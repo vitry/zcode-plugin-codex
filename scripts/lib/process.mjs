@@ -5,10 +5,11 @@ import { PluginError, wrapError } from './errors.mjs';
 
 const JS_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 
-/** @param {string} path @param {string} [execPath] */
-export function launchForPath(path, execPath = process.execPath) {
+/** @param {string} path @param {string} [execPath] @param {string} [platform] */
+export function launchForPath(path, execPath = process.execPath, platform = process.platform) {
   if (typeof path !== 'string' || path.length === 0) throw processInputError();
   const extension = path.slice(path.lastIndexOf('.')).toLowerCase();
+  if (platform === 'win32' && ['.cmd', '.bat'].includes(extension)) return { command: process.env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c'], target: path, windowsShim: true };
   return JS_EXTENSIONS.has(extension)
     ? { command: execPath, args: [path], target: path }
     : { command: path, args: [], target: path };
@@ -29,14 +30,16 @@ export async function assertLaunchTarget(launch) {
 }
 
 /**
- * @param {{ command: string, args: string[], target?: string }} launch
+ * @param {{ command: string, args: string[], target?: string, windowsShim?: boolean }} launch
  * @param {{ args?: string[], cwd?: string, env?: NodeJS.ProcessEnv, signal?: AbortSignal }} [options]
  */
 export async function spawnProcess(launch, options = {}) {
   validateLaunch(launch);
   await assertLaunchTarget(launch);
   try {
-    return spawn(launch.command, [...launch.args, ...(options.args ?? [])], {
+    const extraArgs = options.args ?? [];
+    const argv = launch.windowsShim ? [...launch.args, windowsShimCommand(/** @type {string} */ (launch.target), extraArgs)] : [...launch.args, ...extraArgs];
+    return spawn(launch.command, argv, {
       cwd: options.cwd, env: options.env, signal: options.signal,
       detached: process.platform !== 'win32', shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -50,9 +53,28 @@ export async function spawnProcess(launch, options = {}) {
 /** @param {{command:string,args:string[],target?:string}} launch @param {{args?:string[],cwd?:string,env?:NodeJS.ProcessEnv}} [options] */
 export async function spawnDaemon(launch, options = {}) {
   validateLaunch(launch); await assertLaunchTarget(launch);
-  const child = spawn(launch.command, [...launch.args, ...(options.args ?? [])], { cwd: options.cwd, env: options.env, detached: true, shell: false, windowsHide: true, stdio: 'ignore' });
-  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-  child.unref(); return child;
+  try {
+    const child = spawn(launch.command, [...launch.args, ...(options.args ?? [])], { cwd: options.cwd, env: options.env, detached: true, shell: false, windowsHide: true, stdio: 'ignore' });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    child.unref(); return child;
+  } catch (error) { throw wrapError(error, 'ZCODE_DAEMON_SPAWN_FAILED', 'Could not start the ZCode broker process.', { category: 'runtime', remedy: 'Verify the Node and ZCode installations.' }); }
+}
+
+/** @param {{command:string,args:string[],target?:string,windowsShim?:boolean}} launch @param {{args?:string[],cwd?:string,env?:NodeJS.ProcessEnv,timeoutMs?:number,maxOutputBytes?:number,signal?:AbortSignal}} [options] */
+export async function runProcess(launch, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 30_000; const maxOutputBytes = options.maxOutputBytes ?? 1024 * 1024;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0) throw processInputError();
+  const child = await spawnProcess(launch, options); let stdout = ''; let stderr = ''; let overflow = false;
+  child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
+  const capture = (/** @type {'stdout'|'stderr'} */ kind, /** @type {string} */ chunk) => { if (kind === 'stdout') stdout += chunk; else stderr += chunk; if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > maxOutputBytes) { overflow = true; void terminateProcess(child); } };
+  child.stdout?.on('data', (chunk) => capture('stdout', chunk)); child.stderr?.on('data', (chunk) => capture('stderr', chunk));
+  let timer; const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs); });
+  let outcome;
+  try { outcome = await Promise.race([new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({ code, signal })); }), timeout]); }
+  catch (error) { throw wrapError(error, 'ZCODE_PROCESS_FAILED', 'The ZCode process failed.', { category: 'runtime', remedy: 'Verify the installation and retry.' }); }
+  finally { clearTimeout(timer); }
+  if (outcome === 'timeout' || overflow) { await terminateProcess(child); throw new PluginError(outcome === 'timeout' ? 'ZCODE_PROCESS_TIMEOUT' : 'ZCODE_PROCESS_OUTPUT_LIMIT', outcome === 'timeout' ? 'The ZCode process timed out.' : 'The ZCode process exceeded its output limit.', { category: outcome === 'timeout' ? 'timeout' : 'runtime', remedy: 'Inspect the ZCode installation and retry.', details: { timeoutMs, maxOutputBytes } }); }
+  return { ...outcome, stdout, stderr };
 }
 
 /** @param {import('node:child_process').ChildProcess} child @param {{ graceMs?: number }} [options] */
@@ -89,8 +111,12 @@ function validateLaunch(launch) {
   if (!value || typeof value !== 'object' || typeof value.command !== 'string'
     || value.command.length === 0 || !Array.isArray(value.args)
     || !value.args.every((/** @type {unknown} */ arg) => typeof arg === 'string')
-    || value.target !== undefined && typeof value.target !== 'string') throw processInputError();
+    || value.target !== undefined && typeof value.target !== 'string'
+    || value.windowsShim !== undefined && typeof value.windowsShim !== 'boolean') throw processInputError();
 }
+
+/** @param {string} target @param {string[]} args */
+function windowsShimCommand(target, args) { if (/["\r\n]/.test(target) || !args.every((arg) => /^[A-Za-z0-9._:/=-]+$/.test(arg))) throw processInputError(); return `"${target}"${args.map((arg) => ` "${arg}"`).join('')}`; }
 
 function processInputError() {
   return new PluginError('PROCESS_INPUT_INVALID', 'Process launch input is invalid.', {

@@ -3,7 +3,7 @@ import net from 'node:net';
 import { spawnProcess, terminateProcess } from './process.mjs';
 
 export const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
-export const COMPLETION_REASONS = Object.freeze(['prompt_completed', 'prompt_cancelled', 'prompt_failed']);
+export const COMPLETION_REASONS = Object.freeze(['prompt_completed', 'prompt_failed']);
 
 export class ZCodeProtocolClient {
   /** @param {import('node:child_process').ChildProcess} child @param {{ requestTimeoutMs?:number, completionTimeoutMs?:number, maxFrameBytes?:number }} [options] */
@@ -15,13 +15,17 @@ export class ZCodeProtocolClient {
     /** @type {Map<number,{resolve:(value:any)=>void,reject:(error:Error)=>void,timer:NodeJS.Timeout,method:string}>} */
     this.pending = new Map();
     /** @type {Map<string, any[]>} */ this.completed = new Map();
+    /** @type {Map<string,NodeJS.Timeout>} */ this.completionExpiry = new Map();
+    /** @type {Map<string,{status:'sending'|'armed',baseline?:number,inputId?:string}>} */ this.turns = new Map();
+    /** @type {Map<string,any>} */ this.earlyCompletions = new Map();
     /** @type {Set<any>} */ this.completionWaiters = new Set();
     /** @type {Set<(message:any)=>void>} */ this.subscribers = new Set();
     this.nextId = 1;
     this.buffer = '';
     this.closed = false;
     this.permissionHandler = null;
-    this.permissionRequestIds = new Set();
+    this.closeHandler = null;
+    this.permissionRequestIds = new Map();
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     child.stdout?.on('data', (chunk) => this.handleChunk(chunk));
@@ -50,18 +54,22 @@ export class ZCodeProtocolClient {
     if (handler !== null && typeof handler !== 'function') throw protocolInputError();
     this.permissionHandler = handler;
   }
+  /** @param {(error:PluginError)=>void} handler */ setCloseHandler(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.closeHandler = handler; }
 
   /** @param {string} sessionId */
-  beginTurn(sessionId) { if (!nonEmpty(sessionId)) throw protocolInputError(); this.completed.delete(sessionId); }
+  beginTurn(sessionId) { if (!nonEmpty(sessionId) || this.turns.has(sessionId)) throw new PluginError('ZCODE_TURN_ACTIVE', 'A turn is already active for this session.', { category: 'state', remedy: 'Wait for the active turn to finish.' }); clearTimeout(this.completionExpiry.get(sessionId)); this.completionExpiry.delete(sessionId); this.completed.delete(sessionId); this.turns.set(sessionId, { status: 'sending' }); }
+  /** @param {string} sessionId @param {number} baseline @param {string} inputId */
+  armTurn(sessionId, baseline, inputId) { const turn = this.turns.get(sessionId); if (!turn || turn.status !== 'sending' || !Number.isSafeInteger(baseline) || baseline < 0 || !nonEmpty(inputId)) throw protocolInputError(); const armed = { status: /** @type {'armed'} */ ('armed'), baseline, inputId }; this.turns.set(sessionId, armed); const early = this.earlyCompletions.get(sessionId); this.earlyCompletions.delete(sessionId); if (early && isCompletionFor({ method: 'state.updated', params: early }, sessionId, armed)) this.queueCompletion(sessionId, early); }
+  /** @param {string} sessionId */ abortTurn(sessionId) { this.turns.delete(sessionId); this.earlyCompletions.delete(sessionId); this.completed.delete(sessionId); clearTimeout(this.completionExpiry.get(sessionId)); this.completionExpiry.delete(sessionId); }
 
   /** @param {(message:any)=>void} handler */
   subscribe(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.subscribers.add(handler); return () => this.subscribers.delete(handler); }
 
   /** @param {string} sessionId @param {number} [timeoutMs] */
   waitForCompletion(sessionId, timeoutMs = this.completionTimeoutMs) {
-    if (!nonEmpty(sessionId) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) return Promise.reject(protocolInputError());
+    if (!nonEmpty(sessionId) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || this.turns.get(sessionId)?.status !== 'armed') return Promise.reject(protocolInputError());
     const queued = this.completed.get(sessionId)?.shift();
-    if (queued) return Promise.resolve(queued);
+    if (queued) { this.turns.delete(sessionId); clearTimeout(this.completionExpiry.get(sessionId)); this.completionExpiry.delete(sessionId); return Promise.resolve(queued); }
     return new Promise((resolve, reject) => {
       let unsubscribe = () => {};
       const waiter = { reject, timer: /** @type {NodeJS.Timeout|null} */ (null), unsubscribe };
@@ -73,9 +81,9 @@ export class ZCodeProtocolClient {
       waiter.timer = timer;
       timer.unref?.();
       unsubscribe = this.subscribe((message) => {
-        if (!isCompletionFor(message, sessionId)) return;
+        if (!isCompletionFor(message, sessionId, this.turns.get(sessionId))) return;
         this.completed.get(sessionId)?.shift();
-        this.completionWaiters.delete(waiter); clearTimeout(timer); unsubscribe(); resolve(message.params);
+        this.completionWaiters.delete(waiter); clearTimeout(timer); unsubscribe(); this.turns.delete(sessionId); resolve(message.params);
       });
       waiter.unsubscribe = unsubscribe;
       this.completionWaiters.add(waiter);
@@ -118,10 +126,9 @@ export class ZCodeProtocolClient {
     if (message.id !== undefined && message.method !== undefined) { void this.handleServerRequest(message); return; }
     if (message.id !== undefined) { this.handleResponse(message); return; }
     if (typeof message.method === 'string' && plainObject(message.params)) {
-      if (isCompletionFor(message, message.params.sessionId)) {
-        const queue = this.completed.get(message.params.sessionId) ?? [];
-        queue.splice(0, queue.length, message.params); this.completed.set(message.params.sessionId, queue);
-      }
+      const turn = this.turns.get(message.params.sessionId);
+      if (isTerminalNotification(message) && turn?.status === 'sending') this.earlyCompletions.set(message.params.sessionId, message.params);
+      else if (isCompletionFor(message, message.params.sessionId, turn)) this.queueCompletion(message.params.sessionId, message.params);
       for (const subscriber of this.subscribers) subscriber(message);
       return;
     }
@@ -151,10 +158,15 @@ export class ZCodeProtocolClient {
     if (message.method !== 'interaction/requestPermission') { this.sendFrame({ id: message.id, error: { code: -32601, message: 'Unsupported server request.' } }); return; }
     try {
       validatePermissionRequest(message.params);
-      if (this.permissionRequestIds.has(message.params.requestId)) throw new PluginError('ZCODE_PERMISSION_REPLAY', 'A duplicate permission request was rejected.', { category: 'authorization', remedy: 'Restart the affected ZCode turn.' });
-      this.permissionRequestIds.add(message.params.requestId);
-      const result = this.permissionHandler ? await this.permissionHandler(message.params) : { decision: 'deny', reason: 'No permission handler is attached.' };
+      if (!this.turns.has(message.params.sessionId)) throw new PluginError('ZCODE_PERMISSION_SESSION_INVALID', 'Permission request does not match an active session turn.', { category: 'authorization', remedy: 'Deny the request and restart the turn.' });
+      const cutoff = Date.now() - 10 * 60_000; for (const [key, timestamp] of this.permissionRequestIds) if (timestamp < cutoff) this.permissionRequestIds.delete(key);
+      const replayKey = JSON.stringify([message.params.sessionId, message.params.turnId ?? '', message.params.requestId, message.params.toolCallId]);
+      if (this.permissionRequestIds.has(replayKey)) throw new PluginError('ZCODE_PERMISSION_REPLAY', 'A duplicate permission request was rejected.', { category: 'authorization', remedy: 'Restart the affected ZCode turn.' });
+      if (this.permissionRequestIds.size >= 1024) throw new PluginError('ZCODE_PERMISSION_OVERFLOW', 'Too many permission requests were rejected.', { category: 'authorization', remedy: 'Restart the affected ZCode turn.' });
+      this.permissionRequestIds.set(replayKey, Date.now());
+      const result = this.permissionHandler ? await this.permissionHandler(message.params) : message.params.options.find((/** @type {any} */ option) => option.response.decision === 'deny')?.response;
       validatePermissionResult(result);
+      if (!message.params.options.some((/** @type {any} */ option) => JSON.stringify(option.response) === JSON.stringify(result))) throw new PluginError('ZCODE_PERMISSION_OPTION_INVALID', 'Permission response was not one of the offered options.', { category: 'authorization', remedy: 'Return an exact response offered by ZCode.' });
       this.sendFrame({ id: message.id, result });
     } catch (error) {
       this.sendFrame({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Permission handler failed.' } });
@@ -172,7 +184,8 @@ export class ZCodeProtocolClient {
   /** @param {PluginError} error */
   fail(error) {
     if (this.closed) return;
-    this.closed = true; this.rejectPending(error); this.rejectCompletionWaiters(error); this.completed.clear();
+    this.closed = true; this.rejectPending(error); this.rejectCompletionWaiters(error); for (const timer of this.completionExpiry.values()) clearTimeout(timer); this.completionExpiry.clear(); this.completed.clear(); this.earlyCompletions.clear(); this.turns.clear();
+    this.closeHandler?.(error);
     try { this.child.stdin?.destroy(); this.child.stdout?.destroy(); } catch { /* best effort */ }
     void terminateProcess(this.child);
   }
@@ -182,6 +195,9 @@ export class ZCodeProtocolClient {
 
   /** @param {PluginError} error */
   rejectCompletionWaiters(error) { for (const waiter of this.completionWaiters) { if (waiter.timer) clearTimeout(waiter.timer); waiter.unsubscribe(); waiter.reject(error); } this.completionWaiters.clear(); }
+
+  /** @param {string} sessionId @param {any} params */
+  queueCompletion(sessionId, params) { if (!this.completed.has(sessionId) && this.completed.size >= 1024) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many unconsumed completions were received.', { category: 'protocol', remedy: 'Restart the connection and consume completions promptly.' })); return; } const queue = this.completed.get(sessionId) ?? []; queue.splice(0, queue.length, params); this.completed.set(sessionId, queue); clearTimeout(this.completionExpiry.get(sessionId)); const expiry = setTimeout(() => this.abortTurn(sessionId), 10 * 60_000); expiry.unref?.(); this.completionExpiry.set(sessionId, expiry); }
 }
 
 /** @param {{command:string,args:string[],target?:string}} launch @param {{cwd?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number}} [options] */
@@ -190,9 +206,9 @@ export async function spawnZCodeProtocol(launch, options = {}) {
   return new ZCodeProtocolClient(child, options);
 }
 
-/** @param {string} endpoint @param {{brokerToken:string,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number}} options */
+/** @param {string} endpoint @param {{brokerToken:string,ownerId:string,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number}} options */
 export async function connectZCodeBroker(endpoint, options) {
-  if (!nonEmpty(endpoint) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32) throw protocolInputError();
+  if (!nonEmpty(endpoint) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32 || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw protocolInputError();
   const socket = net.createConnection(endpoint);
   await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
   /** @type {any} */
@@ -206,12 +222,14 @@ export async function connectZCodeBroker(endpoint, options) {
     kill() { transport.exitCode = 0; socket.destroy(); return true; },
   };
   const protocol = new ZCodeProtocolClient(transport, options);
-  await protocol.request('broker/auth', { token: options.brokerToken });
+  await protocol.request('broker/auth', { token: options.brokerToken, ownerId: options.ownerId });
   return protocol;
 }
 
 /** @param {any} message @param {unknown} sessionId */
-function isCompletionFor(message, sessionId) { return nonEmpty(sessionId) && message.method === 'state.updated' && message.params?.scope === 'session' && message.params.sessionId === sessionId && COMPLETION_REASONS.includes(message.params.reason); }
+function isCompletionFor(message, sessionId, /** @type {any} */ turn) { return nonEmpty(sessionId) && turn?.status === 'armed' && Number.isSafeInteger(message.params?.revision) && message.params.revision > turn.baseline && message.method === 'state.updated' && message.params?.scope === 'session' && message.params.sessionId === sessionId && COMPLETION_REASONS.includes(message.params.reason); }
+/** @param {any} message */
+function isTerminalNotification(message) { return message.method === 'state.updated' && message.params?.scope === 'session' && nonEmpty(message.params.sessionId) && Number.isSafeInteger(message.params.revision) && COMPLETION_REASONS.includes(message.params.reason); }
 /** @param {number|undefined} value @param {number} fallback @param {number} minimum @param {number} maximum */
 function boundedInteger(value, fallback, minimum, maximum) { if (value === undefined) return fallback; if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw protocolInputError(); return value; }
 /** @param {unknown} value */
@@ -229,13 +247,26 @@ function validatePermissionRequest(value) {
   if (required.some((key) => !Object.hasOwn(value, key)) || Object.keys(value).some((key) => !allowed.includes(key))
     || !required.slice(0, 5).every((key) => nonEmpty(value[key]))
     || !['low', 'medium', 'high', 'critical'].includes(value.riskLevel)
-    || !Array.isArray(value.options) || value.options.length === 0) throw malformedFrame();
+    || !Array.isArray(value.options) || value.options.length === 0 || !value.options.every(validPermissionOption)
+    || value.turnId !== undefined && !nonEmpty(value.turnId)
+    || value.origin !== undefined && !validPermissionOrigin(value.origin)) throw malformedFrame();
 }
 /** @param {unknown} value */
+function validPermissionOrigin(value) { if (!plainObject(value)) return false; const required = ['kind', 'agentId', 'agentType', 'childSessionId', 'parentSessionId']; const allowed = [...required, 'childTurnId', 'description', 'parentToolCallId', 'parentTurnId']; return value.kind === 'subagent' && required.slice(1).every((key) => nonEmpty(value[key])) && Object.keys(value).every((key) => allowed.includes(key)) && allowed.slice(5).every((key) => value[key] === undefined || nonEmpty(value[key])); }
+/** @param {unknown} value */
+function validPermissionOption(value) { if (!plainObject(value)) return false; const allowed = ['optionId', 'kind', 'name', 'description', 'response']; return Object.keys(value).every((key) => allowed.includes(key)) && ['optionId', 'kind', 'name'].every((key) => nonEmpty(value[key])) && (value.description === undefined || typeof value.description === 'string') && permissionResultValid(value.response); }
+/** @param {unknown} value */
 function validatePermissionResult(value) {
+  if (!permissionResultValid(value)) throw protocolInputError();
+}
+/** @param {unknown} value */
+function permissionResultValid(value) {
   const allowed = ['decision', 'reason', 'modifiedInput', 'permissionUpdates'];
   if (!plainObject(value) || !['allow', 'deny', 'escalate', 'modify'].includes(value.decision)
     || Object.keys(value).some((key) => !allowed.includes(key))
     || value.reason !== undefined && typeof value.reason !== 'string'
-    || value.permissionUpdates !== undefined && !Array.isArray(value.permissionUpdates)) throw protocolInputError();
+    || value.permissionUpdates !== undefined && (!Array.isArray(value.permissionUpdates) || !value.permissionUpdates.every(validPermissionUpdate))) return false;
+  return true;
 }
+/** @param {unknown} value */
+function validPermissionUpdate(value) { return plainObject(value) && Object.keys(value).every((key) => ['type', 'behavior', 'rules'].includes(key)) && value.type === 'addRules' && ['allow', 'deny', 'ask'].includes(value.behavior) && Array.isArray(value.rules) && value.rules.length > 0 && value.rules.every((rule) => plainObject(rule) && nonEmpty(rule.toolName) && Object.keys(rule).every((key) => ['toolName', 'ruleContent'].includes(key)) && (rule.ruleContent === undefined || typeof rule.ruleContent === 'string')); }

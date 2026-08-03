@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { discoverZCode, getPlatformCandidates } from '../scripts/lib/zcode-discovery.mjs';
+import { launchForPath } from '../scripts/lib/process.mjs';
 
 const okVersion = async () => 'zcode 0.16.1';
 
@@ -41,4 +42,18 @@ test('discovery treats a prerelease of the minimum release as unsupported SemVer
 test('discovery validates injected inputs and output fail closed', async () => {
   await assert.rejects(discoverZCode({ platform: 'plan9' }), { code: 'ZCODE_DISCOVERY_INPUT_INVALID' });
   await assert.rejects(discoverZCode({ explicitPath: '/zcode', platform: 'linux', env: {}, which: async () => null, exists: async () => true, runVersion: async () => ({ version: 'wat' }) }), { code: 'ZCODE_VERSION_INVALID' });
+});
+
+test('SemVer parser rejects invalid 2.0 forms', async () => {
+  for (const version of ['01.2.3', '1.02.3', '1.2.03', '1.2.3-', '1.2.3-alpha..1', '1.2.3-01', '1.2.3+bad..build', '1.2.3+']) {
+    await assert.rejects(discoverZCode({ explicitPath: '/zcode', platform: 'linux', env: {}, which: async () => null, exists: async () => true, runVersion: async () => version }), { code: 'ZCODE_VERSION_INVALID' });
+  }
+});
+
+test('Windows command shims use ComSpec while JS and native paths remain direct', () => {
+  const shim = launchForPath('C:\\Program Files\\ZCode & Tools\\zcode.cmd', 'C:\\node.exe', 'win32');
+  assert.equal(shim.windowsShim, true);
+  assert.deepEqual(shim.args, ['/d', '/s', '/c']);
+  assert.deepEqual(launchForPath('C:\\ZCode\\zcode.cjs', 'C:\\node.exe', 'win32').command, 'C:\\node.exe');
+  assert.deepEqual(launchForPath('C:\\ZCode\\zcode.exe', 'C:\\node.exe', 'win32').command, 'C:\\ZCode\\zcode.exe');
 });

@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
-import { launchForPath, spawnProcess, terminateProcess } from './process.mjs';
+import { launchForPath, runProcess } from './process.mjs';
 
 const MINIMUM_VERSION = [0, 16, 1];
 const PLATFORMS = new Set(['darwin', 'linux', 'win32']);
@@ -46,7 +46,7 @@ export async function discoverZCode(options = {}) {
   candidates.push(...getPlatformCandidates(/** @type {'darwin'|'linux'|'win32'} */ (platform), env));
   for (const path of new Set(candidates)) {
     if (!await exists(path)) continue;
-    const launch = launchForPath(path, options.execPath);
+    const launch = launchForPath(path, options.execPath, platform);
     const rawVersion = await runVersion(launch);
     if (typeof rawVersion !== 'string') throw versionInvalid(rawVersion);
     const version = parseVersion(rawVersion);
@@ -70,7 +70,8 @@ async function fileExists(path) { try { await access(path); return true; } catch
 /** @param {string} name @param {any} env @param {string} platform */
 async function findOnPath(name, env, platform) {
   for (const directory of String(env.PATH ?? '').split(platform === 'win32' ? ';' : ':').filter(Boolean)) {
-    const suffixes = platform === 'win32' ? ['', '.exe', '.cjs', '.js'] : [''];
+    const configured = String(env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';').map((suffix) => suffix.toLowerCase()).filter(Boolean);
+    const suffixes = platform === 'win32' ? [...new Set(['', ...configured, '.cjs', '.js'])] : [''];
     for (const suffix of suffixes) { const path = join(directory, `${name}${suffix}`); if (await fileExists(path)) return path; }
   }
   return null;
@@ -78,23 +79,19 @@ async function findOnPath(name, env, platform) {
 
 /** @param {{command:string,args:string[],target?:string}} launch */
 async function defaultRunVersion(launch) {
-  const child = await spawnProcess(launch, { args: ['--version'] });
-  let stdout = ''; let stderrBytes = 0; let oversized = false;
-  child.stdout?.setEncoding('utf8');
-  child.stderr?.setEncoding('utf8');
-  child.stdout?.on('data', (chunk) => { stdout += chunk; if (Buffer.byteLength(stdout) > 64 * 1024) { oversized = true; void terminateProcess(child); } });
-  child.stderr?.on('data', (chunk) => { stderrBytes += Buffer.byteLength(chunk); if (stderrBytes > 64 * 1024) { oversized = true; void terminateProcess(child); } });
-  let timer;
-  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), 5_000); });
-  const outcome = await Promise.race([new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => resolve(code)); }), timeout]);
-  clearTimeout(timer);
-  await terminateProcess(child);
-  if (outcome === 'timeout' || oversized || outcome !== 0) throw new PluginError('ZCODE_VERSION_CHECK_FAILED', 'ZCode version check failed or exceeded its safety bounds.', { category: outcome === 'timeout' ? 'timeout' : 'runtime', remedy: 'Run $zcode:setup and inspect the installation.' });
-  return stdout;
+  const result = await runProcess(launch, { args: ['--version'], timeoutMs: 5_000, maxOutputBytes: 64 * 1024 });
+  if (result.code !== 0) throw new PluginError('ZCODE_VERSION_CHECK_FAILED', 'ZCode version check failed.', { category: 'runtime', remedy: 'Run $zcode:setup and inspect the installation.' });
+  return result.stdout;
 }
 
 /** @param {string} value */
-function parseVersion(value) { const match = value.match(/(?:^|\s|v)(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?(?:\s|$)/); return match ? { value: `${match[1]}.${match[2]}.${match[3]}${match[4] ?? ''}`, parts: match.slice(1, 4).map(Number), prerelease: Boolean(match[4]) } : null; }
+function parseVersion(value) {
+  const token = value.match(/(?:^|\s|v)(\d[^\s]*)(?:\s|$)/)?.[1];
+  if (!token) return null;
+  const match = token.match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/);
+  if (!match || match[4]?.split('.').some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))) return null;
+  return { value: token, parts: match.slice(1, 4).map(Number), prerelease: Boolean(match[4]) };
+}
 /** @param {number[]} left @param {number[]} right */
 function compareVersion(left, right) { for (let index = 0; index < 3; index += 1) { if (left[index] !== right[index]) return /** @type {number} */ (left[index]) - /** @type {number} */ (right[index]); } return 0; }
 function discoveryInputError() { return new PluginError('ZCODE_DISCOVERY_INPUT_INVALID', 'ZCode discovery input is invalid.', { category: 'validation', remedy: 'Provide a supported platform and valid dependency functions.' }); }
