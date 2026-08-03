@@ -8,10 +8,18 @@ if (process.argv.includes('--version')) {
   process.stdout.write(`${process.env.FAKE_ZCODE_VERSION ?? '0.16.1'}\n`);
   process.exit(0);
 }
+if (process.env.FAKE_ZCODE_STDERR_BYTES) process.stderr.write('sensitive-stderr'.repeat(Math.ceil(Number(process.env.FAKE_ZCODE_STDERR_BYTES) / 16)));
 
 const sessions = new Map();
 const input = readline.createInterface({ input: process.stdin });
 let permissionId = 9000;
+let sendCount = 0;
+let resumeCount = 0;
+
+const defaultModel = { providerId: 'fake', modelId: 'model' };
+function settings(model = defaultModel) { return { model: { current: model, available: [{ ref: model, reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' } }; }
+function sessionInfo(sessionId, workspacePath = '/repo') { return { sessionId, workspace: { workspacePath, workspaceKey: workspacePath }, sessionKind: 'main', title: 'Fixture session', mode: 'build', status: 'idle', createdAt: 1, updatedAt: 1 }; }
+function snapshot(sessionId, value = sessions.get(sessionId)) { return { protocol: { name: 'zcode', version: '0.16.1' }, session: sessionInfo(sessionId, value?.workspacePath), settings: value?.settings ?? settings(), projection: {}, runtime: {}, messages: value?.messages ?? [] }; }
 
 async function record(message) {
   if (process.env.FAKE_ZCODE_RECORD) {
@@ -22,6 +30,7 @@ async function record(message) {
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
+function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
 
 input.on('line', async (line) => {
   let message;
@@ -55,14 +64,19 @@ input.on('line', async (line) => {
   switch (message.method) {
     case 'session/create': {
       const sessionId = p.sessionId ?? `session-${sessions.size + 1}`;
-      sessions.set(sessionId, { sessionId, settings: { model: { current: p.model ?? { providerId: 'fake', modelId: 'model' }, available: [{ ref: p.model ?? { providerId: 'fake', modelId: 'model' }, reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] } }, messages: [] });
-      send({ id: message.id, result: { session: { sessionId }, settings: sessions.get(sessionId).settings, messages: [] } });
+      sessions.set(sessionId, { sessionId, workspacePath: p.workspace?.workspacePath ?? '/repo', settings: settings(p.model ?? defaultModel), messages: [] });
+      const result = snapshot(sessionId);
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-workspace') delete result.session.workspace;
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'empty-message') result.messages = [{}];
+      send({ id: message.id, result });
       break;
     }
     case 'session/send': {
+      sendCount += 1;
       const stateRevision = process.env.FAKE_ZCODE_BARRIER === '1' ? 1000 : 1;
       if (process.env.FAKE_ZCODE_BARRIER === '1') send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: 999, reason: 'prompt_completed', patch: { status: 'idle' } } });
-      send({ id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision } });
+      const response = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision } };
+      if (process.env.FAKE_ZCODE_SYNC_BATCH !== 'stale-valid') send(response);
       if (process.env.FAKE_ZCODE_PERMISSION === '1') {
         const id = permissionId++;
         const params = { requestId: `permission-${id}`, sessionId: p.sessionId, toolCallId: 'tool-1', toolName: 'write', reason: 'fixture', riskLevel: 'medium', input: { secret: 'never-log-me' }, options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }, { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] };
@@ -71,28 +85,33 @@ input.on('line', async (line) => {
         if (process.env.FAKE_ZCODE_PERMISSION_REPLAY === '1') send({ id: permissionId++, method: 'interaction/requestPermission', params });
       }
       const notificationSession = process.env.FAKE_ZCODE_CROSS_SESSION ?? p.sessionId;
-      const complete = () => send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: stateRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } });
-      if (process.env.FAKE_ZCODE_SYNC_COMPLETE === '1') complete(); else setTimeout(complete, 5);
+      const completion = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: stateRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };
+      if (process.env.FAKE_ZCODE_SYNC_BATCH === 'stale-valid') sendBatch([response, { method: 'state.updated', params: { ...completion.params, revision: stateRevision } }, completion]);
+      else if (process.env.FAKE_ZCODE_SYNC_COMPLETE === '1') send(completion);
+      else if (!(process.env.FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION === '1' && sendCount === 1)) setTimeout(() => send(completion), 5);
       break;
     }
     case 'session/read':
-      send({ id: message.id, result: { session: { sessionId: p.sessionId }, settings: sessions.get(p.sessionId)?.settings ?? { model: { current: { providerId: 'fake', modelId: 'model' }, available: [] } }, messages: sessions.get(p.sessionId)?.messages ?? [] } });
+      send({ id: message.id, result: snapshot(p.sessionId) });
       break;
     case 'session/resume':
-      send({ id: message.id, result: { session: { sessionId: p.sessionId }, settings: sessions.get(p.sessionId)?.settings ?? { model: { current: { providerId: 'fake', modelId: 'model' }, available: [] } }, messages: [] } });
+      resumeCount += 1;
+      if (process.env.FAKE_ZCODE_RESUME_ABA === '1' && resumeCount === 1) { await new Promise((resolve) => setTimeout(resolve, 40)); send({ id: message.id, error: { code: -32099, message: 'late resume failure' } }); break; }
+      if (!sessions.has(p.sessionId)) sessions.set(p.sessionId, { sessionId: p.sessionId, workspacePath: '/repo', settings: settings(), messages: [] });
+      send({ id: message.id, result: snapshot(p.sessionId) });
       break;
     case 'session/list':
-      send({ id: message.id, result: { sessions: [...sessions.values()].map(({ sessionId }) => ({ sessionId })) } });
+      send({ id: message.id, result: { sessions: process.env.FAKE_ZCODE_BAD_LIST === 'session-id-only' ? [...sessions.values()].map(({ sessionId }) => ({ sessionId })) : [...sessions.values()].map(({ sessionId, workspacePath }) => sessionInfo(sessionId, workspacePath)) } });
       break;
     case 'session/stop':
-      send({ id: message.id, result: {} });
+      send({ id: message.id, result: process.env.FAKE_ZCODE_BAD_STOP_EXTRA === '1' ? { stopped: true } : {} });
       break;
     case 'session/setModel':
       sessions.get(p.sessionId).settings.model.current = p.model;
-      send({ id: message.id, result: { session: { sessionId: p.sessionId }, settings: sessions.get(p.sessionId).settings, messages: [] } });
+      send({ id: message.id, result: snapshot(p.sessionId) });
       break;
     case 'session/setThoughtLevel':
-      send({ id: message.id, result: { session: { sessionId: p.sessionId }, settings: sessions.get(p.sessionId)?.settings ?? {}, messages: [] } });
+      send({ id: message.id, result: snapshot(p.sessionId) });
       break;
     default:
       send({ id: message.id, error: { code: -32601, message: `unknown ${message.method}` } });

@@ -4,9 +4,11 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 import { runProcess, spawnProcess, terminateProcess } from '../scripts/lib/process.mjs';
+import { BoundedWriter } from '../scripts/lib/zcode-protocol.mjs';
 
 test('grace timer does not retain the caller after the child exits', async () => {
   const moduleUrl = new URL('../scripts/lib/process.mjs', import.meta.url).href;
@@ -32,4 +34,23 @@ test('termination kills the spawned process group including descendants', async 
   assert.ok(Number.isSafeInteger(grandchildPid)); await terminateProcess(child, { graceMs: 100 });
   assert.throws(() => process.kill(grandchildPid, 0), (error) => error.code === 'ESRCH');
   await rm(directory, { recursive: true, force: true });
+});
+
+test('async spawn errors are wrapped with the stable spawn code', async () => {
+  await assert.rejects(spawnProcess({ command: '/definitely/not/a/zcode-binary', args: [] }), { code: 'ZCODE_SPAWN_FAILED' });
+});
+
+test('runProcess abort awaits termination of the entire descendant tree', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-abort-tree-')); const pidFile = join(directory, 'pid');
+  const source = `const {spawn}=require('node:child_process'),fs=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},10000)'],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));setInterval(()=>{},10000);`;
+  const controller = new AbortController(); const running = runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath }, { signal: controller.signal, timeoutMs: 2_000 });
+  let grandchildPid; for (let index = 0; index < 100; index += 1) { try { grandchildPid = Number(await readFile(pidFile, 'utf8')); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); } }
+  controller.abort(); await assert.rejects(running, { code: 'ZCODE_PROCESS_ABORTED' }); assert.throws(() => process.kill(grandchildPid, 0), (error) => error.code === 'ESRCH'); await rm(directory, { recursive: true, force: true });
+});
+
+test('bounded writer queues on backpressure, flushes on drain, and fails at its byte cap', () => {
+  class FakeWritable extends EventEmitter { constructor() { super(); this.writable = true; this.writes = []; this.block = true; } write(value) { this.writes.push(value); return !this.block; } }
+  const stream = new FakeWritable(); let failure; const writer = new BoundedWriter(stream, { maxQueuedBytes: 8, drainTimeoutMs: 10_000, onFailure: (error) => { failure = error; } });
+  writer.write('1234'); writer.write('56'); assert.deepEqual(stream.writes, ['1234']); stream.block = false; stream.emit('drain'); assert.deepEqual(stream.writes, ['1234', '56']); writer.close();
+  const blocked = new FakeWritable(); const capped = new BoundedWriter(blocked, { maxQueuedBytes: 5, onFailure: (error) => { failure = error; } }); capped.write('1234'); assert.throws(() => capped.write('56'), { code: 'ZCODE_WRITE_OVERFLOW' }); assert.equal(failure.code, 'ZCODE_WRITE_OVERFLOW');
 });

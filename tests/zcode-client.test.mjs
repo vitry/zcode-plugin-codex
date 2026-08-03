@@ -72,6 +72,21 @@ test('completion in the same frame batch after response survives the arm barrier
   await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); await client.send(created.session.sessionId, 'sync'); const completion = await client.waitForCompletion(created.session.sessionId); assert.equal(completion.revision, 2); }, { FAKE_ZCODE_SYNC_COMPLETE: '1' });
 });
 
+test('stale and valid completions in the same stdout write choose the valid revision', async () => {
+  await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); await client.send(created.session.sessionId, 'sync'); const completion = await client.waitForCompletion(created.session.sessionId); assert.equal(completion.revision, 2); }, { FAKE_ZCODE_SYNC_BATCH: 'stale-valid' });
+});
+
+test('completion timeout and stop fully clean the turn and allow another send', async () => {
+  await withClient(async (client) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await client.send(sessionId, 'timeout'); await assert.rejects(client.waitForCompletion(sessionId, 20), { code: 'ZCODE_COMPLETION_TIMEOUT' });
+    await client.send(sessionId, 'retry'); await client.waitForCompletion(sessionId);
+    await client.send(sessionId, 'stop'); const waiter = client.waitForCompletion(sessionId, 2_000); await client.stopSession(sessionId); await assert.rejects(waiter, { code: 'ZCODE_SESSION_STOPPED' });
+    for (const map of [client.protocol.turns, client.protocol.completed, client.protocol.earlyCompletions, client.protocol.completionExpiry]) assert.equal(map.size, 0);
+    assert.equal(client.protocol.completionWaiters.size, 0); assert.equal(client.protocol.waiterSessions.size, 0);
+  }, { FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' });
+});
+
 test('permission response must be an offered option and replay is rejected', async () => {
   await withClient(async (client, record) => {
     const created = await client.createSession({ workspace: '/repo' });
@@ -159,6 +174,20 @@ test('typed operation results fail closed when their runtime shape is invalid', 
   }, { FAKE_ZCODE_BAD_RESULT: 'session/list' });
 });
 
+test('session/stop accepts only the real empty 0.16.1 result', async () => {
+  await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); await assert.rejects(client.stopSession(created.session.sessionId), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_STOP_EXTRA: '1' });
+});
+
+test('large child stderr is drained without blocking or contaminating protocol stdout', async () => {
+  await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); assert.equal(created.session.sessionId, 'session-1'); }, { FAKE_ZCODE_STDERR_BYTES: String(2 * 1024 * 1024) });
+});
+
+test('actual 0.16.1 snapshot and list required fields are enforced', async (t) => {
+  await t.test('snapshot workspace', () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: 'missing-workspace' }));
+  await t.test('message envelope', () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: 'empty-message' }));
+  await t.test('list session info', () => withClient(async (client) => { await client.createSession({ workspace: '/repo' }); await assert.rejects(client.listSessions(), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_LIST: 'session-id-only' }));
+});
+
 test('broker endpoints are bounded and platform-safe', () => {
   const unix = brokerEndpointFor({ platform: 'darwin', dataRoot: `/tmp/${'a'.repeat(300)}`, workspace: '/repo' });
   const windows = brokerEndpointFor({ platform: 'win32', dataRoot: 'C:\\data', workspace: 'C:\\repo' });
@@ -183,6 +212,21 @@ test('typed client uses a local broker whose single CLI owner handles permission
     await broker.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('broker consumes validated completion and permits repeated turns without retained state', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-consume-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '9'.repeat(64);
+  const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SYNC_BATCH: 'stale-valid' }, idleTimeoutMs: 25 }).start();
+  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, completionTimeoutMs: 500 });
+  try { const { session: { sessionId } } = await client.createSession({ workspace: directory }); for (let i = 0; i < 2; i += 1) { await client.send(sessionId, String(i)); await client.waitForCompletion(sessionId); assert.equal(broker.activeSessions.size, 0); for (const map of [broker.protocol.turns, broker.protocol.completed, broker.protocol.earlyCompletions, broker.protocol.completionExpiry]) assert.equal(map.size, 0); } }
+  finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('completed broker becomes truly idle after its final owner disconnects', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-idle-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '7'.repeat(64);
+  const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, idleTimeoutMs: 20 }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken });
+  try { const { session: { sessionId } } = await client.createSession({ workspace: directory }); await client.send(sessionId, 'finish'); await client.waitForCompletion(sessionId); await client.close(); for (let index = 0; index < 100 && (broker.server || broker.protocol); index += 1) await new Promise((resolve) => setTimeout(resolve, 5)); assert.equal(broker.server, null); assert.equal(broker.protocol, null); assert.equal(broker.activeSessions.size, 0); }
+  finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('concurrent lazy broker acquisition publishes one healthy pid and identity', async () => {
@@ -231,6 +275,14 @@ test('stable owner credential prevents sibling reclaim after disconnect', async 
   const sibling = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'sibling-credential-2' });
   await assert.rejects(sibling.resumeSession('durable-session'), { code: 'ZCODE_REQUEST_FAILED' }); await sibling.close();
   const resumed = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); await resumed.resumeSession('durable-session'); await resumed.close(); await broker.close(); await rm(directory, { recursive: true, force: true });
+});
+
+test('late same-owner claim failure cannot erase a newer successful claim', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-owner-aba-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '8'.repeat(64); const ownerId = 'owner-credential-aba';
+  const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_RESUME_ABA: '1' } }).start();
+  const first = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); const second = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  try { const results = await Promise.allSettled([first.resumeSession('aba-session'), second.resumeSession('aba-session')]); assert.deepEqual(results.map((result) => result.status).sort(), ['fulfilled', 'rejected']); const sibling = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'sibling-credential-aba' }); try { await assert.rejects(sibling.resumeSession('aba-session'), { code: 'ZCODE_REQUEST_FAILED' }); } finally { await sibling.close(); } }
+  finally { await first.close(); await second.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('launch target is revalidated before spawning', async () => {

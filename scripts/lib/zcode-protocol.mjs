@@ -3,10 +3,11 @@ import net from 'node:net';
 import { spawnProcess, terminateProcess } from './process.mjs';
 
 export const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
+export const DEFAULT_MAX_OUTBOUND_BYTES = 4 * 1024 * 1024;
 export const COMPLETION_REASONS = Object.freeze(['prompt_completed', 'prompt_failed']);
 
 export class ZCodeProtocolClient {
-  /** @param {import('node:child_process').ChildProcess} child @param {{ requestTimeoutMs?:number, completionTimeoutMs?:number, maxFrameBytes?:number }} [options] */
+  /** @param {import('node:child_process').ChildProcess} child @param {{ requestTimeoutMs?:number, completionTimeoutMs?:number, maxFrameBytes?:number, maxOutboundBytes?:number }} [options] */
   constructor(child, options = {}) {
     this.child = child;
     this.requestTimeoutMs = boundedInteger(options.requestTimeoutMs, 30_000, 1, 3_600_000);
@@ -26,8 +27,10 @@ export class ZCodeProtocolClient {
     this.permissionHandler = null;
     this.closeHandler = null;
     this.terminalHandler = null;
+    this.consumeTerminal = false;
     this.waiterSessions = new Set();
     this.permissionRequestIds = new Map();
+    this.writer = new BoundedWriter(child.stdin, { maxQueuedBytes: boundedInteger(options.maxOutboundBytes, DEFAULT_MAX_OUTBOUND_BYTES, 128, 64 * 1024 * 1024), onFailure: (error) => this.fail(error) });
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', () => {});
@@ -57,7 +60,8 @@ export class ZCodeProtocolClient {
     if (handler !== null && typeof handler !== 'function') throw protocolInputError();
     this.permissionHandler = handler;
   }
-  /** @param {(params:any)=>void} handler */ setTerminalHandler(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.terminalHandler = handler; }
+  /** Broker-only terminal hook. Validated terminal notifications are consumed before this callback. @param {(params:any)=>void} handler */
+  consumeTerminalsWith(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.terminalHandler = handler; this.consumeTerminal = true; }
   /** @param {(error:PluginError)=>void} handler */ setCloseHandler(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.closeHandler = handler; }
 
   /** @param {string} sessionId */
@@ -65,6 +69,11 @@ export class ZCodeProtocolClient {
   /** @param {string} sessionId @param {number} baseline @param {string} inputId */
   armTurn(sessionId, baseline, inputId) { const turn = this.turns.get(sessionId); if (!turn || turn.status !== 'sending' || !Number.isSafeInteger(baseline) || baseline < 0 || !nonEmpty(inputId)) throw protocolInputError(); const armed = { status: /** @type {'armed'} */ ('armed'), baseline, inputId }; this.turns.set(sessionId, armed); const early = this.earlyCompletions.get(sessionId) ?? []; this.earlyCompletions.delete(sessionId); const valid = early.find((params) => isCompletionFor({ method: 'state.updated', params }, sessionId, armed)); if (valid) this.queueCompletion(sessionId, valid); }
   /** @param {string} sessionId */ abortTurn(sessionId) { this.turns.delete(sessionId); this.earlyCompletions.delete(sessionId); this.completed.delete(sessionId); clearTimeout(this.completionExpiry.get(sessionId)); this.completionExpiry.delete(sessionId); }
+  /** @param {string} sessionId @param {PluginError} [error] */
+  cancelTurn(sessionId, error = new PluginError('ZCODE_SESSION_STOPPED', `ZCode session ${sessionId} was stopped.`, { category: 'state', remedy: 'Start a new turn before waiting for completion.', details: { sessionId } })) {
+    for (const waiter of this.completionWaiters) if (waiter.sessionId === sessionId) { if (waiter.timer) clearTimeout(waiter.timer); waiter.unsubscribe(); this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); waiter.reject(error); }
+    this.abortTurn(sessionId);
+  }
 
   /** @param {(message:any)=>void} handler */
   subscribe(handler) { if (typeof handler !== 'function' || this.subscribers.size >= 256) throw protocolInputError(); this.subscribers.add(handler); return () => this.subscribers.delete(handler); }
@@ -99,6 +108,7 @@ export class ZCodeProtocolClient {
     this.closed = true;
     this.rejectPending(disconnected());
     this.rejectCompletionWaiters(disconnected());
+    this.writer.close();
     try { this.child.stdin?.end(); } catch { /* already closed */ }
     await terminateProcess(this.child);
   }
@@ -181,14 +191,13 @@ export class ZCodeProtocolClient {
   sendFrame(frame) {
     const data = `${JSON.stringify(frame)}\n`;
     if (Buffer.byteLength(data) > this.maxFrameBytes) throw frameTooLarge();
-    if (!this.child.stdin?.writable) throw disconnected();
-    this.child.stdin.write(data);
+    this.writer.write(data);
   }
 
   /** @param {PluginError} error */
   fail(error) {
     if (this.closed) return;
-    this.closed = true; this.rejectPending(error); this.rejectCompletionWaiters(error); for (const timer of this.completionExpiry.values()) clearTimeout(timer); this.completionExpiry.clear(); this.completed.clear(); this.earlyCompletions.clear(); this.turns.clear();
+    this.closed = true; this.writer.close(); this.rejectPending(error); this.rejectCompletionWaiters(error); for (const timer of this.completionExpiry.values()) clearTimeout(timer); this.completionExpiry.clear(); this.completed.clear(); this.earlyCompletions.clear(); this.turns.clear();
     this.closeHandler?.(error);
     try { this.child.stdin?.destroy(); this.child.stdout?.destroy(); } catch { /* best effort */ }
     void terminateProcess(this.child);
@@ -201,16 +210,34 @@ export class ZCodeProtocolClient {
   rejectCompletionWaiters(error) { for (const waiter of this.completionWaiters) { if (waiter.timer) clearTimeout(waiter.timer); waiter.unsubscribe(); this.waiterSessions.delete(waiter.sessionId); waiter.reject(error); } this.completionWaiters.clear(); }
 
   /** @param {string} sessionId @param {any} params */
-  queueCompletion(sessionId, params) { if (!this.completed.has(sessionId) && this.completed.size >= 1024) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many unconsumed completions were received.', { category: 'protocol', remedy: 'Restart the connection and consume completions promptly.' })); return; } const queue = this.completed.get(sessionId) ?? []; queue.splice(0, queue.length, params); this.completed.set(sessionId, queue); this.terminalHandler?.(params); clearTimeout(this.completionExpiry.get(sessionId)); const expiry = setTimeout(() => this.abortTurn(sessionId), 10 * 60_000); expiry.unref?.(); this.completionExpiry.set(sessionId, expiry); }
+  queueCompletion(sessionId, params) { if (this.consumeTerminal) { this.abortTurn(sessionId); this.terminalHandler?.(params); return; } if (!this.completed.has(sessionId) && this.completed.size >= 1024) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many unconsumed completions were received.', { category: 'protocol', remedy: 'Restart the connection and consume completions promptly.' })); return; } const queue = this.completed.get(sessionId) ?? []; queue.splice(0, queue.length, params); this.completed.set(sessionId, queue); clearTimeout(this.completionExpiry.get(sessionId)); const expiry = setTimeout(() => this.abortTurn(sessionId), 10 * 60_000); expiry.unref?.(); this.completionExpiry.set(sessionId, expiry); }
 }
 
-/** @param {{command:string,args:string[],target?:string}} launch @param {{cwd?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number}} [options] */
+export class BoundedWriter {
+  /** @param {any} stream @param {{maxQueuedBytes?:number,drainTimeoutMs?:number,onFailure?:(error:PluginError)=>void}} [options] */
+  constructor(stream, options = {}) {
+    this.stream = stream; this.maxQueuedBytes = options.maxQueuedBytes ?? DEFAULT_MAX_OUTBOUND_BYTES; this.drainTimeoutMs = options.drainTimeoutMs ?? 1_000; this.onFailure = options.onFailure ?? (() => {}); this.blocked = false; this.pendingBytes = 0; this.currentBytes = 0;
+    /** @type {string[]} */
+    this.queue = [];
+    /** @type {NodeJS.Timeout|undefined} */
+    this.timer = undefined;
+    this.closed = false; this.onDrain = () => this.drain(); stream?.on?.('drain', this.onDrain);
+  }
+  /** @param {string} data */
+  write(data) { if (this.closed || !this.stream?.writable) throw disconnected(); const bytes = Buffer.byteLength(data); if (bytes > this.maxQueuedBytes || this.pendingBytes + bytes > this.maxQueuedBytes) { const error = new PluginError('ZCODE_WRITE_OVERFLOW', 'ZCode outbound data exceeded the configured queue limit.', { category: 'protocol', remedy: 'Wait for the peer to consume data and retry.' }); this.close(); this.onFailure(error); throw error; } if (this.blocked) { this.queue.push(data); this.pendingBytes += bytes; return; } this.writeNow(data, bytes, false); }
+  /** @param {string} data @param {number} bytes */
+  writeNow(data, bytes, /** @type {boolean} */ alreadyPending) { if (this.stream.write(data)) { if (alreadyPending) this.pendingBytes -= bytes; return; } this.blocked = true; this.currentBytes = bytes; if (!alreadyPending) this.pendingBytes += bytes; this.timer = setTimeout(() => { const error = new PluginError('ZCODE_WRITE_TIMEOUT', 'ZCode outbound data remained backpressured.', { category: 'timeout', remedy: 'Restart the connection and retry.' }); this.close(); this.onFailure(error); }, this.drainTimeoutMs); this.timer.unref?.(); }
+  drain() { if (this.closed || !this.blocked) return; clearTimeout(this.timer); this.timer = undefined; this.blocked = false; this.pendingBytes -= this.currentBytes; this.currentBytes = 0; while (!this.blocked && this.queue.length) { const data = /** @type {string} */ (this.queue.shift()); this.writeNow(data, Buffer.byteLength(data), true); } }
+  close() { if (this.closed) return; this.closed = true; clearTimeout(this.timer); this.stream?.off?.('drain', this.onDrain); this.queue.length = 0; this.pendingBytes = 0; this.currentBytes = 0; }
+}
+
+/** @param {{command:string,args:string[],target?:string}} launch @param {{cwd?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number}} [options] */
 export async function spawnZCodeProtocol(launch, options = {}) {
   const child = await spawnProcess(launch, { args: ['app-server'], cwd: options.cwd, env: options.env });
   return new ZCodeProtocolClient(child, options);
 }
 
-/** @param {string} endpoint @param {{brokerToken:string,ownerId:string,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number}} options */
+/** @param {string} endpoint @param {{brokerToken:string,ownerId:string,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number}} options */
 export async function connectZCodeBroker(endpoint, options) {
   if (!nonEmpty(endpoint) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32 || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw protocolInputError();
   const socket = net.createConnection(endpoint);
