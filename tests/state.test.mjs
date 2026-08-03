@@ -49,7 +49,7 @@ function startLockHolder(lockPath) {
         process.stdout.write('acquired\\n');
         await new Promise((resolve) => process.stdin.once('data', resolve));
       }, {
-        heartbeatIntervalMs: 5,
+        heartbeatIntervalMs: 60_000,
         pollIntervalMs: 5,
         staleAfterMs: 25,
         timeoutMs: 1_000,
@@ -61,6 +61,39 @@ function startLockHolder(lockPath) {
   `;
   return spawn(process.execPath, ['--input-type=module', '--eval', source, lockPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
+
+/** @param {string} lockPath */
+function startTimedLockAttempt(lockPath) {
+  const source = `
+    import { withFileLock } from ${JSON.stringify(fsModuleUrl)};
+    try {
+      await withFileLock(process.argv[1], async () => {
+        process.stdout.write('entered');
+      }, {
+        heartbeatIntervalMs: 60_000,
+        pollIntervalMs: 5,
+        staleAfterMs: 25,
+        timeoutMs: 75,
+      });
+    } catch (error) {
+      process.stdout.write(\`error:\${error.code}\`);
+    }
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', source, lockPath], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return new Promise((resolve, reject) => {
+    let output = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { output += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) resolve(output);
+      else reject(new Error(`Timed lock child exited ${code}: ${stderr}`));
+    });
   });
 }
 
@@ -274,6 +307,23 @@ test('atomic JSON writes use private files and leave no sibling temporary artifa
   assert.deepEqual(await readdir(directory), ['record.json']);
 });
 
+test('the advisory lock keeps one stable inode and never renames ownership metadata', async () => {
+  const { root } = await fixture();
+  const lockPath = join(root, 'stable.lock');
+  /** @type {number | undefined} */
+  let inodeWhileHeld;
+  await withFileLock(lockPath, async () => {
+    assert.deepEqual(await readdir(lockPath), ['advisory.lock']);
+    inodeWhileHeld = (await stat(join(lockPath, 'advisory.lock'))).ino;
+  });
+
+  assert.deepEqual(await readdir(lockPath), ['advisory.lock']);
+  assert.equal((await stat(join(lockPath, 'advisory.lock'))).ino, inodeWhileHeld);
+  await withFileLock(lockPath, async () => {
+    assert.equal((await stat(join(lockPath, 'advisory.lock'))).ino, inodeWhileHeld);
+  });
+});
+
 test('a live child lock holder cannot be evicted solely because directory mtime is old', async () => {
   const { root } = await fixture();
   const lockPath = join(root, 'live.lock');
@@ -294,6 +344,30 @@ test('a live child lock holder cannot be evicted solely because directory mtime 
     );
   } finally {
     await releaseLockHolder(child);
+    await rm(lockPath, { force: true, recursive: true });
+  }
+});
+
+test('a synchronized stale takeover attempt never creates parallel critical sections', async () => {
+  const { root } = await fixture();
+  const lockPath = join(root, 'barrier.lock');
+  const holder = startLockHolder(lockPath);
+  try {
+    await waitForOutput(holder, 'acquired');
+    const ownerPath = join(lockPath, 'owner.json');
+    if (await pathExists(ownerPath)) {
+      const owner = await readJsonFile(ownerPath);
+      await atomicWriteJson(ownerPath, {
+        ...owner,
+        hostname: 'unreachable-remote-host',
+        heartbeatAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+    }
+
+    const contenderResult = await startTimedLockAttempt(lockPath);
+    assert.equal(contenderResult, 'error:LOCK_TIMEOUT');
+  } finally {
+    await releaseLockHolder(holder);
     await rm(lockPath, { force: true, recursive: true });
   }
 });
@@ -320,7 +394,39 @@ test('an expired lock owned by an exited child process is recovered without a lo
     timeoutMs: 75,
   });
   assert.equal(result, 'recovered');
-  assert.equal(await pathExists(lockPath), false);
+  assert.equal(await pathExists(lockPath), true, 'persistent advisory lock directory remains reusable');
+});
+
+test('a stale owner is recoverable when its PID now belongs to an unrelated live process', async () => {
+  const { root } = await fixture();
+  const lockPath = join(root, 'reused-pid.lock');
+  const unrelated = spawn(process.execPath, [
+    '--eval',
+    "process.stdout.write('ready\\n'); process.stdin.resume();",
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    await waitForOutput(unrelated, 'ready');
+    assert.notEqual(unrelated.pid, undefined);
+    await mkdir(lockPath, { mode: 0o700 });
+    await atomicWriteJson(join(lockPath, 'owner.json'), {
+      nonce: 'owner-from-an-old-process-incarnation',
+      pid: unrelated.pid,
+      hostname: hostname(),
+      heartbeatAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    const result = await withFileLock(lockPath, async () => 'recovered', {
+      heartbeatIntervalMs: 5,
+      pollIntervalMs: 5,
+      staleAfterMs: 25,
+      timeoutMs: 75,
+    });
+    assert.equal(result, 'recovered');
+  } finally {
+    unrelated.stdin?.end();
+    if (unrelated.exitCode === null) await once(unrelated, 'exit');
+    await rm(lockPath, { force: true, recursive: true });
+  }
 });
 
 test('an old child holder never removes a replacement lock during release', async () => {

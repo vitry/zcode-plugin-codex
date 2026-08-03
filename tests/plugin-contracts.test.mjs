@@ -199,7 +199,12 @@ test('package metadata exposes the supported Node contract', () => {
 
   assert.equal(packageJson.type, 'module');
   assert.equal(packageJson.engines?.node, '>=18.18.0');
-  assert.deepEqual(packageJson.dependencies ?? {}, {});
+  assert.deepEqual(packageJson.dependencies ?? {}, {
+    'fs-native-extensions': '1.5.0',
+  });
+  assert.deepEqual(packageJson.overrides ?? {}, {
+    'bare-addon-resolve': '1.9.4',
+  });
   assert.match(packageJson.version, semverPattern);
   const [major, minor] = packageJson.version.split('.').map(Number);
   assert.equal(major, 0);
