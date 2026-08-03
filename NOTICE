@@ -1,0 +1,11 @@
+ZCode Plugin for Codex
+Copyright 2026 vitry
+
+This project is designed to contain independently adapted portions of
+Apache-2.0-licensed OpenAI Codex and Sendbird ZCode integration code for the
+ZCode adapter. When such code is added, its upstream notices and attribution
+must be retained here as required by the Apache License, Version 2.0.
+
+At this scaffold stage, no third-party source files are included. OpenAI,
+Codex, Sendbird, and ZCode are names of their respective owners and are used
+only to identify interoperability targets; no affiliation is implied.

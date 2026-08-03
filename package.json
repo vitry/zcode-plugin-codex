@@ -1,0 +1,34 @@
+{
+  "name": "zcode-plugin-codex",
+  "version": "0.1.0",
+  "description": "A Codex plugin that lets the Codex host call ZCode for code review and task delegation.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vitry/zcode-plugin-codex"
+  },
+  "homepage": "https://github.com/vitry/zcode-plugin-codex",
+  "bugs": {
+    "url": "https://github.com/vitry/zcode-plugin-codex"
+  },
+  "author": "vitry <tzukai.chan@gmail.com>",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs tests/integration/*.test.mjs",
+    "test:unit": "node --test tests/*.test.mjs",
+    "test:integration": "node --test tests/integration/*.test.mjs",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^22.19.0",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
+    "typescript": "^5.9.3"
+  }
+}
