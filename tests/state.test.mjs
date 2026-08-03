@@ -427,6 +427,67 @@ test('persisted job timestamps must remain monotonic', async () => {
   }
 });
 
+test('persisted updatedAt cannot precede startedAt', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${job.id}.json`);
+  await atomicWriteJson(path, {
+    ...job,
+    status: 'running',
+    startedAt: new Date(Date.parse(job.updatedAt) + 1).toISOString(),
+  });
+
+  await assert.rejects(
+    store.readJob(workspace, job.id),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+  );
+});
+
+test('persisted updatedAt cannot precede finishedAt', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${job.id}.json`);
+  await atomicWriteJson(path, {
+    ...job,
+    status: 'succeeded',
+    finishedAt: new Date(Date.parse(job.updatedAt) + 1).toISOString(),
+  });
+
+  await assert.rejects(
+    store.readJob(workspace, job.id),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+  );
+});
+
+test('running transition advances updatedAt through a future startedAt', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  const startedAt = new Date(Date.now() + 60_000).toISOString();
+  const running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt });
+
+  assert.ok(Date.parse(running.updatedAt) >= Date.parse(startedAt));
+  assert.equal(new Date(running.updatedAt).toISOString(), running.updatedAt);
+});
+
+test('terminal transition advances updatedAt through a future finishedAt', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  await store.transitionJob(workspace, job.id, ['queued'], 'running');
+  const finishedAt = new Date(Date.now() + 60_000).toISOString();
+  const succeeded = await store.transitionJob(workspace, job.id, ['running'], 'succeeded', {
+    finishedAt,
+  });
+
+  assert.ok(Date.parse(succeeded.updatedAt) >= Date.parse(finishedAt));
+  assert.equal(new Date(succeeded.updatedAt).toISOString(), succeeded.updatedAt);
+});
+
 test('job transitions reject reversed phase times and preserve updatedAt monotonicity', async () => {
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });

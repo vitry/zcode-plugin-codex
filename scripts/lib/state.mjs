@@ -132,6 +132,8 @@ export function createStateStore(options) {
             Date.now(),
             Date.parse(job.createdAt),
             Date.parse(job.updatedAt),
+            typeof patch.startedAt === 'string' ? Date.parse(patch.startedAt) : Number.NEGATIVE_INFINITY,
+            typeof patch.finishedAt === 'string' ? Date.parse(patch.finishedAt) : Number.NEGATIVE_INFINITY,
           )).toISOString(),
           workspace: job.workspace,
         };
@@ -289,6 +291,8 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
   const finishedAt = validShape && 'finishedAt' in job ? Date.parse(job.finishedAt) : undefined;
   const validTimeline = validShape
     && Date.parse(job.updatedAt) >= createdAt
+    && (startedAt === undefined || Date.parse(job.updatedAt) >= startedAt)
+    && (finishedAt === undefined || Date.parse(job.updatedAt) >= finishedAt)
     && (startedAt === undefined || startedAt >= createdAt)
     && (finishedAt === undefined || finishedAt >= (startedAt ?? createdAt));
   if (!validLifecycle || !validTimeline) {
