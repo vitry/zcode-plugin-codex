@@ -85,7 +85,7 @@ input.on('line', async (line) => {
       send({ id: message.id, result: { sessions: [...sessions.values()].map(({ sessionId }) => ({ sessionId })) } });
       break;
     case 'session/stop':
-      send({ id: message.id, result: { session: { sessionId: p.sessionId }, settings: sessions.get(p.sessionId)?.settings ?? { model: { current: { providerId: 'fake', modelId: 'model' }, available: [] } }, messages: [] } });
+      send({ id: message.id, result: {} });
       break;
     case 'session/setModel':
       sessions.get(p.sessionId).settings.model.current = p.model;

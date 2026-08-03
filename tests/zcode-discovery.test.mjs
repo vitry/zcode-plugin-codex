@@ -45,7 +45,7 @@ test('discovery validates injected inputs and output fail closed', async () => {
 });
 
 test('SemVer parser rejects invalid 2.0 forms', async () => {
-  for (const version of ['01.2.3', '1.02.3', '1.2.03', '1.2.3-', '1.2.3-alpha..1', '1.2.3-01', '1.2.3+bad..build', '1.2.3+']) {
+  for (const version of ['01.2.3', '1.02.3', '1.2.03', '1.2.3-', '1.2.3-alpha..1', '1.2.3-01', '1.2.3+bad..build', '1.2.3+', 'evilv0.16.1']) {
     await assert.rejects(discoverZCode({ explicitPath: '/zcode', platform: 'linux', env: {}, which: async () => null, exists: async () => true, runVersion: async () => version }), { code: 'ZCODE_VERSION_INVALID' });
   }
 });

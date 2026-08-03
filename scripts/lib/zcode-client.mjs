@@ -20,9 +20,9 @@ export class ZCodeClient {
     const workspacePath = resolve(input.workspace);
     /** @type {any} */
     const params = { workspace: { workspacePath, workspaceKey: workspacePath } };
-    if (input.sessionId) params.sessionId = input.sessionId;
-    if (input.model) params.model = copyModel(input.model);
-    if (input.importedHistory) params.importedHistory = normalizeImportedHistory(input.importedHistory);
+    if (input.sessionId !== undefined) params.sessionId = input.sessionId;
+    if (input.model !== undefined) params.model = copyModel(input.model);
+    if (input.importedHistory !== undefined) params.importedHistory = normalizeImportedHistory(input.importedHistory);
     const result = await this.protocol.request('session/create', params);
     if (!plainObject(result) || !plainObject(result.session) || !nonEmpty(result.session.sessionId) || input.sessionId && result.session.sessionId !== input.sessionId) throw outputError('session/create');
     validateSnapshot(result, result.session.sessionId, 'session/create');
@@ -45,7 +45,7 @@ export class ZCodeClient {
   /** @param {string} sessionId */ async readSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
   /** @param {string} sessionId */ async resumeSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
   async listSessions() { const result = requireObjectResult(await this.protocol.request('session/list', {}), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every((session) => plainObject(session) && nonEmpty(session.sessionId))) throw outputError('session/list'); return result; }
-  /** @param {string} sessionId */ async stopSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/stop', { sessionId }); validateSnapshot(result, sessionId, 'session/stop'); return result; }
+  /** @param {string} sessionId */ async stopSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/stop', { sessionId }); if (!plainObject(result) || Object.keys(result).length !== 0) throw outputError('session/stop'); this.protocol.abortTurn(sessionId); return result; }
 
   /** @param {string} sessionId @param {{providerId:string,modelId:string,variant?:string}} model */
   async setModel(sessionId, model) {
@@ -136,7 +136,7 @@ function inputError() { return new PluginError('ZCODE_INPUT_INVALID', 'ZCode cli
 /** @param {unknown} value @param {string} method */
 function requireObjectResult(value, method) { if (!plainObject(value)) throw outputError(method); return value; }
 /** @param {any} value @param {string} sessionId @param {string} method */
-function validateSnapshot(value, sessionId, method) { if (!plainObject(value) || !plainObject(value.session) || value.session.sessionId !== sessionId || !plainObject(value.settings) || !validCatalog(value.settings.model) || !Array.isArray(value.messages)) throw outputError(method); }
+function validateSnapshot(value, sessionId, method) { if (!plainObject(value) || !plainObject(value.session) || value.session.sessionId !== sessionId || !plainObject(value.settings) || !validCatalog(value.settings.model) || !Array.isArray(value.messages) || !value.messages.every((message) => plainObject(message))) throw outputError(method); }
 /** @param {unknown} catalog */
 function validCatalog(catalog) { if (!plainObject(catalog) || !validWireModel(catalog.current) || !Array.isArray(catalog.available)) return false; return catalog.available.every((entry) => plainObject(entry) && validWireModel(entry.ref) && (entry.reasoning === undefined || plainObject(entry.reasoning) && typeof entry.reasoning.enabled === 'boolean' && Array.isArray(entry.reasoning.levels) && entry.reasoning.levels.every((level) => plainObject(level) && nonEmpty(level.value) && nonEmpty(level.label) && (level.description === undefined || typeof level.description === 'string')))); }
 /** @param {unknown} model */

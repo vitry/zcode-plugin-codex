@@ -86,7 +86,7 @@ async function defaultRunVersion(launch) {
 
 /** @param {string} value */
 function parseVersion(value) {
-  const token = value.match(/(?:^|\s|v)(\d[^\s]*)(?:\s|$)/)?.[1];
+  const token = value.match(/(?:^|\s)v?(\d[^\s]*)(?:\s|$)/)?.[1];
   if (!token) return null;
   const match = token.match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/);
   if (!match || match[4]?.split('.').some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))) return null;

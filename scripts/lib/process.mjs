@@ -39,10 +39,12 @@ export async function spawnProcess(launch, options = {}) {
   try {
     const extraArgs = options.args ?? [];
     const argv = launch.windowsShim ? [...launch.args, windowsShimCommand(/** @type {string} */ (launch.target), extraArgs)] : [...launch.args, ...extraArgs];
-    return spawn(launch.command, argv, {
+    const child = spawn(launch.command, argv, {
       cwd: options.cwd, env: options.env, signal: options.signal,
       detached: process.platform !== 'win32', shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    return child;
   } catch (error) {
     throw wrapError(error, 'ZCODE_SPAWN_FAILED', 'Could not start ZCode.', {
       category: 'runtime', remedy: 'Verify the ZCode installation and run $zcode:setup.',
@@ -71,7 +73,7 @@ export async function runProcess(launch, options = {}) {
   let timer; const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs); });
   let outcome;
   try { outcome = await Promise.race([new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({ code, signal })); }), timeout]); }
-  catch (error) { throw wrapError(error, 'ZCODE_PROCESS_FAILED', 'The ZCode process failed.', { category: 'runtime', remedy: 'Verify the installation and retry.' }); }
+  catch (error) { await terminateProcess(child).catch(() => {}); throw wrapError(error, 'ZCODE_PROCESS_FAILED', 'The ZCode process failed.', { category: 'runtime', remedy: 'Verify the installation and retry.' }); }
   finally { clearTimeout(timer); }
   if (outcome === 'timeout' || overflow) { await terminateProcess(child); throw new PluginError(outcome === 'timeout' ? 'ZCODE_PROCESS_TIMEOUT' : 'ZCODE_PROCESS_OUTPUT_LIMIT', outcome === 'timeout' ? 'The ZCode process timed out.' : 'The ZCode process exceeded its output limit.', { category: outcome === 'timeout' ? 'timeout' : 'runtime', remedy: 'Inspect the ZCode installation and retry.', details: { timeoutMs, maxOutputBytes } }); }
   return { ...outcome, stdout, stderr };
