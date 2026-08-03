@@ -59,10 +59,11 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const manifest = JSON.parse(fs.readFileSync(path.join(root, ".codex-plugin/plugin.json"), "utf8"));
+const semverPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
 test("plugin manifest identifies the vitry ZCode plugin", () => {
   assert.equal(manifest.name, "zcode-plugin-codex");
-  assert.match(manifest.version, /^0\.1\.0(?:\+[0-9A-Za-z.-]+)?$/);
+  assert.match(manifest.version, semverPattern);
   assert.equal(manifest.author.name, "vitry");
   assert.equal(manifest.license, "Apache-2.0");
   assert.equal(manifest.interface.displayName, "ZCode for Codex");
@@ -74,6 +75,8 @@ test("package requires Node 18.18 and has no runtime dependencies", () => {
   assert.equal(pkg.type, "module");
   assert.equal(pkg.engines.node, ">=18.18.0");
   assert.deepEqual(pkg.dependencies ?? {}, {});
+  assert.match(pkg.version, semverPattern);
+  assert.equal(manifest.version, pkg.version);
 });
 ```
 
@@ -89,9 +92,9 @@ Use version `0.1.0`, repository `https://github.com/vitry/zcode-plugin-codex`, N
 
 ```json
 {
-  "test": "node --test tests/*.test.mjs tests/integration/*.test.mjs",
-  "test:unit": "node --test tests/*.test.mjs",
-  "test:integration": "node --test tests/integration/*.test.mjs",
+  "test": "node --test",
+  "test:unit": "node --test tests/plugin-contracts.test.mjs",
+  "test:integration": "node --test tests/integration/plugin-layout.test.mjs",
   "lint": "eslint .",
   "typecheck": "tsc -p tsconfig.json",
   "check": "npm run lint && npm run typecheck && npm test"
@@ -103,7 +106,7 @@ Use Node-18-compatible development dependencies:
 ```json
 {
   "@eslint/js": "^9.39.1",
-  "@types/node": "^22.19.0",
+  "@types/node": "^18.19.0",
   "eslint": "^9.39.1",
   "globals": "^16.5.0",
   "typescript": "^5.9.3"
