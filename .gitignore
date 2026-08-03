@@ -1,0 +1,5 @@
+.worktrees/
+.planning/
+node_modules/
+coverage/
+*.log
