@@ -36,7 +36,14 @@ test('packed production install loads and locks on Node 18 with pinned resolver'
     private: true,
     dependencies: { 'zcode-plugin-codex': `file:${join(packageDirectory, filename)}` },
   }));
-  const installed = run('npm', ['install', '--omit=dev', '--ignore-scripts'], consumerDirectory);
+  const locked = run(
+    'npm',
+    ['install', '--package-lock-only', '--omit=dev', '--ignore-scripts'],
+    consumerDirectory,
+  );
+  assert.equal(locked.status, 0, locked.stderr);
+  await rm(join(consumerDirectory, 'node_modules'), { force: true, recursive: true });
+  const installed = run('npm', ['ci', '--omit=dev', '--ignore-scripts'], consumerDirectory);
   assert.equal(installed.status, 0, installed.stderr);
 
   const smoke = `
@@ -44,9 +51,14 @@ test('packed production install loads and locks on Node 18 with pinned resolver'
     const path = require('node:path');
     const pluginRoot = path.join(process.cwd(), 'node_modules/zcode-plugin-codex');
     const requireAddon = require.resolve('require-addon', { paths: [pluginRoot] });
+    const nativeBinding = require.resolve('fs-native-extensions', { paths: [pluginRoot] });
+    const bundledRoot = path.join(pluginRoot, 'node_modules') + path.sep;
+    if (!requireAddon.startsWith(bundledRoot)) throw new Error('external require-addon=' + requireAddon);
+    if (!nativeBinding.startsWith(bundledRoot)) throw new Error('external native binding=' + nativeBinding);
     const resolverMain = require.resolve('bare-addon-resolve', {
       paths: [path.dirname(requireAddon)]
     });
+    if (!resolverMain.startsWith(bundledRoot)) throw new Error('external resolver=' + resolverMain);
     const resolver = require(path.join(path.dirname(resolverMain), 'package.json'));
     if (resolver.version !== '1.9.4') throw new Error('resolver=' + resolver.version);
     import(path.join(pluginRoot, 'scripts/lib/fs.mjs')).then(async ({ withFileLock }) => {

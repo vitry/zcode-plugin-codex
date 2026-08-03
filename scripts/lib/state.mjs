@@ -14,13 +14,18 @@ export const JOB_STATUSES = Object.freeze([
   'failed',
   'cancelled',
 ]);
+export const JOB_COMMANDS = Object.freeze(['review', 'adversarial-review', 'rescue', 'transfer']);
+export const EFFORT_LEVELS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling']);
-const JOB_PATCH_FIELDS = new Set(['childPid', 'exitCode', 'lastCancelError']);
+const JOB_PATCH_FIELDS = new Set([
+  'childPid', 'effort', 'error', 'exitCode', 'finishedAt', 'lastCancelError', 'model',
+  'promptArtifact', 'resultArtifact', 'startedAt', 'zcodeSessionId',
+]);
 const TRANSITIONS = new Map([
   ['queued', new Set(['running', 'failed', 'cancelled'])],
-  ['running', new Set(['cancelling', 'succeeded', 'failed'])],
+  ['running', new Set(['running', 'cancelling', 'succeeded', 'failed'])],
   ['cancelling', new Set(['cancelled', 'running', 'failed'])],
 ]);
 
@@ -191,7 +196,7 @@ function validateReservation(reservation) {
   if (!isNonEmptyString(reservation.workspace)) invalidFields.push('workspace');
   if (!isNonEmptyString(reservation.ownerSessionId)) invalidFields.push('ownerSessionId');
   if (!isNonEmptyString(reservation.ownerTurnId)) invalidFields.push('ownerTurnId');
-  if (!isNonEmptyString(reservation.command)) invalidFields.push('command');
+  if (!JOB_COMMANDS.includes(reservation.command)) invalidFields.push('command');
   if (typeof reservation.readOnly !== 'boolean') invalidFields.push('readOnly');
   if (!isPlainJsonObject(reservation.permissionSnapshot)) invalidFields.push('permissionSnapshot');
   if (invalidFields.length > 0) {
@@ -205,20 +210,39 @@ function validateReservation(reservation) {
 
 /** @param {any} job @returns {any} */
 function validateJobRecord(job) {
-  const valid = isPlainJsonObject(job)
+  const validShape = isPlainJsonObject(job)
     && typeof job.id === 'string' && /^[a-f0-9]{64}$/.test(job.id)
     && isNonEmptyString(job.workspace)
     && isNonEmptyString(job.ownerSessionId)
     && isNonEmptyString(job.ownerTurnId)
-    && isNonEmptyString(job.command)
+    && JOB_COMMANDS.includes(job.command)
     && typeof job.readOnly === 'boolean'
     && isPlainJsonObject(job.permissionSnapshot)
     && typeof job.status === 'string' && JOB_STATUSES.includes(job.status)
     && isValidDateString(job.createdAt) && isValidDateString(job.updatedAt)
     && (!('childPid' in job) || Number.isSafeInteger(job.childPid) && job.childPid > 0)
     && (!('exitCode' in job) || job.exitCode === null || Number.isSafeInteger(job.exitCode))
+    && (!('zcodeSessionId' in job) || isNonEmptyString(job.zcodeSessionId))
+    && (!('model' in job) || isModel(job.model))
+    && (!('effort' in job) || EFFORT_LEVELS.includes(job.effort))
+    && (!('startedAt' in job) || isIsoTimestamp(job.startedAt))
+    && (!('finishedAt' in job) || isIsoTimestamp(job.finishedAt))
+    && (!('promptArtifact' in job) || isSafeArtifact(job.promptArtifact))
+    && (!('resultArtifact' in job) || isSafeArtifact(job.resultArtifact))
+    && (!('error' in job) || isTrackedError(job.error))
     && (!('lastCancelError' in job) || isCancellationError(job.lastCancelError));
-  if (!valid) {
+  const terminal = validShape && TERMINAL_STATUSES.has(job.status);
+  const hasRunningMetadata = validShape && [
+    'childPid', 'effort', 'model', 'promptArtifact', 'startedAt', 'zcodeSessionId',
+  ].some((field) => field in job);
+  const validLifecycle = validShape
+    && (!hasRunningMetadata || job.status !== 'queued')
+    && (!('exitCode' in job) || terminal)
+    && (!('finishedAt' in job) || terminal)
+    && (!('resultArtifact' in job) || job.status === 'succeeded')
+    && (!('error' in job) || job.status === 'failed' || job.status === 'cancelled')
+    && (!('lastCancelError' in job) || job.status === 'running' || terminal);
+  if (!validLifecycle) {
     throw new PluginError('JOB_RECORD_INVALID', 'Persisted job record failed schema validation.', {
       category: 'state',
       remedy: 'Restore or remove the corrupted job record.',
@@ -231,8 +255,35 @@ function validateJobRecord(job) {
 /** @param {string} currentStatus @param {string} nextStatus @param {Record<string, unknown>} patch @param {string} jobId */
 function validateJobPatch(currentStatus, nextStatus, patch, jobId) {
   const invalidFields = [];
+  const writesRunningMetadata = nextStatus === 'running'
+    && (currentStatus === 'queued' || currentStatus === 'running' || currentStatus === 'cancelling');
   if ('childPid' in patch && (!Number.isSafeInteger(patch.childPid) || Number(patch.childPid) <= 0
-    || nextStatus !== 'running')) invalidFields.push('childPid');
+    || !writesRunningMetadata)) invalidFields.push('childPid');
+  if ('zcodeSessionId' in patch
+    && (!isNonEmptyString(patch.zcodeSessionId) || !writesRunningMetadata)) {
+    invalidFields.push('zcodeSessionId');
+  }
+  if ('model' in patch && (!isModel(patch.model) || !writesRunningMetadata)) {
+    invalidFields.push('model');
+  }
+  if ('effort' in patch && (typeof patch.effort !== 'string'
+    || !EFFORT_LEVELS.includes(patch.effort) || !writesRunningMetadata)) {
+    invalidFields.push('effort');
+  }
+  if ('startedAt' in patch && (!isIsoTimestamp(patch.startedAt)
+    || currentStatus !== 'queued' || nextStatus !== 'running')) invalidFields.push('startedAt');
+  if ('finishedAt' in patch && (!isIsoTimestamp(patch.finishedAt)
+    || !TERMINAL_STATUSES.has(nextStatus))) invalidFields.push('finishedAt');
+  if ('promptArtifact' in patch
+    && (!isSafeArtifact(patch.promptArtifact) || !writesRunningMetadata)) {
+    invalidFields.push('promptArtifact');
+  }
+  if ('resultArtifact' in patch
+    && (!isSafeArtifact(patch.resultArtifact) || nextStatus !== 'succeeded')) {
+    invalidFields.push('resultArtifact');
+  }
+  if ('error' in patch && (!isTrackedError(patch.error)
+    || (nextStatus !== 'failed' && nextStatus !== 'cancelled'))) invalidFields.push('error');
   if ('exitCode' in patch && (patch.exitCode !== null && !Number.isSafeInteger(patch.exitCode)
     || !TERMINAL_STATUSES.has(nextStatus))) invalidFields.push('exitCode');
   if ('lastCancelError' in patch && (currentStatus !== 'cancelling' || nextStatus !== 'running'
@@ -253,10 +304,37 @@ function invalidJobPatch(jobId, invalidFields, nextStatus, currentStatus) {
 
 /** @param {unknown} value */
 function isCancellationError(value) {
+  return isTrackedError(value);
+}
+
+/** @param {unknown} value */
+function isTrackedError(value) {
   return isNonEmptyString(value) || (isPlainJsonObject(value) && isNonEmptyString(value.message));
 }
 
 /** @param {unknown} value */
+function isModel(value) {
+  if (isNonEmptyString(value)) return true;
+  if (!isPlainJsonObject(value) || !isNonEmptyString(value.providerId)
+    || !isNonEmptyString(value.modelId)) return false;
+  if ('variant' in value && !isNonEmptyString(value.variant)) return false;
+  return Object.keys(value).every((key) => key === 'providerId' || key === 'modelId' || key === 'variant');
+}
+
+/** @param {unknown} value */
+function isSafeArtifact(value) {
+  if (!isNonEmptyString(value) || value !== value.trim() || value.length > 1_024
+    || value.includes('\0') || /^[\\/]/.test(value) || /^[A-Za-z]:[\\/]/.test(value)) return false;
+  return value.split(/[\\/]/).every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+/** @param {unknown} value */
+function isIsoTimestamp(value) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value))
+    && new Date(value).toISOString() === value;
+}
+
+/** @param {unknown} value @returns {value is string} */
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }

@@ -263,6 +263,7 @@ test('job reservation rejects incomplete or non-persistable input without weaken
     { ...jobInput, ownerSessionId: '' },
     { ...jobInput, ownerTurnId: '   ' },
     { ...jobInput, command: '' },
+    { ...jobInput, command: 'arbitrary-shell' },
     { ...jobInput, permissionSnapshot: [] },
     { ...jobInput, permissionSnapshot: { mode: undefined } },
   ]);
@@ -297,6 +298,132 @@ test('persisted jobs are schema-validated before use', async () => {
   await assert.rejects(
     store.readJob(workspace, job.id),
     (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+  );
+
+  await atomicWriteJson(path, { ...job, command: 'arbitrary-shell' });
+  await assert.rejects(
+    store.readJob(workspace, job.id),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+  );
+
+  for (const invalidJob of [
+    { ...job, finishedAt: '2026-08-04T01:03:04.000Z' },
+    { ...job, resultArtifact: 'artifacts/result.json' },
+    { ...job, status: 'running', error: 'too early' },
+    { ...job, status: 'failed', resultArtifact: 'artifacts/result.json' },
+  ]) {
+    await atomicWriteJson(path, invalidJob);
+    await assert.rejects(
+      store.readJob(workspace, job.id),
+      (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+    );
+  }
+});
+
+test('tracked job fields persist through their legal lifecycle phases', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const succeededJob = await store.reserveJob({ workspace, ...jobInput });
+  const startedAt = '2026-08-04T01:02:03.000Z';
+  const finishedAt = '2026-08-04T01:03:04.000Z';
+  const running = await store.transitionJob(workspace, succeededJob.id, ['queued'], 'running', {
+    childPid: 123,
+    effort: 'xhigh',
+    model: { providerId: 'zai', modelId: 'glm-4.5', variant: 'thinking' },
+    promptArtifact: 'artifacts/prompt.json',
+    startedAt,
+    zcodeSessionId: 'zcode-session-a',
+  });
+  assert.equal(running.startedAt, startedAt);
+  assert.deepEqual(running.model, {
+    providerId: 'zai', modelId: 'glm-4.5', variant: 'thinking',
+  });
+
+  const refreshed = await store.transitionJob(workspace, succeededJob.id, ['running'], 'running', {
+    model: 'configured-alias',
+    zcodeSessionId: 'zcode-session-b',
+  });
+  assert.equal(refreshed.model, 'configured-alias');
+  assert.equal(refreshed.zcodeSessionId, 'zcode-session-b');
+
+  const succeeded = await store.transitionJob(workspace, succeededJob.id, ['running'], 'succeeded', {
+    exitCode: 0,
+    finishedAt,
+    resultArtifact: 'artifacts/result.json',
+  });
+  assert.equal(succeeded.finishedAt, finishedAt);
+  assert.equal(succeeded.resultArtifact, 'artifacts/result.json');
+  assert.deepEqual(await store.readJob(workspace, succeededJob.id), succeeded);
+
+  const failedJob = await store.reserveJob({ workspace, ...jobInput });
+  await store.transitionJob(workspace, failedJob.id, ['queued'], 'running');
+  const failed = await store.transitionJob(workspace, failedJob.id, ['running'], 'failed', {
+    error: { code: 'BROKER_FAILED', message: 'broker stopped' },
+    exitCode: 1,
+    finishedAt,
+  });
+  assert.deepEqual(failed.error, { code: 'BROKER_FAILED', message: 'broker stopped' });
+  assert.deepEqual(await store.readJob(workspace, failedJob.id), failed);
+
+  const cancelledJob = await store.reserveJob({ workspace, ...jobInput });
+  await store.transitionJob(workspace, cancelledJob.id, ['queued'], 'running');
+  await store.transitionJob(workspace, cancelledJob.id, ['running'], 'cancelling');
+  const cancelled = await store.transitionJob(workspace, cancelledJob.id, ['cancelling'], 'cancelled', {
+    error: 'cancelled by caller',
+    exitCode: null,
+    finishedAt,
+  });
+  assert.equal(cancelled.error, 'cancelled by caller');
+  assert.deepEqual(await store.readJob(workspace, cancelledJob.id), cancelled);
+});
+
+test('tracked job fields reject unsafe values and invalid lifecycle phases', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  for (const patch of /** @type {Array<Record<string, unknown>>} */ ([
+    { zcodeSessionId: '' },
+    { model: {} },
+    { effort: 'ultra' },
+    { startedAt: 'tomorrow' },
+    { promptArtifact: '../outside.json' },
+    { promptArtifact: { path: 'prompt.json' } },
+  ])) {
+    await assert.rejects(
+      store.transitionJob(workspace, job.id, ['queued'], 'running', patch),
+      (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
+    );
+  }
+
+  await store.transitionJob(workspace, job.id, ['queued'], 'running');
+  for (const patch of /** @type {Array<Record<string, unknown>>} */ ([
+    { childPid: 456 },
+    { effort: 'high' },
+    { model: 'configured-alias' },
+    { promptArtifact: 'artifacts/prompt.json' },
+    { zcodeSessionId: 'zcode-session-a' },
+  ])) {
+    await assert.rejects(
+      store.transitionJob(workspace, job.id, ['running'], 'failed', patch),
+      (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
+    );
+  }
+  for (const patch of /** @type {Array<Record<string, unknown>>} */ ([
+    { startedAt: '2026-08-04T01:02:03.000Z' },
+    { finishedAt: '2026-08-04T01:03:04.000Z' },
+    { resultArtifact: 'result.json' },
+    { error: 'too early' },
+  ])) {
+    await assert.rejects(
+      store.transitionJob(workspace, job.id, ['running'], 'running', patch),
+      (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
+    );
+  }
+  await assert.rejects(
+    store.transitionJob(workspace, job.id, ['running'], 'succeeded', {
+      error: 'wrong terminal phase', resultArtifact: '/absolute/result.json',
+    }),
+    (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
   );
 });
 
