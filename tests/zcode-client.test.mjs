@@ -8,7 +8,8 @@ import net from 'node:net';
 import test from 'node:test';
 
 import { createManagedZCodeClient, createZCodeClient } from '../scripts/lib/zcode-client.mjs';
-import { brokerEndpointFor, ensureZCodeBroker, ZCodeBroker } from '../scripts/zcode-broker.mjs';
+import { brokerEndpointFor, ensureZCodeBroker, reconcileBrokerOwnership, ZCodeBroker } from '../scripts/zcode-broker.mjs';
+import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 
@@ -193,6 +194,10 @@ test('managed broker clients require an explicit stable owner credential', async
   await assert.rejects(createManagedZCodeClient({ dataRoot: '/tmp/data', workspace: '/tmp/workspace', launch: { command: process.execPath, args: [] } }), { code: 'ZCODE_INPUT_INVALID' });
 });
 
+test('direct broker clients require an explicit stable owner credential before connecting', async () => {
+  for (const ownerId of [undefined, '', 'too-short']) await assert.rejects(createZCodeClient({ workspace: '/tmp', brokerEndpoint: '/missing-broker', brokerToken: 'a'.repeat(64), ...(ownerId === undefined ? {} : { ownerId }) }), { code: 'ZCODE_INPUT_INVALID' });
+});
+
 test('actual 0.16.1 snapshot and list required fields are enforced', async (t) => {
   await t.test('snapshot workspace', () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: 'missing-workspace' }));
   await t.test('message envelope', () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: 'empty-message' }));
@@ -231,8 +236,8 @@ test('typed client uses a local broker whose single CLI owner handles permission
   const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory });
   const brokerToken = 'a'.repeat(64);
   const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_PERMISSION: '1' }, idleTimeoutMs: 10_000 }).start();
-  await assert.rejects(createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken: 'b'.repeat(64), requestTimeoutMs: 500 }), { code: 'ZCODE_REQUEST_FAILED' });
-  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, requestTimeoutMs: 500, completionTimeoutMs: 500 });
+  await assert.rejects(createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken: 'b'.repeat(64), ownerId: 'typed-owner-invalid-token', requestTimeoutMs: 500 }), { code: 'ZCODE_REQUEST_FAILED' });
+  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'typed-owner-permission', requestTimeoutMs: 500, completionTimeoutMs: 500 });
   try {
     const created = await client.createSession({ workspace: directory });
     client.setPermissionHandler(async () => ({ decision: 'allow' }));
@@ -248,14 +253,14 @@ test('typed client uses a local broker whose single CLI owner handles permission
 test('broker consumes validated completion and permits repeated turns without retained state', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-consume-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '9'.repeat(64);
   const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SYNC_BATCH: 'stale-valid' }, idleTimeoutMs: 25 }).start();
-  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, completionTimeoutMs: 500 });
+  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'consume-owner-stable', completionTimeoutMs: 500 });
   try { const { session: { sessionId } } = await client.createSession({ workspace: directory }); for (let i = 0; i < 2; i += 1) { await client.send(sessionId, String(i)); await client.waitForCompletion(sessionId); assert.equal(broker.activeSessions.size, 0); for (const map of [broker.protocol.turns, broker.protocol.completed, broker.protocol.earlyCompletions, broker.protocol.completionExpiry]) assert.equal(map.size, 0); } }
   finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('completed broker becomes truly idle after its final owner disconnects', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-idle-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '7'.repeat(64);
-  const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, idleTimeoutMs: 20 }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken });
+  const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, idleTimeoutMs: 20 }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'idle-owner-stable' });
   try { const { session: { sessionId } } = await client.createSession({ workspace: directory }); await client.send(sessionId, 'finish'); await client.waitForCompletion(sessionId); await client.close(); for (let index = 0; index < 100 && (broker.server || broker.protocol); index += 1) await new Promise((resolve) => setTimeout(resolve, 5)); assert.equal(broker.server, null); assert.equal(broker.protocol, null); assert.equal(broker.activeSessions.size, 0); }
   finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
@@ -267,7 +272,7 @@ test('concurrent lazy broker acquisition publishes one healthy pid and identity'
     const identities = await Promise.all([ensureZCodeBroker(options), ensureZCodeBroker(options)]);
     assert.equal(identities[0].pid, identities[1].pid);
     assert.equal(identities[0].instanceId, identities[1].instanceId);
-    const client = await createZCodeClient({ workspace: directory, brokerEndpoint: identities[0].endpoint, brokerToken: identities[0].brokerToken });
+    const client = await createZCodeClient({ workspace: directory, brokerEndpoint: identities[0].endpoint, brokerToken: identities[0].brokerToken, ownerId: 'ensure-owner-stable' });
     await client.close();
     try { process.kill(identities[0].pid, 'SIGTERM'); } catch { /* idle shutdown won */ }
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -278,8 +283,8 @@ test('broker allows explicit imported create and atomically assigns resume owner
   const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory });
   const brokerToken = 'c'.repeat(64);
   const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }).start();
-  const first = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken });
-  const second = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken });
+  const first = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'explicit-owner-first' });
+  const second = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'explicit-owner-second' });
   try {
     const explicit = await first.createSession({ workspace: directory, sessionId: 'imported-session', importedHistory: { messages: [{ role: 'user', content: 'history' }] } });
     assert.equal(explicit.session.sessionId, 'imported-session');
@@ -295,7 +300,7 @@ test('unauthenticated broker socket receives no notifications and owns no sessio
   const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }).start();
   const attacker = net.createConnection(endpoint); await new Promise((resolve) => attacker.once('connect', resolve)); let received = '';
   attacker.on('data', (chunk) => { received += chunk; });
-  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken });
+  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'notification-owner' });
   try { const created = await client.createSession({ workspace: directory }); await client.send(created.session.sessionId, 'private'); await client.waitForCompletion(created.session.sessionId); await new Promise((resolve) => setTimeout(resolve, 20)); assert.equal(received, ''); }
   finally { attacker.destroy(); await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
@@ -322,6 +327,22 @@ test('durable owner bindings survive broker restart and fail closed when corrupt
   let broker = await new ZCodeBroker({ endpoint, ownershipPath, brokerToken, workspace: directory, launch }).start(); const ownerId = 'stable-owner-for-restart'; const owner = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); await owner.createSession({ workspace: directory, sessionId: 'restart-session', importedHistory: { messages: [{ role: 'user', content: 'x' }] } }); assert.equal((await stat(ownershipPath)).mode & 0o777, 0o600); await owner.close(); await broker.close();
   broker = await new ZCodeBroker({ endpoint, ownershipPath, brokerToken, workspace: directory, launch }).start(); const sibling = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'different-owner-restart' }); await assert.rejects(sibling.resumeSession('restart-session'), { code: 'ZCODE_REQUEST_FAILED' }); await sibling.close(); const reconnect = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); await reconnect.resumeSession('restart-session'); await reconnect.close(); await broker.close();
   await writeFile(ownershipPath, '{bad'); await assert.rejects(new ZCodeBroker({ endpoint, ownershipPath, brokerToken, workspace: directory, launch }).start(), { code: 'ZCODE_OWNER_STORE_INVALID' }); await rm(directory, { recursive: true, force: true });
+});
+
+test('trusted reconciliation seeds pre-upgrade ownership and live broker reloads it fail closed', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-owner-reconcile-')); const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const ownershipPath = join(storage.directory, 'broker', 'session-owners.json'); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '5'.repeat(64); const record = join(directory, 'calls.jsonl'); const ownerId = 'reconciled-owner-stable'; const sessionId = 'pre-upgrade-session'; const liveSessionId = 'live-reconciled-session';
+  await reconcileBrokerOwnership({ dataRoot: directory, workspace: directory, ownerId, ownedSessionIds: [sessionId] });
+  const broker = await new ZCodeBroker({ endpoint, ownershipPath, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_RECORD: record } }).start();
+  try {
+    await reconcileBrokerOwnership({ dataRoot: directory, workspace: directory, ownerId, ownedSessionIds: [sessionId] });
+    await reconcileBrokerOwnership({ dataRoot: directory, workspace: directory, ownerId, ownedSessionIds: [sessionId, liveSessionId] });
+    const owner = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); await owner.resumeSession(sessionId); await owner.resumeSession(liveSessionId); await owner.close();
+    assert.ok((await readFile(record, 'utf8')).split('\n').some((line) => line && JSON.parse(line).method === 'session/resume'));
+    const sibling = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'reconciled-sibling' }); await assert.rejects(sibling.resumeSession(sessionId), { code: 'ZCODE_REQUEST_FAILED' }); await sibling.close();
+    await assert.rejects(reconcileBrokerOwnership({ dataRoot: directory, workspace: directory, ownerId: 'conflicting-owner', ownedSessionIds: [sessionId] }), { code: 'ZCODE_SESSION_OWNER_CONFLICT' });
+    await rm(ownershipPath); const reconnected = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); await assert.rejects(reconnected.resumeSession(sessionId), { code: 'ZCODE_OWNER_STORE_INVALID' }); assert.equal(broker.sessionOwners.get(sessionId).ownerId, ownerId); await reconcileBrokerOwnership({ dataRoot: directory, workspace: directory, ownerId, ownedSessionIds: [sessionId, liveSessionId] }); await reconnected.resumeSession(sessionId); await reconnected.close();
+    await writeFile(ownershipPath, '{bad'); await assert.rejects(reconcileBrokerOwnership({ dataRoot: directory, workspace: directory, ownerId, ownedSessionIds: [sessionId] }), { code: 'ZCODE_OWNER_STORE_INVALID' });
+  } finally { await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('broker removes only the identity record belonging to its own instance', async () => {

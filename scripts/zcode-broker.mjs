@@ -14,6 +14,26 @@ import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 
 const MAX_LOCAL_FRAME_BYTES = 1024 * 1024;
 
+/**
+ * Reconciles broker ownership from authorization-bound durable state.
+ * `ownedSessionIds` is a trusted-boundary input: callers must populate it only
+ * from validated durable job records already bound to the same workspace,
+ * session, and consumed caller/execution capability.
+ * @param {{dataRoot:string,workspace:string,ownerId:string,ownedSessionIds:string[]}} options
+ */
+export async function reconcileBrokerOwnership(options) {
+  if (!options || typeof options.dataRoot !== 'string' || !options.dataRoot || typeof options.workspace !== 'string' || !options.workspace || typeof options.ownerId !== 'string' || options.ownerId.length < 16 || !Array.isArray(options.ownedSessionIds) || !options.ownedSessionIds.every((sessionId) => typeof sessionId === 'string' && sessionId.length > 0)) throw brokerInputError();
+  const storage = await resolveWorkspaceStorage(options); const ownershipPath = join(storage.directory, 'broker', 'session-owners.json');
+  return mutateOwnerStore(ownershipPath, true, async (sessions) => {
+    for (const sessionId of new Set(options.ownedSessionIds)) {
+      if (Object.hasOwn(sessions, sessionId) && sessions[sessionId] !== options.ownerId) throw ownerConflict();
+      sessions[sessionId] = options.ownerId;
+    }
+    await atomicWriteJson(ownershipPath, { version: 1, sessions });
+    return { reconciledSessionIds: [...new Set(options.ownedSessionIds)] };
+  });
+}
+
 /** @param {{platform?:string,dataRoot:string,workspace:string,identity?:string}} options */
 export function brokerEndpointFor(options) {
   if (!options || typeof options.dataRoot !== 'string' || !options.dataRoot || typeof options.workspace !== 'string' || !options.workspace) throw brokerInputError();
@@ -84,7 +104,7 @@ export async function ensureZCodeBroker(options) {
 
 export class ZCodeBroker {
   /** @param {{endpoint:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,instanceId?:string}} options */
-  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.server = null; this.protocol = null; this.protocolPromise = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.permissionPending = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.idleTimer = null; this.closing = false; }
+  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.server = null; this.protocol = null; this.protocolPromise = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.permissionPending = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.idleTimer = null; this.closing = false; }
 
   async start() {
     if (this.server) return this;
@@ -133,6 +153,7 @@ export class ZCodeBroker {
     }
     if (!frame || !Number.isSafeInteger(frame.id) || typeof frame.method !== 'string' || !frame.params || typeof frame.params !== 'object') { socket.destroy(); return; }
     if (frame.method === 'broker/health') { writeLocal(socket, { id: frame.id, result: { ok: true, pid: process.pid, instanceId: this.options.instanceId } }); return; }
+    try { await this.reloadOwnership(); } catch (error) { writeRequestError(socket, frame.id, error); return; }
     const requestedSessionId = frame.params.sessionId;
     const ownerId = this.socketOwnerIds.get(socket); const existingOwner = typeof requestedSessionId === 'string' ? this.sessionOwners.get(requestedSessionId) : null;
     const claimMethod = frame.method === 'session/create';
@@ -202,15 +223,16 @@ export class ZCodeBroker {
   }
 
   async loadOwnership() {
-    let value;
-    try { value = JSON.parse(await readFile(this.ownershipPath, 'utf8')); } catch (error) { if (error?.code === 'ENOENT') return; throw new PluginError('ZCODE_OWNER_STORE_INVALID', 'The ZCode session owner store is corrupt.', { category: 'storage', remedy: 'Restore the broker owner store before resuming sessions.', cause: error }); }
-    if (!validOwnerStore(value)) throw new PluginError('ZCODE_OWNER_STORE_INVALID', 'The ZCode session owner store is corrupt.', { category: 'storage', remedy: 'Restore the broker owner store before resuming sessions.' });
-    for (const [sessionId, ownerId] of Object.entries(value.sessions)) this.sessionOwners.set(sessionId, { ownerId, socket: null, claimToken: null });
+    const loaded = await readOwnerStore(this.ownershipPath, true); if (!loaded.exists) return; this.applyOwnership(loaded.sessions); this.ownershipStoreEstablished = true;
   }
 
   async persistOwnership(sessionId, ownerId) {
-    await withFileLock(`${this.ownershipPath}.lock`, async () => { const sessions = Object.create(null); try { const stored = JSON.parse(await readFile(this.ownershipPath, 'utf8')); if (!validOwnerStore(stored)) throw new Error('invalid owner store'); for (const [key, value] of Object.entries(stored.sessions)) sessions[key] = value; } catch (error) { if (error?.code !== 'ENOENT') throw new PluginError('ZCODE_OWNER_STORE_INVALID', 'The ZCode session owner store is corrupt.', { category: 'storage', remedy: 'Restore the broker owner store before creating sessions.', cause: error }); } if (Object.hasOwn(sessions, sessionId) && sessions[sessionId] !== ownerId) throw new PluginError('ZCODE_SESSION_OWNER_CONFLICT', 'The session already belongs to another broker owner.', { category: 'authorization', remedy: 'Use the original stable owner credential.' }); sessions[sessionId] = ownerId; await atomicWriteJson(this.ownershipPath, { version: 1, sessions }); });
+    await mutateOwnerStore(this.ownershipPath, !this.ownershipStoreEstablished, async (sessions) => { if (Object.hasOwn(sessions, sessionId) && sessions[sessionId] !== ownerId) throw ownerConflict(); sessions[sessionId] = ownerId; await atomicWriteJson(this.ownershipPath, { version: 1, sessions }); }); this.ownershipStoreEstablished = true;
   }
+
+  async reloadOwnership() { const loaded = await readOwnerStore(this.ownershipPath, !this.ownershipStoreEstablished); if (!loaded.exists) return; for (const [sessionId, current] of this.sessionOwners) if (!current.claimToken && (!Object.hasOwn(loaded.sessions, sessionId) || loaded.sessions[sessionId] !== current.ownerId)) throw ownerStoreInvalid(); this.applyOwnership(loaded.sessions); this.ownershipStoreEstablished = true; }
+
+  applyOwnership(sessions) { const next = new Map(); for (const [sessionId, ownerId] of Object.entries(sessions)) { const current = this.sessionOwners.get(sessionId); next.set(sessionId, { ownerId, socket: current?.ownerId === ownerId ? current.socket : null, claimToken: null }); } for (const [sessionId, current] of this.sessionOwners) if (current.claimToken && !next.has(sessionId)) next.set(sessionId, current); this.sessionOwners = next; }
 
   async removeIdentityIfOwned() { if (!this.options.identityPath || !this.options.instanceId) return; try { const value = JSON.parse(await readFile(this.options.identityPath, 'utf8')); if (value.instanceId === this.options.instanceId) await unlink(this.options.identityPath); } catch { /* missing or replaced identity */ } }
 }
@@ -221,6 +243,12 @@ function safeTokenEqual(left, right) { const a = Buffer.from(left); const b = Bu
 function offeredDeny(request) { return request.options?.find((option) => option.response?.decision === 'deny')?.response ?? { decision: 'deny' }; }
 function validateSendResult(result, sessionId) { if (!result || typeof result !== 'object' || result.accepted !== true || result.sessionId !== sessionId || !Number.isSafeInteger(result.stateRevision) || result.stateRevision < 0 || result.modelRuntimeRevision !== undefined && (typeof result.modelRuntimeRevision !== 'string' || !result.modelRuntimeRevision)) throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid session/send result.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.' }); }
 function validOwnerStore(value) { return value && value.version === 1 && value.sessions && typeof value.sessions === 'object' && !Array.isArray(value.sessions) && Object.entries(value.sessions).every(([sessionId, ownerId]) => sessionId && typeof ownerId === 'string' && ownerId.length >= 16); }
+async function readOwnerStore(path, allowMissing) { return withFileLock(`${path}.lock`, async () => readOwnerStoreUnlocked(path, allowMissing)); }
+async function mutateOwnerStore(path, allowMissing, operation) { return withFileLock(`${path}.lock`, async () => { const loaded = await readOwnerStoreUnlocked(path, allowMissing); return operation(loaded.sessions); }); }
+async function readOwnerStoreUnlocked(path, allowMissing) { let value; try { value = JSON.parse(await readFile(path, 'utf8')); } catch (error) { if (error?.code === 'ENOENT' && allowMissing) return { exists: false, sessions: Object.create(null) }; throw ownerStoreInvalid(error); } if (!validOwnerStore(value)) throw ownerStoreInvalid(); const sessions = Object.create(null); for (const [sessionId, ownerId] of Object.entries(value.sessions)) sessions[sessionId] = ownerId; return { exists: true, sessions }; }
+function writeRequestError(socket, id, error) { const pluginError = error instanceof PluginError ? { code: error.code, category: error.category, remedy: error.remedy, details: error.details } : null; writeLocal(socket, { id, error: { code: -32000, message: error instanceof Error ? error.message : 'Broker request failed', ...(pluginError ? { data: { pluginError } } : {}) } }); }
+function ownerStoreInvalid(cause) { return new PluginError('ZCODE_OWNER_STORE_INVALID', 'The ZCode session owner store is missing or corrupt.', { category: 'storage', remedy: 'Reconcile ownership from validated durable job records before resuming sessions.', ...(cause === undefined ? {} : { cause }) }); }
+function ownerConflict() { return new PluginError('ZCODE_SESSION_OWNER_CONFLICT', 'The session already belongs to another broker owner.', { category: 'authorization', remedy: 'Use the original stable owner credential.' }); }
 function brokerInputError() { return new PluginError('ZCODE_BROKER_INPUT_INVALID', 'ZCode broker input is invalid.', { category: 'validation', remedy: 'Provide a data root, workspace, endpoint, and launch target.' }); }
 
 async function main() {

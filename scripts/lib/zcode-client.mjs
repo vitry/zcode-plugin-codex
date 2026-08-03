@@ -80,19 +80,19 @@ export class ZCodeClient {
 export async function createZCodeClient(options) {
   if (!plainObject(options) || !nonEmpty(options.workspace)
     || (options.brokerEndpoint === undefined) === (options.launch === undefined)
-    || options.brokerEndpoint !== undefined && (!nonEmpty(options.brokerEndpoint) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32)
+    || options.brokerEndpoint !== undefined && (!nonEmpty(options.brokerEndpoint) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32 || !nonEmpty(options.ownerId) || options.ownerId.length < 16)
     || options.launch !== undefined && !plainObject(options.launch)) throw inputError();
   const protocolOptions = {
     cwd: options.workspace, env: options.env, requestTimeoutMs: options.requestTimeoutMs,
     completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes,
   };
   const protocol = options.brokerEndpoint
-    ? await connectZCodeBroker(options.brokerEndpoint, { ...protocolOptions, brokerToken: /** @type {string} */ (options.brokerToken), ownerId: options.ownerId ?? randomUUID() })
+    ? await connectZCodeBroker(options.brokerEndpoint, { ...protocolOptions, brokerToken: /** @type {string} */ (options.brokerToken), ownerId: /** @type {string} */ (options.ownerId) })
     : await spawnZCodeProtocol(/** @type {{command:string,args:string[],target?:string}} */ (options.launch), protocolOptions);
   return new ZCodeClient(protocol);
 }
 
-/** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},ownerId?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number}} options */
+/** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},ownerId:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number}} options */
 export async function createManagedZCodeClient(options) {
   if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !plainObject(options.launch) || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw inputError();
   const identity = await ensureZCodeBroker(options);
