@@ -17,6 +17,7 @@ export const JOB_STATUSES = Object.freeze([
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling']);
+const JOB_PATCH_FIELDS = new Set(['childPid', 'exitCode', 'lastCancelError']);
 const TRANSITIONS = new Map([
   ['queued', new Set(['running', 'failed', 'cancelled'])],
   ['running', new Set(['cancelling', 'succeeded', 'failed'])],
@@ -73,6 +74,15 @@ export function createStateStore({ dataRoot }) {
     async transitionJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}) {
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
+        const forbiddenFields = Object.keys(patch)
+          .filter((field) => !JOB_PATCH_FIELDS.has(field));
+        if (forbiddenFields.length > 0) {
+          throw new PluginError('JOB_PATCH_FORBIDDEN', 'Job patch contains protected or unsupported fields.', {
+            category: 'state',
+            remedy: 'Only patch mutable job execution fields.',
+            details: { forbiddenFields, jobId },
+          });
+        }
         const path = jobPath(storage.jobsDirectory, jobId);
         const job = await readJobRecord(path, jobId);
         if (TERMINAL_STATUSES.has(job.status)) {

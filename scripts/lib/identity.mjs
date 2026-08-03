@@ -134,10 +134,17 @@ export function createIdentityStore({ dataRoot }) {
         createdAt: new Date().toISOString(),
         consumedAt: null,
       };
-      await withFileLock(storage.lockPath, () => atomicWriteJson(
-        join(storage.gatesDirectory, `${key}.json`),
-        record,
-      ));
+      await withFileLock(storage.lockPath, async () => {
+        const path = join(storage.gatesDirectory, `${key}.json`);
+        if (await authorizationRecordExists(path)) {
+          throw new PluginError('GATE_BASELINE_EXISTS', 'Gate baseline already exists for this turn.', {
+            category: 'authorization',
+            remedy: 'Consume the existing baseline or begin a new turn.',
+            details: { sessionId: input.sessionId, turnId: input.turnId },
+          });
+        }
+        await atomicWriteJson(path, record);
+      });
       return publicRecord(record);
     },
 
@@ -209,6 +216,20 @@ async function readAuthorizationRecord(path, code, message) {
         remedy: 'Use the exact credential issued for this operation.',
         cause: error,
       });
+    }
+    throw error;
+  }
+}
+
+/** @param {string} path */
+async function authorizationRecordExists(path) {
+  try {
+    await readJsonFile(path);
+    return true;
+  } catch (error) {
+    if (error instanceof PluginError && error.code === 'JSON_READ_FAILED'
+      && error.cause instanceof Error && 'code' in error.cause && error.cause.code === 'ENOENT') {
+      return false;
     }
     throw error;
   }

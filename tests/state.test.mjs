@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
-import { atomicWriteJson, readJsonFile } from '../scripts/lib/fs.mjs';
+import { atomicWriteJson, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
@@ -24,6 +36,81 @@ const jobInput = {
   readOnly: false,
   permissionSnapshot: { mode: 'workspace-write' },
 };
+
+const fsModuleUrl = new URL('../scripts/lib/fs.mjs', import.meta.url).href;
+
+/** @param {string} lockPath */
+function startLockHolder(lockPath) {
+  const source = `
+    import { withFileLock } from ${JSON.stringify(fsModuleUrl)};
+    const lockPath = process.argv[1];
+    try {
+      await withFileLock(lockPath, async () => {
+        process.stdout.write('acquired\\n');
+        await new Promise((resolve) => process.stdin.once('data', resolve));
+      }, {
+        heartbeatIntervalMs: 5,
+        pollIntervalMs: 5,
+        staleAfterMs: 25,
+        timeoutMs: 1_000,
+      });
+      process.stdout.write('released\\n');
+    } catch (error) {
+      process.stdout.write(\`error:\${error.code}\\n\`);
+    }
+  `;
+  return spawn(process.execPath, ['--input-type=module', '--eval', source, lockPath], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
+
+/** @param {import('node:child_process').ChildProcess} child @param {string} expected */
+async function waitForOutput(child, expected) {
+  let output = '';
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for child output: ${expected}; received: ${output}`));
+    }, 2_000);
+    function cleanup() {
+      clearTimeout(timeout);
+      child.stdout?.off('data', onData);
+      child.off('exit', onExit);
+    }
+    /** @param {Buffer} chunk */
+    function onData(chunk) {
+      output += chunk.toString();
+      if (output.includes(expected)) {
+        cleanup();
+        resolve(undefined);
+      }
+    }
+    /** @param {number | null} code */
+    function onExit(code) {
+      cleanup();
+      reject(new Error(`Child exited with ${code}; output: ${output}`));
+    }
+    child.stdout?.on('data', onData);
+    child.once('exit', onExit);
+  });
+}
+
+/** @param {import('node:child_process').ChildProcess} child */
+async function releaseLockHolder(child) {
+  if (child.exitCode !== null) return;
+  child.stdin?.end('release\n');
+  await once(child, 'exit');
+}
+
+/** @param {string} path */
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test('jobs follow queued -> running -> succeeded and persist complete metadata', async () => {
   const { dataRoot, workspace } = await fixture();
@@ -104,6 +191,40 @@ test('terminal jobs and invalid transitions are rejected with stable PluginError
   );
 });
 
+test('transition patches cannot rewrite job identity or scheduling invariants', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  const forbiddenPatches = [
+    { id: 'a'.repeat(64) },
+    { jobId: 'b'.repeat(64) },
+    { workspace: '/forged/workspace' },
+    { ownerSessionId: 'session-b' },
+    { ownerTurnId: 'turn-b' },
+    { command: ['different-command'] },
+    { readOnly: true },
+    { permissionSnapshot: { mode: 'read-only' } },
+    { createdAt: '2000-01-01T00:00:00.000Z' },
+  ];
+
+  for (const patch of forbiddenPatches) {
+    await assert.rejects(
+      store.transitionJob(workspace, job.id, ['queued'], 'running', patch),
+      (error) => error instanceof PluginError
+        && error.code === 'JOB_PATCH_FORBIDDEN'
+        && error.category === 'state',
+    );
+  }
+
+  const unchanged = await store.readJob(workspace, job.id);
+  assert.equal(unchanged.status, 'queued');
+  assert.equal(unchanged.readOnly, false);
+  await assert.rejects(
+    store.reserveJob({ workspace, ...jobInput, ownerTurnId: 'turn-b' }),
+    (error) => error instanceof PluginError && error.code === 'WRITABLE_JOB_EXISTS',
+  );
+});
+
 test('a workspace permits one writable job while read-only jobs remain concurrent', async () => {
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });
@@ -151,6 +272,74 @@ test('atomic JSON writes use private files and leave no sibling temporary artifa
   assert.equal(parsed.payload, parsed.writer.repeat(1000));
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.deepEqual(await readdir(directory), ['record.json']);
+});
+
+test('a live child lock holder cannot be evicted solely because directory mtime is old', async () => {
+  const { root } = await fixture();
+  const lockPath = join(root, 'live.lock');
+  const child = startLockHolder(lockPath);
+  try {
+    await waitForOutput(child, 'acquired');
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockPath, old, old);
+
+    await assert.rejects(
+      withFileLock(lockPath, async () => 'must-not-enter', {
+        heartbeatIntervalMs: 5,
+        pollIntervalMs: 5,
+        staleAfterMs: 25,
+        timeoutMs: 75,
+      }),
+      (error) => error instanceof PluginError && error.code === 'LOCK_TIMEOUT',
+    );
+  } finally {
+    await releaseLockHolder(child);
+    await rm(lockPath, { force: true, recursive: true });
+  }
+});
+
+test('an expired lock owned by an exited child process is recovered without a long wait', async () => {
+  const { root } = await fixture();
+  const lockPath = join(root, 'dead.lock');
+  const child = spawn(process.execPath, ['--eval', 'process.exit(0)']);
+  const deadPid = child.pid;
+  assert.notEqual(deadPid, undefined);
+  await once(child, 'exit');
+  await mkdir(lockPath, { mode: 0o700 });
+  await atomicWriteJson(join(lockPath, 'owner.json'), {
+    nonce: 'dead-owner',
+    pid: deadPid,
+    hostname: hostname(),
+    heartbeatAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  const result = await withFileLock(lockPath, async () => 'recovered', {
+    heartbeatIntervalMs: 5,
+    pollIntervalMs: 5,
+    staleAfterMs: 25,
+    timeoutMs: 75,
+  });
+  assert.equal(result, 'recovered');
+  assert.equal(await pathExists(lockPath), false);
+});
+
+test('an old child holder never removes a replacement lock during release', async () => {
+  const { root } = await fixture();
+  const lockPath = join(root, 'aba.lock');
+  const replacementMarker = join(lockPath, 'replacement-owner');
+  const child = startLockHolder(lockPath);
+  try {
+    await waitForOutput(child, 'acquired');
+    await rm(lockPath, { recursive: true });
+    await mkdir(lockPath, { mode: 0o700 });
+    await writeFile(replacementMarker, 'new-owner');
+    await releaseLockHolder(child);
+
+    assert.equal(await pathExists(replacementMarker), true);
+  } finally {
+    if (child.exitCode === null) child.kill();
+    await rm(lockPath, { force: true, recursive: true });
+  }
 });
 
 test('path and JSON failures retain their causes behind stable PluginErrors', async () => {
