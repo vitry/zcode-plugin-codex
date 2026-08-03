@@ -5,11 +5,11 @@ import { PluginError, wrapError } from './errors.mjs';
 
 const JS_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 
-/** @param {string} path @param {string} [execPath] @param {string} [platform] */
-export function launchForPath(path, execPath = process.execPath, platform = process.platform) {
+/** @param {string} path @param {string} [execPath] @param {string} [platform] @param {NodeJS.ProcessEnv|Record<string,string|undefined>} [env] */
+export function launchForPath(path, execPath = process.execPath, platform = process.platform, env = process.env) {
   if (typeof path !== 'string' || path.length === 0) throw processInputError();
   const extension = path.slice(path.lastIndexOf('.')).toLowerCase();
-  if (platform === 'win32' && ['.cmd', '.bat'].includes(extension)) return { command: process.env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c'], target: path, windowsShim: true };
+  if (platform === 'win32' && ['.cmd', '.bat'].includes(extension)) return { command: env.ComSpec ?? env.COMSPEC ?? 'cmd.exe', args: ['/d', '/s', '/c'], target: path, windowsShim: true };
   return JS_EXTENSIONS.has(extension)
     ? { command: execPath, args: [path], target: path }
     : { command: path, args: [], target: path };
@@ -69,7 +69,7 @@ export async function runProcess(launch, options = {}) {
   if (options.signal?.aborted) throw new PluginError('ZCODE_PROCESS_ABORTED', 'The ZCode process was aborted.', { category: 'state', remedy: 'Retry when the operation should continue.' });
   const { signal, ...spawnOptions } = options; const child = await spawnProcess(launch, spawnOptions); let stdout = ''; let stderr = ''; let overflow = false;
   child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
-  const capture = (/** @type {'stdout'|'stderr'} */ kind, /** @type {string} */ chunk) => { if (kind === 'stdout') stdout += chunk; else stderr += chunk; if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > maxOutputBytes) { overflow = true; void terminateProcess(child); } };
+  const capture = (/** @type {'stdout'|'stderr'} */ kind, /** @type {string} */ chunk) => { if (kind === 'stdout') stdout += chunk; else stderr += chunk; if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > maxOutputBytes) { overflow = true; void terminateProcess(child).catch(() => {}); } };
   child.stdout?.on('data', (chunk) => capture('stdout', chunk)); child.stderr?.on('data', (chunk) => capture('stderr', chunk));
   let timer; const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs); });
   let resolveAbort = () => {}; const abort = new Promise((resolve) => { resolveAbort = () => resolve('aborted'); }); signal?.addEventListener('abort', resolveAbort, { once: true });

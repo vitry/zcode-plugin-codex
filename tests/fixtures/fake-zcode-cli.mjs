@@ -8,7 +8,7 @@ if (process.argv.includes('--version')) {
   process.stdout.write(`${process.env.FAKE_ZCODE_VERSION ?? '0.16.1'}\n`);
   process.exit(0);
 }
-if (process.env.FAKE_ZCODE_STDERR_BYTES) process.stderr.write('sensitive-stderr'.repeat(Math.ceil(Number(process.env.FAKE_ZCODE_STDERR_BYTES) / 16)));
+if (process.env.FAKE_ZCODE_STDERR_BYTES) process.stderr.write((process.env.FAKE_ZCODE_STDERR_TEXT ?? 'sensitive-stderr').repeat(Math.ceil(Number(process.env.FAKE_ZCODE_STDERR_BYTES) / (process.env.FAKE_ZCODE_STDERR_TEXT ?? 'sensitive-stderr').length)));
 
 const sessions = new Map();
 const input = readline.createInterface({ input: process.stdin });
@@ -67,6 +67,7 @@ input.on('line', async (line) => {
       const sessionId = p.sessionId ?? `session-${sessions.size + 1}`;
       sessions.set(sessionId, { sessionId, workspacePath: p.workspace?.workspacePath ?? '/repo', settings: settings(p.model ?? defaultModel), messages: [] });
       const result = snapshot(sessionId);
+      if (process.env.FAKE_ZCODE_FUTURE_FIELDS === '1') { result.protocol.version = 2; result.futureEnvelope = { ignored: true }; result.projection.futureProjectionField = 'new'; result.settings.model.available[0].futureCatalogField = 42; }
       if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-workspace') delete result.session.workspace;
       if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'empty-message') result.messages = [{}];
       if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-session-kind') result.session.sessionKind = 'main';
@@ -87,6 +88,7 @@ input.on('line', async (line) => {
       const stateRevision = process.env.FAKE_ZCODE_BARRIER === '1' ? 1000 : 1;
       if (process.env.FAKE_ZCODE_BARRIER === '1') send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: 999, reason: 'prompt_completed', patch: { status: 'idle' } } });
       const response = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision } };
+      if (process.env.FAKE_ZCODE_BAD_SEND_ONCE === '1' && sendCount === 1) response.result.stateRevision = 'bad';
       if (process.env.FAKE_ZCODE_SYNC_BATCH !== 'stale-valid') send(response);
       if (process.env.FAKE_ZCODE_PERMISSION === '1') {
         const id = permissionId++;

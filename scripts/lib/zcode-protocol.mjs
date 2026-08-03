@@ -21,10 +21,14 @@ export class ZCodeProtocolClient {
     /** @type {Map<string,any[]>} */ this.earlyCompletions = new Map();
     /** @type {Set<any>} */ this.completionWaiters = new Set();
     /** @type {Set<(message:any)=>void>} */ this.subscribers = new Set();
+    /** @type {Set<Promise<void>>} */ this.serverTasks = new Set();
     this.nextId = 1;
     this.buffer = '';
     this.closed = false;
+    this.closing = false;
+    /** @type {Promise<void>|null} */ this.terminationPromise = null;
     this.permissionHandler = null;
+    this.subscriberErrorHandler = null;
     this.closeHandler = null;
     this.terminalHandler = null;
     this.consumeTerminal = false;
@@ -33,7 +37,8 @@ export class ZCodeProtocolClient {
     this.writer = new BoundedWriter(child.stdin, { maxQueuedBytes: boundedInteger(options.maxOutboundBytes, DEFAULT_MAX_OUTBOUND_BYTES, 128, 64 * 1024 * 1024), onFailure: (error) => this.fail(error) });
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
-    child.stderr?.on('data', () => {});
+    this.stderrTail = new RedactedTail();
+    child.stderr?.on('data', (chunk) => this.stderrTail.append(chunk));
     child.stdout?.on('data', (chunk) => this.handleChunk(chunk));
     child.once('error', (error) => this.fail(new PluginError('ZCODE_DISCONNECTED', 'The ZCode process connection failed.', { category: 'runtime', remedy: 'Restart the operation.', cause: error })));
     child.once('exit', (code, signal) => this.fail(new PluginError('ZCODE_DISCONNECTED', 'The ZCode process disconnected.', { category: 'runtime', remedy: 'Restart the operation.', details: { code, signal } })));
@@ -60,6 +65,8 @@ export class ZCodeProtocolClient {
     if (handler !== null && typeof handler !== 'function') throw protocolInputError();
     this.permissionHandler = handler;
   }
+  /** @param {(error:unknown)=>void} handler */
+  setSubscriberErrorHandler(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.subscriberErrorHandler = handler; }
   /** Broker-only terminal hook. Validated terminal notifications are consumed before this callback. @param {(params:any)=>void} handler */
   consumeTerminalsWith(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.terminalHandler = handler; this.consumeTerminal = true; }
   /** @param {(error:PluginError)=>void} handler */ setCloseHandler(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.closeHandler = handler; }
@@ -104,13 +111,11 @@ export class ZCodeProtocolClient {
   }
 
   async close() {
-    if (this.closed) return;
-    this.closed = true;
-    this.rejectPending(disconnected());
-    this.rejectCompletionWaiters(disconnected());
-    this.writer.close();
-    try { this.child.stdin?.end(); } catch { /* already closed */ }
-    await terminateProcess(this.child);
+    if (this.closing) { await Promise.allSettled([...this.serverTasks]); await this.terminationPromise; return; }
+    this.closing = true;
+    if (!this.closed) { this.closed = true; this.rejectPending(disconnected()); this.rejectCompletionWaiters(disconnected()); this.writer.close(); try { this.child.stdin?.end(); } catch { /* already closed */ } }
+    await Promise.allSettled([...this.serverTasks]);
+    this.terminationPromise ??= terminateProcess(this.child); await this.terminationPromise;
   }
 
   /** @param {string} chunk */
@@ -137,13 +142,15 @@ export class ZCodeProtocolClient {
       this.fail(new PluginError('ZCODE_PROTOCOL_MALFORMED', 'ZCode sent malformed JSON.', { category: 'protocol', remedy: 'Restart ZCode and retry.', cause: error })); return;
     }
     if (!plainObject(message)) { this.fail(malformedFrame()); return; }
-    if (message.id !== undefined && message.method !== undefined) { void this.handleServerRequest(message); return; }
+    if (message.id !== undefined && message.method !== undefined) { this.trackServerTask(this.handleServerRequest(message)); return; }
     if (message.id !== undefined) { this.handleResponse(message); return; }
     if (typeof message.method === 'string' && plainObject(message.params)) {
       const turn = this.turns.get(message.params.sessionId);
       if (isTerminalNotification(message) && turn?.status === 'sending') { const early = this.earlyCompletions.get(message.params.sessionId) ?? []; if (early.length >= 16) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many early completion candidates.', { category: 'protocol', remedy: 'Restart the connection.' })); return; } early.push(message.params); this.earlyCompletions.set(message.params.sessionId, early); }
       else if (isCompletionFor(message, message.params.sessionId, turn)) this.queueCompletion(message.params.sessionId, message.params);
-      for (const subscriber of this.subscribers) subscriber(message);
+      for (const subscriber of this.subscribers) {
+        try { subscriber(message); } catch (error) { try { this.subscriberErrorHandler?.(error); } catch { /* diagnostics must not affect protocol */ } }
+      }
       return;
     }
     this.fail(malformedFrame());
@@ -169,7 +176,7 @@ export class ZCodeProtocolClient {
   /** @param {any} message */
   async handleServerRequest(message) {
     if (!Number.isSafeInteger(message.id) || typeof message.method !== 'string' || !plainObject(message.params)) { this.fail(malformedFrame()); return; }
-    if (message.method !== 'interaction/requestPermission') { this.sendFrame({ id: message.id, error: { code: -32601, message: 'Unsupported server request.' } }); return; }
+    if (message.method !== 'interaction/requestPermission') { if (!this.closed) this.sendFrame({ id: message.id, error: { code: -32601, message: 'Unsupported server request.' } }); return; }
     try {
       validatePermissionRequest(message.params);
       if (!this.turns.has(message.params.sessionId)) throw new PluginError('ZCODE_PERMISSION_SESSION_INVALID', 'Permission request does not match an active session turn.', { category: 'authorization', remedy: 'Deny the request and restart the turn.' });
@@ -181,11 +188,17 @@ export class ZCodeProtocolClient {
       const result = this.permissionHandler ? await this.permissionHandler(message.params) : message.params.options.find((/** @type {any} */ option) => option.response.decision === 'deny')?.response;
       validatePermissionResult(result);
       if (!message.params.options.some((/** @type {any} */ option) => JSON.stringify(option.response) === JSON.stringify(result))) throw new PluginError('ZCODE_PERMISSION_OPTION_INVALID', 'Permission response was not one of the offered options.', { category: 'authorization', remedy: 'Return an exact response offered by ZCode.' });
-      this.sendFrame({ id: message.id, result });
+      if (!this.closed) this.sendFrame({ id: message.id, result });
     } catch (error) {
-      this.sendFrame({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Permission handler failed.' } });
+      if (!this.closed) {
+        try { this.sendFrame({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Permission handler failed.' } }); }
+        catch (sendError) { this.fail(asDisconnected(sendError, this.stderrTail.value())); }
+      }
     }
   }
+
+  /** @param {Promise<void>} task */
+  trackServerTask(task) { this.serverTasks.add(task); void task.then(() => this.serverTasks.delete(task), (error) => { this.serverTasks.delete(task); this.fail(asDisconnected(error, this.stderrTail.value())); }); }
 
   /** @param {Record<string,unknown>} frame */
   sendFrame(frame) {
@@ -197,10 +210,11 @@ export class ZCodeProtocolClient {
   /** @param {PluginError} error */
   fail(error) {
     if (this.closed) return;
-    this.closed = true; this.writer.close(); this.rejectPending(error); this.rejectCompletionWaiters(error); for (const timer of this.completionExpiry.values()) clearTimeout(timer); this.completionExpiry.clear(); this.completed.clear(); this.earlyCompletions.clear(); this.turns.clear();
-    this.closeHandler?.(error);
+    const diagnosticError = withStderr(error, this.stderrTail.value());
+    this.closed = true; this.writer.close(); this.rejectPending(diagnosticError); this.rejectCompletionWaiters(diagnosticError); for (const timer of this.completionExpiry.values()) clearTimeout(timer); this.completionExpiry.clear(); this.completed.clear(); this.earlyCompletions.clear(); this.turns.clear();
+    try { this.closeHandler?.(diagnosticError); } catch { /* close diagnostics cannot destabilize host */ }
     try { this.child.stdin?.destroy(); this.child.stdout?.destroy(); } catch { /* best effort */ }
-    void terminateProcess(this.child);
+    this.terminationPromise ??= terminateProcess(this.child); void this.terminationPromise.catch(() => {});
   }
 
   /** @param {PluginError} error */
@@ -221,14 +235,21 @@ export class BoundedWriter {
     this.queue = [];
     /** @type {NodeJS.Timeout|undefined} */
     this.timer = undefined;
-    this.closed = false; this.onDrain = () => this.drain(); stream?.on?.('drain', this.onDrain);
+    this.closed = false; this.failed = false; this.onDrain = () => this.drain(); this.onError = (/** @type {unknown} */ error) => this.failOnce(asDisconnected(error)); stream?.on?.('drain', this.onDrain); stream?.on?.('error', this.onError);
   }
   /** @param {string} data */
-  write(data) { if (this.closed || !this.stream?.writable) throw disconnected(); const bytes = Buffer.byteLength(data); if (bytes > this.maxQueuedBytes || this.pendingBytes + bytes > this.maxQueuedBytes) { const error = new PluginError('ZCODE_WRITE_OVERFLOW', 'ZCode outbound data exceeded the configured queue limit.', { category: 'protocol', remedy: 'Wait for the peer to consume data and retry.' }); this.close(); this.onFailure(error); throw error; } if (this.blocked) { this.queue.push(data); this.pendingBytes += bytes; return; } this.writeNow(data, bytes, false); }
+  write(data) { if (this.closed || !this.stream?.writable) throw disconnected(); const bytes = Buffer.byteLength(data); if (bytes > this.maxQueuedBytes || this.pendingBytes + bytes > this.maxQueuedBytes) { const error = new PluginError('ZCODE_WRITE_OVERFLOW', 'ZCode outbound data exceeded the configured queue limit.', { category: 'protocol', remedy: 'Wait for the peer to consume data and retry.' }); this.failOnce(error); throw error; } if (this.blocked) { this.queue.push(data); this.pendingBytes += bytes; return; } this.writeNow(data, bytes, false); }
   /** @param {string} data @param {number} bytes */
-  writeNow(data, bytes, /** @type {boolean} */ alreadyPending) { if (this.stream.write(data)) { if (alreadyPending) this.pendingBytes -= bytes; return; } this.blocked = true; this.currentBytes = bytes; if (!alreadyPending) this.pendingBytes += bytes; this.timer = setTimeout(() => { const error = new PluginError('ZCODE_WRITE_TIMEOUT', 'ZCode outbound data remained backpressured.', { category: 'timeout', remedy: 'Restart the connection and retry.' }); this.close(); this.onFailure(error); }, this.drainTimeoutMs); this.timer.unref?.(); }
+  writeNow(data, bytes, /** @type {boolean} */ alreadyPending) { if (this.stream.write(data)) { if (alreadyPending) this.pendingBytes -= bytes; return; } this.blocked = true; this.currentBytes = bytes; if (!alreadyPending) this.pendingBytes += bytes; this.timer = setTimeout(() => this.failOnce(new PluginError('ZCODE_WRITE_TIMEOUT', 'ZCode outbound data remained backpressured.', { category: 'timeout', remedy: 'Restart the connection and retry.' })), this.drainTimeoutMs); this.timer.unref?.(); }
   drain() { if (this.closed || !this.blocked) return; clearTimeout(this.timer); this.timer = undefined; this.blocked = false; this.pendingBytes -= this.currentBytes; this.currentBytes = 0; while (!this.blocked && this.queue.length) { const data = /** @type {string} */ (this.queue.shift()); this.writeNow(data, Buffer.byteLength(data), true); } }
   close() { if (this.closed) return; this.closed = true; clearTimeout(this.timer); this.stream?.off?.('drain', this.onDrain); this.queue.length = 0; this.pendingBytes = 0; this.currentBytes = 0; }
+  /** @param {PluginError} error */ failOnce(error) { if (this.failed) return; this.failed = true; this.close(); try { this.onFailure(error); } catch { /* failure callbacks cannot escape stream events */ } }
+}
+
+export class RedactedTail {
+  /** @param {number} [maxBytes] */ constructor(maxBytes = 8192) { this.maxBytes = maxBytes; this.tail = ''; }
+  /** @param {unknown} chunk */ append(chunk) { this.tail += String(chunk); while (Buffer.byteLength(this.tail) > this.maxBytes) this.tail = this.tail.slice(Math.max(1, Math.floor(this.tail.length / 4))); }
+  value() { return redactSecrets(this.tail); }
 }
 
 /** @param {{command:string,args:string[],target?:string}} launch @param {{cwd?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number}} [options] */
@@ -271,6 +292,12 @@ function disconnected() { return new PluginError('ZCODE_DISCONNECTED', 'The ZCod
 function protocolInputError() { return new PluginError('ZCODE_PROTOCOL_INPUT_INVALID', 'ZCode protocol input is invalid.', { category: 'validation', remedy: 'Provide a valid method, params, session, and bounded timeout.' }); }
 function malformedFrame() { return new PluginError('ZCODE_PROTOCOL_MALFORMED', 'ZCode sent a malformed protocol frame.', { category: 'protocol', remedy: 'Restart ZCode and retry.' }); }
 function frameTooLarge() { return new PluginError('ZCODE_PROTOCOL_FRAME_TOO_LARGE', 'A ZCode protocol frame exceeded the configured limit.', { category: 'protocol', remedy: 'Reduce request size or inspect the peer for invalid output.' }); }
+/** @param {unknown} error @param {string} [stderrTail] */
+function asDisconnected(error, stderrTail = '') { return new PluginError('ZCODE_DISCONNECTED', 'The ZCode process connection failed.', { category: 'runtime', remedy: 'Restart the operation.', cause: error, details: stderrTail ? { stderrTail } : {} }); }
+/** @param {PluginError} error @param {string} stderrTail */
+function withStderr(error, stderrTail) { if (!stderrTail) return error; return new PluginError(error.code, error.message, { category: error.category, remedy: error.remedy, cause: error.cause, details: { ...error.details, stderrTail } }); }
+/** @param {string} value */
+function redactSecrets(value) { return value.replace(/\b(token|auth(?:orization)?|cookie|api[_-]?key|permission)\b\s*[:=]\s*[^\r\n]*/gi, '$1=[REDACTED]'); }
 /** @param {Record<string,any>} value */
 function validatePermissionRequest(value) {
   const required = ['requestId', 'sessionId', 'toolCallId', 'toolName', 'reason', 'riskLevel', 'input', 'options'];

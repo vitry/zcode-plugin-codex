@@ -5,10 +5,11 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { runProcess, spawnProcess, terminateProcess } from '../scripts/lib/process.mjs';
-import { BoundedWriter } from '../scripts/lib/zcode-protocol.mjs';
+import { BoundedWriter, ZCodeProtocolClient } from '../scripts/lib/zcode-protocol.mjs';
 
 test('grace timer does not retain the caller after the child exits', async () => {
   const moduleUrl = new URL('../scripts/lib/process.mjs', import.meta.url).href;
@@ -53,4 +54,32 @@ test('bounded writer queues on backpressure, flushes on drain, and fails at its 
   const stream = new FakeWritable(); let failure; const writer = new BoundedWriter(stream, { maxQueuedBytes: 8, drainTimeoutMs: 10_000, onFailure: (error) => { failure = error; } });
   writer.write('1234'); writer.write('56'); assert.deepEqual(stream.writes, ['1234']); stream.block = false; stream.emit('drain'); assert.deepEqual(stream.writes, ['1234', '56']); writer.close();
   const blocked = new FakeWritable(); const capped = new BoundedWriter(blocked, { maxQueuedBytes: 5, onFailure: (error) => { failure = error; } }); capped.write('1234'); assert.throws(() => capped.write('56'), { code: 'ZCODE_WRITE_OVERFLOW' }); assert.equal(failure.code, 'ZCODE_WRITE_OVERFLOW');
+});
+
+test('bounded writer consumes early and late stream errors and reports failure once', () => {
+  class FakeWritable extends EventEmitter { constructor() { super(); this.writable = true; } write() { return true; } }
+  const stream = new FakeWritable(); const failures = [];
+  const writer = new BoundedWriter(stream, { onFailure: (error) => failures.push(error) });
+  stream.emit('error', Object.assign(new Error('peer closed'), { code: 'EPIPE' }));
+  writer.close();
+  stream.emit('error', Object.assign(new Error('late reset'), { code: 'ECONNRESET' }));
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].code, 'ZCODE_DISCONNECTED');
+});
+
+test('subscriber failures are isolated and permission work cannot write after close', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child); const received = []; const subscriberErrors = [];
+  protocol.setSubscriberErrorHandler((error) => subscriberErrors.push(error));
+  protocol.subscribe(() => { throw new Error('bad subscriber'); });
+  protocol.subscribe((message) => received.push(message.method));
+  protocol.handleLine(JSON.stringify({ method: 'event', params: {} }));
+  assert.deepEqual(received, ['event']); assert.equal(subscriberErrors.length, 1);
+
+  protocol.beginTurn('session-1');
+  let release; protocol.setPermissionHandler(() => new Promise((resolve) => { release = resolve; }));
+  protocol.handleLine(JSON.stringify({ id: 99, method: 'interaction/requestPermission', params: { requestId: 'r', sessionId: 'session-1', toolCallId: 't', toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } }));
+  const beforeClose = child.stdin.readableLength;
+  const closing = protocol.close(); release({ decision: 'deny' }); await closing;
+  assert.equal(child.stdin.readableLength, beforeClose);
 });

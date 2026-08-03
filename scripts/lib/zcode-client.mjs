@@ -38,15 +38,15 @@ export class ZCodeClient {
     const inputId = randomUUID();
     let result;
     try { result = await this.protocol.request('session/send', { sessionId, inputId, queryId: inputId, content }); } catch (error) { this.protocol.abortTurn(sessionId); throw error; }
-    if (!plainObject(result) || Object.keys(result).some((key) => !['sessionId', 'accepted', 'stateRevision', 'modelRuntimeRevision'].includes(key)) || result.accepted !== true || result.sessionId !== sessionId || !Number.isSafeInteger(result.stateRevision) || result.stateRevision < 0 || result.modelRuntimeRevision !== undefined && !nonEmpty(result.modelRuntimeRevision)) { this.protocol.abortTurn(sessionId); throw outputError('session/send'); }
+    if (!plainObject(result) || result.accepted !== true || result.sessionId !== sessionId || !Number.isSafeInteger(result.stateRevision) || result.stateRevision < 0 || result.modelRuntimeRevision !== undefined && !nonEmpty(result.modelRuntimeRevision)) { this.protocol.abortTurn(sessionId); throw outputError('session/send'); }
     this.protocol.armTurn(sessionId, result.stateRevision, inputId);
     return result;
   }
 
   /** @param {string} sessionId */ async readSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
   /** @param {string} sessionId */ async resumeSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
-  async listSessions() { const result = requireObjectResult(await this.protocol.request('session/list', {}), 'session/list'); if (Object.keys(result).some((key) => key !== 'sessions') || !Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
-  /** @param {string} sessionId */ async stopSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/stop', { sessionId }); if (!plainObject(result) || Object.keys(result).length !== 0) throw outputError('session/stop'); this.protocol.cancelTurn(sessionId); return result; }
+  async listSessions() { const result = requireObjectResult(await this.protocol.request('session/list', {}), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
+  /** @param {string} sessionId */ async stopSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/stop', { sessionId }); if (!plainObject(result)) throw outputError('session/stop'); this.protocol.cancelTurn(sessionId); return result; }
 
   /** @param {string} sessionId @param {{providerId:string,modelId:string,variant?:string}} model */
   async setModel(sessionId, model) {
@@ -94,9 +94,9 @@ export async function createZCodeClient(options) {
 
 /** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},ownerId?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number}} options */
 export async function createManagedZCodeClient(options) {
-  if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !plainObject(options.launch)) throw inputError();
+  if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !plainObject(options.launch) || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw inputError();
   const identity = await ensureZCodeBroker(options);
-  return createZCodeClient({ workspace: options.workspace, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId ?? randomUUID(), requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes });
+  return createZCodeClient({ workspace: options.workspace, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes });
 }
 
 /** @param {any} history */

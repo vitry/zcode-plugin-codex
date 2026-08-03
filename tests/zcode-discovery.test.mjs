@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { discoverZCode, getPlatformCandidates } from '../scripts/lib/zcode-discovery.mjs';
+import { discoverZCode, findOnPath, getPlatformCandidates } from '../scripts/lib/zcode-discovery.mjs';
 import { launchForPath } from '../scripts/lib/process.mjs';
 
 const okVersion = async () => 'zcode 0.16.1';
@@ -51,9 +51,15 @@ test('SemVer parser rejects invalid 2.0 forms', async () => {
 });
 
 test('Windows command shims use ComSpec while JS and native paths remain direct', () => {
-  const shim = launchForPath('C:\\Program Files\\ZCode & Tools\\zcode.cmd', 'C:\\node.exe', 'win32');
+  const shim = launchForPath('C:\\Program Files\\ZCode & Tools\\zcode.cmd', 'C:\\node.exe', 'win32', { ComSpec: 'C:\\Windows\\custom-cmd.exe' });
+  assert.equal(shim.command, 'C:\\Windows\\custom-cmd.exe');
   assert.equal(shim.windowsShim, true);
   assert.deepEqual(shim.args, ['/d', '/s', '/c']);
   assert.deepEqual(launchForPath('C:\\ZCode\\zcode.cjs', 'C:\\node.exe', 'win32').command, 'C:\\node.exe');
   assert.deepEqual(launchForPath('C:\\ZCode\\zcode.exe', 'C:\\node.exe', 'win32').command, 'C:\\ZCode\\zcode.exe');
+});
+
+test('Windows PATH lookup honors injected PATHEXT casing and win32 separators', async () => {
+  const visited = []; const found = await findOnPath('zcode', { PATH: 'C:\\Tools;D:\\Bin', PATHEXT: '.CMD;.EXE' }, 'win32', async (candidate) => { visited.push(candidate); return candidate === 'D:\\Bin\\zcode.CMD'; });
+  assert.equal(found, 'D:\\Bin\\zcode.CMD'); assert.ok(visited.includes('C:\\Tools\\zcode.CMD'));
 });

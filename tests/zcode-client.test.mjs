@@ -1,15 +1,16 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import test from 'node:test';
 
-import { createZCodeClient } from '../scripts/lib/zcode-client.mjs';
+import { createManagedZCodeClient, createZCodeClient } from '../scripts/lib/zcode-client.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, ZCodeBroker } from '../scripts/zcode-broker.mjs';
 
-const fixture = new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url).pathname;
+const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 
 async function withClient(callback, env = {}, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-client-'));
@@ -176,12 +177,20 @@ test('typed operation results fail closed when their runtime shape is invalid', 
   }, { FAKE_ZCODE_BAD_RESULT: 'session/list' });
 });
 
-test('session/stop accepts only the real empty 0.16.1 result', async () => {
-  await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); await assert.rejects(client.stopSession(created.session.sessionId), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_STOP_EXTRA: '1' });
+test('session/stop accepts additive result fields from newer compatible versions', async () => {
+  await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); assert.deepEqual(await client.stopSession(created.session.sessionId), { stopped: true }); }, { FAKE_ZCODE_BAD_STOP_EXTRA: '1' });
 });
 
 test('large child stderr is drained without blocking or contaminating protocol stdout', async () => {
   await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); assert.equal(created.session.sessionId, 'session-1'); }, { FAKE_ZCODE_STDERR_BYTES: String(2 * 1024 * 1024) });
+});
+
+test('disconnect diagnostics retain only a bounded redacted stderr tail', async () => {
+  await withClient(async (client) => { await client.createSession({ workspace: '/repo' }); await assert.rejects(client.listSessions(), (error) => error.code === 'ZCODE_DISCONNECTED' && error.details.stderrTail.length <= 8192 && !error.details.stderrTail.includes('super-secret') && error.details.stderrTail.includes('[REDACTED]')); }, { FAKE_ZCODE_STDERR_BYTES: '20000', FAKE_ZCODE_STDERR_TEXT: ' token=super-secret ', FAKE_ZCODE_DISCONNECT: 'session/list' });
+});
+
+test('managed broker clients require an explicit stable owner credential', async () => {
+  await assert.rejects(createManagedZCodeClient({ dataRoot: '/tmp/data', workspace: '/tmp/workspace', launch: { command: process.execPath, args: [] } }), { code: 'ZCODE_INPUT_INVALID' });
 });
 
 test('actual 0.16.1 snapshot and list required fields are enforced', async (t) => {
@@ -192,6 +201,22 @@ test('actual 0.16.1 snapshot and list required fields are enforced', async (t) =
 
 test('invented and malformed nested 0.16.1 response fields are rejected', async (t) => {
   for (const variant of ['invented-session-kind', 'invented-subagent-kind', 'bad-protocol', 'missing-model-label', 'string-message-model', 'bad-goal-stats', 'bad-permission-origin', 'bad-runtime-cache', 'bad-timeline-trigger', 'bad-provider-options']) await t.test(variant, () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: variant }));
+});
+
+test('newer protocol versions and harmless additive response fields are accepted', async () => {
+  await withClient(async (client) => { const result = await client.createSession({ workspace: '/repo' }); assert.equal(result.protocol.version, 2); assert.equal(result.projection.futureProjectionField, 'new'); }, { FAKE_ZCODE_FUTURE_FIELDS: '1' });
+});
+
+test('invalid broker send response rolls back the turn and permits a retry', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-send-rollback-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '4'.repeat(64); const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_BAD_SEND_ONCE: '1' } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'send-rollback-owner' });
+  try { const { session: { sessionId } } = await client.createSession({ workspace: directory }); await assert.rejects(client.send(sessionId, 'bad'), { code: 'ZCODE_OUTPUT_INVALID' }); assert.equal(broker.activeSessions.size, 0); assert.equal(broker.protocol.turns.size, 0); await client.send(sessionId, 'retry'); await client.waitForCompletion(sessionId); }
+  finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('broker clears a shared failed protocol spawn so a later request can retry', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-spawn-retry-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '3'.repeat(64); const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: join(directory, 'missing'), args: [] } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'spawn-retry-owner' });
+  try { const failures = await Promise.allSettled([client.createSession({ workspace: directory }), client.listSessions()]); assert.equal(failures.filter((item) => item.status === 'rejected').length, 2); assert.equal(broker.protocolPromise, null); broker.options.launch = { command: process.execPath, args: [fixture], target: fixture }; const created = await client.createSession({ workspace: directory }); assert.equal(created.session.sessionId, 'session-1'); }
+  finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('broker endpoints are bounded and platform-safe', () => {
@@ -258,6 +283,7 @@ test('broker allows explicit imported create and atomically assigns resume owner
   try {
     const explicit = await first.createSession({ workspace: directory, sessionId: 'imported-session', importedHistory: { messages: [{ role: 'user', content: 'history' }] } });
     assert.equal(explicit.session.sessionId, 'imported-session');
+    await first.createSession({ workspace: directory, sessionId: 'race-session', importedHistory: { messages: [{ role: 'user', content: 'history' }] } });
     const results = await Promise.allSettled([first.resumeSession('race-session'), second.resumeSession('race-session')]);
     assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
     assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
@@ -287,8 +313,21 @@ test('late same-owner claim failure cannot erase a newer successful claim', asyn
   const directory = await mkdtemp(join(tmpdir(), 'zcode-owner-aba-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '8'.repeat(64); const ownerId = 'owner-credential-aba';
   const broker = await new ZCodeBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_RESUME_ABA: '1' } }).start();
   const first = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); const second = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
-  try { const results = await Promise.allSettled([first.resumeSession('aba-session'), second.resumeSession('aba-session')]); assert.deepEqual(results.map((result) => result.status).sort(), ['fulfilled', 'rejected']); const sibling = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'sibling-credential-aba' }); try { await assert.rejects(sibling.resumeSession('aba-session'), { code: 'ZCODE_REQUEST_FAILED' }); } finally { await sibling.close(); } }
+  try { await first.createSession({ workspace: directory, sessionId: 'aba-session', importedHistory: { messages: [{ role: 'user', content: 'x' }] } }); const results = await Promise.allSettled([first.resumeSession('aba-session'), second.resumeSession('aba-session')]); assert.deepEqual(results.map((result) => result.status).sort(), ['fulfilled', 'rejected']); const sibling = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'sibling-credential-aba' }); try { await assert.rejects(sibling.resumeSession('aba-session'), { code: 'ZCODE_REQUEST_FAILED' }); } finally { await sibling.close(); } }
   finally { await first.close(); await second.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('durable owner bindings survive broker restart and fail closed when corrupt', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-owner-restart-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const ownershipPath = join(directory, 'owners.json'); const brokerToken = '6'.repeat(64); const launch = { command: process.execPath, args: [fixture], target: fixture };
+  let broker = await new ZCodeBroker({ endpoint, ownershipPath, brokerToken, workspace: directory, launch }).start(); const ownerId = 'stable-owner-for-restart'; const owner = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); await owner.createSession({ workspace: directory, sessionId: 'restart-session', importedHistory: { messages: [{ role: 'user', content: 'x' }] } }); assert.equal((await stat(ownershipPath)).mode & 0o777, 0o600); await owner.close(); await broker.close();
+  broker = await new ZCodeBroker({ endpoint, ownershipPath, brokerToken, workspace: directory, launch }).start(); const sibling = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'different-owner-restart' }); await assert.rejects(sibling.resumeSession('restart-session'), { code: 'ZCODE_REQUEST_FAILED' }); await sibling.close(); const reconnect = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); await reconnect.resumeSession('restart-session'); await reconnect.close(); await broker.close();
+  await writeFile(ownershipPath, '{bad'); await assert.rejects(new ZCodeBroker({ endpoint, ownershipPath, brokerToken, workspace: directory, launch }).start(), { code: 'ZCODE_OWNER_STORE_INVALID' }); await rm(directory, { recursive: true, force: true });
+});
+
+test('broker removes only the identity record belonging to its own instance', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-identity-clean-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const identityPath = join(directory, 'identity.json'); const options = { endpoint, identityPath, brokerToken: '2'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } };
+  await writeFile(identityPath, JSON.stringify({ instanceId: 'instance-a' }), { mode: 0o600 }); const first = await new ZCodeBroker({ ...options, instanceId: 'instance-a' }).start(); await first.close(); await assert.rejects(readFile(identityPath), (error) => error.code === 'ENOENT');
+  await writeFile(identityPath, JSON.stringify({ instanceId: 'replacement' }), { mode: 0o600 }); const second = await new ZCodeBroker({ ...options, instanceId: 'instance-b' }).start(); await second.close(); assert.equal(JSON.parse(await readFile(identityPath, 'utf8')).instanceId, 'replacement'); await rm(directory, { recursive: true, force: true });
 });
 
 test('launch target is revalidated before spawning', async () => {

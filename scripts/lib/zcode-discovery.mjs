@@ -1,6 +1,6 @@
 import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import { launchForPath, runProcess } from './process.mjs';
@@ -34,7 +34,7 @@ export async function discoverZCode(options = {}) {
     throw discoveryInputError();
   }
   const exists = options.exists ?? fileExists;
-  const which = options.which ?? ((name, whichEnv) => findOnPath(name, whichEnv, platform));
+  const which = options.which ?? ((name, whichEnv) => findOnPath(name, whichEnv, platform, exists));
   const runVersion = options.runVersion ?? defaultRunVersion;
   if (typeof exists !== 'function' || typeof which !== 'function' || typeof runVersion !== 'function') throw discoveryInputError();
   /** @type {string[]} */
@@ -46,7 +46,7 @@ export async function discoverZCode(options = {}) {
   candidates.push(...getPlatformCandidates(/** @type {'darwin'|'linux'|'win32'} */ (platform), env));
   for (const path of new Set(candidates)) {
     if (!await exists(path)) continue;
-    const launch = launchForPath(path, options.execPath, platform);
+    const launch = launchForPath(path, options.execPath, platform, env);
     const rawVersion = await runVersion(launch);
     if (typeof rawVersion !== 'string') throw versionInvalid(rawVersion);
     const version = parseVersion(rawVersion);
@@ -68,11 +68,11 @@ export async function discoverZCode(options = {}) {
 async function fileExists(path) { try { await access(path); return true; } catch { return false; } }
 
 /** @param {string} name @param {any} env @param {string} platform */
-async function findOnPath(name, env, platform) {
+export async function findOnPath(name, env, platform, exists = fileExists) {
   for (const directory of String(env.PATH ?? '').split(platform === 'win32' ? ';' : ':').filter(Boolean)) {
-    const configured = String(env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';').map((suffix) => suffix.toLowerCase()).filter(Boolean);
+    const configured = String(env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';').filter(Boolean);
     const suffixes = platform === 'win32' ? [...new Set(['', ...configured, '.cjs', '.js'])] : [''];
-    for (const suffix of suffixes) { const path = join(directory, `${name}${suffix}`); if (await fileExists(path)) return path; }
+    for (const suffix of suffixes) { const path = (platform === 'win32' ? win32 : { join }).join(directory, `${name}${suffix}`); if (await exists(path)) return path; }
   }
   return null;
 }
