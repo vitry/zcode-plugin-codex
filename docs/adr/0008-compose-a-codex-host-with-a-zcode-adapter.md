@@ -1,0 +1,3 @@
+# Compose a Codex host with a ZCode adapter
+
+Build `zcode-plugin-codex` by retaining the current Codex-native skill, hook, session ownership, tracked-job, rendering, and built-in-subagent patterns from `cc-plugin-codex`; use `codex-plugin-cc` as the eight-command behavioral contract; and selectively port then update the ZCode protocol adapter from `zcode-plugin-cc` for ZCode 0.16.1. Keep a separate, bounded Codex host adapter for app-server operations such as `thread/read` and hook-trust configuration; do not mix those calls into the ZCode adapter. Direct CLI wrapping and reverse-porting the older Claude-host implementation were rejected because they would lose protocol capabilities or regress host lifecycle behavior.
