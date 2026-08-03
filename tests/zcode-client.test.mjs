@@ -30,10 +30,10 @@ test('typed operations use real 0.16.1 method and parameter shapes', async () =>
     const model = { providerId: 'zai', modelId: 'glm-5', variant: 'fast' };
     const created = await client.createSession({ workspace: '/repo', model, importedHistory: { messages: [{ role: 'user', content: 'old', timestamp: 1 }, { role: 'assistant', content: 'answer' }] } });
     const sessionId = created.session.sessionId;
-    await client.readSession(sessionId);
-    await client.resumeSession(sessionId);
-    await client.listSessions();
-    await client.setModel(sessionId, model);
+    const read = await client.readSession(sessionId);
+    const resumed = await client.resumeSession(sessionId);
+    const listed = await client.listSessions();
+    const modeled = await client.setModel(sessionId, model);
     await client.setThoughtLevel(sessionId, 'high', { model: { ...model, thoughtLevels: ['low', 'HIGH'] } });
     await client.stopSession(sessionId);
     const calls = (await readFile(record, 'utf8')).trim().split('\n').map(JSON.parse);
@@ -42,6 +42,8 @@ test('typed operations use real 0.16.1 method and parameter shapes', async () =>
     assert.deepEqual(calls.slice(0, 7).map((entry) => entry.method), ['session/create', 'session/read', 'session/resume', 'session/list', 'session/setModel', 'session/setThoughtLevel', 'session/stop']);
     assert.equal(calls[5].params.thoughtLevel, 'HIGH');
     assert.equal(calls[5].params.persistAsWorkspaceLastUsed, false);
+    for (const result of [created, read, resumed, modeled]) { assert.deepEqual(result.protocol, { name: 'ZCode Protocol', version: 1 }); assert.equal(result.session.sessionKind, 'interactive'); assert.equal(result.settings.model.available[0].label, 'Fixture model'); assert.deepEqual(result.messages[0].info.model, model); assert.equal(result.goalStats.tokensUsed, 0); assert.equal(result.todos[0].priority, 'high'); assert.equal(result.todoGroups[0].source, 'session'); assert.equal(result.slashCommands[0].source, 'builtin'); }
+    assert.equal(listed.sessions[0].sessionKind, 'interactive');
   });
 });
 
@@ -186,6 +188,10 @@ test('actual 0.16.1 snapshot and list required fields are enforced', async (t) =
   await t.test('snapshot workspace', () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: 'missing-workspace' }));
   await t.test('message envelope', () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: 'empty-message' }));
   await t.test('list session info', () => withClient(async (client) => { await client.createSession({ workspace: '/repo' }); await assert.rejects(client.listSessions(), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_LIST: 'session-id-only' }));
+});
+
+test('invented and malformed nested 0.16.1 response fields are rejected', async (t) => {
+  for (const variant of ['invented-session-kind', 'invented-subagent-kind', 'bad-protocol', 'missing-model-label', 'string-message-model', 'bad-goal-stats', 'bad-permission-origin', 'bad-runtime-cache', 'bad-timeline-trigger', 'bad-provider-options']) await t.test(variant, () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: variant }));
 });
 
 test('broker endpoints are bounded and platform-safe', () => {

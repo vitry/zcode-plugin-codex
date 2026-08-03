@@ -17,9 +17,10 @@ let sendCount = 0;
 let resumeCount = 0;
 
 const defaultModel = { providerId: 'fake', modelId: 'model' };
-function settings(model = defaultModel) { return { model: { current: model, available: [{ ref: model, reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' } }; }
-function sessionInfo(sessionId, workspacePath = '/repo') { return { sessionId, workspace: { workspacePath, workspaceKey: workspacePath }, sessionKind: 'main', title: 'Fixture session', mode: 'build', status: 'idle', createdAt: 1, updatedAt: 1 }; }
-function snapshot(sessionId, value = sessions.get(sessionId)) { return { protocol: { name: 'zcode', version: '0.16.1' }, session: sessionInfo(sessionId, value?.workspacePath), settings: value?.settings ?? settings(), projection: {}, runtime: {}, messages: value?.messages ?? [] }; }
+function settings(model = defaultModel) { return { appliedProviderRevision: 'provider-revision-1', model: { current: model, available: [{ ref: model, label: 'Fixture model', reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, label: 'Other model', reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' }, permission: { mode: 'build', rulesRevision: 1 } }; }
+function sessionInfo(sessionId, workspacePath = '/repo') { return { sessionId, workspace: { workspacePath, workspaceKey: workspacePath }, sessionKind: 'interactive', title: 'Fixture session', titleSource: 'generated', mode: 'build', status: 'idle', model: defaultModel, createdAt: 1, updatedAt: 1 }; }
+function messages(sessionId, model = defaultModel) { return [{ info: { messageId: 'message-user-1', sessionId, role: 'user', time: { created: 1, completed: 2 }, agent: 'build', model, synthetic: false, visibility: 'user-visible' }, parts: [{ partId: 'part-user-1', sessionId, messageId: 'message-user-1', type: 'text', text: 'hello' }] }, { info: { messageId: 'message-assistant-1', sessionId, role: 'assistant', time: { created: 2, completed: 3 }, parentMessageId: 'message-user-1', agent: 'build', model, path: { cwd: '/repo', root: '/repo' }, cost: 0, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, finish: 'stop' }, parts: [{ partId: 'part-assistant-1', sessionId, messageId: 'message-assistant-1', type: 'reasoning', text: 'done' }] }]; }
+function snapshot(sessionId, value = sessions.get(sessionId)) { const valueSettings = value?.settings ?? settings(); return { protocol: { name: 'ZCode Protocol', version: 1 }, session: { ...sessionInfo(sessionId, value?.workspacePath), model: valueSettings.model.current }, settings: valueSettings, projection: { sessionId, status: 'idle', mode: 'build', turnCount: 0, totalTokenCount: 0, contextUsed: 0, contextWindow: 128000, pendingPermissions: [], activeToolCalls: [], backgroundJobs: [] }, runtime: { eventSeq: 0, stateRevision: 0, pendingRequestIds: [] }, messages: value?.messages?.length ? value.messages : messages(sessionId, valueSettings.model.current), goalStats: { timeUsedSeconds: 0, tokensUsed: 0, tokenBudget: null, contextUsed: 0, contextWindow: 128000, toolCallCount: 0, iterationCount: 0 }, todos: [{ content: 'Verify', status: 'pending', priority: 'high' }], todoGroups: [{ id: 'todo-group-1', source: 'session', todos: [] }], slashCommands: [{ name: 'review', description: 'Review code', source: 'builtin' }] }; }
 
 async function record(message) {
   if (process.env.FAKE_ZCODE_RECORD) {
@@ -68,6 +69,16 @@ input.on('line', async (line) => {
       const result = snapshot(sessionId);
       if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-workspace') delete result.session.workspace;
       if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'empty-message') result.messages = [{}];
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-session-kind') result.session.sessionKind = 'main';
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-subagent-kind') result.session.sessionKind = 'subagent';
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-protocol') result.protocol = { name: 'zcode', version: '0.16.1' };
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-model-label') delete result.settings.model.available[0].label;
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'string-message-model') result.messages[0].info.model = 'fake/model';
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-goal-stats') result.goalStats.tokensUsed = -1;
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-permission-origin') result.projection.pendingPermissions = [{ requestId: 'request-1', toolCallId: 'tool-1', toolName: 'write', reason: 'test', riskLevel: 'low', origin: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }], requestedAt: 1 }];
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-runtime-cache') result.runtime.contextUsage = { used: 0, size: 1, cache: { inputTokens: -1 } };
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-timeline-trigger') result.messages[0].parts = [{ partId: 'part-timeline-1', sessionId, messageId: 'message-user-1', type: 'timeline', timelineType: 'context_compaction', display: 'separator', trigger: 'invented' }];
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-provider-options') result.settings.model.available[0].reasoning.providerOptionsByLevel = { low: 3 };
       send({ id: message.id, result });
       break;
     }
