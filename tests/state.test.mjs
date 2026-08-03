@@ -12,7 +12,7 @@ import {
   utimes,
   writeFile,
 } from 'node:fs/promises';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -32,7 +32,7 @@ async function fixture() {
 const jobInput = {
   ownerSessionId: 'session-a',
   ownerTurnId: 'turn-a',
-  command: ['zcode', 'rescue'],
+  command: 'rescue',
   readOnly: false,
   permissionSnapshot: { mode: 'workspace-write' },
 };
@@ -49,9 +49,7 @@ function startLockHolder(lockPath) {
         process.stdout.write('acquired\\n');
         await new Promise((resolve) => process.stdin.once('data', resolve));
       }, {
-        heartbeatIntervalMs: 60_000,
         pollIntervalMs: 5,
-        staleAfterMs: 25,
         timeoutMs: 1_000,
       });
       process.stdout.write('released\\n');
@@ -72,9 +70,7 @@ function startTimedLockAttempt(lockPath) {
       await withFileLock(process.argv[1], async () => {
         process.stdout.write('entered');
       }, {
-        heartbeatIntervalMs: 60_000,
         pollIntervalMs: 5,
-        staleAfterMs: 25,
         timeoutMs: 75,
       });
     } catch (error) {
@@ -234,7 +230,7 @@ test('transition patches cannot rewrite job identity or scheduling invariants', 
     { workspace: '/forged/workspace' },
     { ownerSessionId: 'session-b' },
     { ownerTurnId: 'turn-b' },
-    { command: ['different-command'] },
+    { command: 'different-command' },
     { readOnly: true },
     { permissionSnapshot: { mode: 'read-only' } },
     { createdAt: '2000-01-01T00:00:00.000Z' },
@@ -255,6 +251,79 @@ test('transition patches cannot rewrite job identity or scheduling invariants', 
   await assert.rejects(
     store.reserveJob({ workspace, ...jobInput, ownerTurnId: 'turn-b' }),
     (error) => error instanceof PluginError && error.code === 'WRITABLE_JOB_EXISTS',
+  );
+});
+
+test('job reservation rejects incomplete or non-persistable input without weakening writable exclusivity', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const invalidReservations = /** @type {any[]} */ ([
+    { ...jobInput, workspace: undefined },
+    { ...jobInput, readOnly: undefined },
+    { ...jobInput, ownerSessionId: '' },
+    { ...jobInput, ownerTurnId: '   ' },
+    { ...jobInput, command: '' },
+    { ...jobInput, permissionSnapshot: [] },
+    { ...jobInput, permissionSnapshot: { mode: undefined } },
+  ]);
+  for (const reservation of invalidReservations) {
+    await assert.rejects(
+      store.reserveJob({ workspace, ...reservation }),
+      (error) => error instanceof PluginError && error.code === 'JOB_INPUT_INVALID',
+    );
+  }
+
+  await store.reserveJob({ workspace, ...jobInput });
+  await assert.rejects(
+    store.reserveJob({ workspace, ...jobInput, ownerTurnId: 'second-turn' }),
+    (error) => error instanceof PluginError && error.code === 'WRITABLE_JOB_EXISTS',
+  );
+});
+
+test('persisted jobs are schema-validated before use', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${job.id}.json`);
+  await atomicWriteJson(path, { ...job, readOnly: 'false' });
+
+  await assert.rejects(
+    store.readJob(workspace, job.id),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+  );
+
+  await atomicWriteJson(path, { ...job, childPid: '123' });
+  await assert.rejects(
+    store.readJob(workspace, job.id),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+  );
+});
+
+test('transition patch fields are typed and restricted to their lifecycle stage', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  for (const [nextStatus, patch] of /** @type {Array<[string, Record<string, unknown>]>} */ ([
+    ['running', { childPid: 0 }],
+    ['failed', { childPid: 123 }],
+    ['running', { exitCode: 0 }],
+    ['running', { lastCancelError: 'not a rollback' }],
+  ])) {
+    await assert.rejects(
+      store.transitionJob(workspace, job.id, ['queued'], nextStatus, patch),
+      (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
+    );
+  }
+
+  await store.transitionJob(workspace, job.id, ['queued'], 'running', { childPid: 123 });
+  await assert.rejects(
+    store.transitionJob(workspace, job.id, ['running'], 'failed', { exitCode: 1.5 }),
+    (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
+  );
+  await assert.rejects(
+    store.transitionJob(workspace, job.id, ['running'], 'failed', /** @type {any} */ (null)),
+    (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
   );
 });
 
@@ -324,6 +393,20 @@ test('the advisory lock keeps one stable inode and never renames ownership metad
   });
 });
 
+test('lock timing options reject non-finite, fractional, or unsafe values', async () => {
+  const { root } = await fixture();
+  const lockPath = join(root, 'options.lock');
+  for (const options of [
+    { timeoutMs: Number.NaN }, { timeoutMs: -1 }, { timeoutMs: 1.5 },
+    { pollIntervalMs: 0 }, { pollIntervalMs: Number.POSITIVE_INFINITY }, { pollIntervalMs: 1.5 },
+  ]) {
+    await assert.rejects(
+      withFileLock(lockPath, async () => undefined, options),
+      (error) => error instanceof PluginError && error.code === 'LOCK_OPTIONS_INVALID',
+    );
+  }
+});
+
 test('a live child lock holder cannot be evicted solely because directory mtime is old', async () => {
   const { root } = await fixture();
   const lockPath = join(root, 'live.lock');
@@ -335,9 +418,7 @@ test('a live child lock holder cannot be evicted solely because directory mtime 
 
     await assert.rejects(
       withFileLock(lockPath, async () => 'must-not-enter', {
-        heartbeatIntervalMs: 5,
         pollIntervalMs: 5,
-        staleAfterMs: 25,
         timeoutMs: 75,
       }),
       (error) => error instanceof PluginError && error.code === 'LOCK_TIMEOUT',
@@ -372,61 +453,34 @@ test('a synchronized stale takeover attempt never creates parallel critical sect
   }
 });
 
-test('an expired lock owned by an exited child process is recovered without a long wait', async () => {
+test('an advisory lock is automatically released when its child holder is killed', async () => {
   const { root } = await fixture();
   const lockPath = join(root, 'dead.lock');
-  const child = spawn(process.execPath, ['--eval', 'process.exit(0)']);
-  const deadPid = child.pid;
-  assert.notEqual(deadPid, undefined);
+  const child = startLockHolder(lockPath);
+  await waitForOutput(child, 'acquired');
+  child.kill('SIGKILL');
   await once(child, 'exit');
-  await mkdir(lockPath, { mode: 0o700 });
-  await atomicWriteJson(join(lockPath, 'owner.json'), {
-    nonce: 'dead-owner',
-    pid: deadPid,
-    hostname: hostname(),
-    heartbeatAt: new Date(Date.now() - 60_000).toISOString(),
-  });
 
   const result = await withFileLock(lockPath, async () => 'recovered', {
-    heartbeatIntervalMs: 5,
     pollIntervalMs: 5,
-    staleAfterMs: 25,
     timeoutMs: 75,
   });
   assert.equal(result, 'recovered');
   assert.equal(await pathExists(lockPath), true, 'persistent advisory lock directory remains reusable');
 });
 
-test('a stale owner is recoverable when its PID now belongs to an unrelated live process', async () => {
+test('an advisory lock is automatically released when its child holder exits', async () => {
   const { root } = await fixture();
-  const lockPath = join(root, 'reused-pid.lock');
-  const unrelated = spawn(process.execPath, [
-    '--eval',
-    "process.stdout.write('ready\\n'); process.stdin.resume();",
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
-  try {
-    await waitForOutput(unrelated, 'ready');
-    assert.notEqual(unrelated.pid, undefined);
-    await mkdir(lockPath, { mode: 0o700 });
-    await atomicWriteJson(join(lockPath, 'owner.json'), {
-      nonce: 'owner-from-an-old-process-incarnation',
-      pid: unrelated.pid,
-      hostname: hostname(),
-      heartbeatAt: new Date(Date.now() - 60_000).toISOString(),
-    });
-
-    const result = await withFileLock(lockPath, async () => 'recovered', {
-      heartbeatIntervalMs: 5,
-      pollIntervalMs: 5,
-      staleAfterMs: 25,
-      timeoutMs: 75,
-    });
-    assert.equal(result, 'recovered');
-  } finally {
-    unrelated.stdin?.end();
-    if (unrelated.exitCode === null) await once(unrelated, 'exit');
-    await rm(lockPath, { force: true, recursive: true });
-  }
+  const lockPath = join(root, 'exited.lock');
+  const child = startLockHolder(lockPath);
+  await waitForOutput(child, 'acquired');
+  child.kill('SIGTERM');
+  await once(child, 'exit');
+  const result = await withFileLock(lockPath, async () => 'recovered', {
+    pollIntervalMs: 5,
+    timeoutMs: 75,
+  });
+  assert.equal(result, 'recovered');
 });
 
 test('an old child holder never removes a replacement lock during release', async () => {

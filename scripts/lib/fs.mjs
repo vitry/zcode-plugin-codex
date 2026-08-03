@@ -98,11 +98,21 @@ export async function readJsonFile(path) {
  * @template T
  * @param {string} lockPath
  * @param {() => Promise<T>} operation
- * @param {{ heartbeatIntervalMs?: number, pollIntervalMs?: number, staleAfterMs?: number, timeoutMs?: number }} [options]
+ * @param {{ pollIntervalMs?: number, timeoutMs?: number }} [options]
  * @returns {Promise<T>}
  */
 export async function withFileLock(lockPath, operation, options = {}) {
   const settings = { ...DEFAULT_LOCK_OPTIONS, ...options };
+  if (
+    !Number.isSafeInteger(settings.timeoutMs) || settings.timeoutMs < 0
+    || !Number.isSafeInteger(settings.pollIntervalMs) || settings.pollIntervalMs <= 0
+  ) {
+    throw new PluginError('LOCK_OPTIONS_INVALID', 'Lock timing options must be safe integer milliseconds.', {
+      category: 'storage',
+      remedy: 'Use timeoutMs >= 0 and pollIntervalMs > 0.',
+      details: { pollIntervalMs: settings.pollIntervalMs, timeoutMs: settings.timeoutMs },
+    });
+  }
   const startedAt = Date.now();
   await ensurePrivateDirectory(lockPath);
   const lockFilePath = join(lockPath, 'advisory.lock');

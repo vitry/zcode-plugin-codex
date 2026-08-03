@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,9 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
+import { atomicWriteJson } from '../scripts/lib/fs.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 const identityModuleUrl = new URL('../scripts/lib/identity.mjs', import.meta.url).href;
 
@@ -301,4 +304,73 @@ test('authorization artifacts contain digests but never plaintext random tokens'
   const artifacts = await artifactText(dataRoot);
   assert.equal(artifacts.includes(callerToken), false);
   assert.equal(artifacts.includes(capabilityToken), false);
+});
+
+test('identity creation rejects missing identities and uncontrolled modes or operations', async () => {
+  const { identity, workspaceA } = await fixture();
+  const caller = {
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'read-only', now: new Date(),
+  };
+  for (const invalid of /** @type {any[]} */ ([
+    { ...caller, sessionId: '' },
+    { ...caller, turnId: undefined },
+    { ...caller, permissionMode: 'god-mode' },
+  ])) {
+    await assert.rejects(
+      identity.createCallerContext(invalid),
+      (error) => error instanceof PluginError && error.code === 'IDENTITY_INPUT_INVALID',
+    );
+  }
+  const capability = {
+    jobId: 'job-a', ownerSessionId: 'session-a', workspace: workspaceA,
+    operation: 'rescue', permissionSnapshot: { mode: 'read-only' },
+  };
+  for (const invalid of /** @type {any[]} */ ([
+    { ...capability, jobId: undefined },
+    { ...capability, ownerSessionId: '' },
+    { ...capability, operation: 'arbitrary-shell' },
+    { ...capability, permissionSnapshot: [] },
+  ])) {
+    await assert.rejects(
+      identity.createExecutionCapability(invalid),
+      (error) => error instanceof PluginError && error.code === 'IDENTITY_INPUT_INVALID',
+    );
+  }
+});
+
+test('identity consumption validates expected identities before storage access', async () => {
+  const { identity, workspaceA } = await fixture();
+  await assert.rejects(
+    identity.consumeExecutionCapability('token', /** @type {any} */ (undefined)),
+    (error) => error instanceof PluginError && error.code === 'IDENTITY_INPUT_INVALID',
+  );
+  await assert.rejects(
+    identity.consumeExecutionCapability('token', {
+      jobId: '', ownerSessionId: 'session-a', workspace: workspaceA, operation: 'rescue',
+    }),
+    (error) => error instanceof PluginError && error.code === 'IDENTITY_INPUT_INVALID',
+  );
+  await assert.rejects(
+    identity.consumeGateBaseline({ sessionId: 'session-a', turnId: '', workspace: workspaceA }),
+    (error) => error instanceof PluginError && error.code === 'IDENTITY_INPUT_INVALID',
+  );
+});
+
+test('corrupted persisted authorization records fail closed before comparison', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture();
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA });
+  const token = await identity.createCallerContext({
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'read-only', now: new Date(),
+  });
+  const digest = createHash('sha256').update(token).digest('hex');
+  await atomicWriteJson(join(storage.directory, 'identity', 'callers', `${digest}.json`), {
+    digest,
+    sessionId: 123,
+  });
+  await assert.rejects(
+    identity.consumeCallerContext(token, { workspace: workspaceA, now: new Date() }),
+    (error) => error instanceof PluginError && error.code === 'AUTHORIZATION_RECORD_INVALID',
+  );
 });

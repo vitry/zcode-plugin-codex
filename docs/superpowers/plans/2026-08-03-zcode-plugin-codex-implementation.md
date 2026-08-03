@@ -80,6 +80,9 @@ test("package requires Node 18.18 and only the pinned native lock dependency", (
   assert.deepEqual(pkg.overrides ?? {}, {
     "bare-addon-resolve": "1.9.4",
   });
+  assert.deepEqual(pkg.bundleDependencies ?? [], ["fs-native-extensions"]);
+  const shrinkwrap = JSON.parse(fs.readFileSync(path.join(root, "npm-shrinkwrap.json"), "utf8"));
+  assert.equal(shrinkwrap.packages["node_modules/require-addon/node_modules/bare-addon-resolve"].version, "1.9.4");
   assert.match(pkg.version, semverPattern);
   assert.equal(manifest.version, pkg.version);
 });
@@ -93,7 +96,7 @@ Expected: FAIL because `package.json` and `.codex-plugin/plugin.json` do not exi
 
 - [ ] **Step 3: Add the minimal package and plugin files**
 
-Use version `0.1.0`, repository `https://github.com/vitry/zcode-plugin-codex`, Node `>=18.18.0`, and Apache-2.0. The only runtime dependency is the exact pin `fs-native-extensions@1.5.0`, which provides process-owned advisory file locks on macOS, Linux, and Windows. Pin the `bare-addon-resolve` override to `1.9.4` because later releases use JavaScript unavailable in Node 18.18. Contract tests must compare the complete dependency and override objects so additional runtime packages cannot be added implicitly.
+Use version `0.1.0`, repository `https://github.com/vitry/zcode-plugin-codex`, Node `>=18.18.0`, and Apache-2.0. The only runtime dependency is the exact pin `fs-native-extensions@1.5.0`, which provides process-owned advisory file locks on macOS, Linux, and Windows. Pin the `bare-addon-resolve` override to `1.9.4` because later releases use JavaScript unavailable in Node 18.18. Publish `npm-shrinkwrap.json` and bundle the `fs-native-extensions` tree, because a consuming install does not apply this package's root override. Contract tests must compare the complete dependency, override, and bundle objects and verify the shrinkwrapped resolver version so additional runtime packages cannot be added implicitly.
 
 Use these scripts:
 
@@ -459,7 +462,7 @@ Exercise every skill against fake Codex/ZCode peers, including the two-session i
 
 Document installation through a Codex marketplace, ZCode `>=0.16.1`, macOS bundled discovery, model aliases, all eight commands, permission limits, job storage, review gate, troubleshooting, Linux/Windows qualification status, and Apache-2.0 provenance.
 
-Add a package-install integration test that packs the plugin, installs that tarball into an empty temporary consumer with production dependencies only (`npm ci --omit=dev`), loads the installed `fs-native-extensions` binding, and acquires/releases a lock through the installed companion runtime. The test must prove that the native dependency is installed beside the plugin rather than relying on the repository's development `node_modules`.
+Add a package-install integration test that packs the plugin, installs that tarball into an empty temporary consumer with production dependencies only, asserts the bundled plugin-local `bare-addon-resolve` is exactly `1.9.4`, loads the installed `fs-native-extensions` binding on Node 18.18, and acquires/releases a lock through the installed companion runtime. The test must prove that the native dependency is installed beside the plugin rather than relying on the repository's development `node_modules`.
 
 CI runs the fake-protocol suite on current macOS, Ubuntu, and Windows. Each platform job must start with `npm ci`, run `npm run check`, perform the clean packed-plugin production install, and execute a binding-load plus lock smoke test. Include Node 18.18 coverage for the pinned override in addition to the current Node LTS matrix. A platform job is not successful if it skips the native binding smoke.
 

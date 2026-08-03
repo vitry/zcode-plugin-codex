@@ -6,6 +6,13 @@ import { atomicWriteJson, ensurePrivateDirectory, readJsonFile, withFileLock } f
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const CALLER_LIFETIME_MS = 30 * 60_000;
+export const PERMISSION_MODES = Object.freeze([
+  'default', 'plan', 'read-only', 'workspace-write', 'acceptEdits', 'bypassPermissions',
+]);
+export const EXECUTION_OPERATIONS = Object.freeze([
+  'review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel', 'setup',
+  'run-reserved-job', 'continue',
+]);
 
 /** @param {{ dataRoot: string }} options */
 export function createIdentityStore({ dataRoot }) {
@@ -19,6 +26,7 @@ export function createIdentityStore({ dataRoot }) {
   return {
     /** @param {CallerContextInput} input */
     async createCallerContext(input) {
+      validateCallerInput(input);
       const storage = await identityStorage(dataRoot, input.workspace);
       const token = createToken();
       const digest = tokenDigest(token);
@@ -41,6 +49,7 @@ export function createIdentityStore({ dataRoot }) {
 
     /** @param {string} token @param {{ workspace: string, now?: Date | number | string }} expected */
     async consumeCallerContext(token, expected) {
+      validateTokenAndWorkspace(token, expected);
       const storage = await identityStorage(dataRoot, expected.workspace);
       const digest = tokenDigest(token);
       return withFileLock(storage.lockPath, async () => {
@@ -49,6 +58,7 @@ export function createIdentityStore({ dataRoot }) {
           'CALLER_CONTEXT_INVALID',
           'Caller context is invalid for this workspace.',
         );
+        if (!isCallerRecord(record)) throw invalidAuthorizationRecord('caller context');
         if (!safeEqual(record.digest, digest) || record.workspace !== storage.workspacePath) {
           throw authorizationError('CALLER_CONTEXT_INVALID', 'Caller context is invalid for this workspace.');
         }
@@ -62,6 +72,7 @@ export function createIdentityStore({ dataRoot }) {
 
     /** @param {ExecutionCapabilityInput} input */
     async createExecutionCapability(input) {
+      validateExecutionInput(input, true);
       const storage = await identityStorage(dataRoot, input.workspace);
       const token = createToken();
       const digest = tokenDigest(token);
@@ -84,6 +95,8 @@ export function createIdentityStore({ dataRoot }) {
 
     /** @param {string} token @param {ExecutionCapabilityExpected} expected */
     async consumeExecutionCapability(token, expected) {
+      validateExecutionInput(expected, false);
+      validateToken(token);
       const storage = await identityStorage(dataRoot, expected.workspace);
       const digest = tokenDigest(token);
       return withFileLock(storage.lockPath, async () => {
@@ -93,6 +106,7 @@ export function createIdentityStore({ dataRoot }) {
           'EXECUTION_CAPABILITY_INVALID',
           'Execution capability is invalid for this workspace.',
         );
+        if (!isExecutionRecord(record)) throw invalidAuthorizationRecord('execution capability');
         if (!safeEqual(record.digest, digest) || record.workspace !== storage.workspacePath) {
           throw authorizationError(
             'EXECUTION_CAPABILITY_INVALID',
@@ -124,6 +138,7 @@ export function createIdentityStore({ dataRoot }) {
 
     /** @param {GateBaselineIdentity} input */
     async recordGateBaseline(input) {
+      validateGateIdentity(input);
       const storage = await identityStorage(dataRoot, input.workspace);
       const key = gateKey(input.sessionId, input.turnId, storage.workspacePath);
       const record = {
@@ -150,6 +165,7 @@ export function createIdentityStore({ dataRoot }) {
 
     /** @param {GateBaselineIdentity} input */
     async consumeGateBaseline(input) {
+      validateGateIdentity(input);
       const storage = await identityStorage(dataRoot, input.workspace);
       const key = gateKey(input.sessionId, input.turnId, storage.workspacePath);
       return withFileLock(storage.lockPath, async () => {
@@ -159,6 +175,7 @@ export function createIdentityStore({ dataRoot }) {
           'GATE_BASELINE_NOT_FOUND',
           'No gate baseline matches this session, turn, and workspace.',
         );
+        if (!isGateRecord(record)) throw invalidAuthorizationRecord('gate baseline');
         if (!safeEqual(record.key, key)
           || !safeEqual(record.sessionId, input.sessionId)
           || !safeEqual(record.turnId, input.turnId)
@@ -241,7 +258,7 @@ function createToken() {
 
 /** @param {string} token */
 function tokenDigest(token) {
-  return createHash('sha256').update(String(token)).digest('hex');
+  return createHash('sha256').update(token).digest('hex');
 }
 
 /** @param {string} sessionId @param {string} turnId @param {string} workspace */
@@ -253,9 +270,122 @@ function gateKey(sessionId, turnId, workspace) {
 
 /** @param {unknown} left @param {unknown} right */
 function safeEqual(left, right) {
-  const leftBuffer = Buffer.from(String(left));
-  const rightBuffer = Buffer.from(String(right));
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+/** @param {any} input */
+function validateCallerInput(input) {
+  if (!isPlainObject(input) || !isNonEmptyString(input.sessionId)
+    || !isNonEmptyString(input.turnId) || !isNonEmptyString(input.workspace)
+    || !PERMISSION_MODES.includes(input.permissionMode)) throw invalidIdentityInput();
+}
+
+/** @param {any} input @param {boolean} requireSnapshot */
+function validateExecutionInput(input, requireSnapshot) {
+  if (!isPlainObject(input) || !isNonEmptyString(input.jobId)
+    || !isNonEmptyString(input.ownerSessionId) || !isNonEmptyString(input.workspace)
+    || !EXECUTION_OPERATIONS.includes(input.operation)
+    || requireSnapshot && !isPlainJsonObject(input.permissionSnapshot)) throw invalidIdentityInput();
+}
+
+/** @param {any} input */
+function validateGateIdentity(input) {
+  if (!isPlainObject(input) || !isNonEmptyString(input.sessionId)
+    || !isNonEmptyString(input.turnId) || !isNonEmptyString(input.workspace)) {
+    throw invalidIdentityInput();
+  }
+}
+
+/** @param {unknown} token @param {any} expected */
+function validateTokenAndWorkspace(token, expected) {
+  validateToken(token);
+  if (!isPlainObject(expected) || !isNonEmptyString(expected.workspace)) throw invalidIdentityInput();
+}
+
+/** @param {unknown} token */
+function validateToken(token) {
+  if (!isNonEmptyString(token)) throw invalidIdentityInput();
+}
+
+function invalidIdentityInput() {
+  return new PluginError('IDENTITY_INPUT_INVALID', 'Authorization identity input is invalid.', {
+    category: 'authorization',
+    remedy: 'Provide all required non-empty identities and a supported mode or operation.',
+  });
+}
+
+/** @param {string} kind */
+function invalidAuthorizationRecord(kind) {
+  return new PluginError('AUTHORIZATION_RECORD_INVALID', `Persisted ${kind} record is invalid.`, {
+    category: 'authorization',
+    remedy: 'Remove the corrupted authorization record and issue a new credential.',
+  });
+}
+
+/** @param {any} record */
+function isCallerRecord(record) {
+  return isPlainObject(record) && isDigest(record.digest) && isNonEmptyString(record.sessionId)
+    && isNonEmptyString(record.turnId) && isNonEmptyString(record.workspace)
+    && PERMISSION_MODES.includes(record.permissionMode) && isDate(record.createdAt)
+    && isDate(record.expiresAt) && Date.parse(record.expiresAt) > Date.parse(record.createdAt);
+}
+
+/** @param {any} record */
+function isExecutionRecord(record) {
+  return isPlainObject(record) && isDigest(record.digest) && isNonEmptyString(record.jobId)
+    && isNonEmptyString(record.ownerSessionId) && isNonEmptyString(record.workspace)
+    && EXECUTION_OPERATIONS.includes(record.operation) && isPlainJsonObject(record.permissionSnapshot)
+    && isDate(record.createdAt) && (record.consumedAt === null || isDate(record.consumedAt));
+}
+
+/** @param {any} record */
+function isGateRecord(record) {
+  return isPlainObject(record) && isDigest(record.key) && isNonEmptyString(record.sessionId)
+    && isNonEmptyString(record.turnId) && isNonEmptyString(record.workspace)
+    && isDate(record.createdAt) && (record.consumedAt === null || isDate(record.consumedAt));
+}
+
+/** @param {unknown} value */
+function isDigest(value) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+}
+
+/** @param {unknown} value */
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/** @param {unknown} value */
+function isDate(value) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
+/** @param {unknown} value @returns {value is Record<string, any>} */
+function isPlainObject(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/** @param {unknown} value @returns {value is Record<string, any>} */
+function isPlainJsonObject(value) {
+  return isPlainObject(value) && isJsonValue(value, new Set());
+}
+
+/** @param {unknown} value @param {Set<object>} seen @returns {boolean} */
+function isJsonValue(value, seen) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  /** @type {boolean} */
+  const valid = Array.isArray(value) ? value.every((item) => isJsonValue(item, seen))
+    : isPlainObject(value) && Object.values(value).every((item) => isJsonValue(item, seen));
+  seen.delete(value);
+  return valid;
 }
 
 /** @param {Date | number | string | undefined} now */

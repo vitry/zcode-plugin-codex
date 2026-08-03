@@ -205,6 +205,17 @@ test('package metadata exposes Node 18 and only the pinned native lock dependenc
   assert.deepEqual(packageJson.overrides ?? {}, {
     'bare-addon-resolve': '1.9.4',
   }, 'only the Node 18 compatibility override is allowed');
+  assert.deepEqual(packageJson.bundleDependencies ?? [], [
+    'fs-native-extensions',
+  ], 'the native lock tree must be bundled for production consumers');
+  assert.equal(existsSync(new URL('npm-shrinkwrap.json', root)), true);
+  assert.equal(existsSync(new URL('package-lock.json', root)), false);
+  const shrinkwrap = readJson('npm-shrinkwrap.json');
+  assert.equal(
+    shrinkwrap.packages?.['node_modules/require-addon/node_modules/bare-addon-resolve']?.version,
+    '1.9.4',
+    'the published dependency tree must retain the Node 18-compatible resolver',
+  );
   assert.match(packageJson.version, semverPattern);
   const [major, minor] = packageJson.version.split('.').map(Number);
   assert.equal(major, 0);
