@@ -281,6 +281,39 @@ test('job reservation rejects incomplete or non-persistable input without weaken
   );
 });
 
+test('state API rejects malformed reservation and transition shapes with stable errors', async () => {
+  assert.throws(
+    () => createStateStore(/** @type {any} */ (undefined)),
+    (error) => error instanceof PluginError && error.code === 'DATA_ROOT_REQUIRED',
+  );
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  for (const reservation of /** @type {any[]} */ ([undefined, null, [], 'rescue'])) {
+    await assert.rejects(
+      store.reserveJob(reservation),
+      (error) => error instanceof PluginError && error.code === 'JOB_INPUT_INVALID',
+    );
+  }
+
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  for (const [expectedStatuses, nextStatus, patch] of /** @type {any[]} */ ([
+    [undefined, 'running', {}],
+    [{ queued: true }, 'running', {}],
+    [[], 'running', {}],
+    [['unknown'], 'running', {}],
+    [['queued', 1], 'running', {}],
+    [['queued'], undefined, {}],
+    [['queued'], 'unknown', {}],
+    [['queued'], 'running', null],
+    [['queued'], 'running', []],
+  ])) {
+    await assert.rejects(
+      store.transitionJob(workspace, job.id, expectedStatuses, nextStatus, patch),
+      (error) => error instanceof PluginError && error.code === 'JOB_TRANSITION_INPUT_INVALID',
+    );
+  }
+});
+
 test('persisted jobs are schema-validated before use', async () => {
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });
@@ -318,6 +351,119 @@ test('persisted jobs are schema-validated before use', async () => {
       (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
     );
   }
+});
+
+test('persisted jobs are bound to their filename and canonical workspace scope', async () => {
+  const { dataRoot, root, workspace } = await fixture();
+  const otherWorkspace = join(root, 'other-workspace');
+  await mkdir(otherWorkspace);
+  const store = createStateStore({ dataRoot });
+  const [job, otherJob] = await Promise.all([
+    store.reserveJob({ workspace, ...jobInput }),
+    store.reserveJob({ workspace: otherWorkspace, ...jobInput, ownerTurnId: 'turn-b' }),
+  ]);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const otherStorage = await resolveWorkspaceStorage({ dataRoot, workspace: otherWorkspace });
+  const path = join(storage.directory, 'jobs', `${job.id}.json`);
+  const otherPath = join(otherStorage.directory, 'jobs', `${otherJob.id}.json`);
+
+  await atomicWriteJson(path, { ...job, id: otherJob.id });
+  await assert.rejects(
+    store.readJob(workspace, job.id),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+  );
+  await atomicWriteJson(path, job);
+
+  await atomicWriteJson(otherPath, job);
+  await assert.rejects(
+    store.transitionJob(otherWorkspace, otherJob.id, ['queued'], 'running'),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+  );
+  await atomicWriteJson(otherPath, otherJob);
+
+  await atomicWriteJson(join(otherStorage.directory, 'jobs', `${job.id}.json`), job);
+  await assert.rejects(
+    store.listJobs(otherWorkspace),
+    (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+  );
+});
+
+test('job listing ignores files whose names are not canonical job IDs', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'jobs', 'copied-job.json'), job);
+
+  assert.deepEqual(await store.listJobs(workspace), [job]);
+});
+
+test('persisted job timestamps must remain monotonic', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${job.id}.json`);
+  const created = Date.parse(job.createdAt);
+  const beforeCreated = new Date(created - 1).toISOString();
+  const afterCreated = new Date(created + 2_000).toISOString();
+  const betweenCreatedAndStarted = new Date(created + 1_000).toISOString();
+  for (const invalidJob of [
+    { ...job, updatedAt: beforeCreated },
+    { ...job, status: 'running', startedAt: beforeCreated },
+    {
+      ...job,
+      status: 'succeeded',
+      startedAt: afterCreated,
+      finishedAt: betweenCreatedAndStarted,
+    },
+    { ...job, status: 'failed', finishedAt: beforeCreated },
+  ]) {
+    await atomicWriteJson(path, invalidJob);
+    await assert.rejects(
+      store.readJob(workspace, job.id),
+      (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
+    );
+  }
+});
+
+test('job transitions reject reversed phase times and preserve updatedAt monotonicity', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  const created = Date.parse(job.createdAt);
+  await assert.rejects(
+    store.transitionJob(workspace, job.id, ['queued'], 'running', {
+      startedAt: new Date(created - 1).toISOString(),
+    }),
+    (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
+  );
+
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${job.id}.json`);
+  const future = new Date(Date.now() + 60_000).toISOString();
+  await atomicWriteJson(path, { ...job, createdAt: future, updatedAt: future });
+  const running = await store.transitionJob(workspace, job.id, ['queued'], 'running', {
+    startedAt: future,
+  });
+  assert.ok(Date.parse(running.updatedAt) >= Date.parse(future));
+
+  await assert.rejects(
+    store.transitionJob(workspace, job.id, ['running'], 'succeeded', {
+      finishedAt: new Date(Date.parse(future) - 1).toISOString(),
+    }),
+    (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
+  );
+
+  const failedJob = await store.reserveJob({
+    workspace, ...jobInput, readOnly: true, ownerTurnId: 'turn-failed',
+  });
+  await assert.rejects(
+    store.transitionJob(workspace, failedJob.id, ['queued'], 'failed', {
+      finishedAt: new Date(Date.parse(failedJob.createdAt) - 1).toISOString(),
+    }),
+    (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
+  );
 });
 
 test('tracked job fields persist through their legal lifecycle phases', async () => {
@@ -450,7 +596,7 @@ test('transition patch fields are typed and restricted to their lifecycle stage'
   );
   await assert.rejects(
     store.transitionJob(workspace, job.id, ['running'], 'failed', /** @type {any} */ (null)),
-    (error) => error instanceof PluginError && error.code === 'JOB_PATCH_INVALID',
+    (error) => error instanceof PluginError && error.code === 'JOB_TRANSITION_INPUT_INVALID',
   );
 });
 

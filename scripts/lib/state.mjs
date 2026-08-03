@@ -30,7 +30,8 @@ const TRANSITIONS = new Map([
 ]);
 
 /** @param {{ dataRoot: string }} options */
-export function createStateStore({ dataRoot }) {
+export function createStateStore(options) {
+  const dataRoot = isPlainJsonObject(options) ? options.dataRoot : undefined;
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) {
     throw new PluginError('DATA_ROOT_REQUIRED', 'A plugin data root must be provided explicitly.', {
       category: 'configuration',
@@ -44,7 +45,7 @@ export function createStateStore({ dataRoot }) {
       validateReservation(reservation);
       const storage = await jobStorage(dataRoot, reservation.workspace);
       return withFileLock(storage.lockPath, async () => {
-        const jobs = await readAllJobs(storage.jobsDirectory);
+        const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         if (!reservation.readOnly && jobs.some(isActiveWritableJob)) {
           throw new PluginError('WRITABLE_JOB_EXISTS', 'This workspace already has an active writable rescue job.', {
             category: 'state',
@@ -78,7 +79,7 @@ export function createStateStore({ dataRoot }) {
      * @param {Record<string, unknown>} [patch]
      */
     async transitionJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}) {
-      if (!isPlainJsonObject(patch)) throw invalidJobPatch(jobId, ['patch'], nextStatus);
+      validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus, patch);
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         const forbiddenFields = Object.keys(patch)
@@ -91,8 +92,8 @@ export function createStateStore({ dataRoot }) {
           });
         }
         const path = jobPath(storage.jobsDirectory, jobId);
-        const job = await readJobRecord(path, jobId);
-        validateJobPatch(job.status, nextStatus, patch, jobId);
+        const job = await readJobRecord(path, jobId, storage.workspacePath);
+        validateJobPatch(job, nextStatus, patch, jobId);
         if (TERMINAL_STATUSES.has(job.status)) {
           throw new PluginError('JOB_TERMINAL', `Job ${jobId} is already terminal.`, {
             category: 'state',
@@ -127,9 +128,14 @@ export function createStateStore({ dataRoot }) {
           ...patch,
           id: job.id,
           status: nextStatus,
-          updatedAt: new Date().toISOString(),
+          updatedAt: new Date(Math.max(
+            Date.now(),
+            Date.parse(job.createdAt),
+            Date.parse(job.updatedAt),
+          )).toISOString(),
           workspace: job.workspace,
         };
+        validateJobRecord(updated, jobId, storage.workspacePath);
         await atomicWriteJson(path, updated);
         return updated;
       });
@@ -141,6 +147,7 @@ export function createStateStore({ dataRoot }) {
       return withFileLock(storage.lockPath, () => readJobRecord(
         jobPath(storage.jobsDirectory, jobId),
         jobId,
+        storage.workspacePath,
       ));
     },
 
@@ -148,7 +155,7 @@ export function createStateStore({ dataRoot }) {
     async listJobs(workspace) {
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
-        const jobs = await readAllJobs(storage.jobsDirectory);
+        const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         return jobs.sort((left, right) => left.createdAt.localeCompare(right.createdAt)
           || left.id.localeCompare(right.id));
       });
@@ -164,18 +171,22 @@ async function jobStorage(dataRoot, workspace) {
   return { ...storage, jobsDirectory, lockPath: join(storage.directory, '.state.lock') };
 }
 
-/** @param {string} jobsDirectory */
-async function readAllJobs(jobsDirectory) {
+/** @param {string} jobsDirectory @param {string} expectedWorkspacePath */
+async function readAllJobs(jobsDirectory, expectedWorkspacePath) {
   const entries = await readdir(jobsDirectory);
   return Promise.all(entries
-    .filter((entry) => entry.endsWith('.json'))
-    .map(async (entry) => validateJobRecord(await readJsonFile(join(jobsDirectory, entry)))));
+    .filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry))
+    .map(async (entry) => validateJobRecord(
+      await readJsonFile(join(jobsDirectory, entry)),
+      entry.slice(0, -'.json'.length),
+      expectedWorkspacePath,
+    )));
 }
 
-/** @param {string} path @param {string} jobId */
-async function readJobRecord(path, jobId) {
+/** @param {string} path @param {string} jobId @param {string} expectedWorkspacePath */
+async function readJobRecord(path, jobId, expectedWorkspacePath) {
   try {
-    return validateJobRecord(await readJsonFile(path));
+    return validateJobRecord(await readJsonFile(path), jobId, expectedWorkspacePath);
   } catch (error) {
     if (error instanceof PluginError && error.code === 'JSON_READ_FAILED'
       && error.cause instanceof Error && 'code' in error.cause && error.cause.code === 'ENOENT') {
@@ -190,8 +201,9 @@ async function readJobRecord(path, jobId) {
   }
 }
 
-/** @param {JobReservation} reservation */
+/** @param {any} reservation */
 function validateReservation(reservation) {
+  if (!isPlainJsonObject(reservation)) throw invalidReservation(['reservation']);
   const invalidFields = [];
   if (!isNonEmptyString(reservation.workspace)) invalidFields.push('workspace');
   if (!isNonEmptyString(reservation.ownerSessionId)) invalidFields.push('ownerSessionId');
@@ -199,20 +211,50 @@ function validateReservation(reservation) {
   if (!JOB_COMMANDS.includes(reservation.command)) invalidFields.push('command');
   if (typeof reservation.readOnly !== 'boolean') invalidFields.push('readOnly');
   if (!isPlainJsonObject(reservation.permissionSnapshot)) invalidFields.push('permissionSnapshot');
+  if (invalidFields.length > 0) throw invalidReservation(invalidFields);
+}
+
+/** @param {string[]} invalidFields */
+function invalidReservation(invalidFields) {
+  return new PluginError('JOB_INPUT_INVALID', 'Job reservation contains invalid fields.', {
+    category: 'state',
+    remedy: 'Provide non-empty identity and command strings, a boolean readOnly, and a JSON object permission snapshot.',
+    details: { invalidFields },
+  });
+}
+
+/**
+ * @param {unknown} workspace
+ * @param {unknown} jobId
+ * @param {unknown} expectedStatuses
+ * @param {unknown} nextStatus
+ * @param {unknown} patch
+ */
+function validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus, patch) {
+  const invalidFields = [];
+  if (!isNonEmptyString(workspace)) invalidFields.push('workspace');
+  if (typeof jobId !== 'string' || !/^[a-f0-9]{64}$/.test(jobId)) invalidFields.push('jobId');
+  if (!Array.isArray(expectedStatuses) || expectedStatuses.length === 0
+    || expectedStatuses.some((status) => typeof status !== 'string'
+      || !JOB_STATUSES.includes(status))) invalidFields.push('expectedStatuses');
+  if (typeof nextStatus !== 'string' || !JOB_STATUSES.includes(nextStatus)) {
+    invalidFields.push('nextStatus');
+  }
+  if (!isPlainJsonObject(patch)) invalidFields.push('patch');
   if (invalidFields.length > 0) {
-    throw new PluginError('JOB_INPUT_INVALID', 'Job reservation contains invalid fields.', {
+    throw new PluginError('JOB_TRANSITION_INPUT_INVALID', 'Job transition input is invalid.', {
       category: 'state',
-      remedy: 'Provide non-empty identity and command strings, a boolean readOnly, and a JSON object permission snapshot.',
+      remedy: 'Provide a valid workspace, job ID, status list, next status, and JSON object patch.',
       details: { invalidFields },
     });
   }
 }
 
-/** @param {any} job @returns {any} */
-function validateJobRecord(job) {
+/** @param {any} job @param {string} expectedJobId @param {string} expectedWorkspacePath @returns {any} */
+function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
   const validShape = isPlainJsonObject(job)
-    && typeof job.id === 'string' && /^[a-f0-9]{64}$/.test(job.id)
-    && isNonEmptyString(job.workspace)
+    && job.id === expectedJobId
+    && job.workspace === expectedWorkspacePath
     && isNonEmptyString(job.ownerSessionId)
     && isNonEmptyString(job.ownerTurnId)
     && JOB_COMMANDS.includes(job.command)
@@ -242,18 +284,31 @@ function validateJobRecord(job) {
     && (!('resultArtifact' in job) || job.status === 'succeeded')
     && (!('error' in job) || job.status === 'failed' || job.status === 'cancelled')
     && (!('lastCancelError' in job) || job.status === 'running' || terminal);
-  if (!validLifecycle) {
+  const createdAt = validShape ? Date.parse(job.createdAt) : Number.NaN;
+  const startedAt = validShape && 'startedAt' in job ? Date.parse(job.startedAt) : undefined;
+  const finishedAt = validShape && 'finishedAt' in job ? Date.parse(job.finishedAt) : undefined;
+  const validTimeline = validShape
+    && Date.parse(job.updatedAt) >= createdAt
+    && (startedAt === undefined || startedAt >= createdAt)
+    && (finishedAt === undefined || finishedAt >= (startedAt ?? createdAt));
+  if (!validLifecycle || !validTimeline) {
     throw new PluginError('JOB_RECORD_INVALID', 'Persisted job record failed schema validation.', {
       category: 'state',
       remedy: 'Restore or remove the corrupted job record.',
-      details: { jobId: typeof job?.id === 'string' ? job.id : undefined },
+      details: {
+        actualJobId: typeof job?.id === 'string' ? job.id : undefined,
+        actualWorkspace: typeof job?.workspace === 'string' ? job.workspace : undefined,
+        expectedJobId,
+        expectedWorkspace: expectedWorkspacePath,
+      },
     });
   }
   return job;
 }
 
-/** @param {string} currentStatus @param {string} nextStatus @param {Record<string, unknown>} patch @param {string} jobId */
-function validateJobPatch(currentStatus, nextStatus, patch, jobId) {
+/** @param {any} job @param {string} nextStatus @param {Record<string, unknown>} patch @param {string} jobId */
+function validateJobPatch(job, nextStatus, patch, jobId) {
+  const currentStatus = job.status;
   const invalidFields = [];
   const writesRunningMetadata = nextStatus === 'running'
     && (currentStatus === 'queued' || currentStatus === 'running' || currentStatus === 'cancelling');
@@ -271,8 +326,11 @@ function validateJobPatch(currentStatus, nextStatus, patch, jobId) {
     invalidFields.push('effort');
   }
   if ('startedAt' in patch && (!isIsoTimestamp(patch.startedAt)
+    || Date.parse(/** @type {string} */ (patch.startedAt)) < Date.parse(job.createdAt)
     || currentStatus !== 'queued' || nextStatus !== 'running')) invalidFields.push('startedAt');
   if ('finishedAt' in patch && (!isIsoTimestamp(patch.finishedAt)
+    || Date.parse(/** @type {string} */ (patch.finishedAt))
+      < Date.parse(job.startedAt ?? job.createdAt)
     || !TERMINAL_STATUSES.has(nextStatus))) invalidFields.push('finishedAt');
   if ('promptArtifact' in patch
     && (!isSafeArtifact(patch.promptArtifact) || !writesRunningMetadata)) {
