@@ -248,7 +248,7 @@ export class BoundedWriter {
 
 export class RedactedTail {
   /** @param {number} [maxBytes] */ constructor(maxBytes = 8192) { this.maxBytes = maxBytes; this.tail = ''; }
-  /** @param {unknown} chunk */ append(chunk) { this.tail += String(chunk); while (Buffer.byteLength(this.tail) > this.maxBytes) this.tail = this.tail.slice(Math.max(1, Math.floor(this.tail.length / 4))); }
+  /** @param {unknown} chunk */ append(chunk) { this.tail = redactSecrets(this.tail + String(chunk)); while (Buffer.byteLength(this.tail) > this.maxBytes) this.tail = this.tail.slice(Math.max(1, Math.floor(this.tail.length / 4))); }
   value() { return redactSecrets(this.tail); }
 }
 

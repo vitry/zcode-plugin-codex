@@ -9,7 +9,7 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { runProcess, spawnProcess, terminateProcess } from '../scripts/lib/process.mjs';
-import { BoundedWriter, ZCodeProtocolClient } from '../scripts/lib/zcode-protocol.mjs';
+import { BoundedWriter, RedactedTail, ZCodeProtocolClient } from '../scripts/lib/zcode-protocol.mjs';
 
 test('grace timer does not retain the caller after the child exits', async () => {
   const moduleUrl = new URL('../scripts/lib/process.mjs', import.meta.url).href;
@@ -82,4 +82,8 @@ test('subscriber failures are isolated and permission work cannot write after cl
   const beforeClose = child.stdin.readableLength;
   const closing = protocol.close(); release({ decision: 'deny' }); await closing;
   assert.equal(child.stdin.readableLength, beforeClose);
+});
+
+test('stderr tail redacts a secret before truncating a single oversized line', () => {
+  const tail = new RedactedTail(128); tail.append(`authorization=${'super-secret'.repeat(1000)}`); assert.ok(Buffer.byteLength(tail.value()) <= 128); assert.ok(!tail.value().includes('super-secret'));
 });
