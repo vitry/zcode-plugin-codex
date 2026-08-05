@@ -65,5 +65,9 @@ async function handleLine(line) {
       thread = { id: request.params.threadId, ephemeral: false, turns: Array.from({ length: count }, (_, index) => ({ startedAt: 1_725_000_000 + index, items: [{ type: index % 2 ? 'agentMessage' : 'userMessage', ...(index % 2 ? { text: 'x'.repeat(bytes) } : { content: [{ type: 'text', text: 'x'.repeat(bytes) }] }) }] })) };
     } else try { thread = JSON.parse(process.env.FAKE_CODEX_THREAD_JSON ?? '{}'); } catch { thread = null; }
     write({ id: request.id, result: { thread } });
+    return;
   }
+  if (request.method === 'config/read') { write({ id: request.id, result: JSON.parse(process.env.FAKE_CODEX_CONFIG_RESULT ?? '{"config":{},"origins":{},"layers":[]}') }); return; }
+  if (request.method === 'hooks/list') { write({ id: request.id, result: JSON.parse(process.env.FAKE_CODEX_HOOKS_RESULT ?? '{"data":[]}') }); return; }
+  if (request.method === 'config/batchWrite') { write({ id: request.id, result: { filePath: process.env.FAKE_CODEX_CONFIG_PATH ?? '/tmp/config.toml', status: 'ok', version: 'version-2' } }); }
 }

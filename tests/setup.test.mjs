@@ -1,0 +1,91 @@
+// @ts-nocheck
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, writeFile, mkdir, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { spawn } from 'node:child_process';
+
+import { parseArgs } from '../scripts/lib/args.mjs';
+import { runSetup } from '../scripts/lib/codex-config.mjs';
+import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
+import { runCompanion } from '../scripts/zcode-companion.mjs';
+
+const root = new URL('../', import.meta.url).pathname;
+const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
+const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
+
+test('setup arguments are strict, unique and mutually exclusive', () => {
+  assert.deepEqual(parseArgs(['setup']), { command: 'setup', options: {}, positionals: [] });
+  assert.deepEqual(parseArgs(['setup', '--enable-review-gate']), { command: 'setup', options: { reviewGate: true }, positionals: [] });
+  assert.deepEqual(parseArgs(['setup', '--disable-review-gate']), { command: 'setup', options: { reviewGate: false }, positionals: [] });
+  for (const args of [['setup', '--enable-review-gate', '--disable-review-gate'], ['setup', '--enable-review-gate', '--enable-review-gate'], ['setup', '--bad'], ['setup', 'extra']]) assert.throws(() => parseArgs(args), { code: 'ARGUMENT_INVALID' });
+});
+
+function hookMetadata(rootPath, trustStatus = 'untrusted') {
+  const events = ['sessionStart', 'userPromptSubmit', 'subagentStart', 'subagentStop', 'stop', 'sessionEnd'];
+  const scripts = ['session-lifecycle-hook.mjs', 'user-prompt-hook.mjs', 'subagent-hook.mjs', 'subagent-hook.mjs', 'stop-review-gate-hook.mjs', 'session-end-hook.mjs'];
+  return events.map((eventName, index) => ({ key: `plugin-hook-${index}`, currentHash: `${index}`.repeat(64), displayOrder: index, enabled: true, eventName, handlerType: 'command', isManaged: false, source: 'plugin', sourcePath: join(rootPath, 'hooks/hooks.json'), timeoutSec: eventName === 'stop' ? 900 : 5, trustStatus, pluginId: 'zcode-plugin-codex', command: `node "$PLUGIN_ROOT/hooks/${scripts[index]}"` }));
+}
+
+async function context({ hooks = hookMetadata(root), features = { hooks: false }, zcodeEnv = {}, codexEnv = {} } = {}) {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'zpc-setup-workspace-'))); const dataRoot = await mkdtemp(join(tmpdir(), 'zpc-setup-data-')); const record = join(dataRoot, 'codex-requests.jsonl'); await writeFile(record, '');
+  const configResult = { config: { features, unrelated: { preserved: true } }, origins: {}, layers: [{ name: { type: 'user', file: join(dataRoot, 'config.toml') }, version: 'version-1', config: { unrelated: { preserved: true } } }] };
+  const hooksResult = { data: [{ cwd, errors: [], warnings: [], hooks }] };
+  return { cwd, dataRoot, record, options: { pluginRoot: root, dataRoot, cwd, reviewGate: undefined, env: { ...process.env, ZCODE_PATH: fakeZCode, FAKE_CODEX_RECORD: record, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configResult), FAKE_CODEX_HOOKS_RESULT: JSON.stringify(hooksResult), ...zcodeEnv, ...codexEnv }, codex: { executable: process.execPath, args: [fakeCodex], timeoutMs: 1_000 } } };
+}
+
+test('setup uses current config/read, hooks/list and one atomic exact trust/features batch write', async () => {
+  const ctx = await context(); const report = await runSetup({ ...ctx.options, reviewGate: true });
+  assert.equal(report.status, 'restart-required', JSON.stringify(report)); assert.equal(report.zcode.version, '0.16.1'); assert.equal(report.auth.ready, true); assert.equal(report.reviewGate.enabled, true);
+  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse).filter((call) => call.method);
+  assert.deepEqual(calls.map((call) => call.method), ['initialize', 'initialized', 'config/read', 'hooks/list', 'config/batchWrite']);
+  assert.deepEqual(calls[2].params, { cwd: ctx.cwd, includeLayers: true }); assert.deepEqual(calls[3].params, { cwds: [ctx.cwd] });
+  const params = calls[4].params; assert.equal(params.expectedVersion, 'version-1'); assert.equal(params.reloadUserConfig, true); assert.equal(params.edits.length, 2);
+  assert.deepEqual(params.edits[0], { keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' });
+  assert.equal(params.edits[1].keyPath, 'hooks.state'); assert.equal(params.edits[1].mergeStrategy, 'upsert');
+  assert.deepEqual(Object.keys(params.edits[1].value), ['plugin-hook-0', 'plugin-hook-1', 'plugin-hook-2', 'plugin-hook-3', 'plugin-hook-4', 'plugin-hook-5']);
+  assert.deepEqual(params.edits[1].value['plugin-hook-0'], { trusted_hash: '0'.repeat(64) });
+  assert.doesNotMatch(JSON.stringify(params), /plugin_hooks/); assert.doesNotMatch(JSON.stringify(params), /unrelated/);
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd }); const gate = JSON.parse(await readFile(join(storage.directory, 'config/review-gate.json'), 'utf8')); assert.deepEqual(gate, { version: 1, enabled: true, setupReady: true, status: 'restart-required' });
+});
+
+test('already enabled and trusted hooks report ready without config writes', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runSetup(ctx.options);
+  assert.equal(report.status, 'ready'); const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'config/batchWrite'));
+});
+
+test('setup rejects missing, outdated, unauthenticated and foreign/untrusted hook sources deterministically', async (t) => {
+  await t.test('outdated', async () => { const ctx = await context(); const report = await runSetup({ ...ctx.options, dependencies: { discoverZCode: async () => { throw Object.assign(new Error('outdated'), { code: 'ZCODE_VERSION_UNSUPPORTED' }); } } }); assert.equal(report.status, 'outdated'); });
+  await t.test('missing', async () => { const ctx = await context(); const report = await runSetup({ ...ctx.options, dependencies: { discoverZCode: async () => { throw Object.assign(new Error('missing'), { code: 'ZCODE_NOT_FOUND' }); } } }); assert.equal(report.status, 'missing'); });
+  await t.test('unauthenticated', async () => { const ctx = await context({ zcodeEnv: { FAKE_ZCODE_ERROR: 'session/list' } }); const report = await runSetup(ctx.options); assert.equal(report.status, 'unauthenticated'); assert.equal(report.auth.ready, false); });
+  await t.test('untrusted-source', async () => { const foreign = await mkdtemp(join(tmpdir(), 'foreign-hooks-')); await mkdir(join(foreign, 'hooks')); await writeFile(join(foreign, 'hooks/hooks.json'), '{}'); const ctx = await context({ hooks: hookMetadata(foreign) }); const report = await runSetup(ctx.options); assert.equal(report.status, 'untrusted'); assert.ok(!(await readFile(ctx.record, 'utf8')).includes('config/batchWrite')); });
+});
+
+test('setup never follows a forged PLUGIN_ROOT symlink or edits plugin files', async () => {
+  const ctx = await context(); const before = await readFile(join(root, 'hooks/hooks.json'), 'utf8');
+  await assert.rejects(runSetup({ ...ctx.options, pluginRoot: join(root, '..') }), { code: 'PLUGIN_ROOT_UNTRUSTED' });
+  assert.equal(await readFile(join(root, 'hooks/hooks.json'), 'utf8'), before);
+});
+
+test('app-server failure cannot persist a ready gate and enable/disable touches only workspace gate state', async () => {
+  const failed = await context({ codexEnv: { FAKE_CODEX_ERROR: 'hooks/list' } }); await assert.rejects(runSetup({ ...failed.options, reviewGate: true }), { code: 'CODEX_CONFIG_REQUEST_FAILED' });
+  for (let index = 0; index < 50 && !(await readFile(failed.record, 'utf8')).includes('lifecycle'); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 10)); assert.match(await readFile(failed.record, 'utf8'), /"lifecycle":"SIGTERM"/);
+  const failedStorage = await resolveWorkspaceStorage({ dataRoot: failed.dataRoot, workspace: failed.cwd }); await assert.rejects(readFile(join(failedStorage.directory, 'config/review-gate.json'), 'utf8'), { code: 'ENOENT' });
+  const disabled = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runSetup({ ...disabled.options, reviewGate: false }); assert.equal(report.reviewGate.enabled, false);
+  const disabledStorage = await resolveWorkspaceStorage({ dataRoot: disabled.dataRoot, workspace: disabled.cwd }); const gate = JSON.parse(await readFile(join(disabledStorage.directory, 'config/review-gate.json'), 'utf8')); assert.equal(gate.enabled, false); assert.equal(gate.setupReady, true);
+});
+
+test('review-gate toggles are isolated between workspaces sharing PLUGIN_DATA', async () => {
+  const first = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); await runSetup({ ...first.options, reviewGate: true }); const secondCwd = await realpath(await mkdtemp(join(tmpdir(), 'zpc-setup-second-'))); const secondHooks = { data: [{ cwd: secondCwd, errors: [], warnings: [], hooks: hookMetadata(root, 'trusted') }] }; const second = { ...first.options, cwd: secondCwd, reviewGate: false, env: { ...first.options.env, FAKE_CODEX_HOOKS_RESULT: JSON.stringify(secondHooks) } }; await runSetup(second);
+  const firstStorage = await resolveWorkspaceStorage({ dataRoot: first.dataRoot, workspace: first.cwd }); const secondStorage = await resolveWorkspaceStorage({ dataRoot: first.dataRoot, workspace: secondCwd }); assert.equal(JSON.parse(await readFile(join(firstStorage.directory, 'config/review-gate.json'), 'utf8')).enabled, true); assert.equal(JSON.parse(await readFile(join(secondStorage.directory, 'config/review-gate.json'), 'utf8')).enabled, false);
+});
+
+test('real companion setup is the only public command that needs no caller authorization', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runCompanion(['setup', '--enable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) } }); assert.equal(report.status, 'ready'); assert.equal(report.reviewGate.enabled, true);
+  await assert.rejects(runCompanion(['status'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot } }), { code: 'INTERNAL_AUTHORIZATION_INVALID' });
+});
+
+test('setup executable succeeds on ordinary stdio without protected fd3/fd4', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const result = await new Promise((resolvePromise, reject) => { const child = spawn(process.execPath, [join(root, 'scripts/zcode-companion.mjs'), 'setup', '--disable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) }, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let stderr = ''; child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.once('error', reject); child.once('exit', (code) => resolvePromise({ code, stdout, stderr })); }); assert.equal(result.code, 0, result.stderr); assert.equal(JSON.parse(result.stdout).status, 'ready'); assert.doesNotMatch(`${result.stdout}${result.stderr}`, /INTERNAL_RESPONSE/);
+});

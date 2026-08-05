@@ -58,7 +58,7 @@ test('transfer accepts only one bounded explicit source', () => {
 
 test('unknown commands, flags, duplicate scalars and removed surfaces are rejected', () => {
   for (const argv of [
-    ['spark'], ['setup'], ['review', '--force'], ['review', '--prompt-file', 'x'],
+    ['spark'], ['review', '--force'], ['review', '--prompt-file', 'x'],
     ['review', '--write'], ['review', '--wat'], ['review', '--base', 'a', '--base', 'b'],
     ['review', '--base', '--force'], ['rescue', '--model', '--write', 'task'],
   ]) rejects(argv);

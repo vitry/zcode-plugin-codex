@@ -7,7 +7,7 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const CALLER_LIFETIME_MS = 30 * 60_000;
 export const PERMISSION_MODES = Object.freeze([
-  'default', 'plan', 'read-only', 'workspace-write', 'acceptEdits', 'bypassPermissions',
+  'default', 'plan', 'dontAsk', 'read-only', 'workspace-write', 'acceptEdits', 'bypassPermissions',
 ]);
 export const EXECUTION_OPERATIONS = Object.freeze([
   'review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel', 'setup',
@@ -24,6 +24,22 @@ export function createIdentityStore({ dataRoot }) {
   }
 
   return {
+    /** Remove credentials belonging to one ended parent session only. */
+    /** @param {string} workspace @param {string} sessionId */
+    async cleanupSession(workspace, sessionId) {
+      if (!isNonEmptyString(sessionId)) throw invalidIdentityInput();
+      const storage = await identityStorage(dataRoot, workspace);
+      await withFileLock(storage.lockPath, async () => {
+        for (const directory of [storage.callersDirectory, storage.gatesDirectory]) {
+          const { readdir, unlink } = await import('node:fs/promises');
+          for (const name of await readdir(directory)) {
+            if (!name.endsWith('.json')) continue;
+            const path = join(directory, name);
+            try { if ((await readJsonFile(path)).sessionId === sessionId) await unlink(path); } catch { /* advisory cleanup */ }
+          }
+        }
+      });
+    },
     /** @param {CallerContextInput} input */
     async createCallerContext(input) {
       validateCallerInput(input);
@@ -174,10 +190,13 @@ export function createIdentityStore({ dataRoot }) {
       const storage = await identityStorage(dataRoot, input.workspace);
       const key = gateKey(input.sessionId, input.turnId, storage.workspacePath);
       const record = {
+        kind: 'baseline',
         key,
         sessionId: input.sessionId,
         turnId: input.turnId,
         workspace: storage.workspacePath,
+        ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }),
+        ...(input.permissionSnapshot === undefined ? {} : { permissionSnapshot: input.permissionSnapshot }),
         createdAt: new Date().toISOString(),
         consumedAt: null,
       };
@@ -328,7 +347,9 @@ function validateExecutionInput(input, requireSnapshot) {
 /** @param {any} input */
 function validateGateIdentity(input) {
   if (!isPlainObject(input) || !isNonEmptyString(input.sessionId)
-    || !isNonEmptyString(input.turnId) || !isNonEmptyString(input.workspace)) {
+    || !isNonEmptyString(input.turnId) || !isNonEmptyString(input.workspace)
+    || input.fingerprint !== undefined && !isDigest(input.fingerprint)
+    || input.permissionSnapshot !== undefined && !isPlainJsonObject(input.permissionSnapshot)) {
     throw invalidIdentityInput();
   }
 }
@@ -379,8 +400,10 @@ function isExecutionRecord(record) {
 
 /** @param {any} record */
 function isGateRecord(record) {
-  return isPlainObject(record) && isDigest(record.key) && isNonEmptyString(record.sessionId)
+  return isPlainObject(record) && (record.kind === undefined || record.kind === 'baseline') && isDigest(record.key) && isNonEmptyString(record.sessionId)
     && isNonEmptyString(record.turnId) && isNonEmptyString(record.workspace)
+    && (record.fingerprint === undefined || isDigest(record.fingerprint))
+    && (record.permissionSnapshot === undefined || isPlainJsonObject(record.permissionSnapshot))
     && isDate(record.createdAt) && (record.consumedAt === null || isDate(record.consumedAt));
 }
 
@@ -476,4 +499,6 @@ function authorizationError(code, message, remedy = 'Use the exact credential is
  * @property {string} sessionId
  * @property {string} turnId
  * @property {string} workspace
+ * @property {string} [fingerprint]
+ * @property {Record<string, unknown>} [permissionSnapshot]
  */

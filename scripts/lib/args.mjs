@@ -1,6 +1,6 @@
 import { PluginError } from './errors.mjs';
 
-const PUBLIC_COMMANDS = new Set(['review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel']);
+const PUBLIC_COMMANDS = new Set(['review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel', 'setup']);
 const SCOPES = new Set(['auto', 'working-tree', 'branch']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const JOB_ID = /^[a-f0-9]{64}$/;
@@ -16,8 +16,19 @@ export function parseArgs(argv) {
     ? parseReview(command, tokens)
       : command === 'rescue' ? parseRescue(tokens)
         : command === 'transfer' ? parseTransfer(tokens)
+          : command === 'setup' ? parseSetup(tokens)
       : command === 'status' ? parseStatus(tokens) : parseJobLookup(command, tokens);
   return { command, ...parsed };
+}
+
+/** @param {string[]} tokens */
+function parseSetup(tokens) {
+  /** @type {any} */
+  const options = {};
+  /** @type {string[]} */
+  const positionals = [];
+  parseTokens(tokens, { boolean: { '--enable-review-gate': () => { if (options.reviewGate !== undefined) throw argumentError('Review-gate flags are mutually exclusive.'); options.reviewGate = true; }, '--disable-review-gate': () => { if (options.reviewGate !== undefined) throw argumentError('Review-gate flags are mutually exclusive.'); options.reviewGate = false; } }, scalar: {}, positionals });
+  if (positionals.length) throw argumentError('Setup does not accept positional arguments.'); return { options, positionals };
 }
 
 /** @param {string} value @param {Record<string,unknown>} aliases @param {any[]} catalog */

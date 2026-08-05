@@ -45,16 +45,17 @@ export class ZCodeProtocolClient {
     child.once('exit', (code, signal) => this.fail(new PluginError('ZCODE_DISCONNECTED', 'The ZCode process disconnected.', { category: 'runtime', remedy: 'Restart the operation.', details: { code, signal } })));
   }
 
-  /** @param {string} method @param {Record<string,unknown>} params */
-  request(method, params) {
+  /** @param {string} method @param {Record<string,unknown>} params @param {number} [timeoutMs] */
+  request(method, params, timeoutMs) {
     if (this.closed) return Promise.reject(disconnected());
-    if (!nonEmpty(method) || !plainObject(params)) return Promise.reject(protocolInputError());
+    if (!nonEmpty(method) || !plainObject(params) || timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > this.requestTimeoutMs)) return Promise.reject(protocolInputError());
     if (this.pending.size >= 1024) return Promise.reject(new PluginError('ZCODE_PENDING_OVERFLOW', 'Too many pending ZCode requests.', { category: 'protocol', remedy: 'Wait for pending requests to finish.' })); const id = this.nextId++;
+    const effectiveTimeoutMs = timeoutMs ?? this.requestTimeoutMs;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new PluginError('ZCODE_REQUEST_TIMEOUT', `ZCode request timed out: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method, timeoutMs: this.requestTimeoutMs } }));
-      }, this.requestTimeoutMs);
+        reject(new PluginError('ZCODE_REQUEST_TIMEOUT', `ZCode request timed out: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method, timeoutMs: effectiveTimeoutMs } }));
+      }, effectiveTimeoutMs);
       timer.unref?.();
       this.pending.set(id, { resolve, reject, timer, method });
       try { this.sendFrame({ id, method, params }); } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }

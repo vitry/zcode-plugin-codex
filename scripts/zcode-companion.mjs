@@ -7,6 +7,7 @@ import { join, resolve, sep } from 'node:path';
 
 import { parseArgs, resolveModel } from './lib/args.mjs';
 import { readCodexThread } from './lib/codex-app-server.mjs';
+import { runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
@@ -25,9 +26,10 @@ const backgroundBindings = new WeakMap();
 /** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
-  const dataRoot = env.ZCODE_DATA_ROOT;
+  const parsed = parseArgs(argv); const dataRoot = env.ZCODE_DATA_ROOT ?? env.PLUGIN_DATA;
   if (!dataRoot) throw new PluginError('DATA_ROOT_REQUIRED', 'Plugin data root is not configured.', { category: 'configuration', remedy: 'Run $zcode:setup.' });
-  const parsed = parseArgs(argv); const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
+  if (parsed.command === 'setup') return runSetup({ pluginRoot: env.PLUGIN_ROOT, dataRoot, cwd, reviewGate: parsed.options.reviewGate, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
+  const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']) });
   const authorization = requireAuthorization(runtime.authorization, ['callerContext']);
   const caller = await identity.consumeCallerContext(authorization.callerContext, { workspace: cwd });
@@ -253,11 +255,11 @@ async function failQueuedJob(store, workspace, jobId, error) {
 async function main() {
   let output;
   try {
-    const authorization = await readInternalEnvelope();
+    const setup = process.argv[2] === 'setup'; const authorization = setup ? undefined : await readInternalEnvelope();
     output = await runCompanion(process.argv.slice(2), { authorization });
-    await writeInternalResponse(output); process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
+    if (!setup) await writeInternalResponse(output); process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
   }
-  catch (error) { if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1; }
+  catch (error) { if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); if (process.argv[2] !== 'setup') try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1; }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await main();
