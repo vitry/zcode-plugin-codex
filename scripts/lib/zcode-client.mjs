@@ -6,14 +6,14 @@ import { PluginError } from './errors.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
 import { connectZCodeBroker, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
-import { ensureZCodeBroker, readHealthyBrokerIdentity, removeConfirmedBrokerOwnership } from '../zcode-broker.mjs';
+import { ensureZCodeBroker, prioritizeBrokerOwnership, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const THOUGHT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const OWNER_CLEANUP_BUDGET_MS = 1_800;
 const OWNER_CLEANUP_MAX_BATCHES = 32;
 const OWNER_CLEANUP_LEGACY_ACTIVE_MAX = 64;
-const OWNER_CLEANUP_LEGACY_CONCURRENCY = 8;
+const OWNER_CLEANUP_LEGACY_BATCH_SIZE = 8;
 export const IMPORTED_HISTORY_SOURCE = 'claudeCode';
 
 export class ZCodeClient {
@@ -137,13 +137,10 @@ export async function releaseManagedZCodeOwner(options) {
         if (!capabilities.releaseOwnerExclusions && (result.failedSessionIds.length || !result.releasedSessionIds.length)) { legacyFallback = true; break; }
       }
       if (!capabilities.releaseOwnerExclusions && legacyFallback && profileDeferred > 0 && Date.now() < deadline) {
-        const listed = await client.listSessions(boundedCleanupTimeout(deadline, requestTimeoutMs)); const candidates = listed.sessions.map((/** @type {any} */ session) => session.sessionId).filter((/** @type {string} */ sessionId) => !attempted.has(sessionId)).slice(0, OWNER_CLEANUP_LEGACY_ACTIVE_MAX); /** @type {string[]} */ const confirmed = [];
-        for (let offset = 0; offset < candidates.length && Date.now() < deadline; offset += OWNER_CLEANUP_LEGACY_CONCURRENCY) {
-          const batch = candidates.slice(offset, offset + OWNER_CLEANUP_LEGACY_CONCURRENCY); const timeoutMs = boundedCleanupTimeout(deadline, requestTimeoutMs); const activeClient = client; const results = await Promise.allSettled(batch.map((/** @type {string} */ sessionId) => activeClient.stopSession(sessionId, timeoutMs))); for (let index = 0; index < batch.length; index += 1) if (results[index].status === 'fulfilled') confirmed.push(batch[index]);
-        }
-        if (confirmed.length) {
-          await client.close().catch(() => {}); client = null; while (Date.now() < deadline && processAlive(identity.pid)) await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
-          if (!processAlive(identity.pid)) { const removed = await removeConfirmedBrokerOwnership({ dataRoot: options.dataRoot, workspace: storage.workspacePath, identityName, ownerId: options.ownerId, sessionIds: confirmed }); for (const sessionId of removed.removedSessionIds) { released.add(sessionId); failed.delete(sessionId); } profileDeferred = Math.max(0, profileDeferred - removed.removedSessionIds.length); }
+        const listed = await client.listSessions(boundedCleanupTimeout(deadline, requestTimeoutMs)); const candidates = listed.sessions.map((/** @type {any} */ session) => session.sessionId).filter((/** @type {string} */ sessionId) => !attempted.has(sessionId)).slice(0, OWNER_CLEANUP_LEGACY_ACTIVE_MAX);
+        for (let offset = 0; offset < candidates.length && Date.now() < deadline; offset += OWNER_CLEANUP_LEGACY_BATCH_SIZE) {
+          const batch = candidates.slice(offset, offset + OWNER_CLEANUP_LEGACY_BATCH_SIZE); const prioritized = await prioritizeBrokerOwnership({ dataRoot: options.dataRoot, workspace: storage.workspacePath, identityName, ownerId: options.ownerId, sessionIds: batch }); if (!prioritized.prioritizedSessionIds.length) continue;
+          const result = await client.releaseOwner(undefined, boundedCleanupTimeout(deadline, requestTimeoutMs)); profileDeferred = result.deferredSessionCount; for (const sessionId of result.releasedSessionIds) { attempted.add(sessionId); released.add(sessionId); failed.delete(sessionId); } for (const sessionId of result.failedSessionIds) { attempted.add(sessionId); if (!released.has(sessionId)) failed.add(sessionId); }
         }
       }
     }
@@ -157,8 +154,6 @@ export async function releaseManagedZCodeOwner(options) {
 
 /** @param {number} deadline @param {number} requestTimeoutMs */
 function boundedCleanupTimeout(deadline, requestTimeoutMs) { return Math.max(1, Math.min(requestTimeoutMs, deadline - Date.now())); }
-/** @param {number} pid */
-function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 
 /** @param {any} history */
 function normalizeImportedHistory(history) {

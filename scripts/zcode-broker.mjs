@@ -39,11 +39,11 @@ export async function reconcileBrokerOwnership(options) {
   });
 }
 
-/** Removes only mappings whose confirmed session and owner still match under the durable owner-store lock. */
-export async function removeConfirmedBrokerOwnership(options) {
+/** Moves exact-owner mappings to the front without changing the durable ownership set or values. */
+export async function prioritizeBrokerOwnership(options) {
   if (!options || typeof options.dataRoot !== 'string' || !options.dataRoot || typeof options.workspace !== 'string' || !options.workspace || typeof options.identityName !== 'string' || !/^identity(?:-[a-f0-9]{16})?\.json$/.test(options.identityName) || typeof options.ownerId !== 'string' || options.ownerId.length < 16 || !Array.isArray(options.sessionIds) || options.sessionIds.length > 1_000 || !options.sessionIds.every((sessionId) => isSafeIdentifier(sessionId))) throw brokerInputError();
   const storage = await resolveWorkspaceStorage(options); const ownershipPath = join(storage.directory, 'broker', options.identityName.replace(/^identity/, 'session-owners'));
-  return mutateOwnerStore(ownershipPath, false, async (sessions) => { const removedSessionIds = []; for (const sessionId of new Set(options.sessionIds)) if (sessions[sessionId] === options.ownerId) { delete sessions[sessionId]; removedSessionIds.push(sessionId); } await atomicWriteJson(ownershipPath, { version: 1, sessions }); return { removedSessionIds }; });
+  return mutateOwnerStore(ownershipPath, false, async (sessions) => { const prioritizedSessionIds = [...new Set(options.sessionIds)].filter((sessionId) => sessions[sessionId] === options.ownerId); const reordered = Object.create(null); for (const sessionId of prioritizedSessionIds) reordered[sessionId] = sessions[sessionId]; for (const [sessionId, ownerId] of Object.entries(sessions)) if (!Object.hasOwn(reordered, sessionId)) reordered[sessionId] = ownerId; await atomicWriteJson(ownershipPath, { version: 1, sessions: reordered }); return { prioritizedSessionIds }; });
 }
 
 /** @param {{platform?:string,dataRoot:string,workspace:string,identity?:string}} options */

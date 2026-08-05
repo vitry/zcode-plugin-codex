@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, realpath, writeFile, mkdir, readdir, rm, symlink, unlink } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, readdir, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -14,6 +14,7 @@ import { brokerEndpointFor, ensureZCodeBroker, probeBrokerHealth, reconcileBroke
 
 const root = new URL('../', import.meta.url).pathname;
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
+const legacyBroker = join(root, 'tests/fixtures/legacy-zcode-broker-v1.mjs');
 
 async function jsonFiles(directory) {
   const found = []; let entries;
@@ -37,8 +38,6 @@ async function runHook(script, input, env = {}, options = {}) {
     child.stdin.end(options.raw ?? JSON.stringify(input));
   });
 }
-
-async function runCommand(command, args, cwd) { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd, stdio: ['ignore', 'ignore', 'pipe'] }); let stderr = ''; child.stderr.on('data', (chunk) => { stderr += chunk; }); child.once('error', reject); child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}: ${stderr}`))); }); }
 
 async function workspace() {
   const cwd = await mkdtemp(join(tmpdir(), 'zpc-hooks-workspace-'));
@@ -196,18 +195,18 @@ test('SessionEnd advances beyond a failed 16-mapping prefix to clean a later act
   const stops = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).filter((call) => call.method === 'session/stop').map((call) => call.params.sessionId); assert.equal(stops.filter((sessionId) => sessionId.startsWith('failed-history-')).length, 17, 'failed mappings must be tried at most once in this cleanup'); assert.ok(stops.includes('later-active-session')); assert.ok(!stops.includes('failed-sibling-session'));
 });
 
-test('HEAD cleanup interoperates with an actual fd3e3c0 broker without failed-prefix starvation', async (t) => {
-  const { cwd, data } = await workspace(); const legacyRoot = await mkdtemp(join(tmpdir(), 'zpc-legacy-broker-')); const record = join(data, 'legacy-zcode-calls.jsonl'); await writeFile(record, '');
-  await runCommand('git', ['clone', '--quiet', '--no-checkout', '--no-hardlinks', root, legacyRoot], root); await runCommand('git', ['-C', legacyRoot, 'checkout', '--quiet', 'fd3e3c0', '--', '.'], root); await symlink(join(root, 'node_modules'), join(legacyRoot, 'node_modules'));
-  const owner = ownerIdForSession('legacy-prefix'); const sibling = ownerIdForSession('legacy-sibling'); const histories = Array.from({ length: 17 }, (_, index) => `legacy-history-${String(index).padStart(2, '0')}`); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: owner, ownedSessionIds: histories }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: sibling, ownedSessionIds: ['legacy-sibling-session'] });
+test('HEAD cleanup interoperates with the hermetic v1 broker while a sibling remains active', async (t) => {
+  const { cwd, data } = await workspace(); const record = join(data, 'legacy-zcode-calls.jsonl'); await writeFile(record, '');
+  const owner = ownerIdForSession('legacy-prefix'); const sibling = ownerIdForSession('legacy-sibling'); const probeOwner = ownerIdForSession('legacy-probe'); const histories = Array.from({ length: 17 }, (_, index) => `legacy-history-${String(index).padStart(2, '0')}`); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: owner, ownedSessionIds: histories }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: sibling, ownedSessionIds: ['legacy-sibling-session'] }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: probeOwner, ownedSessionIds: ['legacy-exclusion-probe'] });
   const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const brokerDirectory = join(storage.directory, 'broker'); const identityPath = join(brokerDirectory, 'identity.json'); const ownershipPath = join(brokerDirectory, 'session-owners.json'); const configPath = join(brokerDirectory, 'legacy-config.json'); const endpoint = brokerEndpointFor({ dataRoot: data, workspace: storage.workspacePath }); const instanceId = 'b'.repeat(48); const brokerToken = 'c'.repeat(64);
   await writeFile(configPath, JSON.stringify({ endpoint, instanceId, brokerToken, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, workspace: storage.workspacePath, ownershipPath, identityPath }));
-  const legacyScript = await realpath(join(legacyRoot, 'scripts/zcode-broker.mjs')); const legacy = spawn(process.execPath, [legacyScript, configPath], { cwd, env: { ...process.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_STOP_ERROR_PREFIX: 'legacy-history-' }, stdio: ['ignore', 'ignore', 'pipe'] }); let legacyStderr = ''; let legacyExited = false; legacy.stderr.on('data', (chunk) => { legacyStderr += chunk; }); legacy.once('exit', () => { legacyExited = true; }); await writeBrokerIdentity(identityPath, { endpoint, pid: legacy.pid, instanceId, brokerToken });
-  t.after(async () => { if (!legacyExited) { try { process.kill(legacy.pid, 'SIGTERM'); } catch { /* already exited */ } } await rm(legacyRoot, { recursive: true, force: true }); });
+  const legacy = spawn(process.execPath, [legacyBroker, configPath], { cwd, env: { ...process.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_STOP_ERROR_PREFIX: 'legacy-history-' }, stdio: ['ignore', 'ignore', 'pipe'] }); let legacyStderr = ''; let legacyExited = false; legacy.stderr.on('data', (chunk) => { legacyStderr += chunk; }); legacy.once('exit', () => { legacyExited = true; }); await writeBrokerIdentity(identityPath, { endpoint, pid: legacy.pid, instanceId, brokerToken });
+  t.after(async () => { if (!legacyExited) { try { process.kill(legacy.pid, 'SIGTERM'); } catch { /* already exited */ } } });
   const identity = { endpoint, pid: legacy.pid, instanceId, brokerToken }; const readyDeadline = Date.now() + 5_000; while (Date.now() < readyDeadline && !await probeBrokerHealth(identity)) await new Promise((resolve) => setTimeout(resolve, 25)); assert.equal(await probeBrokerHealth(identity), true, legacyStderr);
-  const client = await createZCodeClient({ workspace: cwd, brokerEndpoint: endpoint, brokerToken, ownerId: owner, requestTimeoutMs: 750 }); await client.createSession({ workspace: cwd, sessionId: 'legacy-later-active' }); await client.close();
-  const result = await releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: owner, requestTimeoutMs: 750 }); const owners = JSON.parse(await readFile(ownershipPath, 'utf8')).sessions; assert.equal(owners['legacy-later-active'], undefined); assert.equal(owners['legacy-sibling-session'], sibling); assert.equal(histories.filter((sessionId) => owners[sessionId] === owner).length, 17); assert.ok(result.failedSessionIds.length <= 17); assert.ok(result.deferredSessionCount <= 17);
-  const stops = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).filter((call) => call.method === 'session/stop').map((call) => call.params.sessionId); assert.ok(stops.includes('legacy-later-active')); assert.ok(!stops.includes('legacy-sibling-session')); assert.ok(stops.filter((sessionId) => sessionId.startsWith('legacy-history-')).length <= 17, 'legacy failed mappings must not be retried in a busy loop');
+  const client = await createZCodeClient({ workspace: cwd, brokerEndpoint: endpoint, brokerToken, ownerId: owner, requestTimeoutMs: 750 }); assert.deepEqual(await client.brokerCapabilities(), { releaseOwnerExclusions: false }); await client.createSession({ workspace: cwd, sessionId: 'legacy-later-active' }); await client.close(); const siblingClient = await createZCodeClient({ workspace: cwd, brokerEndpoint: endpoint, brokerToken, ownerId: sibling, requestTimeoutMs: 750 }); await siblingClient.createSession({ workspace: cwd, sessionId: 'legacy-sibling-active' }); t.after(() => siblingClient.close()); const probe = await createZCodeClient({ workspace: cwd, brokerEndpoint: endpoint, brokerToken, ownerId: probeOwner, requestTimeoutMs: 750 }); assert.deepEqual((await probe.releaseOwner(['legacy-exclusion-probe'])).releasedSessionIds, ['legacy-exclusion-probe'], 'v1 broker must faithfully ignore the future exclusion field'); await probe.close();
+  const result = await releaseManagedZCodeOwner({ dataRoot: data, workspace: cwd, ownerId: owner, requestTimeoutMs: 750 }); assert.equal(processAlive(legacy.pid), true, 'active sibling must keep the shared legacy broker alive'); let owners = JSON.parse(await readFile(ownershipPath, 'utf8')).sessions; assert.equal(owners['legacy-later-active'], undefined); assert.equal(owners['legacy-sibling-active'], sibling); assert.equal(owners['legacy-sibling-session'], sibling); assert.equal(histories.filter((sessionId) => owners[sessionId] === owner).length, 17); assert.ok(result.failedSessionIds.length <= 17); assert.ok(result.deferredSessionCount <= 17); assert.ok((await siblingClient.listSessions()).sessions.some((session) => session.sessionId === 'legacy-sibling-active'));
+  const reuseOwner = ownerIdForSession('legacy-reuse'); const reuse = await createZCodeClient({ workspace: cwd, brokerEndpoint: endpoint, brokerToken, ownerId: reuseOwner, requestTimeoutMs: 750 }); await reuse.createSession({ workspace: cwd, sessionId: 'legacy-later-active' }); await reuse.close(); owners = JSON.parse(await readFile(ownershipPath, 'utf8')).sessions; assert.equal(owners['legacy-later-active'], reuseOwner);
+  const stops = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).filter((call) => call.method === 'session/stop').map((call) => call.params.sessionId); assert.ok(stops.includes('legacy-later-active')); assert.ok(!stops.includes('legacy-sibling-active')); assert.ok(stops.filter((sessionId) => sessionId.startsWith('legacy-history-')).length <= 32, 'legacy failed prefix retries must stay bounded');
 });
 
 test('owner release spans existing broker profiles and preserves mappings whose stop failed', async () => {
