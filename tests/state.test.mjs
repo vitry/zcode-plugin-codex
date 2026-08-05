@@ -531,8 +531,8 @@ test('tracked job fields persist through their legal lifecycle phases', async ()
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });
   const succeededJob = await store.reserveJob({ workspace, ...jobInput });
-  const startedAt = '2026-08-04T01:02:03.000Z';
-  const finishedAt = '2026-08-04T01:03:04.000Z';
+  const startedAt = new Date(Date.parse(succeededJob.createdAt) + 1_000).toISOString();
+  const finishedAt = new Date(Date.parse(succeededJob.createdAt) + 2_000).toISOString();
   const running = await store.transitionJob(workspace, succeededJob.id, ['queued'], 'running', {
     childPid: 123,
     effort: 'xhigh',
