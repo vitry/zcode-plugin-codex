@@ -104,7 +104,7 @@ export async function ensureZCodeBroker(options) {
 
 export class ZCodeBroker {
   /** @param {{endpoint:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,instanceId?:string}} options */
-  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.server = null; this.protocol = null; this.protocolPromise = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.permissionPending = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.idleTimer = null; this.closing = false; }
+  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.server = null; this.protocol = null; this.protocolPromise = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.permissionPending = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
     if (this.server) return this;
@@ -213,8 +213,13 @@ export class ZCodeBroker {
     });
   }
 
-  async close() {
-    if (this.closing) return; this.closing = true; this.cancelIdleShutdown(); for (const pending of this.permissionPending.values()) { clearTimeout(pending.timer); pending.resolve(offeredDeny(pending.request)); } this.permissionPending.clear(); for (const socket of this.sockets) socket.destroy(); this.sockets.clear();
+  close() {
+    if (!this.closePromise) { this.closing = true; this.closePromise = this.closeOnce(); }
+    return this.closePromise;
+  }
+
+  async closeOnce() {
+    this.cancelIdleShutdown(); for (const pending of this.permissionPending.values()) { clearTimeout(pending.timer); pending.resolve(offeredDeny(pending.request)); } this.permissionPending.clear(); for (const socket of this.sockets) socket.destroy(); this.sockets.clear();
     const startingProtocol = this.protocolPromise; await this.protocol?.close().catch(() => {}); if (!this.protocol && startingProtocol) { const spawned = await startingProtocol.catch(() => null); await spawned?.close().catch(() => {}); } this.protocol = null; this.protocolPromise = null;
     await Promise.allSettled([...this.localTasks]);
     if (this.server) await new Promise((resolve) => this.server.close(() => resolve()));

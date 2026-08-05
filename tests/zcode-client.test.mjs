@@ -392,6 +392,42 @@ test('broker identity cleanup reports corrupt identity paths as stable plugin er
   await rm(directory, { recursive: true, force: true });
 });
 
+test('concurrent broker close callers share completion through locked identity cleanup', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-close-shared-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const identityPath = join(directory, 'identity.json'); const lockPath = join(directory, '.lock');
+  const broker = await new ZCodeBroker({ endpoint, identityPath, instanceId: 'shared-close-instance', brokerToken: '2'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }).start();
+  await writeFile(identityPath, JSON.stringify({ instanceId: 'shared-close-instance' }), { mode: 0o600 });
+  const protocol = await broker.getProtocol(); const child = protocol.child;
+  let cleanupCalls = 0; const removeIdentityIfOwned = broker.removeIdentityIfOwned.bind(broker); broker.removeIdentityIfOwned = async () => { cleanupCalls += 1; return removeIdentityIfOwned(); };
+  let releaseLock; let signalAcquired; const acquired = new Promise((resolve) => { signalAcquired = resolve; }); const release = new Promise((resolve) => { releaseLock = resolve; });
+  const holder = withFileLock(lockPath, async () => { signalAcquired(); await release; }); await acquired;
+  let firstSettled = false; let secondSettled = false;
+  const firstClose = broker.close(); firstClose.finally(() => { firstSettled = true; }).catch(() => {});
+  const secondClose = broker.close(); secondClose.finally(() => { secondSettled = true; }).catch(() => {});
+  for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  const samePromise = firstClose === secondClose; const settledWhileLocked = [firstSettled, secondSettled];
+  releaseLock(); await holder; await Promise.all([firstClose, secondClose]);
+  assert.equal(samePromise, true);
+  assert.deepEqual(settledWhileLocked, [false, false]);
+  assert.equal(broker.server, null); assert.equal(broker.protocol, null); assert.ok(child.exitCode !== null || child.signalCode !== null);
+  await assert.rejects(readFile(identityPath), (error) => error.code === 'ENOENT');
+  const thirdClose = broker.close(); assert.equal(thirdClose, firstClose); await thirdClose; assert.equal(cleanupCalls, 1);
+  await rm(directory, { recursive: true, force: true });
+});
+
+test('concurrent broker close callers observe the same cleanup failure without unhandled rejection', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-close-failure-')); const identityPath = join(directory, 'identity.json');
+  const broker = new ZCodeBroker({ endpoint: join(directory, 'broker.sock'), identityPath, instanceId: 'failed-close-instance', brokerToken: '2'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  await writeFile(identityPath, '{not-json', { mode: 0o600 });
+  const firstClose = broker.close(); const secondClose = broker.close();
+  const outcomes = await Promise.allSettled([firstClose, secondClose]);
+  assert.equal(firstClose, secondClose);
+  assert.deepEqual(outcomes.map((outcome) => outcome.status), ['rejected', 'rejected']);
+  assert.equal(outcomes[0].reason, outcomes[1].reason);
+  assert.equal(outcomes[0].reason.code, 'ZCODE_BROKER_IDENTITY_CLEANUP_FAILED');
+  const thirdClose = broker.close(); assert.equal(thirdClose, firstClose); await assert.rejects(thirdClose, { code: 'ZCODE_BROKER_IDENTITY_CLEANUP_FAILED' });
+  await rm(directory, { recursive: true, force: true });
+});
+
 test('launch target is revalidated before spawning', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-missing-'));
   const target = join(directory, 'gone.mjs');
