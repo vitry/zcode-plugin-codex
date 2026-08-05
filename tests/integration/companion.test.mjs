@@ -10,6 +10,7 @@ import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
+import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
 import { createManagedZCodeClient } from '../../scripts/lib/zcode-client.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
@@ -350,7 +351,7 @@ test('real Transfer imports current Codex history into a resumable ZCode session
   const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)); const create = zcodeCalls.find((entry) => entry.method === 'session/create');
   assert.deepEqual(create.params.importedHistory, { source: 'claudeCode', messages: [{ role: 'user', content: 'visible request', timestamp: 1_725_000_000 }, { role: 'assistant', content: 'visible response', timestamp: 1_725_000_000 }] });
   assert.equal(zcodeCalls.some((entry) => entry.method === 'session/send'), false);
-  const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch: { command: process.execPath, args: [fake], target: fake }, ownerId: ownerIdForSession('codex-session'), env: context.env });
+  const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch: { command: process.execPath, args: [fake], target: fake }, ownerId: ownerIdForSession('codex-session'), env: context.env, maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes });
   try { assert.equal((await client.resumeSession(transferred.json.zcodeSessionId)).session.sessionId, transferred.json.zcodeSessionId); } finally { await client.close(); }
   const storage = await resolveWorkspaceStorage(context); const artifact = await readFile(join(storage.directory, transferred.json.job.resultArtifact), 'utf8');
   const exposed = `${transferred.stdout}${transferred.stderr}${await readFile(codexRecord, 'utf8')}${await readFile(zcodeRecord, 'utf8')}${artifact}`;
@@ -363,4 +364,19 @@ test('Transfer launcher configuration failure terminalizes its reserved job', as
   assert.notEqual(result.code, 0); assert.equal(result.json.error.code, 'CODEX_APP_SERVER_CONFIG_INVALID');
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   assert.equal(jobs.length, 1); assert.equal(jobs[0].command, 'transfer'); assert.equal(jobs[0].status, 'failed');
+});
+
+test('Transfer carries five maximum-size messages through the managed broker without enlarging ordinary defaults', async () => {
+  const context = await fixture();
+  const transferred = await companion(context, ['transfer'], {
+    CODEX_APP_SERVER_PATH: process.execPath,
+    CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+    FAKE_CODEX_GENERATED_MESSAGE_BYTES: String(1024 * 1024),
+    FAKE_CODEX_GENERATED_MESSAGE_COUNT: '5',
+  });
+  assert.equal(transferred.code, 0, `${transferred.stderr}${transferred.stdout}`);
+  assert.equal(transferred.json.job.status, 'succeeded'); assert.equal(transferred.json.zcodeSessionId, 'session-1');
+  const reviewed = await companion(context, ['review']); assert.equal(reviewed.code, 0, `${reviewed.stderr}${reviewed.stdout}`);
+  const storage = await resolveWorkspaceStorage(context); const identities = (await readdir(join(storage.directory, 'broker'))).filter((name) => /^identity(?:-[a-f0-9]+)?\.json$/.test(name));
+  assert.equal(identities.length, 2); assert.ok(identities.includes('identity.json'));
 });

@@ -45,7 +45,7 @@ test('terminates the child on success, JSON-RPC error, malformed output, oversiz
     [{ FAKE_CODEX_MALFORMED: 'thread/read' }, {}, 'CODEX_APP_SERVER_MALFORMED'],
     [{ FAKE_CODEX_AMBIGUOUS: 'thread/read' }, {}, 'CODEX_APP_SERVER_MALFORMED'],
     [{ FAKE_CODEX_OVERSIZE: 'thread/read', FAKE_CODEX_OVERSIZE_BYTES: '2048' }, { maxLineBytes: 256 }, 'CODEX_APP_SERVER_FRAME_TOO_LARGE'],
-    [{ FAKE_CODEX_HANG: 'thread/read' }, { timeoutMs: 30 }, 'CODEX_APP_SERVER_TIMEOUT'],
+    [{ FAKE_CODEX_HANG: 'thread/read' }, { timeoutMs: 500 }, 'CODEX_APP_SERVER_TIMEOUT'],
   ];
   for (const [env, options, code] of cases) await t.test(code ?? 'success', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'codex-app-lifecycle-')); const record = join(directory, 'record.jsonl'); await writeFile(record, '');

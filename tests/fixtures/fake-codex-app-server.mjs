@@ -54,7 +54,10 @@ async function handleLine(line) {
   }
   if (request.method === 'thread/read') {
     let thread;
-    try { thread = JSON.parse(process.env.FAKE_CODEX_THREAD_JSON ?? '{}'); } catch { thread = null; }
+    if (process.env.FAKE_CODEX_GENERATED_MESSAGE_BYTES) {
+      const count = Number(process.env.FAKE_CODEX_GENERATED_MESSAGE_COUNT ?? 1); const bytes = Number(process.env.FAKE_CODEX_GENERATED_MESSAGE_BYTES);
+      thread = { id: request.params.threadId, ephemeral: false, turns: Array.from({ length: count }, (_, index) => ({ startedAt: 1_725_000_000 + index, items: [{ type: index % 2 ? 'agentMessage' : 'userMessage', ...(index % 2 ? { text: 'x'.repeat(bytes) } : { content: [{ type: 'text', text: 'x'.repeat(bytes) }] }) }] })) };
+    } else try { thread = JSON.parse(process.env.FAKE_CODEX_THREAD_JSON ?? '{}'); } catch { thread = null; }
     write({ id: request.id, result: { thread } });
   }
 }

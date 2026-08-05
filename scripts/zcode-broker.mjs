@@ -75,21 +75,23 @@ export async function probeBrokerHealth(record) {
   } catch { return false; } finally { await protocol?.close().catch(() => {}); }
 }
 
-/** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},env?:NodeJS.ProcessEnv,platform?:string,idleTimeoutMs?:number}} options */
+/** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},env?:NodeJS.ProcessEnv,platform?:string,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number}} options */
 export async function ensureZCodeBroker(options) {
+  if (!validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024)) throw brokerInputError();
   const storage = await resolveWorkspaceStorage(options);
   const brokerDirectory = join(storage.directory, 'broker');
-  const identityPath = join(brokerDirectory, 'identity.json');
+  const profile = options.maxFrameBytes === undefined && options.maxOutboundBytes === undefined ? null : createHash('sha256').update(JSON.stringify([options.maxFrameBytes ?? null, options.maxOutboundBytes ?? null])).digest('hex').slice(0, 16);
+  const identityPath = join(brokerDirectory, profile ? `identity-${profile}.json` : 'identity.json');
   await ensurePrivateDirectory(brokerDirectory);
   return withFileLock(join(brokerDirectory, '.lock'), async () => {
     const existing = await readHealthyBrokerIdentity(identityPath);
     if (existing) return existing;
     const instanceId = randomBytes(24).toString('hex');
     const brokerToken = randomBytes(32).toString('hex');
-    const endpoint = brokerEndpointFor({ platform: options.platform, dataRoot: options.dataRoot, workspace: storage.workspacePath });
+    const endpoint = brokerEndpointFor({ platform: options.platform, dataRoot: options.dataRoot, workspace: storage.workspacePath, ...(profile ? { identity: profile } : {}) });
     if ((options.platform ?? process.platform) !== 'win32') await unlink(endpoint).catch(() => {});
     const configPath = join(brokerDirectory, `config-${instanceId}.json`);
-    await atomicWriteJson(configPath, { endpoint, instanceId, brokerToken, launch: options.launch, workspace: storage.workspacePath, idleTimeoutMs: options.idleTimeoutMs, ownershipPath: join(brokerDirectory, 'session-owners.json'), identityPath });
+    await atomicWriteJson(configPath, { endpoint, instanceId, brokerToken, launch: options.launch, workspace: storage.workspacePath, idleTimeoutMs: options.idleTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, ownershipPath: join(brokerDirectory, profile ? `session-owners-${profile}.json` : 'session-owners.json'), identityPath });
     const child = await spawnDaemon({ command: process.execPath, args: [fileURLToPath(import.meta.url)], target: fileURLToPath(import.meta.url) }, { args: [configPath], cwd: storage.workspacePath, env: options.env });
     const record = await writeBrokerIdentity(identityPath, { endpoint, pid: child.pid, instanceId, brokerToken });
     const deadline = Date.now() + 5_000;
@@ -258,6 +260,7 @@ export class ZCodeBroker {
 }
 
 function writeLocal(socket, value) { if (!socket.writable) return; try { socket.zcodeWriter?.write(`${JSON.stringify(value)}\n`); } catch { socket.destroy(); } }
+function validWireOption(value, maximum) { return value === undefined || Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
 function isProcessAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 function safeTokenEqual(left, right) { const a = Buffer.from(left); const b = Buffer.from(right); return a.length === b.length && timingSafeEqual(a, b); }
 function offeredDeny(request) { return request.options?.find((option) => option.response?.decision === 'deny')?.response ?? { decision: 'deny' }; }

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createStateStore } from '../scripts/lib/state.mjs';
+import * as transferModule from '../scripts/lib/transfer.mjs';
 import { extractImportedHistory, executeTransfer, resolveTransferSource, TRANSFER_LIMITS } from '../scripts/lib/transfer.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
@@ -32,6 +33,11 @@ test('extracts ordered visible user and assistant text with turn timestamps only
   assert.doesNotMatch(JSON.stringify(extractImportedHistory(thread(), source)), /secret|hidden|commandExecution|turn-secret|user-secret|agent-secret/);
 });
 
+test('treats a null turn startedAt as an unavailable timestamp', () => {
+  const history = extractImportedHistory(thread({ turns: [{ startedAt: null, items: [{ type: 'userMessage', content: [{ type: 'text', text: 'without time' }] }, { type: 'agentMessage', text: 'also without time' }] }] }), source);
+  assert.deepEqual(history.messages, [{ role: 'user', content: 'without time' }, { role: 'assistant', content: 'also without time' }]);
+});
+
 test('requires the exact persisted source thread and rejects empty history', () => {
   for (const value of [null, {}, thread({ id: 'other' }), thread({ ephemeral: true }), thread({ ephemeral: undefined }), thread({ turns: [] }), thread({ turns: [{ items: [{ type: 'reasoning', text: 'private' }] }] })]) {
     assert.throws(() => extractImportedHistory(value, source), (/** @type {any} */ error) => ['CODEX_THREAD_INVALID', 'CODEX_THREAD_EPHEMERAL', 'TRANSFER_HISTORY_EMPTY'].includes(error.code));
@@ -50,6 +56,9 @@ test('enforces message count, message bytes and total history byte limits', () =
   assert.throws(() => extractImportedHistory(thread({ turns: [{ items: tooMany }] }), source), { code: 'TRANSFER_HISTORY_TOO_LARGE' });
   const chunk = 'x'.repeat(Math.floor(TRANSFER_LIMITS.maxTotalBytes / 2));
   assert.throws(() => extractImportedHistory(thread({ turns: [{ items: [{ type: 'agentMessage', text: chunk }, { type: 'agentMessage', text: chunk }, { type: 'agentMessage', text: 'xx' }] }] }), source), { code: 'TRANSFER_HISTORY_TOO_LARGE' });
+  const escaped = '\0'.repeat(TRANSFER_LIMITS.maxMessageBytes);
+  assert.throws(() => extractImportedHistory(thread({ turns: [{ items: [{ type: 'agentMessage', text: escaped }, { type: 'agentMessage', text: escaped }, { type: 'agentMessage', text: escaped }] }] }), source), { code: 'TRANSFER_HISTORY_TOO_LARGE' });
+  assert.ok(transferModule.TRANSFER_WIRE_LIMITS.maxEncodedHistoryBytes < transferModule.TRANSFER_WIRE_LIMITS.maxFrameBytes);
 });
 
 async function executionFixture(readThread = async () => thread()) {

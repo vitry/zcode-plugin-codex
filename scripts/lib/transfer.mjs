@@ -1,11 +1,17 @@
 import { PluginError } from './errors.mjs';
 import { writeResultArtifact } from './review.mjs';
+import { IMPORTED_HISTORY_SOURCE } from './zcode-client.mjs';
 
 export const TRANSFER_LIMITS = Object.freeze({
   maxThreadIdBytes: 512,
   maxMessages: 10_000,
   maxMessageBytes: 1024 * 1024,
   maxTotalBytes: 8 * 1024 * 1024,
+});
+export const TRANSFER_WIRE_LIMITS = Object.freeze({
+  maxEncodedHistoryBytes: 15 * 1024 * 1024,
+  maxFrameBytes: 16 * 1024 * 1024,
+  maxOutboundBytes: 16 * 1024 * 1024,
 });
 
 /** @param {{source?:string}} options @param {{sessionId?:string,[key:string]:unknown}} caller */
@@ -22,8 +28,8 @@ export function extractImportedHistory(thread, expectedThreadId) {
   const record = thread;
   /** @type {Array<{role:'user'|'assistant',content:string,timestamp?:number}>} */ const messages = []; let totalBytes = 0;
   for (const turn of record.turns) {
-    if (!plainObject(turn) || !Array.isArray(turn.items) || turn.startedAt !== undefined && (!Number.isSafeInteger(turn.startedAt) || turn.startedAt < 0)) throw invalidThread();
-    const timestamp = turn.startedAt;
+    if (!plainObject(turn) || !Array.isArray(turn.items) || turn.startedAt !== undefined && turn.startedAt !== null && (!Number.isSafeInteger(turn.startedAt) || turn.startedAt < 0)) throw invalidThread();
+    const timestamp = turn.startedAt ?? undefined;
     for (const item of turn.items) {
       if (!plainObject(item) || typeof item.type !== 'string') throw invalidThread();
       if (item.type === 'userMessage') {
@@ -42,7 +48,9 @@ export function extractImportedHistory(thread, expectedThreadId) {
     }
   }
   if (!messages.length) throw new PluginError('TRANSFER_HISTORY_EMPTY', 'The Codex thread has no transferable visible text.', { category: 'validation', remedy: 'Choose a thread containing user or assistant text.' });
-  return { messages };
+  const history = { messages };
+  if (Buffer.byteLength(JSON.stringify({ source: IMPORTED_HISTORY_SOURCE, ...history })) > TRANSFER_WIRE_LIMITS.maxEncodedHistoryBytes) throw historyTooLarge();
+  return history;
 }
 
 /**
