@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
@@ -135,6 +136,28 @@ export function createIdentityStore({ dataRoot }) {
         const consumed = { ...record, consumedAt: new Date().toISOString() };
         await atomicWriteJson(path, consumed);
         return publicRecord(consumed);
+      });
+    },
+
+    /** @param {string} token @param {ExecutionCapabilityExpected} expected */
+    async revokeExecutionCapability(token, expected) {
+      validateExecutionInput(expected, false);
+      validateToken(token);
+      const storage = await identityStorage(dataRoot, expected.workspace);
+      const digest = tokenDigest(token);
+      return withFileLock(storage.lockPath, async () => {
+        const path = join(storage.capabilitiesDirectory, `${digest}.json`);
+        const record = await readAuthorizationRecord(path, 'EXECUTION_CAPABILITY_INVALID', 'Execution capability is invalid for this workspace.');
+        if (!isExecutionRecord(record) || !safeEqual(record.digest, digest) || record.workspace !== storage.workspacePath) {
+          throw authorizationError('EXECUTION_CAPABILITY_INVALID', 'Execution capability is invalid for this workspace.');
+        }
+        /** @type {(keyof ExecutionCapabilityExpected)[]} */
+        const fields = ['jobId', 'ownerSessionId', 'operation'];
+        if (expected.specDigest !== undefined) fields.push('specDigest');
+        for (const field of fields) {
+          if (!safeEqual(record[field], expected[field])) throw authorizationError('EXECUTION_CAPABILITY_MISMATCH', `Execution capability does not match ${field}.`);
+        }
+        await unlink(path);
       });
     },
 

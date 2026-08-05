@@ -8,10 +8,12 @@ import { resolveModel } from './args.mjs';
 import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
 import { buildPrompt } from './prompts.mjs';
+import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const READ_TOOLS = /^(read|inspect|search|list|find|glob|grep|git(?:[-_ ]?(?:status|diff|log|show))?)$/i;
 const MUTATING_TOOLS = /(write|edit|patch|delete|remove|create|exec|shell|command|install|move|rename|commit|push)/i;
+const REVIEW_OUTPUT_SCHEMA = await loadReviewOutputSchema();
 
 /** @param {any} request @param {any} permissionSnapshot @param {string} command */
 export function decidePermission(request, permissionSnapshot, command) {
@@ -140,7 +142,7 @@ export function extractFinalResult(snapshot, command, turnBoundary = {}) {
   if (structured === undefined) {
     try { structured = JSON.parse(text); } catch (error) { throw invalidReviewResult(error); }
   }
-  if (!validReviewOutput(structured)) throw invalidReviewResult();
+  if (!validateJsonSchema(structured, REVIEW_OUTPUT_SCHEMA)) throw invalidReviewResult();
   return `${JSON.stringify(structured, null, 2)}\n`;
 }
 /** @param {any} snapshot */
@@ -148,18 +150,6 @@ function snapshotMessageIds(snapshot) { return new Set((Array.isArray(snapshot?.
 function missingResult() { return new PluginError('ZCODE_RESULT_MISSING', 'ZCode completed without a visible result for the current turn.', { category: 'protocol', remedy: 'Inspect the ZCode session and retry.' }); }
 /** @param {unknown} [cause] */
 function invalidReviewResult(cause) { return new PluginError('REVIEW_RESULT_INVALID', 'ZCode review output failed the required findings schema.', { category: 'protocol', remedy: 'Retry the review with a compatible ZCode model.', ...(cause ? { cause } : {}) }); }
-/** @param {any} value */
-function validReviewOutput(value) {
-  if (!plainObject(value) || Object.keys(value).some((key) => key !== 'findings') || !Array.isArray(value.findings)) return false;
-  return value.findings.every((/** @type {any} */ finding) => plainObject(finding)
-    && Object.keys(finding).every((key) => ['severity', 'file', 'line', 'evidence', 'fix'].includes(key))
-    && ['severity', 'file', 'evidence', 'fix'].every((key) => Object.hasOwn(finding, key))
-    && ['critical', 'high', 'medium', 'low'].includes(finding.severity)
-    && [finding.file, finding.evidence, finding.fix].every((item) => typeof item === 'string')
-    && (finding.line === undefined || Number.isSafeInteger(finding.line) && finding.line >= 1));
-}
-/** @param {unknown} value @returns {value is Record<string,any>} */
-function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 /** @param {any} response */
 function validResponse(response) { return response && typeof response === 'object' && ['allow', 'deny'].includes(response.decision); }
 /** @param {unknown} error */

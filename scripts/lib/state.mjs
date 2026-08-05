@@ -40,6 +40,7 @@ export function createStateStore(options) {
   }
 
   return {
+    dataRoot,
     /** @param {JobReservation} reservation */
     async reserveJob(reservation) {
       validateReservation(reservation);

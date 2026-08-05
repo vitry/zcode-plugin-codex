@@ -56,6 +56,10 @@ test('review falls back to schema-valid visible JSON text and line is optional',
   assert.equal(extractFinalResult({ messages: [assistant([{ type: 'text', text: JSON.stringify(value) }])] }, 'adversarial-review'), `${JSON.stringify(value, null, 2)}\n`);
 });
 
+test('ordinary markdown is not accepted as structured review output', () => {
+  assert.throws(() => extractFinalResult({ messages: [assistant([{ type: 'text', text: 'Looks good to me.' }])] }, 'review'), { code: 'REVIEW_RESULT_INVALID' });
+});
+
 test('reasoning-only, hidden and invalid structured results fail closed', () => {
   assert.throws(() => extractFinalResult({ messages: [assistant([{ type: 'reasoning', text: 'done' }])] }, 'rescue'), { code: 'ZCODE_RESULT_MISSING' });
   assert.throws(() => extractFinalResult({ messages: [assistant([{ type: 'text', text: 'done' }], undefined, { uiVisibility: 'hidden' })] }, 'rescue'), { code: 'ZCODE_RESULT_MISSING' });

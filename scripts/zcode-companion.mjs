@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process';
 import { createHash } from 'node:crypto';
-import { createReadStream, writeFileSync } from 'node:fs';
+import { close as closeFd, createReadStream, write as writeFd } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve, sep } from 'node:path';
 
@@ -18,7 +18,9 @@ import { createStateStore } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { reconcileBrokerOwnership } from './zcode-broker.mjs';
 
-/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>}} [runtime] */
+const backgroundBindings = new WeakMap();
+
+/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
   const dataRoot = env.ZCODE_DATA_ROOT;
@@ -27,7 +29,7 @@ export async function runCompanion(argv, runtime = {}) {
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']) });
   const authorization = requireAuthorization(runtime.authorization, ['callerContext']);
   const caller = await identity.consumeCallerContext(authorization.callerContext, { workspace: cwd });
-  const controller = createJobController({ store });
+  const controller = createJobController({ store, dataRoot });
   if (parsed.command === 'status') {
     if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId)) };
     let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
@@ -41,14 +43,14 @@ export async function runCompanion(argv, runtime = {}) {
   }
   if (parsed.command === 'cancel') {
     const selected = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
-    if (selected.status !== 'running') return { job: await controller.cancel(cwd, selected.id, caller.sessionId) };
+    if (!['running', 'cancelling'].includes(selected.status)) return { job: await controller.cancel(cwd, selected.id, caller.sessionId) };
     const launch = await discoverLaunch(env);
     const client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId: ownerIdForSession(caller.sessionId), env });
-    const cancelling = createJobController({ store, stopSession: (sessionId) => client.stopSession(sessionId) });
+    const cancelling = createJobController({ store, dataRoot, stopSession: (sessionId) => client.stopSession(sessionId) });
     try { return { job: await cancelling.cancel(cwd, selected.id, caller.sessionId) }; }
     finally { await client.close().catch(() => {}); }
   }
-  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller });
+  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, dependencies: runtime.dependencies });
 }
 
 /** @param {any} context */
@@ -65,9 +67,19 @@ async function startPublic(context) {
   const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' '), task: parsed.positionals.join(' '), model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined });
   if (parsed.options.execution === 'background') {
     const specDigest = digestSpec(spec);
-    await writeJobSpec(dataRoot, cwd, job, spec, specDigest);
-    const capability = await identity.createExecutionCapability({ jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', permissionSnapshot, specDigest });
-    return { type: 'background', job, privateInvocation: ['run-reserved-job', job.id], executionCapability: capability };
+    const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', specDigest };
+    let capability;
+    try {
+      await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, spec, specDigest);
+      capability = await (context.dependencies?.createExecutionCapability ?? ((/** @type {any} */ input) => identity.createExecutionCapability(input)))({ ...binding, permissionSnapshot });
+      const output = (context.dependencies?.buildBackgroundOutput ?? ((/** @type {any} */ value) => value))({ type: 'background', job, privateInvocation: ['run-reserved-job', job.id], executionCapability: capability });
+      backgroundBindings.set(output, { identity, store, capability, binding });
+      return output;
+    } catch (error) {
+      if (capability) await identity.revokeExecutionCapability(capability, binding).catch(() => {});
+      await failQueuedJob(store, cwd, job.id, error);
+      throw error;
+    }
   }
   return executeReserved({ ...context, job, spec });
 }
@@ -171,17 +183,59 @@ export function readInternalEnvelope(fd = 3, options = {}) {
     stream.once('end', () => finish(() => { try { resolvePromise(JSON.parse(data)); } catch { reject(authorizationInputError()); } }));
   });
 }
-/** @param {unknown} value @param {number} [fd] */
-function writeInternalResponse(value, fd = 4) { const data = `${JSON.stringify(value)}\n`; if (Buffer.byteLength(data) > 1024 * 1024) throw new PluginError('INTERNAL_RESPONSE_TOO_LARGE', 'Internal response exceeded its limit.', { category: 'runtime', remedy: 'Inspect the job through status/result.' }); writeFileSync(fd, data); }
+/** @param {unknown} value @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number,write?:(fd:number,buffer:Buffer,offset:number,length:number,position:null,callback:(error:NodeJS.ErrnoException|null,bytesWritten:number)=>void)=>void,close?:(fd:number,callback:(error?:NodeJS.ErrnoException|null)=>void)=>void}} [options] */
+export function writeInternalResponse(value, fd = 4, options = {}) {
+  const maxBytes = options.maxBytes ?? 1024 * 1024; const timeoutMs = options.timeoutMs ?? 1_000;
+  if (!Number.isSafeInteger(fd) || fd < 3 || !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > 1024 * 1024 || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) return Promise.reject(new PluginError('INTERNAL_RESPONSE_OPTIONS_INVALID', 'Internal response writer options are invalid.', { category: 'validation', remedy: 'Use a protected descriptor, a limit up to 1 MiB, and a positive deadline.' }));
+  const data = Buffer.from(`${JSON.stringify(value)}\n`);
+  if (data.length > maxBytes) return Promise.reject(new PluginError('INTERNAL_RESPONSE_TOO_LARGE', 'Internal response exceeded its limit.', { category: 'runtime', remedy: 'Inspect the job through status/result.' }));
+  const write = options.write ?? writeFd; const close = options.close ?? closeFd;
+  return new Promise((resolvePromise, reject) => {
+    let offset = 0; let settled = false; let closing = false;
+    /** @param {unknown} [error] */
+    const finish = (error) => { if (settled) return; settled = true; clearTimeout(timer); if (error) reject(error); else resolvePromise(undefined); };
+    /** @param {unknown} cause @param {string} [code] */
+    const failure = (cause, code = 'INTERNAL_RESPONSE_WRITE_FAILED') => new PluginError(code, 'Could not deliver the protected internal response.', { category: code.endsWith('TIMEOUT') ? 'timeout' : 'runtime', remedy: 'Retry the command through its installed skill.', cause });
+    const timer = setTimeout(() => {
+      if (settled || closing) return; closing = true;
+      try { close(fd, () => {}); } catch { /* best effort abort */ }
+      finish(failure(new Error('Internal response write timed out.'), 'INTERNAL_RESPONSE_WRITE_TIMEOUT'));
+    }, timeoutMs);
+    const next = () => {
+      if (settled) return;
+      write(fd, data, offset, data.length - offset, null, (error, bytesWritten) => {
+        if (settled) return;
+        if (error) return finish(failure(error));
+        if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0) return finish(failure(new Error('Internal response writer made no progress.')));
+        offset += bytesWritten;
+        if (offset >= data.length) finish(); else queueMicrotask(next);
+      });
+    };
+    next();
+  });
+}
+
+/** @param {any} output @param {unknown} error */
+export async function failBackgroundDelivery(output, error) {
+  const record = output && backgroundBindings.get(output); if (!record) return;
+  backgroundBindings.delete(output);
+  await record.identity.revokeExecutionCapability(record.capability, record.binding).catch(() => {});
+  await failQueuedJob(record.store, record.binding.workspace, record.binding.jobId, error);
+}
+
+/** @param {any} store @param {string} workspace @param {string} jobId @param {unknown} error */
+async function failQueuedJob(store, workspace, jobId, error) {
+  await store.transitionJob(workspace, jobId, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Background preparation failed' }, finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
+}
 
 async function main() {
+  let output;
   try {
     const authorization = await readInternalEnvelope();
-    /** @type {any} */
-    const output = await runCompanion(process.argv.slice(2), { authorization });
-    writeInternalResponse(output); process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
+    output = await runCompanion(process.argv.slice(2), { authorization });
+    await writeInternalResponse(output); process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
   }
-  catch (error) { const envelope = errorEnvelope(error); try { writeInternalResponse(envelope); } catch { /* no trusted response channel */ } process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1; }
+  catch (error) { if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1; }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await main();
