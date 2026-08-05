@@ -10,7 +10,10 @@ const rootPath = fileURLToPath(new URL('../../', import.meta.url));
 
 /** @param {string} command @param {string[]} args @param {string} cwd */
 function run(command, args, cwd) {
-  return spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 30_000 });
+  const executable = process.platform === 'win32' && ['npm', 'npx'].includes(command)
+    ? `${command}.cmd`
+    : command;
+  return spawnSync(executable, args, { cwd, encoding: 'utf8', timeout: 30_000 });
 }
 
 test('packed production install loads and locks on Node 18 with pinned resolver', async (t) => {
@@ -19,6 +22,7 @@ test('packed production install loads and locks on Node 18 with pinned resolver'
   const nodePrefix = node18 ? [] : ['--yes', 'node@18.18.0'];
   const probe = run(nodeCommand, [...nodePrefix, '--version'], rootPath);
   if (probe.status !== 0) {
+    if (process.env.CI) assert.fail(`Node 18.18 is mandatory in CI: ${probe.stderr || probe.stdout}`);
     t.skip('Node 18.18 is unavailable; CI must set NODE18_BINARY or allow npx download');
     return;
   }

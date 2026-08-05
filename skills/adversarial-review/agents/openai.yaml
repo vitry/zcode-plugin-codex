@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZCode Adversarial Review"
+  short_description: "Challenge code assumptions and hidden failures"
+  default_prompt: "Use $zcode:adversarial-review to challenge my current changes."
