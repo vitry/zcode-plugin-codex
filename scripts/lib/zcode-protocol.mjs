@@ -22,10 +22,11 @@ export class ZCodeProtocolClient {
     /** @type {Set<any>} */ this.completionWaiters = new Set();
     /** @type {Set<(message:any)=>void>} */ this.subscribers = new Set();
     /** @type {Set<Promise<void>>} */ this.serverTasks = new Set();
+    /** @type {Set<AbortController>} */ this.serverTaskControllers = new Set();
     this.nextId = 1;
     this.buffer = '';
     this.closed = false;
-    this.closing = false;
+    /** @type {Promise<void>|null} */ this.closePromise = null;
     /** @type {Promise<void>|null} */ this.terminationPromise = null;
     this.permissionHandler = null;
     this.subscriberErrorHandler = null;
@@ -60,7 +61,7 @@ export class ZCodeProtocolClient {
     });
   }
 
-  /** @param {(params:any)=>Promise<any>|any} handler */
+  /** @param {((params:any,signal:AbortSignal)=>Promise<any>|any)|null} handler */
   setPermissionHandler(handler) {
     if (handler !== null && typeof handler !== 'function') throw protocolInputError();
     this.permissionHandler = handler;
@@ -110,11 +111,25 @@ export class ZCodeProtocolClient {
     });
   }
 
-  async close() {
-    if (this.closing) { await Promise.allSettled([...this.serverTasks]); await this.terminationPromise; return; }
-    this.closing = true;
-    if (!this.closed) { this.closed = true; this.rejectPending(disconnected()); this.rejectCompletionWaiters(disconnected()); this.writer.close(); try { this.child.stdin?.end(); } catch { /* already closed */ } }
-    await Promise.allSettled([...this.serverTasks]);
+  close() {
+    this.closePromise ??= this.closeOnce();
+    return this.closePromise;
+  }
+
+  async closeOnce() {
+    const firstClose = !this.closed;
+    this.closed = true;
+    for (const controller of this.serverTaskControllers) controller.abort();
+    if (firstClose) {
+      this.stderrTail.close();
+      this.rejectPending(disconnected()); this.rejectCompletionWaiters(disconnected()); this.writer.close();
+      for (const timer of this.completionExpiry.values()) clearTimeout(timer);
+      this.completionExpiry.clear(); this.completed.clear(); this.earlyCompletions.clear(); this.turns.clear(); this.permissionRequestIds.clear();
+      try { this.child.stdin?.end(); } catch { /* already closed */ }
+    }
+    const tasks = [...this.serverTasks];
+    if (tasks.length) await Promise.race([Promise.allSettled(tasks), boundedDelay(25)]);
+    this.serverTasks.clear(); this.serverTaskControllers.clear();
     this.terminationPromise ??= terminateProcess(this.child); await this.terminationPromise;
   }
 
@@ -142,7 +157,7 @@ export class ZCodeProtocolClient {
       this.fail(new PluginError('ZCODE_PROTOCOL_MALFORMED', 'ZCode sent malformed JSON.', { category: 'protocol', remedy: 'Restart ZCode and retry.', cause: error })); return;
     }
     if (!plainObject(message)) { this.fail(malformedFrame()); return; }
-    if (message.id !== undefined && message.method !== undefined) { this.trackServerTask(this.handleServerRequest(message)); return; }
+    if (message.id !== undefined && message.method !== undefined) { const controller = new AbortController(); this.trackServerTask(this.handleServerRequest(message, controller.signal), controller); return; }
     if (message.id !== undefined) { this.handleResponse(message); return; }
     if (typeof message.method === 'string' && plainObject(message.params)) {
       const turn = this.turns.get(message.params.sessionId);
@@ -173,8 +188,8 @@ export class ZCodeProtocolClient {
     } else pending.resolve(message.result);
   }
 
-  /** @param {any} message */
-  async handleServerRequest(message) {
+  /** @param {any} message @param {AbortSignal} signal */
+  async handleServerRequest(message, signal) {
     if (!Number.isSafeInteger(message.id) || typeof message.method !== 'string' || !plainObject(message.params)) { this.fail(malformedFrame()); return; }
     if (message.method !== 'interaction/requestPermission') { if (!this.closed) this.sendFrame({ id: message.id, error: { code: -32601, message: 'Unsupported server request.' } }); return; }
     try {
@@ -185,7 +200,7 @@ export class ZCodeProtocolClient {
       if (this.permissionRequestIds.has(replayKey)) throw new PluginError('ZCODE_PERMISSION_REPLAY', 'A duplicate permission request was rejected.', { category: 'authorization', remedy: 'Restart the affected ZCode turn.' });
       if (this.permissionRequestIds.size >= 1024) throw new PluginError('ZCODE_PERMISSION_OVERFLOW', 'Too many permission requests were rejected.', { category: 'authorization', remedy: 'Restart the affected ZCode turn.' });
       this.permissionRequestIds.set(replayKey, Date.now());
-      const result = this.permissionHandler ? await this.permissionHandler(message.params) : message.params.options.find((/** @type {any} */ option) => option.response.decision === 'deny')?.response;
+      const result = this.permissionHandler ? await this.permissionHandler(message.params, signal) : message.params.options.find((/** @type {any} */ option) => option.response.decision === 'deny')?.response;
       validatePermissionResult(result);
       if (!message.params.options.some((/** @type {any} */ option) => JSON.stringify(option.response) === JSON.stringify(result))) throw new PluginError('ZCODE_PERMISSION_OPTION_INVALID', 'Permission response was not one of the offered options.', { category: 'authorization', remedy: 'Return an exact response offered by ZCode.' });
       if (!this.closed) this.sendFrame({ id: message.id, result });
@@ -197,8 +212,8 @@ export class ZCodeProtocolClient {
     }
   }
 
-  /** @param {Promise<void>} task */
-  trackServerTask(task) { this.serverTasks.add(task); void task.then(() => this.serverTasks.delete(task), (error) => { this.serverTasks.delete(task); this.fail(asDisconnected(error, this.stderrTail.value())); }); }
+  /** @param {Promise<void>} task @param {AbortController} controller */
+  trackServerTask(task, controller) { this.serverTasks.add(task); this.serverTaskControllers.add(controller); void task.then(() => { this.serverTasks.delete(task); this.serverTaskControllers.delete(controller); }, (error) => { this.serverTasks.delete(task); this.serverTaskControllers.delete(controller); this.fail(asDisconnected(error, this.stderrTail.value())); }); }
 
   /** @param {Record<string,unknown>} frame */
   sendFrame(frame) {
@@ -210,8 +225,12 @@ export class ZCodeProtocolClient {
   /** @param {PluginError} error */
   fail(error) {
     if (this.closed) return;
+    this.closed = true;
+    for (const controller of this.serverTaskControllers) controller.abort();
+    this.serverTasks.clear(); this.serverTaskControllers.clear(); this.permissionRequestIds.clear();
+    this.stderrTail.close();
     const diagnosticError = withStderr(error, this.stderrTail.value());
-    this.closed = true; this.writer.close(); this.rejectPending(diagnosticError); this.rejectCompletionWaiters(diagnosticError); for (const timer of this.completionExpiry.values()) clearTimeout(timer); this.completionExpiry.clear(); this.completed.clear(); this.earlyCompletions.clear(); this.turns.clear();
+    this.writer.close(); this.rejectPending(diagnosticError); this.rejectCompletionWaiters(diagnosticError); for (const timer of this.completionExpiry.values()) clearTimeout(timer); this.completionExpiry.clear(); this.completed.clear(); this.earlyCompletions.clear(); this.turns.clear();
     try { this.closeHandler?.(diagnosticError); } catch { /* close diagnostics cannot destabilize host */ }
     try { this.child.stdin?.destroy(); this.child.stdout?.destroy(); } catch { /* best effort */ }
     this.terminationPromise ??= terminateProcess(this.child); void this.terminationPromise.catch(() => {});
@@ -247,9 +266,38 @@ export class BoundedWriter {
 }
 
 export class RedactedTail {
-  /** @param {number} [maxBytes] */ constructor(maxBytes = 8192) { this.maxBytes = maxBytes; this.tail = ''; }
-  /** @param {unknown} chunk */ append(chunk) { this.tail = redactSecrets(this.tail + String(chunk)); while (Buffer.byteLength(this.tail) > this.maxBytes) this.tail = this.tail.slice(Math.max(1, Math.floor(this.tail.length / 4))); }
-  value() { return redactSecrets(this.tail); }
+  /** @param {number} [maxBytes] @param {number} [maxLineBytes] */
+  constructor(maxBytes = 8192, maxLineBytes = 64 * 1024) { this.maxBytes = maxBytes; this.maxLineBytes = maxLineBytes; this.tail = ''; this.line = ''; this.oversized = false; this.closed = false; }
+  /** @param {unknown} chunk */
+  append(chunk) {
+    if (this.closed) return;
+    let input = String(chunk);
+    let newline = input.indexOf('\n');
+    while (newline !== -1) {
+      this.appendLineSegment(input.slice(0, newline)); this.finishLine(true);
+      input = input.slice(newline + 1); newline = input.indexOf('\n');
+    }
+    this.appendLineSegment(input);
+  }
+  /** @param {string} segment */
+  appendLineSegment(segment) {
+    if (this.oversized || !segment) return;
+    if (Buffer.byteLength(this.line) + Buffer.byteLength(segment) > this.maxLineBytes) { this.line = ''; this.oversized = true; return; }
+    this.line += segment;
+  }
+  /** @param {boolean} newline */
+  finishLine(newline) {
+    const diagnostic = this.oversized ? '[oversized stderr line omitted]' : redactSecrets(this.line.replace(/\r$/, ''));
+    if (diagnostic || newline) this.appendDiagnostic(`${diagnostic}${newline ? '\n' : ''}`);
+    this.line = ''; this.oversized = false;
+  }
+  /** @param {string} diagnostic */
+  appendDiagnostic(diagnostic) {
+    this.tail += diagnostic;
+    while (Buffer.byteLength(this.tail) > this.maxBytes) this.tail = this.tail.slice(Math.max(1, Math.floor(this.tail.length / 4)));
+  }
+  close() { if (this.closed) return; this.closed = true; if (this.line || this.oversized) this.finishLine(false); }
+  value() { return this.tail; }
 }
 
 /** @param {{command:string,args:string[],target?:string}} launch @param {{cwd?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number}} [options] */
@@ -284,6 +332,8 @@ function isCompletionFor(message, sessionId, /** @type {any} */ turn) { return n
 function isTerminalNotification(message) { return message.method === 'state.updated' && message.params?.scope === 'session' && nonEmpty(message.params.sessionId) && Number.isSafeInteger(message.params.revision) && COMPLETION_REASONS.includes(message.params.reason); }
 /** @param {number|undefined} value @param {number} fallback @param {number} minimum @param {number} maximum */
 function boundedInteger(value, fallback, minimum, maximum) { if (value === undefined) return fallback; if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw protocolInputError(); return value; }
+/** @param {number} milliseconds */
+function boundedDelay(milliseconds) { return new Promise((resolve) => { setTimeout(resolve, milliseconds); }); }
 /** @param {unknown} value */
 function nonEmpty(value) { return typeof value === 'string' && value.length > 0; }
 /** @param {unknown} value @returns {value is Record<string,any>} */
@@ -297,7 +347,12 @@ function asDisconnected(error, stderrTail = '') { return new PluginError('ZCODE_
 /** @param {PluginError} error @param {string} stderrTail */
 function withStderr(error, stderrTail) { if (!stderrTail) return error; return new PluginError(error.code, error.message, { category: error.category, remedy: error.remedy, cause: error.cause, details: { ...error.details, stderrTail } }); }
 /** @param {string} value */
-function redactSecrets(value) { return value.replace(/\b(token|auth(?:orization)?|cookie|api[_-]?key|permission)\b\s*[:=]\s*[^\r\n]*/gi, '$1=[REDACTED]'); }
+function redactSecrets(value) {
+  const credentialsRedacted = value.replace(/\b(Bearer|Basic)\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi, '$1 [REDACTED]');
+  const key = String.raw`(?:"(?:authorization|auth|cookie|token|api[_-]?key|apikey|secret|password)"|'(?:authorization|auth|cookie|token|api[_-]?key|apikey|secret|password)'|\b(?:authorization|auth|cookie|token|api[_-]?key|apikey|secret|password|[A-Za-z][A-Za-z0-9_]*(?:_TOKEN|_API_KEY|_SECRET|_PASSWORD))\b)`;
+  const secretValue = String.raw`(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,;]+)`;
+  return credentialsRedacted.replace(new RegExp(`(${key}\\s*(?::|=|\\s)\\s*)${secretValue}`, 'gi'), '$1[REDACTED]');
+}
 /** @param {Record<string,any>} value */
 function validatePermissionRequest(value) {
   const required = ['requestId', 'sessionId', 'toolCallId', 'toolName', 'reason', 'riskLevel', 'input', 'options'];

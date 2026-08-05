@@ -4,12 +4,15 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { runProcess, spawnProcess, terminateProcess } from '../scripts/lib/process.mjs';
 import { BoundedWriter, RedactedTail, ZCodeProtocolClient } from '../scripts/lib/zcode-protocol.mjs';
+
+const fakeFixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 
 test('grace timer does not retain the caller after the child exits', async () => {
   const moduleUrl = new URL('../scripts/lib/process.mjs', import.meta.url).href;
@@ -84,6 +87,90 @@ test('subscriber failures are isolated and permission work cannot write after cl
   assert.equal(child.stdin.readableLength, beforeClose);
 });
 
-test('stderr tail redacts a secret before truncating a single oversized line', () => {
-  const tail = new RedactedTail(128); tail.append(`authorization=${'super-secret'.repeat(1000)}`); assert.ok(Buffer.byteLength(tail.value()) <= 128); assert.ok(!tail.value().includes('super-secret'));
+test('close aborts and detaches a never-settling permission task under strict rejections', async () => {
+  const protocolUrl = new URL('../scripts/lib/zcode-protocol.mjs', import.meta.url).href;
+  const source = `
+    import assert from 'node:assert/strict';
+    import { spawn } from 'node:child_process';
+    import { ZCodeProtocolClient } from ${JSON.stringify(protocolUrl)};
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 10000)'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    const protocol = new ZCodeProtocolClient(child);
+    protocol.beginTurn('session-1');
+    const handlerSignals = [];
+    protocol.setPermissionHandler((_request, signal) => {
+      const index = handlerSignals.push(signal) - 1;
+      if (index === 0) return new Promise(() => {});
+      if (index === 1) return new Promise((resolve) => signal.addEventListener('abort', () => setImmediate(() => resolve({ decision: 'deny' })), { once: true }));
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => setImmediate(() => reject(new Error('late rejection'))), { once: true }));
+    });
+    const request = (id) => ({ id, method: 'interaction/requestPermission', params: { requestId: 'r-' + id, sessionId: 'session-1', toolCallId: 't-' + id, toolName: 'write', reason: 'test', riskLevel: 'low', input: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] } });
+    for (const id of [99, 100, 101]) protocol.handleLine(JSON.stringify(request(id)));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(handlerSignals.length, 3);
+    assert.ok(handlerSignals.every((signal) => signal instanceof AbortSignal));
+    const beforeClose = child.stdin.readableLength;
+    const started = Date.now();
+    const firstClose = protocol.close();
+    const secondClose = protocol.close();
+    assert.equal(firstClose, secondClose);
+    await firstClose;
+    const elapsedMs = Date.now() - started;
+    assert.ok(elapsedMs <= 200, 'close took ' + elapsedMs + 'ms');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(handlerSignals.every((signal) => signal.aborted));
+    assert.equal(protocol.serverTasks.size, 0);
+    for (const map of [protocol.pending, protocol.completed, protocol.completionExpiry, protocol.turns, protocol.earlyCompletions, protocol.permissionRequestIds]) assert.equal(map.size, 0);
+    assert.ok(child.exitCode !== null || child.signalCode !== null);
+    assert.equal(child.stdin.readableLength, beforeClose);
+  `;
+  const runner = spawn(process.execPath, ['--unhandled-rejections=strict', '--input-type=module', '-e', source], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = '';
+  runner.stderr.setEncoding('utf8'); runner.stderr.on('data', (chunk) => { stderr += chunk; });
+  const outcome = await Promise.race([
+    new Promise((resolve) => runner.once('exit', (code, signal) => resolve({ code, signal }))),
+    new Promise((resolve) => { const timer = setTimeout(() => resolve({ timeout: true }), 1_000); timer.unref(); }),
+  ]);
+  if (outcome.timeout) runner.kill('SIGKILL');
+  assert.deepEqual(outcome, { code: 0, signal: null }, stderr || 'strict child did not finish');
+});
+
+test('stderr tail redacts complete cross-chunk lines and retains ordinary diagnostics', () => {
+  const tail = new RedactedTail(4096);
+  tail.append('ordinary diagnostic retained\n"author');
+  tail.append('ization": "cross-chunk-secret"\nOPENAI_API_');
+  tail.append('KEY = env-secret\n{"auth":"auth-secret","cookie":"cookie-secret","token":"token-secret","api_key":"snake-secret","apiKey":"camel-secret","SECRET":"secret-secret","password":"password-secret"}\n');
+  tail.append('ZCODE_TOKEN space-secret\nCUSTOM_TOKEN=custom-secret\nCUSTOM_API_KEY: custom-api-secret\nCLIENT_SECRET=client-secret\nDATABASE_PASSWORD=correct horse battery staple\nBearer bearer-secret\nBasic basic-secret\n');
+  tail.close();
+  const value = tail.value();
+  for (const secret of ['cross-chunk-secret', 'env-secret', 'auth-secret', 'cookie-secret', 'token-secret', 'snake-secret', 'camel-secret', 'secret-secret', 'password-secret', 'space-secret', 'custom-secret', 'custom-api-secret', 'client-secret', 'correct horse battery staple', 'bearer-secret', 'basic-secret']) assert.ok(!value.includes(secret), secret);
+  assert.match(value, /ordinary diagnostic retained/);
+  assert.match(value, /\[REDACTED\]/);
+});
+
+test('stderr tail omits an oversized line and flushes a safe unterminated line on close', () => {
+  const tail = new RedactedTail(256, 64);
+  tail.append(`ZCODE_TOKEN=${'oversized-secret'.repeat(100)}`);
+  tail.append('\nordinary final diagnostic token=final-secret');
+  tail.close();
+  const value = tail.value();
+  assert.ok(Buffer.byteLength(value) <= 256);
+  assert.equal(value.match(/\[oversized stderr line omitted\]/g)?.length, 1);
+  assert.ok(!value.includes('oversized-secret'));
+  assert.ok(!value.includes('final-secret'));
+  assert.match(value, /ordinary final diagnostic/);
+});
+
+test('fake peer stop cancels the pending completion before acknowledging stop', async () => {
+  const peer = spawn(process.execPath, [fakeFixture], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = ''; let stderr = '';
+  peer.stdout.setEncoding('utf8'); peer.stdout.on('data', (chunk) => { stdout += chunk; });
+  peer.stderr.setEncoding('utf8'); peer.stderr.on('data', (chunk) => { stderr += chunk; });
+  await new Promise((resolve, reject) => { peer.once('spawn', resolve); peer.once('error', reject); });
+  peer.stdin.end(`${JSON.stringify({ id: 1, method: 'session/send', params: { sessionId: 'stop-session', inputId: 'input-1' } })}\n${JSON.stringify({ id: 2, method: 'session/stop', params: { sessionId: 'stop-session' } })}\n`);
+  const code = await new Promise((resolve) => peer.once('exit', resolve));
+  assert.equal(code, 0, stderr);
+  const frames = stdout.trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.deepEqual(frames.map((frame) => frame.id), [1, 2]);
+  assert.equal(frames.some((frame) => frame.method === 'state.updated'), false);
 });

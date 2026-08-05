@@ -234,7 +234,22 @@ export class ZCodeBroker {
 
   applyOwnership(sessions) { const next = new Map(); for (const [sessionId, ownerId] of Object.entries(sessions)) { const current = this.sessionOwners.get(sessionId); next.set(sessionId, { ownerId, socket: current?.ownerId === ownerId ? current.socket : null, claimToken: null }); } for (const [sessionId, current] of this.sessionOwners) if (current.claimToken && !next.has(sessionId)) next.set(sessionId, current); this.sessionOwners = next; }
 
-  async removeIdentityIfOwned() { if (!this.options.identityPath || !this.options.instanceId) return; try { const value = JSON.parse(await readFile(this.options.identityPath, 'utf8')); if (value.instanceId === this.options.instanceId) await unlink(this.options.identityPath); } catch { /* missing or replaced identity */ } }
+  async removeIdentityIfOwned() {
+    if (!this.options.identityPath || !this.options.instanceId) return;
+    const identityPath = this.options.identityPath;
+    await withFileLock(join(dirname(identityPath), '.lock'), async () => {
+      let contents;
+      try { contents = await readFile(identityPath, 'utf8'); }
+      catch (error) { if (error?.code === 'ENOENT') return; throw identityCleanupError(identityPath, error); }
+      let value;
+      try { value = JSON.parse(contents); }
+      catch (error) { throw identityCleanupError(identityPath, error); }
+      if (!value || typeof value !== 'object' || typeof value.instanceId !== 'string') throw identityCleanupError(identityPath);
+      if (value.instanceId !== this.options.instanceId) return;
+      try { await unlink(identityPath); }
+      catch (error) { throw identityCleanupError(identityPath, error); }
+    });
+  }
 }
 
 function writeLocal(socket, value) { if (!socket.writable) return; try { socket.zcodeWriter?.write(`${JSON.stringify(value)}\n`); } catch { socket.destroy(); } }
@@ -250,6 +265,7 @@ function writeRequestError(socket, id, error) { const pluginError = error instan
 function ownerStoreInvalid(cause) { return new PluginError('ZCODE_OWNER_STORE_INVALID', 'The ZCode session owner store is missing or corrupt.', { category: 'storage', remedy: 'Reconcile ownership from validated durable job records before resuming sessions.', ...(cause === undefined ? {} : { cause }) }); }
 function ownerConflict() { return new PluginError('ZCODE_SESSION_OWNER_CONFLICT', 'The session already belongs to another broker owner.', { category: 'authorization', remedy: 'Use the original stable owner credential.' }); }
 function brokerInputError() { return new PluginError('ZCODE_BROKER_INPUT_INVALID', 'ZCode broker input is invalid.', { category: 'validation', remedy: 'Provide a data root, workspace, endpoint, and launch target.' }); }
+function identityCleanupError(path, cause) { return new PluginError('ZCODE_BROKER_IDENTITY_CLEANUP_FAILED', 'The ZCode broker identity could not be safely removed.', { category: 'storage', remedy: 'Inspect the broker identity path and retry cleanup.', ...(cause === undefined ? {} : { cause }), details: { path } }); }
 
 async function main() {
   const configPath = process.argv[2];

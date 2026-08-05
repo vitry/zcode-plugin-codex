@@ -72,7 +72,7 @@ export class ZCodeClient {
 
   /** @param {string} sessionId @param {number} [timeoutMs] */ waitForCompletion(sessionId, timeoutMs) { return this.protocol.waitForCompletion(sessionId, timeoutMs); }
   /** @param {(message:any)=>void} handler */ subscribe(handler) { return this.protocol.subscribe(handler); }
-  /** @param {(request:any)=>Promise<any>|any} handler */ setPermissionHandler(handler) { this.protocol.setPermissionHandler(handler); }
+  /** @param {(request:any,signal:AbortSignal)=>Promise<any>|any} handler */ setPermissionHandler(handler) { this.protocol.setPermissionHandler(handler); }
   close() { return this.protocol.close(); }
 }
 

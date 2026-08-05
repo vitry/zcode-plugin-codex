@@ -15,6 +15,7 @@ const input = readline.createInterface({ input: process.stdin });
 let permissionId = 9000;
 let sendCount = 0;
 let resumeCount = 0;
+const pendingCompletionTimers = new Map();
 
 const defaultModel = { providerId: 'fake', modelId: 'model' };
 function settings(model = defaultModel) { return { appliedProviderRevision: 'provider-revision-1', model: { current: model, available: [{ ref: model, label: 'Fixture model', reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, label: 'Other model', reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' }, permission: { mode: 'build', rulesRevision: 1 } }; }
@@ -67,7 +68,8 @@ input.on('line', async (line) => {
       const sessionId = p.sessionId ?? `session-${sessions.size + 1}`;
       sessions.set(sessionId, { sessionId, workspacePath: p.workspace?.workspacePath ?? '/repo', settings: settings(p.model ?? defaultModel), messages: [] });
       const result = snapshot(sessionId);
-      if (process.env.FAKE_ZCODE_FUTURE_FIELDS === '1') { result.protocol.version = 2; result.futureEnvelope = { ignored: true }; result.projection.futureProjectionField = 'new'; result.settings.model.available[0].futureCatalogField = 42; }
+      if (process.env.FAKE_ZCODE_FUTURE_FIELDS === '1') { result.futureEnvelope = { ignored: true }; result.protocol.futureProtocolField = 'ignored'; result.projection.futureProjectionField = 'new'; result.settings.model.available[0].futureCatalogField = 42; }
+      if (process.env.FAKE_ZCODE_PROTOCOL_VERSION) result.protocol.version = Number(process.env.FAKE_ZCODE_PROTOCOL_VERSION);
       if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-workspace') delete result.session.workspace;
       if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'empty-message') result.messages = [{}];
       if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-session-kind') result.session.sessionKind = 'main';
@@ -101,7 +103,11 @@ input.on('line', async (line) => {
       const completion = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: stateRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };
       if (process.env.FAKE_ZCODE_SYNC_BATCH === 'stale-valid') sendBatch([response, { method: 'state.updated', params: { ...completion.params, revision: stateRevision } }, completion]);
       else if (process.env.FAKE_ZCODE_SYNC_COMPLETE === '1') send(completion);
-      else if (!(process.env.FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION === '1' && sendCount === 1)) setTimeout(() => send(completion), 5);
+      else if (!(process.env.FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION === '1' && sendCount === 1)) {
+        const existingTimer = pendingCompletionTimers.get(p.sessionId); if (existingTimer) clearTimeout(existingTimer);
+        const timer = setTimeout(() => { if (pendingCompletionTimers.get(p.sessionId) === timer) pendingCompletionTimers.delete(p.sessionId); send(completion); }, 5);
+        pendingCompletionTimers.set(p.sessionId, timer);
+      }
       break;
     }
     case 'session/read':
@@ -116,9 +122,11 @@ input.on('line', async (line) => {
     case 'session/list':
       send({ id: message.id, result: { sessions: process.env.FAKE_ZCODE_BAD_LIST === 'session-id-only' ? [...sessions.values()].map(({ sessionId }) => ({ sessionId })) : [...sessions.values()].map(({ sessionId, workspacePath }) => sessionInfo(sessionId, workspacePath)) } });
       break;
-    case 'session/stop':
+    case 'session/stop': {
+      const timer = pendingCompletionTimers.get(p.sessionId); if (timer) { clearTimeout(timer); pendingCompletionTimers.delete(p.sessionId); }
       send({ id: message.id, result: process.env.FAKE_ZCODE_BAD_STOP_EXTRA === '1' ? { stopped: true } : {} });
       break;
+    }
     case 'session/setModel':
       sessions.get(p.sessionId).settings.model.current = p.model;
       send({ id: message.id, result: snapshot(p.sessionId) });

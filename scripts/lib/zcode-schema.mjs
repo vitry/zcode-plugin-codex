@@ -140,7 +140,7 @@ function validSlashCommand(/** @type {any} */ value) { return exact(value, ['nam
 /** Kne */
 export function validSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId) {
   return exact(value, ['protocol', 'session', 'settings', 'projection', 'runtime', 'messages'], ['goalStats', 'todos', 'todoGroups', 'slashCommands'])
-    && exact(value.protocol, ['name', 'version']) && value.protocol.name === 'ZCode Protocol' && Number.isSafeInteger(value.protocol.version) && value.protocol.version >= 1
+    && exact(value.protocol, ['name', 'version']) && value.protocol.name === 'ZCode Protocol' && value.protocol.version === 1
     && validSessionInfo(value.session) && value.session.sessionId === sessionId && validSettings(value.settings) && validProjection(value.projection) && validRuntime(value.runtime) && arrayOf(value.messages, validMessage)
     && optional(value.goalStats, validGoalStats) && optional(value.todos, (items) => arrayOf(items, validTodo)) && optional(value.todoGroups, (items) => arrayOf(items, validTodoGroup)) && optional(value.slashCommands, (items) => arrayOf(items, validSlashCommand));
 }

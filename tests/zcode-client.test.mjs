@@ -9,6 +9,7 @@ import test from 'node:test';
 
 import { createManagedZCodeClient, createZCodeClient } from '../scripts/lib/zcode-client.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, reconcileBrokerOwnership, ZCodeBroker } from '../scripts/zcode-broker.mjs';
+import { withFileLock } from '../scripts/lib/fs.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
@@ -89,6 +90,17 @@ test('completion timeout and stop fully clean the turn and allow another send', 
     for (const map of [client.protocol.turns, client.protocol.completed, client.protocol.earlyCompletions, client.protocol.completionExpiry]) assert.equal(map.size, 0);
     assert.equal(client.protocol.completionWaiters.size, 0); assert.equal(client.protocol.waiterSessions.size, 0);
   }, { FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' });
+});
+
+test('stopping after completion does not change the already resolved completion result', async () => {
+  await withClient(async (client) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await client.send(sessionId, 'complete first');
+    const completion = await client.waitForCompletion(sessionId);
+    await client.stopSession(sessionId);
+    assert.equal(completion.reason, 'prompt_completed');
+    assert.equal(completion.sessionId, sessionId);
+  });
 });
 
 test('permission response must be an offered option and replay is rejected', async () => {
@@ -208,8 +220,12 @@ test('invented and malformed nested 0.16.1 response fields are rejected', async 
   for (const variant of ['invented-session-kind', 'invented-subagent-kind', 'bad-protocol', 'missing-model-label', 'string-message-model', 'bad-goal-stats', 'bad-permission-origin', 'bad-runtime-cache', 'bad-timeline-trigger', 'bad-provider-options']) await t.test(variant, () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: variant }));
 });
 
-test('newer protocol versions and harmless additive response fields are accepted', async () => {
-  await withClient(async (client) => { const result = await client.createSession({ workspace: '/repo' }); assert.equal(result.protocol.version, 2); assert.equal(result.projection.futureProjectionField, 'new'); }, { FAKE_ZCODE_FUTURE_FIELDS: '1' });
+test('harmless additive response fields are accepted with wire protocol version 1', async () => {
+  await withClient(async (client) => { const result = await client.createSession({ workspace: '/repo' }); assert.equal(result.protocol.version, 1); assert.equal(result.protocol.futureProtocolField, 'ignored'); assert.equal(result.projection.futureProjectionField, 'new'); }, { FAKE_ZCODE_FUTURE_FIELDS: '1' });
+});
+
+test('wire protocol version 2 fails closed even when its fields are otherwise valid', async () => {
+  await withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_PROTOCOL_VERSION: '2' });
 });
 
 test('invalid broker send response rolls back the turn and permits a retry', async () => {
@@ -349,6 +365,31 @@ test('broker removes only the identity record belonging to its own instance', as
   const directory = await mkdtemp(join(tmpdir(), 'zcode-identity-clean-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const identityPath = join(directory, 'identity.json'); const options = { endpoint, identityPath, brokerToken: '2'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } };
   await writeFile(identityPath, JSON.stringify({ instanceId: 'instance-a' }), { mode: 0o600 }); const first = await new ZCodeBroker({ ...options, instanceId: 'instance-a' }).start(); await first.close(); await assert.rejects(readFile(identityPath), (error) => error.code === 'ENOENT');
   await writeFile(identityPath, JSON.stringify({ instanceId: 'replacement' }), { mode: 0o600 }); const second = await new ZCodeBroker({ ...options, instanceId: 'instance-b' }).start(); await second.close(); assert.equal(JSON.parse(await readFile(identityPath, 'utf8')).instanceId, 'replacement'); await rm(directory, { recursive: true, force: true });
+});
+
+test('broker identity cleanup rechecks ownership inside the startup advisory lock', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-identity-lock-')); const identityPath = join(directory, 'identity.json'); const lockPath = join(directory, '.lock');
+  const broker = new ZCodeBroker({ endpoint: join(directory, 'broker.sock'), identityPath, instanceId: 'old-instance', brokerToken: '2'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  await writeFile(identityPath, JSON.stringify({ instanceId: 'old-instance' }), { mode: 0o600 });
+  let releaseLock; let signalAcquired; const acquired = new Promise((resolve) => { signalAcquired = resolve; }); const release = new Promise((resolve) => { releaseLock = resolve; });
+  const holder = withFileLock(lockPath, async () => { signalAcquired(); await release; });
+  await acquired;
+  let cleanupSettled = false; const cleanup = broker.removeIdentityIfOwned().finally(() => { cleanupSettled = true; });
+  for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  const settledWhileLocked = cleanupSettled;
+  await writeFile(identityPath, JSON.stringify({ instanceId: 'replacement-instance' }), { mode: 0o600 });
+  releaseLock(); await holder; await cleanup;
+  assert.equal(settledWhileLocked, false, 'cleanup must wait for the startup lock');
+  assert.equal(JSON.parse(await readFile(identityPath, 'utf8')).instanceId, 'replacement-instance');
+  await rm(directory, { recursive: true, force: true });
+});
+
+test('broker identity cleanup reports corrupt identity paths as stable plugin errors', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-identity-error-')); const identityPath = join(directory, 'identity.json');
+  const broker = new ZCodeBroker({ endpoint: join(directory, 'broker.sock'), identityPath, instanceId: 'old-instance', brokerToken: '2'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  await writeFile(identityPath, '{not-json', { mode: 0o600 });
+  await assert.rejects(broker.removeIdentityIfOwned(), { name: 'PluginError', code: 'ZCODE_BROKER_IDENTITY_CLEANUP_FAILED' });
+  await rm(directory, { recursive: true, force: true });
 });
 
 test('launch target is revalidated before spawning', async () => {
