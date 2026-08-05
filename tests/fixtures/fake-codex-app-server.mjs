@@ -1,0 +1,60 @@
+#!/usr/bin/env node
+// @ts-nocheck
+import { appendFile } from 'node:fs/promises';
+import process from 'node:process';
+import readline from 'node:readline';
+
+const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+async function record(value) {
+  if (process.env.FAKE_CODEX_RECORD) await appendFile(process.env.FAKE_CODEX_RECORD, `${JSON.stringify(value)}\n`);
+}
+
+let outputQueue = Promise.resolve();
+function write(value) {
+  const frame = `${JSON.stringify(value)}${process.env.FAKE_CODEX_CRLF === '1' ? '\r\n' : '\n'}`;
+  outputQueue = outputQueue.then(async () => {
+    if (process.env.FAKE_CODEX_PARTIAL === '1') {
+      const middle = Math.floor(frame.length / 2);
+      process.stdout.write(frame.slice(0, middle));
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      process.stdout.write(frame.slice(middle));
+    } else process.stdout.write(frame);
+  });
+}
+
+if (process.env.FAKE_CODEX_STDERR_BYTES) {
+  const text = process.env.FAKE_CODEX_STDERR_TEXT ?? 'diagnostic';
+  process.stderr.write(text.repeat(Math.ceil(Number(process.env.FAKE_CODEX_STDERR_BYTES) / text.length)));
+}
+
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, async () => {
+  await record({ lifecycle: signal });
+  process.exit(0);
+});
+process.on('exit', () => { if (process.env.FAKE_CODEX_EXIT_MARKER) process.stderr.write(process.env.FAKE_CODEX_EXIT_MARKER); });
+
+let inputQueue = Promise.resolve();
+input.on('line', (line) => { inputQueue = inputQueue.then(() => handleLine(line)); });
+
+async function handleLine(line) {
+  let request;
+  try { request = JSON.parse(line); } catch { return; }
+  await record(request);
+  if (!request.method || process.env.FAKE_CODEX_HANG === request.method) return;
+  if (process.env.FAKE_CODEX_NOTIFICATION === '1') write({ method: 'thread/status/changed', params: { threadId: 'unrelated' } });
+  if (process.env.FAKE_CODEX_OTHER_ID === '1') write({ id: 999, result: { ignored: true } });
+  if (process.env.FAKE_CODEX_MALFORMED === request.method) { process.stdout.write('{not-json}\n'); return; }
+  if (process.env.FAKE_CODEX_OVERSIZE === request.method) { process.stdout.write(`${'x'.repeat(Number(process.env.FAKE_CODEX_OVERSIZE_BYTES ?? 4096))}\n`); return; }
+  if (process.env.FAKE_CODEX_ERROR === request.method) { write({ id: request.id, error: { code: -32001, message: 'thread unavailable', data: { secret: 'do-not-copy' } } }); return; }
+  if (process.env.FAKE_CODEX_AMBIGUOUS === request.method) { write({ id: request.id, result: {}, error: { code: -32001, message: 'ambiguous' } }); return; }
+  if (request.method === 'initialize') {
+    write({ id: request.id, result: { userAgent: 'fake-codex' } });
+    return;
+  }
+  if (request.method === 'thread/read') {
+    let thread;
+    try { thread = JSON.parse(process.env.FAKE_CODEX_THREAD_JSON ?? '{}'); } catch { thread = null; }
+    write({ id: request.id, result: { thread } });
+  }
+}

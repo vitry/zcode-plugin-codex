@@ -63,6 +63,7 @@ export function createStateStore(options) {
           command: reservation.command,
           readOnly: reservation.readOnly,
           permissionSnapshot: reservation.permissionSnapshot,
+          ...(reservation.codexThreadId === undefined ? {} : { codexThreadId: reservation.codexThreadId }),
           status: 'queued',
           createdAt: timestamp,
           updatedAt: timestamp,
@@ -215,6 +216,7 @@ function validateReservation(reservation) {
   if (!JOB_COMMANDS.includes(reservation.command)) invalidFields.push('command');
   if (typeof reservation.readOnly !== 'boolean') invalidFields.push('readOnly');
   if (!isPlainJsonObject(reservation.permissionSnapshot)) invalidFields.push('permissionSnapshot');
+  if (reservation.command === 'transfer' ? !isBoundedThreadId(reservation.codexThreadId) : reservation.codexThreadId !== undefined) invalidFields.push('codexThreadId');
   if (invalidFields.length > 0) throw invalidReservation(invalidFields);
 }
 
@@ -269,6 +271,8 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
     && (!('childPid' in job) || Number.isSafeInteger(job.childPid) && job.childPid > 0)
     && (!('exitCode' in job) || job.exitCode === null || Number.isSafeInteger(job.exitCode))
     && (!('zcodeSessionId' in job) || isNonEmptyString(job.zcodeSessionId))
+    && (!('codexThreadId' in job) || job.command === 'transfer' && isBoundedThreadId(job.codexThreadId))
+    && (job.command !== 'transfer' || isBoundedThreadId(job.codexThreadId))
     && (!('model' in job) || isModel(job.model))
     && (!('effort' in job) || EFFORT_LEVELS.includes(job.effort))
     && (!('startedAt' in job) || isIsoTimestamp(job.startedAt))
@@ -378,6 +382,9 @@ function isTrackedError(value) {
 }
 
 /** @param {unknown} value */
+function isBoundedThreadId(value) { return isNonEmptyString(value) && Buffer.byteLength(value) <= 512 && ![...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code <= 31 || code === 127; }); }
+
+/** @param {unknown} value */
 function isModel(value) {
   if (isNonEmptyString(value)) return true;
   if (!isPlainJsonObject(value) || !isNonEmptyString(value.providerId)
@@ -457,4 +464,5 @@ function jobPath(jobsDirectory, jobId) {
  * @property {string} command
  * @property {boolean} readOnly
  * @property {unknown} permissionSnapshot
+ * @property {string} [codexThreadId]
  */

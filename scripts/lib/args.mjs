@@ -1,6 +1,6 @@
 import { PluginError } from './errors.mjs';
 
-const PUBLIC_COMMANDS = new Set(['review', 'adversarial-review', 'rescue', 'status', 'result', 'cancel']);
+const PUBLIC_COMMANDS = new Set(['review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel']);
 const SCOPES = new Set(['auto', 'working-tree', 'branch']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const JOB_ID = /^[a-f0-9]{64}$/;
@@ -14,7 +14,8 @@ export function parseArgs(argv) {
   /** @type {any} */
   const parsed = command === 'review' || command === 'adversarial-review'
     ? parseReview(command, tokens)
-    : command === 'rescue' ? parseRescue(tokens)
+      : command === 'rescue' ? parseRescue(tokens)
+        : command === 'transfer' ? parseTransfer(tokens)
       : command === 'status' ? parseStatus(tokens) : parseJobLookup(command, tokens);
   return { command, ...parsed };
 }
@@ -69,6 +70,16 @@ function parseRescue(tokens) {
     }, positionals,
   });
   if (!positionals.some((value) => value.trim())) throw argumentError('Rescue requires a task.');
+  return { options, positionals };
+}
+
+/** @param {string[]} tokens */
+function parseTransfer(tokens) {
+  /** @type {any} */ const options = {};
+  /** @type {string[]} */
+  const positionals = [];
+  parseTokens(tokens, { boolean: {}, scalar: { '--source': (value) => { if (Buffer.byteLength(value) > 512 || hasControl(value)) throw argumentError('Codex thread ID is invalid.'); options.source = value; } }, positionals });
+  if (positionals.length) throw argumentError('Transfer does not accept positional arguments.');
   return { options, positionals };
 }
 
@@ -138,3 +149,5 @@ function copyModel(value) { return { providerId: value.providerId, modelId: valu
 function modelNotFound(value) { return new PluginError('MODEL_NOT_FOUND', `Model ${String(value)} could not be resolved.`, { category: 'configuration', remedy: 'Use provider/model, a configured alias, or an exact advertised model ID.' }); }
 /** @param {string} message */
 function argumentError(message) { return new PluginError('ARGUMENT_INVALID', message, { category: 'validation', remedy: 'Use the documented command arguments.' }); }
+/** @param {string} value */
+function hasControl(value) { return [...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code <= 31 || code === 127; }); }

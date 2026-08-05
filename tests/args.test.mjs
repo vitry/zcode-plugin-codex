@@ -50,9 +50,15 @@ test('result/cancel and private entry point have narrow identities', () => {
   rejects(['review', '--caller-context', 'ctx']);
 });
 
+test('transfer accepts only one bounded explicit source', () => {
+  assert.deepEqual(parseArgs(['transfer']), { command: 'transfer', options: {}, positionals: [] });
+  assert.deepEqual(parseArgs(['transfer', '--source', 'thread-1']), { command: 'transfer', options: { source: 'thread-1' }, positionals: [] });
+  for (const argv of [['transfer', '--source'], ['transfer', '--source', 'a', '--source', 'b'], ['transfer', '--unknown'], ['transfer', 'extra'], ['transfer', '--source', 'x'.repeat(513)]]) rejects(argv);
+});
+
 test('unknown commands, flags, duplicate scalars and removed surfaces are rejected', () => {
   for (const argv of [
-    ['spark'], ['transfer'], ['setup'], ['review', '--force'], ['review', '--prompt-file', 'x'],
+    ['spark'], ['setup'], ['review', '--force'], ['review', '--prompt-file', 'x'],
     ['review', '--write'], ['review', '--wat'], ['review', '--base', 'a', '--base', 'b'],
     ['review', '--base', '--force'], ['rescue', '--model', '--write', 'task'],
   ]) rejects(argv);

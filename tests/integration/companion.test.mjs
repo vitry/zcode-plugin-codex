@@ -17,6 +17,7 @@ import { renderOutput } from '../../scripts/lib/render.mjs';
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fake = join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs');
+const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-companion-'));
@@ -325,4 +326,41 @@ test('real CLI status wait stays alive until its timeout', async () => {
   const reserved = await companion(context, ['review', '--background']);
   const waited = await companion(context, ['status', reserved.json.job.id, '--wait', '--timeout-ms', '20']);
   assert.equal(waited.code, 1); assert.equal(waited.json.error.code, 'JOB_WAIT_TIMEOUT');
+});
+
+test('real Transfer imports current Codex history into a resumable ZCode session without leaking caller authorization', async () => {
+  const context = await fixture(); const codexRecord = join(context.directory, 'codex.jsonl'); const zcodeRecord = join(context.directory, 'zcode.jsonl');
+  await writeFile(codexRecord, ''); await writeFile(zcodeRecord, '');
+  const sourceThread = { id: 'codex-session', ephemeral: false, turns: [{ id: 'private-turn-id', startedAt: 1_725_000_000, completedAt: 1_725_000_001, items: [
+    { type: 'userMessage', id: 'private-user-id', content: [{ type: 'text', text: 'visible request' }] },
+    { type: 'reasoning', summary: ['hidden reasoning'] },
+    { type: 'agentMessage', id: 'private-agent-id', text: 'visible response' },
+  ] }] };
+  const transferred = await companion(context, ['transfer'], {
+    CODEX_APP_SERVER_PATH: process.execPath,
+    CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+    FAKE_CODEX_RECORD: codexRecord,
+    FAKE_CODEX_THREAD_JSON: JSON.stringify(sourceThread),
+    FAKE_ZCODE_RECORD: zcodeRecord,
+  });
+  assert.equal(transferred.code, 0, `${transferred.stderr}${transferred.stdout}`); assert.equal(transferred.json.type, 'transfer'); assert.equal(transferred.json.job.status, 'succeeded');
+  assert.match(transferred.stdout, /Imported from Codex/); assert.match(transferred.stdout, /ZCode session ID: session-1/); assert.match(transferred.stdout, /--resume session-1/);
+  const codexCalls = (await readFile(codexRecord, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((entry) => entry.method);
+  assert.deepEqual(codexCalls.map((entry) => entry.method), ['initialize', 'initialized', 'thread/read']); assert.equal(codexCalls[2].params.threadId, 'codex-session');
+  const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)); const create = zcodeCalls.find((entry) => entry.method === 'session/create');
+  assert.deepEqual(create.params.importedHistory, { source: 'claudeCode', messages: [{ role: 'user', content: 'visible request', timestamp: 1_725_000_000 }, { role: 'assistant', content: 'visible response', timestamp: 1_725_000_000 }] });
+  assert.equal(zcodeCalls.some((entry) => entry.method === 'session/send'), false);
+  const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch: { command: process.execPath, args: [fake], target: fake }, ownerId: ownerIdForSession('codex-session'), env: context.env });
+  try { assert.equal((await client.resumeSession(transferred.json.zcodeSessionId)).session.sessionId, transferred.json.zcodeSessionId); } finally { await client.close(); }
+  const storage = await resolveWorkspaceStorage(context); const artifact = await readFile(join(storage.directory, transferred.json.job.resultArtifact), 'utf8');
+  const exposed = `${transferred.stdout}${transferred.stderr}${await readFile(codexRecord, 'utf8')}${await readFile(zcodeRecord, 'utf8')}${artifact}`;
+  assert.doesNotMatch(exposed, new RegExp(context.caller)); assert.doesNotMatch(exposed, /hidden reasoning|private-turn-id|private-user-id|private-agent-id|transcript_path/);
+});
+
+test('Transfer launcher configuration failure terminalizes its reserved job', async () => {
+  const context = await fixture();
+  const result = await companion(context, ['transfer'], { CODEX_APP_SERVER_ARGS_JSON: '{bad-json' });
+  assert.notEqual(result.code, 0); assert.equal(result.json.error.code, 'CODEX_APP_SERVER_CONFIG_INVALID');
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].command, 'transfer'); assert.equal(jobs[0].status, 'failed');
 });

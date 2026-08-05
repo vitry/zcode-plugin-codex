@@ -89,6 +89,9 @@ export async function readResultArtifact({ dataRoot, workspace, artifact }) {
   } catch (error) { throw new PluginError('RESULT_READ_FAILED', 'Could not safely read the result artifact.', { category: 'storage', remedy: 'Inspect the private workspace result store.', cause: error }); }
 }
 
+/** @param {{dataRoot:string,workspace:string,jobId:string,contents:string}} input @param {{syncDirectory?:(path:string)=>Promise<void>}} [dependencies] */
+export function writeResultArtifact(input, dependencies = {}) { return writeArtifact({ ...input, directory: 'results' }, dependencies); }
+
 /** @param {{dataRoot:string,workspace:string,directory:string,jobId:string,contents:string}} input @param {{syncDirectory?:(path:string)=>Promise<void>}} [dependencies] */
 async function writeArtifact({ dataRoot, workspace, directory, jobId, contents }, dependencies = {}) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const syncDirectory = dependencies.syncDirectory ?? defaultSyncDirectory;

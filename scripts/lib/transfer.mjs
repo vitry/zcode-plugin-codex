@@ -1,0 +1,103 @@
+import { PluginError } from './errors.mjs';
+import { writeResultArtifact } from './review.mjs';
+
+export const TRANSFER_LIMITS = Object.freeze({
+  maxThreadIdBytes: 512,
+  maxMessages: 10_000,
+  maxMessageBytes: 1024 * 1024,
+  maxTotalBytes: 8 * 1024 * 1024,
+});
+
+/** @param {{source?:string}} options @param {{sessionId?:string,[key:string]:unknown}} caller */
+export function resolveTransferSource(options, caller) {
+  const source = options?.source ?? caller?.sessionId;
+  if (typeof source !== 'string' || !boundedText(source, TRANSFER_LIMITS.maxThreadIdBytes) || hasControl(source)) throw new PluginError('TRANSFER_SOURCE_INVALID', 'A valid persisted Codex thread ID is required.', { category: 'validation', remedy: 'Invoke Transfer from a persisted Codex thread or pass --source with an accessible thread ID.' });
+  return source;
+}
+
+/** @param {unknown} thread @param {string} expectedThreadId */
+export function extractImportedHistory(thread, expectedThreadId) {
+  if (!plainObject(thread) || thread.id !== expectedThreadId || typeof thread.ephemeral !== 'boolean' || !Array.isArray(thread.turns)) throw invalidThread();
+  if (thread.ephemeral) throw new PluginError('CODEX_THREAD_EPHEMERAL', 'Ephemeral Codex threads cannot be transferred.', { category: 'configuration', remedy: 'Persist the Codex thread, then retry Transfer.' });
+  const record = thread;
+  /** @type {Array<{role:'user'|'assistant',content:string,timestamp?:number}>} */ const messages = []; let totalBytes = 0;
+  for (const turn of record.turns) {
+    if (!plainObject(turn) || !Array.isArray(turn.items) || turn.startedAt !== undefined && (!Number.isSafeInteger(turn.startedAt) || turn.startedAt < 0)) throw invalidThread();
+    const timestamp = turn.startedAt;
+    for (const item of turn.items) {
+      if (!plainObject(item) || typeof item.type !== 'string') throw invalidThread();
+      if (item.type === 'userMessage') {
+        if (!Array.isArray(item.content) || item.content.some((/** @type {unknown} */ part) => !plainObject(part) || typeof part.type !== 'string')) throw invalidThread();
+        /** @type {string[]} */ const textParts = [];
+        for (const part of item.content) {
+          if (part.type !== 'text') continue;
+          if (typeof part.text !== 'string') throw invalidThread();
+          if (part.text.trim()) textParts.push(part.text);
+        }
+        if (textParts.length) addMessage(messages, { role: 'user', content: textParts.join('\n'), ...(timestamp === undefined ? {} : { timestamp }) }, () => totalBytes, (value) => { totalBytes = value; });
+      } else if (item.type === 'agentMessage') {
+        if (typeof item.text !== 'string') throw invalidThread();
+        if (item.text.trim()) addMessage(messages, { role: 'assistant', content: item.text, ...(timestamp === undefined ? {} : { timestamp }) }, () => totalBytes, (value) => { totalBytes = value; });
+      }
+    }
+  }
+  if (!messages.length) throw new PluginError('TRANSFER_HISTORY_EMPTY', 'The Codex thread has no transferable visible text.', { category: 'validation', remedy: 'Choose a thread containing user or assistant text.' });
+  return { messages };
+}
+
+/**
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,sourceThreadId:string,launch?:{command:string,args:string[]},resolveLaunch?:()=>Promise<{command:string,args:string[]}>,readThread:()=>Promise<unknown>,createClient:(launch:{command:string,args:string[]})=>Promise<any>,writeResult?:(input:any)=>Promise<string>}} input
+ */
+export async function executeTransfer(input) {
+  const { job, workspace, dataRoot, store, sourceThreadId } = input;
+  let client; let running = job;
+  try {
+    validateExecution(input);
+    running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString() });
+    const importedHistory = extractImportedHistory(await input.readThread(), sourceThreadId);
+    const launch = input.launch ?? await /** @type {()=>Promise<{command:string,args:string[]}>} */ (input.resolveLaunch)();
+    validateLaunch(launch);
+    client = await input.createClient(launch);
+    const snapshot = await client.createSession({ workspace, importedHistory });
+    const sessionId = snapshot?.session?.sessionId;
+    if (typeof sessionId !== 'string' || !sessionId) throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid imported session.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.' });
+    running = await store.transitionJob(workspace, job.id, ['running'], 'running', { zcodeSessionId: sessionId });
+    const resumeCommand = buildResumeCommand(launch, sessionId);
+    const result = `Imported from Codex\nZCode session ID: ${sessionId}\nResume in ZCode: ${resumeCommand}\n`;
+    const resultArtifact = await (input.writeResult ?? writeResultArtifact)({ dataRoot, workspace, jobId: job.id, contents: result });
+    const succeeded = await store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
+    return { type: 'transfer', job: succeeded, result, zcodeSessionId: sessionId, resumeCommand };
+  } catch (error) {
+    const current = await store?.readJob(workspace, job?.id).catch(() => running);
+    if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) await store.transitionJob(workspace, job.id, [current.status], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Transfer failed' }, finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
+    throw error;
+  } finally { await client?.close().catch(() => {}); }
+}
+
+/** @param {{command:string,args:string[]}} launch @param {string} sessionId */
+export function buildResumeCommand(launch, sessionId) { return [launch.command, ...launch.args, '--resume', sessionId].map(shellQuote).join(' '); }
+
+/** @param {Array<{role:'user'|'assistant',content:string,timestamp?:number}>} messages @param {{role:'user'|'assistant',content:string,timestamp?:number}} message @param {()=>number} readTotal @param {(value:number)=>void} writeTotal */
+function addMessage(messages, message, readTotal, writeTotal) {
+  const bytes = Buffer.byteLength(message.content); const total = readTotal() + bytes;
+  if (bytes > TRANSFER_LIMITS.maxMessageBytes || messages.length >= TRANSFER_LIMITS.maxMessages || total > TRANSFER_LIMITS.maxTotalBytes) throw historyTooLarge();
+  messages.push(message); writeTotal(total);
+}
+/** @param {any} input */
+function validateExecution(input) {
+  if (!plainObject(input) || !plainObject(input.job) || input.job.command !== 'transfer' || input.job.codexThreadId !== input.sourceThreadId || input.job.readOnly !== true || typeof input.workspace !== 'string' || !input.workspace || typeof input.dataRoot !== 'string' || !input.dataRoot || input.launch === undefined && typeof input.resolveLaunch !== 'function' || input.launch !== undefined && !validLaunch(input.launch) || typeof input.readThread !== 'function' || typeof input.createClient !== 'function') throw new PluginError('TRANSFER_INPUT_INVALID', 'Transfer execution input is invalid.', { category: 'validation', remedy: 'Reserve a read-only Transfer job bound to the exact Codex source.' });
+}
+/** @param {unknown} launch @returns {launch is {command:string,args:string[]}} */
+function validLaunch(launch) { return plainObject(launch) && typeof launch.command === 'string' && launch.command.length > 0 && Array.isArray(launch.args) && launch.args.every((/** @type {unknown} */ arg) => typeof arg === 'string'); }
+/** @param {unknown} launch */
+function validateLaunch(launch) { if (!validLaunch(launch)) throw new PluginError('TRANSFER_INPUT_INVALID', 'Resolved ZCode launcher is invalid.', { category: 'configuration', remedy: 'Run $zcode:setup and repair the ZCode launcher.' }); }
+/** @param {unknown} value @param {number} maximum */
+function boundedText(value, maximum) { return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= maximum; }
+/** @param {unknown} value @returns {value is Record<string,any>} */
+function plainObject(value) { if (value === null || typeof value !== 'object' || Array.isArray(value)) return false; const prototype = Object.getPrototypeOf(value); return prototype === Object.prototype || prototype === null; }
+/** @param {string} value */
+function shellQuote(value) { return /^[A-Za-z0-9_./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`; }
+/** @param {string} value */
+function hasControl(value) { return [...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code <= 31 || code === 127; }); }
+function invalidThread() { return new PluginError('CODEX_THREAD_INVALID', 'Codex returned an invalid or mismatched thread.', { category: 'protocol', remedy: 'Upgrade or restart Codex, then retry Transfer.' }); }
+function historyTooLarge() { return new PluginError('TRANSFER_HISTORY_TOO_LARGE', 'The Codex thread exceeds Transfer history limits.', { category: 'validation', remedy: `Choose a smaller thread (at most ${TRANSFER_LIMITS.maxMessages} messages, ${TRANSFER_LIMITS.maxMessageBytes} bytes each, and ${TRANSFER_LIMITS.maxTotalBytes} bytes total).` }); }
