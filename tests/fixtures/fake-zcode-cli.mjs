@@ -138,6 +138,7 @@ input.on('line', async (line) => {
       send({ id: message.id, result: { sessions: process.env.FAKE_ZCODE_BAD_LIST === 'session-id-only' ? [...sessions.values()].map(({ sessionId }) => ({ sessionId })) : [...sessions.values()].map(({ sessionId, workspacePath }) => sessionInfo(sessionId, workspacePath)) } });
       break;
     case 'session/stop': {
+      if (process.env.FAKE_ZCODE_STOP_ERROR_PREFIX && p.sessionId.startsWith(process.env.FAKE_ZCODE_STOP_ERROR_PREFIX)) { send({ id: message.id, error: { code: -32099, message: 'fixture stop failed' } }); break; }
       const timer = pendingCompletionTimers.get(p.sessionId); if (timer) { clearTimeout(timer); pendingCompletionTimers.delete(p.sessionId); }
       send({ id: message.id, result: process.env.FAKE_ZCODE_BAD_STOP_EXTRA === '1' ? { stopped: true } : {} });
       break;

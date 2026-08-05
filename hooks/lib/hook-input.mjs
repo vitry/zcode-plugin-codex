@@ -5,14 +5,15 @@ import process from 'node:process';
 const MAX_BYTES = 64 * 1024;
 const DEADLINE_MS = 2_000;
 const PERMISSIONS = new Set(['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions']);
-const COMMON = ['session_id', 'transcript_path', 'cwd', 'hook_event_name', 'model'];
+const COMMON = ['session_id', 'transcript_path', 'cwd', 'hook_event_name'];
+const WITH_MODEL = [...COMMON, 'model'];
 const EVENTS = Object.freeze({
-  SessionStart: { fields: [...COMMON, 'permission_mode', 'source'], required: ['session_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'source'] },
-  UserPromptSubmit: { fields: [...COMMON, 'turn_id', 'permission_mode', 'prompt'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'prompt'] },
-  SubagentStart: { fields: [...COMMON, 'turn_id', 'permission_mode', 'agent_id', 'agent_type'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'agent_id', 'agent_type'] },
-  SubagentStop: { fields: [...COMMON, 'turn_id', 'permission_mode', 'agent_id', 'agent_type', 'agent_transcript_path', 'stop_hook_active', 'last_assistant_message'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'agent_id', 'agent_type', 'stop_hook_active'] },
-  Stop: { fields: [...COMMON, 'turn_id', 'permission_mode', 'stop_hook_active', 'last_assistant_message'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'stop_hook_active'] },
-  SessionEnd: { fields: [...COMMON, 'reason'], required: ['session_id', 'cwd', 'hook_event_name', 'model', 'reason'] },
+  SessionStart: { fields: [...WITH_MODEL, 'permission_mode', 'source'], required: ['session_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'source'] },
+  UserPromptSubmit: { fields: [...WITH_MODEL, 'turn_id', 'permission_mode', 'prompt'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'prompt'] },
+  SubagentStart: { fields: [...WITH_MODEL, 'turn_id', 'permission_mode', 'agent_id', 'agent_type'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'agent_id', 'agent_type'] },
+  SubagentStop: { fields: [...WITH_MODEL, 'turn_id', 'permission_mode', 'agent_id', 'agent_type', 'agent_transcript_path', 'stop_hook_active', 'last_assistant_message'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'agent_id', 'agent_type', 'stop_hook_active'] },
+  Stop: { fields: [...WITH_MODEL, 'turn_id', 'permission_mode', 'stop_hook_active', 'last_assistant_message'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'stop_hook_active'] },
+  SessionEnd: { fields: [...COMMON, 'reason'], required: ['session_id', 'cwd', 'hook_event_name', 'reason'] },
 });
 
 export async function readHookInput(expectedEvent, options = {}) {

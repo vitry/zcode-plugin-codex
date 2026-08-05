@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
 
 import { parseArgs } from '../scripts/lib/args.mjs';
-import { runSetup } from '../scripts/lib/codex-config.mjs';
+import { pluginRootFromModuleUrl, runSetup } from '../scripts/lib/codex-config.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 
@@ -81,6 +82,11 @@ test('setup never follows a forged PLUGIN_ROOT symlink or edits plugin files', a
   const ctx = await context(); const before = await readFile(join(root, 'hooks/hooks.json'), 'utf8');
   await assert.rejects(runSetup({ ...ctx.options, pluginRoot: join(root, '..') }), { code: 'PLUGIN_ROOT_UNTRUSTED' });
   assert.equal(await readFile(join(root, 'hooks/hooks.json'), 'utf8'), before);
+});
+
+test('plugin root derivation decodes file URLs with spaces and percent characters portably', () => {
+  const expected = join(tmpdir(), 'plugin root % encoded'); const moduleUrl = pathToFileURL(join(expected, 'scripts', 'lib', 'codex-config.mjs'));
+  assert.equal(pluginRootFromModuleUrl(moduleUrl), expected);
 });
 
 test('app-server failure cannot persist a ready gate and enable/disable touches only workspace gate state', async () => {

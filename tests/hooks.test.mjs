@@ -148,10 +148,11 @@ test('SessionEnd removes only its session contexts and leaves sibling jobs/sessi
     await runHook('session-lifecycle-hook.mjs', { session_id, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
     await runHook('user-prompt-hook.mjs', { session_id, turn_id: `turn-${session_id}`, cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'go' }, env);
   }
-  const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, model: 'gpt', reason: 'other' }, env);
+  const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
   assert.equal(ended.code, 0); assert.equal(ended.stdout, '');
   const contents = (await Promise.all((await jsonFiles(data)).map((path) => readFile(path, 'utf8')))).join('\n');
   assert.doesNotMatch(contents, /"sessionId": "a"/); assert.match(contents, /"sessionId": "b"/);
+  const inventedModel = await runHook('session-end-hook.mjs', { session_id: 'b', cwd, hook_event_name: 'SessionEnd', transcript_path: null, model: 'gpt', reason: 'other' }, env); assert.notEqual(inventedModel.code, 0, 'SessionEnd must keep an exact native field contract');
 });
 
 test('SessionEnd releases only its broker owner sessions and lets the idle broker exit', async () => {
@@ -164,7 +165,7 @@ test('SessionEnd releases only its broker owner sessions and lets the idle broke
   }
   for (const client of clients) await client.close();
   const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const identity = JSON.parse(await readFile(join(storage.directory, 'broker/identity.json'), 'utf8'));
-  const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, model: 'gpt', reason: 'other' }, env);
+  const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
   assert.equal(ended.code, 0);
   const owners = JSON.parse(await readFile(join(storage.directory, 'broker/session-owners.json'), 'utf8'));
   assert.deepEqual(owners.sessions, { 'zcode-b': ownerIdForSession('b') });
@@ -173,6 +174,24 @@ test('SessionEnd releases only its broker owner sessions and lets the idle broke
   assert.ok(!calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-b'));
   const deadline = Date.now() + 2_000; while (Date.now() < deadline && processAlive(identity.pid)) await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(processAlive(identity.pid), false, 'released idle broker must exit promptly');
+});
+
+test('SessionEnd drains deferred owner batches without touching siblings or looping on failures', async () => {
+  const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, ''); const owner = ownerIdForSession('many'); const sibling = ownerIdForSession('sibling');
+  await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: owner, ownedSessionIds: Array.from({ length: 17 }, (_, index) => `historical-${String(index).padStart(2, '0')}`) }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: sibling, ownedSessionIds: ['sibling-session'] });
+  const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: owner, env: { ...process.env, FAKE_ZCODE_RECORD: record } }); await client.createSession({ workspace: cwd, sessionId: 'new-active-session' }); await client.close();
+  const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: 'many', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500, 'repeated release must remain inside the native hook budget');
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const owners = JSON.parse(await readFile(join(storage.directory, 'broker/session-owners.json'), 'utf8')).sessions; assert.deepEqual(owners, { 'sibling-session': sibling });
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'new-active-session'), 'a newer active session beyond the first 16 mappings must be stopped'); assert.ok(!calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'sibling-session'));
+});
+
+test('SessionEnd advances beyond a failed 16-mapping prefix to clean a later active session', async () => {
+  const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, ''); const owner = ownerIdForSession('failed-prefix'); const sibling = ownerIdForSession('failed-sibling');
+  await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: owner, ownedSessionIds: Array.from({ length: 17 }, (_, index) => `failed-history-${String(index).padStart(2, '0')}`) }); await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId: sibling, ownedSessionIds: ['failed-sibling-session'] });
+  const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: owner, env: { ...process.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_STOP_ERROR_PREFIX: 'failed-history-' } }); await client.createSession({ workspace: cwd, sessionId: 'later-active-session' }); await client.close();
+  const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: 'failed-prefix', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500);
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const owners = JSON.parse(await readFile(join(storage.directory, 'broker/session-owners.json'), 'utf8')).sessions; assert.equal(owners['later-active-session'], undefined); assert.equal(owners['failed-sibling-session'], sibling); assert.equal(Object.keys(owners).filter((sessionId) => sessionId.startsWith('failed-history-')).length, 17, 'failed mappings must remain owned for a later cleanup');
+  const stops = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).filter((call) => call.method === 'session/stop').map((call) => call.params.sessionId); assert.equal(stops.filter((sessionId) => sessionId.startsWith('failed-history-')).length, 17, 'failed mappings must be tried at most once in this cleanup'); assert.ok(stops.includes('later-active-session')); assert.ok(!stops.includes('failed-sibling-session'));
 });
 
 test('owner release spans existing broker profiles and preserves mappings whose stop failed', async () => {

@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { PluginError } from './errors.mjs';
 import { atomicWriteJson } from './fs.mjs';
@@ -34,7 +35,8 @@ async function reportAndPersist(input, discovery, auth, status, reason, setupRea
 }
 async function priorGateEnabled(workspaceDirectory) { try { const { readJsonFile } = await import('./fs.mjs'); return (await readJsonFile(join(workspaceDirectory, 'config', 'review-gate.json'))).enabled === true; } catch { return false; } }
 
-async function trustedRoot(value) { let actual; let supplied; try { actual = await realpath(resolve(new URL('../..', import.meta.url).pathname)); supplied = await realpath(value); } catch (cause) { throw rootError(cause); } if (actual !== supplied) throw rootError(); return actual; }
+export function pluginRootFromModuleUrl(moduleUrl) { return resolve(fileURLToPath(new URL('../..', moduleUrl))); }
+async function trustedRoot(value) { let actual; let supplied; try { actual = await realpath(pluginRootFromModuleUrl(import.meta.url)); supplied = await realpath(value); } catch (cause) { throw rootError(cause); } if (actual !== supplied) throw rootError(); return actual; }
 function rootError(cause) { return new PluginError('PLUGIN_ROOT_UNTRUSTED', 'PLUGIN_ROOT does not identify this active plugin installation.', { category: 'authorization', remedy: 'Invoke setup from the installed ZCode plugin.', ...(cause ? { cause } : {}) }); }
 async function validateHooks(result, cwd, pluginRoot, hooksPath) {
   const entry = Array.isArray(result?.data) ? result.data.find((item) => item?.cwd === cwd) : null; if (!entry || !Array.isArray(entry.hooks) || entry.errors?.length) return { ok: false, reason: 'missing-or-invalid-hooks' };

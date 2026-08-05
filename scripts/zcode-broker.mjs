@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, ensurePrivateDirectory, withFileLock } from './lib/fs.mjs';
+import { isSafeIdentifier } from './lib/identifier.mjs';
 import { spawnDaemon } from './lib/process.mjs';
 import { BoundedWriter, connectZCodeBroker, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
@@ -161,7 +162,7 @@ export class ZCodeBroker {
     if (frame.method === 'broker/health') { writeLocal(socket, { id: frame.id, result: { ok: true, pid: process.pid, instanceId: this.options.instanceId } }); return; }
     try { await this.reloadOwnership(); } catch (error) { writeRequestError(socket, frame.id, error); return; }
     if (frame.method === 'broker/releaseOwner') {
-      try { writeLocal(socket, { id: frame.id, result: await this.releaseOwner(socket, this.socketOwnerIds.get(socket)) }); this.fastIdleRequested = true; }
+      try { const excluded = frame.params.excludeSessionIds ?? []; if (Object.keys(frame.params).some((key) => key !== 'excludeSessionIds') || !Array.isArray(excluded) || excluded.length > 1_000 || new Set(excluded).size !== excluded.length || !excluded.every((sessionId) => isSafeIdentifier(sessionId))) throw brokerInputError(); writeLocal(socket, { id: frame.id, result: await this.releaseOwner(socket, this.socketOwnerIds.get(socket), excluded) }); this.fastIdleRequested = true; }
       catch (error) { writeRequestError(socket, frame.id, error); }
       return;
     }
@@ -196,8 +197,8 @@ export class ZCodeBroker {
   cancelIdleShutdown() { clearTimeout(this.idleTimer); this.idleTimer = null; }
   scheduleIdleShutdown() { this.cancelIdleShutdown(); if (this.closing || this.owners || this.activeSessions.size || this.permissionPending.size || this.localTasks.size || this.protocolPromise && !this.protocol) return; this.idleTimer = setTimeout(() => { this.idleTimer = null; if (!this.owners && !this.activeSessions.size && !this.permissionPending.size && !this.localTasks.size && !(this.protocolPromise && !this.protocol)) void this.close().catch(() => {}); }, this.fastIdleRequested ? 0 : this.options.idleTimeoutMs ?? 30_000); this.idleTimer.unref?.(); }
 
-  async releaseOwner(socket, ownerId) {
-    const allOwnerEntries = [...this.sessionOwners].filter(([, owner]) => owner.ownerId === ownerId); const stableOwned = allOwnerEntries.filter(([, owner]) => !owner.claimToken).map(([sessionId]) => sessionId); const inFlightClaims = allOwnerEntries.length - stableOwned.length; const owned = stableOwned.slice(0, OWNER_RELEASE_MAX_SESSIONS);
+  async releaseOwner(socket, ownerId, excludeSessionIds = []) {
+    const excluded = new Set(excludeSessionIds); const allOwnerEntries = [...this.sessionOwners].filter(([, owner]) => owner.ownerId === ownerId); const stableOwned = allOwnerEntries.filter(([, owner]) => !owner.claimToken).map(([sessionId]) => sessionId); const eligible = stableOwned.filter((sessionId) => !excluded.has(sessionId)); const inFlightClaims = allOwnerEntries.length - stableOwned.length; const owned = eligible.slice(0, OWNER_RELEASE_MAX_SESSIONS);
     if (!owned.length) return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: inFlightClaims };
     const released = []; const failed = [];
     if (!this.protocol) {
@@ -222,7 +223,7 @@ export class ZCodeBroker {
       this.applyOwnership(remaining);
     }
     this.scheduleIdleShutdown();
-    return { releasedSessionIds: released, failedSessionIds: failed, deferredSessionCount: stableOwned.length - owned.length + inFlightClaims };
+    return { releasedSessionIds: released, failedSessionIds: failed, deferredSessionCount: eligible.length - owned.length + inFlightClaims };
   }
 
   async getProtocol() {
