@@ -43,6 +43,7 @@ export function createJobController(options) {
     },
     /** @param {string} workspace @param {string} jobId @param {string} ownerSessionId */
     async cancel(workspace, jobId, ownerSessionId) {
+      const initial = await options.store.readJob(workspace, jobId);
       const dataRoot = options.dataRoot ?? options.store.dataRoot;
       if (!dataRoot) throw cancelError(jobId, 'Cancellation lock storage is unavailable.');
       const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
@@ -52,7 +53,8 @@ export function createJobController(options) {
         if (TERMINAL.has(job.status)) return job;
         if (job.status === 'queued') return options.store.transitionJob(workspace, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
         if (!['running', 'cancelling'].includes(job.status)) throw cancelError(job.id, 'Job is not cancellable.');
-        const cancelling = job.status === 'running' ? await options.store.transitionJob(workspace, job.id, ['running'], 'cancelling') : job;
+        if (job.status === 'running' && job.lastCancelError && job.updatedAt !== initial.updatedAt) throw cancelError(job.id, cancellationMessage(job.lastCancelError));
+        const cancelling = job.status === 'running' ? await options.store.transitionJob(workspace, job.id, ['running'], 'cancelling', job.lastCancelError ? { lastCancelError: null } : {}) : job;
         try {
           if (!cancelling.zcodeSessionId || !options.stopSession) throw new Error('No live ZCode session stop handler is available.');
           await options.stopSession(cancelling.zcodeSessionId);
@@ -74,5 +76,7 @@ export function createJobController(options) {
 
 /** @param {number} milliseconds */
 function pollDelay(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
+/** @param {unknown} value */
+function cancellationMessage(value) { return typeof value === 'string' ? value : value && typeof value === 'object' && 'message' in value && typeof value.message === 'string' ? value.message : 'ZCode stop failed'; }
 /** @param {string} jobId @param {string} message @param {unknown} [cause] */
 function cancelError(jobId, message, cause) { return new PluginError('JOB_CANCEL_FAILED', `Could not cancel job ${jobId}: ${message}`, { category: 'runtime', remedy: 'The job remains running; retry cancellation or inspect the ZCode session.', ...(cause ? { cause } : {}) }); }

@@ -77,6 +77,27 @@ test('concurrent cancellation calls stop once and both observe cancelled', async
   assert.equal(stops, 1); assert.deepEqual(results.map(({ status }) => status), ['cancelled', 'cancelled']);
 });
 
+test('concurrent failed cancellations share one stable failure and a later retry starts a new attempt', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation });
+  await store.transitionJob(workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'zs' });
+  let stops = 0; let release = () => {}; let markStopStarted = () => {}; let markSecondInitial = () => {}; let reads = 0;
+  const gate = new Promise((resolve) => { release = () => resolve(undefined); });
+  const stopStarted = new Promise((resolve) => { markStopStarted = () => resolve(undefined); });
+  const secondInitial = new Promise((resolve) => { markSecondInitial = () => resolve(undefined); });
+  const observedStore = { ...store, readJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg) => { const value = await store.readJob(workspaceArg, jobIdArg); reads += 1; if (reads === 3) markSecondInitial(); return value; } };
+  const controller = createJobController({ store: observedStore, stopSession: async () => { stops += 1; markStopStarted(); await gate; throw new Error('refused'); } });
+  const first = controller.cancel(workspace, job.id, 'session-a');
+  await stopStarted; const second = controller.cancel(workspace, job.id, 'session-a'); await secondInitial; release();
+  const concurrent = await Promise.allSettled([first, second]);
+  assert.equal(stops, 1); assert.ok(concurrent.every(({ status }) => status === 'rejected'));
+  const errors = concurrent.map((result) => result.status === 'rejected' ? result.reason : null);
+  assert.deepEqual(errors.map(({ code, message }) => ({ code, message })), [0, 1].map(() => ({ code: 'JOB_CANCEL_FAILED', message: `Could not cancel job ${job.id}: refused` })));
+  const restored = await store.readJob(workspace, job.id); assert.equal(restored.status, 'running'); assert.equal(restored.lastCancelError, 'refused');
+  await assert.rejects(controller.cancel(workspace, job.id, 'session-a'), { code: 'JOB_CANCEL_FAILED', message: `Could not cancel job ${job.id}: refused` });
+  assert.equal(stops, 2); assert.equal((await store.readJob(workspace, job.id)).status, 'running');
+});
+
 test('resume candidates are only latest owned rescue sessions', async () => {
   const { workspace, store, controller } = await setup();
   const review = await store.reserveJob({ workspace, ...reservation, command: 'review', readOnly: true });

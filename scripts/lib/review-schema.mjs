@@ -11,7 +11,7 @@ export async function loadReviewOutputSchema() {
     let schema;
     try { schema = JSON.parse(contents); } catch (error) { throw schemaError(error); }
     validateSchemaDefinition(schema);
-    return Object.freeze(schema);
+    return deepFreeze(schema);
   }).catch((error) => { throw error instanceof PluginError ? error : schemaError(error); });
   return cachedSchema;
 }
@@ -53,6 +53,15 @@ function validateSchemaDefinition(schema) {
     if (!plainObject(schema.properties)) throw schemaError();
     for (const child of Object.values(schema.properties)) validateSchemaDefinition(child);
   }
+}
+
+/** @template T @param {T} value @returns {T} */
+function deepFreeze(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 /** @param {unknown} [cause] */

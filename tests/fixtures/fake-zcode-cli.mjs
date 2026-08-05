@@ -97,7 +97,7 @@ input.on('line', async (line) => {
     }
     case 'session/send': {
       sendCount += 1;
-      const trustedPrompt = p.content.split('--- BEGIN UNTRUSTED GIT DATA ---', 1)[0];
+      const trustedPrompt = typeof p.content === 'string' ? p.content.split('--- BEGIN UNTRUSTED GIT DATA ---', 1)[0] : '';
       const session = sessions.get(p.sessionId); if (session) session.messages.push(...resultMessages(p.sessionId, session.settings.model.current, /ZCODE_REVIEW_OUTPUT_SCHEMA:\s*\{/i.test(trustedPrompt), `turn-${sendCount}`, /current hidden/i.test(p.content) ? 'reasoning-only' : undefined, /current unrelated/i.test(p.content) ? 'input-unrelated' : p.inputId));
       const stateRevision = process.env.FAKE_ZCODE_BARRIER === '1' ? 1000 : 1;
       if (process.env.FAKE_ZCODE_BARRIER === '1') send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: 999, reason: 'prompt_completed', patch: { status: 'idle' } } });

@@ -132,12 +132,13 @@ export function createStateStore(options) {
           updatedAt: new Date(Math.max(
             Date.now(),
             Date.parse(job.createdAt),
-            Date.parse(job.updatedAt),
+            Date.parse(job.updatedAt) + 1,
             typeof patch.startedAt === 'string' ? Date.parse(patch.startedAt) : Number.NEGATIVE_INFINITY,
             typeof patch.finishedAt === 'string' ? Date.parse(patch.finishedAt) : Number.NEGATIVE_INFINITY,
           )).toISOString(),
           workspace: job.workspace,
         };
+        if (patch.lastCancelError === null) delete updated.lastCancelError;
         validateJobRecord(updated, jobId, storage.workspacePath);
         await atomicWriteJson(path, updated);
         return updated;
@@ -349,8 +350,9 @@ function validateJobPatch(job, nextStatus, patch, jobId) {
     || (nextStatus !== 'failed' && nextStatus !== 'cancelled'))) invalidFields.push('error');
   if ('exitCode' in patch && (patch.exitCode !== null && !Number.isSafeInteger(patch.exitCode)
     || !TERMINAL_STATUSES.has(nextStatus))) invalidFields.push('exitCode');
-  if ('lastCancelError' in patch && (currentStatus !== 'cancelling' || nextStatus !== 'running'
-    || !isCancellationError(patch.lastCancelError))) invalidFields.push('lastCancelError');
+  if ('lastCancelError' in patch
+    && !(currentStatus === 'cancelling' && nextStatus === 'running' && isCancellationError(patch.lastCancelError))
+    && !(currentStatus === 'running' && nextStatus === 'cancelling' && patch.lastCancelError === null)) invalidFields.push('lastCancelError');
   if (invalidFields.length > 0) {
     throw invalidJobPatch(jobId, invalidFields, nextStatus, currentStatus);
   }

@@ -157,6 +157,9 @@ export function createIdentityStore({ dataRoot }) {
         for (const field of fields) {
           if (!safeEqual(record[field], expected[field])) throw authorizationError('EXECUTION_CAPABILITY_MISMATCH', `Execution capability does not match ${field}.`);
         }
+        if (record.consumedAt !== null) {
+          throw authorizationError('EXECUTION_CAPABILITY_CONSUMED', 'Execution capability has already been consumed.', 'Create a new child execution capability.');
+        }
         await unlink(path);
       });
     },

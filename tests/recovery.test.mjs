@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
 import { buildPrompt } from '../scripts/lib/prompts.mjs';
-import { validateJsonSchema } from '../scripts/lib/review-schema.mjs';
+import { loadReviewOutputSchema, validateJsonSchema } from '../scripts/lib/review-schema.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { failBackgroundDelivery, runCompanion, writeInternalResponse } from '../scripts/zcode-companion.mjs';
@@ -18,6 +18,7 @@ import { failBackgroundDelivery, runCompanion, writeInternalResponse } from '../
 const writerProbe = fileURLToPath(new URL('./fixtures/internal-writer-child.mjs', import.meta.url));
 const cancellingHolder = fileURLToPath(new URL('./fixtures/cancelling-holder.mjs', import.meta.url));
 const companionCli = fileURLToPath(new URL('../scripts/zcode-companion.mjs', import.meta.url));
+const fakeZCode = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 
 function runWriterProbe(mode) {
   const child = spawn(process.execPath, [writerProbe, mode], { stdio: ['ignore', 'pipe', 'pipe', 'ignore', 'pipe'] });
@@ -119,4 +120,23 @@ test('review contract is embedded in the request and schema evaluation fails clo
   assert.match(prompt, /ZCODE_REVIEW_OUTPUT_SCHEMA:/); assert.match(prompt, /"additionalProperties":false/);
   assert.equal(validateJsonSchema({ findings: [] }, { type: 'object', required: ['findings'], properties: { findings: { type: 'array', items: { type: 'string' } } }, additionalProperties: false }), true);
   assert.throws(() => validateJsonSchema({}, { type: 'number' }), { code: 'REVIEW_SCHEMA_INVALID' });
+});
+
+test('the cached review schema is recursively immutable under concurrent loads', async () => {
+  const [left, right] = await Promise.all([loadReviewOutputSchema(), loadReviewOutputSchema()]); assert.equal(left, right);
+  assert.equal(Object.isFrozen(left), true); assert.equal(Object.isFrozen(left.required), true); assert.equal(Object.isFrozen(left.properties.findings.items.properties.severity.enum), true);
+  assert.throws(() => left.required.push('forged'), TypeError); assert.throws(() => left.properties.findings.items.properties.severity.enum.push('bogus'), TypeError);
+  assert.equal(validateJsonSchema({}, await loadReviewOutputSchema()), false);
+});
+
+test('fake peer tolerates non-string send content and still completes stop', async () => {
+  const child = spawn(process.execPath, [fakeZCode], { stdio: ['pipe', 'pipe', 'pipe'] }); let stdout = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stdin.end([
+    { id: 1, method: 'session/create', params: { sessionId: 'non-string', workspace: { workspacePath: '/repo' } } },
+    { id: 2, method: 'session/send', params: { sessionId: 'non-string', content: { invalid: true }, inputId: 'input' } },
+    { id: 3, method: 'session/stop', params: { sessionId: 'non-string' } },
+  ].map((message) => JSON.stringify(message)).join('\n') + '\n');
+  const code = await new Promise((resolve, reject) => { const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('fake stop path timed out')); }, 2_000); child.once('error', reject); child.once('exit', (value) => { clearTimeout(timer); resolve(value); }); });
+  assert.equal(code, 0); const messages = stdout.trim().split('\n').map(JSON.parse); assert.deepEqual(messages.filter(({ id }) => id === 3).map(({ result }) => result), [{}]);
 });

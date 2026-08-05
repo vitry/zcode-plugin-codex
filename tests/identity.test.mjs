@@ -190,6 +190,26 @@ test('execution capability is exact-match and atomically single-use', async () =
   assert.equal(success.value.jobId, 'job-a');
 });
 
+test('revocation preserves consumed outcomes for legacy and spec-bound capabilities', async () => {
+  for (const expected of [
+    { jobId: 'legacy-job', ownerSessionId: 'session-a', operation: 'continue' },
+    { jobId: 'spec-job', ownerSessionId: 'session-a', operation: 'run-reserved-job', specDigest: 'c'.repeat(64) },
+  ]) {
+    const { identity, workspaceA } = await fixture(); const binding = { ...expected, workspace: workspaceA };
+    const token = await identity.createExecutionCapability({ ...binding, permissionSnapshot: { permissionMode: 'workspace-write' } });
+    await identity.consumeExecutionCapability(token, binding);
+    await assert.rejects(identity.revokeExecutionCapability(token, binding), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+    await assert.rejects(identity.consumeExecutionCapability(token, binding), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+  }
+});
+
+test('revocation deletes an unconsumed legacy capability', async () => {
+  const { identity, workspaceA } = await fixture(); const binding = { jobId: 'legacy-job', ownerSessionId: 'session-a', workspace: workspaceA, operation: 'continue' };
+  const token = await identity.createExecutionCapability({ ...binding, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await identity.revokeExecutionCapability(token, binding);
+  await assert.rejects(identity.consumeExecutionCapability(token, binding), { code: 'EXECUTION_CAPABILITY_INVALID' });
+});
+
 test('execution capabilities cannot be double-consumed across child processes', async () => {
   const { dataRoot, identity, workspaceA } = await fixture();
   const expected = {
