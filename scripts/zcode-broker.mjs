@@ -39,6 +39,13 @@ export async function reconcileBrokerOwnership(options) {
   });
 }
 
+/** Removes only mappings whose confirmed session and owner still match under the durable owner-store lock. */
+export async function removeConfirmedBrokerOwnership(options) {
+  if (!options || typeof options.dataRoot !== 'string' || !options.dataRoot || typeof options.workspace !== 'string' || !options.workspace || typeof options.identityName !== 'string' || !/^identity(?:-[a-f0-9]{16})?\.json$/.test(options.identityName) || typeof options.ownerId !== 'string' || options.ownerId.length < 16 || !Array.isArray(options.sessionIds) || options.sessionIds.length > 1_000 || !options.sessionIds.every((sessionId) => isSafeIdentifier(sessionId))) throw brokerInputError();
+  const storage = await resolveWorkspaceStorage(options); const ownershipPath = join(storage.directory, 'broker', options.identityName.replace(/^identity/, 'session-owners'));
+  return mutateOwnerStore(ownershipPath, false, async (sessions) => { const removedSessionIds = []; for (const sessionId of new Set(options.sessionIds)) if (sessions[sessionId] === options.ownerId) { delete sessions[sessionId]; removedSessionIds.push(sessionId); } await atomicWriteJson(ownershipPath, { version: 1, sessions }); return { removedSessionIds }; });
+}
+
 /** @param {{platform?:string,dataRoot:string,workspace:string,identity?:string}} options */
 export function brokerEndpointFor(options) {
   if (!options || typeof options.dataRoot !== 'string' || !options.dataRoot || typeof options.workspace !== 'string' || !options.workspace) throw brokerInputError();
@@ -159,7 +166,7 @@ export class ZCodeBroker {
       return;
     }
     if (!frame || !Number.isSafeInteger(frame.id) || typeof frame.method !== 'string' || !frame.params || typeof frame.params !== 'object') { socket.destroy(); return; }
-    if (frame.method === 'broker/health') { writeLocal(socket, { id: frame.id, result: { ok: true, pid: process.pid, instanceId: this.options.instanceId } }); return; }
+    if (frame.method === 'broker/health') { writeLocal(socket, { id: frame.id, result: { ok: true, pid: process.pid, instanceId: this.options.instanceId, capabilities: { releaseOwnerExclusions: true } } }); return; }
     try { await this.reloadOwnership(); } catch (error) { writeRequestError(socket, frame.id, error); return; }
     if (frame.method === 'broker/releaseOwner') {
       try { const excluded = frame.params.excludeSessionIds ?? []; if (Object.keys(frame.params).some((key) => key !== 'excludeSessionIds') || !Array.isArray(excluded) || excluded.length > 1_000 || new Set(excluded).size !== excluded.length || !excluded.every((sessionId) => isSafeIdentifier(sessionId))) throw brokerInputError(); writeLocal(socket, { id: frame.id, result: await this.releaseOwner(socket, this.socketOwnerIds.get(socket), excluded) }); this.fastIdleRequested = true; }

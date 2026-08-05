@@ -6,12 +6,14 @@ import { PluginError } from './errors.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
 import { connectZCodeBroker, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
-import { ensureZCodeBroker, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
+import { ensureZCodeBroker, readHealthyBrokerIdentity, removeConfirmedBrokerOwnership } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const THOUGHT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const OWNER_CLEANUP_BUDGET_MS = 1_800;
 const OWNER_CLEANUP_MAX_BATCHES = 32;
+const OWNER_CLEANUP_LEGACY_ACTIVE_MAX = 64;
+const OWNER_CLEANUP_LEGACY_CONCURRENCY = 8;
 export const IMPORTED_HISTORY_SOURCE = 'claudeCode';
 
 export class ZCodeClient {
@@ -51,10 +53,11 @@ export class ZCodeClient {
 
   /** @param {string} sessionId */ async readSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
   /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
-  async listSessions() { const result = requireObjectResult(await this.protocol.request('session/list', {}), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
-  /** @param {string} sessionId */ async stopSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/stop', { sessionId }); if (!plainObject(result)) throw outputError('session/stop'); this.protocol.cancelTurn(sessionId); return result; }
+  /** @param {number} [timeoutMs] */ async listSessions(timeoutMs) { const result = requireObjectResult(await this.protocol.request('session/list', {}, timeoutMs), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
+  /** @param {string} sessionId @param {number} [timeoutMs] */ async stopSession(sessionId, timeoutMs) { requireSessionId(sessionId); const result = await this.protocol.request('session/stop', { sessionId }, timeoutMs); if (!plainObject(result)) throw outputError('session/stop'); this.protocol.cancelTurn(sessionId); return result; }
+  /** @param {number} [timeoutMs] */ async brokerCapabilities(timeoutMs) { const result = await this.protocol.request('broker/health', {}, timeoutMs); if (!plainObject(result) || result.ok !== true) throw outputError('broker/health'); return { releaseOwnerExclusions: result.capabilities?.releaseOwnerExclusions === true }; }
   /** @param {string[]} [excludeSessionIds] @param {number} [timeoutMs] */
-  async releaseOwner(excludeSessionIds = [], timeoutMs) { if (!Array.isArray(excludeSessionIds) || excludeSessionIds.length > 1_000 || new Set(excludeSessionIds).size !== excludeSessionIds.length || !excludeSessionIds.every((sessionId) => isSafeIdentifier(sessionId))) throw inputError(); const result = await this.protocol.request('broker/releaseOwner', { excludeSessionIds }, timeoutMs); if (!plainObject(result) || !Array.isArray(result.releasedSessionIds) || !Array.isArray(result.failedSessionIds) || !result.releasedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !result.failedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !Number.isSafeInteger(result.deferredSessionCount) || result.deferredSessionCount < 0) throw outputError('broker/releaseOwner'); return result; }
+  async releaseOwner(excludeSessionIds, timeoutMs) { if (excludeSessionIds !== undefined && (!Array.isArray(excludeSessionIds) || excludeSessionIds.length > 1_000 || new Set(excludeSessionIds).size !== excludeSessionIds.length || !excludeSessionIds.every((sessionId) => isSafeIdentifier(sessionId)))) throw inputError(); const result = await this.protocol.request('broker/releaseOwner', excludeSessionIds === undefined ? {} : { excludeSessionIds }, timeoutMs); if (!plainObject(result) || !Array.isArray(result.releasedSessionIds) || !Array.isArray(result.failedSessionIds) || !result.releasedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !result.failedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !Number.isSafeInteger(result.deferredSessionCount) || result.deferredSessionCount < 0) throw outputError('broker/releaseOwner'); return result; }
 
   /** @param {string} sessionId @param {{providerId:string,modelId:string,variant?:string}} model */
   async setModel(sessionId, model) {
@@ -118,18 +121,30 @@ export async function releaseManagedZCodeOwner(options) {
   if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw inputError();
   const storage = await resolveWorkspaceStorage(options); const brokerDirectory = resolve(storage.directory, 'broker'); let names;
   try { names = await readdir(brokerDirectory); } catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code === 'ENOENT') return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 }; throw error; }
-  const identities = await Promise.all(names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).slice(0, 32).map((name) => readHealthyBrokerIdentity(resolve(brokerDirectory, name))));
-  const outcomes = await Promise.all(identities.filter(Boolean).map(async (identity) => {
+  const profiles = (await Promise.all(names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).slice(0, 32).map(async (name) => ({ identity: await readHealthyBrokerIdentity(resolve(brokerDirectory, name)), identityName: name })))).filter((profile) => profile.identity);
+  const outcomes = await Promise.all(profiles.map(async ({ identity, identityName }) => {
     /** @type {Set<string>} */ const released = new Set(); /** @type {Set<string>} */ const failed = new Set();
-    let client;
+    /** @type {ZCodeClient|null} */ let client = null;
     let profileDeferred = 0;
     try {
-      const requestTimeoutMs = options.requestTimeoutMs ?? 750; client = await createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs }); const attempted = new Set(); const deadline = Date.now() + OWNER_CLEANUP_BUDGET_MS;
+      const requestTimeoutMs = options.requestTimeoutMs ?? 750; client = await createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs }); const attempted = new Set(); const deadline = Date.now() + OWNER_CLEANUP_BUDGET_MS; const capabilities = await client.brokerCapabilities(boundedCleanupTimeout(deadline, requestTimeoutMs));
+      let legacyFallback = false;
       for (let batch = 0; batch < OWNER_CLEANUP_MAX_BATCHES && Date.now() < deadline; batch += 1) {
-        const result = await client.releaseOwner([...attempted], Math.max(1, Math.min(requestTimeoutMs, deadline - Date.now()))); profileDeferred = result.deferredSessionCount;
+        const result = await client.releaseOwner(capabilities.releaseOwnerExclusions ? [...attempted] : undefined, boundedCleanupTimeout(deadline, requestTimeoutMs)); profileDeferred = result.deferredSessionCount;
         for (const sessionId of result.releasedSessionIds) { attempted.add(sessionId); released.add(sessionId); failed.delete(sessionId); }
         for (const sessionId of result.failedSessionIds) { attempted.add(sessionId); if (!released.has(sessionId)) failed.add(sessionId); }
         if (!profileDeferred || result.releasedSessionIds.length + result.failedSessionIds.length === 0) break;
+        if (!capabilities.releaseOwnerExclusions && (result.failedSessionIds.length || !result.releasedSessionIds.length)) { legacyFallback = true; break; }
+      }
+      if (!capabilities.releaseOwnerExclusions && legacyFallback && profileDeferred > 0 && Date.now() < deadline) {
+        const listed = await client.listSessions(boundedCleanupTimeout(deadline, requestTimeoutMs)); const candidates = listed.sessions.map((/** @type {any} */ session) => session.sessionId).filter((/** @type {string} */ sessionId) => !attempted.has(sessionId)).slice(0, OWNER_CLEANUP_LEGACY_ACTIVE_MAX); /** @type {string[]} */ const confirmed = [];
+        for (let offset = 0; offset < candidates.length && Date.now() < deadline; offset += OWNER_CLEANUP_LEGACY_CONCURRENCY) {
+          const batch = candidates.slice(offset, offset + OWNER_CLEANUP_LEGACY_CONCURRENCY); const timeoutMs = boundedCleanupTimeout(deadline, requestTimeoutMs); const activeClient = client; const results = await Promise.allSettled(batch.map((/** @type {string} */ sessionId) => activeClient.stopSession(sessionId, timeoutMs))); for (let index = 0; index < batch.length; index += 1) if (results[index].status === 'fulfilled') confirmed.push(batch[index]);
+        }
+        if (confirmed.length) {
+          await client.close().catch(() => {}); client = null; while (Date.now() < deadline && processAlive(identity.pid)) await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+          if (!processAlive(identity.pid)) { const removed = await removeConfirmedBrokerOwnership({ dataRoot: options.dataRoot, workspace: storage.workspacePath, identityName, ownerId: options.ownerId, sessionIds: confirmed }); for (const sessionId of removed.removedSessionIds) { released.add(sessionId); failed.delete(sessionId); } profileDeferred = Math.max(0, profileDeferred - removed.removedSessionIds.length); }
+        }
       }
     }
     catch { /* SessionEnd cleanup is advisory and continues across profiles. */ }
@@ -139,6 +154,11 @@ export async function releaseManagedZCodeOwner(options) {
   const released = outcomes.flatMap((outcome) => outcome.releasedSessionIds); const failed = outcomes.flatMap((outcome) => outcome.failedSessionIds); const deferredSessionCount = outcomes.reduce((total, outcome) => total + outcome.deferredSessionCount, 0);
   return { releasedSessionIds: released.slice(0, 1_000), failedSessionIds: failed.slice(0, 1_000), deferredSessionCount };
 }
+
+/** @param {number} deadline @param {number} requestTimeoutMs */
+function boundedCleanupTimeout(deadline, requestTimeoutMs) { return Math.max(1, Math.min(requestTimeoutMs, deadline - Date.now())); }
+/** @param {number} pid */
+function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 
 /** @param {any} history */
 function normalizeImportedHistory(history) {
