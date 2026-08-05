@@ -14,6 +14,13 @@ import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 
+function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+async function waitForProcessExit(pid, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (processAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  if (processAlive(pid)) assert.fail(`broker process ${pid} did not exit within ${timeoutMs}ms`);
+}
+
 async function withClient(callback, env = {}, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-client-'));
   const record = join(directory, 'calls.jsonl');
@@ -283,16 +290,20 @@ test('completed broker becomes truly idle after its final owner disconnects', as
 });
 
 test('concurrent lazy broker acquisition publishes one healthy pid and identity', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-ensure-'));
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-ensure-')); let brokerPid;
   try {
     const options = { dataRoot: directory, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, idleTimeoutMs: 100 };
     const identities = await Promise.all([ensureZCodeBroker(options), ensureZCodeBroker(options)]);
+    brokerPid = identities[0].pid;
     assert.equal(identities[0].pid, identities[1].pid);
     assert.equal(identities[0].instanceId, identities[1].instanceId);
     const client = await createZCodeClient({ workspace: directory, brokerEndpoint: identities[0].endpoint, brokerToken: identities[0].brokerToken, ownerId: 'ensure-owner-stable' });
     await client.close();
-    try { process.kill(identities[0].pid, 'SIGTERM'); } catch { /* idle shutdown won */ }
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally {
+    if (brokerPid && processAlive(brokerPid)) try { process.kill(brokerPid, 'SIGTERM'); } catch { /* idle shutdown won */ }
+    if (brokerPid) await waitForProcessExit(brokerPid);
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('broker allows explicit imported create and atomically assigns resume ownership', async () => {
