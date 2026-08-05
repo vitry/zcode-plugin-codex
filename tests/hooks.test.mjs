@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, readdir, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -120,6 +120,16 @@ test('unborn repositories get baselines and full untracked contents affect finge
   bytes.fill(66, 160 * 1024, 224 * 1024); await writeFile(join(cwd, 'large.bin'), bytes);
   const stop = await runHook('stop-review-gate-hook.mjs', { session_id: 'unborn', turn_id: 'turn', cwd, hook_event_name: 'Stop', transcript_path: null, model: 'gpt', permission_mode: 'default', stop_hook_active: false, last_assistant_message: 'done' }, env); assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
   assert.equal((await jsonFiles(join(data, 'workspaces'))).filter((path) => path.includes('/gate-runs/')).length, 1, 'same-size middle-only untracked edits must change the fingerprint');
+});
+
+test('changing only an untracked symlink target changes the fingerprint without following it', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'zpc-symlink-')); const data = await mkdtemp(join(tmpdir(), 'zpc-hooks-data-')); const env = { PLUGIN_DATA: data };
+  await new Promise((resolvePromise, reject) => { const child = spawn('git', ['init', '-q'], { cwd }); child.once('error', reject); child.once('exit', (code) => code === 0 ? resolvePromise() : reject(new Error(`git init ${code}`))); });
+  const link = join(cwd, 'untracked-link'); await symlink('missing-target-a', link); await runHook('session-lifecycle-hook.mjs', { session_id: 'symlink', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+  const prompt = await runHook('user-prompt-hook.mjs', { session_id: 'symlink', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'work' }, env); assert.equal(prompt.code, 0);
+  await unlink(link); await symlink('missing-target-b', link);
+  const stop = await runHook('stop-review-gate-hook.mjs', { session_id: 'symlink', turn_id: 'turn', cwd, hook_event_name: 'Stop', transcript_path: null, model: 'gpt', permission_mode: 'default', stop_hook_active: false, last_assistant_message: 'done' }, env); assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
+  assert.equal((await jsonFiles(join(data, 'workspaces'))).filter((path) => path.includes('/gate-runs/')).length, 1, 'same-path symlink target changes must reach the gate path');
 });
 
 test('SubagentStart marks forwarding suppression without changing parent permission snapshot', async () => {
