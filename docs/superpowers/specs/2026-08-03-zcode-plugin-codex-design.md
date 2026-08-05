@@ -72,36 +72,52 @@ diagnostics, but a background job uses the immutable parent-turn snapshot stored
 when that job was reserved. Missing hooks or unrecognized values produce an
 `unknown` snapshot and never gain high-risk permission.
 
-`UserPromptSubmit` also creates a random, opaque caller-context capability whose
-server-side record binds `sessionId`, `turnId`, workspace, permission mode, and
-creation time. Its hook output adds concise developer context instructing
-`$zcode:*` skills to pass that capability to the companion through the internal
-`--caller-context` option. The companion resolves and validates the record before
-choosing ownership, source thread, or permission state. The raw capability is
-never rendered to the user or stored in a prompt/result artifact. It may be
-reused only within the same Codex turn and expires after the turn or 30 minutes,
-whichever comes first.
+`UserPromptSubmit` writes a private active-turn record bound to the exact
+`session_id`, `turn_id`, canonical workspace, permission mode, original prompt,
+and expiry. The record key is derived from the exact session and workspace; it
+is never a workspace-wide "current session" pointer. Hook output contains no
+credential and the model never receives an authorization secret.
 
-There is no workspace-wide "current session" fallback. `CODEX_THREAD_ID` may be
-observed in some Codex builds but is not part of this contract because it is not
-a documented stable environment variable. Every Skill-facing command except
-setup requires a valid caller context; if hooks are disabled, untrusted, or
-unavailable, it fails with `$zcode:setup` guidance rather than guessing another
-session's identity.
+For Codex CLI 0.146, runtime prototyping observed that a normal Skill shell
+child inherits `CODEX_THREAD_ID`, and that value matches the Codex session/thread
+identity supplied to lifecycle hooks. This is a version-pinned, runtime-observed
+dependency, not a claim that OpenAI documents the variable as stable. Every
+Skill-facing command except setup resolves its caller from the ambient
+`CODEX_THREAD_ID`, canonical working directory, and the matching private
+active-turn record. Missing, malformed, expired, session-mismatched, or
+workspace-mismatched state fails closed with setup/compatibility guidance.
+Sibling sessions in the same workspace have disjoint records.
+
+Skills invoke only a constant direct-companion command and do not interpolate
+the user's prompt, task text, identifiers, or secrets into a shell command. The
+companion obtains public command arguments from the hook-recorded original
+prompt and parses them in Node without shell interpretation. For implicit Skill
+activation, the Skill supplies only its constant command name and the original
+prompt becomes review focus or Rescue task according to that command's grammar.
+Optional status/result/cancel job IDs are likewise parsed from the saved prompt.
+
+If the first invocation needs a wait/background or resume/fresh answer, the
+companion stores the normalized command specification and task as a private
+pending invocation bound to the exact session, workspace, and originating turn.
+A later answer turn may invoke only a fixed enum action such as
+`invoke-choice rescue resume`; the companion resolves the same session and
+workspace, atomically consumes the one pending invocation, and rejects replay,
+free-form replacement text, or sibling-session access.
 
 Internal execution uses different, narrower authorization. Reserving a
-background job generates a second random execution capability bound to that job,
-owner session, workspace, operation, and permission snapshot. The forwarding
-subagent receives only the job ID and execution capability and calls the private
-`run-reserved-job` entrypoint. The capability is consumed atomically exactly once
-and cannot run a different job or select a different session. The parent caller
-context is never sent to the child. A failed child launch may be retried only by
-the parent creating a new execution capability for the same still-queued job.
+background job generates a single-use execution capability bound to that job,
+owner session, workspace, immutable permission snapshot, and normalized spec.
+Production Node starts the background worker itself and supplies this capability
+through a protected child-process channel; neither the Codex model nor a
+forwarding subagent receives or retransmits it. The capability is consumed
+atomically exactly once and cannot run a different job or select a different
+session. A failed child launch may be retried only by production Node creating a
+new capability for the same still-queued job.
 
-Foreground work remains in the invoking turn. Background work is delegated
-through a Codex built-in forwarding subagent that consumes the job-specific
-execution capability, runs the already-reserved job, and reports completion
-without reinterpreting the result.
+Foreground work remains in the invoking turn. Background work is launched and
+reaped by the companion runtime, and completion stays available through durable
+status/result records without requiring a model to carry private capability
+material.
 
 Loop prevention and ownership checks stop assistant-to-assistant delegation cycles and prevent one Codex session from silently adopting another session's work.
 
@@ -164,7 +180,7 @@ $zcode:transfer [--source <codex-thread-id>]
 Without `--source`, transfer reads the current Codex thread. In this plugin, `--source` deliberately means a Codex thread ID rather than a Claude JSONL file. This is the only intentional reinterpretation of an upstream public argument.
 
 The source thread is explicit `--source` when provided; otherwise it is the
-`sessionId` bound to the validated caller-context capability. The adapter starts
+exact session ID from the validated active-turn record. The adapter starts
 a short-lived `codex app-server`, initializes it, and calls `thread/read` with
 `{threadId, includeTurns: true}`. An explicit ID is visible only if that
 app-server can read it from the same Codex home; a missing, unknown, inaccessible,
@@ -199,7 +215,13 @@ the session may still be active, the job returns to `running` with
 `lastCancelError`; the command fails and never reports successful cancellation.
 Cancelling an already terminal job is idempotent and reports its actual state.
 
-When no job ID is given, each command uses the most recent eligible job owned by the current Codex session and workspace. `--all` on status includes all jobs visible to that workspace while clearly marking ownership.
+When no job ID is given, status selects the newest owned job, cancel selects the
+newest owned job whose state is `queued`, `running`, or `cancelling`, and result
+selects the newest owned `succeeded` job that has a complete result artifact. An explicit job ID retains
+the command's existing semantics, including reporting a terminal or unfinished
+record rather than silently selecting another job. Every selection is confined
+to the exact Codex session and workspace. `--all` on status includes all jobs
+visible to that workspace while clearly marking ownership.
 
 ### Setup
 
@@ -224,18 +246,19 @@ No first-release public command exposes `--force`, `--prompt-file`, or `--write`
 
 ### Foreground review or rescue
 
-1. The skill passes the argument vector unchanged to the companion. It may use the companion's structured preflight result to ask about scope, wait/background, or resume behavior, then invokes the companion again with the explicit choice.
-2. The companion snapshots Codex thread, workspace, and current turn permission information.
-3. It reserves a tracked job before starting ZCode.
-4. The adapter creates or resumes a ZCode session, applies model and thought-level settings, and sends the generated prompt.
-5. ZCode permission requests are answered through the headless permission policy.
-6. The companion follows state notifications until completion, persists the result, transitions the job atomically, and renders the output.
+1. The Skill runs a constant `invoke <command>` direct-companion command. The companion resolves the exact active-turn record and parses the original prompt without shell interpolation.
+2. If a choice is required, the companion saves a normalized pending invocation; a later turn supplies only a fixed enum through `invoke-choice`, which atomically consumes the same-session pending record.
+3. The companion snapshots Codex thread, workspace, and current-turn permission information.
+4. It reserves a tracked job before starting ZCode.
+5. The adapter creates or resumes a ZCode session, applies model and thought-level settings, and sends the generated prompt.
+6. ZCode permission requests are answered through the headless permission policy.
+7. The companion follows state notifications until completion, persists the result, transitions the job atomically, and renders the output.
 
 ### Background work
 
-1. The parent turn reserves a job and invokes the plugin's built-in forwarding subagent.
+1. The parent turn reserves a job and the production companion starts a detached worker.
 2. Reservation creates a single-use execution capability bound to the job, owner, workspace, operation, and captured permission snapshot.
-3. The subagent calls private `run-reserved-job` with the job ID and execution capability; it never receives the parent caller-context capability.
+3. Production Node passes the capability through a protected child-process descriptor and reaps/escalates the child on launch failure; no model or subagent handles the capability.
 4. Status and result remain queryable even if the originating turn ends.
 5. Completion is routed once to the owning Codex session; unread results remain durable.
 
@@ -263,6 +286,9 @@ TrackedJob
   permissionSnapshot
   model?
   effort?
+  inputId?
+  startRevision?
+  beforeMessageIds?
   createdAt
   startedAt?
   finishedAt?
@@ -278,6 +304,20 @@ record so interruption does not erase its outcome. Multiple read-only reviews ma
 coexist in one workspace; only one writable rescue may run there by default to
 prevent concurrent edits.
 
+For every accepted ZCode turn, the job persists the minimum recovery boundary:
+the `inputId`, accepted state revision, and the set of assistant message IDs
+visible before send. On the next start, status, result, or cancel invocation,
+the companion locks each owned nonterminal job, reconnects the broker, restores
+ownership, and reconciles through `session/read` and, when needed,
+`session/list`. A remotely completed turn extracts only assistant output beyond
+the persisted boundary, writes the result artifact, and transitions to
+`succeeded`. A stopped/cancelled turn becomes `cancelled`; a missing session,
+ambiguous boundary, incompatible state, or other condition that cannot be
+safely resumed becomes an explicit terminal `failed` recovery outcome. A
+persisted `cancelling` job coordinates with the cancellation lock and either
+finishes cancellation or records a terminal recovery failure. No crash may
+leave an owned job permanently `running`.
+
 ## Model and Thought-Level Selection
 
 Model resolution order is:
@@ -286,8 +326,14 @@ Model resolution order is:
 2. Plugin workspace configuration.
 3. ZCode's current default.
 
-Plugin configuration stores aliases as
-`models.<alias> = {providerId, modelId, variant?}`. An explicit `provider/model`
+Private workspace configuration stores an optional default and aliases as
+`defaultModel` plus `models.<alias> = {providerId, modelId, variant?}` beneath
+that canonical workspace's plugin data directory. Setup may write these values
+only from explicit setup input or the documented
+`ZCODE_SETUP_DEFAULT_MODEL`/`ZCODE_SETUP_MODEL_ALIASES_JSON` environment
+variables; run
+commands always read the persisted workspace configuration and do not treat a
+process-only `ZCODE_MODEL_ALIASES` value as runtime configuration. An explicit `provider/model`
 splits at the first slash; an unqualified value must match a configured alias or
 an exact model ID advertised by the current ZCode registry. The resolved
 `{providerId, modelId, variant?}` is supplied on `session/create`; resumed
@@ -302,6 +348,12 @@ fails before the first prompt and lists the available levels. The matched value
 is applied with `session/setThoughtLevel`. The runtime does not silently
 downgrade or ignore either model or effort.
 
+After `session/setModel`, the adapter requires the response's current model to
+exactly equal the requested provider/model/variant tuple. After
+`session/setThoughtLevel`, it requires the returned current level to equal the
+advertised requested level case-insensitively. A missing or mismatched current
+value fails before `session/send`; an acknowledgement alone is insufficient.
+
 ## Permission Policy
 
 ZCode's protocol-level permission request is not an OS sandbox. The plugin applies the following conservative policy:
@@ -314,10 +366,10 @@ ZCode's protocol-level permission request is not an OS sandbox. The plugin appli
 
 Read-only review permits operations required to inspect the workspace but denies every request classified as mutating. A background job retains the permission snapshot from the turn that launched it; later Codex turns cannot implicitly elevate it. Missing, stale, or unrecognized permission information chooses the restrictive outcome.
 
-The companion resolves the opaque caller context to the exact per-session,
-per-turn record. Reserving a job copies that record into the job before ZCode
-starts. Caller-context records are keyed by their random capability, not by a
-workspace-level latest pointer. Only the exact documented value
+The companion resolves the exact per-session, per-turn active record using the
+runtime-observed thread ID and canonical workspace. Reserving a job copies that
+record into the job before ZCode starts. Active records are keyed by the exact
+session and workspace, not by a workspace-level latest pointer. Only the exact documented value
 `bypassPermissions` enables the high-risk row; `default`, `acceptEdits`, `plan`,
 `dontAsk`, `unknown`, or a snapshot from a different session/turn does not.
 
@@ -333,7 +385,7 @@ and never accepts a caller-context or job-execution capability. It compares the
 baseline with the current fingerprint and skips ZCode when there were no net
 tracked or untracked changes or no baseline exists.
 
-The gate is suppressed for plugin forwarding subagents, externally hosted or
+The gate is suppressed for plugin-owned background workers, externally hosted or
 nested sessions, and a `Stop` continuation already created by this gate. It also
 records a run ID and the before/after fingerprints so the same session, turn, and
 fingerprint pair cannot trigger a duplicate review. Active Companion jobs are
@@ -359,7 +411,7 @@ The CLI discovery order is:
 
 The runtime requires ZCode CLI 0.16.1 or newer. Discovery results may be cached with their version and observation time, but every launch verifies that the resolved target still exists. A JavaScript entrypoint is launched through the current Node executable; a native executable is launched directly.
 
-The broker starts lazily for the first active session and is reused while healthy. Codex lifecycle hooks release session ownership and stop an idle broker. Cleanup must not stop sessions or jobs owned by sibling Codex sessions. After an abnormal exit, the next invocation reconciles nonterminal jobs, including jobs left in `cancelling`, from persisted state and ZCode session status.
+The broker starts lazily for the first active session and is reused while healthy. Codex lifecycle hooks release session ownership and stop an idle broker. Cleanup must not stop sessions or jobs owned by sibling Codex sessions. After an abnormal exit, the next start, status, result, or cancel invocation reconciles owned nonterminal jobs, including jobs left in `cancelling`, from persisted turn boundaries and ZCode session state while holding the job's recovery/cancellation lock.
 
 ## Local Storage
 
@@ -407,7 +459,8 @@ A deterministic fake ZCode broker covers `session/create`, `session/send`, `sess
 
 ### Integration tests
 
-Exercise all eight public skills, foreground and background execution, resume and
+Exercise all eight public skills through ordinary direct-companion stdio,
+foreground and production-launched background execution, resume and
 fresh selection, concurrent read-only work, writable-job exclusion, status
 waiting and timeout validation, result persistence, acknowledged and failed
 cancellation, transfer from a fake Codex app-server, native hook trust setup,
@@ -415,20 +468,32 @@ review-gate allow/block/skip/deduplication paths, and broker recovery. A dedicat
 test interleaves `SessionStart` and `UserPromptSubmit` for two Codex sessions in
 the same workspace and proves that Transfer, permission snapshots, resume
 candidates, status defaults, result defaults, and cancellation never cross the
-caller-context boundary. Internal authorization tests reject a forged job ID, an
+active-turn boundary. Tests also prove absent/mismatched `CODEX_THREAD_ID` fails
+closed, same-workspace sibling sessions cannot consume each other's active or
+pending invocation, and original task metacharacters never enter shell parsing.
+Internal authorization tests reject a forged job ID, an
 execution capability used with another session or workspace, a second
 consumption of the same capability, and Stop input whose session/turn does not
 match the atomically consumed gate baseline.
 
 ### Real end-to-end tests
 
-The first release qualifies macOS against ZCode Desktop 3.6.5 with bundled CLI 0.16.1 or a newer compatible installation. Tests verify discovery, authentication diagnostics, a read-only prompt, explicit model selection, cancellation, and imported history without relying on a particular model's prose.
+The first release qualifies macOS against ZCode Desktop 3.6.5 with bundled CLI 0.16.1 or a newer compatible installation. Tests verify discovery, authentication diagnostics, a read-only prompt, explicit model selection through the complete companion `--model` path, cancellation, and imported history without relying on a particular model's prose. The release E2E requires a non-empty `ZCODE_REAL_E2E_MODEL`; an unauthenticated, unavailable, or credit-exhausted local runtime reports itself explicitly as unqualified and is never counted as a pass.
+
+The marketplace integration installs the production snapshot, confirms the
+Skill through real `codex app-server`, executes the installed hook, and invokes
+the installed companion over ordinary stdio with the observed thread identity.
+An opt-in authenticated `codex exec` test proves an actual model-driven Skill
+call when the environment is eligible. The 2026-08-06 local prototype reached
+`thread.started` but was unqualified before Skill execution because the Codex
+workspace was out of credits; this is recorded as evidence, not a success.
 
 CI runs fake-protocol tests on macOS, Linux, and Windows. Documentation describes Linux and Windows as code-supported but not real-CLI-qualified until matching end-to-end environments exist.
 
 ## Acceptance Criteria
 
 - A marketplace-installed plugin exposes all eight `$zcode:*` skills.
+- A marketplace-installed Skill invokes the companion through ordinary stdio; no public contract depends on caller-created file descriptors or a model-visible secret.
 - Each public argument above is parsed and behaves as specified.
 - Review modes cannot approve a mutating ZCode permission request.
 - Rescue defaults to foreground and persists both foreground and background jobs.
@@ -436,8 +501,8 @@ CI runs fake-protocol tests on macOS, Linux, and Windows. Documentation describe
 - Transfer imports ordered Codex user and assistant turns into a resumable ZCode session.
 - Status, result, and cancellation survive a new Codex turn and process restart.
 - Sibling Codex sessions cannot steal ownership or terminate one another's active work.
-- Two interleaved Codex sessions in one workspace resolve their own Transfer source and permission snapshot without relying on process environment or a workspace-wide latest marker.
-- Background execution consumes a single-use job capability and never forwards the parent's caller-context capability; forged, cross-owner, and replayed capabilities are rejected.
+- Two interleaved Codex sessions in one workspace resolve their own Transfer source and permission snapshot from exact hook state plus runtime-observed `CODEX_THREAD_ID`, without a workspace-wide latest marker.
+- Background execution consumes a single-use job capability wholly inside production Node; forged, cross-owner, replayed, or model-forwarded capabilities are rejected.
 - The Stop gate consumes only the exact session/turn baseline identified by its Codex hook input.
 - A failed `session/stop` cannot make a potentially running job appear cancelled.
 - The optional Stop review gate runs only for a changed, user-driven parent turn and implements the documented allow, block, skip, failure, and deduplication behavior.
