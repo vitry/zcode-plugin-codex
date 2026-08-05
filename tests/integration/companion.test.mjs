@@ -210,6 +210,15 @@ test('resumed rescue cannot reuse a historical visible result when the current t
   assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'failed').length, 1);
 });
 
+test('resumed rescue rejects an unrelated-only new assistant result', async () => {
+  const context = await fixture(); const fresh = await companion(context, ['rescue', '--fresh', 'historical visible']);
+  assert.equal(fresh.code, 0, `${fresh.stderr}${fresh.stdout}`);
+  const resumed = await companion(context, ['rescue', '--resume', 'current unrelated']);
+  assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.code, 'ZCODE_RESULT_MISSING');
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'failed').length, 1);
+});
+
 test('foreground launch failure durably fails its reserved job', async () => {
   const context = await fixture();
   const failed = await companion(context, ['review'], { FAKE_ZCODE_VERSION: '0.1.0' });

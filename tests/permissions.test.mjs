@@ -82,6 +82,11 @@ test('current-turn result prefers assistant messages linked to the send input ov
   assert.equal(extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), 'current');
 });
 
+test('current-turn result rejects unrelated new assistants when input linkage is available', () => {
+  const snapshot = { messages: [assistant([{ type: 'text', text: 'unrelated' }], undefined, undefined, 'assistant-other', 'input-other')] };
+  assert.throws(() => extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), { code: 'ZCODE_RESULT_MISSING' });
+});
+
 test('rescue returns only nonignored visible text and never reasoning', () => {
   const snapshot = { messages: [assistant([{ type: 'reasoning', text: 'private' }, { type: 'text', text: 'old', ignored: true }, { type: 'text', text: 'final' }])] };
   assert.equal(extractFinalResult(snapshot, 'rescue'), 'final');
