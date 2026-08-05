@@ -132,7 +132,7 @@ export function createStateStore(options) {
           updatedAt: new Date(Math.max(
             Date.now(),
             Date.parse(job.createdAt),
-            Date.parse(job.updatedAt) + 1,
+            Date.parse(job.updatedAt),
             typeof patch.startedAt === 'string' ? Date.parse(patch.startedAt) : Number.NEGATIVE_INFINITY,
             typeof patch.finishedAt === 'string' ? Date.parse(patch.finishedAt) : Number.NEGATIVE_INFINITY,
           )).toISOString(),

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
@@ -13,12 +14,14 @@ export function ownerIdForSession(sessionId) {
   return createHash('sha256').update(JSON.stringify(['zcode-owner-v1', sessionId])).digest('hex');
 }
 
-/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>}} options */
+/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>}} options */
 export function createJobController(options) {
   if (!options?.store) throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'A state store is required.', { category: 'validation', remedy: 'Provide the Task 2 state store.' });
   const pollIntervalMs = options.pollIntervalMs ?? 50;
   const clock = options.clock ?? Date.now;
   const delay = options.delay ?? pollDelay;
+  /** @type {Map<string,Promise<any>>} */
+  const inFlight = new Map();
   return {
     /** @param {string} workspace @param {string} ownerSessionId */
     async listOwned(workspace, ownerSessionId) {
@@ -42,29 +45,15 @@ export function createJobController(options) {
       }
     },
     /** @param {string} workspace @param {string} jobId @param {string} ownerSessionId */
-    async cancel(workspace, jobId, ownerSessionId) {
-      const initial = await options.store.readJob(workspace, jobId);
+    cancel(workspace, jobId, ownerSessionId) {
       const dataRoot = options.dataRoot ?? options.store.dataRoot;
-      if (!dataRoot) throw cancelError(jobId, 'Cancellation lock storage is unavailable.');
-      const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
-      return withFileLock(join(storage.directory, 'cancel-locks', `${jobId}.lock`), async () => {
-        const job = await options.store.readJob(workspace, jobId);
-        if (job.ownerSessionId !== ownerSessionId) throw new PluginError('OWNED_JOB_NOT_FOUND', 'No matching owned job was found.', { category: 'authorization', remedy: 'Check the job ID and invoke the command from its owning Codex session.' });
-        if (TERMINAL.has(job.status)) return job;
-        if (job.status === 'queued') return options.store.transitionJob(workspace, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
-        if (!['running', 'cancelling'].includes(job.status)) throw cancelError(job.id, 'Job is not cancellable.');
-        if (job.status === 'running' && job.lastCancelError && job.updatedAt !== initial.updatedAt) throw cancelError(job.id, cancellationMessage(job.lastCancelError));
-        const cancelling = job.status === 'running' ? await options.store.transitionJob(workspace, job.id, ['running'], 'cancelling', job.lastCancelError ? { lastCancelError: null } : {}) : job;
-        try {
-          if (!cancelling.zcodeSessionId || !options.stopSession) throw new Error('No live ZCode session stop handler is available.');
-          await options.stopSession(cancelling.zcodeSessionId);
-          return await options.store.transitionJob(workspace, job.id, ['cancelling'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'ZCode stop failed';
-          await options.store.transitionJob(workspace, job.id, ['cancelling'], 'running', { lastCancelError: message }).catch(() => {});
-          throw cancelError(job.id, message, error);
-        }
-      }, { timeoutMs: 30_000 });
+      if (!dataRoot) return Promise.reject(cancelError(jobId, 'Cancellation lock storage is unavailable.'));
+      let canonicalWorkspace;
+      try { canonicalWorkspace = realpathSync(resolve(workspace)); }
+      catch { return resolveWorkspaceStorage({ dataRoot, workspace }).then((storage) => cancelWithElection({ options, storage, workspace: storage.workspacePath, jobId, ownerSessionId })); }
+      const key = `${canonicalWorkspace}:${jobId}`; const existing = inFlight.get(key); if (existing) return existing;
+      const attempt = resolveWorkspaceStorage({ dataRoot, workspace: canonicalWorkspace }).then((storage) => cancelWithElection({ options, storage, workspace: canonicalWorkspace, jobId, ownerSessionId }));
+      inFlight.set(key, attempt); const cleanup = () => { if (inFlight.get(key) === attempt) inFlight.delete(key); }; attempt.then(cleanup, cleanup); return attempt;
     },
     /** @param {string} workspace @param {string} ownerSessionId */
     async resumeCandidate(workspace, ownerSessionId) {
@@ -72,6 +61,44 @@ export function createJobController(options) {
       return candidates.at(-1) ?? null;
     },
   };
+}
+
+/** @param {{options:any,storage:any,workspace:string,jobId:string,ownerSessionId:string}} input */
+async function cancelWithElection(input) {
+  const lockPath = join(input.storage.directory, 'cancel-locks', `${input.jobId}.lock`);
+  try { return await withFileLock(lockPath, () => performCancellation(input, false), { timeoutMs: 0 }); }
+  catch (error) {
+    if (!(error instanceof PluginError) || error.code !== 'LOCK_TIMEOUT') throw error;
+    await input.options.afterFollowerSelected?.();
+    return withFileLock(lockPath, () => performCancellation(input, true), { timeoutMs: 30_000 });
+  }
+}
+
+/** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {boolean} follower */
+async function performCancellation(input, follower) {
+  const job = await input.options.store.readJob(input.workspace, input.jobId);
+  if (job.ownerSessionId !== input.ownerSessionId) throw new PluginError('OWNED_JOB_NOT_FOUND', 'No matching owned job was found.', { category: 'authorization', remedy: 'Check the job ID and invoke the command from its owning Codex session.' });
+  if (TERMINAL.has(job.status)) return job;
+  if (job.status === 'queued') {
+    if (follower) throw cancelError(job.id, 'The prior cancellation attempt ended without an outcome.');
+    return input.options.store.transitionJob(input.workspace, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+  }
+  if (!['running', 'cancelling'].includes(job.status)) throw cancelError(job.id, 'Job is not cancellable.');
+  if (follower && job.status === 'running') {
+    if (job.lastCancelError) throw cancelError(job.id, cancellationMessage(job.lastCancelError));
+    throw cancelError(job.id, 'The prior cancellation attempt ended without an outcome.');
+  }
+  const cancelling = job.status === 'running' ? await input.options.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling', job.lastCancelError ? { lastCancelError: null } : {}) : job;
+  try {
+    if (!cancelling.zcodeSessionId || !input.options.stopSession) throw new Error('No live ZCode session stop handler is available.');
+    await input.options.stopSession(cancelling.zcodeSessionId);
+    return await input.options.store.transitionJob(input.workspace, job.id, ['cancelling'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'ZCode stop failed';
+    await input.options.store.transitionJob(input.workspace, job.id, ['cancelling'], 'running', { lastCancelError: message }).catch(() => {});
+    await input.options.afterRollbackBeforeSettle?.();
+    throw cancelError(job.id, message, error);
+  }
 }
 
 /** @param {number} milliseconds */

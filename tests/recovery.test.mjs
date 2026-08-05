@@ -1,7 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -19,6 +19,15 @@ const writerProbe = fileURLToPath(new URL('./fixtures/internal-writer-child.mjs'
 const cancellingHolder = fileURLToPath(new URL('./fixtures/cancelling-holder.mjs', import.meta.url));
 const companionCli = fileURLToPath(new URL('../scripts/zcode-companion.mjs', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
+const cancelAttemptChild = fileURLToPath(new URL('./fixtures/cancel-attempt-child.mjs', import.meta.url));
+
+async function waitForPath(path) { while (true) { try { await access(path); return; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); } } }
+function spawnCancelAttempt(args) {
+  const child = spawn(process.execPath, [cancelAttemptChild, ...args], { stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const result = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(`cancel child ${code}: ${stderr}`))); });
+  return { child, result };
+}
 
 function runWriterProbe(mode) {
   const child = spawn(process.execPath, [writerProbe, mode], { stdio: ['ignore', 'pipe', 'pipe', 'ignore', 'pipe'] });
@@ -113,6 +122,20 @@ test('a second process takes over after a cancelling lock holder is SIGKILLed', 
   child.kill('SIGKILL'); await new Promise((resolve) => child.once('exit', resolve));
   let stops = 0; const controller = createJobController({ store, dataRoot: fixture.dataRoot, stopSession: async () => { stops += 1; } });
   assert.equal((await controller.cancel(fixture.workspace, job.id, 'owner')).status, 'cancelled'); assert.equal(stops, 1);
+});
+
+test('a cross-process follower joins the leader failure without stopping again', async () => {
+  const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' });
+  const leaderReady = join(fixture.root, 'leader-ready'); const followerReady = join(fixture.root, 'follower-ready'); const release = join(fixture.root, 'release'); const stopMarker = join(fixture.root, 'follower-stop');
+  const leader = spawnCancelAttempt(['leader', fixture.dataRoot, fixture.workspace, job.id, leaderReady, release, stopMarker]); await waitForPath(leaderReady);
+  const follower = spawnCancelAttempt(['follower', fixture.dataRoot, fixture.workspace, job.id, followerReady, release, stopMarker]);
+  try { await Promise.race([waitForPath(followerReady), new Promise((_, reject) => setTimeout(() => reject(new Error('follower was not selected')), 1_000))]); await writeFile(release, 'go'); }
+  catch (error) { leader.child.kill('SIGKILL'); follower.child.kill('SIGKILL'); await Promise.allSettled([leader.result, follower.result]); throw error; }
+  const [leaderResult, followerResult] = await Promise.all([leader.result, follower.result]);
+  assert.deepEqual(followerResult.error, leaderResult.error); assert.equal(leaderResult.error.code, 'JOB_CANCEL_FAILED'); assert.equal(followerResult.job.status, 'running'); assert.equal(followerResult.job.lastCancelError, 'refused');
+  await assert.rejects(access(stopMarker), { code: 'ENOENT' });
 });
 
 test('review contract is embedded in the request and schema evaluation fails closed', async () => {
