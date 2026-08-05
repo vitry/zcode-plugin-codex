@@ -103,7 +103,8 @@ input.on('line', async (line) => {
       const completion = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: stateRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };
       if (process.env.FAKE_ZCODE_SYNC_BATCH === 'stale-valid') sendBatch([response, { method: 'state.updated', params: { ...completion.params, revision: stateRevision } }, completion]);
       else if (process.env.FAKE_ZCODE_SYNC_COMPLETE === '1') send(completion);
-      else if (!(process.env.FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION === '1' && sendCount === 1)) {
+      else if (!(process.env.FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION === '1' && sendCount === 1)
+        && Number(process.env.FAKE_ZCODE_SUPPRESS_COMPLETION_AT ?? 0) !== sendCount) {
         const existingTimer = pendingCompletionTimers.get(p.sessionId); if (existingTimer) clearTimeout(existingTimer);
         const timer = setTimeout(() => { if (pendingCompletionTimers.get(p.sessionId) === timer) pendingCompletionTimers.delete(p.sessionId); send(completion); }, 5);
         pendingCompletionTimers.set(p.sessionId, timer);
