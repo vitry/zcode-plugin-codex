@@ -1,7 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -22,12 +22,11 @@ const fakeZCode = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.
 const cancelAttemptChild = fileURLToPath(new URL('./fixtures/cancel-attempt-child.mjs', import.meta.url));
 const cancelLockHolder = fileURLToPath(new URL('./fixtures/cancel-lock-holder.mjs', import.meta.url));
 
-async function waitForPath(path) { while (true) { try { await access(path); return; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); } } }
 function spawnCancelAttempt(args) {
-  const child = spawn(process.execPath, [cancelAttemptChild, ...args], { stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let stderr = '';
+  const child = spawn(process.execPath, [cancelAttemptChild, ...args], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] }); let stdout = ''; let stderr = '';
   child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
   const result = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(`cancel child ${code}: ${stderr}`))); });
-  return { child, result };
+  return { child, result, message: (type) => new Promise((resolve) => { const listener = (value) => { if (value?.type === type) { child.off('message', listener); resolve(value); } }; child.on('message', listener); }) };
 }
 
 function runWriterProbe(mode) {
@@ -46,6 +45,11 @@ async function context() {
   await mkdir(workspace); const identity = createIdentityStore({ dataRoot });
   const callerContext = await identity.createCallerContext({ sessionId: 'owner', turnId: 'turn', workspace, permissionMode: 'workspace-write' });
   return { root, workspace, dataRoot, identity, callerContext, env: { ...process.env, ZCODE_DATA_ROOT: dataRoot } };
+}
+
+async function cancellationAttempt(dataRoot, workspace, jobId) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  return JSON.parse(await readFile(join(storage.directory, 'cancel-attempts', `${jobId}.json`), 'utf8'));
 }
 
 test('background preparation failures terminalize the reservation and release the writable slot', async () => {
@@ -129,14 +133,19 @@ test('a cross-process follower joins the leader failure without stopping again',
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
   const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' });
-  const leaderReady = join(fixture.root, 'leader-ready'); const followerReady = join(fixture.root, 'follower-ready'); const release = join(fixture.root, 'release'); const stopMarker = join(fixture.root, 'follower-stop');
-  const leader = spawnCancelAttempt(['leader', fixture.dataRoot, fixture.workspace, job.id, leaderReady, release, stopMarker]); await waitForPath(leaderReady);
-  const follower = spawnCancelAttempt(['follower', fixture.dataRoot, fixture.workspace, job.id, followerReady, release, stopMarker]);
-  try { await Promise.race([waitForPath(followerReady), new Promise((_, reject) => setTimeout(() => reject(new Error('follower was not selected')), 1_000))]); await writeFile(release, 'go'); }
-  catch (error) { leader.child.kill('SIGKILL'); follower.child.kill('SIGKILL'); await Promise.allSettled([leader.result, follower.result]); throw error; }
+  const leader = spawnCancelAttempt(['leader-failure-ipc', fixture.dataRoot, fixture.workspace, job.id]); await leader.message('stop-entered');
+  const follower = spawnCancelAttempt(['follower-ipc', fixture.dataRoot, fixture.workspace, job.id]); await follower.message('follower-selected'); leader.child.send({ type: 'release' });
   const [leaderResult, followerResult] = await Promise.all([leader.result, follower.result]);
   assert.deepEqual(followerResult.error, leaderResult.error); assert.equal(leaderResult.error.code, 'JOB_CANCEL_FAILED'); assert.equal(followerResult.job.status, 'running'); assert.equal(followerResult.job.lastCancelError, 'refused');
-  await assert.rejects(access(stopMarker), { code: 'ENOENT' });
+});
+
+test('a cross-process follower joins the leader success without stopping again', async () => {
+  const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' });
+  const leader = spawnCancelAttempt(['leader-success-ipc', fixture.dataRoot, fixture.workspace, job.id]); await leader.message('stop-entered');
+  const follower = spawnCancelAttempt(['follower-ipc', fixture.dataRoot, fixture.workspace, job.id]); await follower.message('follower-selected'); leader.child.send({ type: 'release' });
+  const [leaderResult, followerResult] = await Promise.all([leader.result, follower.result]); assert.equal(leaderResult.job.status, 'cancelled'); assert.equal(followerResult.job.status, 'cancelled');
 });
 
 test('a follower takes leadership after a pre-transition lock holder crash', async () => {
@@ -151,6 +160,44 @@ test('a follower takes leadership after a pre-transition lock holder crash', asy
     const cancellation = controller.cancel(fixture.workspace, job.id, 'owner'); await followerSelected; const holderExit = new Promise((resolve) => holder.once('exit', resolve)); holder.kill('SIGKILL'); await holderExit;
     assert.equal((await cancellation).status, 'cancelled'); assert.equal(stops, initialStatus === 'running' ? 1 : 0);
   }
+});
+
+test('historical cancel failure does not make a retry follower join a leader killed before publishing active', async () => {
+  const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' });
+  await assert.rejects(createJobController({ store, dataRoot: fixture.dataRoot, stopSession: async () => { throw new Error('historical refusal'); } }).cancel(fixture.workspace, job.id, 'owner'), { code: 'JOB_CANCEL_FAILED' });
+  const holder = spawn(process.execPath, [cancelLockHolder, fixture.dataRoot, fixture.workspace, job.id, 'before-active'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  await new Promise((resolve, reject) => { holder.stdout.once('data', resolve); holder.once('error', reject); });
+  let followerReady = () => {}; const selected = new Promise((resolve) => { followerReady = () => resolve(undefined); }); let stops = 0;
+  const cancellation = createJobController({ store, dataRoot: fixture.dataRoot, afterFollowerSelected: async () => { followerReady(); }, stopSession: async () => { stops += 1; } }).cancel(fixture.workspace, job.id, 'owner');
+  await selected; const exited = new Promise((resolve) => holder.once('exit', resolve)); holder.kill('SIGKILL'); await exited;
+  assert.equal((await cancellation).status, 'cancelled'); assert.equal(stops, 1); assert.equal((await cancellationAttempt(fixture.dataRoot, fixture.workspace, job.id)).status, 'succeeded');
+});
+
+test('a follower takes over the same active attempt after publication but before transition', async () => {
+  const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' }); const attemptId = 'b'.repeat(64);
+  const holder = spawn(process.execPath, [cancelLockHolder, fixture.dataRoot, fixture.workspace, job.id, 'after-active', attemptId], { stdio: ['ignore', 'pipe', 'pipe'] });
+  await new Promise((resolve, reject) => { holder.stdout.once('data', resolve); holder.once('error', reject); });
+  let followerReady = () => {}; const selected = new Promise((resolve) => { followerReady = () => resolve(undefined); }); let stops = 0;
+  const cancellation = createJobController({ store, dataRoot: fixture.dataRoot, afterFollowerSelected: async () => { followerReady(); }, stopSession: async () => { stops += 1; } }).cancel(fixture.workspace, job.id, 'owner');
+  await selected; const exited = new Promise((resolve) => holder.once('exit', resolve)); holder.kill('SIGKILL'); await exited;
+  assert.equal((await cancellation).status, 'cancelled'); assert.equal(stops, 1); const attempt = await cancellationAttempt(fixture.dataRoot, fixture.workspace, job.id); assert.equal(attempt.attemptId, attemptId); assert.equal(attempt.status, 'succeeded');
+});
+
+test('a follower joins failed-pending-release without stopping and settles the attempt failed', async () => {
+  const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' }); const attemptId = 'c'.repeat(64);
+  const holder = spawn(process.execPath, [cancelLockHolder, fixture.dataRoot, fixture.workspace, job.id, 'failed-pending', attemptId], { stdio: ['ignore', 'pipe', 'pipe'] });
+  await new Promise((resolve, reject) => { holder.stdout.once('data', resolve); holder.once('error', reject); });
+  let followerReady = () => {}; const selected = new Promise((resolve) => { followerReady = () => resolve(undefined); }); let stops = 0;
+  const cancellation = createJobController({ store, dataRoot: fixture.dataRoot, afterFollowerSelected: async () => { followerReady(); }, stopSession: async () => { stops += 1; } }).cancel(fixture.workspace, job.id, 'owner');
+  await selected; const exited = new Promise((resolve) => holder.once('exit', resolve)); holder.kill('SIGKILL'); await exited;
+  await assert.rejects(cancellation, { code: 'JOB_CANCEL_FAILED', message: `Could not cancel job ${job.id}: refused` }); assert.equal(stops, 0);
+  const attempt = await cancellationAttempt(fixture.dataRoot, fixture.workspace, job.id); assert.equal(attempt.attemptId, attemptId); assert.equal(attempt.status, 'failed');
 });
 
 test('review contract is embedded in the request and schema evaluation fails closed', async () => {
