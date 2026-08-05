@@ -20,6 +20,7 @@ const cancellingHolder = fileURLToPath(new URL('./fixtures/cancelling-holder.mjs
 const companionCli = fileURLToPath(new URL('../scripts/zcode-companion.mjs', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 const cancelAttemptChild = fileURLToPath(new URL('./fixtures/cancel-attempt-child.mjs', import.meta.url));
+const cancelLockHolder = fileURLToPath(new URL('./fixtures/cancel-lock-holder.mjs', import.meta.url));
 
 async function waitForPath(path) { while (true) { try { await access(path); return; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); } } }
 function spawnCancelAttempt(args) {
@@ -68,7 +69,7 @@ test('delivery failure revokes the minted capability and fails the queued job', 
   const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace });
   const spec = JSON.parse(await readFile(join(storage.directory, 'job-specs', `${output.job.id}.json`), 'utf8'));
   const binding = { jobId: output.job.id, ownerSessionId: 'owner', workspace: fixture.workspace, operation: 'run-reserved-job', specDigest: spec.digest };
-  await assert.rejects(fixture.identity.consumeExecutionCapability(output.executionCapability, binding), { code: 'EXECUTION_CAPABILITY_INVALID' });
+  await assert.rejects(fixture.identity.consumeExecutionCapability(output.executionCapability, binding), { code: 'EXECUTION_CAPABILITY_REVOKED' });
   assert.equal((await createStateStore({ dataRoot: fixture.dataRoot }).readJob(fixture.workspace, output.job.id)).status, 'failed');
 });
 
@@ -80,7 +81,7 @@ test('real CLI fd4 delivery failure revokes capability and releases the writable
   const code = await new Promise((resolve, reject) => { const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('companion delivery failure timed out')); }, 2_000); child.once('error', reject); child.once('exit', (value) => { clearTimeout(timer); resolve(value); }); });
   assert.notEqual(code, 0);
   const store = createStateStore({ dataRoot: fixture.dataRoot }); const [failed] = await store.listJobs(fixture.workspace); assert.equal(failed.status, 'failed');
-  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace }); assert.deepEqual(await readdir(join(storage.directory, 'identity', 'capabilities')), []);
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace }); const capabilityFiles = await readdir(join(storage.directory, 'identity', 'capabilities')); assert.equal(capabilityFiles.length, 1); assert.ok(JSON.parse(await readFile(join(storage.directory, 'identity', 'capabilities', capabilityFiles[0]), 'utf8')).revokedAt);
   const later = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'later', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }); assert.equal(later.status, 'queued');
 });
 
@@ -136,6 +137,20 @@ test('a cross-process follower joins the leader failure without stopping again',
   const [leaderResult, followerResult] = await Promise.all([leader.result, follower.result]);
   assert.deepEqual(followerResult.error, leaderResult.error); assert.equal(leaderResult.error.code, 'JOB_CANCEL_FAILED'); assert.equal(followerResult.job.status, 'running'); assert.equal(followerResult.job.lastCancelError, 'refused');
   await assert.rejects(access(stopMarker), { code: 'ENOENT' });
+});
+
+test('a follower takes leadership after a pre-transition lock holder crash', async () => {
+  for (const initialStatus of ['queued', 'running']) {
+    const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
+    const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+    if (initialStatus === 'running') await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' });
+    const holder = spawn(process.execPath, [cancelLockHolder, fixture.dataRoot, fixture.workspace, job.id], { stdio: ['ignore', 'pipe', 'pipe'] });
+    await new Promise((resolve, reject) => { holder.stdout.once('data', resolve); holder.once('error', reject); });
+    let selected = () => {}; const followerSelected = new Promise((resolve) => { selected = () => resolve(undefined); }); let stops = 0;
+    const controller = createJobController({ store, dataRoot: fixture.dataRoot, afterFollowerSelected: async () => { selected(); }, stopSession: async () => { stops += 1; } });
+    const cancellation = controller.cancel(fixture.workspace, job.id, 'owner'); await followerSelected; const holderExit = new Promise((resolve) => holder.once('exit', resolve)); holder.kill('SIGKILL'); await holderExit;
+    assert.equal((await cancellation).status, 'cancelled'); assert.equal(stops, initialStatus === 'running' ? 1 : 0);
+  }
 });
 
 test('review contract is embedded in the request and schema evaluation fails closed', async () => {

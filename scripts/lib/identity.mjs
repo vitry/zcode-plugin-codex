@@ -1,5 +1,4 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
@@ -87,6 +86,7 @@ export function createIdentityStore({ dataRoot }) {
         ...(input.specDigest === undefined ? {} : { specDigest: input.specDigest }),
         createdAt: new Date().toISOString(),
         consumedAt: null,
+        revokedAt: null,
       };
       await withFileLock(storage.lockPath, () => atomicWriteJson(
         join(storage.capabilitiesDirectory, `${digest}.json`),
@@ -133,6 +133,9 @@ export function createIdentityStore({ dataRoot }) {
             'Create a new child execution capability.',
           );
         }
+        if ((record.revokedAt ?? null) !== null) {
+          throw authorizationError('EXECUTION_CAPABILITY_REVOKED', 'Execution capability has been revoked.', 'Create a new execution capability.');
+        }
         const consumed = { ...record, consumedAt: new Date().toISOString() };
         await atomicWriteJson(path, consumed);
         return publicRecord(consumed);
@@ -160,7 +163,8 @@ export function createIdentityStore({ dataRoot }) {
         if (record.consumedAt !== null) {
           throw authorizationError('EXECUTION_CAPABILITY_CONSUMED', 'Execution capability has already been consumed.', 'Create a new child execution capability.');
         }
-        await unlink(path);
+        if ((record.revokedAt ?? null) !== null) return;
+        await atomicWriteJson(path, { ...record, revokedAt: new Date().toISOString() });
       });
     },
 
@@ -369,7 +373,8 @@ function isExecutionRecord(record) {
     && isNonEmptyString(record.ownerSessionId) && isNonEmptyString(record.workspace)
     && EXECUTION_OPERATIONS.includes(record.operation) && isPlainJsonObject(record.permissionSnapshot)
     && (!('specDigest' in record) || isDigest(record.specDigest))
-    && isDate(record.createdAt) && (record.consumedAt === null || isDate(record.consumedAt));
+    && isDate(record.createdAt) && (record.consumedAt === null || isDate(record.consumedAt))
+    && (!('revokedAt' in record) || record.revokedAt === null || isDate(record.revokedAt));
 }
 
 /** @param {any} record */

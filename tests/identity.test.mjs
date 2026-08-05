@@ -203,11 +203,26 @@ test('revocation preserves consumed outcomes for legacy and spec-bound capabilit
   }
 });
 
-test('revocation deletes an unconsumed legacy capability', async () => {
-  const { identity, workspaceA } = await fixture(); const binding = { jobId: 'legacy-job', ownerSessionId: 'session-a', workspace: workspaceA, operation: 'continue' };
-  const token = await identity.createExecutionCapability({ ...binding, permissionSnapshot: { permissionMode: 'workspace-write' } });
-  await identity.revokeExecutionCapability(token, binding);
-  await assert.rejects(identity.consumeExecutionCapability(token, binding), { code: 'EXECUTION_CAPABILITY_INVALID' });
+test('revocation durably tombstones unconsumed legacy and spec-bound capabilities', async () => {
+  for (const expected of [
+    { jobId: 'legacy-job', ownerSessionId: 'session-a', operation: 'continue' },
+    { jobId: 'spec-job', ownerSessionId: 'session-a', operation: 'run-reserved-job', specDigest: 'd'.repeat(64) },
+  ]) {
+    const { dataRoot, identity, workspaceA } = await fixture(); const binding = { ...expected, workspace: workspaceA };
+    const token = await identity.createExecutionCapability({ ...binding, permissionSnapshot: { permissionMode: 'workspace-write' } }); await identity.revokeExecutionCapability(token, binding);
+    const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const path = join(storage.directory, 'identity', 'capabilities', `${createHash('sha256').update(token).digest('hex')}.json`);
+    const first = JSON.parse(await readFile(path, 'utf8')); assert.equal(first.consumedAt, null); assert.ok(Date.parse(first.revokedAt));
+    const reopened = createIdentityStore({ dataRoot }); await assert.rejects(reopened.consumeExecutionCapability(token, binding), { code: 'EXECUTION_CAPABILITY_REVOKED' });
+    await reopened.revokeExecutionCapability(token, binding); const second = JSON.parse(await readFile(path, 'utf8')); assert.equal(second.revokedAt, first.revokedAt);
+    await assert.rejects(reopened.consumeExecutionCapability(token, binding), { code: 'EXECUTION_CAPABILITY_REVOKED' });
+  }
+});
+
+test('execution records written before revokedAt remain compatible as unrevoked', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture(); const binding = { jobId: 'pre-revocation-field', ownerSessionId: 'session-a', workspace: workspaceA, operation: 'continue' };
+  const token = await identity.createExecutionCapability({ ...binding, permissionSnapshot: { permissionMode: 'workspace-write' } }); const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA });
+  const path = join(storage.directory, 'identity', 'capabilities', `${createHash('sha256').update(token).digest('hex')}.json`); const legacy = JSON.parse(await readFile(path, 'utf8')); delete legacy.revokedAt; await atomicWriteJson(path, legacy);
+  assert.equal((await createIdentityStore({ dataRoot }).consumeExecutionCapability(token, binding)).jobId, binding.jobId);
 });
 
 test('execution capabilities cannot be double-consumed across child processes', async () => {
