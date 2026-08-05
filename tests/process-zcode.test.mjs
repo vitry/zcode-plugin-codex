@@ -14,6 +14,14 @@ import { BoundedWriter, RedactedTail, ZCodeProtocolClient } from '../scripts/lib
 
 const fakeFixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 
+async function assertProcessGone(pid) {
+  for (let index = 0; index < 100; index += 1) {
+    try { process.kill(pid, 0); } catch (error) { assert.equal(error.code, 'ESRCH'); return; }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`process ${pid} remained observable after termination`);
+}
+
 test('grace timer does not retain the caller after the child exits', async () => {
   const moduleUrl = new URL('../scripts/lib/process.mjs', import.meta.url).href;
   const source = `import { spawn } from 'node:child_process'; import { terminateProcess } from ${JSON.stringify(moduleUrl)}; const child=spawn(process.execPath,['-e','setInterval(()=>{},10000)']); await terminateProcess(child,{graceMs:1000});`;
@@ -36,7 +44,7 @@ test('termination kills the spawned process group including descendants', async 
   let grandchildPid;
   for (let index = 0; index < 100; index += 1) { try { grandchildPid = Number(await readFile(pidFile, 'utf8')); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); } }
   assert.ok(Number.isSafeInteger(grandchildPid)); await terminateProcess(child, { graceMs: 100 });
-  assert.throws(() => process.kill(grandchildPid, 0), (error) => error.code === 'ESRCH');
+  await assertProcessGone(grandchildPid);
   await rm(directory, { recursive: true, force: true });
 });
 
@@ -49,7 +57,7 @@ test('runProcess abort awaits termination of the entire descendant tree', async 
   const source = `const {spawn}=require('node:child_process'),fs=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},10000)'],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));setInterval(()=>{},10000);`;
   const controller = new AbortController(); const running = runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath }, { signal: controller.signal, timeoutMs: 2_000 });
   let grandchildPid; for (let index = 0; index < 100; index += 1) { try { grandchildPid = Number(await readFile(pidFile, 'utf8')); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); } }
-  controller.abort(); await assert.rejects(running, { code: 'ZCODE_PROCESS_ABORTED' }); assert.throws(() => process.kill(grandchildPid, 0), (error) => error.code === 'ESRCH'); await rm(directory, { recursive: true, force: true });
+  controller.abort(); await assert.rejects(running, { code: 'ZCODE_PROCESS_ABORTED' }); await assertProcessGone(grandchildPid); await rm(directory, { recursive: true, force: true });
 });
 
 test('bounded writer queues on backpressure, flushes on drain, and fails at its byte cap', () => {
