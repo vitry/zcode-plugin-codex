@@ -22,7 +22,7 @@ export async function runSetup(input) {
   try {
     client = await startClient({ ...input.codex, cwd, env: input.env }); const config = await client.request('config/read', { cwd, includeLayers: true }); const hooks = await client.request('hooks/list', { cwds: [cwd] }); const inspected = await validateHooks(hooks, cwd, pluginRoot, hooksPath);
     if (!inspected.ok) return reportAndPersist(input, discovery, { ready: false }, 'untrusted', inspected.reason, false);
-    const auth = await probeAuth(input, discovery, cwd); if (!auth.ready) return reportAndPersist(input, discovery, auth, 'unauthenticated', 'ZCode model authentication is unavailable.', false);
+    const auth = await diagnoseZCodeAuth({ workspace: cwd, discovery, env: input.env }); if (!auth.ready) return reportAndPersist(input, discovery, auth, 'unauthenticated', auth.reason, false);
     const edits = []; if (config?.config?.features?.hooks !== true) edits.push({ keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' }); const trust = {}; for (const hook of inspected.hooks) if (!['trusted', 'managed'].includes(hook.trustStatus)) trust[hook.key] = { trusted_hash: hook.currentHash }; if (Object.keys(trust).length) edits.push({ keyPath: 'hooks.state', value: trust, mergeStrategy: 'upsert' });
     let status = 'ready'; if (edits.length) { await client.request('config/batchWrite', { edits, expectedVersion: userVersion(config), reloadUserConfig: true }); status = 'restart-required'; }
     return reportAndPersist(input, discovery, auth, status, null, true);
@@ -44,7 +44,7 @@ async function validateHooks(result, cwd, pluginRoot, hooksPath) {
   for (const hook of entry.hooks) {
     if (hook?.source !== 'plugin') continue;
     let sourcePath; try { sourcePath = await realpath(hook.sourcePath); } catch { continue; }
-    if (sourcePath === hooksPath && sourcePath.startsWith(`${pluginRoot}/`) && typeof hook.pluginId === 'string' && /^zcode-plugin-codex@[A-Za-z0-9_-]+$/.test(hook.pluginId)) ownHooks.push({ ...hook, sourcePath });
+    if (sourcePath === hooksPath && sourcePath.startsWith(`${pluginRoot}/`) && typeof hook.pluginId === 'string' && /^zcode@[A-Za-z0-9_-]+$/.test(hook.pluginId)) ownHooks.push({ ...hook, sourcePath });
   }
   if (ownHooks.length !== EXPECTED_EVENTS.size) return { ok: false, reason: 'missing-or-invalid-hooks' };
   const seen = new Set();
@@ -52,7 +52,25 @@ async function validateHooks(result, cwd, pluginRoot, hooksPath) {
   return { ok: seen.size === EXPECTED_EVENTS.size, hooks: ownHooks };
 }
 function userVersion(config) { const layer = Array.isArray(config?.layers) ? config.layers.find((item) => item?.name?.type === 'user') : null; if (typeof layer?.version !== 'string' || !layer.version) throw new PluginError('CODEX_CONFIG_VERSION_MISSING', 'Codex user config version is unavailable.', { category: 'protocol', remedy: 'Restart Codex and rerun $zcode:setup.' }); return layer.version; }
-async function probeAuth(input, discovery, cwd) { let client; let sessionId; try { client = await createZCodeClient({ workspace: cwd, launch: discovery.launch, env: input.env, requestTimeoutMs: 2_000 }); const snapshot = await client.createSession({ workspace: cwd }); sessionId = snapshot.session.sessionId; return { ready: true }; } catch { return { ready: false }; } finally { if (sessionId) await client?.stopSession(sessionId).catch(() => {}); await client?.close().catch(() => {}); } }
+/**
+ * Prove model authentication by creating, then stopping, a harmless session.
+ * @param {{workspace:string,discovery:{launch:{command:string,args:string[],target?:string}},env?:NodeJS.ProcessEnv,createClient?:(options:any)=>Promise<any>,requestTimeoutMs?:number}} input
+ */
+export async function diagnoseZCodeAuth(input) {
+  if (!input || typeof input.workspace !== 'string' || !input.workspace || !input.discovery?.launch) throw new PluginError('ZCODE_AUTH_DIAGNOSTIC_INVALID', 'ZCode authentication diagnostic input is invalid.', { category: 'validation', remedy: 'Run $zcode:setup from a valid workspace.' });
+  let client; let sessionId;
+  try {
+    client = await (input.createClient ?? createZCodeClient)({ workspace: input.workspace, launch: input.discovery.launch, env: input.env, requestTimeoutMs: input.requestTimeoutMs ?? 2_000 });
+    const snapshot = await client.createSession({ workspace: input.workspace });
+    sessionId = snapshot.session.sessionId;
+    return { ready: true, status: 'authenticated' };
+  } catch {
+    return { ready: false, status: 'unauthenticated', reason: 'ZCode session/create could not prove model authentication.', remedy: 'Authenticate with ZCode, then run $zcode:setup again.' };
+  } finally {
+    if (sessionId) await client?.stopSession(sessionId).catch(() => {});
+    await client?.close().catch(() => {});
+  }
+}
 
 async function startClient(options) {
   const executable = options.executable ?? 'codex'; const args = options.args ?? ['app-server']; const child = spawn(executable, args, { cwd: options.cwd, env: options.env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] }); let nextId = 1; const pending = new Map(); let stderr = ''; let closed = false; let stdoutBytes = 0; let buffer = Buffer.alloc(0);

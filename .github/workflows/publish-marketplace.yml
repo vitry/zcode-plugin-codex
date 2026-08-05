@@ -1,0 +1,69 @@
+name: Publish marketplace snapshot
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Source ref to publish"
+        required: true
+        default: "main"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18.18.0
+          cache: npm
+      - name: Install production dependencies
+        run: npm ci --omit=dev
+      - name: Build marketplace snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot="$RUNNER_TEMP/marketplace-snapshot"
+          plugin="$snapshot/plugins/zcode"
+          mkdir -p "$plugin" "$snapshot/.agents/plugins"
+          cp marketplace/.agents/plugins/marketplace.json "$snapshot/.agents/plugins/marketplace.json"
+          for path in .codex-plugin agents hooks prompts schemas scripts skills node_modules; do
+            cp -R "$path" "$plugin/$path"
+          done
+          for path in LICENSE NOTICE README.md README.zh-CN.md SECURITY.md CHANGELOG.md package.json npm-shrinkwrap.json; do
+            cp "$path" "$plugin/$path"
+          done
+      - name: Publish marketplace branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          catalog="$RUNNER_TEMP/marketplace-branch"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$catalog"
+          cd "$catalog"
+          if git show-ref --verify --quiet refs/remotes/origin/marketplace; then
+            git switch -C marketplace origin/marketplace
+          else
+            git switch --orphan marketplace
+          fi
+          git rm -rf --ignore-unmatch .
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R "$RUNNER_TEMP/marketplace-snapshot/." .
+          git add .agents/plugins/marketplace.json plugins/zcode
+          if git diff --cached --quiet; then
+            echo "Marketplace snapshot is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Publish zcode-plugin-codex snapshot from ${GITHUB_REF_NAME}"
+          git push origin HEAD:marketplace

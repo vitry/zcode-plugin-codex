@@ -1,0 +1,20 @@
+{
+  "name": "vitry",
+  "interface": {
+    "displayName": "vitry Codex Plugins"
+  },
+  "plugins": [
+    {
+      "name": "zcode",
+      "source": {
+        "source": "local",
+        "path": "./plugins/zcode"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { resolveModel } from '../../scripts/lib/args.mjs';
+import { diagnoseZCodeAuth } from '../../scripts/lib/codex-config.mjs';
 import { createZCodeClient } from '../../scripts/lib/zcode-client.mjs';
 import { discoverZCode } from '../../scripts/lib/zcode-discovery.mjs';
 
@@ -31,6 +32,12 @@ test('real ZCode discovery, read-only turn, cancellation, model, and history imp
   });
   const discovery = await discoverZCode({ explicitPath: process.env.ZCODE_PATH, env: process.env });
   assert.match(discovery.version, /^\d+\.\d+\.\d+/);
+  assert.deepEqual(await diagnoseZCodeAuth({
+    workspace: temporary,
+    discovery,
+    env: process.env,
+    requestTimeoutMs: 30_000,
+  }), { ready: true, status: 'authenticated' });
 
   client = await createZCodeClient({
     workspace: temporary,
@@ -39,7 +46,11 @@ test('real ZCode discovery, read-only turn, cancellation, model, and history imp
     requestTimeoutMs: 30_000,
     completionTimeoutMs: 180_000,
   });
-  client.setPermissionHandler((request) => request.options.find((option) => option.response?.decision === 'deny')?.response);
+  client.setPermissionHandler((request) => {
+    const denied = request.options.find((option) => option.response?.decision === 'deny');
+    assert.ok(denied, 'every real E2E permission request must offer an exact deny response');
+    return denied.response;
+  });
 
   let created;
   try {
@@ -58,6 +69,15 @@ test('real ZCode discovery, read-only turn, cancellation, model, and history imp
     const selected = await client.setModel(sessionId, model);
     assert.deepEqual(selected.settings.model.current, model);
   }
+
+  const cancellation = await client.createSession({ workspace: temporary });
+  const cancellationId = cancellation.session.sessionId;
+  sessions.add(cancellationId);
+  const active = await client.send(cancellationId, 'Inspect only this empty temporary workspace. Do not write files or run mutating commands.');
+  assert.equal(active.accepted, true);
+  const stopped = await client.stopSession(cancellationId, 10_000);
+  assert.ok(stopped && typeof stopped === 'object' && !Array.isArray(stopped));
+  sessions.delete(cancellationId);
 
   const sent = await client.send(sessionId, 'Inspect only this empty temporary workspace. Do not write files or run mutating commands. Reply with a short acknowledgement.');
   assert.equal(sent.accepted, true);

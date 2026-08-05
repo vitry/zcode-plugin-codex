@@ -1,0 +1,137 @@
+// @ts-nocheck
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+import { createStateStore } from '../../scripts/lib/state.mjs';
+
+const root = fileURLToPath(new URL('../..', import.meta.url));
+const cli = join(root, 'scripts', 'zcode-companion.mjs');
+const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
+const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
+
+function child(command, args, { cwd, env, input, protectedInput = false }) {
+  return new Promise((resolvePromise, reject) => {
+    const stdio = protectedInput ? ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'];
+    const processChild = spawn(command, args, { cwd, env, shell: false, stdio });
+    let stdout = ''; let stderr = ''; let internal = '';
+    processChild.stdout.on('data', (chunk) => { stdout += chunk; });
+    processChild.stderr.on('data', (chunk) => { stderr += chunk; });
+    if (protectedInput) {
+      processChild.stdio[4].on('data', (chunk) => { internal += chunk; });
+      processChild.stdio[3].end(`${JSON.stringify(input)}\n`);
+    } else processChild.stdin.end(JSON.stringify(input));
+    processChild.once('error', reject);
+    processChild.once('exit', (code) => resolvePromise({ code, stdout, stderr, json: protectedInput ? JSON.parse(internal) : stdout ? JSON.parse(stdout) : null }));
+  });
+}
+
+async function git(cwd, args) {
+  const result = await child('git', args, { cwd, env: process.env });
+  assert.equal(result.code, 0, result.stderr);
+}
+
+async function fixture(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-two-session-'));
+  const workspace = join(directory, 'workspace'); const dataRoot = join(directory, 'data');
+  await mkdir(workspace); await writeFile(join(workspace, 'tracked.txt'), 'base\n');
+  await git(workspace, ['init', '-q']); await git(workspace, ['add', 'tracked.txt']);
+  await git(workspace, ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base']);
+  await writeFile(join(workspace, 'tracked.txt'), 'changed\n');
+  const env = { ...process.env, PLUGIN_ROOT: root, PLUGIN_DATA: dataRoot, ZCODE_PATH: fakeZCode };
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  return { workspace, dataRoot, env };
+}
+
+async function hook(ctx, script, input) {
+  const result = await child(process.execPath, [join(root, 'hooks', script)], { cwd: ctx.workspace, env: ctx.env, input });
+  assert.equal(result.code, 0, result.stderr);
+  return result.json;
+}
+
+function token(output) {
+  const value = output.hookSpecificOutput.additionalContext.match(/ZCODE_CALLER_CONTEXT=([A-Za-z0-9_-]+)/)?.[1];
+  assert.ok(value); return value;
+}
+
+function companion(ctx, argv, caller, extraEnv = {}) {
+  return child(process.execPath, [cli, ...argv], { cwd: ctx.workspace, env: { ...ctx.env, ...extraEnv }, input: { callerContext: caller }, protectedInput: true });
+}
+
+function thread(id) {
+  return { id, ephemeral: false, turns: [{ items: [{ type: 'userMessage', content: [{ type: 'text', text: `hello ${id}` }] }] }] };
+}
+
+test('real hooks keep two interleaved Codex sessions isolated through transfer, rescue, defaults and cancellation', async (t) => {
+  const ctx = await fixture(t);
+  const sessions = [
+    { id: 'session-a', turn: 'turn-a', permission: 'acceptEdits' },
+    { id: 'session-b', turn: 'turn-b', permission: 'plan' },
+  ];
+  for (const session of sessions) {
+    await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: session.id, cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: session.permission, source: 'startup' });
+    session.caller = token(await hook(ctx, 'user-prompt-hook.mjs', { session_id: session.id, turn_id: session.turn, cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: session.permission, prompt: 'work' }));
+  }
+  const [a, b] = sessions;
+  assert.notEqual(a.caller, b.caller);
+
+  for (const session of [a, b]) {
+    const transfer = await companion(ctx, ['transfer'], session.caller, {
+      CODEX_APP_SERVER_PATH: process.execPath,
+      CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+      FAKE_CODEX_THREAD_JSON: JSON.stringify(thread(session.id)),
+    });
+    assert.equal(transfer.code, 0, transfer.stderr);
+    assert.equal(transfer.json.job.codexThreadId, session.id, 'transfer without --source must use the authenticated caller session');
+    session.transfer = transfer.json.job;
+  }
+
+  for (const session of [a, b]) {
+    const rescue = await companion(ctx, ['rescue', '--fresh', '--wait', `repair for ${session.id}`], session.caller);
+    assert.equal(rescue.code, 0, rescue.stderr);
+    assert.equal(rescue.json.job.status, 'succeeded');
+    session.rescue = rescue.json.job;
+  }
+  const jobs = await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace);
+  assert.equal(jobs.find((job) => job.id === a.rescue.id).permissionSnapshot.permissionMode, 'acceptEdits');
+  assert.equal(jobs.find((job) => job.id === b.rescue.id).permissionSnapshot.permissionMode, 'plan');
+  assert.notEqual(jobs.find((job) => job.id === a.rescue.id).zcodeSessionId, jobs.find((job) => job.id === b.rescue.id).zcodeSessionId);
+
+  for (const session of [a, b]) {
+    const choice = await companion(ctx, ['rescue', 'continue repair'], session.caller);
+    assert.equal(choice.code, 3);
+    assert.equal(choice.json.type, 'needs-choice');
+    assert.equal(choice.json.candidate.id, session.rescue.id);
+    const status = await companion(ctx, ['status'], session.caller);
+    assert.equal(status.json.job.id, session.rescue.id);
+    const result = await companion(ctx, ['result'], session.caller);
+    assert.equal(result.json.job.id, session.rescue.id);
+    assert.equal(result.json.result, 'done');
+  }
+
+  for (const [owner, sibling] of [[a, b], [b, a]]) {
+    for (const command of ['status', 'result']) {
+      const denied = await companion(ctx, [command, sibling.rescue.id], owner.caller);
+      assert.notEqual(denied.code, 0);
+      assert.equal(denied.json.error.code, 'OWNED_JOB_NOT_FOUND');
+    }
+  }
+
+  a.queued = (await companion(ctx, ['review', '--background'], a.caller)).json.job;
+  b.queued = (await companion(ctx, ['review', '--background'], b.caller)).json.job;
+  const crossCancel = await companion(ctx, ['cancel', b.queued.id], a.caller);
+  assert.notEqual(crossCancel.code, 0);
+  assert.equal(crossCancel.json.error.code, 'OWNED_JOB_NOT_FOUND');
+  const bBefore = await companion(ctx, ['status'], b.caller);
+  assert.equal(bBefore.json.job.status, 'queued');
+  for (const session of [a, b]) {
+    const cancelled = await companion(ctx, ['cancel'], session.caller);
+    assert.equal(cancelled.code, 0, cancelled.stderr);
+    assert.equal(cancelled.json.job.id, session.queued.id);
+    assert.equal(cancelled.json.job.status, 'cancelled');
+  }
+});

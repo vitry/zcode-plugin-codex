@@ -16,7 +16,8 @@ test('package and plugin manifest describe the same plugin release', () => {
   const packageJson = readJson('package.json');
   const manifest = readJson('.codex-plugin/plugin.json');
 
-  assert.equal(manifest.name, packageJson.name);
+  assert.equal(packageJson.name, 'zcode-plugin-codex');
+  assert.equal(manifest.name, 'zcode');
   assert.equal(manifest.version, packageJson.version);
   assert.equal(manifest.license, packageJson.license);
 });

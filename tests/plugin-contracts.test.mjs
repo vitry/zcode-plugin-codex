@@ -98,7 +98,7 @@ test('plugin manifest exposes the native Codex plugin contract', () => {
   const manifest = readJson('.codex-plugin/plugin.json');
 
   assertManifestContract(manifest);
-  assert.equal(manifest.name, 'zcode-plugin-codex');
+  assert.equal(manifest.name, 'zcode');
   assert.equal(manifest.author?.name, 'vitry');
   assert.equal(manifest.license, 'Apache-2.0');
   assert.equal(manifest.interface?.displayName, 'ZCode for Codex');

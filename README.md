@@ -10,7 +10,14 @@ ZCode for Codex is a native Codex marketplace plugin that delegates independent 
 - ZCode CLI `>=0.16.1`, installed and authenticated for at least one model.
 - Node.js `>=18.18.0` (the plugin packages its production native lock dependency).
 
-Add `https://github.com/vitry/zcode-plugin-codex` as a Codex marketplace source in Codex Settings, then install **ZCode for Codex** from that marketplace and restart Codex. Do not copy hooks out of the installed plugin cache. Run `$zcode:setup` in the target workspace after installation.
+Install from the production snapshot published on this repository's `marketplace` branch; the source-code root on `main` is not itself a marketplace catalog:
+
+```bash
+codex plugin marketplace add vitry/zcode-plugin-codex --ref marketplace
+codex plugin add zcode@vitry
+```
+
+The release workflow builds `.agents/plugins/marketplace.json` plus `plugins/zcode/` with production dependencies on that branch. Restart Codex after installation, then run `$zcode:setup` in the target workspace. Do not copy hooks out of the installed plugin cache.
 
 Discovery checks `ZCODE_PATH`, `zcode` on `PATH`, platform locations, and on macOS the bundled `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`. Setup reports missing, outdated, unauthenticated, or untrusted installations; it does not download ZCode or sign in for you.
 
@@ -19,8 +26,8 @@ Discovery checks `ZCODE_PATH`, `zcode` on `PATH`, platform locations, and on mac
 | Skill | Purpose |
 |---|---|
 | `$zcode:review [--wait \| --background] [--base <ref>] [--scope auto\|working-tree\|branch]` | Read-only code review. |
-| `$zcode:adversarial-review ... [focus...]` | Read-only challenge review for assumptions and hidden failures. |
-| `$zcode:rescue [--background \| --wait] [--resume \| --fresh] [--model <model>] [--effort <level>] <task...>` | Delegate investigation or edits; foreground by default. |
+| `$zcode:adversarial-review [--wait \| --background] [--base <git-ref>] [--scope auto\|working-tree\|branch] [review focus...]` | Read-only challenge review for assumptions and hidden failures. |
+| `$zcode:rescue [--background \| --wait] [--resume \| --fresh] [--model <provider/model\|alias>] [--effort none\|minimal\|low\|medium\|high\|xhigh] <task...>` | Delegate investigation or edits; foreground by default. |
 | `$zcode:transfer [--source <codex-thread-id>]` | Import visible Codex turns into a resumable ZCode session. |
 | `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]` | Inspect durable jobs; wait defaults to 240 seconds. |
 | `$zcode:result [job-id]` | Read a completed job's full stored output. |
@@ -55,7 +62,7 @@ The optional Stop review gate runs a bounded foreground read-only review only af
 - Background work: use `$zcode:status <job-id> --wait`, `$zcode:result <job-id>`, or `$zcode:cancel <job-id>` exactly as reported.
 - Hook trust or restart required: let setup trust only this installed plugin's exact hook hashes, restart Codex, and rerun setup.
 
-macOS is real-CLI qualified against ZCode Desktop 3.6.5 with CLI 0.16.1 or newer. Linux and Windows are code-supported by fake-protocol CI, but are not real-CLI qualified yet.
+macOS with ZCode Desktop 3.6.5 and CLI 0.16.1+ is the release qualification target. Run `ZCODE_REAL_E2E=1 node --test tests/e2e/real-zcode.test.mjs` on an authenticated machine before marking a release qualified; an ordinary local skip is explicitly unqualified and this repository does not claim that an unrun E2E passed. Linux and Windows are code-supported by fake-protocol CI, but are not real-CLI qualified yet.
 
 ## License and provenance
 

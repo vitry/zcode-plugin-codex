@@ -11,6 +11,9 @@ test('English and Chinese release docs cover installation, operation, and qualif
   for (const path of ['README.md', 'README.zh-CN.md']) {
     const source = read(path);
     assert.match(source, /marketplace/i);
+    assert.match(source, /vitry\/zcode-plugin-codex/);
+    assert.match(source, /--ref marketplace/);
+    assert.match(source, /zcode@vitry/);
     assert.match(source, /0\.16\.1/);
     assert.match(source, /\/Applications\/ZCode\.app\/Contents\/Resources\/glm\/zcode\.cjs/);
     assert.match(source, /ZCODE_MODEL_ALIASES/);
@@ -23,6 +26,22 @@ test('English and Chinese release docs cover installation, operation, and qualif
     assert.match(source, /not (?:real-CLI )?qualified/i);
     assert.match(source, /Apache-2\.0/i);
   }
+});
+
+test('marketplace catalog and publisher describe an installable vitry snapshot', () => {
+  const catalog = JSON.parse(read('marketplace/.agents/plugins/marketplace.json'));
+  assert.equal(catalog.name, 'vitry');
+  assert.equal(catalog.interface.displayName, 'vitry Codex Plugins');
+  assert.deepEqual(catalog.plugins, [{
+    name: 'zcode',
+    source: { source: 'local', path: './plugins/zcode' },
+    policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+    category: 'Developer Tools',
+  }]);
+  const publisher = read('.github/workflows/publish-marketplace.yml');
+  assert.match(publisher, /marketplace/);
+  assert.match(publisher, /plugins\/zcode/);
+  assert.match(publisher, /npm ci --omit=dev/);
 });
 
 test('security, changelog, and provenance are release-ready', () => {

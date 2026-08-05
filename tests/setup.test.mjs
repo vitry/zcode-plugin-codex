@@ -8,7 +8,7 @@ import test from 'node:test';
 import { spawn } from 'node:child_process';
 
 import { parseArgs } from '../scripts/lib/args.mjs';
-import { pluginRootFromModuleUrl, runSetup } from '../scripts/lib/codex-config.mjs';
+import { diagnoseZCodeAuth, pluginRootFromModuleUrl, runSetup } from '../scripts/lib/codex-config.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 
@@ -23,7 +23,7 @@ test('setup arguments are strict, unique and mutually exclusive', () => {
   for (const args of [['setup', '--enable-review-gate', '--disable-review-gate'], ['setup', '--enable-review-gate', '--enable-review-gate'], ['setup', '--bad'], ['setup', 'extra']]) assert.throws(() => parseArgs(args), { code: 'ARGUMENT_INVALID' });
 });
 
-function hookMetadata(rootPath, trustStatus = 'untrusted', pluginId = 'zcode-plugin-codex@vitry') {
+function hookMetadata(rootPath, trustStatus = 'untrusted', pluginId = 'zcode@vitry') {
   const events = ['sessionStart', 'userPromptSubmit', 'subagentStart', 'subagentStop', 'stop', 'sessionEnd'];
   const scripts = ['session-lifecycle-hook.mjs', 'user-prompt-hook.mjs', 'subagent-hook.mjs', 'subagent-hook.mjs', 'stop-review-gate-hook.mjs', 'session-end-hook.mjs'];
   return events.map((eventName, index) => ({ key: `plugin-hook-${index}`, currentHash: `${index}`.repeat(64), displayOrder: index, enabled: true, eventName, handlerType: 'command', isManaged: false, source: 'plugin', sourcePath: join(rootPath, 'hooks/hooks.json'), timeoutSec: eventName === 'stop' ? 900 : 5, trustStatus, pluginId, command: `node "$PLUGIN_ROOT/hooks/${scripts[index]}"` }));
@@ -60,6 +60,20 @@ test('already enabled and trusted hooks report ready without config writes', asy
 test('setup readiness ignores session/list and is proven by create plus cleanup', async () => {
   const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true }, zcodeEnv: { FAKE_ZCODE_ERROR: 'session/list' } }); const report = await runSetup(ctx.options); assert.equal(report.status, 'ready');
   const calls = (await readFile(ctx.zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'session/list')); assert.ok(calls.some((call) => call.method === 'session/create')); assert.ok(calls.some((call) => call.method === 'session/stop'));
+});
+
+test('plugin-level authentication diagnostic is session/create based and actionable', async () => {
+  const ready = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  const discovery = { launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode } };
+  assert.deepEqual(await diagnoseZCodeAuth({ workspace: ready.cwd, discovery, env: ready.options.env }), {
+    ready: true,
+    status: 'authenticated',
+  });
+  const unavailable = await diagnoseZCodeAuth({ workspace: ready.cwd, discovery, env: { ...ready.options.env, FAKE_ZCODE_ERROR: 'session/create' } });
+  assert.equal(unavailable.ready, false);
+  assert.equal(unavailable.status, 'unauthenticated');
+  assert.match(unavailable.reason, /session\/create/i);
+  assert.match(unavailable.remedy, /authenticate.*ZCode/i);
 });
 
 test('setup selects only its qualified marketplace hooks from mixed hooks/list output', async () => {

@@ -1,5 +1,5 @@
 {
-  "name": "zcode-plugin-codex",
+  "name": "zcode",
   "version": "0.1.0",
   "description": "Let Codex call ZCode for code review and task delegation.",
   "author": {

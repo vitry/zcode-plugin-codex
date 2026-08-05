@@ -10,7 +10,14 @@ ZCode for Codex 是原生 Codex marketplace 插件：由 Codex 保持用户交�
 - 已安装 ZCode CLI `>=0.16.1`，并至少为一个模型完成认证。
 - Node.js `>=18.18.0`；插件包内自带生产环境原生锁依赖。
 
-在 Codex Settings 中把 `https://github.com/vitry/zcode-plugin-codex` 添加为 marketplace source，从该 marketplace 安装 **ZCode for Codex**，重启 Codex，然后在目标工作区运行 `$zcode:setup`。不要把 hooks 从插件缓存复制到别处。
+从本仓库 `marketplace` 分支发布的生产快照安装；`main` 上的源码根目录本身不是 marketplace catalog：
+
+```bash
+codex plugin marketplace add vitry/zcode-plugin-codex --ref marketplace
+codex plugin add zcode@vitry
+```
+
+发布 workflow 会在该分支生成 `.agents/plugins/marketplace.json` 和带生产依赖的 `plugins/zcode/`。安装后重启 Codex，再在目标工作区运行 `$zcode:setup`。不要把 hooks 从插件缓存复制到别处。
 
 插件依次检查 `ZCODE_PATH`、`PATH` 中的 `zcode`、平台目录，以及 macOS 内置路径 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`。Setup 会报告缺失、版本过低、未认证或 hook 不可信，但不会下载 ZCode，也不会代替用户登录。
 
@@ -19,8 +26,8 @@ ZCode for Codex 是原生 Codex marketplace 插件：由 Codex 保持用户交�
 | Skill | 用途 |
 |---|---|
 | `$zcode:review [--wait \| --background] [--base <ref>] [--scope auto\|working-tree\|branch]` | 始终只读的代码审查。 |
-| `$zcode:adversarial-review ... [focus...]` | 只读地挑战实现假设、取舍与隐蔽失败。 |
-| `$zcode:rescue [--background \| --wait] [--resume \| --fresh] [--model <model>] [--effort <level>] <task...>` | 委派调查或修改，默认前台。 |
+| `$zcode:adversarial-review [--wait \| --background] [--base <git-ref>] [--scope auto\|working-tree\|branch] [review focus...]` | 只读地挑战实现假设、取舍与隐蔽失败。 |
+| `$zcode:rescue [--background \| --wait] [--resume \| --fresh] [--model <provider/model\|alias>] [--effort none\|minimal\|low\|medium\|high\|xhigh] <task...>` | 委派调查或修改，默认前台。 |
 | `$zcode:transfer [--source <codex-thread-id>]` | 把可见 Codex 对话导入可恢复的 ZCode 会话。 |
 | `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]` | 查看持久任务；等待默认 240 秒。 |
 | `$zcode:result [job-id]` | 读取完整的已存储结果。 |
@@ -55,7 +62,7 @@ Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺�
 - 后台任务：按输出使用 `$zcode:status <job-id> --wait`、`$zcode:result <job-id>` 或 `$zcode:cancel <job-id>`。
 - Hook trust / restart required：只让 setup 信任当前安装插件的精确 hook hash，重启后再次检查。
 
-macOS 已用 ZCode Desktop 3.6.5 与 CLI 0.16.1+ 做 real-CLI qualification。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
+macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。发布前应在已认证机器运行 `ZCODE_REAL_E2E=1 node --test tests/e2e/real-zcode.test.mjs`；普通本地 skip 明确表示 unqualified，本仓库不会把未运行的 E2E 写成通过。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
 
 ## 许可证与来源
 

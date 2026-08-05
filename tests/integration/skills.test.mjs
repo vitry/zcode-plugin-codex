@@ -1,5 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,16 +8,15 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
-import { runCompanion } from '../../scripts/zcode-companion.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
+const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
 
 async function run(command, args, cwd) {
-  const { spawn } = await import('node:child_process');
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd, stdio: 'ignore' });
+    const child = spawn(command, args, { cwd, stdio: 'ignore', shell: false });
     child.once('error', reject);
     child.once('exit', (code) => code === 0 ? resolvePromise() : reject(new Error(`${command} exited ${code}`)));
   });
@@ -36,68 +36,98 @@ async function fixture(t) {
   const callerB = await identity.createCallerContext({ sessionId: 'codex-b', turnId: 'turn-b', workspace, permissionMode: 'read-only' });
   const env = { ...process.env, PLUGIN_DATA: dataRoot, PLUGIN_ROOT: root, ZCODE_PATH: fakeZCode };
   t.after(async () => { await new Promise((resolvePromise) => setTimeout(resolvePromise, 80)); await rm(directory, { force: true, recursive: true }); });
-  return { workspace, dataRoot, identity, callerA, callerB, env };
+  return { workspace, callerA, callerB, env };
 }
 
-function invoke(ctx, argv, caller = ctx.callerA, extraEnv = {}) {
-  return runCompanion(argv, { cwd: ctx.workspace, env: { ...ctx.env, ...extraEnv }, authorization: { callerContext: caller } });
+function invoke(ctx, rawArgv, authorization, extraEnv = {}, ordinaryStdio = false) {
+  return new Promise((resolvePromise, reject) => {
+    const stdio = ordinaryStdio ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'];
+    const child = spawn(process.execPath, [cli, ...rawArgv], { cwd: ctx.workspace, env: { ...ctx.env, ...extraEnv }, shell: false, stdio });
+    let stdout = ''; let stderr = ''; let internal = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    if (!ordinaryStdio) {
+      child.stdio[4].on('data', (chunk) => { internal += chunk; });
+      child.stdio[3].end(`${JSON.stringify(authorization)}\n`);
+    }
+    child.once('error', reject);
+    child.once('exit', (code) => resolvePromise({ code, stdout, stderr, json: internal ? JSON.parse(internal) : null, spawnargs: child.spawnargs }));
+  });
 }
 
-test('all eight skill commands execute against fake peers', async (t) => {
+function publicInvoke(ctx, rawArgv, caller = ctx.callerA, extraEnv = {}) {
+  return invoke(ctx, rawArgv, { callerContext: caller }, extraEnv);
+}
+
+test('all eight skill commands preserve argv and execute across the CLI fd boundary', async (t) => {
   const ctx = await fixture(t);
   for (const skill of ['review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel', 'setup']) {
     assert.match(await readFile(join(root, 'skills', skill, 'SKILL.md'), 'utf8'), new RegExp(`\\$zcode:${skill}`));
   }
 
-  const review = await invoke(ctx, ['review', '--wait']);
-  assert.equal(review.job.status, 'succeeded');
-  const adversarial = await invoke(ctx, ['adversarial-review', '--wait', 'challenge auth'], ctx.callerB);
-  assert.equal(adversarial.job.status, 'succeeded');
-  const rescue = await invoke(ctx, ['rescue', '--fresh', '--wait', 'repair the fixture']);
-  assert.equal(rescue.job.status, 'succeeded');
+  const invocations = [];
+  const call = async (argv, caller = ctx.callerA, env = {}) => {
+    const result = await publicInvoke(ctx, argv, caller, env); invocations.push({ argv, result }); return result;
+  };
+  const review = await call(['review', '--wait']);
+  assert.equal(review.json.job.status, 'succeeded');
+  const adversarial = await call(['adversarial-review', '--wait', 'challenge auth'], ctx.callerB);
+  assert.equal(adversarial.json.job.status, 'succeeded');
+  const rescue = await call(['rescue', '--fresh', '--wait', 'repair the fixture']);
+  assert.equal(rescue.json.job.status, 'succeeded');
 
   const thread = { id: 'codex-a', ephemeral: false, turns: [
     { items: [{ type: 'userMessage', content: [{ type: 'text', text: 'hello' }] }] },
     { items: [{ type: 'agentMessage', text: 'hi' }] },
   ] };
-  const transfer = await invoke(ctx, ['transfer'], ctx.callerA, {
+  const transfer = await call(['transfer'], ctx.callerA, {
     CODEX_APP_SERVER_PATH: process.execPath,
     CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
     FAKE_CODEX_THREAD_JSON: JSON.stringify(thread),
   });
-  assert.equal(transfer.job.status, 'succeeded');
-  assert.equal(transfer.job.codexThreadId, 'codex-a');
+  assert.equal(transfer.json.job.status, 'succeeded');
+  assert.equal(transfer.json.job.codexThreadId, 'codex-a');
 
-  const status = await invoke(ctx, ['status', rescue.job.id]);
-  assert.equal(status.job.id, rescue.job.id);
-  const result = await invoke(ctx, ['result', rescue.job.id]);
-  assert.equal(result.result, 'done');
-  const queued = await invoke(ctx, ['rescue', '--fresh', '--background', 'cancel this']);
-  const cancelled = await invoke(ctx, ['cancel', queued.job.id]);
-  assert.equal(cancelled.job.status, 'cancelled');
+  const status = await call(['status', rescue.json.job.id]);
+  assert.equal(status.json.job.id, rescue.json.job.id);
+  const result = await call(['result', rescue.json.job.id]);
+  assert.equal(result.json.result, 'done');
+  const queued = await call(['rescue', '--fresh', '--background', 'cancel this']);
+  const cancelled = await call(['cancel', queued.json.job.id]);
+  assert.equal(cancelled.json.job.status, 'cancelled');
 
-  const setup = await runCompanion(['setup'], {
-    cwd: ctx.workspace,
-    env: ctx.env,
-    dependencies: { discoverZCode: async () => { throw Object.assign(new Error('not installed'), { code: 'ZCODE_NOT_FOUND' }); } },
-  });
-  assert.equal(setup.status, 'missing');
+  const setupArgv = ['setup'];
+  const setup = await invoke(ctx, setupArgv, undefined, { FAKE_ZCODE_VERSION: '0.1.0' }, true);
+  assert.equal(setup.code, 0, setup.stderr || setup.stdout);
+  assert.match(setup.stdout, /outdated/);
+  invocations.push({ argv: setupArgv, result: setup });
+
+  assert.deepEqual(invocations.map(({ result: value }) => value.spawnargs),
+    invocations.map(({ argv }) => [process.execPath, cli, ...argv]));
+  const secret = ctx.callerA;
+  for (const { result: value } of invocations) {
+    assert.doesNotMatch(`${value.stdout}${value.stderr}${value.spawnargs.join(' ')}`, new RegExp(secret));
+  }
 });
 
-test('interleaved sessions retain ownership and background capability rejects replay', async (t) => {
+test('background private child receives only its one-use execution envelope', async (t) => {
   const ctx = await fixture(t);
-  const reserved = await invoke(ctx, ['review', '--background'], ctx.callerA);
-  assert.equal(reserved.type, 'background');
-  await assert.rejects(invoke(ctx, ['status', reserved.job.id], ctx.callerB), { code: 'OWNED_JOB_NOT_FOUND' });
+  const reserved = await publicInvoke(ctx, ['review', '--background']);
+  assert.equal(reserved.code, 0, reserved.stderr);
+  assert.equal(reserved.json.type, 'background');
+  assert.deepEqual(reserved.json.privateInvocation, ['run-reserved-job', reserved.json.job.id]);
+  assert.doesNotMatch(`${reserved.stdout}${reserved.stderr}${reserved.spawnargs.join(' ')}`, new RegExp(reserved.json.executionCapability));
+  assert.doesNotMatch(JSON.stringify(reserved.json.job), new RegExp(reserved.json.executionCapability));
 
-  const authorization = { executionCapability: reserved.executionCapability, jobId: reserved.job.id };
-  const first = await runCompanion(reserved.privateInvocation, { cwd: ctx.workspace, env: ctx.env, authorization });
-  assert.equal(first.job.status, 'succeeded');
-  await assert.rejects(runCompanion(reserved.privateInvocation, { cwd: ctx.workspace, env: ctx.env, authorization }), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+  const authorization = { executionCapability: reserved.json.executionCapability, jobId: reserved.json.job.id };
+  const first = await invoke(ctx, reserved.json.privateInvocation, authorization);
+  assert.deepEqual(first.spawnargs, [process.execPath, cli, ...reserved.json.privateInvocation]);
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(first.json.job.status, 'succeeded');
+  assert.doesNotMatch(`${first.stdout}${first.stderr}${first.spawnargs.join(' ')}`, new RegExp(ctx.callerA));
+  assert.doesNotMatch(`${first.stdout}${first.stderr}${first.spawnargs.join(' ')}`, new RegExp(authorization.executionCapability));
 
-  const own = await invoke(ctx, ['result', reserved.job.id], ctx.callerA);
-  assert.equal(own.job.ownerSessionId, 'codex-a');
-  const bJob = await invoke(ctx, ['rescue', '--fresh', '--background', 'session b task'], ctx.callerB);
-  await assert.rejects(invoke(ctx, ['cancel', bJob.job.id], ctx.callerA), { code: 'OWNED_JOB_NOT_FOUND' });
-  assert.equal((await invoke(ctx, ['cancel', bJob.job.id], ctx.callerB)).job.status, 'cancelled');
+  const replay = await invoke(ctx, reserved.json.privateInvocation, authorization);
+  assert.notEqual(replay.code, 0);
+  assert.equal(replay.json.error.code, 'EXECUTION_CAPABILITY_CONSUMED');
 });
