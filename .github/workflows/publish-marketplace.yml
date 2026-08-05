@@ -12,16 +12,25 @@ on:
         default: "main"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  publish:
+  qualify:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
+    outputs:
+      source_ref: ${{ steps.source.outputs.source_ref }}
+      source_sha: ${{ steps.source.outputs.resolved_sha }}
+      package_version: ${{ steps.source.outputs.package_version }}
+      snapshot_sha256: ${{ steps.handoff.outputs.snapshot_sha256 }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 18.18.0
@@ -40,7 +49,6 @@ jobs:
           resolved_sha="$(git rev-parse HEAD)"
           ref_sha="$(git rev-parse --verify --end-of-options "${SOURCE_REF}^{commit}")"
           test "$resolved_sha" = "$ref_sha"
-          test -n "$SOURCE_REF"
           release_tag=""
           if [ "$EVENT_NAME" = "push" ]; then
             case "$SOURCE_REF" in
@@ -48,9 +56,11 @@ jobs:
               *) echo "Tag publication requires an exact refs/tags/v* source." >&2; exit 1 ;;
             esac
           fi
+          package_version="$(node -p "require('./package.json').version")"
           echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
           echo "resolved_sha=$resolved_sha" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
       - name: Install qualification dependencies
         run: npm ci
       - name: Run complete quality gate
@@ -74,11 +84,114 @@ jobs:
           MARKETPLACE_SOURCE_REF: ${{ steps.source.outputs.source_ref }}
           MARKETPLACE_SOURCE_SHA: ${{ steps.source.outputs.resolved_sha }}
         run: node --test tests/integration/marketplace-install.test.mjs
-      - name: Publish only the qualified marketplace branch
+      - name: Seal qualified snapshot handoff
+        id: handoff
         shell: bash
         env:
           SOURCE_REF: ${{ steps.source.outputs.source_ref }}
           SOURCE_SHA: ${{ steps.source.outputs.resolved_sha }}
+          PACKAGE_VERSION: ${{ steps.source.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          snapshot="$RUNNER_TEMP/marketplace-snapshot"
+          handoff="$RUNNER_TEMP/marketplace-handoff"
+          test -z "$(find "$snapshot" -type l -print -quit)"
+          mkdir -p "$handoff"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -czf "$handoff/snapshot.tar.gz" -C "$snapshot" .
+          snapshot_sha256="$(/usr/bin/sha256sum "$handoff/snapshot.tar.gz" | awk '{print $1}')"
+          SOURCE_REF="$SOURCE_REF" SOURCE_SHA="$SOURCE_SHA" PACKAGE_VERSION="$PACKAGE_VERSION" SNAPSHOT_SHA256="$snapshot_sha256" HANDOFF="$handoff" node --input-type=module --eval '
+            import { writeFileSync } from "node:fs";
+            const value = { version: 1, sourceRef: process.env.SOURCE_REF, sourceSha: process.env.SOURCE_SHA, packageVersion: process.env.PACKAGE_VERSION, snapshotSha256: process.env.SNAPSHOT_SHA256 };
+            writeFileSync(`${process.env.HANDOFF}/attestation.json`, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o644 });
+          '
+          echo "snapshot_sha256=$snapshot_sha256" >> "$GITHUB_OUTPUT"
+      - name: Upload sealed qualified snapshot
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualified-marketplace-snapshot
+          path: ${{ runner.temp }}/marketplace-handoff
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: qualify
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download sealed qualified snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: qualified-marketplace-snapshot
+          path: ${{ runner.temp }}/qualified-marketplace-artifact
+      - name: Validate handoff without executing artifact content
+        shell: bash
+        env:
+          EXPECTED_REF: ${{ needs.qualify.outputs.source_ref }}
+          EXPECTED_SHA: ${{ needs.qualify.outputs.source_sha }}
+          EXPECTED_VERSION: ${{ needs.qualify.outputs.package_version }}
+          EXPECTED_SNAPSHOT_SHA256: ${{ needs.qualify.outputs.snapshot_sha256 }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.qualify.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          artifact="$RUNNER_TEMP/qualified-marketplace-artifact"
+          test "$(find "$artifact" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = "attestation.json snapshot.tar.gz "
+          test -z "$(find "$artifact" -type l -print -quit)"
+          case "$EXPECTED_ARTIFACT_DIGEST" in (*[!a-f0-9]*|"") exit 1 ;; esac
+          test "${#EXPECTED_ARTIFACT_DIGEST}" -eq 64
+          actual_sha256="$(/usr/bin/sha256sum "$artifact/snapshot.tar.gz" | awk '{print $1}')"
+          test "$actual_sha256" = "$EXPECTED_SNAPSHOT_SHA256"
+          ARTIFACT="$artifact" EXPECTED_REF="$EXPECTED_REF" EXPECTED_SHA="$EXPECTED_SHA" EXPECTED_VERSION="$EXPECTED_VERSION" EXPECTED_SNAPSHOT_SHA256="$EXPECTED_SNAPSHOT_SHA256" node --input-type=module --eval '
+            import { readFileSync } from "node:fs";
+            const value = JSON.parse(readFileSync(`${process.env.ARTIFACT}/attestation.json`, "utf8"));
+            if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["packageVersion", "snapshotSha256", "sourceRef", "sourceSha", "version"])) throw new Error("Unexpected attestation fields");
+            if (value.version !== 1 || value.sourceRef !== process.env.EXPECTED_REF || value.sourceSha !== process.env.EXPECTED_SHA || value.packageVersion !== process.env.EXPECTED_VERSION || value.snapshotSha256 !== process.env.EXPECTED_SNAPSHOT_SHA256) throw new Error("Artifact attestation mismatch");
+          '
+          while IFS= read -r entry; do
+            case "$entry" in
+              ./|./.agents/|./.agents/plugins/|./.agents/plugins/*|./plugins/|./plugins/zcode/|./plugins/zcode/*) ;;
+              *) echo "Unsafe snapshot entry: $entry" >&2; exit 1 ;;
+            esac
+            case "$entry" in (*\\*|*/../*|../*|/*) echo "Unsafe snapshot path: $entry" >&2; exit 1 ;; esac
+          done < <(tar -tzf "$artifact/snapshot.tar.gz")
+          test -z "$(tar -tvzf "$artifact/snapshot.tar.gz" | awk 'substr($0,1,1) !~ /[-d]/ { print; exit }')"
+          mkdir -p "$RUNNER_TEMP/qualified-marketplace-snapshot"
+          tar -xzf "$artifact/snapshot.tar.gz" --no-same-owner --no-same-permissions -C "$RUNNER_TEMP/qualified-marketplace-snapshot"
+          test -z "$(find "$RUNNER_TEMP/qualified-marketplace-snapshot" -type l -print -quit)"
+          test "$(find "$RUNNER_TEMP/qualified-marketplace-snapshot" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = ".agents plugins "
+          test "$(find "$RUNNER_TEMP/qualified-marketplace-snapshot/.agents/plugins" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')" = "marketplace.json provenance.json "
+          test -f "$RUNNER_TEMP/qualified-marketplace-snapshot/.agents/plugins/marketplace.json"
+          test -f "$RUNNER_TEMP/qualified-marketplace-snapshot/.agents/plugins/provenance.json"
+          test -f "$RUNNER_TEMP/qualified-marketplace-snapshot/plugins/zcode/.codex-plugin/plugin.json"
+          test ! -e "$RUNNER_TEMP/qualified-marketplace-snapshot/plugins/zcode/tests"
+          test ! -e "$RUNNER_TEMP/qualified-marketplace-snapshot/plugins/zcode/node_modules/@openai/codex"
+          while IFS= read -r entry; do
+            case "$entry" in
+              .codex-plugin|agents|hooks|prompts|schemas|scripts|skills|node_modules|CHANGELOG.md|LICENSE|NOTICE|README.md|README.zh-CN.md|SECURITY.md|npm-shrinkwrap.json|package.json) ;;
+              *) echo "Unexpected production plugin entry: $entry" >&2; exit 1 ;;
+            esac
+          done < <(find "$RUNNER_TEMP/qualified-marketplace-snapshot/plugins/zcode" -mindepth 1 -maxdepth 1 -printf '%f\n')
+          SNAPSHOT="$RUNNER_TEMP/qualified-marketplace-snapshot" EXPECTED_REF="$EXPECTED_REF" EXPECTED_SHA="$EXPECTED_SHA" EXPECTED_VERSION="$EXPECTED_VERSION" node --input-type=module --eval '
+            import { readFileSync } from "node:fs";
+            const read = (path) => JSON.parse(readFileSync(`${process.env.SNAPSHOT}/${path}`, "utf8"));
+            const provenance = read(".agents/plugins/provenance.json");
+            const catalog = read(".agents/plugins/marketplace.json");
+            const manifest = read("plugins/zcode/.codex-plugin/plugin.json");
+            const packageJson = read("plugins/zcode/package.json");
+            if (provenance.sourceRef !== process.env.EXPECTED_REF || provenance.sourceSha !== process.env.EXPECTED_SHA || provenance.packageVersion !== process.env.EXPECTED_VERSION || provenance.pluginVersion !== process.env.EXPECTED_VERSION) throw new Error("Snapshot provenance mismatch");
+            if (manifest.name !== "zcode" || manifest.version !== process.env.EXPECTED_VERSION || packageJson.name !== "zcode-plugin-codex" || packageJson.version !== process.env.EXPECTED_VERSION) throw new Error("Snapshot plugin identity mismatch");
+            if (catalog.name !== "vitry" || catalog.plugins?.length !== 1 || catalog.plugins[0]?.name !== "zcode" || catalog.plugins[0]?.source?.path !== "./plugins/zcode") throw new Error("Snapshot catalog mismatch");
+          '
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - name: Publish only the validated marketplace branch
+        shell: bash
+        env:
+          SOURCE_REF: ${{ needs.qualify.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.qualify.outputs.source_sha }}
         run: |
           set -euo pipefail
           if git show-ref --verify --quiet refs/remotes/origin/marketplace; then
@@ -88,7 +201,7 @@ jobs:
           fi
           git rm -rf --ignore-unmatch .
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -R "$RUNNER_TEMP/marketplace-snapshot/." .
+          cp -R "$RUNNER_TEMP/qualified-marketplace-snapshot/." .
           git add .agents plugins/zcode
           if git diff --cached --quiet; then
             echo "Marketplace snapshot is already current."

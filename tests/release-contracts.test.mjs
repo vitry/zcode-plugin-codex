@@ -52,8 +52,24 @@ test('marketplace catalog and publisher describe an installable vitry snapshot',
   assert.match(publisher, /github\.event_name/);
   assert.match(publisher, /github\.ref/);
   assert.match(publisher, /refs\/tags\/v/);
-  assert.ok(publisher.indexOf('npm run check') < publisher.indexOf('git push'));
-  assert.ok(publisher.indexOf('marketplace-install.test.mjs') < publisher.indexOf('git push'));
+  assert.match(publisher, /permissions:\s*\n\s*contents: read/);
+  assert.match(publisher, /qualify:\s*\n\s*permissions:\s*\n\s*contents: read/);
+  assert.match(publisher, /persist-credentials: false/);
+  assert.match(publisher, /publish:\s*\n\s*needs: qualify\s*\n\s*permissions:\s*\n\s*contents: write/);
+  assert.match(publisher, /actions\/upload-artifact@v4/);
+  assert.match(publisher, /actions\/download-artifact@v4/);
+  assert.match(publisher, /snapshot_sha256/);
+  assert.match(publisher, /artifact-digest/);
+  const publishJob = publisher.slice(publisher.indexOf('\n  publish:'));
+  assert.doesNotMatch(publishJob, /npm (?:ci|install|run)|build-marketplace-snapshot|MARKETPLACE_SNAPSHOT/);
+  assert.doesNotMatch(publishJob, /inputs\.ref|steps\.source|github\.ref(?:\W|$)/);
+  assert.match(publishJob, /github\.event\.repository\.default_branch/);
+  assert.match(publishJob, /sha256sum/);
+  assert.match(publishJob, /tar -t/);
+  assert.match(publishJob, /find .* -type l/);
+  assert.ok(publisher.indexOf('npm run check') < publisher.indexOf('\n  publish:'));
+  assert.ok(publisher.indexOf('marketplace-install.test.mjs') < publisher.indexOf('\n  publish:'));
+  assert.ok(publisher.indexOf('download-artifact') < publisher.indexOf('git push'));
   assert.doesNotMatch(publisher, /GITHUB_REF_NAME/);
   assert.doesNotMatch(publisher, /github\.ref_name/);
 });
@@ -88,7 +104,10 @@ test('CI runs full and packed native suites on three platforms and Node 18.18', 
   const marketplaceTest = read('tests/integration/marketplace-install.test.mjs');
   for (const source of [packageTest, marketplaceTest]) {
     assert.match(source, /tool-launch\.mjs/);
+    assert.match(source, /runProcess/);
     assert.match(source, /shell:\s*false/);
+    assert.doesNotMatch(source, /spawnSync/);
+    assert.match(source, /await run\(/);
     assert.doesNotMatch(source, /\.cmd/);
   }
 });

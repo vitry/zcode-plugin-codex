@@ -3,22 +3,20 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
-import { terminateProcess } from '../../scripts/lib/process.mjs';
+import { runProcess, terminateProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const expectedSkills = ['adversarial-review', 'cancel', 'rescue', 'result', 'review', 'setup', 'status', 'transfer'];
 
-function run(args, cwd, env) {
+async function run(args, cwd, env) {
   const launch = codexLaunch(args, { root, env });
-  return spawnSync(launch.command, launch.args, {
-    ...launch.options, cwd, env, encoding: 'utf8', timeout: 30_000, shell: false,
-  });
+  return runProcess(launch, { cwd, env, timeoutMs: 30_000, maxOutputBytes: 4 * 1024 * 1024 });
 }
 
 function listSkills(cwd, env) {
@@ -96,17 +94,17 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   await assert.rejects(readFile(join(marketplace, 'plugins', 'zcode', 'tests', 'integration', 'marketplace-install.test.mjs'), 'utf8'), { code: 'ENOENT' });
   const env = { ...process.env, CODEX_HOME: codexHome, HOME: isolatedHome, USERPROFILE: isolatedHome };
 
-  const added = run(['plugin', 'marketplace', 'add', marketplace, '--json'], temporary, env);
-  assert.equal(added.status, 0, added.stderr || added.stdout);
+  const added = await run(['plugin', 'marketplace', 'add', marketplace, '--json'], temporary, env);
+  assert.equal(added.code, 0, added.stderr || added.stdout);
   const addJson = JSON.parse(added.stdout);
   assert.equal(addJson.marketplaceName, 'vitry');
 
-  const listed = run(['plugin', 'list', '--marketplace', 'vitry', '--available', '--json'], temporary, env);
-  assert.equal(listed.status, 0, listed.stderr || listed.stdout);
+  const listed = await run(['plugin', 'list', '--marketplace', 'vitry', '--available', '--json'], temporary, env);
+  assert.equal(listed.code, 0, listed.stderr || listed.stdout);
   assert.deepEqual(JSON.parse(listed.stdout).available.map((entry) => entry.pluginId), ['zcode@vitry']);
 
-  const installed = run(['plugin', 'add', 'zcode@vitry', '--json'], temporary, env);
-  assert.equal(installed.status, 0, installed.stderr || installed.stdout);
+  const installed = await run(['plugin', 'add', 'zcode@vitry', '--json'], temporary, env);
+  assert.equal(installed.code, 0, installed.stderr || installed.stdout);
   const roots = await findPluginRoots(codexHome);
   const installedRoot = roots.find((path) => basename(join(path, '..', '..')) === 'zcode')
     ?? roots.find((path) => path.includes(`${join('cache', 'vitry', 'zcode')}`));

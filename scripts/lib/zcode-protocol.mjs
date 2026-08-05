@@ -23,6 +23,7 @@ export class ZCodeProtocolClient {
     /** @type {Set<(message:any)=>void>} */ this.subscribers = new Set();
     /** @type {Set<Promise<void>>} */ this.serverTasks = new Set();
     /** @type {Set<AbortController>} */ this.serverTaskControllers = new Set();
+    /** @type {Map<AbortController,string>} */ this.serverTaskSessions = new Map();
     this.nextId = 1;
     this.buffer = '';
     this.closed = false;
@@ -82,6 +83,7 @@ export class ZCodeProtocolClient {
   /** @param {string} sessionId @param {PluginError} [error] */
   cancelTurn(sessionId, error = new PluginError('ZCODE_SESSION_STOPPED', `ZCode session ${sessionId} was stopped.`, { category: 'state', remedy: 'Start a new turn before waiting for completion.', details: { sessionId } })) {
     for (const waiter of this.completionWaiters) if (waiter.sessionId === sessionId) { if (waiter.timer) clearTimeout(waiter.timer); waiter.unsubscribe(); this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); waiter.reject(error); }
+    for (const [controller, taskSessionId] of this.serverTaskSessions) if (taskSessionId === sessionId) controller.abort();
     this.abortTurn(sessionId);
   }
 
@@ -131,7 +133,7 @@ export class ZCodeProtocolClient {
     }
     const tasks = [...this.serverTasks];
     if (tasks.length) await Promise.race([Promise.allSettled(tasks), boundedDelay(25)]);
-    this.serverTasks.clear(); this.serverTaskControllers.clear();
+    this.serverTasks.clear(); this.serverTaskControllers.clear(); this.serverTaskSessions.clear();
     this.terminationPromise ??= terminateProcess(this.child); await this.terminationPromise;
   }
 
@@ -159,7 +161,7 @@ export class ZCodeProtocolClient {
       this.fail(new PluginError('ZCODE_PROTOCOL_MALFORMED', 'ZCode sent malformed JSON.', { category: 'protocol', remedy: 'Restart ZCode and retry.', cause: error })); return;
     }
     if (!plainObject(message)) { this.fail(malformedFrame()); return; }
-    if (message.id !== undefined && message.method !== undefined) { const controller = new AbortController(); this.trackServerTask(this.handleServerRequest(message, controller.signal), controller); return; }
+    if (message.id !== undefined && message.method !== undefined) { const controller = new AbortController(); this.trackServerTask(this.handleServerRequest(message, controller.signal), controller, message.params?.sessionId); return; }
     if (message.id !== undefined) { this.handleResponse(message); return; }
     if (typeof message.method === 'string' && plainObject(message.params)) {
       const turn = this.turns.get(message.params.sessionId);
@@ -207,6 +209,7 @@ export class ZCodeProtocolClient {
       if (!message.params.options.some((/** @type {any} */ option) => JSON.stringify(option.response) === JSON.stringify(result))) throw new PluginError('ZCODE_PERMISSION_OPTION_INVALID', 'Permission response was not one of the offered options.', { category: 'authorization', remedy: 'Return an exact response offered by ZCode.' });
       if (!this.closed) this.sendFrame({ id: message.id, result });
     } catch (error) {
+      if (signal.aborted) return;
       if (!this.closed) {
         try { this.sendFrame({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Permission handler failed.' } }); }
         catch (sendError) { this.fail(asDisconnected(sendError, this.stderrTail.value())); }
@@ -214,8 +217,8 @@ export class ZCodeProtocolClient {
     }
   }
 
-  /** @param {Promise<void>} task @param {AbortController} controller */
-  trackServerTask(task, controller) { this.serverTasks.add(task); this.serverTaskControllers.add(controller); void task.then(() => { this.serverTasks.delete(task); this.serverTaskControllers.delete(controller); }, (error) => { this.serverTasks.delete(task); this.serverTaskControllers.delete(controller); this.fail(asDisconnected(error, this.stderrTail.value())); }); }
+  /** @param {Promise<void>} task @param {AbortController} controller @param {unknown} sessionId */
+  trackServerTask(task, controller, sessionId) { this.serverTasks.add(task); this.serverTaskControllers.add(controller); if (nonEmpty(sessionId)) this.serverTaskSessions.set(controller, /** @type {string} */ (sessionId)); const cleanup = () => { this.serverTasks.delete(task); this.serverTaskControllers.delete(controller); this.serverTaskSessions.delete(controller); }; void task.then(cleanup, (error) => { cleanup(); this.fail(asDisconnected(error, this.stderrTail.value())); }); }
 
   /** @param {Record<string,unknown>} frame */
   sendFrame(frame) {
@@ -229,7 +232,7 @@ export class ZCodeProtocolClient {
     if (this.closed) return;
     this.closed = true;
     for (const controller of this.serverTaskControllers) controller.abort();
-    this.serverTasks.clear(); this.serverTaskControllers.clear(); this.permissionRequestIds.clear();
+    this.serverTasks.clear(); this.serverTaskControllers.clear(); this.serverTaskSessions.clear(); this.permissionRequestIds.clear();
     this.stderrTail.close();
     const diagnosticError = withStderr(error, this.stderrTail.value());
     this.writer.close(); this.rejectPending(diagnosticError); this.rejectCompletionWaiters(diagnosticError); for (const timer of this.completionExpiry.values()) clearTimeout(timer); this.completionExpiry.clear(); this.completed.clear(); this.earlyCompletions.clear(); this.turns.clear();

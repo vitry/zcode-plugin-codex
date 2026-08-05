@@ -113,6 +113,24 @@ test('turn state proves an accepted send is active until acknowledged stop clear
   }, { FAKE_ZCODE_SUPPRESS_COMPLETION_AT: '1' });
 });
 
+test('stop aborts an observed remote permission barrier for the active turn', { timeout: 2_000 }, async () => {
+  await withClient(async (client) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    let reached; const permissionReached = new Promise((resolve) => { reached = resolve; });
+    let aborted; const permissionAborted = new Promise((resolve) => { aborted = resolve; });
+    client.setPermissionHandler((request, signal) => {
+      reached(request.requestId);
+      return new Promise((resolve, reject) => signal.addEventListener('abort', () => { aborted(); reject(new Error('turn stopped')); }, { once: true }));
+    });
+    await client.send(sessionId, 'request permission');
+    assert.match(await permissionReached, /^permission-/);
+    assert.equal(client.turnState(sessionId), 'armed');
+    assert.deepEqual(await client.stopSession(sessionId), {});
+    await permissionAborted;
+    assert.equal(client.turnState(sessionId), null);
+  }, { FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_SUPPRESS_COMPLETION_AT: '1' });
+});
+
 test('stopping after completion does not change the already resolved completion result', async () => {
   await withClient(async (client) => {
     const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
