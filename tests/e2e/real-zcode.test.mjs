@@ -75,8 +75,15 @@ test('real ZCode discovery, read-only turn, cancellation, model, and history imp
   sessions.add(cancellationId);
   const active = await client.send(cancellationId, 'Inspect only this empty temporary workspace. Do not write files or run mutating commands.');
   assert.equal(active.accepted, true);
+  assert.equal(client.turnState(cancellationId), 'armed');
+  await assert.rejects(client.send(cancellationId, 'This second send must be rejected while the first turn is active.'), { code: 'ZCODE_TURN_ACTIVE' });
+  // ZCode Protocol 0.16.1 exposes a successful object acknowledgement, not a
+  // remote "cancelled" terminal enum. The strongest exact invariant is that
+  // the accepted turn is armed before that ack and absent immediately after it.
   const stopped = await client.stopSession(cancellationId, 10_000);
   assert.ok(stopped && typeof stopped === 'object' && !Array.isArray(stopped));
+  assert.equal(client.turnState(cancellationId), null);
+  await assert.rejects(client.waitForCompletion(cancellationId, 10_000), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
   sessions.delete(cancellationId);
 
   const sent = await client.send(sessionId, 'Inspect only this empty temporary workspace. Do not write files or run mutating commands. Reply with a short acknowledgement.');

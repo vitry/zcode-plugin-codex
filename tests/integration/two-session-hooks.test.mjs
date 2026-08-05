@@ -1,6 +1,5 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { createStateStore } from '../../scripts/lib/state.mjs';
+import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
@@ -15,19 +15,8 @@ const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
 
 function child(command, args, { cwd, env, input, protectedInput = false }) {
-  return new Promise((resolvePromise, reject) => {
-    const stdio = protectedInput ? ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'];
-    const processChild = spawn(command, args, { cwd, env, shell: false, stdio });
-    let stdout = ''; let stderr = ''; let internal = '';
-    processChild.stdout.on('data', (chunk) => { stdout += chunk; });
-    processChild.stderr.on('data', (chunk) => { stderr += chunk; });
-    if (protectedInput) {
-      processChild.stdio[4].on('data', (chunk) => { internal += chunk; });
-      processChild.stdio[3].end(`${JSON.stringify(input)}\n`);
-    } else processChild.stdin.end(JSON.stringify(input));
-    processChild.once('error', reject);
-    processChild.once('exit', (code) => resolvePromise({ code, stdout, stderr, json: protectedInput ? JSON.parse(internal) : stdout ? JSON.parse(stdout) : null }));
-  });
+  return runChild(command, args, { cwd, env, input, protectedInput, ordinaryInput: !protectedInput })
+    .then((result) => ({ ...result, json: protectedInput ? JSON.parse(result.internal) : result.stdout ? JSON.parse(result.stdout) : null }));
 }
 
 async function git(cwd, args) {

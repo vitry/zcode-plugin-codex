@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Source ref to publish"
+        description: "Source ref to qualify and publish"
         required: true
         default: "main"
 
@@ -21,35 +21,66 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 18.18.0
           cache: npm
-      - name: Install production dependencies
-        run: npm ci --omit=dev
-      - name: Build marketplace snapshot
+      - name: Resolve and validate source provenance
+        id: source
         shell: bash
-        run: |
-          set -euo pipefail
-          snapshot="$RUNNER_TEMP/marketplace-snapshot"
-          plugin="$snapshot/plugins/zcode"
-          mkdir -p "$plugin" "$snapshot/.agents/plugins"
-          cp marketplace/.agents/plugins/marketplace.json "$snapshot/.agents/plugins/marketplace.json"
-          for path in .codex-plugin agents hooks prompts schemas scripts skills node_modules; do
-            cp -R "$path" "$plugin/$path"
-          done
-          for path in LICENSE NOTICE README.md README.zh-CN.md SECURITY.md CHANGELOG.md package.json npm-shrinkwrap.json; do
-            cp "$path" "$plugin/$path"
-          done
-      - name: Publish marketplace branch
         env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
+          SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          catalog="$RUNNER_TEMP/marketplace-branch"
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$catalog"
-          cd "$catalog"
+          case "$SOURCE_REF" in
+            ""|*[!A-Za-z0-9._/@:+-]*) echo "Source ref contains unsupported characters." >&2; exit 1 ;;
+          esac
+          resolved_sha="$(git rev-parse HEAD)"
+          ref_sha="$(git rev-parse --verify --end-of-options "${SOURCE_REF}^{commit}")"
+          test "$resolved_sha" = "$ref_sha"
+          test -n "$SOURCE_REF"
+          release_tag=""
+          if [ "$EVENT_NAME" = "push" ]; then
+            case "$SOURCE_REF" in
+              refs/tags/v*) release_tag="${SOURCE_REF#refs/tags/}" ;;
+              *) echo "Tag publication requires an exact refs/tags/v* source." >&2; exit 1 ;;
+            esac
+          fi
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          echo "resolved_sha=$resolved_sha" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+      - name: Install qualification dependencies
+        run: npm ci
+      - name: Run complete quality gate
+        run: npm run check
+      - name: Re-run Node 18 packed native qualification
+        run: node --test tests/integration/package-install.test.mjs
+      - name: Build exact production marketplace snapshot
+        shell: bash
+        env:
+          SOURCE_REF: ${{ steps.source.outputs.source_ref }}
+          SOURCE_SHA: ${{ steps.source.outputs.resolved_sha }}
+          RELEASE_TAG: ${{ steps.source.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          args=(--output "$RUNNER_TEMP/marketplace-snapshot" --source-ref "$SOURCE_REF" --source-sha "$SOURCE_SHA")
+          if [ -n "$RELEASE_TAG" ]; then args+=(--release-tag "$RELEASE_TAG"); fi
+          node scripts/build-marketplace-snapshot.mjs "${args[@]}"
+      - name: Qualify the exact snapshot through Codex and native locking
+        env:
+          MARKETPLACE_SNAPSHOT: ${{ runner.temp }}/marketplace-snapshot
+          MARKETPLACE_SOURCE_REF: ${{ steps.source.outputs.source_ref }}
+          MARKETPLACE_SOURCE_SHA: ${{ steps.source.outputs.resolved_sha }}
+        run: node --test tests/integration/marketplace-install.test.mjs
+      - name: Publish only the qualified marketplace branch
+        shell: bash
+        env:
+          SOURCE_REF: ${{ steps.source.outputs.source_ref }}
+          SOURCE_SHA: ${{ steps.source.outputs.resolved_sha }}
+        run: |
+          set -euo pipefail
           if git show-ref --verify --quiet refs/remotes/origin/marketplace; then
             git switch -C marketplace origin/marketplace
           else
@@ -58,12 +89,12 @@ jobs:
           git rm -rf --ignore-unmatch .
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -R "$RUNNER_TEMP/marketplace-snapshot/." .
-          git add .agents/plugins/marketplace.json plugins/zcode
+          git add .agents plugins/zcode
           if git diff --cached --quiet; then
             echo "Marketplace snapshot is already current."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Publish zcode-plugin-codex snapshot from ${GITHUB_REF_NAME}"
+          git commit -m "Publish zcode-plugin-codex from ${SOURCE_REF} at ${SOURCE_SHA}"
           git push origin HEAD:marketplace

@@ -16,6 +16,20 @@
   "engines": {
     "node": ">=18.18.0"
   },
+  "files": [
+    ".codex-plugin/",
+    "agents/",
+    "hooks/",
+    "prompts/",
+    "schemas/",
+    "scripts/",
+    "skills/",
+    "CHANGELOG.md",
+    "NOTICE",
+    "README.zh-CN.md",
+    "SECURITY.md",
+    "npm-shrinkwrap.json"
+  ],
   "scripts": {
     "test": "node --test",
     "test:unit": "node --test tests/plugin-contracts.test.mjs",

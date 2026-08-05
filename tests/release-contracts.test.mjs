@@ -41,7 +41,21 @@ test('marketplace catalog and publisher describe an installable vitry snapshot',
   const publisher = read('.github/workflows/publish-marketplace.yml');
   assert.match(publisher, /marketplace/);
   assert.match(publisher, /plugins\/zcode/);
-  assert.match(publisher, /npm ci --omit=dev/);
+  assert.match(publisher, /npm ci/);
+  assert.match(publisher, /npm run check/);
+  assert.match(publisher, /build-marketplace-snapshot\.mjs/);
+  assert.match(publisher, /MARKETPLACE_SNAPSHOT/);
+  assert.match(publisher, /tests\/integration\/package-install\.test\.mjs/);
+  assert.match(publisher, /tests\/integration\/marketplace-install\.test\.mjs/);
+  assert.match(publisher, /source_ref/);
+  assert.match(publisher, /resolved_sha/);
+  assert.match(publisher, /github\.event_name/);
+  assert.match(publisher, /github\.ref/);
+  assert.match(publisher, /refs\/tags\/v/);
+  assert.ok(publisher.indexOf('npm run check') < publisher.indexOf('git push'));
+  assert.ok(publisher.indexOf('marketplace-install.test.mjs') < publisher.indexOf('git push'));
+  assert.doesNotMatch(publisher, /GITHUB_REF_NAME/);
+  assert.doesNotMatch(publisher, /github\.ref_name/);
 });
 
 test('security, changelog, and provenance are release-ready', () => {
@@ -71,6 +85,10 @@ test('CI runs full and packed native suites on three platforms and Node 18.18', 
   assert.match(workflow, /tryLock/);
   assert.doesNotMatch(workflow, /fetch-depth|git diff|git log/);
   const packageTest = read('tests/integration/package-install.test.mjs');
-  assert.match(packageTest, /process\.platform.*win32/);
-  assert.match(packageTest, /\.cmd/);
+  const marketplaceTest = read('tests/integration/marketplace-install.test.mjs');
+  for (const source of [packageTest, marketplaceTest]) {
+    assert.match(source, /tool-launch\.mjs/);
+    assert.match(source, /shell:\s*false/);
+    assert.doesNotMatch(source, /\.cmd/);
+  }
 });

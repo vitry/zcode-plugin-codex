@@ -95,9 +95,22 @@ test('completion timeout and stop fully clean the turn and allow another send', 
     await client.send(sessionId, 'timeout'); await assert.rejects(client.waitForCompletion(sessionId, 20), { code: 'ZCODE_COMPLETION_TIMEOUT' });
     await client.send(sessionId, 'retry'); await client.waitForCompletion(sessionId);
     await client.send(sessionId, 'stop'); const waiter = client.waitForCompletion(sessionId, 2_000); await new Promise((resolve) => setTimeout(resolve, 20)); await client.stopSession(sessionId); await assert.rejects(waiter, { code: 'ZCODE_SESSION_STOPPED' });
+    assert.equal(client.turnState(sessionId), null);
     for (const map of [client.protocol.turns, client.protocol.completed, client.protocol.earlyCompletions, client.protocol.completionExpiry]) assert.equal(map.size, 0);
     assert.equal(client.protocol.completionWaiters.size, 0); assert.equal(client.protocol.waiterSessions.size, 0);
   }, { FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', FAKE_ZCODE_SUPPRESS_COMPLETION_AT: '3' });
+});
+
+test('turn state proves an accepted send is active until acknowledged stop clears it', async () => {
+  await withClient(async (client) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await client.send(sessionId, 'active');
+    assert.equal(client.turnState(sessionId), 'armed');
+    await assert.rejects(client.send(sessionId, 'must reject while active'), { code: 'ZCODE_TURN_ACTIVE' });
+    assert.deepEqual(await client.stopSession(sessionId), {});
+    assert.equal(client.turnState(sessionId), null);
+    await assert.rejects(client.waitForCompletion(sessionId, 20), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
+  }, { FAKE_ZCODE_SUPPRESS_COMPLETION_AT: '1' });
 });
 
 test('stopping after completion does not change the already resolved completion result', async () => {

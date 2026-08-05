@@ -1,6 +1,5 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
+import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
@@ -15,11 +15,8 @@ const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
 
 async function run(command, args, cwd) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd, stdio: 'ignore', shell: false });
-    child.once('error', reject);
-    child.once('exit', (code) => code === 0 ? resolvePromise() : reject(new Error(`${command} exited ${code}`)));
-  });
+  const result = await runChild(command, args, { cwd });
+  if (result.code !== 0) throw new Error(`${command} exited ${result.code}`);
 }
 
 async function fixture(t) {
@@ -40,19 +37,12 @@ async function fixture(t) {
 }
 
 function invoke(ctx, rawArgv, authorization, extraEnv = {}, ordinaryStdio = false) {
-  return new Promise((resolvePromise, reject) => {
-    const stdio = ordinaryStdio ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'];
-    const child = spawn(process.execPath, [cli, ...rawArgv], { cwd: ctx.workspace, env: { ...ctx.env, ...extraEnv }, shell: false, stdio });
-    let stdout = ''; let stderr = ''; let internal = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    if (!ordinaryStdio) {
-      child.stdio[4].on('data', (chunk) => { internal += chunk; });
-      child.stdio[3].end(`${JSON.stringify(authorization)}\n`);
-    }
-    child.once('error', reject);
-    child.once('exit', (code) => resolvePromise({ code, stdout, stderr, json: internal ? JSON.parse(internal) : null, spawnargs: child.spawnargs }));
-  });
+  return runChild(process.execPath, [cli, ...rawArgv], {
+    cwd: ctx.workspace,
+    env: { ...ctx.env, ...extraEnv },
+    input: authorization,
+    protectedInput: !ordinaryStdio,
+  }).then((result) => ({ ...result, json: result.internal ? JSON.parse(result.internal) : null }));
 }
 
 function publicInvoke(ctx, rawArgv, caller = ctx.callerA, extraEnv = {}) {

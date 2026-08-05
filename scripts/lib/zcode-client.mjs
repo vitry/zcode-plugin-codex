@@ -82,6 +82,7 @@ export class ZCodeClient {
   }
 
   /** @param {string} sessionId @param {number} [timeoutMs] */ waitForCompletion(sessionId, timeoutMs) { return this.protocol.waitForCompletion(sessionId, timeoutMs); }
+  /** Exact local protocol invariant used to prove whether this client owns an active turn. @param {string} sessionId */ turnState(sessionId) { requireSessionId(sessionId); return this.protocol.turnState(sessionId); }
   /** @param {(message:any)=>void} handler */ subscribe(handler) { return this.protocol.subscribe(handler); }
   /** @param {(request:any,signal:AbortSignal)=>Promise<any>|any} handler */ setPermissionHandler(handler) { this.protocol.setPermissionHandler(handler); }
   close() { return this.protocol.close(); }

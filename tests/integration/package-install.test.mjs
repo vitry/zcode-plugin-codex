@@ -6,21 +6,26 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { npmLaunch, npxLaunch } from '../../scripts/lib/tool-launch.mjs';
+
 const rootPath = fileURLToPath(new URL('../../', import.meta.url));
 
-/** @param {string} command @param {string[]} args @param {string} cwd */
-function run(command, args, cwd) {
-  const executable = process.platform === 'win32' && ['npm', 'npx'].includes(command)
-    ? `${command}.cmd`
-    : command;
-  return spawnSync(executable, args, { cwd, encoding: 'utf8', timeout: 30_000 });
+/** @param {{ command: string, args: string[], options: object }} launch @param {string} cwd */
+function run(launch, cwd) {
+  return spawnSync(launch.command, launch.args, {
+    ...launch.options, cwd, encoding: 'utf8', timeout: 30_000, shell: false,
+  });
+}
+
+/** @param {string[]} args */
+function node18Launch(args) {
+  const configured = process.env.NODE18_BINARY;
+  if (configured) return { command: configured, args, options: { shell: false } };
+  return npxLaunch(['--yes', 'node@18.18.0', ...args]);
 }
 
 test('packed production install loads and locks on Node 18 with pinned resolver', async (t) => {
-  const node18 = process.env.NODE18_BINARY;
-  const nodeCommand = node18 ?? 'npx';
-  const nodePrefix = node18 ? [] : ['--yes', 'node@18.18.0'];
-  const probe = run(nodeCommand, [...nodePrefix, '--version'], rootPath);
+  const probe = run(node18Launch(['--version']), rootPath);
   if (probe.status !== 0) {
     if (process.env.CI) assert.fail(`Node 18.18 is mandatory in CI: ${probe.stderr || probe.stdout}`);
     t.skip('Node 18.18 is unavailable; CI must set NODE18_BINARY or allow npx download');
@@ -32,7 +37,7 @@ test('packed production install loads and locks on Node 18 with pinned resolver'
   const packageDirectory = join(temporary, 'package');
   const consumerDirectory = join(temporary, 'consumer');
   await Promise.all([mkdir(packageDirectory), mkdir(consumerDirectory)]);
-  const packed = run('npm', ['pack', '--json', '--pack-destination', packageDirectory], rootPath);
+  const packed = run(npmLaunch(['pack', '--json', '--pack-destination', packageDirectory]), rootPath);
   assert.equal(packed.status, 0, packed.stderr);
   const [{ filename }] = JSON.parse(packed.stdout);
   await writeFile(join(consumerDirectory, 'package.json'), JSON.stringify({
@@ -40,14 +45,10 @@ test('packed production install loads and locks on Node 18 with pinned resolver'
     private: true,
     dependencies: { 'zcode-plugin-codex': `file:${join(packageDirectory, filename)}` },
   }));
-  const locked = run(
-    'npm',
-    ['install', '--package-lock-only', '--omit=dev', '--ignore-scripts'],
-    consumerDirectory,
-  );
+  const locked = run(npmLaunch(['install', '--package-lock-only', '--omit=dev', '--ignore-scripts']), consumerDirectory);
   assert.equal(locked.status, 0, locked.stderr);
   await rm(join(consumerDirectory, 'node_modules'), { force: true, recursive: true });
-  const installed = run('npm', ['ci', '--omit=dev', '--ignore-scripts'], consumerDirectory);
+  const installed = run(npmLaunch(['ci', '--omit=dev', '--ignore-scripts']), consumerDirectory);
   assert.equal(installed.status, 0, installed.stderr);
 
   const smoke = `
@@ -71,6 +72,6 @@ test('packed production install loads and locks on Node 18 with pinned resolver'
       if (result !== 'locked') throw new Error('lock failed');
     });
   `;
-  const result = run(nodeCommand, [...nodePrefix, '--eval', smoke], consumerDirectory);
+  const result = run(node18Launch(['--eval', smoke]), consumerDirectory);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
