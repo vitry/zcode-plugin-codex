@@ -10,7 +10,7 @@ export function errorEnvelope(error) {
 export function renderOutput(value, options = {}) {
   if (options.json) return `${JSON.stringify(redact(value))}\n`;
   if (value?.type === 'background') return `Reserved background job ${value.job.id}.\n`;
-  if (value?.jobs) return `${value.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command}`).join('\n')}\n`;
+  if (value?.jobs) return `${value.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner}`).join('\n')}\n`;
   if (value?.result !== undefined) return `${value.result}\n`;
   if (value?.job) return `${value.job.id} ${value.job.status}\n`;
   return `${JSON.stringify(redact(value))}\n`;

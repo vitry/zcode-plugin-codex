@@ -201,6 +201,15 @@ test('rescue requires an explicit choice when an owned resumable session exists'
   assert.equal(resumed.json.job.zcodeSessionId, fresh.json.job.zcodeSessionId);
 });
 
+test('resumed rescue cannot reuse a historical visible result when the current turn is hidden', async () => {
+  const context = await fixture(); const fresh = await companion(context, ['rescue', '--fresh', 'historical visible']);
+  assert.equal(fresh.code, 0, `${fresh.stderr}${fresh.stdout}`);
+  const resumed = await companion(context, ['rescue', '--resume', 'current hidden']);
+  assert.notEqual(resumed.code, 0); assert.equal(resumed.json.error.code, 'ZCODE_RESULT_MISSING');
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'failed').length, 1);
+});
+
 test('foreground launch failure durably fails its reserved job', async () => {
   const context = await fixture();
   const failed = await companion(context, ['review'], { FAKE_ZCODE_VERSION: '0.1.0' });
@@ -297,6 +306,9 @@ test('status --all reports every workspace job with nonsecret ownership markers'
   assert.equal(listed.json.jobs.filter((/** @type {any} */ job) => job.owned).length, 2);
   assert.deepEqual(new Set(listed.json.jobs.map((/** @type {any} */ job) => job.owner)), new Set(['same-owner', 'other']));
   assert.ok(listed.json.jobs.every((/** @type {any} */ job) => !('ownerSessionId' in job) && !('ownerTurnId' in job) && !('permissionSnapshot' in job)));
+  const lines = listed.stdout.trim().split('\n');
+  assert.deepEqual(lines, listed.json.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner}`));
+  assert.doesNotMatch(listed.stdout, /codex-session|other-session/);
 });
 
 test('real CLI status wait stays alive until its timeout', async () => {

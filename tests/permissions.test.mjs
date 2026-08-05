@@ -36,9 +36,9 @@ test('permission decisions choose only a response actually offered by ZCode', ()
   assert.throws(() => decidePermission({ ...request('low'), options: [{ response: { decision: 'mystery' } }] }, { permissionMode: 'workspace-write' }, 'rescue'), { code: 'PERMISSION_DENY_UNAVAILABLE' });
 });
 
-/** @param {any[]} parts @param {unknown} [structured] @param {unknown} [semantics] */
-function assistant(parts, structured, semantics) {
-  return { info: { role: 'assistant', ...(structured === undefined ? {} : { structured }), ...(semantics === undefined ? {} : { semantics }) }, parts };
+/** @param {any[]} parts @param {unknown} [structured] @param {unknown} [semantics] @param {string} [messageId] @param {string} [parentMessageId] */
+function assistant(parts, structured, semantics, messageId = 'assistant-current', parentMessageId = 'input-current') {
+  return { info: { role: 'assistant', messageId, parentMessageId, ...(structured === undefined ? {} : { structured }), ...(semantics === undefined ? {} : { semantics }) }, parts };
 }
 
 test('review result prefers valid structured findings anchored by visible final text', () => {
@@ -62,9 +62,24 @@ test('reasoning-only, hidden and invalid structured results fail closed', () => 
   assert.throws(() => extractFinalResult({ messages: [assistant([{ type: 'text', text: '{"findings":[]}' }], { findings: [{ severity: 'bogus' }] })] }, 'review'), { code: 'REVIEW_RESULT_INVALID' });
 });
 
-test('final result skips hidden assistant messages and uses the latest visible assistant', () => {
-  const snapshot = { messages: [assistant([{ type: 'text', text: 'visible' }]), assistant([{ type: 'text', text: 'hidden' }], undefined, { uiVisibility: 'hidden' })] };
-  assert.equal(extractFinalResult(snapshot, 'rescue'), 'visible');
+test('current-turn result never falls back to a visible historical assistant message', () => {
+  const snapshot = { messages: [assistant([{ type: 'text', text: 'historical' }], undefined, undefined, 'assistant-old'), assistant([{ type: 'text', text: 'hidden current' }], undefined, { uiVisibility: 'hidden' }, 'assistant-new')] };
+  assert.throws(() => extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(['assistant-old']), inputId: 'input-current' }), { code: 'ZCODE_RESULT_MISSING' });
+});
+
+test('current-turn result rejects an empty new assistant instead of using historical text', () => {
+  const snapshot = { messages: [assistant([{ type: 'text', text: 'historical' }], undefined, undefined, 'assistant-old'), assistant([{ type: 'text', text: '' }], undefined, undefined, 'assistant-new')] };
+  assert.throws(() => extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(['assistant-old']), inputId: 'input-current' }), { code: 'ZCODE_RESULT_MISSING' });
+});
+
+test('current-turn result accepts a newly added visible structured assistant message', () => {
+  const structured = { findings: [] }; const snapshot = { messages: [assistant([{ type: 'text', text: 'historical' }], undefined, undefined, 'assistant-old'), assistant([{ type: 'text', text: '{}'}], structured, undefined, 'assistant-new')] };
+  assert.equal(extractFinalResult(snapshot, 'review', { beforeMessageIds: new Set(['assistant-old']), inputId: 'input-current' }), `${JSON.stringify(structured, null, 2)}\n`);
+});
+
+test('current-turn result prefers assistant messages linked to the send input over unrelated new messages', () => {
+  const snapshot = { messages: [assistant([{ type: 'text', text: 'current' }], undefined, undefined, 'assistant-current', 'input-current'), assistant([{ type: 'text', text: 'unrelated' }], undefined, undefined, 'assistant-other', 'input-other')] };
+  assert.equal(extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), 'current');
 });
 
 test('rescue returns only nonignored visible text and never reasoning', () => {

@@ -40,7 +40,7 @@ export class ZCodeClient {
     try { result = await this.protocol.request('session/send', { sessionId, inputId, queryId: inputId, content }); } catch (error) { this.protocol.abortTurn(sessionId); throw error; }
     if (!plainObject(result) || result.accepted !== true || result.sessionId !== sessionId || !Number.isSafeInteger(result.stateRevision) || result.stateRevision < 0 || result.modelRuntimeRevision !== undefined && !nonEmpty(result.modelRuntimeRevision)) { this.protocol.abortTurn(sessionId); throw outputError('session/send'); }
     this.protocol.armTurn(sessionId, result.stateRevision, inputId);
-    return result;
+    return { ...result, inputId };
   }
 
   /** @param {string} sessionId */ async readSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }

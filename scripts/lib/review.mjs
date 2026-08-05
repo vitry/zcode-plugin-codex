@@ -48,17 +48,17 @@ export async function executeJob(input) {
     const sessionId = snapshot.session.sessionId;
     const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
     if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await client.setModel(sessionId, selectedModel);
-    if (input.effort) await client.setThoughtLevel(sessionId, input.effort);
+    if (input.effort) snapshot = await client.setThoughtLevel(sessionId, input.effort);
     client.setPermissionHandler((/** @type {any} */ request) => decidePermission(request, job.permissionSnapshot, job.command));
     const now = new Date().toISOString();
     running = await input.store.transitionJob(workspace, job.id, ['queued'], 'running', {
       startedAt: now, zcodeSessionId: sessionId, promptArtifact,
       ...(selectedModel ? { model: selectedModel } : {}), ...(input.effort ? { effort: input.effort } : {}),
     });
-    await client.send(sessionId, prompt);
+    const turnBoundary = { beforeMessageIds: snapshotMessageIds(snapshot), ...await client.send(sessionId, prompt) };
     await client.waitForCompletion(sessionId);
     const finalSnapshot = await client.readSession(sessionId);
-    const result = extractFinalResult(finalSnapshot, job.command);
+    const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
     const resultArtifact = await writeArtifact({ dataRoot, workspace, directory: 'results', jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
     const succeeded = await input.store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
     return { job: succeeded, result };
@@ -124,12 +124,16 @@ async function defaultSyncDirectory(path) {
   finally { await handle?.close(); }
 }
 
-/** @param {any} snapshot @param {string} command */
-export function extractFinalResult(snapshot, command) {
+/** @param {any} snapshot @param {string} command @param {{beforeMessageIds?:Set<string>,inputId?:string,stateRevision?:number}} [turnBoundary] */
+export function extractFinalResult(snapshot, command, turnBoundary = {}) {
   const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
-  const assistant = [...messages].reverse().find((message) => message?.info?.role === 'assistant' && !['hidden', 'debug'].includes(message?.info?.semantics?.uiVisibility));
+  const beforeMessageIds = turnBoundary.beforeMessageIds ?? new Set();
+  const newAssistants = messages.filter((/** @type {any} */ message) => message?.info?.role === 'assistant' && typeof message.info.messageId === 'string' && !beforeMessageIds.has(message.info.messageId));
+  const linkedAssistants = turnBoundary.inputId ? newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === turnBoundary.inputId) : [];
+  const assistant = (linkedAssistants.length ? linkedAssistants : newAssistants).at(-1);
+  if (['hidden', 'debug'].includes(assistant?.info?.semantics?.uiVisibility)) throw missingResult();
   const parts = assistant?.parts?.filter((/** @type {any} */ part) => part?.type === 'text' && part.ignored !== true && typeof part.text === 'string' && part.text.length > 0).map((/** @type {any} */ part) => part.text) ?? [];
-  if (!parts.length) throw new PluginError('ZCODE_RESULT_MISSING', 'ZCode completed without a final result.', { category: 'protocol', remedy: 'Inspect the ZCode session and retry.' });
+  if (!parts.length) throw missingResult();
   const text = parts.join('\n');
   if (command !== 'review' && command !== 'adversarial-review') return text;
   let structured = assistant?.info?.structured;
@@ -139,6 +143,9 @@ export function extractFinalResult(snapshot, command) {
   if (!validReviewOutput(structured)) throw invalidReviewResult();
   return `${JSON.stringify(structured, null, 2)}\n`;
 }
+/** @param {any} snapshot */
+function snapshotMessageIds(snapshot) { return new Set((Array.isArray(snapshot?.messages) ? snapshot.messages : []).map((/** @type {any} */ message) => message?.info?.messageId).filter((/** @type {unknown} */ value) => typeof value === 'string')); }
+function missingResult() { return new PluginError('ZCODE_RESULT_MISSING', 'ZCode completed without a visible result for the current turn.', { category: 'protocol', remedy: 'Inspect the ZCode session and retry.' }); }
 /** @param {unknown} [cause] */
 function invalidReviewResult(cause) { return new PluginError('REVIEW_RESULT_INVALID', 'ZCode review output failed the required findings schema.', { category: 'protocol', remedy: 'Retry the review with a compatible ZCode model.', ...(cause ? { cause } : {}) }); }
 /** @param {any} value */

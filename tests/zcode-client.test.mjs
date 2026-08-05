@@ -56,7 +56,8 @@ test('send waits only for matching-session completion and answers permission req
     const sessionId = created.session.sessionId;
     const permissions = [];
     client.setPermissionHandler(async (request) => { permissions.push(request.toolName); return { decision: 'allow' }; });
-    await client.send(sessionId, 'hello');
+    const sent = await client.send(sessionId, 'hello');
+    assert.match(sent.inputId, /^[0-9a-f-]{36}$/); assert.equal(sent.stateRevision, 1);
     await client.waitForCompletion(sessionId);
     assert.deepEqual(permissions, ['write']);
     const calls = (await readFile(record, 'utf8')).trim().split('\n').map(JSON.parse);
