@@ -10,6 +10,8 @@ import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 
 const exec = promisify(execFile);
 const terminal = new Set(['succeeded', 'failed', 'cancelled']);
+const MAX_UNTRACKED_FILES = 10_000;
+const MAX_UNTRACKED_BYTES = 256 * 1024 * 1024;
 
 async function paths(dataRoot, workspace) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const directory = join(storage.directory, 'hook-state');
@@ -19,9 +21,12 @@ function key(...values) { return createHash('sha256').update(JSON.stringify(valu
 
 export async function fingerprintWorkspace(workspace) {
   const result = await exec('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: workspace, encoding: 'buffer', timeout: 8_000, maxBuffer: 4 * 1024 * 1024, shell: false });
-  const diff = await exec('git', ['diff', '--no-ext-diff', '--binary', 'HEAD', '--'], { cwd: workspace, encoding: 'buffer', timeout: 8_000, maxBuffer: 8 * 1024 * 1024, shell: false });
-  const hash = createHash('sha256').update(result.stdout).update(diff.stdout); const entries = result.stdout.toString('utf8').split('\0').filter((line) => line.startsWith('?? ')).map((line) => line.slice(3)).sort();
-  for (const relative of entries.slice(0, 2000)) { const path = join(workspace, relative); const stat = await lstat(path).catch(() => null); hash.update(relative); if (stat?.isFile() && !stat.isSymbolicLink()) { hash.update(`size:${stat.size}:`); const handle = await open(path, 'r'); try { const sample = Buffer.alloc(Math.min(stat.size, 128 * 1024)); if (sample.length) { await handle.read(sample, 0, sample.length, 0); hash.update(sample); if (stat.size > sample.length) { await handle.read(sample, 0, sample.length, Math.max(0, stat.size - sample.length)); hash.update(sample); } } } finally { await handle.close(); } } else hash.update(`:${stat?.mode ?? 'missing'}:`); }
+  let hasHead = true; try { await exec('git', ['rev-parse', '--verify', 'HEAD'], { cwd: workspace, timeout: 2_000, maxBuffer: 64 * 1024, shell: false }); } catch { hasHead = false; }
+  const diffArgs = hasHead ? [['diff', '--no-ext-diff', '--binary', 'HEAD', '--']] : [['diff', '--no-ext-diff', '--binary', '--cached', '--'], ['diff', '--no-ext-diff', '--binary', '--']];
+  const diffs = await Promise.all(diffArgs.map((args) => exec('git', args, { cwd: workspace, encoding: 'buffer', timeout: 8_000, maxBuffer: 8 * 1024 * 1024, shell: false })));
+  const hash = createHash('sha256').update(result.stdout); for (const diff of diffs) hash.update(diff.stdout); const entries = result.stdout.toString('utf8').split('\0').filter((line) => line.startsWith('?? ')).map((line) => line.slice(3)).sort();
+  if (entries.length > MAX_UNTRACKED_FILES) throw new Error('Git fingerprint exceeded the untracked file limit.'); let totalBytes = 0;
+  for (const relative of entries) { const path = join(workspace, relative); const stat = await lstat(path).catch(() => null); hash.update(JSON.stringify(relative)); if (stat?.isFile() && !stat.isSymbolicLink()) { totalBytes += stat.size; if (totalBytes > MAX_UNTRACKED_BYTES) throw new Error('Git fingerprint exceeded the untracked byte limit.'); hash.update(`size:${stat.size}:`); const handle = await open(path, 'r'); try { const buffer = Buffer.alloc(64 * 1024); let position = 0; while (true) { const { bytesRead } = await handle.read(buffer, 0, buffer.length, position); if (!bytesRead) break; position += bytesRead; hash.update(buffer.subarray(0, bytesRead)); if (position > stat.size || totalBytes - stat.size + position > MAX_UNTRACKED_BYTES) throw new Error('Git fingerprint changed beyond its byte limit.'); } } finally { await handle.close(); } } else hash.update(`:${stat?.mode ?? 'missing'}:`); }
   hash.update(`count:${entries.length}`); return hash.digest('hex');
 }
 

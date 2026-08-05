@@ -343,6 +343,13 @@ test('authorization artifacts contain digests but never plaintext random tokens'
   assert.equal(artifacts.includes(capabilityToken), false);
 });
 
+test('caller turn lifecycle revokes exact older and completed turns without touching siblings', async () => {
+  const { identity, workspaceA } = await fixture(); const base = { workspace: workspaceA, permissionMode: 'default' };
+  const old = await identity.beginCallerTurn({ ...base, sessionId: 'owner', turnId: 'turn-1' }); const sibling = await identity.beginCallerTurn({ ...base, sessionId: 'sibling', turnId: 'turn-sibling' }); const current = await identity.beginCallerTurn({ ...base, sessionId: 'owner', turnId: 'turn-2' });
+  await assert.rejects(identity.consumeCallerContext(old, { workspace: workspaceA }), { code: 'CALLER_CONTEXT_INVALID' }); assert.equal((await identity.consumeCallerContext(current, { workspace: workspaceA })).turnId, 'turn-2'); assert.equal((await identity.consumeCallerContext(sibling, { workspace: workspaceA })).sessionId, 'sibling');
+  await identity.endCallerTurn({ sessionId: 'owner', turnId: 'turn-2', workspace: workspaceA }); await assert.rejects(identity.consumeCallerContext(current, { workspace: workspaceA }), { code: 'CALLER_CONTEXT_INVALID' }); assert.equal((await identity.consumeCallerContext(sibling, { workspace: workspaceA })).turnId, 'turn-sibling');
+});
+
 test('identity creation rejects missing identities and uncontrolled modes or operations', async () => {
   const { identity, workspaceA } = await fixture();
   const caller = {

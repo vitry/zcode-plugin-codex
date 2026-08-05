@@ -22,17 +22,17 @@ test('setup arguments are strict, unique and mutually exclusive', () => {
   for (const args of [['setup', '--enable-review-gate', '--disable-review-gate'], ['setup', '--enable-review-gate', '--enable-review-gate'], ['setup', '--bad'], ['setup', 'extra']]) assert.throws(() => parseArgs(args), { code: 'ARGUMENT_INVALID' });
 });
 
-function hookMetadata(rootPath, trustStatus = 'untrusted') {
+function hookMetadata(rootPath, trustStatus = 'untrusted', pluginId = 'zcode-plugin-codex@vitry') {
   const events = ['sessionStart', 'userPromptSubmit', 'subagentStart', 'subagentStop', 'stop', 'sessionEnd'];
   const scripts = ['session-lifecycle-hook.mjs', 'user-prompt-hook.mjs', 'subagent-hook.mjs', 'subagent-hook.mjs', 'stop-review-gate-hook.mjs', 'session-end-hook.mjs'];
-  return events.map((eventName, index) => ({ key: `plugin-hook-${index}`, currentHash: `${index}`.repeat(64), displayOrder: index, enabled: true, eventName, handlerType: 'command', isManaged: false, source: 'plugin', sourcePath: join(rootPath, 'hooks/hooks.json'), timeoutSec: eventName === 'stop' ? 900 : 5, trustStatus, pluginId: 'zcode-plugin-codex', command: `node "$PLUGIN_ROOT/hooks/${scripts[index]}"` }));
+  return events.map((eventName, index) => ({ key: `plugin-hook-${index}`, currentHash: `${index}`.repeat(64), displayOrder: index, enabled: true, eventName, handlerType: 'command', isManaged: false, source: 'plugin', sourcePath: join(rootPath, 'hooks/hooks.json'), timeoutSec: eventName === 'stop' ? 900 : 5, trustStatus, pluginId, command: `node "$PLUGIN_ROOT/hooks/${scripts[index]}"` }));
 }
 
 async function context({ hooks = hookMetadata(root), features = { hooks: false }, zcodeEnv = {}, codexEnv = {} } = {}) {
-  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'zpc-setup-workspace-'))); const dataRoot = await mkdtemp(join(tmpdir(), 'zpc-setup-data-')); const record = join(dataRoot, 'codex-requests.jsonl'); await writeFile(record, '');
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'zpc-setup-workspace-'))); const dataRoot = await mkdtemp(join(tmpdir(), 'zpc-setup-data-')); const record = join(dataRoot, 'codex-requests.jsonl'); const zcodeRecord = join(dataRoot, 'zcode-requests.jsonl'); await writeFile(record, ''); await writeFile(zcodeRecord, '');
   const configResult = { config: { features, unrelated: { preserved: true } }, origins: {}, layers: [{ name: { type: 'user', file: join(dataRoot, 'config.toml') }, version: 'version-1', config: { unrelated: { preserved: true } } }] };
   const hooksResult = { data: [{ cwd, errors: [], warnings: [], hooks }] };
-  return { cwd, dataRoot, record, options: { pluginRoot: root, dataRoot, cwd, reviewGate: undefined, env: { ...process.env, ZCODE_PATH: fakeZCode, FAKE_CODEX_RECORD: record, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configResult), FAKE_CODEX_HOOKS_RESULT: JSON.stringify(hooksResult), ...zcodeEnv, ...codexEnv }, codex: { executable: process.execPath, args: [fakeCodex], timeoutMs: 1_000 } } };
+  return { cwd, dataRoot, record, zcodeRecord, options: { pluginRoot: root, dataRoot, cwd, reviewGate: undefined, env: { ...process.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_CODEX_RECORD: record, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configResult), FAKE_CODEX_HOOKS_RESULT: JSON.stringify(hooksResult), ...zcodeEnv, ...codexEnv }, codex: { executable: process.execPath, args: [fakeCodex], timeoutMs: 1_000 } } };
 }
 
 test('setup uses current config/read, hooks/list and one atomic exact trust/features batch write', async () => {
@@ -53,12 +53,27 @@ test('setup uses current config/read, hooks/list and one atomic exact trust/feat
 test('already enabled and trusted hooks report ready without config writes', async () => {
   const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runSetup(ctx.options);
   assert.equal(report.status, 'ready'); const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'config/batchWrite'));
+  const zcodeCalls = (await readFile(ctx.zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.deepEqual(zcodeCalls.map((call) => call.method), ['session/create', 'session/stop']);
+});
+
+test('setup readiness ignores session/list and is proven by create plus cleanup', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true }, zcodeEnv: { FAKE_ZCODE_ERROR: 'session/list' } }); const report = await runSetup(ctx.options); assert.equal(report.status, 'ready');
+  const calls = (await readFile(ctx.zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'session/list')); assert.ok(calls.some((call) => call.method === 'session/create')); assert.ok(calls.some((call) => call.method === 'session/stop'));
+});
+
+test('setup selects only its qualified marketplace hooks from mixed hooks/list output', async () => {
+  const foreign = await mkdtemp(join(tmpdir(), 'foreign-hooks-')); await mkdir(join(foreign, 'hooks')); await writeFile(join(foreign, 'hooks/hooks.json'), '{}');
+  const own = hookMetadata(root); const other = hookMetadata(foreign, 'untrusted', 'other-plugin@someone').map((hook, index) => ({ ...hook, key: `other-${index}` }));
+  const user = { key: 'user-hook', currentHash: 'f'.repeat(64), displayOrder: 99, enabled: true, eventName: 'stop', handlerType: 'command', isManaged: false, source: 'user', timeoutSec: 5, trustStatus: 'untrusted', command: 'echo user' };
+  const ctx = await context({ hooks: [user, ...other, ...own] }); const report = await runSetup(ctx.options); assert.equal(report.status, 'restart-required', JSON.stringify(report));
+  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse); const batch = calls.find((call) => call.method === 'config/batchWrite'); const trust = batch.params.edits.find((edit) => edit.keyPath === 'hooks.state').value;
+  assert.deepEqual(Object.keys(trust).sort(), own.map((hook) => hook.key).sort()); assert.ok(!Object.hasOwn(trust, 'user-hook')); assert.ok(!Object.keys(trust).some((key) => key.startsWith('other-')));
 });
 
 test('setup rejects missing, outdated, unauthenticated and foreign/untrusted hook sources deterministically', async (t) => {
   await t.test('outdated', async () => { const ctx = await context(); const report = await runSetup({ ...ctx.options, dependencies: { discoverZCode: async () => { throw Object.assign(new Error('outdated'), { code: 'ZCODE_VERSION_UNSUPPORTED' }); } } }); assert.equal(report.status, 'outdated'); });
   await t.test('missing', async () => { const ctx = await context(); const report = await runSetup({ ...ctx.options, dependencies: { discoverZCode: async () => { throw Object.assign(new Error('missing'), { code: 'ZCODE_NOT_FOUND' }); } } }); assert.equal(report.status, 'missing'); });
-  await t.test('unauthenticated', async () => { const ctx = await context({ zcodeEnv: { FAKE_ZCODE_ERROR: 'session/list' } }); const report = await runSetup(ctx.options); assert.equal(report.status, 'unauthenticated'); assert.equal(report.auth.ready, false); });
+  await t.test('unauthenticated', async () => { const ctx = await context({ zcodeEnv: { FAKE_ZCODE_ERROR: 'session/create' } }); const report = await runSetup(ctx.options); assert.equal(report.status, 'unauthenticated'); assert.equal(report.auth.ready, false); });
   await t.test('untrusted-source', async () => { const foreign = await mkdtemp(join(tmpdir(), 'foreign-hooks-')); await mkdir(join(foreign, 'hooks')); await writeFile(join(foreign, 'hooks/hooks.json'), '{}'); const ctx = await context({ hooks: hookMetadata(foreign) }); const report = await runSetup(ctx.options); assert.equal(report.status, 'untrusted'); assert.ok(!(await readFile(ctx.record, 'utf8')).includes('config/batchWrite')); });
 });
 

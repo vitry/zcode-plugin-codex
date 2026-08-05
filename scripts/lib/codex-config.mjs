@@ -37,13 +37,20 @@ async function priorGateEnabled(workspaceDirectory) { try { const { readJsonFile
 async function trustedRoot(value) { let actual; let supplied; try { actual = await realpath(resolve(new URL('../..', import.meta.url).pathname)); supplied = await realpath(value); } catch (cause) { throw rootError(cause); } if (actual !== supplied) throw rootError(); return actual; }
 function rootError(cause) { return new PluginError('PLUGIN_ROOT_UNTRUSTED', 'PLUGIN_ROOT does not identify this active plugin installation.', { category: 'authorization', remedy: 'Invoke setup from the installed ZCode plugin.', ...(cause ? { cause } : {}) }); }
 async function validateHooks(result, cwd, pluginRoot, hooksPath) {
-  const entry = Array.isArray(result?.data) ? result.data.find((item) => item?.cwd === cwd) : null; if (!entry || !Array.isArray(entry.hooks) || entry.errors?.length || entry.hooks.length !== EXPECTED_EVENTS.size) return { ok: false, reason: 'missing-or-invalid-hooks' };
+  const entry = Array.isArray(result?.data) ? result.data.find((item) => item?.cwd === cwd) : null; if (!entry || !Array.isArray(entry.hooks) || entry.errors?.length) return { ok: false, reason: 'missing-or-invalid-hooks' };
+  const ownHooks = [];
+  for (const hook of entry.hooks) {
+    if (hook?.source !== 'plugin') continue;
+    let sourcePath; try { sourcePath = await realpath(hook.sourcePath); } catch { continue; }
+    if (sourcePath === hooksPath && sourcePath.startsWith(`${pluginRoot}/`) && typeof hook.pluginId === 'string' && /^zcode-plugin-codex@[A-Za-z0-9_-]+$/.test(hook.pluginId)) ownHooks.push({ ...hook, sourcePath });
+  }
+  if (ownHooks.length !== EXPECTED_EVENTS.size) return { ok: false, reason: 'missing-or-invalid-hooks' };
   const seen = new Set();
-  for (const hook of entry.hooks) { let sourcePath; try { sourcePath = await realpath(hook.sourcePath); } catch { return { ok: false, reason: 'hook-source-missing' }; } if (hook.source !== 'plugin' || sourcePath !== hooksPath || !sourcePath.startsWith(`${pluginRoot}/`) || hook.pluginId !== 'zcode-plugin-codex' || hook.handlerType !== 'command' || hook.command !== EXPECTED_COMMANDS.get(hook.eventName) || !hook.enabled || !EXPECTED_EVENTS.has(hook.eventName) || seen.has(hook.eventName) || typeof hook.key !== 'string' || !hook.key || control(hook.key) || typeof hook.currentHash !== 'string' || !/^[a-f0-9]{64}$/.test(hook.currentHash) || !['managed', 'untrusted', 'trusted', 'modified'].includes(hook.trustStatus)) return { ok: false, reason: 'foreign-or-outdated-hooks' }; seen.add(hook.eventName); }
-  return { ok: seen.size === EXPECTED_EVENTS.size, hooks: entry.hooks };
+  for (const hook of ownHooks) { if (hook.handlerType !== 'command' || hook.command !== EXPECTED_COMMANDS.get(hook.eventName) || !hook.enabled || !EXPECTED_EVENTS.has(hook.eventName) || seen.has(hook.eventName) || typeof hook.key !== 'string' || !hook.key || control(hook.key) || typeof hook.currentHash !== 'string' || !/^[a-f0-9]{64}$/.test(hook.currentHash) || !['managed', 'untrusted', 'trusted', 'modified'].includes(hook.trustStatus)) return { ok: false, reason: 'foreign-or-outdated-hooks' }; seen.add(hook.eventName); }
+  return { ok: seen.size === EXPECTED_EVENTS.size, hooks: ownHooks };
 }
 function userVersion(config) { const layer = Array.isArray(config?.layers) ? config.layers.find((item) => item?.name?.type === 'user') : null; if (typeof layer?.version !== 'string' || !layer.version) throw new PluginError('CODEX_CONFIG_VERSION_MISSING', 'Codex user config version is unavailable.', { category: 'protocol', remedy: 'Restart Codex and rerun $zcode:setup.' }); return layer.version; }
-async function probeAuth(input, discovery, cwd) { let client; try { client = await createZCodeClient({ workspace: cwd, launch: discovery.launch, env: input.env, requestTimeoutMs: 2_000 }); await client.listSessions(); return { ready: true }; } catch { return { ready: false }; } finally { await client?.close().catch(() => {}); } }
+async function probeAuth(input, discovery, cwd) { let client; let sessionId; try { client = await createZCodeClient({ workspace: cwd, launch: discovery.launch, env: input.env, requestTimeoutMs: 2_000 }); const snapshot = await client.createSession({ workspace: cwd }); sessionId = snapshot.session.sessionId; return { ready: true }; } catch { return { ready: false }; } finally { if (sessionId) await client?.stopSession(sessionId).catch(() => {}); await client?.close().catch(() => {}); } }
 
 async function startClient(options) {
   const executable = options.executable ?? 'codex'; const args = options.args ?? ['app-server']; const child = spawn(executable, args, { cwd: options.cwd, env: options.env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] }); let nextId = 1; const pending = new Map(); let stderr = ''; let closed = false; let stdoutBytes = 0; let buffer = Buffer.alloc(0);

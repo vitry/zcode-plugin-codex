@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
@@ -31,7 +32,6 @@ export function createIdentityStore({ dataRoot }) {
       const storage = await identityStorage(dataRoot, workspace);
       await withFileLock(storage.lockPath, async () => {
         for (const directory of [storage.callersDirectory, storage.gatesDirectory]) {
-          const { readdir, unlink } = await import('node:fs/promises');
           for (const name of await readdir(directory)) {
             if (!name.endsWith('.json')) continue;
             const path = join(directory, name);
@@ -44,23 +44,24 @@ export function createIdentityStore({ dataRoot }) {
     async createCallerContext(input) {
       validateCallerInput(input);
       const storage = await identityStorage(dataRoot, input.workspace);
-      const token = createToken();
-      const digest = tokenDigest(token);
-      const createdAt = toTimestamp(input.now);
-      const record = {
-        digest,
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        workspace: storage.workspacePath,
-        permissionMode: input.permissionMode,
-        createdAt: new Date(createdAt).toISOString(),
-        expiresAt: new Date(createdAt + CALLER_LIFETIME_MS).toISOString(),
-      };
+      const { token, digest, record } = callerRecord(input, storage.workspacePath);
       await withFileLock(storage.lockPath, () => atomicWriteJson(
         join(storage.callersDirectory, `${digest}.json`),
         record,
       ));
       return token;
+    },
+
+    /** Atomically starts one caller turn and revokes older turns for this exact session. @param {CallerContextInput} input */
+    async beginCallerTurn(input) {
+      validateCallerInput(input); const storage = await identityStorage(dataRoot, input.workspace); const { token, digest, record } = callerRecord(input, storage.workspacePath);
+      await withFileLock(storage.lockPath, async () => { await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId !== input.turnId); await atomicWriteJson(join(storage.callersDirectory, `${digest}.json`), record); }); return token;
+    },
+
+    /** Revokes every caller credential for one exact completed turn. @param {GateBaselineIdentity} input */
+    async endCallerTurn(input) {
+      validateTurnIdentity(input); const storage = await identityStorage(dataRoot, input.workspace);
+      await withFileLock(storage.lockPath, () => removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId === input.turnId));
     },
 
     /** @param {string} token @param {{ workspace: string, now?: Date | number | string }} expected */
@@ -303,6 +304,21 @@ async function authorizationRecordExists(path) {
   }
 }
 
+/** @param {CallerContextInput} input @param {string} workspacePath */
+function callerRecord(input, workspacePath) {
+  const token = createToken(); const digest = tokenDigest(token); const createdAt = toTimestamp(input.now);
+  return { token, digest, record: { digest, sessionId: input.sessionId, turnId: input.turnId, workspace: workspacePath, permissionMode: input.permissionMode, createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + CALLER_LIFETIME_MS).toISOString() } };
+}
+
+/** @param {string} directory @param {(record:any)=>boolean} predicate */
+async function removeCallerRecords(directory, predicate) {
+  for (const name of await readdir(directory)) {
+    if (!/^[a-f0-9]{64}\.json$/.test(name)) continue; const path = join(directory, name);
+    let record; try { record = await readJsonFile(path); } catch { continue; }
+    if (isCallerRecord(record) && predicate(record)) { try { await unlink(path); } catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code !== 'ENOENT') throw error; } }
+  }
+}
+
 function createToken() {
   return randomBytes(32).toString('base64url');
 }
@@ -332,6 +348,11 @@ function validateCallerInput(input) {
   if (!isPlainObject(input) || !isNonEmptyString(input.sessionId)
     || !isNonEmptyString(input.turnId) || !isNonEmptyString(input.workspace)
     || !PERMISSION_MODES.includes(input.permissionMode)) throw invalidIdentityInput();
+}
+
+/** @param {any} input */
+function validateTurnIdentity(input) {
+  if (!isPlainObject(input) || !isNonEmptyString(input.sessionId) || !isNonEmptyString(input.turnId) || !isNonEmptyString(input.workspace)) throw invalidIdentityInput();
 }
 
 /** @param {any} input @param {boolean} requireSnapshot */

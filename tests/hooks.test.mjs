@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import test from 'node:test';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
+import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createManagedZCodeClient, releaseManagedZCodeOwner } from '../scripts/lib/zcode-client.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { ensureZCodeBroker, reconcileBrokerOwnership } from '../scripts/zcode-broker.mjs';
@@ -56,6 +57,7 @@ async function workspace() {
 
 async function writeGateConfig(data, cwd, value) { const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); await mkdir(join(storage.directory, 'config'), { recursive: true }); await writeFile(join(storage.directory, 'config/review-gate.json'), JSON.stringify(value)); }
 function stopFields(input) { const copy = { ...input }; delete copy.prompt; return copy; }
+function callerToken(result) { return result.json?.hookSpecificOutput?.additionalContext?.match(/ZCODE_CALLER_CONTEXT=([A-Za-z0-9_-]+)/)?.[1]; }
 function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 
 test('hooks.json registers bounded native lifecycle hooks with no manifest field', async () => {
@@ -100,6 +102,24 @@ test('two sessions in one workspace get isolated caller capabilities, permission
   assert.ok(records.filter((record) => record.kind === 'baseline').every((record) => /^[a-f0-9]{64}$/.test(record.fingerprint)));
   const allStored = (await Promise.all((await jsonFiles(data)).map((path) => readFile(path, 'utf8')))).join('\n');
   for (const token of [ac, bc].map((value) => value.match(/ZCODE_CALLER_CONTEXT=([^\s]+)/)?.[1])) assert.ok(token && !allStored.includes(token));
+});
+
+test('caller authorization survives non-Git workspaces while gate baseline stays unavailable', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'zpc-nongit-')); const data = await mkdtemp(join(tmpdir(), 'zpc-hooks-data-')); const env = { PLUGIN_DATA: data };
+  await runHook('session-lifecycle-hook.mjs', { session_id: 'nongit', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+  const prompt = await runHook('user-prompt-hook.mjs', { session_id: 'nongit', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'work' }, env);
+  assert.equal(prompt.code, 0); assert.match(prompt.json.hookSpecificOutput.additionalContext, /ZCODE_CALLER_CONTEXT=/);
+  const stop = await runHook('stop-review-gate-hook.mjs', { session_id: 'nongit', turn_id: 'turn', cwd, hook_event_name: 'Stop', transcript_path: null, model: 'gpt', permission_mode: 'default', stop_hook_active: false, last_assistant_message: 'done' }, env); assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
+});
+
+test('unborn repositories get baselines and full untracked contents affect fingerprints', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'zpc-unborn-')); const data = await mkdtemp(join(tmpdir(), 'zpc-hooks-data-')); const env = { PLUGIN_DATA: data };
+  await new Promise((resolvePromise, reject) => { const child = spawn('git', ['init', '-q'], { cwd }); child.once('error', reject); child.once('exit', (code) => code === 0 ? resolvePromise() : reject(new Error(`git init ${code}`))); });
+  const bytes = Buffer.alloc(384 * 1024, 65); await writeFile(join(cwd, 'large.bin'), bytes); await runHook('session-lifecycle-hook.mjs', { session_id: 'unborn', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+  const prompt = await runHook('user-prompt-hook.mjs', { session_id: 'unborn', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'work' }, env); assert.equal(prompt.code, 0); assert.match(prompt.json.hookSpecificOutput.additionalContext, /ZCODE_CALLER_CONTEXT=/);
+  bytes.fill(66, 160 * 1024, 224 * 1024); await writeFile(join(cwd, 'large.bin'), bytes);
+  const stop = await runHook('stop-review-gate-hook.mjs', { session_id: 'unborn', turn_id: 'turn', cwd, hook_event_name: 'Stop', transcript_path: null, model: 'gpt', permission_mode: 'default', stop_hook_active: false, last_assistant_message: 'done' }, env); assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
+  assert.equal((await jsonFiles(join(data, 'workspaces'))).filter((path) => path.includes('/gate-runs/')).length, 1, 'same-size middle-only untracked edits must change the fingerprint');
 });
 
 test('SubagentStart marks forwarding suppression without changing parent permission snapshot', async () => {
@@ -200,6 +220,29 @@ test('terminal completion context is routed durably once to its exact owner', as
   assert.match(first.json.hookSpecificOutput.additionalContext, new RegExp(job.id)); assert.doesNotMatch(second.json.hookSpecificOutput.additionalContext, new RegExp(job.id));
 });
 
+test('caller contexts end at the earlier turn boundary without crossing sibling sessions', async (t) => {
+  await t.test('a new prompt revokes only older turns from the same session', async () => {
+    const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+    for (const session_id of ['owner', 'sibling']) await runHook('session-lifecycle-hook.mjs', { session_id, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+    const first = await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 't1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'one' }, env); const sibling = await runHook('user-prompt-hook.mjs', { session_id: 'sibling', turn_id: 's1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'sibling' }, env); const second = await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 't2', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'two' }, env);
+    await assert.rejects(identity.consumeCallerContext(callerToken(first), { workspace: cwd }), { code: 'CALLER_CONTEXT_INVALID' }); assert.equal((await identity.consumeCallerContext(callerToken(second), { workspace: cwd })).turnId, 't2'); assert.equal((await identity.consumeCallerContext(callerToken(sibling), { workspace: cwd })).sessionId, 'sibling');
+  });
+  for (const mode of ['disabled', 'setup-not-ready', 'allow']) await t.test(`${mode} Stop ends the current caller turn`, async () => {
+    const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+    if (mode !== 'disabled') await writeGateConfig(data, cwd, { enabled: true, setupReady: mode === 'allow', ...(mode === 'setup-not-ready' ? { reason: 'unauthenticated' } : {}) });
+    const promptInput = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; const prompt = await runHook('user-prompt-hook.mjs', promptInput, env); await writeFile(join(cwd, 'tracked.txt'), `${mode}\n`);
+    const stop = await runHook('stop-review-gate-hook.mjs', { ...stopFields(promptInput), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'ALLOW: clean' }); assert.notEqual(stop.json?.decision, 'block'); await assert.rejects(identity.consumeCallerContext(callerToken(prompt), { workspace: cwd }), { code: 'CALLER_CONTEXT_INVALID' });
+  });
+  await t.test('BLOCK keeps the caller turn reusable for continuation', async () => {
+    const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); await writeGateConfig(data, cwd, { enabled: true, setupReady: true }); await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+    const promptInput = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; const prompt = await runHook('user-prompt-hook.mjs', promptInput, env); await writeFile(join(cwd, 'tracked.txt'), 'blocked\n'); const stop = await runHook('stop-review-gate-hook.mjs', { ...stopFields(promptInput), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'BLOCK: continue' }); assert.equal(stop.json.decision, 'block'); assert.equal((await identity.consumeCallerContext(callerToken(prompt), { workspace: cwd })).turnId, 'turn');
+  });
+  await t.test('a concurrent duplicate cannot revoke a turn while the real review blocks', async () => {
+    const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); await writeGateConfig(data, cwd, { enabled: true, setupReady: true }); await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+    const promptInput = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; const prompt = await runHook('user-prompt-hook.mjs', promptInput, env); await writeFile(join(cwd, 'tracked.txt'), 'blocked concurrent\n'); const stopInput = { ...stopFields(promptInput), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }; const results = await Promise.all([runHook('stop-review-gate-hook.mjs', stopInput, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'BLOCK: continue' }), runHook('stop-review-gate-hook.mjs', stopInput, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'BLOCK: continue' })]); assert.equal(results.filter((result) => result.json?.decision === 'block').length, 1); assert.equal((await identity.consumeCallerContext(callerToken(prompt), { workspace: cwd })).turnId, 'turn');
+  });
+});
+
 test('Stop suppresses continuation, forwarding and external sessions before starting ZCode', async () => {
   const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, '');
   const externalPrompt = await runHook('user-prompt-hook.mjs', { session_id: 'external', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'x' }, env); assert.deepEqual(externalPrompt.json, {});
@@ -228,7 +271,7 @@ test('Stop gate skips unchanged and atomically consumes exact changed baseline',
 });
 
 test('Stop gate suppresses continuation/nested runs, fails open when setup is not ready, and conservatively blocks bad reviews', async (t) => {
-  for (const [name, fake, extra, expected] of [['allow', 'ALLOW: looks good', {}, {}], ['block', 'BLOCK: fix issue', {}, { decision: 'block', reason: 'fix issue' }], ['empty', '__EMPTY__', {}, { decision: 'block' }], ['malformed', 'maybe', {}, { decision: 'block' }], ['failure', 'unused', { FAKE_ZCODE_ERROR: 'session/send' }, { decision: 'block' }], ['timeout', 'unused', { FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' }, { decision: 'block' }]]) await t.test(name, async () => {
+  for (const [name, fake, extra, expected] of [['allow', 'ALLOW: looks good', {}, {}], ['block', 'BLOCK: fix issue', {}, { decision: 'block', reason: 'fix issue' }], ['empty', '__EMPTY__', {}, { decision: 'block' }], ['malformed', 'maybe', {}, { decision: 'block' }], ['failure', 'unused', { FAKE_ZCODE_ERROR: 'session/send' }, { decision: 'block' }], ['read-failure', 'unused', { FAKE_ZCODE_ERROR: 'session/read' }, { decision: 'block' }], ['timeout', 'unused', { FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' }, { decision: 'block' }]]) await t.test(name, async () => {
     const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, ''); await writeGateConfig(data, cwd, { enabled: true, setupReady: true });
     await runHook('session-lifecycle-hook.mjs', { session_id: 's', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
     const base = { session_id: 's', turn_id: 't', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' };
@@ -238,7 +281,7 @@ test('Stop gate suppresses continuation/nested runs, fails open when setup is no
     const result = await runHook(script, { ...stop, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_GATE_RESULT: fake, ...extra }, { absolute: name === 'timeout' });
     assert.equal(result.code, 0); if (expected.decision) assert.equal(result.json.decision, expected.decision); else assert.deepEqual(result.json, expected);
     if (expected.reason) assert.equal(result.json.reason, expected.reason); if (result.json.reason) assert.ok(result.json.reason.length <= 1000);
-    if (name === 'failure' || name === 'timeout') {
+    if (['failure', 'read-failure', 'timeout'].includes(name)) {
       const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
       assert.ok(calls.some((call) => call.method === 'session/stop'), `${name} must stop its created review session`);
     }
@@ -250,4 +293,17 @@ test('Stop gate suppresses continuation/nested runs, fails open when setup is no
   const stop = stopFields(base);
   const notReady = await runHook('stop-review-gate-hook.mjs', { ...stop, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, env);
   assert.equal(notReady.code, 0); assert.notEqual(notReady.json.decision, 'block'); assert.match(notReady.json.systemMessage, /\$zcode:setup/);
+});
+
+test('Stop rechecks stale setup readiness before session creation and fails open', async (t) => {
+  for (const scenario of [
+    { name: 'missing', extra: { FAKE_GATE_DISCOVERY_ERROR: 'ZCODE_NOT_FOUND' }, fixture: true, reason: 'ZCODE_NOT_FOUND' },
+    { name: 'outdated', extra: { FAKE_ZCODE_VERSION: '0.15.0' }, fixture: false, reason: 'ZCODE_VERSION_UNSUPPORTED' },
+    { name: 'unauthenticated', extra: { FAKE_ZCODE_ERROR: 'session/create' }, fixture: false, reason: 'ZCODE_REQUEST_FAILED' },
+  ]) await t.test(scenario.name, async () => {
+    const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, ''); await writeGateConfig(data, cwd, { enabled: true, setupReady: true, status: 'ready' }); await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+    const prompt = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; await runHook('user-prompt-hook.mjs', prompt, env); await writeFile(join(cwd, 'tracked.txt'), `${scenario.name}\n`); const script = scenario.fixture ? join(root, 'tests/fixtures/stop-gate-with-timeout.mjs') : 'stop-review-gate-hook.mjs'; const result = await runHook(script, { ...stopFields(prompt), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: record, ...scenario.extra }, { absolute: scenario.fixture });
+    assert.equal(result.code, 0); assert.notEqual(result.json?.decision, 'block'); assert.match(result.json.systemMessage, /\$zcode:setup/); const runs = (await jsonFiles(join(data, 'workspaces'))).filter((path) => path.includes('/gate-runs/')); assert.equal(runs.length, 1); const snapshot = JSON.parse(await readFile(runs[0], 'utf8')); assert.equal(snapshot.status, 'skipped_setup_not_ready'); assert.equal(snapshot.reason, scenario.reason);
+    const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'session/send'));
+  });
 });
