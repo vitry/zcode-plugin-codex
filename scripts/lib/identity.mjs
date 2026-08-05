@@ -83,6 +83,7 @@ export function createIdentityStore({ dataRoot }) {
         workspace: storage.workspacePath,
         operation: input.operation,
         permissionSnapshot: input.permissionSnapshot,
+        ...(input.specDigest === undefined ? {} : { specDigest: input.specDigest }),
         createdAt: new Date().toISOString(),
         consumedAt: null,
       };
@@ -115,6 +116,7 @@ export function createIdentityStore({ dataRoot }) {
         }
         /** @type {(keyof ExecutionCapabilityExpected)[]} */
         const identityFields = ['jobId', 'ownerSessionId', 'operation'];
+        if (expected.specDigest !== undefined) identityFields.push('specDigest');
         for (const field of identityFields) {
           if (!safeEqual(record[field], expected[field])) {
             throw authorizationError(
@@ -288,6 +290,8 @@ function validateExecutionInput(input, requireSnapshot) {
   if (!isPlainObject(input) || !isNonEmptyString(input.jobId)
     || !isNonEmptyString(input.ownerSessionId) || !isNonEmptyString(input.workspace)
     || !EXECUTION_OPERATIONS.includes(input.operation)
+    || input.specDigest !== undefined && !isDigest(input.specDigest)
+    || input.operation === 'run-reserved-job' && !isDigest(input.specDigest)
     || requireSnapshot && !isPlainJsonObject(input.permissionSnapshot)) throw invalidIdentityInput();
 }
 
@@ -338,6 +342,7 @@ function isExecutionRecord(record) {
   return isPlainObject(record) && isDigest(record.digest) && isNonEmptyString(record.jobId)
     && isNonEmptyString(record.ownerSessionId) && isNonEmptyString(record.workspace)
     && EXECUTION_OPERATIONS.includes(record.operation) && isPlainJsonObject(record.permissionSnapshot)
+    && (!('specDigest' in record) || isDigest(record.specDigest))
     && isDate(record.createdAt) && (record.consumedAt === null || isDate(record.consumedAt));
 }
 
@@ -428,6 +433,7 @@ function authorizationError(code, message, remedy = 'Use the exact credential is
  * @property {string} ownerSessionId
  * @property {string} workspace
  * @property {string} operation
+ * @property {string} [specDigest]
  */
 
 /**

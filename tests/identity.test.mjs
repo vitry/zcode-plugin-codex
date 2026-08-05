@@ -159,6 +159,7 @@ test('execution capability is exact-match and atomically single-use', async () =
     ownerSessionId: 'session-a',
     workspace: workspaceA,
     operation: 'continue',
+    specDigest: 'a'.repeat(64),
   };
   const token = await identity.createExecutionCapability({
     ...expected,
@@ -196,6 +197,7 @@ test('execution capabilities cannot be double-consumed across child processes', 
     ownerSessionId: 'session-a',
     workspace: workspaceA,
     operation: 'continue',
+    specDigest: 'b'.repeat(64),
   };
   const token = await identity.createExecutionCapability({
     ...expected,

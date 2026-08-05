@@ -105,3 +105,11 @@ test('executor failure cannot steal cancellation terminal ownership', async () =
   assert.equal((await cancellation).status, 'cancelled');
   assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
 });
+
+test('artifact directory fsync failure fails the job before success', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const client = { createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, send: async () => ({}), waitForCompletion: async () => ({}), readSession: async () => ({ messages: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {} };
+  const error = Object.assign(new Error('disk sync failed'), { code: 'EIO' });
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', syncDirectory: async () => { throw error; } }), { code: 'ARTIFACT_WRITE_FAILED' });
+  assert.equal((await store.readJob(workspace, job.id)).status, 'failed');
+});

@@ -9,11 +9,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["severity", "file", "line", "evidence", "fix"],
+        "required": ["severity", "file", "evidence", "fix"],
         "properties": {
           "severity": { "enum": ["critical", "high", "medium", "low"] },
           "file": { "type": "string" },
-          "line": { "type": ["integer", "null"], "minimum": 1 },
+          "line": { "type": "integer", "minimum": 1 },
           "evidence": { "type": "string" },
           "fix": { "type": "string" }
         }

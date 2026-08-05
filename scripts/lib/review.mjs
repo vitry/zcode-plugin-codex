@@ -1,11 +1,11 @@
 import { constants } from 'node:fs';
-import { open, rename, chmod, unlink } from 'node:fs/promises';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { open, rename, chmod, lstat, realpath, unlink } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 import { PluginError } from './errors.mjs';
 import { resolveModel } from './args.mjs';
-import { ensurePrivateDirectory } from './fs.mjs';
+import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -28,7 +28,7 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
@@ -39,7 +39,7 @@ export async function executeJob(input) {
       const gitFacts = await collectGitFacts({ workspace, scope: input.scope, base: input.base });
       prompt = await buildPrompt({ command: job.command, focus: input.focus, gitFacts });
     } else prompt = await buildPrompt({ command: 'rescue', task: input.task });
-    const promptArtifact = await writeArtifact({ dataRoot, workspace, directory: 'prompts', jobId: job.id, contents: prompt });
+    const promptArtifact = await writeArtifact({ dataRoot, workspace, directory: 'prompts', jobId: job.id, contents: prompt }, { syncDirectory: input.syncDirectory });
     let snapshot;
     if (input.resumeSessionId) {
       await input.onBeforeResume?.(job);
@@ -58,8 +58,8 @@ export async function executeJob(input) {
     await client.send(sessionId, prompt);
     await client.waitForCompletion(sessionId);
     const finalSnapshot = await client.readSession(sessionId);
-    const result = finalResult(finalSnapshot);
-    const resultArtifact = await writeArtifact({ dataRoot, workspace, directory: 'results', jobId: job.id, contents: result });
+    const result = extractFinalResult(finalSnapshot, job.command);
+    const resultArtifact = await writeArtifact({ dataRoot, workspace, directory: 'results', jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
     const succeeded = await input.store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
     return { job: succeeded, result };
   } catch (error) {
@@ -74,37 +74,91 @@ export async function executeJob(input) {
 /** @param {{dataRoot:string,workspace:string,artifact:string}} input */
 export async function readResultArtifact({ dataRoot, workspace, artifact }) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
-  const root = resolve(storage.directory, 'results'); const path = resolve(storage.directory, artifact);
-  if (path !== root && !path.startsWith(`${root}${sep}`)) throw artifactError();
-  let handle;
-  try { handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); const info = await handle.stat(); if (!info.isFile()) throw artifactError(); return await handle.readFile('utf8'); }
-  catch (error) { if (error instanceof PluginError) throw error; throw new PluginError('RESULT_READ_FAILED', 'Could not safely read the result artifact.', { category: 'storage', remedy: 'Inspect the private workspace result store.', cause: error }); }
+  const pieces = artifact.split(/[\\/]/); if (pieces.length !== 2 || pieces[0] !== 'results' || !pieces[1]) throw artifactError();
+  try {
+    return await withFileLock(join(storage.directory, '.artifacts.lock'), async () => {
+      const root = await secureArtifactRoot(storage.directory, 'results', false); const path = join(root, pieces[1]);
+      const pathInfo = await lstat(path); if (pathInfo.isSymbolicLink() || !pathInfo.isFile()) throw artifactError();
+      if (await realpath(dirname(path)) !== root) throw artifactError();
+      const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try { const before = await handle.stat(); const contents = await handle.readFile('utf8'); const after = await lstat(path); if (after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) throw artifactError(); return contents; }
+      finally { await handle.close(); }
+    });
+  } catch (error) { throw new PluginError('RESULT_READ_FAILED', 'Could not safely read the result artifact.', { category: 'storage', remedy: 'Inspect the private workspace result store.', cause: error }); }
+}
+
+/** @param {{dataRoot:string,workspace:string,directory:string,jobId:string,contents:string}} input @param {{syncDirectory?:(path:string)=>Promise<void>}} [dependencies] */
+async function writeArtifact({ dataRoot, workspace, directory, jobId, contents }, dependencies = {}) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const syncDirectory = dependencies.syncDirectory ?? defaultSyncDirectory;
+  const relative = `${directory}/${jobId}.md`; let temporary; /** @type {import('node:fs/promises').FileHandle|undefined} */ let handle;
+  try {
+    return await withFileLock(join(storage.directory, '.artifacts.lock'), async () => {
+      const targetDirectory = await secureArtifactRoot(storage.directory, directory, true); const path = join(targetDirectory, `${jobId}.md`);
+      try { if ((await lstat(path)).isSymbolicLink()) throw artifactError(); } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
+      temporary = join(targetDirectory, `.${basename(path)}.${randomBytes(8).toString('hex')}.tmp`);
+      handle = await open(temporary, 'wx', 0o600); await handle.writeFile(contents, 'utf8'); await handle.sync(); const sourceInfo = await handle.stat(); await handle.close(); handle = undefined;
+      if (await realpath(targetDirectory) !== targetDirectory) throw artifactError();
+      await rename(temporary, path); temporary = undefined; const finalInfo = await lstat(path);
+      if (finalInfo.isSymbolicLink() || !finalInfo.isFile() || finalInfo.dev !== sourceInfo.dev || finalInfo.ino !== sourceInfo.ino || await realpath(dirname(path)) !== targetDirectory) throw artifactError();
+      await chmod(path, 0o600); await syncDirectory(targetDirectory); return relative;
+    });
+  } catch (error) { await closeFileHandle(handle); if (temporary) await unlink(temporary).catch(() => {}); throw new PluginError('ARTIFACT_WRITE_FAILED', 'Could not durably write the private artifact.', { category: 'storage', remedy: 'Check plugin data storage and retry.', cause: error }); }
+}
+
+/** @param {import('node:fs/promises').FileHandle|undefined} handle */
+async function closeFileHandle(handle) { await handle?.close().catch(() => {}); }
+
+/** @param {string} storageDirectory @param {string} directory @param {boolean} create */
+async function secureArtifactRoot(storageDirectory, directory, create) {
+  const storageRoot = await realpath(resolve(storageDirectory)); const lexicalRoot = join(storageDirectory, directory); let info;
+  try { info = await lstat(lexicalRoot); } catch (error) { if (!create || errorCode(error) !== 'ENOENT') throw error; await ensurePrivateDirectory(lexicalRoot); info = await lstat(lexicalRoot); }
+  if (info.isSymbolicLink() || !info.isDirectory()) throw artifactError();
+  const root = await realpath(lexicalRoot); if (await realpath(dirname(root)) !== storageRoot) throw artifactError();
+  return root;
+}
+/** @param {string} path */
+async function defaultSyncDirectory(path) {
+  /** @type {import('node:fs/promises').FileHandle|undefined} */ let handle;
+  try { handle = await open(path, 'r'); await handle.sync(); }
+  catch (error) { if (!['EINVAL', 'ENOTSUP'].includes(errorCode(error) ?? '')) throw error; }
   finally { await handle?.close(); }
 }
 
-/** @param {{dataRoot:string,workspace:string,directory:string,jobId:string,contents:string}} input */
-async function writeArtifact({ dataRoot, workspace, directory, jobId, contents }) {
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const targetDirectory = join(storage.directory, directory);
-  await ensurePrivateDirectory(targetDirectory);
-  const relative = `${directory}/${jobId}.md`; const path = join(storage.directory, relative);
-  const temporary = join(targetDirectory, `.${basename(path)}.${randomBytes(8).toString('hex')}.tmp`);
-  let handle;
-  try { handle = await open(temporary, 'wx', 0o600); await handle.writeFile(contents, 'utf8'); await handle.sync(); await handle.close(); handle = undefined; await rename(temporary, path); await chmod(path, 0o600); const directoryHandle = await open(dirname(path), 'r'); await directoryHandle.sync().catch(() => {}); await directoryHandle.close(); return relative; }
-  catch (error) { await handle?.close().catch(() => {}); await unlink(temporary).catch(() => {}); throw new PluginError('ARTIFACT_WRITE_FAILED', 'Could not durably write the private artifact.', { category: 'storage', remedy: 'Check plugin data storage and retry.', cause: error }); }
-}
-
-/** @param {any} snapshot */
-function finalResult(snapshot) {
+/** @param {any} snapshot @param {string} command */
+export function extractFinalResult(snapshot, command) {
   const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
-  const assistant = [...messages].reverse().find((message) => message?.info?.role === 'assistant');
-  const parts = assistant?.parts?.filter((/** @type {any} */ part) => typeof part?.text === 'string').map((/** @type {any} */ part) => part.text) ?? [];
+  const assistant = [...messages].reverse().find((message) => message?.info?.role === 'assistant' && !['hidden', 'debug'].includes(message?.info?.semantics?.uiVisibility));
+  const parts = assistant?.parts?.filter((/** @type {any} */ part) => part?.type === 'text' && part.ignored !== true && typeof part.text === 'string' && part.text.length > 0).map((/** @type {any} */ part) => part.text) ?? [];
   if (!parts.length) throw new PluginError('ZCODE_RESULT_MISSING', 'ZCode completed without a final result.', { category: 'protocol', remedy: 'Inspect the ZCode session and retry.' });
-  return parts.join('\n');
+  const text = parts.join('\n');
+  if (command !== 'review' && command !== 'adversarial-review') return text;
+  let structured = assistant?.info?.structured;
+  if (structured === undefined) {
+    try { structured = JSON.parse(text); } catch (error) { throw invalidReviewResult(error); }
+  }
+  if (!validReviewOutput(structured)) throw invalidReviewResult();
+  return `${JSON.stringify(structured, null, 2)}\n`;
 }
+/** @param {unknown} [cause] */
+function invalidReviewResult(cause) { return new PluginError('REVIEW_RESULT_INVALID', 'ZCode review output failed the required findings schema.', { category: 'protocol', remedy: 'Retry the review with a compatible ZCode model.', ...(cause ? { cause } : {}) }); }
+/** @param {any} value */
+function validReviewOutput(value) {
+  if (!plainObject(value) || Object.keys(value).some((key) => key !== 'findings') || !Array.isArray(value.findings)) return false;
+  return value.findings.every((/** @type {any} */ finding) => plainObject(finding)
+    && Object.keys(finding).every((key) => ['severity', 'file', 'line', 'evidence', 'fix'].includes(key))
+    && ['severity', 'file', 'evidence', 'fix'].every((key) => Object.hasOwn(finding, key))
+    && ['critical', 'high', 'medium', 'low'].includes(finding.severity)
+    && [finding.file, finding.evidence, finding.fix].every((item) => typeof item === 'string')
+    && (finding.line === undefined || Number.isSafeInteger(finding.line) && finding.line >= 1));
+}
+/** @param {unknown} value @returns {value is Record<string,any>} */
+function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 /** @param {any} response */
 function validResponse(response) { return response && typeof response === 'object' && ['allow', 'deny'].includes(response.decision); }
 /** @param {unknown} error */
 function safeError(error) { return { message: error instanceof Error ? error.message.slice(0, 2048) : 'Unknown execution failure' }; }
+/** @param {unknown} error */
+function errorCode(error) { return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined; }
 /** @param {any} left @param {any} right */
 function sameModel(left, right) { return left?.providerId === right?.providerId && left?.modelId === right?.modelId && (left?.variant ?? '') === (right?.variant ?? ''); }
 function artifactError() { return new PluginError('RESULT_ARTIFACT_INVALID', 'Result artifact path is outside the private result store.', { category: 'storage', remedy: 'Restore the job record with a scoped result artifact.' }); }

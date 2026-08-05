@@ -10,49 +10,51 @@ function rejects(argv, code = 'ARGUMENT_INVALID') {
 }
 
 test('review and adversarial-review parse their exact public contracts', () => {
-  assert.deepEqual(parseArgs(['review', '--wait', '--base', 'main', '--scope', 'branch', '--caller-context', 'ctx']), {
-    command: 'review', options: { execution: 'wait', base: 'main', scope: 'branch', callerContext: 'ctx' }, positionals: [],
+  assert.deepEqual(parseArgs(['review', '--wait', '--base', 'main', '--scope', 'branch']), {
+    command: 'review', options: { execution: 'wait', base: 'main', scope: 'branch' }, positionals: [],
   });
-  assert.deepEqual(parseArgs(['adversarial-review', '--background', 'focus', 'on', 'auth', '--caller-context', 'ctx']), {
-    command: 'adversarial-review', options: { execution: 'background', scope: 'auto', callerContext: 'ctx' }, positionals: ['focus', 'on', 'auth'],
+  assert.deepEqual(parseArgs(['adversarial-review', '--background', 'focus', 'on', 'auth']), {
+    command: 'adversarial-review', options: { execution: 'background', scope: 'auto' }, positionals: ['focus', 'on', 'auth'],
   });
 });
 
 test('rescue defaults to foreground and enforces task, mode, model and effort contracts', () => {
-  assert.deepEqual(parseArgs(['rescue', '--fresh', '--model', 'openai/gpt-5', '--effort', 'xhigh', '--caller-context', 'ctx', 'repair', 'tests']), {
-    command: 'rescue', options: { execution: 'foreground', resume: 'fresh', model: 'openai/gpt-5', effort: 'xhigh', callerContext: 'ctx' }, positionals: ['repair', 'tests'],
+  assert.deepEqual(parseArgs(['rescue', '--fresh', '--model', 'openai/gpt-5', '--effort', 'xhigh', 'repair', 'tests']), {
+    command: 'rescue', options: { execution: 'foreground', resume: 'fresh', model: 'openai/gpt-5', effort: 'xhigh' }, positionals: ['repair', 'tests'],
   });
-  rejects(['rescue', '--caller-context', 'ctx']);
-  rejects(['rescue', '--wait', '--background', '--caller-context', 'ctx', 'task']);
-  rejects(['rescue', '--resume', '--fresh', '--caller-context', 'ctx', 'task']);
-  rejects(['rescue', '--effort', 'ultra', '--caller-context', 'ctx', 'task']);
-  rejects(['rescue', '--model', 'spark', '--caller-context', 'ctx', 'task'], 'MODEL_SPARK_FORBIDDEN');
-  assert.equal(parseArgs(['rescue', '--effort', 'HIGH', '--caller-context', '-opaque', 'task']).options.effort, 'high');
+  rejects(['rescue']);
+  rejects(['rescue', '--wait', '--background', 'task']);
+  rejects(['rescue', '--resume', '--fresh', 'task']);
+  rejects(['rescue', '--effort', 'ultra', 'task']);
+  rejects(['rescue', '--model', 'spark', 'task'], 'MODEL_SPARK_FORBIDDEN');
+  assert.equal(parseArgs(['rescue', '--effort', 'HIGH', 'task']).options.effort, 'high');
 });
 
 test('status timeout and ownership selection flags fail closed', () => {
-  assert.deepEqual(parseArgs(['status', 'a'.repeat(64), '--wait', '--caller-context', 'ctx']), {
-    command: 'status', options: { wait: true, timeoutMs: 240000, all: false, callerContext: 'ctx' }, positionals: ['a'.repeat(64)],
+  assert.deepEqual(parseArgs(['status', 'a'.repeat(64), '--wait']), {
+    command: 'status', options: { wait: true, timeoutMs: 240000, all: false }, positionals: ['a'.repeat(64)],
   });
-  rejects(['status', '--wait', '--caller-context', 'ctx']);
-  rejects(['status', '--timeout-ms', '10', '--caller-context', 'ctx']);
-  rejects(['status', 'a'.repeat(64), '--all', '--caller-context', 'ctx']);
-  rejects(['status', 'a'.repeat(64), '--wait', '--timeout-ms', '-1', '--caller-context', 'ctx']);
-  rejects(['status', 'a'.repeat(64), '--wait', '--timeout-ms', '9007199254740992', '--caller-context', 'ctx']);
+  rejects(['status', '--wait']);
+  rejects(['status', '--timeout-ms', '10']);
+  rejects(['status', 'a'.repeat(64), '--all']);
+  rejects(['status', 'a'.repeat(64), '--wait', '--timeout-ms', '-1']);
+  rejects(['status', 'a'.repeat(64), '--wait', '--timeout-ms', '9007199254740992']);
 });
 
 test('result/cancel and private entry point have narrow identities', () => {
-  assert.equal(parseArgs(['result', '--caller-context', 'ctx']).command, 'result');
-  assert.deepEqual(parseArgs(['run-reserved-job', 'a'.repeat(64), '--execution-capability', 'cap']), {
-    command: 'run-reserved-job', options: { executionCapability: 'cap' }, positionals: ['a'.repeat(64)],
+  assert.equal(parseArgs(['result']).command, 'result');
+  assert.deepEqual(parseArgs(['run-reserved-job', 'a'.repeat(64)]), {
+    command: 'run-reserved-job', options: {}, positionals: ['a'.repeat(64)],
   });
-  rejects(['run-reserved-job', 'a'.repeat(64), '--execution-capability', 'cap', '--caller-context', 'ctx']);
+  rejects(['run-reserved-job', 'a'.repeat(64), '--execution-capability', 'cap']);
+  rejects(['review', '--caller-context', 'ctx']);
 });
 
 test('unknown commands, flags, duplicate scalars and removed surfaces are rejected', () => {
   for (const argv of [
     ['spark'], ['transfer'], ['setup'], ['review', '--force'], ['review', '--prompt-file', 'x'],
     ['review', '--write'], ['review', '--wat'], ['review', '--base', 'a', '--base', 'b'],
+    ['review', '--base', '--force'], ['rescue', '--model', '--write', 'task'],
   ]) rejects(argv);
 });
 

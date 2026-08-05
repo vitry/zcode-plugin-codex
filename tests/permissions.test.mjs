@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { decidePermission } from '../scripts/lib/review.mjs';
+import { decidePermission, extractFinalResult } from '../scripts/lib/review.mjs';
 
 const options = [
   { optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } },
@@ -34,4 +34,40 @@ test('permission decisions choose only a response actually offered by ZCode', ()
   assert.deepEqual(decidePermission(denyOnly, { permissionMode: 'workspace-write' }, 'rescue'), { decision: 'deny' });
   assert.throws(() => decidePermission({ ...request('low'), options: [] }, { permissionMode: 'workspace-write' }, 'rescue'), { code: 'PERMISSION_DENY_UNAVAILABLE' });
   assert.throws(() => decidePermission({ ...request('low'), options: [{ response: { decision: 'mystery' } }] }, { permissionMode: 'workspace-write' }, 'rescue'), { code: 'PERMISSION_DENY_UNAVAILABLE' });
+});
+
+/** @param {any[]} parts @param {unknown} [structured] @param {unknown} [semantics] */
+function assistant(parts, structured, semantics) {
+  return { info: { role: 'assistant', ...(structured === undefined ? {} : { structured }), ...(semantics === undefined ? {} : { semantics }) }, parts };
+}
+
+test('review result prefers valid structured findings anchored by visible final text', () => {
+  const structured = { findings: [{ severity: 'high', file: 'src/a.js', line: 7, evidence: 'boom', fix: 'repair' }] };
+  const snapshot = { messages: [assistant([
+    { type: 'reasoning', text: 'secret chain' },
+    { type: 'text', text: 'ignored', ignored: true },
+    { type: 'text', text: '{"findings":[]}' },
+  ], structured)] };
+  assert.equal(extractFinalResult(snapshot, 'review'), `${JSON.stringify(structured, null, 2)}\n`);
+});
+
+test('review falls back to schema-valid visible JSON text and line is optional', () => {
+  const value = { findings: [{ severity: 'low', file: 'a.js', evidence: 'e', fix: 'f' }] };
+  assert.equal(extractFinalResult({ messages: [assistant([{ type: 'text', text: JSON.stringify(value) }])] }, 'adversarial-review'), `${JSON.stringify(value, null, 2)}\n`);
+});
+
+test('reasoning-only, hidden and invalid structured results fail closed', () => {
+  assert.throws(() => extractFinalResult({ messages: [assistant([{ type: 'reasoning', text: 'done' }])] }, 'rescue'), { code: 'ZCODE_RESULT_MISSING' });
+  assert.throws(() => extractFinalResult({ messages: [assistant([{ type: 'text', text: 'done' }], undefined, { uiVisibility: 'hidden' })] }, 'rescue'), { code: 'ZCODE_RESULT_MISSING' });
+  assert.throws(() => extractFinalResult({ messages: [assistant([{ type: 'text', text: '{"findings":[]}' }], { findings: [{ severity: 'bogus' }] })] }, 'review'), { code: 'REVIEW_RESULT_INVALID' });
+});
+
+test('final result skips hidden assistant messages and uses the latest visible assistant', () => {
+  const snapshot = { messages: [assistant([{ type: 'text', text: 'visible' }]), assistant([{ type: 'text', text: 'hidden' }], undefined, { uiVisibility: 'hidden' })] };
+  assert.equal(extractFinalResult(snapshot, 'rescue'), 'visible');
+});
+
+test('rescue returns only nonignored visible text and never reasoning', () => {
+  const snapshot = { messages: [assistant([{ type: 'reasoning', text: 'private' }, { type: 'text', text: 'old', ignored: true }, { type: 'text', text: 'final' }])] };
+  assert.equal(extractFinalResult(snapshot, 'rescue'), 'final');
 });

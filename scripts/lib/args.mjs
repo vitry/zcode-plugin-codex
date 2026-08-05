@@ -16,7 +16,6 @@ export function parseArgs(argv) {
     ? parseReview(command, tokens)
     : command === 'rescue' ? parseRescue(tokens)
       : command === 'status' ? parseStatus(tokens) : parseJobLookup(command, tokens);
-  if (!parsed.options.callerContext) throw new PluginError('CALLER_CONTEXT_REQUIRED', 'A caller context is required.', { category: 'authorization', remedy: 'Run $zcode:setup and invoke this command through its installed skill.' });
   return { command, ...parsed };
 }
 
@@ -48,7 +47,6 @@ function parseReview(command, tokens) {
     scalar: {
       '--base': (value) => { options.base = value; },
       '--scope': (value) => { if (!SCOPES.has(value)) throw argumentError('Invalid review scope.'); options.scope = value; },
-      '--caller-context': (value) => { options.callerContext = value; },
     },
     positionals,
   });
@@ -68,7 +66,6 @@ function parseRescue(tokens) {
     scalar: {
       '--model': (value) => { if (value === 'spark') throw new PluginError('MODEL_SPARK_FORBIDDEN', 'The public spark model is not supported.', { category: 'validation', remedy: 'Choose a configured model alias or provider/model.' }); options.model = value; },
       '--effort': (value) => { const normalized = value.toLowerCase(); if (!EFFORTS.has(normalized)) throw argumentError('Invalid effort level.'); options.effort = normalized; },
-      '--caller-context': (value) => { options.callerContext = value; },
     }, positionals,
   });
   if (!positionals.some((value) => value.trim())) throw argumentError('Rescue requires a task.');
@@ -83,7 +80,6 @@ function parseStatus(tokens) {
     boolean: { '--wait': () => { options.wait = true; }, '--all': () => { options.all = true; } },
     scalar: {
       '--timeout-ms': (value) => { if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw argumentError('Timeout must be a finite nonnegative safe integer.'); options.timeoutMs = Number(value); options.timeoutSpecified = true; },
-      '--caller-context': (value) => { options.callerContext = value; },
     }, positionals,
   });
   validateJobPositionals(positionals);
@@ -98,7 +94,7 @@ function parseStatus(tokens) {
 function parseJobLookup(command, tokens) {
   /** @type {any} */ const options = {};
   /** @type {string[]} */ const positionals = [];
-  parseTokens(tokens, { boolean: {}, scalar: { '--caller-context': (value) => { options.callerContext = value; } }, positionals });
+  parseTokens(tokens, { boolean: {}, scalar: {}, positionals });
   validateJobPositionals(positionals);
   return { options, positionals };
 }
@@ -107,8 +103,8 @@ function parseJobLookup(command, tokens) {
 function parsePrivate(tokens) {
   /** @type {any} */ const options = {};
   /** @type {string[]} */ const positionals = [];
-  parseTokens(tokens, { boolean: {}, scalar: { '--execution-capability': (value) => { options.executionCapability = value; } }, positionals });
-  if (positionals.length !== 1 || !JOB_ID.test(positionals[0]) || !options.executionCapability) throw argumentError('Private execution requires one job ID and one execution capability.');
+  parseTokens(tokens, { boolean: {}, scalar: {}, positionals });
+  if (positionals.length !== 1 || !JOB_ID.test(positionals[0])) throw argumentError('Private execution requires one job ID.');
   return { command: 'run-reserved-job', options, positionals };
 }
 
@@ -122,7 +118,7 @@ function parseTokens(tokens, target) {
       const handler = target.boolean[token] ?? target.scalar[token];
       if (!handler) throw argumentError(`Unknown flag: ${token}`);
       if (seen.has(token)) throw argumentError(`Duplicate flag: ${token}`); seen.add(token);
-      if (target.scalar[token]) { const value = tokens[++index]; if (!value || knownFlags.has(value)) throw argumentError(`Missing value for ${token}`); handler(value); }
+      if (target.scalar[token]) { const value = tokens[++index]; if (!value || value.startsWith('-') || knownFlags.has(value)) throw argumentError(`Missing or unsafe value for ${token}`); handler(value); }
       else handler();
     } else target.positionals.push(token);
   }
