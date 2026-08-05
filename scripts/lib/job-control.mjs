@@ -15,7 +15,7 @@ export function ownerIdForSession(sessionId) {
   return createHash('sha256').update(JSON.stringify(['zcode-owner-v1', sessionId])).digest('hex');
 }
 
-/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>}} options */
+/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
 export function createJobController(options) {
   if (!options?.store) throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'A state store is required.', { category: 'validation', remedy: 'Provide the Task 2 state store.' });
   const pollIntervalMs = options.pollIntervalMs ?? 50;
@@ -70,19 +70,20 @@ async function cancelWithElection(input) {
   const lockPath = join(input.storage.directory, 'cancel-locks', `${input.jobId}.lock`); const attempts = createCancelAttemptStore(input.storage); let operationStarted = false;
   let observed = null; let observedError = null;
   try { observed = await attempts.read(input.jobId, input.ownerSessionId); } catch (attemptError) { observedError = attemptError; }
+  await input.options.afterObservationBeforeLock?.();
   try {
-    const outcome = await withFileLock(lockPath, () => { operationStarted = true; return performCancellation(input, attempts, { contended: false, observed: null, observedError: null }); }, { timeoutMs: 0 });
+    const outcome = await withFileLock(lockPath, () => { operationStarted = true; return performCancellation(input, attempts, { observed, observedError }); }, { timeoutMs: 0 });
     return await settleCancellationOutcome(input, attempts, outcome);
   }
   catch (error) {
     if (operationStarted || !(error instanceof PluginError) || error.code !== 'LOCK_TIMEOUT') throw error;
     await input.options.afterFollowerSelected?.();
-    const outcome = await withFileLock(lockPath, () => performCancellation(input, attempts, { contended: true, observed, observedError }), { timeoutMs: 30_000 });
+    const outcome = await withFileLock(lockPath, () => performCancellation(input, attempts, { observed, observedError }), { timeoutMs: 30_000 });
     return settleCancellationOutcome(input, attempts, outcome);
   }
 }
 
-/** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {{contended:boolean,observed:any,observedError:unknown}} election */
+/** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {{observed:any,observedError:unknown}} election */
 async function performCancellation(input, attempts, election) {
   const job = await input.options.store.readJob(input.workspace, input.jobId);
   if (job.ownerSessionId !== input.ownerSessionId) throw new PluginError('OWNED_JOB_NOT_FOUND', 'No matching owned job was found.', { category: 'authorization', remedy: 'Check the job ID and invoke the command from its owning Codex session.' });
@@ -90,7 +91,7 @@ async function performCancellation(input, attempts, election) {
   if (election.observedError) throw election.observedError;
   const current = await attempts.read(job.id, input.ownerSessionId); let attempt;
   if (current?.status === 'failed-pending-release') return failedOutcome(current);
-  if (election.contended && current?.status === 'failed' && !isUnchangedHistoricalOutcome(election.observed, current)) return failedOutcome(current);
+  if (current?.status === 'failed' && completedDuringAcquisition(election.observed, current)) return failedOutcome(current);
   if (current?.status === 'active' || current?.status === 'finalize-pending') attempt = current;
   else attempt = await attempts.start(job.id, input.ownerSessionId);
   if (job.status === 'queued') {
@@ -134,7 +135,13 @@ async function settleCancellationOutcome(input, attempts, outcome) {
 /** @param {any} record */
 function failedOutcome(record) { return { failedAttempt: record.attemptId, message: record.error.message }; }
 /** @param {any} observed @param {any} current */
-function isUnchangedHistoricalOutcome(observed, current) { return observed?.attemptId === current.attemptId && observed.status === current.status && ['failed', 'succeeded'].includes(current.status); }
+function completedDuringAcquisition(observed, current) {
+  if (!observed) return true;
+  if (observed.attemptId !== current.attemptId) return true;
+  if (observed.status === current.status && observed.updatedAt === current.updatedAt) return false;
+  return ['active', 'failed-pending-release', 'finalize-pending'].includes(observed.status)
+    && ['failed', 'succeeded', 'finalize-pending'].includes(current.status);
+}
 
 /** @param {number} milliseconds */
 function pollDelay(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
