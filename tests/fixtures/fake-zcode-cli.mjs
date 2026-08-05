@@ -75,7 +75,7 @@ input.on('line', async (line) => {
   const p = message.params ?? {};
   switch (message.method) {
     case 'session/create': {
-      const sessionId = p.sessionId ?? `session-${sessions.size + 1}`;
+      const sessionId = process.env.FAKE_ZCODE_SESSION_ID ?? p.sessionId ?? `session-${sessions.size + 1}`;
       sessions.set(sessionId, { sessionId, workspacePath: p.workspace?.workspacePath ?? '/repo', settings: settings(p.model ?? defaultModel), messages: [] });
       const result = snapshot(sessionId);
       if (process.env.FAKE_ZCODE_FUTURE_FIELDS === '1') { result.futureEnvelope = { ignored: true }; result.protocol.futureProtocolField = 'ignored'; result.projection.futureProjectionField = 'new'; result.settings.model.available[0].futureCatalogField = 42; }

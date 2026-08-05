@@ -9,6 +9,16 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 
+/**
+ * Serialize executor finalization with cancellation, using the same durable workspace lock.
+ * @param {{dataRoot:string,workspace:string,jobId:string,storage?:any,timeoutMs?:number}} input
+ * @param {()=>Promise<any>} operation
+ */
+export async function withJobCancellationLock(input, operation) {
+  const storage = input.storage ?? await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
+  return withFileLock(join(storage.directory, 'cancel-locks', `${input.jobId}.lock`), operation, { timeoutMs: input.timeoutMs ?? 30_000 });
+}
+
 /** @param {string} sessionId */
 export function ownerIdForSession(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId) throw new PluginError('OWNER_ID_INVALID', 'Owner session is invalid.', { category: 'authorization', remedy: 'Use a validated caller context.' });
@@ -67,18 +77,18 @@ export function createJobController(options) {
 /** @param {{options:any,storage:any,workspace:string,jobId:string,ownerSessionId:string}} input */
 async function cancelWithElection(input) {
   if (!/^[a-f0-9]{64}$/.test(input.jobId)) throw new PluginError('JOB_ID_INVALID', 'Job identifier has an invalid format.', { category: 'validation', remedy: 'Use a job ID returned by the state store.', details: { jobId: input.jobId } });
-  const lockPath = join(input.storage.directory, 'cancel-locks', `${input.jobId}.lock`); const attempts = createCancelAttemptStore(input.storage); let operationStarted = false;
+  const attempts = createCancelAttemptStore(input.storage); let operationStarted = false;
   let observed = null; let observedError = null;
   try { observed = await attempts.read(input.jobId, input.ownerSessionId); } catch (attemptError) { observedError = attemptError; }
   await input.options.afterObservationBeforeLock?.();
   try {
-    const outcome = await withFileLock(lockPath, () => { operationStarted = true; return performCancellation(input, attempts, { observed, observedError }); }, { timeoutMs: 0 });
+    const outcome = await withJobCancellationLock({ ...input, dataRoot: input.options.dataRoot ?? input.options.store.dataRoot, timeoutMs: 0 }, () => { operationStarted = true; return performCancellation(input, attempts, { observed, observedError }); });
     return await settleCancellationOutcome(input, attempts, outcome);
   }
   catch (error) {
     if (operationStarted || !(error instanceof PluginError) || error.code !== 'LOCK_TIMEOUT') throw error;
     await input.options.afterFollowerSelected?.();
-    const outcome = await withFileLock(lockPath, () => performCancellation(input, attempts, { observed, observedError }), { timeoutMs: 30_000 });
+    const outcome = await withJobCancellationLock({ ...input, dataRoot: input.options.dataRoot ?? input.options.store.dataRoot, timeoutMs: 30_000 }, () => performCancellation(input, attempts, { observed, observedError }));
     return settleCancellationOutcome(input, attempts, outcome);
   }
 }

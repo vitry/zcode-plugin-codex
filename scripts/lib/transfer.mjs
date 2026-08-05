@@ -1,5 +1,7 @@
 import { PluginError } from './errors.mjs';
-import { writeResultArtifact } from './review.mjs';
+import { hasControl, isSafeIdentifier } from './identifier.mjs';
+import { withJobCancellationLock } from './job-control.mjs';
+import { removeResultArtifact, writeResultArtifact } from './review.mjs';
 import { IMPORTED_HISTORY_SOURCE } from './zcode-client.mjs';
 
 export const TRANSFER_LIMITS = Object.freeze({
@@ -29,7 +31,8 @@ export function extractImportedHistory(thread, expectedThreadId) {
   /** @type {Array<{role:'user'|'assistant',content:string,timestamp?:number}>} */ const messages = []; let totalBytes = 0;
   for (const turn of record.turns) {
     if (!plainObject(turn) || !Array.isArray(turn.items) || turn.startedAt !== undefined && turn.startedAt !== null && (!Number.isSafeInteger(turn.startedAt) || turn.startedAt < 0)) throw invalidThread();
-    const timestamp = turn.startedAt ?? undefined;
+    const timestamp = turn.startedAt === undefined || turn.startedAt === null ? undefined : turn.startedAt * 1000;
+    if (timestamp !== undefined && !Number.isSafeInteger(timestamp)) throw invalidThread();
     for (const item of turn.items) {
       if (!plainObject(item) || typeof item.type !== 'string') throw invalidThread();
       if (item.type === 'userMessage') {
@@ -54,7 +57,7 @@ export function extractImportedHistory(thread, expectedThreadId) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,sourceThreadId:string,launch?:{command:string,args:string[]},resolveLaunch?:()=>Promise<{command:string,args:string[]}>,readThread:()=>Promise<unknown>,createClient:(launch:{command:string,args:string[]})=>Promise<any>,writeResult?:(input:any)=>Promise<string>}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,sourceThreadId:string,launch?:{command:string,args:string[]},resolveLaunch?:()=>Promise<{command:string,args:string[]}>,readThread:()=>Promise<unknown>,createClient:(launch:{command:string,args:string[]})=>Promise<any>,writeResult?:(input:any)=>Promise<string>,removeResult?:(input:any)=>Promise<void>}} input
  */
 export async function executeTransfer(input) {
   const { job, workspace, dataRoot, store, sourceThreadId } = input;
@@ -68,16 +71,27 @@ export async function executeTransfer(input) {
     client = await input.createClient(launch);
     const snapshot = await client.createSession({ workspace, importedHistory });
     const sessionId = snapshot?.session?.sessionId;
-    if (typeof sessionId !== 'string' || !sessionId) throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid imported session.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.' });
+    if (!isSafeIdentifier(sessionId)) throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid imported session.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.' });
     running = await store.transitionJob(workspace, job.id, ['running'], 'running', { zcodeSessionId: sessionId });
     const resumeCommand = buildResumeCommand(launch, sessionId);
     const result = `Imported from Codex\nZCode session ID: ${sessionId}\nResume in ZCode: ${resumeCommand}\n`;
     const resultArtifact = await (input.writeResult ?? writeResultArtifact)({ dataRoot, workspace, jobId: job.id, contents: result });
-    const succeeded = await store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
+    const succeeded = await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
+      const current = await store.readJob(workspace, job.id);
+      if (current.status === 'cancelled') return current;
+      if (current.status !== 'running') throw new PluginError('TRANSFER_FINALIZE_CONFLICT', `Transfer job ${job.id} cannot finalize from ${current.status}.`, { category: 'state', remedy: 'Inspect the job status and retry with a new Transfer.' });
+      return store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
+    });
+    if (succeeded.status === 'cancelled') {
+      await (input.removeResult ?? removeResultArtifact)({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact });
+      throw new PluginError('TRANSFER_CANCELLED', `Transfer job ${job.id} was cancelled.`, { category: 'state', remedy: 'Run Transfer again if the imported session is still needed.' });
+    }
     return { type: 'transfer', job: succeeded, result, zcodeSessionId: sessionId, resumeCommand };
   } catch (error) {
-    const current = await store?.readJob(workspace, job?.id).catch(() => running);
-    if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) await store.transitionJob(workspace, job.id, [current.status], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Transfer failed' }, finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
+    await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
+      const current = await store?.readJob(workspace, job?.id).catch(() => running);
+      if (current?.status === 'running') await store.transitionJob(workspace, job.id, ['running'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Transfer failed' }, finishedAt: new Date().toISOString(), exitCode: 1 });
+    }).catch(() => {});
     throw error;
   } finally { await client?.close().catch(() => {}); }
 }
@@ -96,7 +110,7 @@ function validateExecution(input) {
   if (!plainObject(input) || !plainObject(input.job) || input.job.command !== 'transfer' || input.job.codexThreadId !== input.sourceThreadId || input.job.readOnly !== true || typeof input.workspace !== 'string' || !input.workspace || typeof input.dataRoot !== 'string' || !input.dataRoot || input.launch === undefined && typeof input.resolveLaunch !== 'function' || input.launch !== undefined && !validLaunch(input.launch) || typeof input.readThread !== 'function' || typeof input.createClient !== 'function') throw new PluginError('TRANSFER_INPUT_INVALID', 'Transfer execution input is invalid.', { category: 'validation', remedy: 'Reserve a read-only Transfer job bound to the exact Codex source.' });
 }
 /** @param {unknown} launch @returns {launch is {command:string,args:string[]}} */
-function validLaunch(launch) { return plainObject(launch) && typeof launch.command === 'string' && launch.command.length > 0 && Array.isArray(launch.args) && launch.args.every((/** @type {unknown} */ arg) => typeof arg === 'string'); }
+function validLaunch(launch) { return plainObject(launch) && typeof launch.command === 'string' && launch.command.length > 0 && !hasControl(launch.command) && Array.isArray(launch.args) && launch.args.every((/** @type {unknown} */ arg) => typeof arg === 'string' && !hasControl(arg)); }
 /** @param {unknown} launch */
 function validateLaunch(launch) { if (!validLaunch(launch)) throw new PluginError('TRANSFER_INPUT_INVALID', 'Resolved ZCode launcher is invalid.', { category: 'configuration', remedy: 'Run $zcode:setup and repair the ZCode launcher.' }); }
 /** @param {unknown} value @param {number} maximum */
@@ -105,7 +119,5 @@ function boundedText(value, maximum) { return typeof value === 'string' && value
 function plainObject(value) { if (value === null || typeof value !== 'object' || Array.isArray(value)) return false; const prototype = Object.getPrototypeOf(value); return prototype === Object.prototype || prototype === null; }
 /** @param {string} value */
 function shellQuote(value) { return /^[A-Za-z0-9_./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`; }
-/** @param {string} value */
-function hasControl(value) { return [...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code <= 31 || code === 127; }); }
 function invalidThread() { return new PluginError('CODEX_THREAD_INVALID', 'Codex returned an invalid or mismatched thread.', { category: 'protocol', remedy: 'Upgrade or restart Codex, then retry Transfer.' }); }
 function historyTooLarge() { return new PluginError('TRANSFER_HISTORY_TOO_LARGE', 'The Codex thread exceeds Transfer history limits.', { category: 'validation', remedy: `Choose a smaller thread (at most ${TRANSFER_LIMITS.maxMessages} messages, ${TRANSFER_LIMITS.maxMessageBytes} bytes each, and ${TRANSFER_LIMITS.maxTotalBytes} bytes total).` }); }

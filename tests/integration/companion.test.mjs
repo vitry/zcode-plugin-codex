@@ -191,6 +191,16 @@ test('real CLI cancellation waits for stop acknowledgement and reports stop fail
   }
 });
 
+test('real CLI cancellation stops sessions owned by the Transfer broker profile', async () => {
+  const context = await fixture(); const launch = { command: process.execPath, args: [fake], target: fake };
+  const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId: ownerIdForSession('codex-session'), env: context.env, maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes });
+  const created = await client.createSession({ workspace: context.workspace, importedHistory: { messages: [{ role: 'user', content: 'history' }] } }); await client.close();
+  const store = createStateStore({ dataRoot: context.dataRoot }); const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'transfer', codexThreadId: 'codex-session', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(context.workspace, queued.id, ['queued'], 'running', { zcodeSessionId: created.session.sessionId });
+  const cancelled = await companion(context, ['cancel', queued.id]);
+  assert.equal(cancelled.code, 0, `${cancelled.stderr}${cancelled.stdout}`); assert.equal(cancelled.json.job.status, 'cancelled');
+});
+
 test('rescue requires an explicit choice when an owned resumable session exists', async () => {
   const context = await fixture();
   const fresh = await companion(context, ['rescue', '--fresh', 'first task']);
@@ -349,7 +359,7 @@ test('real Transfer imports current Codex history into a resumable ZCode session
   const codexCalls = (await readFile(codexRecord, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((entry) => entry.method);
   assert.deepEqual(codexCalls.map((entry) => entry.method), ['initialize', 'initialized', 'thread/read']); assert.equal(codexCalls[2].params.threadId, 'codex-session');
   const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)); const create = zcodeCalls.find((entry) => entry.method === 'session/create');
-  assert.deepEqual(create.params.importedHistory, { source: 'claudeCode', messages: [{ role: 'user', content: 'visible request', timestamp: 1_725_000_000 }, { role: 'assistant', content: 'visible response', timestamp: 1_725_000_000 }] });
+  assert.deepEqual(create.params.importedHistory, { source: 'claudeCode', messages: [{ role: 'user', content: 'visible request', timestamp: 1_725_000_000_000 }, { role: 'assistant', content: 'visible response', timestamp: 1_725_000_000_000 }] });
   assert.equal(zcodeCalls.some((entry) => entry.method === 'session/send'), false);
   const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch: { command: process.execPath, args: [fake], target: fake }, ownerId: ownerIdForSession('codex-session'), env: context.env, maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes });
   try { assert.equal((await client.resumeSession(transferred.json.zcodeSessionId)).session.sessionId, transferred.json.zcodeSessionId); } finally { await client.close(); }
@@ -364,6 +374,15 @@ test('Transfer launcher configuration failure terminalizes its reserved job', as
   assert.notEqual(result.code, 0); assert.equal(result.json.error.code, 'CODEX_APP_SERVER_CONFIG_INVALID');
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   assert.equal(jobs.length, 1); assert.equal(jobs[0].command, 'transfer'); assert.equal(jobs[0].status, 'failed');
+});
+
+test('Transfer rejects hostile ZCode session IDs before artifacts or public/internal output can contain them', async () => {
+  for (const sessionId of ['injected\nSUCCESS', '\u001b[31mSUCCESS', 'x'.repeat(513)]) {
+    const context = await fixture();
+    const result = await companion(context, ['transfer'], { CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]), FAKE_CODEX_THREAD_JSON: JSON.stringify({ id: 'codex-session', ephemeral: false, turns: [{ startedAt: 1_725_000_000, items: [{ type: 'agentMessage', text: 'answer' }] }] }), FAKE_ZCODE_SESSION_ID: sessionId });
+    assert.notEqual(result.code, 0); assert.equal(result.json.error.code, 'ZCODE_OUTPUT_INVALID'); assert.doesNotMatch(`${result.stdout}${result.stderr}${result.internal}`, new RegExp(sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace); assert.equal(jobs[0].status, 'failed'); assert.equal(jobs[0].zcodeSessionId, undefined); assert.equal(jobs[0].resultArtifact, undefined);
+  }
 });
 
 test('Transfer carries five maximum-size messages through the managed broker without enlarging ordinary defaults', async () => {

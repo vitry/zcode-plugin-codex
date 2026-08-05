@@ -9,6 +9,8 @@ const DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MAX_STDERR_BYTES = 8192;
 const SHUTDOWN_GRACE_MS = 1_000;
+const MAX_VALUE_DEPTH = 128;
+const MAX_VALUE_NODES = 100_000;
 
 /**
  * Read one persisted Codex thread through a short-lived app-server connection.
@@ -41,55 +43,65 @@ export async function readCodexThread(threadId, options = {}) {
   const succeed = (/** @type {any} */ thread) => { if (settled) return; settled = true; resolveResult(thread); };
 
   const timer = setTimeout(() => fail(new PluginError('CODEX_APP_SERVER_TIMEOUT', 'Codex app-server timed out while reading the source thread.', { category: 'timeout', remedy: 'Retry after confirming Codex can read the requested thread.' })), timeoutMs);
-  child.stderr?.on('data', (/** @type {Buffer|string} */ chunk) => stderrTail.append(chunk));
-  child.stdout?.on('data', (/** @type {Buffer|string} */ chunk) => {
-    if (settled) return;
-    const bytes = Buffer.from(chunk); stdoutBytes += bytes.length;
-    if (stdoutBytes > maxOutputBytes) return fail(protocolError('CODEX_APP_SERVER_OUTPUT_TOO_LARGE', 'Codex app-server output exceeded its total limit.'));
-    lineBuffer = Buffer.concat([lineBuffer, bytes]);
-    if (lineBuffer.length > maxLineBytes && lineBuffer.indexOf(10) === -1) return fail(protocolError('CODEX_APP_SERVER_FRAME_TOO_LARGE', 'Codex app-server emitted an oversized frame.'));
-    while (!settled) {
-      const newline = lineBuffer.indexOf(10); if (newline < 0) break;
-      let line = lineBuffer.subarray(0, newline); lineBuffer = lineBuffer.subarray(newline + 1);
-      if (line.at(-1) === 13) line = line.subarray(0, -1);
-      if (line.length === 0) continue;
-      if (line.length > maxLineBytes) return fail(protocolError('CODEX_APP_SERVER_FRAME_TOO_LARGE', 'Codex app-server emitted an oversized frame.'));
-      let frame;
-      try { frame = JSON.parse(line.toString('utf8')); } catch (cause) { return fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex app-server emitted malformed JSON.', cause)); }
-      if (!safePlainValue(frame)) return fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex app-server emitted an unsafe response.'));
-      if (!Object.hasOwn(frame, 'id')) continue;
-      const expectedId = requestStage === 'initialize' ? initializeId : readId;
-      if (frame.id !== expectedId) continue;
-      if (Object.keys(frame).some((key) => !['id', 'result', 'error'].includes(key))
-        || Object.hasOwn(frame, 'result') === Object.hasOwn(frame, 'error')) return fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex app-server returned an ambiguous response.'));
-      if (Object.hasOwn(frame, 'error')) {
-        const code = requestStage === 'initialize' ? 'CODEX_APP_SERVER_INITIALIZE_FAILED' : 'CODEX_THREAD_READ_FAILED';
-        return fail(new PluginError(code, requestStage === 'initialize' ? 'Codex app-server initialization failed.' : 'Codex could not read the requested thread.', { category: requestStage === 'initialize' ? 'protocol' : 'configuration', remedy: requestStage === 'initialize' ? 'Upgrade or restart Codex and retry.' : 'Confirm the Codex thread ID is persisted and accessible from this Codex home.' }));
+  const onStderrData = (/** @type {Buffer|string} */ chunk) => stderrTail.append(chunk);
+  const onStdoutData = (/** @type {Buffer|string} */ chunk) => {
+    try {
+      if (settled) return;
+      const bytes = Buffer.from(chunk); stdoutBytes += bytes.length;
+      if (stdoutBytes > maxOutputBytes) return fail(protocolError('CODEX_APP_SERVER_OUTPUT_TOO_LARGE', 'Codex app-server output exceeded its total limit.'));
+      lineBuffer = Buffer.concat([lineBuffer, bytes]);
+      if (lineBuffer.length > maxLineBytes && lineBuffer.indexOf(10) === -1) return fail(protocolError('CODEX_APP_SERVER_FRAME_TOO_LARGE', 'Codex app-server emitted an oversized frame.'));
+      while (!settled) {
+        const newline = lineBuffer.indexOf(10); if (newline < 0) break;
+        let line = lineBuffer.subarray(0, newline); lineBuffer = lineBuffer.subarray(newline + 1);
+        if (line.at(-1) === 13) line = line.subarray(0, -1);
+        if (line.length === 0) continue;
+        if (line.length > maxLineBytes) return fail(protocolError('CODEX_APP_SERVER_FRAME_TOO_LARGE', 'Codex app-server emitted an oversized frame.'));
+        let frame;
+        try { frame = JSON.parse(line.toString('utf8')); } catch (cause) { return fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex app-server emitted malformed JSON.', cause)); }
+        if (!plainObject(frame) || unsafeKeys(frame)) return fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex app-server emitted an unsafe response.'));
+        if (!Object.hasOwn(frame, 'id')) continue;
+        const expectedId = requestStage === 'initialize' ? initializeId : readId;
+        if (frame.id !== expectedId) continue;
+        if (!safePlainValue(frame) || Object.keys(frame).some((key) => !['id', 'result', 'error'].includes(key))
+          || Object.hasOwn(frame, 'result') === Object.hasOwn(frame, 'error')) return fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex app-server returned an ambiguous response.'));
+        if (Object.hasOwn(frame, 'error')) {
+          const code = requestStage === 'initialize' ? 'CODEX_APP_SERVER_INITIALIZE_FAILED' : 'CODEX_THREAD_READ_FAILED';
+          return fail(new PluginError(code, requestStage === 'initialize' ? 'Codex app-server initialization failed.' : 'Codex could not read the requested thread.', { category: requestStage === 'initialize' ? 'protocol' : 'configuration', remedy: requestStage === 'initialize' ? 'Upgrade or restart Codex and retry.' : 'Confirm the Codex thread ID is persisted and accessible from this Codex home.' }));
+        }
+        if (!Object.hasOwn(frame, 'result') || !plainObject(frame.result)) return fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex app-server returned an invalid response.'));
+        if (requestStage === 'initialize') {
+          requestStage = 'read';
+          try {
+            writeFrame(child, { method: 'initialized', params: {} }, maxLineBytes);
+            writeFrame(child, { id: readId, method: 'thread/read', params: { threadId, includeTurns: true } }, maxLineBytes);
+          } catch (cause) { fail(protocolError('CODEX_APP_SERVER_WRITE_FAILED', 'Could not write to Codex app-server.', cause)); }
+        } else {
+          if (!Object.hasOwn(frame.result, 'thread')) return fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex thread/read response omitted its thread.'));
+          succeed(frame.result.thread);
+        }
       }
-      if (!Object.hasOwn(frame, 'result') || !plainObject(frame.result)) return fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex app-server returned an invalid response.'));
-      if (requestStage === 'initialize') {
-        requestStage = 'read';
-        try {
-          writeFrame(child, { method: 'initialized', params: {} }, maxLineBytes);
-          writeFrame(child, { id: readId, method: 'thread/read', params: { threadId, includeTurns: true } }, maxLineBytes);
-        } catch (cause) { fail(protocolError('CODEX_APP_SERVER_WRITE_FAILED', 'Could not write to Codex app-server.', cause)); }
-      } else {
-        if (!Object.hasOwn(frame.result, 'thread')) return fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex thread/read response omitted its thread.'));
-        succeed(frame.result.thread);
-      }
-    }
-  });
-  child.stdout?.once('error', (/** @type {unknown} */ cause) => fail(protocolError('CODEX_APP_SERVER_STREAM_FAILED', 'Codex app-server stdout failed.', cause)));
-  child.stderr?.once('error', (/** @type {unknown} */ cause) => fail(protocolError('CODEX_APP_SERVER_STREAM_FAILED', 'Codex app-server stderr failed.', cause)));
-  child.stdin?.once('error', (/** @type {unknown} */ cause) => fail(protocolError('CODEX_APP_SERVER_WRITE_FAILED', 'Could not write to Codex app-server.', cause)));
-  child.once('error', (/** @type {unknown} */ cause) => fail(spawnError(cause)));
-  child.once('exit', (/** @type {number|null} */ code, /** @type {NodeJS.Signals|null} */ signal) => { if (!settled) fail(new PluginError('CODEX_APP_SERVER_DISCONNECTED', 'Codex app-server exited before returning the source thread.', { category: 'runtime', remedy: 'Restart Codex and retry.', details: { code, signal } })); });
+    } catch (cause) { fail(protocolError('CODEX_APP_SERVER_MALFORMED', 'Codex app-server response processing failed safely.', cause)); }
+  };
+  const onStdoutError = (/** @type {unknown} */ cause) => fail(protocolError('CODEX_APP_SERVER_STREAM_FAILED', 'Codex app-server stdout failed.', cause));
+  const onStderrError = (/** @type {unknown} */ cause) => fail(protocolError('CODEX_APP_SERVER_STREAM_FAILED', 'Codex app-server stderr failed.', cause));
+  const onStdinError = (/** @type {unknown} */ cause) => fail(protocolError('CODEX_APP_SERVER_WRITE_FAILED', 'Could not write to Codex app-server.', cause));
+  const onChildError = (/** @type {unknown} */ cause) => fail(spawnError(cause));
+  const onChildExit = (/** @type {number|null} */ code, /** @type {NodeJS.Signals|null} */ signal) => { if (!settled) fail(new PluginError('CODEX_APP_SERVER_DISCONNECTED', 'Codex app-server exited before returning the source thread.', { category: 'runtime', remedy: 'Restart Codex and retry.', details: { code, signal } })); };
+  child.stderr?.on('data', onStderrData); child.stdout?.on('data', onStdoutData);
+  child.stdout?.once('error', onStdoutError); child.stderr?.once('error', onStderrError); child.stdin?.once('error', onStdinError);
+  child.once('error', onChildError); child.once('exit', onChildExit);
 
   try { writeFrame(child, { id: initializeId, method: 'initialize', params: { clientInfo: { name: 'zcode-plugin-codex', title: 'ZCode plugin for Codex', version: '0.1.0' }, capabilities: null } }, maxLineBytes); }
   catch (cause) { fail(protocolError('CODEX_APP_SERVER_WRITE_FAILED', 'Could not initialize Codex app-server.', cause)); }
 
   try { return await result; }
-  finally { clearTimeout(timer); await terminate(child); }
+  finally {
+    clearTimeout(timer); await terminate(child);
+    child.stdout?.off('data', onStdoutData); child.stderr?.off('data', onStderrData);
+    child.stdout?.off('error', onStdoutError); child.stderr?.off('error', onStderrError); child.stdin?.off('error', onStdinError);
+    child.off('error', onChildError); child.off('exit', onChildExit);
+  }
 }
 
 /** @param {any} child @param {unknown} value @param {number} maxBytes */
@@ -104,12 +116,19 @@ async function terminate(child) {
   if (!child) return;
   child.stdin?.end();
   if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
   try { child.kill('SIGTERM'); } catch { return; }
-  let grace;
-  await Promise.race([exited, new Promise((resolve) => { grace = setTimeout(resolve, SHUTDOWN_GRACE_MS); })]);
-  clearTimeout(grace);
-  if (child.exitCode === null && child.signalCode === null) { try { child.kill('SIGKILL'); } catch { /* already gone */ } await exited; }
+  if (await waitForExit(child, SHUTDOWN_GRACE_MS)) return;
+  if (child.exitCode === null && child.signalCode === null) { try { child.kill('SIGKILL'); } catch { return; } }
+  await waitForExit(child, SHUTDOWN_GRACE_MS);
+}
+
+/** @param {any} child @param {number} timeoutMs */
+function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false; const finish = (/** @type {boolean} */ value) => { if (settled) return; settled = true; clearTimeout(timer); child.off('exit', onExit); resolve(value); };
+    const onExit = () => finish(true); const timer = setTimeout(() => finish(false), timeoutMs); timer.unref?.(); child.once('exit', onExit);
+  });
 }
 
 /** @param {string} threadId @param {any} options */
@@ -134,4 +153,15 @@ function hasControl(value) { return [...value].some((character) => { const code 
 /** @param {unknown} value @returns {value is Record<string,any>} */
 function plainObject(value) { if (value === null || typeof value !== 'object' || Array.isArray(value)) return false; const prototype = Object.getPrototypeOf(value); return prototype === Object.prototype || prototype === null; }
 /** @param {unknown} value @returns {boolean} */
-function safePlainValue(value) { if (Array.isArray(value)) return value.every(safePlainValue); if (!plainObject(value)) return value === null || ['string', 'number', 'boolean'].includes(typeof value); return Object.keys(value).every((key) => !['__proto__', 'prototype', 'constructor'].includes(key) && safePlainValue(value[key])); }
+function safePlainValue(value) {
+  const stack = [{ value, depth: 0 }]; let nodes = 0;
+  while (stack.length) {
+    const current = stack.pop(); if (!current || current.depth > MAX_VALUE_DEPTH || ++nodes > MAX_VALUE_NODES) return false;
+    if (current.value === null || ['string', 'number', 'boolean'].includes(typeof current.value)) continue;
+    if (!Array.isArray(current.value) && !plainObject(current.value) || !Array.isArray(current.value) && unsafeKeys(current.value)) return false;
+    for (const child of Array.isArray(current.value) ? current.value : Object.values(current.value)) stack.push({ value: child, depth: current.depth + 1 });
+  }
+  return true;
+}
+/** @param {Record<string,unknown>} value */
+function unsafeKeys(value) { return Object.keys(value).some((key) => ['__proto__', 'prototype', 'constructor'].includes(key)); }

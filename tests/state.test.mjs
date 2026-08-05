@@ -590,6 +590,9 @@ test('tracked job fields reject unsafe values and invalid lifecycle phases', asy
   const job = await store.reserveJob({ workspace, ...jobInput });
   for (const patch of /** @type {Array<Record<string, unknown>>} */ ([
     { zcodeSessionId: '' },
+    { zcodeSessionId: 'line-one\nline-two' },
+    { zcodeSessionId: '\u001b[31mspoof' },
+    { zcodeSessionId: 'x'.repeat(513) },
     { model: {} },
     { effort: 'ultra' },
     { startedAt: 'tomorrow' },

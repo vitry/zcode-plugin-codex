@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { PluginError } from './errors.mjs';
+import { isSafeIdentifier } from './identifier.mjs';
 import { connectZCodeBroker, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
 import { ensureZCodeBroker } from '../zcode-broker.mjs';
@@ -17,7 +18,7 @@ export class ZCodeClient {
   async createSession(input) {
     requireExactObject(input, ['workspace'], ['sessionId', 'model', 'importedHistory']);
     requireString(input.workspace);
-    if (input.sessionId !== undefined) requireString(input.sessionId);
+    if (input.sessionId !== undefined) requireSessionId(input.sessionId);
     if (input.model !== undefined) validateModel(input.model);
     const workspacePath = resolve(input.workspace);
     /** @type {any} */
@@ -26,7 +27,7 @@ export class ZCodeClient {
     if (input.model !== undefined) params.model = copyModel(input.model);
     if (input.importedHistory !== undefined) params.importedHistory = normalizeImportedHistory(input.importedHistory);
     const result = await this.protocol.request('session/create', params);
-    if (!plainObject(result) || !plainObject(result.session) || !nonEmpty(result.session.sessionId) || input.sessionId && result.session.sessionId !== input.sessionId) throw outputError('session/create');
+    if (!plainObject(result) || !plainObject(result.session) || !isSafeIdentifier(result.session.sessionId) || input.sessionId && result.session.sessionId !== input.sessionId) throw outputError('session/create');
     validateSnapshot(result, result.session.sessionId, 'session/create');
     if (plainObject(result.settings?.model) && Array.isArray(result.settings.model.available)) this.sessionCatalogs.set(result.session.sessionId, result.settings.model);
     return result;
@@ -34,7 +35,7 @@ export class ZCodeClient {
 
   /** @param {string} sessionId @param {string} content @param {Record<string,never>} [options] */
   async send(sessionId, content, options = {}) {
-    requireString(sessionId); if (typeof content !== 'string') throw inputError(); requireExactObject(options, [], []);
+    requireSessionId(sessionId); if (typeof content !== 'string') throw inputError(); requireExactObject(options, [], []);
     this.protocol.beginTurn(sessionId);
     const inputId = randomUUID();
     let result;
@@ -44,21 +45,21 @@ export class ZCodeClient {
     return { ...result, inputId };
   }
 
-  /** @param {string} sessionId */ async readSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
-  /** @param {string} sessionId */ async resumeSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
+  /** @param {string} sessionId */ async readSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
+  /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
   async listSessions() { const result = requireObjectResult(await this.protocol.request('session/list', {}), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
-  /** @param {string} sessionId */ async stopSession(sessionId) { requireString(sessionId); const result = await this.protocol.request('session/stop', { sessionId }); if (!plainObject(result)) throw outputError('session/stop'); this.protocol.cancelTurn(sessionId); return result; }
+  /** @param {string} sessionId */ async stopSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/stop', { sessionId }); if (!plainObject(result)) throw outputError('session/stop'); this.protocol.cancelTurn(sessionId); return result; }
 
   /** @param {string} sessionId @param {{providerId:string,modelId:string,variant?:string}} model */
   async setModel(sessionId, model) {
-    requireString(sessionId); validateModel(model);
+    requireSessionId(sessionId); validateModel(model);
     const result = await this.protocol.request('session/setModel', { sessionId, model: copyModel(model), persistAsWorkspaceLastUsed: false });
     validateSnapshot(result, sessionId, 'session/setModel'); this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
 
   /** @param {string} sessionId @param {string} thoughtLevel */
   async setThoughtLevel(sessionId, thoughtLevel) {
-    requireString(sessionId);
+    requireSessionId(sessionId);
     if (!nonEmpty(thoughtLevel)) throw inputError();
     const normalized = thoughtLevel.toLowerCase();
     if (!THOUGHT_LEVELS.has(normalized)) throw new PluginError('ZCODE_THOUGHT_LEVEL_INVALID', 'The requested thought level is invalid.', { category: 'validation', remedy: 'Use none, minimal, low, medium, high, or xhigh.' });
@@ -132,6 +133,8 @@ function advertisedThoughtLevels(model) {
 function sameModel(left, right) { return left?.providerId === right?.providerId && left?.modelId === right?.modelId && (left?.variant ?? '') === (right?.variant ?? ''); }
 /** @param {unknown} value */
 function requireString(value) { if (!nonEmpty(value)) throw inputError(); }
+/** @param {unknown} value */
+function requireSessionId(value) { if (!isSafeIdentifier(value)) throw inputError(); }
 /** @param {unknown} value @param {string[]} required @param {string[]} optional */
 function requireExactObject(value, required, optional) { if (!plainObject(value) || required.some((key) => !(key in value)) || Object.keys(value).some((key) => !required.includes(key) && !optional.includes(key))) throw inputError(); }
 /** @param {unknown} value @returns {value is Record<string,any>} */

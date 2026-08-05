@@ -92,6 +92,17 @@ export async function readResultArtifact({ dataRoot, workspace, artifact }) {
 /** @param {{dataRoot:string,workspace:string,jobId:string,contents:string}} input @param {{syncDirectory?:(path:string)=>Promise<void>}} [dependencies] */
 export function writeResultArtifact(input, dependencies = {}) { return writeArtifact({ ...input, directory: 'results' }, dependencies); }
 
+/** @param {{dataRoot:string,workspace:string,jobId:string,artifact:string}} input */
+export async function removeResultArtifact(input) {
+  const storage = await resolveWorkspaceStorage(input); const expected = `results/${input.jobId}.md`;
+  if (input.artifact !== expected) throw artifactError();
+  await withFileLock(join(storage.directory, '.artifacts.lock'), async () => {
+    const root = await secureArtifactRoot(storage.directory, 'results', false); const path = join(root, `${input.jobId}.md`);
+    const info = await lstat(path); if (info.isSymbolicLink() || !info.isFile() || await realpath(dirname(path)) !== root) throw artifactError();
+    await unlink(path); await defaultSyncDirectory(root);
+  });
+}
+
 /** @param {{dataRoot:string,workspace:string,directory:string,jobId:string,contents:string}} input @param {{syncDirectory?:(path:string)=>Promise<void>}} [dependencies] */
 async function writeArtifact({ dataRoot, workspace, directory, jobId, contents }, dependencies = {}) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const syncDirectory = dependencies.syncDirectory ?? defaultSyncDirectory;

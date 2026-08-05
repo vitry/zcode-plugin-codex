@@ -23,6 +23,10 @@ function write(value) {
   });
 }
 
+function writeDeepFrame(prefix, depth, suffix) {
+  process.stdout.write(`${prefix}${'{"value":'.repeat(depth)}null${'}'.repeat(depth)}${suffix}\n`);
+}
+
 if (process.env.FAKE_CODEX_STDERR_BYTES) {
   const text = process.env.FAKE_CODEX_STDERR_TEXT ?? 'diagnostic';
   process.stderr.write(text.repeat(Math.ceil(Number(process.env.FAKE_CODEX_STDERR_BYTES) / text.length)));
@@ -53,6 +57,8 @@ async function handleLine(line) {
     return;
   }
   if (request.method === 'thread/read') {
+    if (process.env.FAKE_CODEX_DEEP_NOTIFICATION_DEPTH) writeDeepFrame('{"method":"thread/status/changed","params":', Number(process.env.FAKE_CODEX_DEEP_NOTIFICATION_DEPTH), '}');
+    if (process.env.FAKE_CODEX_DEEP_RESPONSE_DEPTH) { writeDeepFrame(`{"id":${request.id},"result":{"thread":`, Number(process.env.FAKE_CODEX_DEEP_RESPONSE_DEPTH), '}}'); return; }
     let thread;
     if (process.env.FAKE_CODEX_GENERATED_MESSAGE_BYTES) {
       const count = Number(process.env.FAKE_CODEX_GENERATED_MESSAGE_COUNT ?? 1); const bytes = Number(process.env.FAKE_CODEX_GENERATED_MESSAGE_BYTES);

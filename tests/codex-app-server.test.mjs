@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -63,7 +65,34 @@ test('bounds and redacts stderr diagnostics without blocking', async () => {
   });
 });
 
+test('deep expected responses fail as controlled protocol errors and terminate the real child', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'codex-app-deep-response-')); const record = join(directory, 'record.jsonl'); await writeFile(record, '');
+  await assert.rejects(readCodexThread('thread-1', { executable: process.execPath, args: [fake], env: { ...process.env, FAKE_CODEX_RECORD: record, FAKE_CODEX_DEEP_RESPONSE_DEPTH: '10000' }, timeoutMs: 1_000 }), { code: 'CODEX_APP_SERVER_MALFORMED' });
+  for (let index = 0; index < 50 && !(await readFile(record, 'utf8')).includes('lifecycle'); index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.match(await readFile(record, 'utf8'), /"lifecycle":"SIGTERM"/);
+});
+
+test('deep unrelated notifications are ignored without preventing a valid response', async () => {
+  const { value } = await run({ FAKE_CODEX_DEEP_NOTIFICATION_DEPTH: '10000' });
+  assert.deepEqual(value, validThread);
+});
+
 test('rejects malformed options and unsafe thread identifiers before spawn', async () => {
   for (const threadId of ['', 'x'.repeat(513)]) await assert.rejects(readCodexThread(threadId, { spawn: () => { throw new Error('must not spawn'); } }), { code: 'CODEX_APP_SERVER_INPUT_INVALID' });
   await assert.rejects(readCodexThread('ok', { timeoutMs: 0 }), { code: 'CODEX_APP_SERVER_INPUT_INVALID' });
+});
+
+test('termination has a finite reap deadline when an injected child never emits exit', async () => {
+  class NeverExitChild extends EventEmitter {
+    constructor() { super(); this.stdin = new PassThrough(); this.stdout = new PassThrough(); this.stderr = new PassThrough(); this.exitCode = null; this.signalCode = null; this.signals = /** @type {string[]} */ ([]); }
+    kill(/** @type {string} */ signal) { this.signals.push(signal); return true; }
+  }
+  const child = new NeverExitChild(); const started = Date.now();
+  await Promise.race([
+    assert.rejects(readCodexThread('thread-1', { spawn: () => child, timeoutMs: 5 }), { code: 'CODEX_APP_SERVER_TIMEOUT' }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('termination did not honor a finite reap deadline')), 2_500)),
+  ]);
+  assert.ok(Date.now() - started < 2_500); assert.deepEqual(child.signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(child.listenerCount('exit'), 0); assert.equal(child.listenerCount('error'), 0);
+  assert.equal(child.stdout.listenerCount('data'), 0); assert.equal(child.stderr.listenerCount('data'), 0);
 });

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import { atomicWriteJson, ensurePrivateDirectory, readJsonFile, withFileLock } from './fs.mjs';
+import { isSafeIdentifier } from './identifier.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 export const JOB_STATUSES = Object.freeze([
@@ -270,7 +271,7 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
     && isValidDateString(job.createdAt) && isValidDateString(job.updatedAt)
     && (!('childPid' in job) || Number.isSafeInteger(job.childPid) && job.childPid > 0)
     && (!('exitCode' in job) || job.exitCode === null || Number.isSafeInteger(job.exitCode))
-    && (!('zcodeSessionId' in job) || isNonEmptyString(job.zcodeSessionId))
+    && (!('zcodeSessionId' in job) || isSafeIdentifier(job.zcodeSessionId))
     && (!('codexThreadId' in job) || job.command === 'transfer' && isBoundedThreadId(job.codexThreadId))
     && (job.command !== 'transfer' || isBoundedThreadId(job.codexThreadId))
     && (!('model' in job) || isModel(job.model))
@@ -325,7 +326,7 @@ function validateJobPatch(job, nextStatus, patch, jobId) {
   if ('childPid' in patch && (!Number.isSafeInteger(patch.childPid) || Number(patch.childPid) <= 0
     || !writesRunningMetadata)) invalidFields.push('childPid');
   if ('zcodeSessionId' in patch
-    && (!isNonEmptyString(patch.zcodeSessionId) || !writesRunningMetadata)) {
+    && (!isSafeIdentifier(patch.zcodeSessionId) || !writesRunningMetadata)) {
     invalidFields.push('zcodeSessionId');
   }
   if ('model' in patch && (!isModel(patch.model) || !writesRunningMetadata)) {
