@@ -300,7 +300,7 @@ test('session/create rejects unsafe or amplified session identifiers at the ZCod
 });
 
 test('disconnect diagnostics retain only a bounded redacted stderr tail', async () => {
-  await withClient(async (client) => { await client.createSession({ workspace: '/repo' }); await assert.rejects(client.listSessions(), (error) => error.code === 'ZCODE_DISCONNECTED' && error.details.stderrTail.length <= 8192 && !error.details.stderrTail.includes('super-secret') && error.details.stderrTail.includes('[REDACTED]')); }, { FAKE_ZCODE_STDERR_BYTES: '20000', FAKE_ZCODE_STDERR_TEXT: ' token=super-secret ', FAKE_ZCODE_DISCONNECT: 'session/list' });
+  await withClient(async (client) => { await client.createSession({ workspace: '/repo' }); await assert.rejects(client.listSessions(), (error) => error.code === 'ZCODE_DISCONNECTED' && error.details.stderrTail.length <= 8192 && !error.details.stderrTail.includes('super-secret') && error.details.stderrTail.includes('[REDACTED]')); }, { FAKE_ZCODE_STDERR_BYTES: '20000', FAKE_ZCODE_STDERR_TEXT: ' token=super-secret ', FAKE_ZCODE_DISCONNECT: 'session/list' }, { requestTimeoutMs: 2_000 });
 });
 
 test('managed broker clients require an explicit stable owner credential', async () => {
