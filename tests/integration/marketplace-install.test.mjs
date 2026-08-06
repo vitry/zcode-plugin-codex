@@ -1,0 +1,161 @@
+// @ts-nocheck
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, isAbsolute, join, relative, sep } from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import test from 'node:test';
+
+import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
+import { runProcess, terminateProcess } from '../../scripts/lib/process.mjs';
+import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
+import { runChild } from '../helpers/run-child.mjs';
+
+const root = fileURLToPath(new URL('../..', import.meta.url));
+const expectedSkills = ['adversarial-review', 'cancel', 'rescue', 'result', 'review', 'setup', 'status', 'transfer'];
+
+async function run(args, cwd, env) {
+  const launch = codexLaunch(args, { root, env });
+  return runProcess(launch, { cwd, env, timeoutMs: 30_000, maxOutputBytes: 4 * 1024 * 1024 });
+}
+
+function listPluginComponents(cwd, env) {
+  return new Promise((resolvePromise, reject) => {
+    const launch = codexLaunch(['app-server'], { root, env });
+    const child = spawn(launch.command, launch.args, { ...launch.options, cwd, env, detached: process.platform !== 'win32', windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let bytes = 0; let settled = false; let skillsResult;
+    const timer = setTimeout(() => { void finish(new Error(`plugin component listing timed out: ${stderr}`)); }, 30_000);
+    const finish = async (error, value) => {
+      if (settled) return; settled = true;
+      clearTimeout(timer);
+      child.stdin.end();
+      await terminateProcess(child, { graceMs: 250 }).catch(() => {});
+      error ? reject(error) : resolvePromise(value);
+    };
+    child.once('error', (error) => { void finish(error); });
+    child.once('exit', (code, signal) => { if (!settled) void finish(new Error(`Codex app-server exited before skills/list: ${code ?? signal}`)); });
+    child.stderr.on('data', (chunk) => { bytes += chunk.length; stderr = `${stderr}${chunk}`.slice(-8192); if (bytes > 8 * 1024 * 1024) void finish(new Error('skills/list exceeded its output limit')); });
+    child.stdout.on('data', (chunk) => {
+      bytes += chunk.length;
+      if (bytes > 8 * 1024 * 1024) { void finish(new Error('skills/list exceeded its output limit')); return; }
+      stdout += chunk;
+      for (;;) {
+        const newline = stdout.indexOf('\n');
+        if (newline < 0) return;
+        const line = stdout.slice(0, newline); stdout = stdout.slice(newline + 1);
+        let frame;
+        try { frame = JSON.parse(line); } catch { continue; }
+        if (frame.id === 1 && frame.result) {
+          child.stdin.write(`${JSON.stringify({ method: 'initialized', params: {} })}\n`);
+          child.stdin.write(`${JSON.stringify({ id: 2, method: 'skills/list', params: { cwds: [cwd], forceReload: true } })}\n`);
+        } else if (frame.id === 2) {
+          if (frame.error) void finish(new Error(`skills/list failed: ${JSON.stringify(frame.error)} ${stderr}`));
+          else { skillsResult = frame.result; child.stdin.write(`${JSON.stringify({ id: 3, method: 'hooks/list', params: { cwds: [cwd] } })}\n`); }
+        } else if (frame.id === 3) {
+          if (frame.error) void finish(new Error(`hooks/list failed: ${JSON.stringify(frame.error)} ${stderr}`));
+          else void finish(null, { skills: skillsResult, hooks: frame.result });
+        }
+      }
+    });
+    child.stdin.write(`${JSON.stringify({ id: 1, method: 'initialize', params: { clientInfo: { name: 'zcode-marketplace-test', version: '1.0.0' }, capabilities: { experimentalApi: true } } })}\n`);
+  });
+}
+
+async function findPluginRoots(directory, found = []) {
+  let entries;
+  try { entries = await readdir(directory, { withFileTypes: true }); } catch { return found; }
+  if (entries.some((entry) => entry.name === '.codex-plugin' && entry.isDirectory())) found.push(directory);
+  for (const entry of entries) if (entry.isDirectory()) await findPluginRoots(join(directory, entry.name), found);
+  return found;
+}
+
+test('isolated Codex marketplace lists and installs the eight-skill snapshot', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-marketplace-install-'));
+  t.after(() => rm(temporary, { force: true, recursive: true }));
+  const marketplace = process.env.MARKETPLACE_SNAPSHOT
+    ? await realpath(process.env.MARKETPLACE_SNAPSHOT)
+    : join(temporary, 'marketplace');
+  const codexHome = join(temporary, 'codex-home');
+  const isolatedHome = join(temporary, 'home');
+  await Promise.all([mkdir(codexHome, { recursive: true }), mkdir(isolatedHome, { recursive: true })]);
+  if (!process.env.MARKETPLACE_SNAPSHOT) await buildMarketplaceSnapshot({
+    root,
+    output: marketplace,
+    sourceRef: 'test',
+    sourceSha: '0'.repeat(40),
+    npmExecPath: process.env.NPM_CLI_JS ?? npmLaunch([]).args[0],
+    env: process.env,
+  });
+  const provenance = JSON.parse(await readFile(join(marketplace, '.agents', 'plugins', 'provenance.json'), 'utf8'));
+  assert.equal(provenance.packageVersion, JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).version);
+  assert.equal(provenance.pluginVersion, provenance.packageVersion);
+  assert.equal(provenance.sourceRef, process.env.MARKETPLACE_SOURCE_REF ?? 'test');
+  assert.equal(provenance.sourceSha, process.env.MARKETPLACE_SOURCE_SHA ?? '0'.repeat(40));
+  await assert.rejects(readFile(join(marketplace, 'plugins', 'zcode', 'node_modules', '@openai', 'codex', 'package.json'), 'utf8'), { code: 'ENOENT' });
+  await assert.rejects(readFile(join(marketplace, 'plugins', 'zcode', 'tests', 'integration', 'marketplace-install.test.mjs'), 'utf8'), { code: 'ENOENT' });
+  const env = { ...process.env, CODEX_HOME: codexHome, HOME: isolatedHome, USERPROFILE: isolatedHome };
+
+  const added = await run(['plugin', 'marketplace', 'add', marketplace, '--json'], temporary, env);
+  assert.equal(added.code, 0, added.stderr || added.stdout);
+  const addJson = JSON.parse(added.stdout);
+  assert.equal(addJson.marketplaceName, 'vitry');
+
+  const listed = await run(['plugin', 'list', '--marketplace', 'vitry', '--available', '--json'], temporary, env);
+  assert.equal(listed.code, 0, listed.stderr || listed.stdout);
+  assert.deepEqual(JSON.parse(listed.stdout).available.map((entry) => entry.pluginId), ['zcode@vitry']);
+
+  const installed = await run(['plugin', 'add', 'zcode@vitry', '--json'], temporary, env);
+  assert.equal(installed.code, 0, installed.stderr || installed.stdout);
+  const roots = await findPluginRoots(codexHome);
+  const installedRoot = roots.find((path) => basename(join(path, '..', '..')) === 'zcode')
+    ?? roots.find((path) => path.includes(`${join('cache', 'vitry', 'zcode')}`));
+  assert.ok(installedRoot, `installed plugin root missing under ${codexHome}: ${roots.join(', ')}`);
+  assert.deepEqual((await readdir(join(installedRoot, 'skills'), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(), expectedSkills);
+  const installedManifest = JSON.parse(await readFile(join(installedRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
+  assert.equal(installedManifest.name, 'zcode');
+  assert.equal(Object.hasOwn(installedManifest, 'hooks'), false);
+  assert.ok(JSON.parse(await readFile(join(installedRoot, 'hooks', 'hooks.json'), 'utf8')).hooks);
+  const listedComponents = await listPluginComponents(temporary, env);
+  const installedSkills = listedComponents.skills.data.flatMap((entry) => entry.skills)
+    .filter((skill) => /^(?:zcode|zcode-plugin-codex):/.test(skill.name));
+  assert.deepEqual(installedSkills.map((skill) => skill.name).sort(), expectedSkills.map((name) => `zcode:${name}`).sort());
+  assert.ok(installedSkills.every((skill) => skill.enabled === true));
+  assert.match(JSON.stringify(listedComponents.hooks), /session-lifecycle-hook|user-prompt-hook/, 'Codex must auto-discover the installed default hooks/hooks.json');
+  const nativeBinding = await realpath(join(installedRoot, 'node_modules', 'fs-native-extensions'));
+  const installedRootPath = await realpath(installedRoot); const nativeBindingRelative = relative(installedRootPath, nativeBinding);
+  assert.ok(nativeBindingRelative && !isAbsolute(nativeBindingRelative) && nativeBindingRelative !== '..' && !nativeBindingRelative.startsWith(`..${sep}`));
+  // Keep the installed native binding in a short-lived probe process. Loading
+  // it in this test process leaves the Windows .node file locked until the
+  // whole test runner exits, which prevents the marketplace cache cleanup.
+  const lockProbe = await runChild(process.execPath, ['--input-type=module', '--eval', `
+    const { withFileLock } = await import(${JSON.stringify(pathToFileURL(join(installedRoot, 'scripts', 'lib', 'fs.mjs')).href)});
+    const result = await withFileLock(${JSON.stringify(join(temporary, 'snapshot-native.lock'))}, async () => 'locked');
+    if (result !== 'locked') throw new Error('lock failed');
+  `], { cwd: temporary, env });
+  assert.equal(lockProbe.code, 0, lockProbe.stderr || lockProbe.stdout);
+
+  const pluginData = join(temporary, 'plugin-data');
+  const hookEnv = { ...env, PLUGIN_ROOT: installedRoot, PLUGIN_DATA: pluginData };
+  const sessionId = 'installed-session'; const turnId = 'installed-turn';
+  const lifecycle = await runChild(process.execPath, [join(installedRoot, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: temporary, env: hookEnv, ordinaryInput: true,
+    input: { session_id: sessionId, cwd: temporary, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+  });
+  assert.equal(lifecycle.code, 0, lifecycle.stderr || lifecycle.stdout);
+  const prompt = await runChild(process.execPath, [join(installedRoot, 'hooks', 'user-prompt-hook.mjs')], {
+    cwd: temporary, env: hookEnv, ordinaryInput: true,
+    input: { session_id: sessionId, turn_id: turnId, cwd: temporary, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:status --all' },
+  });
+  assert.equal(prompt.code, 0, prompt.stderr || prompt.stdout);
+  assert.doesNotMatch(prompt.stdout, /ZCODE_CALLER_CONTEXT|callerContext/);
+  const direct = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'invoke', 'status'], {
+    cwd: temporary, env: { ...hookEnv, CODEX_THREAD_ID: sessionId },
+  });
+  assert.equal(direct.code, 0, direct.stderr || direct.stdout);
+  assert.equal(direct.stdout, '\nModel policy: default=ZCode default; aliases=none\n');
+  assert.equal(direct.internal, '');
+});

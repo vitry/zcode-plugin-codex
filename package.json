@@ -1,0 +1,59 @@
+{
+  "name": "zcode-plugin-codex",
+  "version": "0.1.0",
+  "description": "A Codex plugin that lets the Codex host call ZCode for code review and task delegation.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vitry/zcode-plugin-codex"
+  },
+  "homepage": "https://github.com/vitry/zcode-plugin-codex",
+  "bugs": {
+    "url": "https://github.com/vitry/zcode-plugin-codex"
+  },
+  "author": "vitry <tzukai.chan@gmail.com>",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "files": [
+    ".codex-plugin/",
+    "agents/",
+    "hooks/",
+    "prompts/",
+    "schemas/",
+    "scripts/",
+    "skills/",
+    "CHANGELOG.md",
+    "NOTICE",
+    "README.zh-CN.md",
+    "SECURITY.md",
+    "npm-shrinkwrap.json"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "test:unit": "node --test tests/plugin-contracts.test.mjs",
+    "test:integration": "node --test tests/integration/plugin-layout.test.mjs",
+    "test:qualified": "node --test tests/e2e/codex-skills-e2e.test.mjs tests/e2e/real-zcode.test.mjs",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run typecheck && npm test && npm run test:qualified"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@openai/codex": "0.146.0",
+    "@types/node": "^18.19.0",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "fs-native-extensions": "1.5.0"
+  },
+  "bundleDependencies": [
+    "fs-native-extensions"
+  ],
+  "overrides": {
+    "bare-addon-resolve": "1.9.4"
+  }
+}

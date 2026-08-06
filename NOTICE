@@ -1,0 +1,22 @@
+ZCode Plugin for Codex
+Copyright 2026 vitry
+
+This work preserves behavior and integration patterns derived from these
+Apache-2.0-licensed projects:
+
+OpenAI codex-plugin-cc
+Copyright 2026 OpenAI
+https://github.com/openai/codex-plugin-cc
+
+zcode-plugin-cc
+Copyright 2026 jackdaidai
+https://github.com/jackdaidai/zcode-plugin-cc
+
+The plugin also interoperates with the OpenAI Codex host and the Sendbird ZCode
+Protocol adapter surface. Substantial modifications replace the Claude Code
+host layer with native Codex skills and hooks, add turn-scoped authorization,
+and use ZCode Protocol history import, jobs, permissions, and cancellation.
+
+These notices are retained under the Apache License, Version 2.0. OpenAI,
+Codex, Sendbird, and ZCode are names of their respective owners; no affiliation
+or endorsement is implied.

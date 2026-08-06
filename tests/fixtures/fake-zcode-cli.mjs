@@ -1,0 +1,183 @@
+#!/usr/bin/env node
+// @ts-nocheck
+import { appendFile, readFile } from 'node:fs/promises';
+import process from 'node:process';
+import readline from 'node:readline';
+
+if (process.argv.includes('--version')) {
+  process.stdout.write(`${process.env.FAKE_ZCODE_VERSION ?? '0.16.1'}\n`);
+  process.exit(0);
+}
+if (process.env.FAKE_ZCODE_STDERR_BYTES) process.stderr.write((process.env.FAKE_ZCODE_STDERR_TEXT ?? 'sensitive-stderr').repeat(Math.ceil(Number(process.env.FAKE_ZCODE_STDERR_BYTES) / (process.env.FAKE_ZCODE_STDERR_TEXT ?? 'sensitive-stderr').length)));
+
+const sessions = new Map();
+const input = readline.createInterface({ input: process.stdin });
+let permissionId = 9000;
+let sendCount = 0;
+let resumeCount = 0;
+const pendingCompletionTimers = new Map();
+
+const defaultModel = { providerId: 'fake', modelId: 'model' };
+function settings(model = defaultModel) { return { appliedProviderRevision: 'provider-revision-1', model: { current: model, available: [{ ref: model, label: 'Fixture model', reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, label: 'Other model', reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' }, permission: { mode: 'build', rulesRevision: 1 } }; }
+function sessionInfo(sessionId, workspacePath = '/repo', status = 'idle') { return { sessionId, workspace: { workspacePath, workspaceKey: workspacePath }, sessionKind: 'interactive', title: 'Fixture session', titleSource: 'generated', mode: 'build', status, model: defaultModel, createdAt: 1, updatedAt: 1 }; }
+function messages(sessionId, model = defaultModel) { return resultMessages(sessionId, model, false, 'history', 'text', undefined, 'historical-result-must-not-win'); }
+function resultMessages(sessionId, model, review, suffix = 'current', selectedMode, inputMessageId, resultText) {
+  const mode = selectedMode ?? process.env.FAKE_ZCODE_RESULT_MODE ?? 'text';
+  const structured = review ? mode === 'invalid-structured' ? { findings: [{ severity: 'bogus' }] } : { findings: [] } : undefined;
+  const assistantId = `message-assistant-${suffix}`; const userId = inputMessageId ?? `message-user-${suffix}`;
+  const base = { partId: `part-assistant-${suffix}`, sessionId, messageId: assistantId };
+  const gateText = process.env.FAKE_ZCODE_GATE_RESULT;
+  const parts = mode === 'reasoning-only' ? [{ ...base, type: 'reasoning', text: 'private reasoning' }]
+    : mode === 'mixed' ? [{ ...base, partId: 'reasoning', type: 'reasoning', text: 'private reasoning' }, { ...base, partId: 'ignored', type: 'text', text: 'ignored', ignored: true }, { ...base, partId: 'visible', type: 'text', text: review ? JSON.stringify({ findings: [] }) : 'done' }]
+      : [{ ...base, type: 'text', text: gateText === '__EMPTY__' ? '' : gateText ?? (review ? JSON.stringify({ findings: [] }) : resultText ?? 'done') }];
+  return [{ info: { messageId: userId, sessionId, role: 'user', time: { created: 1, completed: 2 }, agent: 'build', model, synthetic: false, visibility: 'user-visible' }, parts: [{ partId: `part-user-${suffix}`, sessionId, messageId: userId, type: 'text', text: 'hello' }] }, { info: { messageId: assistantId, sessionId, role: 'assistant', time: { created: 2, completed: 3 }, parentMessageId: userId, agent: 'build', model, path: { cwd: '/repo', root: '/repo' }, cost: 0, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, finish: 'stop', ...(structured === undefined ? {} : { structured }) }, parts }];
+}
+function snapshot(sessionId, value = sessions.get(sessionId)) { const valueSettings = value?.settings ?? settings(); const status = value?.projectionStatus ?? 'idle'; return { protocol: { name: 'ZCode Protocol', version: 1 }, session: { ...sessionInfo(sessionId, value?.workspacePath, status), model: valueSettings.model.current }, settings: valueSettings, projection: { sessionId, status, mode: 'build', turnCount: 0, totalTokenCount: 0, contextUsed: 0, contextWindow: 128000, pendingPermissions: [], activeToolCalls: [], backgroundJobs: [] }, runtime: { eventSeq: 0, stateRevision: value?.stateRevision ?? 0, pendingRequestIds: [] }, messages: value?.messages?.length ? value.messages : value?.pendingResult ? [] : messages(sessionId, valueSettings.model.current), goalStats: { timeUsedSeconds: 0, tokensUsed: 0, tokenBudget: null, contextUsed: 0, contextWindow: 128000, toolCallCount: 0, iterationCount: 0 }, todos: [{ content: 'Verify', status: 'pending', priority: 'high' }], todoGroups: [{ id: 'todo-group-1', source: 'session', todos: [] }], slashCommands: [{ name: 'review', description: 'Review code', source: 'builtin' }] }; }
+
+async function recoveryMode() { if (!process.env.FAKE_ZCODE_RECOVERY_CONTROL) return null; try { const value = JSON.parse(await readFile(process.env.FAKE_ZCODE_RECOVERY_CONTROL, 'utf8')); return ['active', 'completed', 'stopped', 'missing'].includes(value.mode) ? value.mode : 'active'; } catch { return 'active'; } }
+function applyRecoveryMode(session, mode) {
+  if (!session || !mode) return;
+  session.projectionStatus = mode === 'completed' ? 'completed' : mode === 'stopped' ? 'paused' : 'running';
+  if (mode === 'completed' && session.pendingResult && !session.resultApplied) {
+    const pending = session.pendingResult; session.messages.push(...resultMessages(session.sessionId, session.settings.model.current, pending.review, pending.suffix, undefined, pending.inputId));
+    session.resultApplied = true;
+    session.stateRevision = Math.max(session.stateRevision ?? 0, 2);
+  }
+}
+
+async function record(message) {
+  if (process.env.FAKE_ZCODE_RECORD) {
+    await appendFile(process.env.FAKE_ZCODE_RECORD, `${JSON.stringify(message)}\n`);
+  }
+}
+
+function send(message) {
+  process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
+
+input.on('line', async (line) => {
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return;
+  }
+  await record(message);
+  if (!message.method) return;
+  if (process.env.FAKE_ZCODE_DISCONNECT === message.method) process.exit(7);
+  if (process.env.FAKE_ZCODE_MALFORMED === message.method) {
+    process.stdout.write('{not-json}\n');
+    return;
+  }
+  if (process.env.FAKE_ZCODE_OVERSIZE === message.method) {
+    process.stdout.write(`${'x'.repeat(Number(process.env.FAKE_ZCODE_OVERSIZE_BYTES ?? 2048))}\n`);
+    return;
+  }
+  const delay = Number(process.env.FAKE_ZCODE_DELAY_MS ?? 0);
+  if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+  if (process.env.FAKE_ZCODE_ERROR === message.method) {
+    send({ id: message.id, error: { code: -32099, message: 'fixture request failed' } });
+    return;
+  }
+  if (process.env.FAKE_ZCODE_BAD_RESULT === message.method) {
+    send({ id: message.id, result: 'invalid-result' });
+    return;
+  }
+  if (process.env.FAKE_ZCODE_SUPPRESS_METHOD === message.method) return;
+  const p = message.params ?? {};
+  switch (message.method) {
+    case 'session/create': {
+      const sessionId = process.env.FAKE_ZCODE_SESSION_ID ?? p.sessionId ?? `session-${sessions.size + 1}`;
+      sessions.set(sessionId, { sessionId, workspacePath: p.workspace?.workspacePath ?? '/repo', settings: settings(p.model ?? defaultModel), messages: [] });
+      const result = snapshot(sessionId);
+      if (process.env.FAKE_ZCODE_FUTURE_FIELDS === '1') { result.futureEnvelope = { ignored: true }; result.protocol.futureProtocolField = 'ignored'; result.projection.futureProjectionField = 'new'; result.settings.model.available[0].futureCatalogField = 42; }
+      if (process.env.FAKE_ZCODE_PROTOCOL_VERSION) result.protocol.version = Number(process.env.FAKE_ZCODE_PROTOCOL_VERSION);
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-workspace') delete result.session.workspace;
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'empty-message') result.messages = [{}];
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-session-kind') result.session.sessionKind = 'main';
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-subagent-kind') result.session.sessionKind = 'subagent';
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-protocol') result.protocol = { name: 'zcode', version: '0.16.1' };
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-model-label') delete result.settings.model.available[0].label;
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'string-message-model') result.messages[0].info.model = 'fake/model';
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-goal-stats') result.goalStats.tokensUsed = -1;
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-permission-origin') result.projection.pendingPermissions = [{ requestId: 'request-1', toolCallId: 'tool-1', toolName: 'write', reason: 'test', riskLevel: 'low', origin: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }], requestedAt: 1 }];
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-runtime-cache') result.runtime.contextUsage = { used: 0, size: 1, cache: { inputTokens: -1 } };
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-timeline-trigger') result.messages[0].parts = [{ partId: 'part-timeline-1', sessionId, messageId: 'message-user-1', type: 'timeline', timelineType: 'context_compaction', display: 'separator', trigger: 'invented' }];
+      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-provider-options') result.settings.model.available[0].reasoning.providerOptionsByLevel = { low: 3 };
+      send({ id: message.id, result });
+      break;
+    }
+    case 'session/send': {
+      sendCount += 1;
+      const trustedPrompt = typeof p.content === 'string' ? p.content.split('--- BEGIN UNTRUSTED GIT DATA ---', 1)[0] : '';
+      let objectiveResult;
+      if (process.env.FAKE_ZCODE_RESULT_FROM_AUTHORIZED_OBJECTIVE === '1') {
+        const encoded = /--- BEGIN AUTHORIZED RESCUE OBJECTIVE ---\n([^\n]+)\n--- END AUTHORIZED RESCUE OBJECTIVE ---/.exec(trustedPrompt)?.[1];
+        try { objectiveResult = `authorized:${JSON.parse(encoded)}`; } catch { objectiveResult = 'authorized-objective-missing'; }
+      }
+      const session = sessions.get(p.sessionId); if (session) {
+        const review = /ZCODE_REVIEW_OUTPUT_SCHEMA:\s*\{/i.test(trustedPrompt); const suffix = `turn-${sendCount}`; const inputId = /current unrelated/i.test(p.content) ? 'input-unrelated' : p.inputId;
+        if (process.env.FAKE_ZCODE_RECOVERY_CONTROL) { session.messages.push(...messages(p.sessionId, session.settings.model.current)); session.pendingResult = { review, suffix, inputId }; }
+        else session.messages.push(...resultMessages(p.sessionId, session.settings.model.current, review, suffix, /current hidden/i.test(p.content) ? 'reasoning-only' : undefined, inputId, objectiveResult));
+      }
+      const stateRevision = process.env.FAKE_ZCODE_BARRIER === '1' ? 1000 : 1;
+      if (session) session.stateRevision = stateRevision;
+      if (process.env.FAKE_ZCODE_BARRIER === '1') send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: 999, reason: 'prompt_completed', patch: { status: 'idle' } } });
+      const response = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision } };
+      if (process.env.FAKE_ZCODE_BAD_SEND_ONCE === '1' && sendCount === 1) response.result.stateRevision = 'bad';
+      if (process.env.FAKE_ZCODE_SYNC_BATCH !== 'stale-valid') send(response);
+      if (process.env.FAKE_ZCODE_PERMISSION === '1') {
+        const id = permissionId++;
+        const params = { requestId: `permission-${id}`, sessionId: p.sessionId, toolCallId: 'tool-1', toolName: 'write', reason: 'fixture', riskLevel: process.env.FAKE_ZCODE_PERMISSION_RISK ?? 'medium', input: { secret: 'never-log-me' }, options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }, { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] };
+        if (process.env.FAKE_ZCODE_PERMISSION_MALFORMED === '1') delete params.options[0].optionId;
+        send({ id, method: 'interaction/requestPermission', params });
+        if (process.env.FAKE_ZCODE_PERMISSION_REPLAY === '1') send({ id: permissionId++, method: 'interaction/requestPermission', params });
+      }
+      const notificationSession = process.env.FAKE_ZCODE_CROSS_SESSION ?? p.sessionId;
+      const completion = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: stateRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };
+      if (process.env.FAKE_ZCODE_SYNC_BATCH === 'stale-valid') sendBatch([response, { method: 'state.updated', params: { ...completion.params, revision: stateRevision } }, completion]);
+      else if (process.env.FAKE_ZCODE_SYNC_COMPLETE === '1') send(completion);
+      else if (!(process.env.FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION === '1' && sendCount === 1)
+        && Number(process.env.FAKE_ZCODE_SUPPRESS_COMPLETION_AT ?? 0) !== sendCount) {
+        const existingTimer = pendingCompletionTimers.get(p.sessionId); if (existingTimer) clearTimeout(existingTimer);
+        const timer = setTimeout(() => { if (pendingCompletionTimers.get(p.sessionId) === timer) pendingCompletionTimers.delete(p.sessionId); send(completion); }, 5);
+        pendingCompletionTimers.set(p.sessionId, timer);
+      }
+      break;
+    }
+    case 'session/read': {
+      const session = sessions.get(p.sessionId); applyRecoveryMode(session, await recoveryMode());
+      send({ id: message.id, result: snapshot(p.sessionId, session) });
+      break;
+    }
+    case 'session/resume':
+      resumeCount += 1;
+      if (process.env.FAKE_ZCODE_RESUME_ABA === '1' && resumeCount === 1) { await new Promise((resolve) => setTimeout(resolve, 40)); send({ id: message.id, error: { code: -32099, message: 'late resume failure' } }); break; }
+      if (!sessions.has(p.sessionId)) sessions.set(p.sessionId, { sessionId: p.sessionId, workspacePath: '/repo', settings: settings(), messages: [] });
+      send({ id: message.id, result: snapshot(p.sessionId) });
+      break;
+    case 'session/list': {
+      const mode = await recoveryMode(); const listed = mode === 'missing' ? [] : [...sessions.values()];
+      for (const session of listed) applyRecoveryMode(session, mode);
+      send({ id: message.id, result: { sessions: process.env.FAKE_ZCODE_BAD_LIST === 'session-id-only' ? listed.map(({ sessionId }) => ({ sessionId })) : listed.map(({ sessionId, workspacePath, projectionStatus }) => sessionInfo(sessionId, workspacePath, projectionStatus)) } });
+      break;
+    }
+    case 'session/stop': {
+      if (process.env.FAKE_ZCODE_STOP_ERROR_PREFIX && p.sessionId.startsWith(process.env.FAKE_ZCODE_STOP_ERROR_PREFIX)) { send({ id: message.id, error: { code: -32099, message: 'fixture stop failed' } }); break; }
+      const timer = pendingCompletionTimers.get(p.sessionId); if (timer) { clearTimeout(timer); pendingCompletionTimers.delete(p.sessionId); }
+      send({ id: message.id, result: process.env.FAKE_ZCODE_BAD_STOP_EXTRA === '1' ? { stopped: true } : {} });
+      break;
+    }
+    case 'session/setModel':
+      sessions.get(p.sessionId).settings.model.current = process.env.FAKE_ZCODE_SET_MODEL_CURRENT ? JSON.parse(process.env.FAKE_ZCODE_SET_MODEL_CURRENT) : p.model;
+      send({ id: message.id, result: snapshot(p.sessionId) });
+      break;
+    case 'session/setThoughtLevel':
+      sessions.get(p.sessionId).settings.thoughtLevel.current = process.env.FAKE_ZCODE_SET_THOUGHT_CURRENT ?? p.thoughtLevel;
+      send({ id: message.id, result: snapshot(p.sessionId) });
+      break;
+    default:
+      send({ id: message.id, error: { code: -32601, message: `unknown ${message.method}` } });
+  }
+});

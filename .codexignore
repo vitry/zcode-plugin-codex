@@ -1,0 +1,10 @@
+.git/
+.github/
+.planning/
+.worktrees/
+coverage/
+node_modules/
+tests/
+*.log
+eslint.config.mjs
+tsconfig.json

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZCode Result"
+  short_description: "Read a stored ZCode job result"
+  default_prompt: "Use $zcode:result to show the latest ZCode result."

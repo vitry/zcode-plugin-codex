@@ -6,7 +6,7 @@
 
 **Architecture:** Thin Codex skills and lifecycle hooks call one Node.js companion runtime. The companion owns argument contracts, caller/job authorization, workspace-scoped state, prompts, rendering, and two isolated adapters: a bounded Codex app-server client and a long-lived ZCode protocol broker.
 
-**Tech Stack:** Node.js 18.18+ ESM, Node built-in test runner, JSDoc checked by TypeScript, ESLint, Codex plugin manifest/hooks/skills, JSONL app-server protocols.
+**Tech Stack:** Node.js 18.18+ ESM, Node built-in test runner, JSDoc checked by TypeScript, ESLint, `fs-native-extensions` advisory locks, Codex plugin manifest/hooks/skills, JSONL app-server protocols.
 
 ---
 
@@ -59,21 +59,32 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const manifest = JSON.parse(fs.readFileSync(path.join(root, ".codex-plugin/plugin.json"), "utf8"));
+const semverPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
 test("plugin manifest identifies the vitry ZCode plugin", () => {
   assert.equal(manifest.name, "zcode-plugin-codex");
-  assert.match(manifest.version, /^0\.1\.0(?:\+[0-9A-Za-z.-]+)?$/);
+  assert.match(manifest.version, semverPattern);
   assert.equal(manifest.author.name, "vitry");
   assert.equal(manifest.license, "Apache-2.0");
   assert.equal(manifest.interface.displayName, "ZCode for Codex");
   assert.equal("hooks" in manifest, false);
 });
 
-test("package requires Node 18.18 and has no runtime dependencies", () => {
+test("package requires Node 18.18 and only the pinned native lock dependency", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   assert.equal(pkg.type, "module");
   assert.equal(pkg.engines.node, ">=18.18.0");
-  assert.deepEqual(pkg.dependencies ?? {}, {});
+  assert.deepEqual(pkg.dependencies ?? {}, {
+    "fs-native-extensions": "1.5.0",
+  });
+  assert.deepEqual(pkg.overrides ?? {}, {
+    "bare-addon-resolve": "1.9.4",
+  });
+  assert.deepEqual(pkg.bundleDependencies ?? [], ["fs-native-extensions"]);
+  const shrinkwrap = JSON.parse(fs.readFileSync(path.join(root, "npm-shrinkwrap.json"), "utf8"));
+  assert.equal(shrinkwrap.packages["node_modules/require-addon/node_modules/bare-addon-resolve"].version, "1.9.4");
+  assert.match(pkg.version, semverPattern);
+  assert.equal(manifest.version, pkg.version);
 });
 ```
 
@@ -85,13 +96,15 @@ Expected: FAIL because `package.json` and `.codex-plugin/plugin.json` do not exi
 
 - [ ] **Step 3: Add the minimal package and plugin files**
 
-Use version `0.1.0`, repository `https://github.com/vitry/zcode-plugin-codex`, Node `>=18.18.0`, Apache-2.0, no runtime dependencies, and these scripts:
+Use version `0.1.0`, repository `https://github.com/vitry/zcode-plugin-codex`, Node `>=18.18.0`, and Apache-2.0. The only runtime dependency is the exact pin `fs-native-extensions@1.5.0`, which provides process-owned advisory file locks on macOS, Linux, and Windows. Pin the `bare-addon-resolve` override to `1.9.4` because later releases use JavaScript unavailable in Node 18.18. Publish `npm-shrinkwrap.json` and bundle the `fs-native-extensions` tree, because a consuming install does not apply this package's root override. Contract tests must compare the complete dependency, override, and bundle objects and verify the shrinkwrapped resolver version so additional runtime packages cannot be added implicitly.
+
+Use these scripts:
 
 ```json
 {
-  "test": "node --test tests/*.test.mjs tests/integration/*.test.mjs",
-  "test:unit": "node --test tests/*.test.mjs",
-  "test:integration": "node --test tests/integration/*.test.mjs",
+  "test": "node --test",
+  "test:unit": "node --test tests/plugin-contracts.test.mjs",
+  "test:integration": "node --test tests/integration/plugin-layout.test.mjs",
   "lint": "eslint .",
   "typecheck": "tsc -p tsconfig.json",
   "check": "npm run lint && npm run typecheck && npm test"
@@ -103,7 +116,7 @@ Use Node-18-compatible development dependencies:
 ```json
 {
   "@eslint/js": "^9.39.1",
-  "@types/node": "^22.19.0",
+  "@types/node": "^18.19.0",
   "eslint": "^9.39.1",
   "globals": "^16.5.0",
   "typescript": "^5.9.3"
@@ -174,7 +187,7 @@ Use stable error shape:
 new PluginError(code, message, { category, remedy, cause, details })
 ```
 
-Store data beneath `${PLUGIN_DATA}/workspaces/<sha256-real-workspace>/`; fall back to `${CODEX_HOME:-~/.codex}/plugins/data/zcode-plugin-codex` only outside an installed plugin. Use mode `0700` directories, `0600` files, unique temporary sibling files, `fsync`, and rename for atomic replacement.
+Store data beneath `${PLUGIN_DATA}/workspaces/<sha256-real-workspace>/`; fall back to `${CODEX_HOME:-~/.codex}/plugins/data/zcode-plugin-codex` only outside an installed plugin. Use mode `0700` directories, `0600` files, unique temporary sibling files, `fsync`, and rename for atomic replacement. Serialize workspace mutations through one persistent lockfile per lock scope using `fs-native-extensions` locks on an open file descriptor. Never rename or unlink an active lockfile, and do not infer ownership from lease timestamps, hostnames, or PIDs.
 
 - [ ] **Step 4: Write failing authorization tests**
 
@@ -427,6 +440,7 @@ git commit -m "feat: add Codex lifecycle hooks and setup"
 - Create: `CHANGELOG.md`
 - Create: `.github/workflows/ci.yml`
 - Create: `tests/e2e/real-zcode.test.mjs`
+- Create: `tests/integration/package-install.test.mjs`
 
 - [ ] **Step 1: Write failing skill contract tests**
 
@@ -446,7 +460,11 @@ Exercise every skill against fake Codex/ZCode peers, including the two-session i
 
 - [ ] **Step 4: Write release documentation and CI**
 
-Document installation through a Codex marketplace, ZCode `>=0.16.1`, macOS bundled discovery, model aliases, all eight commands, permission limits, job storage, review gate, troubleshooting, Linux/Windows qualification status, and Apache-2.0 provenance. CI runs `npm ci && npm run check` on current macOS, Ubuntu, and Windows Node LTS.
+Document installation through a Codex marketplace, ZCode `>=0.16.1`, macOS bundled discovery, model aliases, all eight commands, permission limits, job storage, review gate, troubleshooting, Linux/Windows qualification status, and Apache-2.0 provenance.
+
+Add a package-install integration test that packs the plugin, installs that tarball into an empty temporary consumer with production dependencies only, asserts the bundled plugin-local `bare-addon-resolve` is exactly `1.9.4`, loads the installed `fs-native-extensions` binding on Node 18.18, and acquires/releases a lock through the installed companion runtime. The test must prove that the native dependency is installed beside the plugin rather than relying on the repository's development `node_modules`.
+
+CI runs the fake-protocol suite on current macOS, Ubuntu, and Windows. Each platform job must start with `npm ci`, run `npm run check`, perform the clean packed-plugin production install, and execute a binding-load plus lock smoke test. Include Node 18.18 coverage for the pinned override in addition to the current Node LTS matrix. A platform job is not successful if it skips the native binding smoke.
 
 - [ ] **Step 5: Add opt-in real ZCode E2E**
 
@@ -457,12 +475,18 @@ Document installation through a Codex marketplace, ZCode `>=0.16.1`, macOS bundl
 Run:
 
 ```bash
+npm ci
 npm run check
+node --test tests/integration/package-install.test.mjs
+npm pack --dry-run
+npm ci --omit=dev
+node -e "const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path'); const lock = require('fs-native-extensions'); const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-lock-')); const file = fs.openSync(path.join(dir, 'smoke.lock'), 'a+'); if (!lock.tryLock(file)) throw new Error('native lock unavailable'); lock.unlock(file); fs.closeSync(file); fs.rmSync(dir, { recursive: true });"
+npm ci
 python3 /Users/zhangzikai/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
 git diff --check
 ```
 
-Expected: all lint, typecheck, unit, integration, contract, and fake-protocol tests pass; plugin validation succeeds; no whitespace errors.
+Expected: all lint, typecheck, unit, integration, contract, fake-protocol, clean-install, native-binding, and packaging checks pass; plugin validation succeeds; no whitespace errors. The direct `npm ci --omit=dev` smoke verifies production installation from the lockfile, while `tests/integration/package-install.test.mjs` verifies the packed plugin in an isolated consumer.
 
 If ZCode is authenticated and a harmless model is available, additionally run:
 

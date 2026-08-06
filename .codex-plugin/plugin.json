@@ -1,0 +1,36 @@
+{
+  "name": "zcode",
+  "version": "0.1.0",
+  "description": "Let Codex call ZCode for code review and task delegation.",
+  "author": {
+    "name": "vitry",
+    "email": "tzukai.chan@gmail.com",
+    "url": "https://github.com/vitry"
+  },
+  "homepage": "https://github.com/vitry/zcode-plugin-codex",
+  "repository": "https://github.com/vitry/zcode-plugin-codex",
+  "license": "Apache-2.0",
+  "keywords": [
+    "codex",
+    "zcode",
+    "code-review",
+    "delegation"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "ZCode for Codex",
+    "shortDescription": "Review code and delegate tasks through ZCode.",
+    "longDescription": "Connect Codex to ZCode for independent code review and delegated development work while preserving Codex host control.",
+    "developerName": "vitry",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/vitry/zcode-plugin-codex",
+    "defaultPrompt": [
+      "Ask ZCode to review my current changes.",
+      "Delegate this implementation task to ZCode."
+    ]
+  }
+}

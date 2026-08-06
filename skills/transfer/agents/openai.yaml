@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZCode Transfer"
+  short_description: "Transfer a Codex thread into ZCode"
+  default_prompt: "Use $zcode:transfer to transfer this Codex conversation."

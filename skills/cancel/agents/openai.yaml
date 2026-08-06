@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZCode Cancel"
+  short_description: "Cancel an active ZCode background job"
+  default_prompt: "Use $zcode:cancel to cancel my active ZCode job."

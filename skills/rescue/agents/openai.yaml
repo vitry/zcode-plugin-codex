@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZCode Rescue"
+  short_description: "Delegate investigation and fixes to ZCode"
+  default_prompt: "Use $zcode:rescue to investigate and fix this issue."
