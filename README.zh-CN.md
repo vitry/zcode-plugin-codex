@@ -73,7 +73,7 @@ Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺�
 - 后台任务：按输出使用 `$zcode:status <job-id> --wait`、`$zcode:result <job-id>` 或 `$zcode:cancel <job-id>`。
 - Hook trust / restart required：只让 setup 信任当前安装插件的精确 hook hash，重启后再次检查。
 
-macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。发布前应在已认证机器运行 `ZCODE_REAL_E2E=1 node --test tests/e2e/real-zcode.test.mjs`；普通本地 skip 明确表示 unqualified，本仓库不会把未运行的 E2E 写成通过。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
+macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。发布前应在已认证机器运行 `ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualified`。如需同时验证“已安装 marketplace → 真实 Codex → ZCode”桥接，还要设置 `ZCODE_CODEX_SKILLS_E2E=1`；该测试会消耗已认证 Codex 账户的额度。缺少 opt-in、认证、模型或额度时，测试只会给出结构化的 `unqualified` skip，绝不会算作通过；未知执行错误仍会让测试失败。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
 
 ## 许可证与来源
 

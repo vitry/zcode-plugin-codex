@@ -73,7 +73,7 @@ The optional Stop review gate runs a bounded foreground read-only review only af
 - Background work: use `$zcode:status <job-id> --wait`, `$zcode:result <job-id>`, or `$zcode:cancel <job-id>` exactly as reported.
 - Hook trust or restart required: let setup trust only this installed plugin's exact hook hashes, restart Codex, and rerun setup.
 
-macOS with ZCode Desktop 3.6.5 and CLI 0.16.1+ is the release qualification target. Run `ZCODE_REAL_E2E=1 node --test tests/e2e/real-zcode.test.mjs` on an authenticated machine before marking a release qualified; an ordinary local skip is explicitly unqualified and this repository does not claim that an unrun E2E passed. Linux and Windows are code-supported by fake-protocol CI, but are not real-CLI qualified yet.
+macOS with ZCode Desktop 3.6.5 and CLI 0.16.1+ is the release qualification target. Run `ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualified` on an authenticated machine before marking a release qualified. To include the installed-marketplace-to-real-Codex bridge, also set `ZCODE_CODEX_SKILLS_E2E=1`; this consumes authenticated Codex credits. Missing opt-in, authentication, model, or credits produces a structured `unqualified` skip, never a pass. An unknown execution failure remains a test failure. Linux and Windows are code-supported by fake-protocol CI, but are not real-CLI qualified yet.
 
 ## License and provenance
 

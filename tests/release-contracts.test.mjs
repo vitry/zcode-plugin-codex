@@ -113,3 +113,19 @@ test('CI runs full and packed native suites on three platforms and Node 18.18', 
     assert.doesNotMatch(source, /\.cmd/);
   }
 });
+
+test('release qualification covers the installed direct bridge and explicit real model', () => {
+  const packageJson = JSON.parse(read('package.json')); const qualified = packageJson.scripts['test:qualified'];
+  assert.match(qualified, /tests\/e2e\/codex-skills-e2e\.test\.mjs/); assert.match(qualified, /tests\/e2e\/real-zcode\.test\.mjs/);
+  assert.match(packageJson.scripts.check, /npm run test:qualified/);
+  const real = read('tests/e2e/real-zcode.test.mjs');
+  assert.match(real, /ZCODE_REAL_E2E_MODEL\?\.trim\(\)/); assert.match(real, /runCompanion/); assert.match(real, /--model/);
+  const installed = read('tests/e2e/codex-skills-e2e.test.mjs');
+  assert.match(installed, /codex-skills-unqualified/); assert.match(installed, /exec/); assert.match(installed, /--ephemeral/); assert.match(installed, /--json/); assert.match(installed, /\$zcode:review/); assert.match(installed, /buildMarketplaceSnapshot/);
+  const manifest = JSON.parse(read('.codex-plugin/plugin.json')); assert.equal(manifest.hooks, './hooks/hooks.json');
+  const companion = read('scripts/zcode-companion.mjs'); assert.match(companion, /startBackgroundWorker/);
+  for (const command of commands) {
+    const skill = read(`skills/${command}/SKILL.md`);
+    assert.doesNotMatch(skill, /FD3|FD4|caller.?context|execution capability/i);
+  }
+});

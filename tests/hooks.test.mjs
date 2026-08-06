@@ -59,10 +59,9 @@ async function workspace() {
 
 async function writeGateConfig(data, cwd, value) { const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); await mkdir(join(storage.directory, 'config'), { recursive: true }); await writeFile(join(storage.directory, 'config/review-gate.json'), JSON.stringify(value)); }
 function stopFields(input) { const copy = { ...input }; delete copy.prompt; return copy; }
-function callerToken(result) { return result.json?.hookSpecificOutput?.additionalContext?.match(/ZCODE_CALLER_CONTEXT=([A-Za-z0-9_-]+)/)?.[1]; }
 function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 
-test('hooks.json registers bounded native lifecycle hooks with no manifest field', async () => {
+test('hooks.json registers bounded native lifecycle hooks through the manifest', async () => {
   const hooks = JSON.parse(await readFile(join(root, 'hooks/hooks.json'), 'utf8'));
   assert.deepEqual(Object.keys(hooks.hooks).sort(), ['SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
   for (const groups of Object.values(hooks.hooks)) for (const group of groups) for (const hook of group.hooks) {
@@ -73,7 +72,7 @@ test('hooks.json registers bounded native lifecycle hooks with no manifest field
   assert.equal(hooks.hooks.Stop[0].hooks[0].timeout, 900);
   assert.ok(hooks.hooks.SessionEnd[0].hooks[0].timeout <= 3);
   const manifest = JSON.parse(await readFile(join(root, '.codex-plugin/plugin.json'), 'utf8'));
-  assert.equal('hooks' in manifest, false);
+  assert.equal(manifest.hooks, './hooks/hooks.json');
   assert.doesNotMatch(await readFile(join(root, 'hooks/stop-review-gate-hook.mjs'), 'utf8'), /NODE_ENV|ZCODE_TEST/, 'production hook must not expose test-only timeout controls');
 });
 
@@ -94,8 +93,9 @@ test('two sessions in one workspace get isolated caller capabilities, permission
   const a = await runHook('user-prompt-hook.mjs', { session_id: 'session-a', turn_id: 'turn-a', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: '/never/read', model: 'gpt', permission_mode: 'plan', prompt: 'hello' }, env);
   const b = await runHook('user-prompt-hook.mjs', { session_id: 'session-b', turn_id: 'turn-b', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'dontAsk', prompt: 'hello' }, env);
   assert.equal(a.code, 0); assert.equal(b.code, 0);
-  const ac = a.json.hookSpecificOutput.additionalContext; const bc = b.json.hookSpecificOutput.additionalContext;
-  assert.match(ac, /ZCODE_CALLER_CONTEXT=/); assert.match(bc, /ZCODE_CALLER_CONTEXT=/); assert.notEqual(ac, bc);
+  assert.deepEqual(a.json, {}); assert.deepEqual(b.json, {}); const identity = createIdentityStore({ dataRoot: data });
+  const ac = await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: cwd }); const bc = await identity.resolveActiveTurn({ sessionId: 'session-b', workspace: cwd });
+  assert.equal(ac.turnId, 'turn-a'); assert.equal(bc.turnId, 'turn-b'); assert.equal(ac.permissionMode, 'plan'); assert.equal(bc.permissionMode, 'dontAsk');
   assert.doesNotMatch(`${a.stdout}${b.stdout}`, /transcript_path|\/never\/read|brokerToken|executionCapability/);
   const files = await jsonFiles(join(data, 'workspaces'));
   const records = await Promise.all(files.map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
@@ -103,14 +103,14 @@ test('two sessions in one workspace get isolated caller capabilities, permission
   assert.ok(records.some((record) => record.sessionId === 'session-b' && record.permissionMode === 'dontAsk'));
   assert.ok(records.filter((record) => record.kind === 'baseline').every((record) => /^[a-f0-9]{64}$/.test(record.fingerprint)));
   const allStored = (await Promise.all((await jsonFiles(data)).map((path) => readFile(path, 'utf8')))).join('\n');
-  for (const token of [ac, bc].map((value) => value.match(/ZCODE_CALLER_CONTEXT=([^\s]+)/)?.[1])) assert.ok(token && !allStored.includes(token));
+  assert.doesNotMatch(allStored, /ZCODE_CALLER_CONTEXT/);
 });
 
 test('caller authorization survives non-Git workspaces while gate baseline stays unavailable', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'zpc-nongit-')); const data = await mkdtemp(join(tmpdir(), 'zpc-hooks-data-')); const env = { PLUGIN_DATA: data };
   await runHook('session-lifecycle-hook.mjs', { session_id: 'nongit', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
   const prompt = await runHook('user-prompt-hook.mjs', { session_id: 'nongit', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'work' }, env);
-  assert.equal(prompt.code, 0); assert.match(prompt.json.hookSpecificOutput.additionalContext, /ZCODE_CALLER_CONTEXT=/);
+  assert.equal(prompt.code, 0); assert.deepEqual(prompt.json, {}); assert.equal((await createIdentityStore({ dataRoot: data }).resolveActiveTurn({ sessionId: 'nongit', workspace: cwd })).turnId, 'turn');
   const stop = await runHook('stop-review-gate-hook.mjs', { session_id: 'nongit', turn_id: 'turn', cwd, hook_event_name: 'Stop', transcript_path: null, model: 'gpt', permission_mode: 'default', stop_hook_active: false, last_assistant_message: 'done' }, env); assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
 });
 
@@ -118,7 +118,7 @@ test('unborn repositories get baselines and full untracked contents affect finge
   const cwd = await mkdtemp(join(tmpdir(), 'zpc-unborn-')); const data = await mkdtemp(join(tmpdir(), 'zpc-hooks-data-')); const env = { PLUGIN_DATA: data };
   await new Promise((resolvePromise, reject) => { const child = spawn('git', ['init', '-q'], { cwd }); child.once('error', reject); child.once('exit', (code) => code === 0 ? resolvePromise() : reject(new Error(`git init ${code}`))); });
   const bytes = Buffer.alloc(384 * 1024, 65); await writeFile(join(cwd, 'large.bin'), bytes); await runHook('session-lifecycle-hook.mjs', { session_id: 'unborn', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
-  const prompt = await runHook('user-prompt-hook.mjs', { session_id: 'unborn', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'work' }, env); assert.equal(prompt.code, 0); assert.match(prompt.json.hookSpecificOutput.additionalContext, /ZCODE_CALLER_CONTEXT=/);
+  const prompt = await runHook('user-prompt-hook.mjs', { session_id: 'unborn', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'work' }, env); assert.equal(prompt.code, 0); assert.deepEqual(prompt.json, {}); assert.equal((await createIdentityStore({ dataRoot: data }).resolveActiveTurn({ sessionId: 'unborn', workspace: cwd })).turnId, 'turn');
   bytes.fill(66, 160 * 1024, 224 * 1024); await writeFile(join(cwd, 'large.bin'), bytes);
   const stop = await runHook('stop-review-gate-hook.mjs', { session_id: 'unborn', turn_id: 'turn', cwd, hook_event_name: 'Stop', transcript_path: null, model: 'gpt', permission_mode: 'default', stop_hook_active: false, last_assistant_message: 'done' }, env); assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
   assert.equal((await jsonFiles(join(data, 'workspaces'))).filter((path) => path.includes('/gate-runs/')).length, 1, 'same-size middle-only untracked edits must change the fingerprint');
@@ -283,29 +283,29 @@ test('terminal completion context is routed durably once to its exact owner', as
   const store = createStateStore({ dataRoot: data }); const job = await store.reserveJob({ workspace: cwd, ownerSessionId: 'owner', ownerTurnId: 'old', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'default' } }); await store.transitionJob(cwd, job.id, ['queued'], 'failed', { error: { message: 'done' }, finishedAt: new Date().toISOString(), exitCode: 1 });
   const input = { session_id: 'owner', turn_id: 'new-1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'next' };
   const first = await runHook('user-prompt-hook.mjs', input, env); const second = await runHook('user-prompt-hook.mjs', { ...input, turn_id: 'new-2' }, env);
-  assert.match(first.json.hookSpecificOutput.additionalContext, new RegExp(job.id)); assert.doesNotMatch(second.json.hookSpecificOutput.additionalContext, new RegExp(job.id));
+  assert.match(first.json.hookSpecificOutput.additionalContext, new RegExp(job.id)); assert.doesNotMatch(second.json?.hookSpecificOutput?.additionalContext ?? '', new RegExp(job.id));
 });
 
 test('caller contexts end at the earlier turn boundary without crossing sibling sessions', async (t) => {
   await t.test('a new prompt revokes only older turns from the same session', async () => {
     const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
     for (const session_id of ['owner', 'sibling']) await runHook('session-lifecycle-hook.mjs', { session_id, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
-    const first = await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 't1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'one' }, env); const sibling = await runHook('user-prompt-hook.mjs', { session_id: 'sibling', turn_id: 's1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'sibling' }, env); const second = await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 't2', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'two' }, env);
-    await assert.rejects(identity.consumeCallerContext(callerToken(first), { workspace: cwd }), { code: 'CALLER_CONTEXT_INVALID' }); assert.equal((await identity.consumeCallerContext(callerToken(second), { workspace: cwd })).turnId, 't2'); assert.equal((await identity.consumeCallerContext(callerToken(sibling), { workspace: cwd })).sessionId, 'sibling');
+    await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 't1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'one' }, env); await runHook('user-prompt-hook.mjs', { session_id: 'sibling', turn_id: 's1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'sibling' }, env); await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 't2', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'two' }, env);
+    assert.equal((await identity.resolveActiveTurn({ sessionId: 'owner', workspace: cwd })).turnId, 't2'); assert.equal((await identity.resolveActiveTurn({ sessionId: 'sibling', workspace: cwd })).turnId, 's1');
   });
   for (const mode of ['disabled', 'setup-not-ready', 'allow']) await t.test(`${mode} Stop ends the current caller turn`, async () => {
     const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
     if (mode !== 'disabled') await writeGateConfig(data, cwd, { enabled: true, setupReady: mode === 'allow', ...(mode === 'setup-not-ready' ? { reason: 'unauthenticated' } : {}) });
-    const promptInput = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; const prompt = await runHook('user-prompt-hook.mjs', promptInput, env); await writeFile(join(cwd, 'tracked.txt'), `${mode}\n`);
-    const stop = await runHook('stop-review-gate-hook.mjs', { ...stopFields(promptInput), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'ALLOW: clean' }); assert.notEqual(stop.json?.decision, 'block'); await assert.rejects(identity.consumeCallerContext(callerToken(prompt), { workspace: cwd }), { code: 'CALLER_CONTEXT_INVALID' });
+    const promptInput = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; await runHook('user-prompt-hook.mjs', promptInput, env); await writeFile(join(cwd, 'tracked.txt'), `${mode}\n`);
+    const stop = await runHook('stop-review-gate-hook.mjs', { ...stopFields(promptInput), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'ALLOW: clean' }); assert.notEqual(stop.json?.decision, 'block'); await assert.rejects(identity.resolveActiveTurn({ sessionId: 'owner', workspace: cwd }), { code: 'ACTIVE_TURN_NOT_FOUND' });
   });
   await t.test('BLOCK keeps the caller turn reusable for continuation', async () => {
     const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); await writeGateConfig(data, cwd, { enabled: true, setupReady: true }); await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
-    const promptInput = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; const prompt = await runHook('user-prompt-hook.mjs', promptInput, env); await writeFile(join(cwd, 'tracked.txt'), 'blocked\n'); const stop = await runHook('stop-review-gate-hook.mjs', { ...stopFields(promptInput), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'BLOCK: continue' }); assert.equal(stop.json.decision, 'block'); assert.equal((await identity.consumeCallerContext(callerToken(prompt), { workspace: cwd })).turnId, 'turn');
+    const promptInput = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; await runHook('user-prompt-hook.mjs', promptInput, env); await writeFile(join(cwd, 'tracked.txt'), 'blocked\n'); const stop = await runHook('stop-review-gate-hook.mjs', { ...stopFields(promptInput), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'BLOCK: continue' }); assert.equal(stop.json.decision, 'block'); assert.equal((await identity.resolveActiveTurn({ sessionId: 'owner', workspace: cwd })).turnId, 'turn');
   });
   await t.test('a concurrent duplicate cannot revoke a turn while the real review blocks', async () => {
     const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); await writeGateConfig(data, cwd, { enabled: true, setupReady: true }); await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
-    const promptInput = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; const prompt = await runHook('user-prompt-hook.mjs', promptInput, env); await writeFile(join(cwd, 'tracked.txt'), 'blocked concurrent\n'); const stopInput = { ...stopFields(promptInput), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }; const results = await Promise.all([runHook('stop-review-gate-hook.mjs', stopInput, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'BLOCK: continue' }), runHook('stop-review-gate-hook.mjs', stopInput, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'BLOCK: continue' })]); assert.equal(results.filter((result) => result.json?.decision === 'block').length, 1); assert.equal((await identity.consumeCallerContext(callerToken(prompt), { workspace: cwd })).turnId, 'turn');
+    const promptInput = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; await runHook('user-prompt-hook.mjs', promptInput, env); await writeFile(join(cwd, 'tracked.txt'), 'blocked concurrent\n'); const stopInput = { ...stopFields(promptInput), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }; const results = await Promise.all([runHook('stop-review-gate-hook.mjs', stopInput, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'BLOCK: continue' }), runHook('stop-review-gate-hook.mjs', stopInput, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'BLOCK: continue' })]); assert.equal(results.filter((result) => result.json?.decision === 'block').length, 1); assert.equal((await identity.resolveActiveTurn({ sessionId: 'owner', workspace: cwd })).turnId, 'turn');
   });
 });
 

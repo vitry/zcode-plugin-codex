@@ -7,14 +7,21 @@ import test from 'node:test';
 
 import { resolveModel } from '../../scripts/lib/args.mjs';
 import { diagnoseZCodeAuth } from '../../scripts/lib/codex-config.mjs';
+import { createIdentityStore } from '../../scripts/lib/identity.mjs';
+import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { createZCodeClient } from '../../scripts/lib/zcode-client.mjs';
+import { releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
 import { discoverZCode } from '../../scripts/lib/zcode-discovery.mjs';
+import { runCompanion } from '../../scripts/zcode-companion.mjs';
 
+const requestedModel = process.env.ZCODE_REAL_E2E_MODEL?.trim();
 const skipReason = process.env.ZCODE_REAL_E2E !== '1'
   ? 'unqualified local real E2E: set ZCODE_REAL_E2E=1 on an authenticated macOS ZCode installation'
   : process.platform !== 'darwin'
     ? 'unqualified real E2E: macOS is the only real-CLI-qualified platform'
-    : false;
+    : !requestedModel
+      ? 'unqualified real E2E: set a non-empty ZCODE_REAL_E2E_MODEL'
+      : false;
 
 test('real ZCode discovery, read-only turn, cancellation, model, and history import', {
   skip: skipReason,
@@ -28,6 +35,7 @@ test('real ZCode discovery, read-only turn, cancellation, model, and history imp
       for (const sessionId of sessions) await client.stopSession(sessionId, 10_000).catch(() => {});
       await client.close().catch(() => {});
     }
+    await releaseManagedZCodeOwner({ dataRoot: join(temporary, 'plugin-data'), workspace: temporary, ownerId: ownerIdForSession('real-zcode-e2e'), requestTimeoutMs: 10_000 }).catch(() => {});
     await rm(temporary, { force: true, recursive: true });
   });
   const discovery = await discoverZCode({ explicitPath: process.env.ZCODE_PATH, env: process.env });
@@ -38,6 +46,11 @@ test('real ZCode discovery, read-only turn, cancellation, model, and history imp
     env: process.env,
     requestTimeoutMs: 30_000,
   }), { ready: true, status: 'authenticated' });
+
+  const dataRoot = join(temporary, 'plugin-data'); const identity = createIdentityStore({ dataRoot });
+  const callerContext = await identity.createCallerContext({ sessionId: 'real-zcode-e2e', turnId: 'real-model-turn', workspace: temporary, permissionMode: 'read-only' });
+  const companion = await runCompanion(['rescue', '--fresh', '--model', requestedModel, 'Inspect this empty workspace read-only and return a short acknowledgement.'], { cwd: temporary, env: { ...process.env, ZCODE_DATA_ROOT: dataRoot, ZCODE_PATH: discovery.path }, authorization: { callerContext } });
+  assert.equal(companion.job.status, 'succeeded'); assert.ok(companion.result.trim()); assert.ok(companion.job.model);
 
   client = await createZCodeClient({
     workspace: temporary,
@@ -61,14 +74,9 @@ test('real ZCode discovery, read-only turn, cancellation, model, and history imp
   const sessionId = created.session.sessionId;
   sessions.add(sessionId);
 
-  const requestedModel = process.env.ZCODE_REAL_E2E_MODEL;
-  if (requestedModel) {
-    let aliases = {};
-    if (process.env.ZCODE_MODEL_ALIASES) aliases = JSON.parse(process.env.ZCODE_MODEL_ALIASES);
-    const model = resolveModel(requestedModel, aliases, created.settings.model.available);
-    const selected = await client.setModel(sessionId, model);
-    assert.deepEqual(selected.settings.model.current, model);
-  }
+  const model = resolveModel(requestedModel, {}, created.settings.model.available);
+  const selected = await client.setModel(sessionId, model);
+  assert.deepEqual(selected.settings.model.current, model);
 
   const cancellation = await client.createSession({ workspace: temporary });
   const cancellationId = cancellation.session.sessionId;
