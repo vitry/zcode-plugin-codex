@@ -15,6 +15,22 @@ const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
 
+async function cleanupFixture(directory) {
+  const delays = process.platform === 'win32' ? [100, 250, 500, 1_000] : [0];
+  let lastError;
+  for (const delay of delays) {
+    if (delay) await new Promise((resolvePromise) => setTimeout(resolvePromise, delay));
+    try {
+      await rm(directory, { force: true, recursive: true });
+      return;
+    } catch (error) {
+      if (process.platform !== 'win32' || !['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error?.code)) throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 function child(command, args, { cwd, env, input, protectedInput = false }) {
   return runChild(command, args, { cwd, env, input, protectedInput, ordinaryInput: !protectedInput })
     .then((result) => {
@@ -37,7 +53,7 @@ async function fixture(t) {
   await git(workspace, ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base']);
   await writeFile(join(workspace, 'tracked.txt'), 'changed\n');
   const env = { ...process.env, PLUGIN_ROOT: root, PLUGIN_DATA: dataRoot, ZCODE_PATH: fakeZCode };
-  t.after(() => rm(directory, { force: true, recursive: true }));
+  t.after(() => cleanupFixture(directory));
   return { workspace, dataRoot, env };
 }
 

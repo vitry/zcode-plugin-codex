@@ -128,8 +128,15 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   const nativeBinding = await realpath(join(installedRoot, 'node_modules', 'fs-native-extensions'));
   const installedRootPath = await realpath(installedRoot); const nativeBindingRelative = relative(installedRootPath, nativeBinding);
   assert.ok(nativeBindingRelative && !isAbsolute(nativeBindingRelative) && nativeBindingRelative !== '..' && !nativeBindingRelative.startsWith(`..${sep}`));
-  const { withFileLock } = await import(pathToFileURL(join(installedRoot, 'scripts', 'lib', 'fs.mjs')).href);
-  assert.equal(await withFileLock(join(temporary, 'snapshot-native.lock'), async () => 'locked'), 'locked');
+  // Keep the installed native binding in a short-lived probe process. Loading
+  // it in this test process leaves the Windows .node file locked until the
+  // whole test runner exits, which prevents the marketplace cache cleanup.
+  const lockProbe = await runChild(process.execPath, ['--input-type=module', '--eval', `
+    const { withFileLock } = await import(${JSON.stringify(pathToFileURL(join(installedRoot, 'scripts', 'lib', 'fs.mjs')).href)});
+    const result = await withFileLock(${JSON.stringify(join(temporary, 'snapshot-native.lock'))}, async () => 'locked');
+    if (result !== 'locked') throw new Error('lock failed');
+  `], { cwd: temporary, env });
+  assert.equal(lockProbe.code, 0, lockProbe.stderr || lockProbe.stdout);
 
   const pluginData = join(temporary, 'plugin-data');
   const hookEnv = { ...env, PLUGIN_ROOT: installedRoot, PLUGIN_DATA: pluginData };

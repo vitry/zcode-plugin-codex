@@ -1,5 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +15,41 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
+
+async function cleanupFixture(directory) {
+  const delays = process.platform === 'win32' ? [80, 100, 250, 500, 1_000] : [80];
+  let lastError;
+  for (const delay of delays) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, delay));
+    try {
+      await rm(directory, { force: true, recursive: true });
+      return;
+    } catch (error) {
+      if (process.platform !== 'win32' || !['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error?.code)) throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+async function ensureWorkerStopped(pid) {
+  if (!Number.isSafeInteger(pid) || !processAlive(pid)) return;
+  const wait = async (milliseconds) => {
+    const deadline = Date.now() + milliseconds;
+    while (processAlive(pid) && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  };
+  await wait(process.platform === 'win32' ? 5_000 : 1_000);
+  if (processAlive(pid)) {
+    if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, shell: false, stdio: 'ignore' });
+    else try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { /* already exited */ } }
+    await wait(2_000);
+  }
+  assert.equal(processAlive(pid), false, `background worker ${pid} did not terminate`);
+}
 
 async function run(command, args, cwd) {
   const result = await runChild(command, args, { cwd });
@@ -33,7 +69,7 @@ async function fixture(t) {
   const callerA = await identity.createCallerContext({ sessionId: 'codex-a', turnId: 'turn-a', workspace, permissionMode: 'workspace-write' });
   const callerB = await identity.createCallerContext({ sessionId: 'codex-b', turnId: 'turn-b', workspace, permissionMode: 'read-only' });
   const env = { ...process.env, PLUGIN_DATA: dataRoot, PLUGIN_ROOT: root, ZCODE_PATH: fakeZCode };
-  t.after(async () => { await new Promise((resolvePromise) => setTimeout(resolvePromise, 80)); await rm(directory, { force: true, recursive: true }); });
+  t.after(() => cleanupFixture(directory));
   return { workspace, callerA, callerB, env };
 }
 
@@ -192,7 +228,8 @@ test('direct background invocation keeps capabilities private and production own
   const jobId = /Reserved background job ([a-f0-9]{64})\./.exec(launched.stdout)?.[1];
   assert.ok(jobId, launched.stdout); assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation/);
   const store = createStateStore({ dataRoot: ctx.env.PLUGIN_DATA }); let job;
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + (process.platform === 'win32' ? 15_000 : 5_000);
   do { job = await store.readJob(ctx.workspace, jobId); if (['succeeded', 'failed', 'cancelled'].includes(job.status)) break; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); } while (Date.now() < deadline);
+  await ensureWorkerStopped(job.childPid);
   assert.equal(job.status, 'succeeded', JSON.stringify(job.error));
 });
