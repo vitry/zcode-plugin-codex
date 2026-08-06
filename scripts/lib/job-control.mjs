@@ -25,7 +25,7 @@ export function ownerIdForSession(sessionId) {
   return createHash('sha256').update(JSON.stringify(['zcode-owner-v1', sessionId])).digest('hex');
 }
 
-/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
+/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
 export function createJobController(options) {
   if (!options?.store) throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'A state store is required.', { category: 'validation', remedy: 'Provide the Task 2 state store.' });
   const pollIntervalMs = options.pollIntervalMs ?? 50;
@@ -38,9 +38,9 @@ export function createJobController(options) {
     async listOwned(workspace, ownerSessionId) {
       return (await options.store.listJobs(workspace)).filter((/** @type {any} */ job) => job.ownerSessionId === ownerSessionId);
     },
-    /** @param {string} workspace @param {string} ownerSessionId @param {string} [jobId] */
-    async selectOwned(workspace, ownerSessionId, jobId) {
-      const jobs = (await options.store.listJobs(workspace)).filter((/** @type {any} */ job) => job.ownerSessionId === ownerSessionId && (!jobId || job.id === jobId));
+    /** @param {string} workspace @param {string} ownerSessionId @param {string} [jobId] @param {'status'|'result'|'cancel'} [eligibility] */
+    async selectOwned(workspace, ownerSessionId, jobId, eligibility = 'status') {
+      const jobs = (await options.store.listJobs(workspace)).filter((/** @type {any} */ job) => job.ownerSessionId === ownerSessionId && (jobId ? job.id === jobId : eligibleImplicit(job, eligibility)));
       const selected = jobs.at(-1);
       if (!selected) throw new PluginError('OWNED_JOB_NOT_FOUND', 'No matching owned job was found.', { category: 'authorization', remedy: 'Check the job ID and invoke the command from its owning Codex session.' });
       return selected;
@@ -49,6 +49,7 @@ export function createJobController(options) {
     async wait(workspace, jobId, timeoutMs) {
       const started = clock();
       while (true) {
+        await options.beforeWaitPoll?.();
         const job = await options.store.readJob(workspace, jobId);
         if (TERMINAL.has(job.status)) return job;
         if (clock() - started >= timeoutMs) throw new PluginError('JOB_WAIT_TIMEOUT', `Timed out waiting for job ${jobId}.`, { category: 'timeout', remedy: `Retry $zcode:status ${jobId} --wait.`, details: { jobId, status: job.status, timeoutMs } });
@@ -155,6 +156,12 @@ function completedDuringAcquisition(observed, current) {
 
 /** @param {number} milliseconds */
 function pollDelay(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
+/** @param {any} job @param {'status'|'result'|'cancel'} eligibility */
+function eligibleImplicit(job, eligibility) {
+  if (eligibility === 'cancel') return ['queued', 'running', 'cancelling'].includes(job.status);
+  if (eligibility === 'result') return job.status === 'succeeded' && typeof job.resultArtifact === 'string';
+  return true;
+}
 /** @param {string} jobId @param {unknown} cause */
 function finalizeError(jobId, cause) { return new PluginError('JOB_CANCEL_FINALIZE_FAILED', `ZCode stopped, but job ${jobId} could not be finalized as cancelled.`, { category: 'storage', remedy: 'Retry cancellation to reconcile and finalize the cancelling job.', cause }); }
 /** @param {string} jobId @param {string} message @param {unknown} [cause] */

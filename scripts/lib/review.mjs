@@ -30,7 +30,7 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
@@ -55,9 +55,14 @@ export async function executeJob(input) {
     const now = new Date().toISOString();
     running = await input.store.transitionJob(workspace, job.id, ['queued'], 'running', {
       startedAt: now, zcodeSessionId: sessionId, promptArtifact,
+      ...(input.childPid ? { childPid: input.childPid } : {}),
+      ...(input.workerLeaseId ? { workerLeaseId: input.workerLeaseId } : {}),
       ...(selectedModel ? { model: selectedModel } : {}), ...(input.effort ? { effort: input.effort } : {}),
     });
-    const turnBoundary = { beforeMessageIds: snapshotMessageIds(snapshot), ...await client.send(sessionId, prompt) };
+    const beforeMessageIds = [...snapshotMessageIds(snapshot)]; const sent = await client.send(sessionId, prompt);
+    running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
+    await input.onBoundaryPersisted?.(running);
+    const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
     await client.waitForCompletion(sessionId);
     const finalSnapshot = await client.readSession(sessionId);
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import process from 'node:process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { close as closeFd, createReadStream, realpathSync, write as writeFd } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve, sep } from 'node:path';
@@ -17,6 +17,7 @@ import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
+import { reconcileOwnedJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createStateStore } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
@@ -34,7 +35,12 @@ export async function runCompanion(argv, runtime = {}) {
   const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck });
   const caller = runtime.caller ?? await identity.consumeCallerContext(requireAuthorization(runtime.authorization, ['callerContext']).callerContext, { workspace: cwd });
-  const controller = createJobController({ store, dataRoot });
+  const reconcile = () => reconcileOwnedJobs({ store, dataRoot, workspace: cwd, ownerSessionId: caller.sessionId, createClient: async (job, ownerId) => {
+    const launch = await discoverLaunch(env);
+    return (runtime.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: cwd, launch, ownerId, env, ...managedWireOptionsForJob(job) });
+  } });
+  const controller = createJobController({ store, dataRoot, beforeWaitPoll: reconcile });
+  await reconcile();
   if (parsed.command === 'status') {
     if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId)) };
     let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
@@ -42,12 +48,12 @@ export async function runCompanion(argv, runtime = {}) {
     return { job };
   }
   if (parsed.command === 'result') {
-    const job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
+    const job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'result');
     if (job.status !== 'succeeded' || !job.resultArtifact) throw new PluginError('JOB_RESULT_UNFINISHED', `Job ${job.id} is ${job.status}.`, { category: 'state', remedy: `Run $zcode:status ${job.id} --wait.`, details: { jobId: job.id, status: job.status } });
     return { job, result: await readResultArtifact({ dataRoot, workspace: cwd, artifact: job.resultArtifact }) };
   }
   if (parsed.command === 'cancel') {
-    const selected = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
+    const selected = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'cancel');
     if (!['running', 'cancelling'].includes(selected.status)) return { job: await controller.cancel(cwd, selected.id, caller.sessionId) };
     const launch = await discoverLaunch(env);
     const client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId: ownerIdForSession(caller.sessionId), env, ...managedWireOptionsForJob(selected) });
@@ -119,7 +125,7 @@ async function startPublic(context) {
       throw error;
     }
   }
-  return executeReserved({ ...context, job, spec });
+  return executeWithWorkerLease({ ...context, job, spec });
 }
 
 /** @param {any} job */
@@ -146,8 +152,13 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', specDigest: recomputed });
   if (!sameJson(consumed.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
-  await startupAck?.();
-  return executeReserved({ parsed, cwd, env, dataRoot, identity, store, job, spec, caller: { sessionId: job.ownerSessionId } });
+  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, caller: { sessionId: job.ownerSessionId }, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
+}
+
+/** @param {any} context */
+async function executeWithWorkerLease(context) {
+  const workerLeaseId = randomBytes(32).toString('hex');
+  return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, () => executeReserved({ ...context, childPid: process.pid, workerLeaseId }));
 }
 
 /** @param {any} context */
@@ -159,7 +170,7 @@ async function executeReserved(context) {
     client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId, env });
     const modelAliases = parseAliases(env.ZCODE_MODEL_ALIASES);
     const preResolvedModel = spec.model && (spec.model.includes('/') || Object.hasOwn(modelAliases, spec.model)) ? resolveModel(spec.model, modelAliases, []) : undefined;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : spec.model, modelAliases, effort: spec.effort, resumeSessionId: spec.resumeSessionId, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); } });
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : spec.model, modelAliases, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); } });
   } catch (error) {
     await client?.close().catch(() => {});
     const current = await store.readJob(cwd, job.id).catch(() => null);

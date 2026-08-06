@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-nocheck
-import { appendFile } from 'node:fs/promises';
+import { appendFile, readFile } from 'node:fs/promises';
 import process from 'node:process';
 import readline from 'node:readline';
 
@@ -19,8 +19,8 @@ const pendingCompletionTimers = new Map();
 
 const defaultModel = { providerId: 'fake', modelId: 'model' };
 function settings(model = defaultModel) { return { appliedProviderRevision: 'provider-revision-1', model: { current: model, available: [{ ref: model, label: 'Fixture model', reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, label: 'Other model', reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' }, permission: { mode: 'build', rulesRevision: 1 } }; }
-function sessionInfo(sessionId, workspacePath = '/repo') { return { sessionId, workspace: { workspacePath, workspaceKey: workspacePath }, sessionKind: 'interactive', title: 'Fixture session', titleSource: 'generated', mode: 'build', status: 'idle', model: defaultModel, createdAt: 1, updatedAt: 1 }; }
-function messages(sessionId, model = defaultModel) { return resultMessages(sessionId, model, false, 'history', 'text'); }
+function sessionInfo(sessionId, workspacePath = '/repo', status = 'idle') { return { sessionId, workspace: { workspacePath, workspaceKey: workspacePath }, sessionKind: 'interactive', title: 'Fixture session', titleSource: 'generated', mode: 'build', status, model: defaultModel, createdAt: 1, updatedAt: 1 }; }
+function messages(sessionId, model = defaultModel) { return resultMessages(sessionId, model, false, 'history', 'text', undefined, 'historical-result-must-not-win'); }
 function resultMessages(sessionId, model, review, suffix = 'current', selectedMode, inputMessageId, resultText) {
   const mode = selectedMode ?? process.env.FAKE_ZCODE_RESULT_MODE ?? 'text';
   const structured = review ? mode === 'invalid-structured' ? { findings: [{ severity: 'bogus' }] } : { findings: [] } : undefined;
@@ -32,7 +32,18 @@ function resultMessages(sessionId, model, review, suffix = 'current', selectedMo
       : [{ ...base, type: 'text', text: gateText === '__EMPTY__' ? '' : gateText ?? (review ? JSON.stringify({ findings: [] }) : resultText ?? 'done') }];
   return [{ info: { messageId: userId, sessionId, role: 'user', time: { created: 1, completed: 2 }, agent: 'build', model, synthetic: false, visibility: 'user-visible' }, parts: [{ partId: `part-user-${suffix}`, sessionId, messageId: userId, type: 'text', text: 'hello' }] }, { info: { messageId: assistantId, sessionId, role: 'assistant', time: { created: 2, completed: 3 }, parentMessageId: userId, agent: 'build', model, path: { cwd: '/repo', root: '/repo' }, cost: 0, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, finish: 'stop', ...(structured === undefined ? {} : { structured }) }, parts }];
 }
-function snapshot(sessionId, value = sessions.get(sessionId)) { const valueSettings = value?.settings ?? settings(); return { protocol: { name: 'ZCode Protocol', version: 1 }, session: { ...sessionInfo(sessionId, value?.workspacePath), model: valueSettings.model.current }, settings: valueSettings, projection: { sessionId, status: 'idle', mode: 'build', turnCount: 0, totalTokenCount: 0, contextUsed: 0, contextWindow: 128000, pendingPermissions: [], activeToolCalls: [], backgroundJobs: [] }, runtime: { eventSeq: 0, stateRevision: 0, pendingRequestIds: [] }, messages: value?.messages?.length ? value.messages : messages(sessionId, valueSettings.model.current), goalStats: { timeUsedSeconds: 0, tokensUsed: 0, tokenBudget: null, contextUsed: 0, contextWindow: 128000, toolCallCount: 0, iterationCount: 0 }, todos: [{ content: 'Verify', status: 'pending', priority: 'high' }], todoGroups: [{ id: 'todo-group-1', source: 'session', todos: [] }], slashCommands: [{ name: 'review', description: 'Review code', source: 'builtin' }] }; }
+function snapshot(sessionId, value = sessions.get(sessionId)) { const valueSettings = value?.settings ?? settings(); const status = value?.projectionStatus ?? 'idle'; return { protocol: { name: 'ZCode Protocol', version: 1 }, session: { ...sessionInfo(sessionId, value?.workspacePath, status), model: valueSettings.model.current }, settings: valueSettings, projection: { sessionId, status, mode: 'build', turnCount: 0, totalTokenCount: 0, contextUsed: 0, contextWindow: 128000, pendingPermissions: [], activeToolCalls: [], backgroundJobs: [] }, runtime: { eventSeq: 0, stateRevision: value?.stateRevision ?? 0, pendingRequestIds: [] }, messages: value?.messages?.length ? value.messages : value?.pendingResult ? [] : messages(sessionId, valueSettings.model.current), goalStats: { timeUsedSeconds: 0, tokensUsed: 0, tokenBudget: null, contextUsed: 0, contextWindow: 128000, toolCallCount: 0, iterationCount: 0 }, todos: [{ content: 'Verify', status: 'pending', priority: 'high' }], todoGroups: [{ id: 'todo-group-1', source: 'session', todos: [] }], slashCommands: [{ name: 'review', description: 'Review code', source: 'builtin' }] }; }
+
+async function recoveryMode() { if (!process.env.FAKE_ZCODE_RECOVERY_CONTROL) return null; try { const value = JSON.parse(await readFile(process.env.FAKE_ZCODE_RECOVERY_CONTROL, 'utf8')); return ['active', 'completed', 'stopped', 'missing'].includes(value.mode) ? value.mode : 'active'; } catch { return 'active'; } }
+function applyRecoveryMode(session, mode) {
+  if (!session || !mode) return;
+  session.projectionStatus = mode === 'completed' ? 'completed' : mode === 'stopped' ? 'paused' : 'running';
+  if (mode === 'completed' && session.pendingResult && !session.resultApplied) {
+    const pending = session.pendingResult; session.messages.push(...resultMessages(session.sessionId, session.settings.model.current, pending.review, pending.suffix, undefined, pending.inputId));
+    session.resultApplied = true;
+    session.stateRevision = Math.max(session.stateRevision ?? 0, 2);
+  }
+}
 
 async function record(message) {
   if (process.env.FAKE_ZCODE_RECORD) {
@@ -105,8 +116,13 @@ input.on('line', async (line) => {
         const encoded = /--- BEGIN AUTHORIZED RESCUE OBJECTIVE ---\n([^\n]+)\n--- END AUTHORIZED RESCUE OBJECTIVE ---/.exec(trustedPrompt)?.[1];
         try { objectiveResult = `authorized:${JSON.parse(encoded)}`; } catch { objectiveResult = 'authorized-objective-missing'; }
       }
-      const session = sessions.get(p.sessionId); if (session) session.messages.push(...resultMessages(p.sessionId, session.settings.model.current, /ZCODE_REVIEW_OUTPUT_SCHEMA:\s*\{/i.test(trustedPrompt), `turn-${sendCount}`, /current hidden/i.test(p.content) ? 'reasoning-only' : undefined, /current unrelated/i.test(p.content) ? 'input-unrelated' : p.inputId, objectiveResult));
+      const session = sessions.get(p.sessionId); if (session) {
+        const review = /ZCODE_REVIEW_OUTPUT_SCHEMA:\s*\{/i.test(trustedPrompt); const suffix = `turn-${sendCount}`; const inputId = /current unrelated/i.test(p.content) ? 'input-unrelated' : p.inputId;
+        if (process.env.FAKE_ZCODE_RECOVERY_CONTROL) { session.messages.push(...messages(p.sessionId, session.settings.model.current)); session.pendingResult = { review, suffix, inputId }; }
+        else session.messages.push(...resultMessages(p.sessionId, session.settings.model.current, review, suffix, /current hidden/i.test(p.content) ? 'reasoning-only' : undefined, inputId, objectiveResult));
+      }
       const stateRevision = process.env.FAKE_ZCODE_BARRIER === '1' ? 1000 : 1;
+      if (session) session.stateRevision = stateRevision;
       if (process.env.FAKE_ZCODE_BARRIER === '1') send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: 999, reason: 'prompt_completed', patch: { status: 'idle' } } });
       const response = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision } };
       if (process.env.FAKE_ZCODE_BAD_SEND_ONCE === '1' && sendCount === 1) response.result.stateRevision = 'bad';
@@ -130,18 +146,23 @@ input.on('line', async (line) => {
       }
       break;
     }
-    case 'session/read':
-      send({ id: message.id, result: snapshot(p.sessionId) });
+    case 'session/read': {
+      const session = sessions.get(p.sessionId); applyRecoveryMode(session, await recoveryMode());
+      send({ id: message.id, result: snapshot(p.sessionId, session) });
       break;
+    }
     case 'session/resume':
       resumeCount += 1;
       if (process.env.FAKE_ZCODE_RESUME_ABA === '1' && resumeCount === 1) { await new Promise((resolve) => setTimeout(resolve, 40)); send({ id: message.id, error: { code: -32099, message: 'late resume failure' } }); break; }
       if (!sessions.has(p.sessionId)) sessions.set(p.sessionId, { sessionId: p.sessionId, workspacePath: '/repo', settings: settings(), messages: [] });
       send({ id: message.id, result: snapshot(p.sessionId) });
       break;
-    case 'session/list':
-      send({ id: message.id, result: { sessions: process.env.FAKE_ZCODE_BAD_LIST === 'session-id-only' ? [...sessions.values()].map(({ sessionId }) => ({ sessionId })) : [...sessions.values()].map(({ sessionId, workspacePath }) => sessionInfo(sessionId, workspacePath)) } });
+    case 'session/list': {
+      const mode = await recoveryMode(); const listed = mode === 'missing' ? [] : [...sessions.values()];
+      for (const session of listed) applyRecoveryMode(session, mode);
+      send({ id: message.id, result: { sessions: process.env.FAKE_ZCODE_BAD_LIST === 'session-id-only' ? listed.map(({ sessionId }) => ({ sessionId })) : listed.map(({ sessionId, workspacePath, projectionStatus }) => sessionInfo(sessionId, workspacePath, projectionStatus)) } });
       break;
+    }
     case 'session/stop': {
       if (process.env.FAKE_ZCODE_STOP_ERROR_PREFIX && p.sessionId.startsWith(process.env.FAKE_ZCODE_STOP_ERROR_PREFIX)) { send({ id: message.id, error: { code: -32099, message: 'fixture stop failed' } }); break; }
       const timer = pendingCompletionTimers.get(p.sessionId); if (timer) { clearTimeout(timer); pendingCompletionTimers.delete(p.sessionId); }

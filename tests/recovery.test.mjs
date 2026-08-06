@@ -1,13 +1,14 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { atomicWriteJson } from '../scripts/lib/fs.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
 import { buildPrompt } from '../scripts/lib/prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from '../scripts/lib/review-schema.mjs';
@@ -52,6 +53,13 @@ async function cancellationAttempt(dataRoot, workspace, jobId) {
   return JSON.parse(await readFile(join(storage.directory, 'cancel-attempts', `${jobId}.json`), 'utf8'));
 }
 
+function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+async function waitForJob(store, workspace, jobId, predicate, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs; let job;
+  while (Date.now() < deadline) { job = await store.readJob(workspace, jobId); if (predicate(job)) return job; await new Promise((resolve) => setTimeout(resolve, 10)); }
+  assert.fail(`job ${jobId} did not reach expected state: ${JSON.stringify(job)}`);
+}
+
 test('background preparation failures terminalize the reservation and release the writable slot', async () => {
   for (const dependency of ['writeJobSpec', 'createExecutionCapability']) {
     const fixture = await context(); const failure = Object.assign(new Error(`${dependency} failed`), { code: 'EIO' });
@@ -75,6 +83,62 @@ test('delivery failure revokes the minted capability and fails the queued job', 
   const binding = { jobId: output.job.id, ownerSessionId: 'owner', workspace: fixture.workspace, operation: 'run-reserved-job', specDigest: spec.digest };
   await assert.rejects(fixture.identity.consumeExecutionCapability(output.executionCapability, binding), { code: 'EXECUTION_CAPABILITY_REVOKED' });
   assert.equal((await createStateStore({ dataRoot: fixture.dataRoot }).readJob(fixture.workspace, output.job.id)).status, 'failed');
+});
+
+test('foreground executions persist an exact worker lease identity', async () => {
+  const fixture = await context();
+  const output = await runCompanion(['rescue', '--fresh', 'repair'], { cwd: fixture.workspace, env: { ...fixture.env, ZCODE_PATH: fakeZCode }, authorization: { callerContext: fixture.callerContext } });
+  const persisted = await createStateStore({ dataRoot: fixture.dataRoot }).readJob(fixture.workspace, output.job.id);
+  assert.equal(persisted.childPid, process.pid); assert.match(persisted.workerLeaseId, /^[a-f0-9]{64}$/);
+});
+
+test('a crashed real background worker reconciles remote terminal state without failing remote active work', async (t) => {
+  for (const [remoteMode, expectedStatus] of [['completed', 'succeeded'], ['stopped', 'cancelled'], ['missing', 'failed']]) {
+    const fixture = await context(); const control = join(fixture.root, 'recovery-control.json'); await writeFile(control, JSON.stringify({ mode: 'active' }));
+    const env = { ...fixture.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' };
+    const started = await runCompanion(['rescue', '--background', '--fresh', `recover ${remoteMode}`], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext }, autoLaunchBackground: true });
+    const store = createStateStore({ dataRoot: fixture.dataRoot });
+    const running = await waitForJob(store, fixture.workspace, started.job.id, (job) => job.status === 'running' && job.childPid && job.inputId);
+    t.after(() => { if (processAlive(running.childPid)) try { process.kill(running.childPid, 'SIGKILL'); } catch { /* already exited */ } });
+    assert.equal((await runCompanion(['status', running.id], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext } })).job.status, 'running', 'a healthy worker must never be reconciled away');
+    process.kill(running.childPid, 'SIGKILL'); const exitDeadline = Date.now() + 2_000; while (processAlive(running.childPid) && Date.now() < exitDeadline) await new Promise((resolve) => setTimeout(resolve, 10)); assert.equal(processAlive(running.childPid), false);
+    const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace });
+    await atomicWriteJson(join(storage.directory, 'jobs', `${running.id}.json`), { ...(await store.readJob(fixture.workspace, running.id)), childPid: process.pid });
+    assert.equal((await runCompanion(['status', running.id], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext } })).job.status, 'running', 'an orphan with a provably remote-active turn stays running');
+    let reconciled;
+    if (remoteMode === 'completed') {
+      const update = setTimeout(() => { void writeFile(control, JSON.stringify({ mode: remoteMode })); }, 50);
+      t.after(() => clearTimeout(update));
+      reconciled = await runCompanion(['status', running.id, '--wait', '--timeout-ms', '1000'], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext } });
+    } else {
+      await writeFile(control, JSON.stringify({ mode: remoteMode }));
+      reconciled = await runCompanion(['status', running.id], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext } });
+    }
+    assert.equal(reconciled.job.status, expectedStatus, remoteMode);
+    if (remoteMode === 'completed') {
+      const result = (await runCompanion(['result', running.id], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext } })).result;
+      assert.equal(result, 'done'); assert.doesNotMatch(result, /historical-result/);
+    }
+  }
+});
+
+test('reconciliation terminalizes one broken owned job, continues siblings, and never scans another owner', async () => {
+  const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot }); const jobs = [];
+  for (const [ownerSessionId, suffix, leaseCharacter] of [['owner', 'bad', 'a'], ['owner', 'good', 'b'], ['sibling', 'sibling', 'c']]) {
+    const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId, ownerTurnId: suffix, command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+    await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { childPid: 999999, workerLeaseId: leaseCharacter.repeat(64), startedAt: new Date().toISOString(), zcodeSessionId: `session-${suffix}` });
+    jobs.push(await store.transitionJob(fixture.workspace, job.id, ['running'], 'running', { inputId: `input-${suffix}`, startRevision: 1, beforeMessageIds: [] }));
+  }
+  const [bad, good, sibling] = jobs; const created = []; let closes = 0;
+  const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
+  await reconcileOwnedJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner', reconcileOwnership: async () => {}, createClient: async (job) => {
+    created.push(job.id); if (job.id === bad.id) throw new Error('broken recovery client');
+    return { listSessions: async () => ({ sessions: [{ sessionId: job.zcodeSessionId }] }), readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 2 }, messages: [{ info: { role: 'assistant', messageId: `assistant-${job.id}`, parentMessageId: job.inputId }, parts: [{ type: 'text', text: `recovered ${job.id}` }] }] }), close: async () => { closes += 1; } };
+  } });
+  assert.equal((await store.readJob(fixture.workspace, bad.id)).status, 'failed');
+  assert.equal((await store.readJob(fixture.workspace, good.id)).status, 'succeeded');
+  assert.equal((await store.readJob(fixture.workspace, sibling.id)).status, 'running');
+  assert.deepEqual(created.sort(), [bad.id, good.id].sort()); assert.equal(closes, 1);
 });
 
 test('real CLI fd4 delivery failure revokes capability and releases the writable slot', async () => {

@@ -584,6 +584,31 @@ test('tracked job fields persist through their legal lifecycle phases', async ()
   assert.deepEqual(await store.readJob(workspace, cancelledJob.id), cancelled);
 });
 
+test('accepted send boundaries persist for durable worker recovery', async () => {
+  const { dataRoot, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+  const queued = await store.reserveJob({ workspace, ...jobInput });
+  await store.transitionJob(workspace, queued.id, ['queued'], 'running', { childPid: 123, startedAt: new Date().toISOString(), zcodeSessionId: 'zcode-recovery-session' });
+  const boundary = await store.transitionJob(workspace, queued.id, ['running'], 'running', {
+    inputId: 'input-recovery-1', startRevision: 41, beforeMessageIds: ['message-before-a', 'message-before-b'],
+  });
+  assert.equal(boundary.inputId, 'input-recovery-1'); assert.equal(boundary.startRevision, 41);
+  assert.deepEqual(boundary.beforeMessageIds, ['message-before-a', 'message-before-b']);
+  assert.deepEqual(await store.readJob(workspace, queued.id), boundary);
+});
+
+test('recovery boundaries reject partial, duplicate, oversized, and rewritten values', async () => {
+  const { dataRoot, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+  const queued = await store.reserveJob({ workspace, ...jobInput });
+  await store.transitionJob(workspace, queued.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'zcode-recovery-session' });
+  for (const patch of [
+    { inputId: 'input-only' },
+    { inputId: 'input-duplicate', startRevision: 1, beforeMessageIds: ['same-message', 'same-message'] },
+    { inputId: 'input-oversized', startRevision: 1, beforeMessageIds: Array.from({ length: 600 }, (_, index) => `${index}-${'x'.repeat(500)}`) },
+  ]) await assert.rejects(store.transitionJob(workspace, queued.id, ['running'], 'running', patch), { code: 'JOB_PATCH_INVALID' });
+  await store.transitionJob(workspace, queued.id, ['running'], 'running', { inputId: 'input-stable', startRevision: 7, beforeMessageIds: ['before-stable'] });
+  await assert.rejects(store.transitionJob(workspace, queued.id, ['running'], 'running', { inputId: 'input-rewritten', startRevision: 8, beforeMessageIds: ['before-rewritten'] }), { code: 'JOB_PATCH_INVALID' });
+});
+
 test('tracked job fields reject unsafe values and invalid lifecycle phases', async () => {
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });

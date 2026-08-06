@@ -40,6 +40,24 @@ test('latest selection is canonical-workspace and owner confined', async () => {
   assert.equal((await controller.listOwned(workspace, 'session-a')).length, 1);
 });
 
+test('implicit cancel and result use command-specific eligibility while explicit IDs stay exact', async () => {
+  const { workspace, store, controller } = await setup();
+  const succeeded = await store.reserveJob({ workspace, ...reservation, readOnly: true, ownerTurnId: 'succeeded' });
+  await store.transitionJob(workspace, succeeded.id, ['queued'], 'running');
+  await store.transitionJob(workspace, succeeded.id, ['running'], 'succeeded', { resultArtifact: `results/${succeeded.id}.md` });
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const failed = await store.reserveJob({ workspace, ...reservation, readOnly: true, ownerTurnId: 'failed' });
+  await store.transitionJob(workspace, failed.id, ['queued'], 'failed', { error: 'failed' });
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const active = await store.reserveJob({ workspace, ...reservation, readOnly: true, ownerTurnId: 'active' });
+
+  assert.equal((await controller.selectOwned(workspace, 'session-a', undefined, 'cancel')).id, active.id);
+  assert.equal((await controller.selectOwned(workspace, 'session-a', undefined, 'result')).id, succeeded.id);
+  assert.equal((await controller.selectOwned(workspace, 'session-a', failed.id, 'result')).id, failed.id, 'explicit result IDs retain exact prior selection');
+  assert.equal((await controller.selectOwned(workspace, 'session-a', succeeded.id, 'cancel')).id, succeeded.id, 'explicit cancel IDs retain exact idempotent selection');
+  await assert.rejects(controller.selectOwned(workspace, 'session-b', undefined, 'cancel'), { code: 'OWNED_JOB_NOT_FOUND' });
+});
+
 test('wait reaches terminal state or returns a stable timeout error', async () => {
   const { workspace, store, controller } = await setup();
   const job = await store.reserveJob({ workspace, ...reservation });
@@ -206,7 +224,7 @@ test('executor failure cannot steal cancellation terminal ownership', async () =
   const completion = new Promise((resolve, reject) => { rejectCompletion = () => reject(new Error('stopped')); });
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
-    setPermissionHandler: () => {}, send: async () => ({}), waitForCompletion: () => completion,
+    setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-cancel-race', stateRevision: 1 }), waitForCompletion: () => completion,
     readSession: async () => ({}), close: async () => {},
   };
   const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' });
@@ -218,9 +236,25 @@ test('executor failure cannot steal cancellation terminal ownership', async () =
   assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
 });
 
+test('executor persists the accepted turn boundary and worker identity before startup acknowledgement', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {any} */
+  let acknowledged = null;
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-boundary' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [{ info: { messageId: 'before-1' } }] }),
+    setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-boundary', stateRevision: 19 }),
+    waitForCompletion: async () => { throw new Error('simulated worker crash after acknowledgement'); }, close: async () => {},
+  };
+  const workerLeaseId = 'a'.repeat(64);
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', childPid: 4321, workerLeaseId, onBoundaryPersisted: async (running) => { acknowledged = running; } }), /simulated worker crash/);
+  assert.ok(acknowledged);
+  assert.equal(acknowledged.childPid, 4321); assert.equal(acknowledged.workerLeaseId, workerLeaseId); assert.equal(acknowledged.inputId, 'input-boundary'); assert.equal(acknowledged.startRevision, 19); assert.deepEqual(acknowledged.beforeMessageIds, ['before-1']);
+  const persisted = await store.readJob(workspace, job.id); assert.equal(persisted.status, 'failed'); assert.equal(persisted.inputId, 'input-boundary'); assert.equal(persisted.childPid, 4321); assert.equal(persisted.workerLeaseId, workerLeaseId);
+});
+
 test('artifact directory fsync failure fails the job before success', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
-  const client = { createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, send: async () => ({}), waitForCompletion: async () => ({}), readSession: async () => ({ messages: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {} };
+  const client = { createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-artifact-failure', stateRevision: 1 }), waitForCompletion: async () => ({}), readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-artifact', parentMessageId: 'input-artifact-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {} };
   const error = Object.assign(new Error('disk sync failed'), { code: 'EIO' });
   await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', syncDirectory: async () => { throw error; } }), { code: 'ARTIFACT_WRITE_FAILED' });
   assert.equal((await store.readJob(workspace, job.id)).status, 'failed');

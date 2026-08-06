@@ -20,9 +20,11 @@ export const EFFORT_LEVELS = Object.freeze(['none', 'minimal', 'low', 'medium', 
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling']);
+const BEFORE_MESSAGE_IDS_MAX_BYTES = 256 * 1024;
 const JOB_PATCH_FIELDS = new Set([
-  'childPid', 'effort', 'error', 'exitCode', 'finishedAt', 'lastCancelError', 'model',
-  'promptArtifact', 'resultArtifact', 'startedAt', 'zcodeSessionId',
+  'beforeMessageIds', 'childPid', 'effort', 'error', 'exitCode', 'finishedAt', 'inputId',
+  'lastCancelError', 'model', 'promptArtifact', 'resultArtifact', 'startedAt', 'startRevision',
+  'workerLeaseId', 'zcodeSessionId',
 ]);
 const TRANSITIONS = new Map([
   ['queued', new Set(['running', 'failed', 'cancelled'])],
@@ -270,6 +272,7 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
     && typeof job.status === 'string' && JOB_STATUSES.includes(job.status)
     && isValidDateString(job.createdAt) && isValidDateString(job.updatedAt)
     && (!('childPid' in job) || Number.isSafeInteger(job.childPid) && job.childPid > 0)
+    && (!('workerLeaseId' in job) || isDigest(job.workerLeaseId))
     && (!('exitCode' in job) || job.exitCode === null || Number.isSafeInteger(job.exitCode))
     && (!('zcodeSessionId' in job) || isSafeIdentifier(job.zcodeSessionId))
     && (!('codexThreadId' in job) || job.command === 'transfer' && isBoundedThreadId(job.codexThreadId))
@@ -282,11 +285,17 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
     && (!('resultArtifact' in job) || isSafeArtifact(job.resultArtifact))
     && (!('error' in job) || isTrackedError(job.error))
     && (!('lastCancelError' in job) || isCancellationError(job.lastCancelError));
+  const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
+  const hasBoundary = boundaryFields.some((field) => field in job);
+  const validBoundary = !hasBoundary || boundaryFields.every((field) => field in job)
+    && isSafeIdentifier(job.inputId) && Number.isSafeInteger(job.startRevision) && job.startRevision >= 0
+    && validBeforeMessageIds(job.beforeMessageIds)
+    && typeof job.zcodeSessionId === 'string' && typeof job.startedAt === 'string' && job.status !== 'queued';
   const terminal = validShape && TERMINAL_STATUSES.has(job.status);
   const hasRunningMetadata = validShape && [
-    'childPid', 'effort', 'model', 'promptArtifact', 'startedAt', 'zcodeSessionId',
+    'childPid', 'effort', 'model', 'promptArtifact', 'startedAt', 'workerLeaseId', 'zcodeSessionId',
   ].some((field) => field in job);
-  const validLifecycle = validShape
+  const validLifecycle = validShape && validBoundary
     && (!hasRunningMetadata || job.status !== 'queued')
     && (!('exitCode' in job) || terminal)
     && (!('finishedAt' in job) || terminal)
@@ -325,6 +334,8 @@ function validateJobPatch(job, nextStatus, patch, jobId) {
     && (currentStatus === 'queued' || currentStatus === 'running' || currentStatus === 'cancelling');
   if ('childPid' in patch && (!Number.isSafeInteger(patch.childPid) || Number(patch.childPid) <= 0
     || !writesRunningMetadata)) invalidFields.push('childPid');
+  if ('workerLeaseId' in patch && (!isDigest(patch.workerLeaseId)
+    || currentStatus !== 'queued' || nextStatus !== 'running')) invalidFields.push('workerLeaseId');
   if ('zcodeSessionId' in patch
     && (!isSafeIdentifier(patch.zcodeSessionId) || !writesRunningMetadata)) {
     invalidFields.push('zcodeSessionId');
@@ -358,10 +369,20 @@ function validateJobPatch(job, nextStatus, patch, jobId) {
   if ('lastCancelError' in patch
     && !(currentStatus === 'cancelling' && nextStatus === 'running' && isCancellationError(patch.lastCancelError))
     && !(currentStatus === 'running' && nextStatus === 'cancelling' && patch.lastCancelError === null)) invalidFields.push('lastCancelError');
+  const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
+  if (boundaryFields.some((field) => field in patch)
+    && (currentStatus !== 'running' || nextStatus !== 'running' || 'inputId' in job
+      || !boundaryFields.every((field) => field in patch)
+      || !isSafeIdentifier(patch.inputId)
+      || !Number.isSafeInteger(patch.startRevision) || Number(patch.startRevision) < 0
+      || !validBeforeMessageIds(patch.beforeMessageIds))) invalidFields.push('turnBoundary');
   if (invalidFields.length > 0) {
     throw invalidJobPatch(jobId, invalidFields, nextStatus, currentStatus);
   }
 }
+
+/** @param {unknown} value */
+function isDigest(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value); }
 
 /** @param {string} jobId @param {string[]} invalidFields @param {string} nextStatus @param {string} [currentStatus] */
 function invalidJobPatch(jobId, invalidFields, nextStatus, currentStatus) {
@@ -399,6 +420,18 @@ function isSafeArtifact(value) {
   if (!isNonEmptyString(value) || value !== value.trim() || value.length > 1_024
     || value.includes('\0') || /^[\\/]/.test(value) || /^[A-Za-z]:[\\/]/.test(value)) return false;
   return value.split(/[\\/]/).every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+/** @param {unknown} value */
+function validBeforeMessageIds(value) {
+  if (!Array.isArray(value) || value.length > 10_000 || new Set(value).size !== value.length) return false;
+  let bytes = 0;
+  for (const messageId of value) {
+    if (!isSafeIdentifier(messageId)) return false;
+    bytes += Buffer.byteLength(messageId);
+    if (bytes > BEFORE_MESSAGE_IDS_MAX_BYTES) return false;
+  }
+  return true;
 }
 
 /** @param {unknown} value */
