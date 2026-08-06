@@ -125,7 +125,12 @@ async function writeArtifact({ dataRoot, workspace, directory, jobId, contents }
       const targetDirectory = await secureArtifactRoot(storage.directory, directory, true); const path = join(targetDirectory, `${jobId}.md`);
       try { if ((await lstat(path)).isSymbolicLink()) throw artifactError(); } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
       temporary = join(targetDirectory, `.${basename(path)}.${randomBytes(8).toString('hex')}.tmp`);
-      handle = await open(temporary, 'wx', 0o600); await handle.writeFile(contents, 'utf8'); await handle.sync(); const sourceInfo = await handle.stat(); await handle.close(); handle = undefined;
+      handle = await open(temporary, 'wx', 0o600); await handle.writeFile(contents, 'utf8'); await handle.sync();
+      // Compare the temporary and final paths through the same stat API. On
+      // Windows, Node 22.13 uses libuv's fast path for lstat while
+      // FileHandle.stat uses the handle path; their dev/ino pairs can differ
+      // for the same file even though the rename is correct.
+      const sourceInfo = await lstat(temporary); await handle.close(); handle = undefined;
       if (await realpath(targetDirectory) !== targetDirectory) throw artifactError();
       await rename(temporary, path); temporary = undefined; const finalInfo = await lstat(path);
       if (finalInfo.isSymbolicLink() || !finalInfo.isFile() || finalInfo.dev !== sourceInfo.dev || finalInfo.ino !== sourceInfo.ino || await realpath(dirname(path)) !== targetDirectory) throw artifactError();

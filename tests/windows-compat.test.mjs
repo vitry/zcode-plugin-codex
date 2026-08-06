@@ -59,3 +59,34 @@ test('artifact writes tolerate an unsupported Windows directory fsync', async ()
   const result = await runNode(syncFailureProbe(reviewModule, 'writeResultArtifact'));
   assert.equal(result.code, 0, result.stderr || result.stdout);
 });
+
+test('artifact identity checks do not mix handle and path stat implementations', async () => {
+  const source = `
+    import { mkdtemp, open, readFile, rm } from 'node:fs/promises';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { writeResultArtifact } from ${JSON.stringify(reviewModule)};
+    const directory = await mkdtemp(join(tmpdir(), 'zcode-stat-'));
+    const probe = await open(join(directory, 'probe'), 'a+');
+    const prototype = Object.getPrototypeOf(probe);
+    await probe.close();
+    const originalStat = prototype.stat;
+    prototype.stat = async function patchedStat(...args) {
+      const stats = await originalStat.call(this, ...args);
+      return new Proxy(stats, { get(target, property) {
+        if (property === 'dev') return target.dev + 1;
+        if (property === 'ino') return target.ino + 1;
+        return Reflect.get(target, property);
+      } });
+    };
+    try {
+      const artifact = await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'b'.repeat(64), contents: 'done' });
+      if (artifact !== 'results/' + 'b'.repeat(64) + '.md') throw new Error('artifact path did not persist');
+    } finally {
+      prototype.stat = originalStat;
+      await rm(directory, { recursive: true, force: true });
+    }
+  `;
+  const result = await runNode(source);
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
