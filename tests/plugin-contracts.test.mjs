@@ -192,7 +192,7 @@ test('plugin manifest contract rejects invalid skills and starter prompts', () =
   }
 });
 
-test('package metadata exposes Node 18 and only the pinned native lock dependency', () => {
+test('package metadata exposes Node 22.13 and the native lock dependency', () => {
   const packagePath = new URL('package.json', root);
 
   assert.equal(existsSync(packagePath), true, 'package.json must exist');
@@ -200,13 +200,11 @@ test('package metadata exposes Node 18 and only the pinned native lock dependenc
   const packageJson = readJson('package.json');
 
   assert.equal(packageJson.type, 'module');
-  assert.equal(packageJson.engines?.node, '>=18.18.0');
+  assert.equal(packageJson.engines?.node, '>=22.13.0');
   assert.deepEqual(packageJson.dependencies ?? {}, {
     'fs-native-extensions': '1.5.0',
   }, 'no runtime dependency other than the exact native lock pin is allowed');
-  assert.deepEqual(packageJson.overrides ?? {}, {
-    'bare-addon-resolve': '1.9.4',
-  }, 'only the Node 18 compatibility override is allowed');
+  assert.deepEqual(packageJson.overrides ?? {}, {}, 'no legacy resolver override is allowed');
   assert.deepEqual(packageJson.bundleDependencies ?? [], [
     'fs-native-extensions',
   ], 'the native lock tree must be bundled for production consumers');
@@ -217,15 +215,15 @@ test('package metadata exposes Node 18 and only the pinned native lock dependenc
   assert.equal(existsSync(new URL('package-lock.json', root)), false);
   const shrinkwrap = readJson('npm-shrinkwrap.json');
   assert.equal(
-    shrinkwrap.packages?.['node_modules/require-addon/node_modules/bare-addon-resolve']?.version,
-    '1.9.4',
-    'the published dependency tree must retain the Node 18-compatible resolver',
+    shrinkwrap.packages?.['node_modules/bare-addon-resolve']?.version,
+    '1.10.1',
+    'the published dependency tree must use the Node 22-compatible resolver',
   );
   assert.match(packageJson.version, semverPattern);
   const [major, minor] = packageJson.version.split('.').map(Number);
   assert.equal(major, 0);
   assert.ok(minor >= 1);
-  assert.equal(packageJson.devDependencies?.['@types/node'], '^18.19.0');
+  assert.equal(packageJson.devDependencies?.['@types/node'], '^22.13.0');
 });
 
 test('package test scripts do not depend on shell glob expansion', () => {

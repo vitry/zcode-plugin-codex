@@ -17,13 +17,13 @@
       "devDependencies": {
         "@eslint/js": "^9.39.1",
         "@openai/codex": "0.146.0",
-        "@types/node": "^18.19.0",
+        "@types/node": "^22.13.0",
         "eslint": "^9.39.1",
         "globals": "^16.5.0",
         "typescript": "^5.9.3"
       },
       "engines": {
-        "node": ">=18.18.0"
+        "node": ">=22.13.0"
       }
     },
     "node_modules/@eslint-community/eslint-utils": {
@@ -393,13 +393,13 @@
       "license": "MIT"
     },
     "node_modules/@types/node": {
-      "version": "18.19.130",
-      "resolved": "https://registry.npmjs.org/@types/node/-/node-18.19.130.tgz",
-      "integrity": "sha512-GRaXQx6jGfL8sKfaIDD6OupbIHBr9jv7Jnaml9tB7l4v068PAOXqfcujMMo5PhbIs6ggR1XODELqahT2R8v0fg==",
+      "version": "22.20.1",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-22.20.1.tgz",
+      "integrity": "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==",
       "dev": true,
       "license": "MIT",
       "dependencies": {
-        "undici-types": "~5.26.4"
+        "undici-types": "~6.21.0"
       }
     },
     "node_modules/acorn": {
@@ -471,6 +471,25 @@
       "integrity": "sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==",
       "dev": true,
       "license": "MIT"
+    },
+    "node_modules/bare-addon-resolve": {
+      "version": "1.10.1",
+      "resolved": "https://registry.npmjs.org/bare-addon-resolve/-/bare-addon-resolve-1.10.1.tgz",
+      "integrity": "sha512-F/SD2du8keuYSb4xipnGz5j2E6yhNdHA8ZVxtHae6h2uOrpBIjjbhXvjzKZbr5XUOzqBzh/i8GVFycj2DlFQIA==",
+      "inBundle": true,
+      "license": "Apache-2.0",
+      "dependencies": {
+        "bare-module-resolve": "^1.10.0",
+        "bare-semver": "^1.0.0"
+      },
+      "peerDependencies": {
+        "bare-url": "*"
+      },
+      "peerDependenciesMeta": {
+        "bare-url": {
+          "optional": true
+        }
+      }
     },
     "node_modules/bare-module-resolve": {
       "version": "1.12.4",
@@ -1189,25 +1208,6 @@
         "bare": ">=1.10.0"
       }
     },
-    "node_modules/require-addon/node_modules/bare-addon-resolve": {
-      "version": "1.9.4",
-      "resolved": "https://registry.npmjs.org/bare-addon-resolve/-/bare-addon-resolve-1.9.4.tgz",
-      "integrity": "sha512-unn6Vy/Yke6F99vg/7tcrvM2KUvIhTNniaSqDbam4AWkd4NhvDVSrQiRYVlNzUV2P7SPobkCK7JFVxrJk9btCg==",
-      "inBundle": true,
-      "license": "Apache-2.0",
-      "dependencies": {
-        "bare-module-resolve": "^1.10.0",
-        "bare-semver": "^1.0.0"
-      },
-      "peerDependencies": {
-        "bare-url": "*"
-      },
-      "peerDependenciesMeta": {
-        "bare-url": {
-          "optional": true
-        }
-      }
-    },
     "node_modules/resolve-from": {
       "version": "4.0.0",
       "resolved": "https://registry.npmjs.org/resolve-from/-/resolve-from-4.0.0.tgz",
@@ -1295,9 +1295,9 @@
       }
     },
     "node_modules/undici-types": {
-      "version": "5.26.5",
-      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-5.26.5.tgz",
-      "integrity": "sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA==",
+      "version": "6.21.0",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
       "dev": true,
       "license": "MIT"
     },

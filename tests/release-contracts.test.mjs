@@ -11,6 +11,7 @@ test('English and Chinese release docs cover installation, operation, and qualif
   for (const path of ['README.md', 'README.zh-CN.md']) {
     const source = read(path);
     assert.match(source, /marketplace/i);
+    assert.match(source, /Node\.js `>=22\.13\.0`/);
     assert.match(source, /vitry\/zcode-plugin-codex/);
     assert.match(source, /--ref marketplace/);
     assert.match(source, /zcode@vitry/);
@@ -91,10 +92,10 @@ test('security, changelog, and provenance are release-ready', () => {
   assert.doesNotMatch(notice, /scaffold stage/);
 });
 
-test('CI runs full and packed native suites on three platforms and Node 18.18', () => {
+test('CI runs full and packed native suites on three platforms and Node 22.13', () => {
   const workflow = read('.github/workflows/ci.yml');
   for (const os of ['ubuntu-latest', 'macos-latest', 'windows-latest']) assert.match(workflow, new RegExp(os));
-  assert.match(workflow, /18\.18\.0/);
+  assert.match(workflow, /22\.13\.0/);
   assert.match(workflow, /lts\/\*/);
   assert.match(workflow, /npm ci/);
   assert.match(workflow, /npm run check/);
@@ -111,6 +112,20 @@ test('CI runs full and packed native suites on three platforms and Node 18.18', 
     assert.doesNotMatch(source, /spawnSync/);
     assert.match(source, /await run\(/);
     assert.doesNotMatch(source, /\.cmd/);
+  }
+  assert.match(packageTest, /NODE22_BINARY/);
+  assert.doesNotMatch(packageTest, /NODE18_BINARY|node@18|Node 18/);
+});
+
+test('runtime baseline is Node 22.13 across implementation plans and locking ADR', () => {
+  for (const path of [
+    'docs/superpowers/plans/2026-08-03-zcode-plugin-codex-implementation.md',
+    'docs/superpowers/plans/2026-08-06-runtime-correctness-remediation.md',
+    'docs/adr/0009-cross-process-locking.md',
+  ]) {
+    const source = read(path);
+    assert.match(source, /Node(?:\.js)? 22\.13/);
+    assert.doesNotMatch(source, /Node(?:\.js)? 18(?:\.18)?/);
   }
 });
 

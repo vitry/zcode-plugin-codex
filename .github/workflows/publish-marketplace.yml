@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 18.18.0
+          node-version: 22.13.0
           cache: npm
       - name: Resolve and validate source provenance
         id: source
@@ -65,7 +65,7 @@ jobs:
         run: npm ci
       - name: Run complete quality gate
         run: npm run check
-      - name: Re-run Node 18 packed native qualification
+      - name: Re-run Node 22.13 packed native qualification
         run: node --test tests/integration/package-install.test.mjs
       - name: Build exact production marketplace snapshot
         shell: bash

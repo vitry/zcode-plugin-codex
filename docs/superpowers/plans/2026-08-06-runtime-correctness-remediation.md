@@ -6,7 +6,7 @@
 
 **Architecture:** Installed Skills call a constant direct-companion command over ordinary stdio. Native hooks persist exact thread/turn/workspace input, while the companion resolves it from runtime-observed `CODEX_THREAD_ID`; private capabilities remain inside production Node. Durable job turn boundaries drive locked broker reconciliation, and workspace-private configuration supplies model defaults and aliases.
 
-**Tech Stack:** Node.js 18 ESM, native Codex hooks and Skills, Codex app-server JSONL, ZCode Protocol JSONL, `node:test`, `fs-native-extensions` advisory locks.
+**Tech Stack:** Node.js 22.13+ ESM, native Codex hooks and Skills, Codex app-server JSONL, ZCode Protocol JSONL, `node:test`, `fs-native-extensions` advisory locks.
 
 ---
 

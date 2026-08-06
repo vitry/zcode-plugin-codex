@@ -6,7 +6,7 @@
 
 **Architecture:** Thin Codex skills and lifecycle hooks call one Node.js companion runtime. The companion owns argument contracts, caller/job authorization, workspace-scoped state, prompts, rendering, and two isolated adapters: a bounded Codex app-server client and a long-lived ZCode protocol broker.
 
-**Tech Stack:** Node.js 18.18+ ESM, Node built-in test runner, JSDoc checked by TypeScript, ESLint, `fs-native-extensions` advisory locks, Codex plugin manifest/hooks/skills, JSONL app-server protocols.
+**Tech Stack:** Node.js 22.13+ ESM, Node built-in test runner, JSDoc checked by TypeScript, ESLint, `fs-native-extensions` advisory locks, Codex plugin manifest/hooks/skills, JSONL app-server protocols.
 
 ---
 
@@ -70,19 +70,17 @@ test("plugin manifest identifies the vitry ZCode plugin", () => {
   assert.equal("hooks" in manifest, false);
 });
 
-test("package requires Node 18.18 and only the pinned native lock dependency", () => {
+test("package requires Node 22.13 and the native lock dependency", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   assert.equal(pkg.type, "module");
-  assert.equal(pkg.engines.node, ">=18.18.0");
+  assert.equal(pkg.engines.node, ">=22.13.0");
   assert.deepEqual(pkg.dependencies ?? {}, {
     "fs-native-extensions": "1.5.0",
   });
-  assert.deepEqual(pkg.overrides ?? {}, {
-    "bare-addon-resolve": "1.9.4",
-  });
+  assert.deepEqual(pkg.overrides ?? {}, {});
   assert.deepEqual(pkg.bundleDependencies ?? [], ["fs-native-extensions"]);
   const shrinkwrap = JSON.parse(fs.readFileSync(path.join(root, "npm-shrinkwrap.json"), "utf8"));
-  assert.equal(shrinkwrap.packages["node_modules/require-addon/node_modules/bare-addon-resolve"].version, "1.9.4");
+  assert.equal(shrinkwrap.packages["node_modules/bare-addon-resolve"].version, "1.10.1");
   assert.match(pkg.version, semverPattern);
   assert.equal(manifest.version, pkg.version);
 });
@@ -96,7 +94,7 @@ Expected: FAIL because `package.json` and `.codex-plugin/plugin.json` do not exi
 
 - [ ] **Step 3: Add the minimal package and plugin files**
 
-Use version `0.1.0`, repository `https://github.com/vitry/zcode-plugin-codex`, Node `>=18.18.0`, and Apache-2.0. The only runtime dependency is the exact pin `fs-native-extensions@1.5.0`, which provides process-owned advisory file locks on macOS, Linux, and Windows. Pin the `bare-addon-resolve` override to `1.9.4` because later releases use JavaScript unavailable in Node 18.18. Publish `npm-shrinkwrap.json` and bundle the `fs-native-extensions` tree, because a consuming install does not apply this package's root override. Contract tests must compare the complete dependency, override, and bundle objects and verify the shrinkwrapped resolver version so additional runtime packages cannot be added implicitly.
+Use version `0.1.0`, repository `https://github.com/vitry/zcode-plugin-codex`, Node `>=22.13.0`, and Apache-2.0. The only runtime dependency is the exact pin `fs-native-extensions@1.5.0`, which provides process-owned advisory file locks on macOS, Linux, and Windows. Node 22.13 supports the current `bare-addon-resolve` release, so no legacy resolver compatibility override is required; the published `npm-shrinkwrap.json` still records the resolved dependency tree. Publish `npm-shrinkwrap.json` and bundle the `fs-native-extensions` tree so consuming installs receive the native lock implementation. Contract tests must compare the complete dependency and bundle objects and verify the shrinkwrapped resolver version so additional runtime packages cannot be added implicitly.
 
 Use these scripts:
 
@@ -111,12 +109,12 @@ Use these scripts:
 }
 ```
 
-Use Node-18-compatible development dependencies:
+Use Node-22-compatible development dependencies:
 
 ```json
 {
   "@eslint/js": "^9.39.1",
-  "@types/node": "^18.19.0",
+  "@types/node": "^22.13.0",
   "eslint": "^9.39.1",
   "globals": "^16.5.0",
   "typescript": "^5.9.3"
@@ -462,9 +460,9 @@ Exercise every skill against fake Codex/ZCode peers, including the two-session i
 
 Document installation through a Codex marketplace, ZCode `>=0.16.1`, macOS bundled discovery, model aliases, all eight commands, permission limits, job storage, review gate, troubleshooting, Linux/Windows qualification status, and Apache-2.0 provenance.
 
-Add a package-install integration test that packs the plugin, installs that tarball into an empty temporary consumer with production dependencies only, asserts the bundled plugin-local `bare-addon-resolve` is exactly `1.9.4`, loads the installed `fs-native-extensions` binding on Node 18.18, and acquires/releases a lock through the installed companion runtime. The test must prove that the native dependency is installed beside the plugin rather than relying on the repository's development `node_modules`.
+Add a package-install integration test that packs the plugin, installs that tarball into an empty temporary consumer with production dependencies only, asserts the bundled plugin-local `bare-addon-resolve` is exactly `1.10.1`, loads the installed `fs-native-extensions` binding on Node 22.13, and acquires/releases a lock through the installed companion runtime. The test must prove that the native dependency is installed beside the plugin rather than relying on the repository's development `node_modules`.
 
-CI runs the fake-protocol suite on current macOS, Ubuntu, and Windows. Each platform job must start with `npm ci`, run `npm run check`, perform the clean packed-plugin production install, and execute a binding-load plus lock smoke test. Include Node 18.18 coverage for the pinned override in addition to the current Node LTS matrix. A platform job is not successful if it skips the native binding smoke.
+CI runs the fake-protocol suite on current macOS, Ubuntu, and Windows. Each platform job must start with `npm ci`, run `npm run check`, perform the clean packed-plugin production install, and execute a binding-load plus lock smoke test. Include Node 22.13 coverage for the production dependency tree in addition to the current Node LTS matrix. A platform job is not successful if it skips the native binding smoke.
 
 - [ ] **Step 5: Add opt-in real ZCode E2E**
 

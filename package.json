@@ -14,7 +14,7 @@
   "author": "vitry <tzukai.chan@gmail.com>",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=18.18.0"
+    "node": ">=22.13.0"
   },
   "files": [
     ".codex-plugin/",
@@ -42,7 +42,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@openai/codex": "0.146.0",
-    "@types/node": "^18.19.0",
+    "@types/node": "^22.13.0",
     "eslint": "^9.39.1",
     "globals": "^16.5.0",
     "typescript": "^5.9.3"
@@ -52,8 +52,5 @@
   },
   "bundleDependencies": [
     "fs-native-extensions"
-  ],
-  "overrides": {
-    "bare-addon-resolve": "1.9.4"
-  }
+  ]
 }

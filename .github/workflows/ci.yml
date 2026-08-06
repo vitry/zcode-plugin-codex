@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: [18.18.0, lts/*]
+        node: [22.13.0, lts/*]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,7 +24,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - name: Clean packed production install and Node 18.18 native binding smoke
+      - name: Clean packed production install and Node 22.13 native binding smoke
         run: node --test tests/integration/package-install.test.mjs
       - name: Production lockfile native binding smoke
         shell: bash
