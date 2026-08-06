@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { realpath } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import process from 'node:process';
 
 const MAX_BYTES = 64 * 1024;
@@ -28,7 +29,7 @@ export async function readHookInput(expectedEvent, options = {}) {
   for (const key of ['session_id', 'turn_id', 'model', 'agent_id', 'agent_type']) if (input[key] !== undefined && !identifier(input[key])) throw inputError();
   for (const key of ['prompt', 'last_assistant_message']) if (input[key] !== undefined && input[key] !== null && !boundedString(input[key], 64 * 1024)) throw inputError();
   for (const key of ['transcript_path', 'agent_transcript_path']) if (input[key] !== undefined && input[key] !== null && !boundedString(input[key], 4096)) throw inputError();
-  if (!boundedString(input.cwd, 4096) || !input.cwd.startsWith('/') || input.permission_mode !== undefined && !PERMISSIONS.has(input.permission_mode)) throw inputError();
+  if (!boundedString(input.cwd, 4096) || !isAbsolute(input.cwd) || input.permission_mode !== undefined && !PERMISSIONS.has(input.permission_mode)) throw inputError();
   if (input.stop_hook_active !== undefined && typeof input.stop_hook_active !== 'boolean') throw inputError();
   if (actualEvent === 'SessionStart' && !['startup', 'resume', 'clear', 'compact'].includes(input.source)) throw inputError();
   if (actualEvent === 'SessionEnd' && input.reason !== 'other') throw inputError();
