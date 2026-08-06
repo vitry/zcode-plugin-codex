@@ -2,8 +2,9 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir, readdir, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
@@ -12,10 +13,12 @@ import { createManagedZCodeClient, createZCodeClient, releaseManagedZCodeOwner }
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
 
-const root = new URL('../', import.meta.url).pathname;
+const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
 const legacyBroker = join(root, 'tests/fixtures/legacy-zcode-broker-v1.mjs');
 const ownerStoreLockHolder = join(root, 'tests/fixtures/owner-store-lock-holder.mjs');
+
+function isGateRunPath(path) { return path.split(sep).includes('gate-runs'); }
 
 async function jsonFiles(directory) {
   const found = []; let entries;
@@ -121,7 +124,7 @@ test('unborn repositories get baselines and full untracked contents affect finge
   const prompt = await runHook('user-prompt-hook.mjs', { session_id: 'unborn', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'work' }, env); assert.equal(prompt.code, 0); assert.deepEqual(prompt.json, {}); assert.equal((await createIdentityStore({ dataRoot: data }).resolveActiveTurn({ sessionId: 'unborn', workspace: cwd })).turnId, 'turn');
   bytes.fill(66, 160 * 1024, 224 * 1024); await writeFile(join(cwd, 'large.bin'), bytes);
   const stop = await runHook('stop-review-gate-hook.mjs', { session_id: 'unborn', turn_id: 'turn', cwd, hook_event_name: 'Stop', transcript_path: null, model: 'gpt', permission_mode: 'default', stop_hook_active: false, last_assistant_message: 'done' }, env); assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
-  assert.equal((await jsonFiles(join(data, 'workspaces'))).filter((path) => path.includes('/gate-runs/')).length, 1, 'same-size middle-only untracked edits must change the fingerprint');
+  assert.equal((await jsonFiles(join(data, 'workspaces'))).filter(isGateRunPath).length, 1, 'same-size middle-only untracked edits must change the fingerprint');
 });
 
 test('changing only an untracked symlink target changes the fingerprint without following it', async () => {
@@ -131,7 +134,7 @@ test('changing only an untracked symlink target changes the fingerprint without 
   const prompt = await runHook('user-prompt-hook.mjs', { session_id: 'symlink', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'work' }, env); assert.equal(prompt.code, 0);
   await unlink(link); await symlink('missing-target-b', link);
   const stop = await runHook('stop-review-gate-hook.mjs', { session_id: 'symlink', turn_id: 'turn', cwd, hook_event_name: 'Stop', transcript_path: null, model: 'gpt', permission_mode: 'default', stop_hook_active: false, last_assistant_message: 'done' }, env); assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
-  assert.equal((await jsonFiles(join(data, 'workspaces'))).filter((path) => path.includes('/gate-runs/')).length, 1, 'same-path symlink target changes must reach the gate path');
+  assert.equal((await jsonFiles(join(data, 'workspaces'))).filter(isGateRunPath).length, 1, 'same-path symlink target changes must reach the gate path');
 });
 
 test('SubagentStart marks forwarding suppression without changing parent permission snapshot', async () => {
@@ -332,7 +335,7 @@ test('Stop gate skips unchanged and atomically consumes exact changed baseline',
   const input = { session_id: 'parent', turn_id: 'turn-2', cwd, hook_event_name: 'Stop', transcript_path: null, model: 'gpt', permission_mode: 'default', stop_hook_active: false, last_assistant_message: 'done' };
   const [one, two] = await Promise.all([runHook('stop-review-gate-hook.mjs', input, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'ALLOW: clean' }), runHook('stop-review-gate-hook.mjs', input, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_GATE_RESULT: 'ALLOW: clean' })]);
   assert.equal([one, two].filter((result) => result.json?.decision === 'block').length, 0);
-  const snapshots = (await jsonFiles(join(data, 'workspaces'))).filter((path) => path.includes('/gate-runs/'));
+  const snapshots = (await jsonFiles(join(data, 'workspaces'))).filter(isGateRunPath);
   assert.equal(snapshots.length, 1);
 });
 
@@ -369,7 +372,7 @@ test('Stop rechecks stale setup readiness before session creation and fails open
   ]) await t.test(scenario.name, async () => {
     const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, ''); await writeGateConfig(data, cwd, { enabled: true, setupReady: true, status: 'ready' }); await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
     const prompt = { session_id: 'owner', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'edit' }; await runHook('user-prompt-hook.mjs', prompt, env); await writeFile(join(cwd, 'tracked.txt'), `${scenario.name}\n`); const script = scenario.fixture ? join(root, 'tests/fixtures/stop-gate-with-timeout.mjs') : 'stop-review-gate-hook.mjs'; const result = await runHook(script, { ...stopFields(prompt), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: record, ...scenario.extra }, { absolute: scenario.fixture });
-    assert.equal(result.code, 0); assert.notEqual(result.json?.decision, 'block'); assert.match(result.json.systemMessage, /\$zcode:setup/); const runs = (await jsonFiles(join(data, 'workspaces'))).filter((path) => path.includes('/gate-runs/')); assert.equal(runs.length, 1); const snapshot = JSON.parse(await readFile(runs[0], 'utf8')); assert.equal(snapshot.status, 'skipped_setup_not_ready'); assert.equal(snapshot.reason, scenario.reason);
+    assert.equal(result.code, 0); assert.notEqual(result.json?.decision, 'block'); assert.match(result.json.systemMessage, /\$zcode:setup/); const runs = (await jsonFiles(join(data, 'workspaces'))).filter(isGateRunPath); assert.equal(runs.length, 1); const snapshot = JSON.parse(await readFile(runs[0], 'utf8')); assert.equal(snapshot.status, 'skipped_setup_not_ready'); assert.equal(snapshot.reason, scenario.reason);
     const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'session/send'));
   });
 });

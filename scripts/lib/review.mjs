@@ -147,10 +147,10 @@ async function secureArtifactRoot(storageDirectory, directory, create) {
 }
 /** @param {string} path */
 async function defaultSyncDirectory(path) {
-  /** @type {import('node:fs/promises').FileHandle|undefined} */ let handle;
-  try { handle = await open(path, 'r'); await handle.sync(); }
-  catch (error) { if (!['EINVAL', 'ENOTSUP'].includes(errorCode(error) ?? '')) throw error; }
-  finally { await handle?.close(); }
+  const handle = await open(path, 'r');
+  try { await handle.sync(); }
+  catch (error) { if (!['EINVAL', 'ENOTSUP', 'EPERM'].includes(errorCode(error) ?? '')) throw error; }
+  finally { await handle.close(); }
 }
 
 /** @param {any} snapshot @param {string} command @param {{beforeMessageIds?:Set<string>,inputId?:string,stateRevision?:number}} [turnBoundary] */

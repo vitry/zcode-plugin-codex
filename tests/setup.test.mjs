@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
 
@@ -12,7 +12,7 @@ import { diagnoseZCodeAuth, pluginRootFromModuleUrl, runSetup } from '../scripts
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 
-const root = new URL('../', import.meta.url).pathname;
+const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
 
@@ -120,7 +120,9 @@ test('plugin root derivation decodes file URLs with spaces and percent character
 
 test('app-server failure cannot persist a ready gate and enable/disable touches only workspace gate state', async () => {
   const failed = await context({ codexEnv: { FAKE_CODEX_ERROR: 'hooks/list' } }); await assert.rejects(runSetup({ ...failed.options, reviewGate: true }), { code: 'CODEX_CONFIG_REQUEST_FAILED' });
-  for (let index = 0; index < 50 && !(await readFile(failed.record, 'utf8')).includes('lifecycle'); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 10)); assert.match(await readFile(failed.record, 'utf8'), /"lifecycle":"SIGTERM"/);
+  if (process.platform !== 'win32') {
+    for (let index = 0; index < 50 && !(await readFile(failed.record, 'utf8')).includes('lifecycle'); index += 1) await new Promise((resolvePromise) => setTimeout(resolvePromise, 10)); assert.match(await readFile(failed.record, 'utf8'), /"lifecycle":"SIGTERM"/);
+  }
   const failedStorage = await resolveWorkspaceStorage({ dataRoot: failed.dataRoot, workspace: failed.cwd }); await assert.rejects(readFile(join(failedStorage.directory, 'config/review-gate.json'), 'utf8'), { code: 'ENOENT' });
   const disabled = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runSetup({ ...disabled.options, reviewGate: false }); assert.equal(report.reviewGate.enabled, false);
   const disabledStorage = await resolveWorkspaceStorage({ dataRoot: disabled.dataRoot, workspace: disabled.cwd }); const gate = JSON.parse(await readFile(join(disabledStorage.directory, 'config/review-gate.json'), 'utf8')); assert.equal(gate.enabled, false); assert.equal(gate.setupReady, true);

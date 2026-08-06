@@ -118,8 +118,8 @@ export async function ensureZCodeBroker(options) {
 }
 
 export class ZCodeBroker {
-  /** @param {{endpoint:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string}} options */
-  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs)) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.server = null; this.protocol = null; this.protocolPromise = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.permissionPending = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
+  /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string}} options */
+  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.server = null; this.protocol = null; this.protocolPromise = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.permissionPending = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
     if (this.server) return this;
@@ -309,6 +309,7 @@ export class ZCodeBroker {
 function writeLocal(socket, value) { if (!socket.writable) return; try { socket.zcodeWriter?.write(`${JSON.stringify(value)}\n`); } catch { socket.destroy(); } }
 function validWireOption(value, maximum) { return value === undefined || Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
 function validDrainOption(value) { return value === undefined || Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAIN_TIMEOUT_MS; }
+function isWindowsNamedPipe(endpoint) { return typeof endpoint === 'string' && endpoint.toLowerCase().startsWith('\\\\.\\pipe\\'); }
 function isProcessAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 function safeTokenEqual(left, right) { const a = Buffer.from(left); const b = Buffer.from(right); return a.length === b.length && timingSafeEqual(a, b); }
 function offeredDeny(request) { return request.options?.find((option) => option.response?.decision === 'deny')?.response ?? { decision: 'deny' }; }

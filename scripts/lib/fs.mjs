@@ -189,14 +189,13 @@ export async function withFileLock(lockPath, operation, options = {}) {
 
 /** @param {string} directory */
 async function syncDirectory(directory) {
-  let handle;
+  const handle = await open(directory, 'r');
   try {
-    handle = await open(directory, 'r');
     await handle.sync();
   } catch (error) {
-    if (!isNodeError(error, 'EINVAL') && !isNodeError(error, 'ENOTSUP')) throw error;
+    if (!isNodeError(error, 'EINVAL') && !isNodeError(error, 'ENOTSUP') && !isNodeError(error, 'EPERM')) throw error;
   } finally {
-    if (handle) await handle.close();
+    await handle.close();
   }
 }
 

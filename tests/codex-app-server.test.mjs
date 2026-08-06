@@ -61,8 +61,10 @@ test('terminates the child on success, JSON-RPC error, malformed output, oversiz
     const directory = await mkdtemp(join(tmpdir(), 'codex-app-lifecycle-')); const record = join(directory, 'record.jsonl'); await writeFile(record, '');
     const promise = readCodexThread('thread-1', { executable: process.execPath, args: [fake], env: { ...process.env, FAKE_CODEX_RECORD: record, FAKE_CODEX_THREAD_JSON: JSON.stringify(validThread), ...env }, timeoutMs: 1_000, ...options });
     if (code) await assert.rejects(promise, { code }); else await promise;
-    for (let index = 0; index < 50 && !(await readFile(record, 'utf8')).includes('lifecycle'); index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.match(await readFile(record, 'utf8'), /"lifecycle":"SIGTERM"/);
+    if (process.platform !== 'win32') {
+      for (let index = 0; index < 50 && !(await readFile(record, 'utf8')).includes('lifecycle'); index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.match(await readFile(record, 'utf8'), /"lifecycle":"SIGTERM"/);
+    }
   });
 });
 
@@ -76,8 +78,10 @@ test('bounds and redacts stderr diagnostics without blocking', async () => {
 test('deep expected responses fail as controlled protocol errors and terminate the real child', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'codex-app-deep-response-')); const record = join(directory, 'record.jsonl'); await writeFile(record, '');
   await assert.rejects(readCodexThread('thread-1', { executable: process.execPath, args: [fake], env: { ...process.env, FAKE_CODEX_RECORD: record, FAKE_CODEX_DEEP_RESPONSE_DEPTH: '10000' }, timeoutMs: 1_000 }), { code: 'CODEX_APP_SERVER_MALFORMED' });
-  for (let index = 0; index < 50 && !(await readFile(record, 'utf8')).includes('lifecycle'); index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.match(await readFile(record, 'utf8'), /"lifecycle":"SIGTERM"/);
+  if (process.platform !== 'win32') {
+    for (let index = 0; index < 50 && !(await readFile(record, 'utf8')).includes('lifecycle'); index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.match(await readFile(record, 'utf8'), /"lifecycle":"SIGTERM"/);
+  }
 });
 
 test('deep unrelated notifications are ignored without preventing a valid response', async () => {

@@ -861,7 +861,7 @@ test('an advisory lock is automatically released when its child holder exits', a
   assert.equal(result, 'recovered');
 });
 
-test('an old child holder never removes a replacement lock during release', async () => {
+test('an old child holder never removes a replacement lock during release', { skip: process.platform === 'win32' ? 'Windows cannot remove an open lock directory while simulating the Unix inode ABA race.' : false }, async () => {
   const { root } = await fixture();
   const lockPath = join(root, 'aba.lock');
   const replacementMarker = join(lockPath, 'replacement-owner');
