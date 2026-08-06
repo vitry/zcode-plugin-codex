@@ -231,17 +231,21 @@ test('executor failure cannot steal cancellation terminal ownership', async () =
   const { root, workspace, store } = await setup();
   const job = await store.reserveJob({ workspace, ...reservation });
   let rejectCompletion = () => {};
+  let signalWaitStarted = () => {};
+  const waitStarted = new Promise((resolve) => { signalWaitStarted = () => resolve(undefined); });
   const completion = new Promise((resolve, reject) => { rejectCompletion = () => reject(new Error('stopped')); });
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
-    setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-cancel-race', stateRevision: 1 }), waitForCompletion: () => completion,
+    setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-cancel-race', stateRevision: 1 }), waitForCompletion: () => { signalWaitStarted(); return completion; },
     readSession: async () => ({}), close: async () => {},
   };
   const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' });
+  const executionFailure = assert.rejects(execution, /stopped/);
   while ((await store.readJob(workspace, job.id)).status !== 'running') await new Promise((resolve) => setTimeout(resolve, 1));
+  await waitStarted;
   const controller = createJobController({ store, stopSession: async () => { rejectCompletion(); } });
   const cancellation = controller.cancel(workspace, job.id, 'session-a');
-  await assert.rejects(execution, /stopped/);
+  await executionFailure;
   assert.equal((await cancellation).status, 'cancelled');
   assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
 });
