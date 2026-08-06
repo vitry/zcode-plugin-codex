@@ -23,10 +23,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - name: Full check (temporary Windows Node diagnostics)
-        env:
-          ZCODE_DEBUG: '1'
-        run: npm run check
+      - run: npm run check
       - name: Clean packed production install and Node 22.13 native binding smoke
         run: node --test tests/integration/package-install.test.mjs
       - name: Production lockfile native binding smoke

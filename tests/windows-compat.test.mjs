@@ -65,7 +65,7 @@ test('artifact identity checks do not mix handle and path stat implementations',
     import { mkdtemp, open, readFile, rm } from 'node:fs/promises';
     import { tmpdir } from 'node:os';
     import { join } from 'node:path';
-    import { writeResultArtifact } from ${JSON.stringify(reviewModule)};
+    import { readResultArtifact, writeResultArtifact } from ${JSON.stringify(reviewModule)};
     const directory = await mkdtemp(join(tmpdir(), 'zcode-stat-'));
     const probe = await open(join(directory, 'probe'), 'a+');
     const prototype = Object.getPrototypeOf(probe);
@@ -82,6 +82,8 @@ test('artifact identity checks do not mix handle and path stat implementations',
     try {
       const artifact = await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'b'.repeat(64), contents: 'done' });
       if (artifact !== 'results/' + 'b'.repeat(64) + '.md') throw new Error('artifact path did not persist');
+      const contents = await readResultArtifact({ dataRoot: directory, workspace: directory, artifact });
+      if (contents !== 'done') throw new Error('artifact contents did not read');
     } finally {
       prototype.stat = originalStat;
       await rm(directory, { recursive: true, force: true });

@@ -96,7 +96,12 @@ export async function readResultArtifact({ dataRoot, workspace, artifact }) {
       const pathInfo = await lstat(path); if (pathInfo.isSymbolicLink() || !pathInfo.isFile()) throw artifactError();
       if (await realpath(dirname(path)) !== root) throw artifactError();
       const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      try { const before = await handle.stat(); const contents = await handle.readFile('utf8'); const after = await lstat(path); if (after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) throw artifactError(); return contents; }
+      try {
+        // Keep the before/after identity check on path stats as well. Mixing
+        // FileHandle.stat with lstat is inconsistent on Node 22.13 Windows.
+        const before = pathInfo; const contents = await handle.readFile('utf8'); const after = await lstat(path);
+        if (after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) throw artifactError(); return contents;
+      }
       finally { await handle.close(); }
     });
   } catch (error) { throw new PluginError('RESULT_READ_FAILED', 'Could not safely read the result artifact.', { category: 'storage', remedy: 'Inspect the private workspace result store.', cause: error }); }
