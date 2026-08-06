@@ -41,10 +41,13 @@ function run(command, args, options = {}) {
     let stdout = ''; let stderr = ''; let internal = '';
     child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
     child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+    child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
     /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(options.rawInput ?? `${JSON.stringify(options.input ?? {})}\n`);
     child.once('error', reject); child.once('exit', (code) => resolvePromise({ code, stdout, stderr, internal }));
   });
 }
+
+function consumePipeError() {}
 
 /** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} [extraEnv] @param {Record<string,unknown>} [authorization] */
 async function companion(context, args, extraEnv = {}, authorization = { callerContext: context.caller }) {
@@ -141,7 +144,7 @@ test('caller authorization is absent from the running process command line and p
   const context = await fixture(); const reserved = await companion(context, ['review', '--background']);
   const caller = await context.identity.createCallerContext({ sessionId: 'codex-session', turnId: 'turn-ps', workspace: context.workspace, permissionMode: 'workspace-write' });
   const child = spawn(process.execPath, [cli, 'status', reserved.json.job.id, '--wait', '--timeout-ms', '500'], { cwd: context.workspace, env: context.env, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], shell: false });
-  let stdout = ''; let stderr = ''; let internal = ''; child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; }); /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: caller })}\n`);
+  let stdout = ''; let stderr = ''; let internal = ''; child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError); child.stdio[4]?.on('data', (chunk) => { internal += chunk; }); /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: caller })}\n`);
   const inspected = await run('ps', ['-p', String(child.pid), '-o', 'command=']);
   assert.equal(inspected.code, 0); assert.doesNotMatch(inspected.stdout, new RegExp(caller));
   const code = await new Promise((resolvePromise, reject) => { child.once('error', reject); child.once('exit', resolvePromise); });

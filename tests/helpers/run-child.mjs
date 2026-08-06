@@ -25,6 +25,7 @@ export function runChild(command, args, options = {}) {
     child.stdout?.on('data', (chunk) => capture('stdout', chunk));
     child.stderr?.on('data', (chunk) => capture('stderr', chunk));
     if (protectedInput) {
+      child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
       child.stdio[4]?.on('data', (chunk) => capture('internal', chunk));
       child.stdio[3]?.end(`${JSON.stringify(options.input ?? {})}\n`);
     } else if (options.ordinaryInput) child.stdin?.end(JSON.stringify(options.input));
@@ -39,3 +40,5 @@ export function runChild(command, args, options = {}) {
     child.once('exit', (code, signal) => { if (!terminating) finish(null, { code, signal, stdout, stderr, internal, spawnargs: child.spawnargs, pid: child.pid }); });
   });
 }
+
+function consumePipeError() {}
