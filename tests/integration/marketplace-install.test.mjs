@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
@@ -126,7 +126,8 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.ok(installedSkills.every((skill) => skill.enabled === true));
   assert.match(JSON.stringify(listedComponents.hooks), /session-lifecycle-hook|user-prompt-hook/, 'Codex must auto-discover the installed default hooks/hooks.json');
   const nativeBinding = await realpath(join(installedRoot, 'node_modules', 'fs-native-extensions'));
-  assert.ok(nativeBinding.startsWith(`${await realpath(installedRoot)}/`));
+  const installedRootPath = await realpath(installedRoot); const nativeBindingRelative = relative(installedRootPath, nativeBinding);
+  assert.ok(nativeBindingRelative && !isAbsolute(nativeBindingRelative) && nativeBindingRelative !== '..' && !nativeBindingRelative.startsWith(`..${sep}`));
   const { withFileLock } = await import(pathToFileURL(join(installedRoot, 'scripts', 'lib', 'fs.mjs')).href);
   assert.equal(await withFileLock(join(temporary, 'snapshot-native.lock'), async () => 'locked'), 'locked');
 
