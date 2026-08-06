@@ -97,10 +97,15 @@ export async function readResultArtifact({ dataRoot, workspace, artifact }) {
       if (await realpath(dirname(path)) !== root) throw artifactError();
       const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       try {
-        // Keep the before/after identity check on path stats as well. Mixing
-        // FileHandle.stat with lstat is inconsistent on Node 22.13 Windows.
-        const before = pathInfo; const contents = await handle.readFile('utf8'); const after = await lstat(path);
-        if (after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) throw artifactError(); return contents;
+        const before = await handle.stat(); const contents = await handle.readFile('utf8'); const handleAfter = await handle.stat();
+        const after = await lstat(path); if (after.isSymbolicLink() || !after.isFile() || await realpath(dirname(path)) !== root) throw artifactError();
+        const pathHandle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        try {
+          const pathAfter = await pathHandle.stat();
+          if (!sameFileIdentity(before, handleAfter) || !sameFileIdentity(before, pathAfter)) throw artifactError();
+        }
+        finally { await pathHandle.close(); }
+        return contents;
       }
       finally { await handle.close(); }
     });
@@ -131,14 +136,17 @@ async function writeArtifact({ dataRoot, workspace, directory, jobId, contents }
       try { if ((await lstat(path)).isSymbolicLink()) throw artifactError(); } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
       temporary = join(targetDirectory, `.${basename(path)}.${randomBytes(8).toString('hex')}.tmp`);
       handle = await open(temporary, 'wx', 0o600); await handle.writeFile(contents, 'utf8'); await handle.sync();
-      // Compare the temporary and final paths through the same stat API. On
-      // Windows, Node 22.13 uses libuv's fast path for lstat while
-      // FileHandle.stat uses the handle path; their dev/ino pairs can differ
-      // for the same file even though the rename is correct.
-      const sourceInfo = await lstat(temporary); await handle.close(); handle = undefined;
+      // Compare the temporary and final files through FileHandle.stat on both
+      // sides. Node 22.13 Windows uses different libuv stat paths for lstat
+      // and fstat, so a path-stat comparison rejects a valid rename. Keeping
+      // both identities handle-bound preserves the replacement check.
+      const sourceInfo = await handle.stat(); await handle.close(); handle = undefined;
       if (await realpath(targetDirectory) !== targetDirectory) throw artifactError();
       await rename(temporary, path); temporary = undefined; const finalInfo = await lstat(path);
-      if (finalInfo.isSymbolicLink() || !finalInfo.isFile() || finalInfo.dev !== sourceInfo.dev || finalInfo.ino !== sourceInfo.ino || await realpath(dirname(path)) !== targetDirectory) throw artifactError();
+      if (finalInfo.isSymbolicLink() || !finalInfo.isFile() || await realpath(dirname(path)) !== targetDirectory) throw artifactError();
+      const finalHandle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try { if (!sameFileIdentity(sourceInfo, await finalHandle.stat())) throw artifactError(); }
+      finally { await finalHandle.close(); }
       await chmod(path, 0o600); await syncDirectory(targetDirectory); return relative;
     });
   } catch (error) { await closeFileHandle(handle); if (temporary) await unlink(temporary).catch(() => {}); throw new PluginError('ARTIFACT_WRITE_FAILED', 'Could not durably write the private artifact.', { category: 'storage', remedy: 'Check plugin data storage and retry.', cause: error }); }
@@ -146,6 +154,9 @@ async function writeArtifact({ dataRoot, workspace, directory, jobId, contents }
 
 /** @param {import('node:fs/promises').FileHandle|undefined} handle */
 async function closeFileHandle(handle) { await handle?.close().catch(() => {}); }
+
+/** @param {any} left @param {any} right */
+function sameFileIdentity(left, right) { return left.dev === right.dev && left.ino === right.ino; }
 
 /** @param {string} storageDirectory @param {string} directory @param {boolean} create */
 async function secureArtifactRoot(storageDirectory, directory, create) {

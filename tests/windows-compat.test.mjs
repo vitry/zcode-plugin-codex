@@ -92,3 +92,76 @@ test('artifact identity checks do not mix handle and path stat implementations',
   const result = await runNode(source);
   assert.equal(result.code, 0, result.stderr || result.stdout);
 });
+
+test('artifact writes retain handle-bound identity checks', async () => {
+  const source = `
+    import { mkdtemp, open, rm } from 'node:fs/promises';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { writeResultArtifact } from ${JSON.stringify(reviewModule)};
+    const directory = await mkdtemp(join(tmpdir(), 'zcode-write-identity-'));
+    const probe = await open(join(directory, 'probe'), 'a+');
+    const prototype = Object.getPrototypeOf(probe);
+    await probe.close();
+    const originalStat = prototype.stat;
+    let statCalls = 0;
+    prototype.stat = async function patchedStat(...args) {
+      const stats = await originalStat.call(this, ...args);
+      statCalls += 1;
+      if (statCalls !== 2) return stats;
+      return new Proxy(stats, { get(target, property) {
+        if (property === 'dev') return target.dev + 1;
+        if (property === 'ino') return target.ino + 1;
+        return Reflect.get(target, property);
+      } });
+    };
+    try {
+      await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'c'.repeat(64), contents: 'done' });
+      throw new Error('artifact write unexpectedly accepted a destination identity mismatch');
+    } catch (error) {
+      if (error?.code !== 'ARTIFACT_WRITE_FAILED') throw error;
+    } finally {
+      prototype.stat = originalStat;
+      await rm(directory, { recursive: true, force: true });
+    }
+  `;
+  const result = await runNode(source);
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('artifact reads retain handle-bound identity checks', async () => {
+  const source = `
+    import { mkdtemp, open, rm } from 'node:fs/promises';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { readResultArtifact, writeResultArtifact } from ${JSON.stringify(reviewModule)};
+    const directory = await mkdtemp(join(tmpdir(), 'zcode-read-identity-'));
+    const probe = await open(join(directory, 'probe'), 'a+');
+    const prototype = Object.getPrototypeOf(probe);
+    await probe.close();
+    const artifact = await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'd'.repeat(64), contents: 'done' });
+    const originalStat = prototype.stat;
+    let statCalls = 0;
+    prototype.stat = async function patchedStat(...args) {
+      const stats = await originalStat.call(this, ...args);
+      statCalls += 1;
+      if (statCalls !== 2) return stats;
+      return new Proxy(stats, { get(target, property) {
+        if (property === 'dev') return target.dev + 1;
+        if (property === 'ino') return target.ino + 1;
+        return Reflect.get(target, property);
+      } });
+    };
+    try {
+      await readResultArtifact({ dataRoot: directory, workspace: directory, artifact });
+      throw new Error('artifact read unexpectedly accepted a path identity mismatch');
+    } catch (error) {
+      if (error?.code !== 'RESULT_READ_FAILED') throw error;
+    } finally {
+      prototype.stat = originalStat;
+      await rm(directory, { recursive: true, force: true });
+    }
+  `;
+  const result = await runNode(source);
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
