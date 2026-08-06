@@ -228,7 +228,10 @@ test('direct background invocation keeps capabilities private and production own
   const jobId = /Reserved background job ([a-f0-9]{64})\./.exec(launched.stdout)?.[1];
   assert.ok(jobId, launched.stdout); assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation/);
   const store = createStateStore({ dataRoot: ctx.env.PLUGIN_DATA }); let job;
-  const deadline = Date.now() + (process.platform === 'win32' ? 15_000 : 5_000);
+  // Windows CI can be heavily contended while several independent fixtures
+  // start brokers and native lock probes. Keep the worker bounded, but leave
+  // enough room for that startup/lock contention before declaring it stuck.
+  const deadline = Date.now() + (process.platform === 'win32' ? 30_000 : 5_000);
   do { job = await store.readJob(ctx.workspace, jobId); if (['succeeded', 'failed', 'cancelled'].includes(job.status)) break; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); } while (Date.now() < deadline);
   await ensureWorkerStopped(job.childPid);
   assert.equal(job.status, 'succeeded', JSON.stringify(job.error));

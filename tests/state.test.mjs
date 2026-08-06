@@ -14,6 +14,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
@@ -38,27 +39,14 @@ const jobInput = {
 };
 
 const fsModuleUrl = new URL('../scripts/lib/fs.mjs', import.meta.url).href;
+const lockHolder = fileURLToPath(new URL('./fixtures/lock-holder.mjs', import.meta.url));
 
 /** @param {string} lockPath */
 function startLockHolder(lockPath) {
-  const source = `
-    import { withFileLock } from ${JSON.stringify(fsModuleUrl)};
-    const lockPath = process.argv[1];
-    try {
-      await withFileLock(lockPath, async () => {
-        process.stdout.write('acquired\\n');
-        await new Promise((resolve) => process.stdin.once('data', resolve));
-      }, {
-        pollIntervalMs: 5,
-        timeoutMs: 1_000,
-      });
-      process.stdout.write('released\\n');
-    } catch (error) {
-      process.stdout.write(\`error:\${error.code}\\n\`);
-    }
-  `;
-  return spawn(process.execPath, ['--input-type=module', '--eval', source, lockPath], {
+  return spawn(process.execPath, [lockHolder, lockPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
+    shell: false,
+    windowsHide: true,
   });
 }
 
@@ -95,11 +83,11 @@ function startTimedLockAttempt(lockPath) {
 
 /** @param {import('node:child_process').ChildProcess} child @param {string} expected */
 async function waitForOutput(child, expected) {
-  let output = '';
+  let output = ''; let stderr = '';
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       cleanup();
-      reject(new Error(`Timed out waiting for child output: ${expected}; received: ${output}`));
+      reject(new Error(`Timed out waiting for child output: ${expected}; received: ${output}; stderr: ${stderr}`));
     }, 2_000);
     function cleanup() {
       clearTimeout(timeout);
@@ -117,9 +105,10 @@ async function waitForOutput(child, expected) {
     /** @param {number | null} code */
     function onExit(code) {
       cleanup();
-      reject(new Error(`Child exited with ${code}; output: ${output}`));
+      reject(new Error(`Child exited with ${code}; output: ${output}; stderr: ${stderr}`));
     }
     child.stdout?.on('data', onData);
+    child.stderr?.on('data', (chunk) => { stderr += chunk.toString(); });
     child.once('exit', onExit);
   });
 }

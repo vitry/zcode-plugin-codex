@@ -3,6 +3,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmod, readFile, unlink } from 'node:fs/promises';
 import net from 'node:net';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -105,7 +106,11 @@ export async function ensureZCodeBroker(options) {
     if ((options.platform ?? process.platform) !== 'win32') await unlink(endpoint).catch(() => {});
     const configPath = join(brokerDirectory, `config-${instanceId}.json`);
     await atomicWriteJson(configPath, { endpoint, instanceId, brokerToken, launch: options.launch, workspace: storage.workspacePath, idleTimeoutMs: options.idleTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs, ownershipPath: join(brokerDirectory, profile ? `session-owners-${profile}.json` : 'session-owners.json'), identityPath });
-    const child = await spawnDaemon({ command: process.execPath, args: [fileURLToPath(import.meta.url)], target: fileURLToPath(import.meta.url) }, { args: [configPath], cwd: storage.workspacePath, env: options.env });
+    // Keep the daemon's process cwd outside the workspace. Windows holds the
+    // cwd directory open for the lifetime of the process, which otherwise
+    // prevents callers from removing short-lived workspace fixtures (and can
+    // make a real workspace impossible to rename or delete).
+    const child = await spawnDaemon({ command: process.execPath, args: [fileURLToPath(import.meta.url)], target: fileURLToPath(import.meta.url) }, { args: [configPath], cwd: tmpdir(), env: options.env });
     const record = await writeBrokerIdentity(identityPath, { endpoint, pid: child.pid, instanceId, brokerToken });
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
