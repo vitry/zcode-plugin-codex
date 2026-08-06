@@ -58,3 +58,53 @@ Expected: zero failures; only the two credential-gated real E2E tests may be ski
 git add .github/workflows/ci.yml tests/release-contracts.test.mjs
 git commit -m "ci: avoid duplicate pull request matrices"
 ```
+
+### Task 2: Stabilize intended timeout seams on Node 22.13
+
+**Files:**
+- Modify: `tests/zcode-client.test.mjs`
+- Modify: `tests/fixtures/stop-gate-with-timeout.mjs`
+- Modify: `tests/hooks.test.mjs`
+
+- [ ] **Step 1: Reproduce the request-budget failures under contention**
+
+Run the stderr-tail test repeatedly under Node 22.13 with parallel workers and confirm at least one `ZCODE_REQUEST_TIMEOUT` occurs before `session/list`.
+
+Run the Stop-gate timeout group repeatedly under Node 22.13 with parallel workers and confirm at least one result has no `decision` because only `session/create` was recorded.
+
+- [ ] **Step 2: Give only the stderr-tail scenario a two-second request budget**
+
+Pass this options object as the third `withClient` argument in the stderr-tail test:
+
+```js
+{ requestTimeoutMs: 2_000 }
+```
+
+Keep the helper's 500 ms default unchanged.
+
+- [ ] **Step 3: Make the deliberate Stop completion timeout platform-neutral**
+
+In `tests/fixtures/stop-gate-with-timeout.mjs`, use:
+
+```js
+const timeoutMs = 2_000;
+```
+
+This keeps the intended suppressed completion as the timeout source on every platform without changing production defaults.
+
+- [ ] **Step 4: Prove the Stop timeout reaches the intended seam**
+
+For the timeout case in `tests/hooks.test.mjs`, assert the recorded calls include `session/send` before accepting the conservative block result. Retain the existing `session/stop` assertion.
+
+- [ ] **Step 5: Verify focused stress and full suites**
+
+Run the Node 22.13 targeted stress commands from the diagnosis, then run `npm run check` and `git diff --check`.
+
+Expected: no targeted timeouts before the intended seam, zero suite failures, and only the two credential-gated real E2E skips.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tests/zcode-client.test.mjs tests/fixtures/stop-gate-with-timeout.mjs tests/hooks.test.mjs
+git commit -m "test: stabilize Node 22 timeout scenarios"
+```
