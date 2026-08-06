@@ -67,8 +67,13 @@ test('send waits only for matching-session completion and answers permission req
     assert.match(sent.inputId, /^[0-9a-f-]{36}$/); assert.equal(sent.stateRevision, 1);
     await client.waitForCompletion(sessionId);
     assert.deepEqual(permissions, ['write']);
-    const calls = (await readFile(record, 'utf8')).trim().split('\n').map(JSON.parse);
-    assert.ok(calls.some((entry) => entry.id === 9000 && entry.result?.decision === 'allow'));
+    let permissionResponse;
+    for (let attempt = 0; attempt < 100 && !permissionResponse; attempt += 1) {
+      const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+      permissionResponse = calls.find((entry) => entry.id === 9000 && entry.result?.decision === 'allow');
+      if (!permissionResponse) await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(permissionResponse);
   }, { FAKE_ZCODE_PERMISSION: '1' });
 });
 
