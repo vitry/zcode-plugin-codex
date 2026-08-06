@@ -79,6 +79,16 @@ test('real CLI runs foreground review/adversarial/rescue and persists private ar
   assert.match(allText, /UNTRUSTED GIT DATA/); assert.match(allText, /focus on auth/); assert.doesNotMatch(allText, new RegExp(context.caller));
 });
 
+test('rescue task semantics reach the fake peer as the authorized objective', async () => {
+  const context = await fixture(); const task = 'repair auth and preserve the literal marker TASK-7'; const record = join(context.directory, 'authorized-objective.jsonl');
+  const result = await companion(context, ['rescue', '--fresh', '--wait', ...task.split(' ')], { FAKE_ZCODE_RESULT_FROM_AUTHORIZED_OBJECTIVE: '1', FAKE_ZCODE_RECORD: record });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
+  assert.equal(result.json.result, `authorized:${task}`);
+  const sent = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).find((frame) => frame.method === 'session/send');
+  assert.match(sent.params.content, /AUTHORIZED RESCUE OBJECTIVE/);
+  assert.match(sent.params.content, /UNTRUSTED GIT DATA/);
+});
+
 test('background reservation exposes one private invocation, which is single-use', async () => {
   const context = await fixture();
   const reserved = await companion(context, ['review', '--background']);

@@ -21,7 +21,7 @@ const defaultModel = { providerId: 'fake', modelId: 'model' };
 function settings(model = defaultModel) { return { appliedProviderRevision: 'provider-revision-1', model: { current: model, available: [{ ref: model, label: 'Fixture model', reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, label: 'Other model', reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' }, permission: { mode: 'build', rulesRevision: 1 } }; }
 function sessionInfo(sessionId, workspacePath = '/repo') { return { sessionId, workspace: { workspacePath, workspaceKey: workspacePath }, sessionKind: 'interactive', title: 'Fixture session', titleSource: 'generated', mode: 'build', status: 'idle', model: defaultModel, createdAt: 1, updatedAt: 1 }; }
 function messages(sessionId, model = defaultModel) { return resultMessages(sessionId, model, false, 'history', 'text'); }
-function resultMessages(sessionId, model, review, suffix = 'current', selectedMode, inputMessageId) {
+function resultMessages(sessionId, model, review, suffix = 'current', selectedMode, inputMessageId, resultText) {
   const mode = selectedMode ?? process.env.FAKE_ZCODE_RESULT_MODE ?? 'text';
   const structured = review ? mode === 'invalid-structured' ? { findings: [{ severity: 'bogus' }] } : { findings: [] } : undefined;
   const assistantId = `message-assistant-${suffix}`; const userId = inputMessageId ?? `message-user-${suffix}`;
@@ -29,7 +29,7 @@ function resultMessages(sessionId, model, review, suffix = 'current', selectedMo
   const gateText = process.env.FAKE_ZCODE_GATE_RESULT;
   const parts = mode === 'reasoning-only' ? [{ ...base, type: 'reasoning', text: 'private reasoning' }]
     : mode === 'mixed' ? [{ ...base, partId: 'reasoning', type: 'reasoning', text: 'private reasoning' }, { ...base, partId: 'ignored', type: 'text', text: 'ignored', ignored: true }, { ...base, partId: 'visible', type: 'text', text: review ? JSON.stringify({ findings: [] }) : 'done' }]
-      : [{ ...base, type: 'text', text: gateText === '__EMPTY__' ? '' : gateText ?? (review ? JSON.stringify({ findings: [] }) : 'done') }];
+      : [{ ...base, type: 'text', text: gateText === '__EMPTY__' ? '' : gateText ?? (review ? JSON.stringify({ findings: [] }) : resultText ?? 'done') }];
   return [{ info: { messageId: userId, sessionId, role: 'user', time: { created: 1, completed: 2 }, agent: 'build', model, synthetic: false, visibility: 'user-visible' }, parts: [{ partId: `part-user-${suffix}`, sessionId, messageId: userId, type: 'text', text: 'hello' }] }, { info: { messageId: assistantId, sessionId, role: 'assistant', time: { created: 2, completed: 3 }, parentMessageId: userId, agent: 'build', model, path: { cwd: '/repo', root: '/repo' }, cost: 0, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, finish: 'stop', ...(structured === undefined ? {} : { structured }) }, parts }];
 }
 function snapshot(sessionId, value = sessions.get(sessionId)) { const valueSettings = value?.settings ?? settings(); return { protocol: { name: 'ZCode Protocol', version: 1 }, session: { ...sessionInfo(sessionId, value?.workspacePath), model: valueSettings.model.current }, settings: valueSettings, projection: { sessionId, status: 'idle', mode: 'build', turnCount: 0, totalTokenCount: 0, contextUsed: 0, contextWindow: 128000, pendingPermissions: [], activeToolCalls: [], backgroundJobs: [] }, runtime: { eventSeq: 0, stateRevision: 0, pendingRequestIds: [] }, messages: value?.messages?.length ? value.messages : messages(sessionId, valueSettings.model.current), goalStats: { timeUsedSeconds: 0, tokensUsed: 0, tokenBudget: null, contextUsed: 0, contextWindow: 128000, toolCallCount: 0, iterationCount: 0 }, todos: [{ content: 'Verify', status: 'pending', priority: 'high' }], todoGroups: [{ id: 'todo-group-1', source: 'session', todos: [] }], slashCommands: [{ name: 'review', description: 'Review code', source: 'builtin' }] }; }
@@ -100,7 +100,12 @@ input.on('line', async (line) => {
     case 'session/send': {
       sendCount += 1;
       const trustedPrompt = typeof p.content === 'string' ? p.content.split('--- BEGIN UNTRUSTED GIT DATA ---', 1)[0] : '';
-      const session = sessions.get(p.sessionId); if (session) session.messages.push(...resultMessages(p.sessionId, session.settings.model.current, /ZCODE_REVIEW_OUTPUT_SCHEMA:\s*\{/i.test(trustedPrompt), `turn-${sendCount}`, /current hidden/i.test(p.content) ? 'reasoning-only' : undefined, /current unrelated/i.test(p.content) ? 'input-unrelated' : p.inputId));
+      let objectiveResult;
+      if (process.env.FAKE_ZCODE_RESULT_FROM_AUTHORIZED_OBJECTIVE === '1') {
+        const encoded = /--- BEGIN AUTHORIZED RESCUE OBJECTIVE ---\n([^\n]+)\n--- END AUTHORIZED RESCUE OBJECTIVE ---/.exec(trustedPrompt)?.[1];
+        try { objectiveResult = `authorized:${JSON.parse(encoded)}`; } catch { objectiveResult = 'authorized-objective-missing'; }
+      }
+      const session = sessions.get(p.sessionId); if (session) session.messages.push(...resultMessages(p.sessionId, session.settings.model.current, /ZCODE_REVIEW_OUTPUT_SCHEMA:\s*\{/i.test(trustedPrompt), `turn-${sendCount}`, /current hidden/i.test(p.content) ? 'reasoning-only' : undefined, /current unrelated/i.test(p.content) ? 'input-unrelated' : p.inputId, objectiveResult));
       const stateRevision = process.env.FAKE_ZCODE_BARRIER === '1' ? 1000 : 1;
       if (process.env.FAKE_ZCODE_BARRIER === '1') send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: 999, reason: 'prompt_completed', patch: { status: 'idle' } } });
       const response = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision } };
