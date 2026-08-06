@@ -131,6 +131,37 @@ test('foreground executions persist an exact worker lease identity', async (t) =
   assert.equal(persisted.childPid, process.pid); assert.match(persisted.workerLeaseId, /^[a-f0-9]{64}$/);
 });
 
+test('enclosing foreground execution preserves executor ownership after ambiguous read and stop failure', async (t) => {
+  for (const stopSucceeds of [false, true]) {
+    const fixture = await context();
+    t.after(() => cleanupRecoveryFixture(fixture));
+    const env = { ...fixture.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_ERROR: 'session/read', ...(stopSucceeds ? {} : { FAKE_ZCODE_STOP_ERROR_PREFIX: 'session-' }) };
+    await assert.rejects(runCompanion(['rescue', '--fresh', `ambiguous-${stopSucceeds}`], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext } }), /fixture request failed/);
+    const store = createStateStore({ dataRoot: fixture.dataRoot }); const [persisted] = await store.listJobs(fixture.workspace);
+    assert.equal(persisted.status, stopSucceeds ? 'failed' : 'running');
+    if (!stopSucceeds) {
+      assert.match(persisted.lastCancelError, /fixture stop failed/);
+      await assert.rejects(store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'later', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' });
+    }
+  }
+});
+
+test('enclosing background execution preserves executor ownership after boundary callback and stop failure', async (t) => {
+  for (const stopSucceeds of [false, true]) {
+    const fixture = await context();
+    t.after(() => cleanupRecoveryFixture(fixture));
+    const env = { ...fixture.env, ZCODE_PATH: fakeZCode, ...(stopSucceeds ? {} : { FAKE_ZCODE_STOP_ERROR_PREFIX: 'session-' }) };
+    const reserved = await runCompanion(['rescue', '--background', '--fresh', `boundary-${stopSucceeds}`], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext } });
+    await assert.rejects(runCompanion(reserved.privateInvocation, { cwd: fixture.workspace, env, authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id }, startupAck: async () => { throw new Error('boundary callback failed'); } }), /boundary callback failed/);
+    const store = createStateStore({ dataRoot: fixture.dataRoot }); const persisted = await store.readJob(fixture.workspace, reserved.job.id);
+    assert.equal(persisted.status, stopSucceeds ? 'failed' : 'running');
+    if (!stopSucceeds) {
+      assert.match(persisted.lastCancelError, /fixture stop failed/);
+      await assert.rejects(store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'later', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' });
+    }
+  }
+});
+
 test('foreground and background workers persist their exact lease before discovery', async () => {
   for (const execution of ['foreground', 'background']) {
     const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot }); let observed;

@@ -179,8 +179,8 @@ async function executeReserved(context) {
   } catch (error) {
     await client?.close().catch(() => {});
     const current = await store.readJob(cwd, job.id).catch(() => null);
-    if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
-      await store.transitionJob(cwd, job.id, [current.status], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution failed' }, finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
+    if (current?.status === 'queued') {
+      await store.transitionJob(cwd, job.id, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution failed' }, finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
     }
     throw error;
   }
