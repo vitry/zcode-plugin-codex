@@ -281,6 +281,12 @@ test('managed broker clients require an explicit stable owner credential', async
   for (const drainTimeoutMs of [0, 30_001]) await assert.rejects(createManagedZCodeClient({ dataRoot: '/tmp/data', workspace: '/tmp/workspace', launch: { command: process.execPath, args: [] }, ownerId: 'bounded-drain-owner', drainTimeoutMs }), { code: 'ZCODE_INPUT_INVALID' });
 });
 
+test('direct broker construction rejects unbounded wire and drain options', () => {
+  const options = { endpoint: '/tmp/zcode-test.sock', brokerToken: 'b'.repeat(64), workspace: '/tmp', launch: { command: process.execPath, args: [] } };
+  assert.throws(() => new ZCodeBroker({ ...options, drainTimeoutMs: 30_001 }), { code: 'ZCODE_BROKER_INPUT_INVALID' });
+  assert.throws(() => new ZCodeBroker({ ...options, maxOutboundBytes: 64 * 1024 * 1024 + 1 }), { code: 'ZCODE_BROKER_INPUT_INVALID' });
+});
+
 test('direct broker clients require an explicit stable owner credential before connecting', async () => {
   for (const ownerId of [undefined, '', 'too-short']) await assert.rejects(createZCodeClient({ workspace: '/tmp', brokerEndpoint: '/missing-broker', brokerToken: 'a'.repeat(64), ...(ownerId === undefined ? {} : { ownerId }) }), { code: 'ZCODE_INPUT_INVALID' });
 });
