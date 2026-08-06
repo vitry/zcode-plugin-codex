@@ -61,7 +61,7 @@ async function writeGateConfig(data, cwd, value) { const storage = await resolve
 function stopFields(input) { const copy = { ...input }; delete copy.prompt; return copy; }
 function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 
-test('hooks.json registers bounded native lifecycle hooks through the manifest', async () => {
+test('default hooks/hooks.json registers bounded native lifecycle hooks without a manifest override', async () => {
   const hooks = JSON.parse(await readFile(join(root, 'hooks/hooks.json'), 'utf8'));
   assert.deepEqual(Object.keys(hooks.hooks).sort(), ['SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
   for (const groups of Object.values(hooks.hooks)) for (const group of groups) for (const hook of group.hooks) {
@@ -72,7 +72,7 @@ test('hooks.json registers bounded native lifecycle hooks through the manifest',
   assert.equal(hooks.hooks.Stop[0].hooks[0].timeout, 900);
   assert.ok(hooks.hooks.SessionEnd[0].hooks[0].timeout <= 3);
   const manifest = JSON.parse(await readFile(join(root, '.codex-plugin/plugin.json'), 'utf8'));
-  assert.equal(manifest.hooks, './hooks/hooks.json');
+  assert.equal(Object.hasOwn(manifest, 'hooks'), false);
   assert.doesNotMatch(await readFile(join(root, 'hooks/stop-review-gate-hook.mjs'), 'utf8'), /NODE_ENV|ZCODE_TEST/, 'production hook must not expose test-only timeout controls');
 });
 

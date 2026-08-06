@@ -20,14 +20,14 @@ async function run(args, cwd, env) {
   return runProcess(launch, { cwd, env, timeoutMs: 30_000, maxOutputBytes: 4 * 1024 * 1024 });
 }
 
-function listSkills(cwd, env) {
+function listPluginComponents(cwd, env) {
   return new Promise((resolvePromise, reject) => {
     const launch = codexLaunch(['app-server'], { root, env });
     const child = spawn(launch.command, launch.args, { ...launch.options, cwd, env, detached: process.platform !== 'win32', windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    let bytes = 0; let settled = false;
-    const timer = setTimeout(() => { void finish(new Error(`skills/list timed out: ${stderr}`)); }, 30_000);
+    let bytes = 0; let settled = false; let skillsResult;
+    const timer = setTimeout(() => { void finish(new Error(`plugin component listing timed out: ${stderr}`)); }, 30_000);
     const finish = async (error, value) => {
       if (settled) return; settled = true;
       clearTimeout(timer);
@@ -53,7 +53,10 @@ function listSkills(cwd, env) {
           child.stdin.write(`${JSON.stringify({ id: 2, method: 'skills/list', params: { cwds: [cwd], forceReload: true } })}\n`);
         } else if (frame.id === 2) {
           if (frame.error) void finish(new Error(`skills/list failed: ${JSON.stringify(frame.error)} ${stderr}`));
-          else void finish(null, frame.result);
+          else { skillsResult = frame.result; child.stdin.write(`${JSON.stringify({ id: 3, method: 'hooks/list', params: { cwds: [cwd] } })}\n`); }
+        } else if (frame.id === 3) {
+          if (frame.error) void finish(new Error(`hooks/list failed: ${JSON.stringify(frame.error)} ${stderr}`));
+          else void finish(null, { skills: skillsResult, hooks: frame.result });
         }
       }
     });
@@ -112,12 +115,16 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.ok(installedRoot, `installed plugin root missing under ${codexHome}: ${roots.join(', ')}`);
   assert.deepEqual((await readdir(join(installedRoot, 'skills'), { withFileTypes: true }))
     .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(), expectedSkills);
-  assert.equal(JSON.parse(await readFile(join(installedRoot, '.codex-plugin', 'plugin.json'), 'utf8')).name, 'zcode');
-  const listedSkills = await listSkills(temporary, env);
-  const installedSkills = listedSkills.data.flatMap((entry) => entry.skills)
+  const installedManifest = JSON.parse(await readFile(join(installedRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
+  assert.equal(installedManifest.name, 'zcode');
+  assert.equal(Object.hasOwn(installedManifest, 'hooks'), false);
+  assert.ok(JSON.parse(await readFile(join(installedRoot, 'hooks', 'hooks.json'), 'utf8')).hooks);
+  const listedComponents = await listPluginComponents(temporary, env);
+  const installedSkills = listedComponents.skills.data.flatMap((entry) => entry.skills)
     .filter((skill) => /^(?:zcode|zcode-plugin-codex):/.test(skill.name));
   assert.deepEqual(installedSkills.map((skill) => skill.name).sort(), expectedSkills.map((name) => `zcode:${name}`).sort());
   assert.ok(installedSkills.every((skill) => skill.enabled === true));
+  assert.match(JSON.stringify(listedComponents.hooks), /session-lifecycle-hook|user-prompt-hook/, 'Codex must auto-discover the installed default hooks/hooks.json');
   const nativeBinding = await realpath(join(installedRoot, 'node_modules', 'fs-native-extensions'));
   assert.ok(nativeBinding.startsWith(`${await realpath(installedRoot)}/`));
   const { withFileLock } = await import(pathToFileURL(join(installedRoot, 'scripts', 'lib', 'fs.mjs')).href);

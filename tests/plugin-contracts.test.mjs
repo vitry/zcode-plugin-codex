@@ -11,7 +11,6 @@ const requiredManifestFields = [
   'author',
   'description',
   'homepage',
-  'hooks',
   'interface',
   'keywords',
   'license',
@@ -46,7 +45,8 @@ function assertManifestContract(manifest) {
   );
   assert.match(manifest.version, semverPattern);
   assert.equal(manifest.skills, './skills/');
-  assert.equal(manifest.hooks, './hooks/hooks.json');
+  assert.equal(Object.hasOwn(manifest, 'hooks'), false);
+  assert.equal(existsSync(resolve(rootPath, 'hooks/hooks.json')), true);
 
   for (const field of requiredInterfaceFields) {
     assert.equal(

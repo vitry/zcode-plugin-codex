@@ -33,7 +33,12 @@ test('plugin component declarations stay within the plugin root', () => {
   assert.notEqual(relativeSkillsPath, '..');
   assert.equal(relativeSkillsPath.startsWith(`..${sep}`), false);
 
-  assert.equal(manifest.hooks, './hooks/hooks.json'); const hooksPath = resolve(rootPath, manifest.hooks); const relativeHooksPath = relative(rootPath, hooksPath); assert.notEqual(relativeHooksPath, '..'); assert.equal(relativeHooksPath.startsWith(`..${sep}`), false);
+  const hooksPath = resolve(rootPath, 'hooks/hooks.json');
+  const relativeHooksPath = relative(rootPath, hooksPath);
+  assert.notEqual(relativeHooksPath, '..');
+  assert.equal(relativeHooksPath.startsWith(`..${sep}`), false);
+  assert.doesNotThrow(() => readJson('hooks/hooks.json'));
+  assert.equal(Object.hasOwn(manifest, 'hooks'), false, 'default hooks/hooks.json must not need a manifest override');
   for (const absentComponent of ['mcpServers', 'apps']) {
     assert.equal(
       Object.hasOwn(manifest, absentComponent),

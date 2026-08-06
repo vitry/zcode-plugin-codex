@@ -17,7 +17,6 @@
     "delegation"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "ZCode for Codex",
     "shortDescription": "Review code and delegate tasks through ZCode.",

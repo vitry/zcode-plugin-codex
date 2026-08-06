@@ -122,7 +122,7 @@ test('release qualification covers the installed direct bridge and explicit real
   assert.match(real, /ZCODE_REAL_E2E_MODEL\?\.trim\(\)/); assert.match(real, /runCompanion/); assert.match(real, /--model/);
   const installed = read('tests/e2e/codex-skills-e2e.test.mjs');
   assert.match(installed, /codex-skills-unqualified/); assert.match(installed, /exec/); assert.match(installed, /--ephemeral/); assert.match(installed, /--json/); assert.match(installed, /\$zcode:review/); assert.match(installed, /buildMarketplaceSnapshot/);
-  const manifest = JSON.parse(read('.codex-plugin/plugin.json')); assert.equal(manifest.hooks, './hooks/hooks.json');
+  const manifest = JSON.parse(read('.codex-plugin/plugin.json')); assert.equal(Object.hasOwn(manifest, 'hooks'), false); assert.ok(JSON.parse(read('hooks/hooks.json')).hooks);
   const companion = read('scripts/zcode-companion.mjs'); assert.match(companion, /startBackgroundWorker/);
   for (const command of commands) {
     const skill = read(`skills/${command}/SKILL.md`);
