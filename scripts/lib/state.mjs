@@ -29,7 +29,7 @@ const JOB_PATCH_FIELDS = new Set([
 const TRANSITIONS = new Map([
   ['queued', new Set(['running', 'failed', 'cancelled'])],
   ['running', new Set(['running', 'cancelling', 'succeeded', 'failed'])],
-  ['cancelling', new Set(['cancelled', 'running', 'failed'])],
+  ['cancelling', new Set(['cancelled', 'running', 'succeeded', 'failed'])],
 ]);
 
 /** @param {{ dataRoot: string }} options */
@@ -73,6 +73,33 @@ export function createStateStore(options) {
         };
         await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), job);
         return job;
+      });
+    },
+
+    /** @param {string} workspace @param {string} jobId @param {{childPid:number,workerLeaseId:string}} worker */
+    async claimJobWorker(workspace, jobId, worker) {
+      if (!isNonEmptyString(workspace) || !isDigest(jobId) || !isPlainJsonObject(worker)
+        || !Number.isSafeInteger(worker.childPid) || worker.childPid <= 0 || !isDigest(worker.workerLeaseId)) {
+        throw new PluginError('WORKER_LEASE_INVALID', 'Worker lease claim is invalid.', {
+          category: 'state',
+          remedy: 'Claim a queued job with one positive process ID and one 64-character lease digest.',
+        });
+      }
+      const storage = await jobStorage(dataRoot, workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const path = jobPath(storage.jobsDirectory, jobId);
+        const job = await readJobRecord(path, jobId, storage.workspacePath);
+        if (job.childPid === worker.childPid && job.workerLeaseId === worker.workerLeaseId) return job;
+        if (job.status !== 'queued' || job.childPid !== undefined || job.workerLeaseId !== undefined) {
+          throw new PluginError('WORKER_LEASE_CONFLICT', `Job ${jobId} is already claimed or no longer queued.`, {
+            category: 'state',
+            remedy: 'Only the worker holding the exact durable lease may execute this reservation.',
+          });
+        }
+        const claimed = { ...job, ...worker, updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString() };
+        validateJobRecord(claimed, jobId, storage.workspacePath);
+        await atomicWriteJson(path, claimed);
+        return claimed;
       });
     },
 
@@ -292,10 +319,12 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
     && validBeforeMessageIds(job.beforeMessageIds)
     && typeof job.zcodeSessionId === 'string' && typeof job.startedAt === 'string' && job.status !== 'queued';
   const terminal = validShape && TERMINAL_STATUSES.has(job.status);
+  const validQueuedClaim = job.status !== 'queued'
+    || ('childPid' in job) === ('workerLeaseId' in job);
   const hasRunningMetadata = validShape && [
-    'childPid', 'effort', 'model', 'promptArtifact', 'startedAt', 'workerLeaseId', 'zcodeSessionId',
+    'effort', 'model', 'promptArtifact', 'startedAt', 'zcodeSessionId',
   ].some((field) => field in job);
-  const validLifecycle = validShape && validBoundary
+  const validLifecycle = validShape && validBoundary && validQueuedClaim
     && (!hasRunningMetadata || job.status !== 'queued')
     && (!('exitCode' in job) || terminal)
     && (!('finishedAt' in job) || terminal)
@@ -368,6 +397,7 @@ function validateJobPatch(job, nextStatus, patch, jobId) {
     || !TERMINAL_STATUSES.has(nextStatus))) invalidFields.push('exitCode');
   if ('lastCancelError' in patch
     && !(currentStatus === 'cancelling' && nextStatus === 'running' && isCancellationError(patch.lastCancelError))
+    && !(currentStatus === 'running' && nextStatus === 'running' && isCancellationError(patch.lastCancelError))
     && !(currentStatus === 'running' && nextStatus === 'cancelling' && patch.lastCancelError === null)) invalidFields.push('lastCancelError');
   const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
   if (boundaryFields.some((field) => field in patch)

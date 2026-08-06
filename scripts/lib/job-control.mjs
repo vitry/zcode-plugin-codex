@@ -106,6 +106,7 @@ async function performCancellation(input, attempts, election) {
   if (current?.status === 'active' || current?.status === 'finalize-pending') attempt = current;
   else attempt = await attempts.start(job.id, input.ownerSessionId);
   if (job.status === 'queued') {
+    if (job.workerLeaseId) throw cancelError(job.id, 'The claimed worker is still starting; retry after it advances or recovery proves it orphaned.');
     const cancelled = await input.options.store.transitionJob(input.workspace, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
     await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'succeeded'); return cancelled;
   }

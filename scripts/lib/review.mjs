@@ -34,7 +34,7 @@ export function decidePermission(request, permissionSnapshot, command) {
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
-  let running = job;
+  let running = job; let sessionId; let sendAttempted = false; let remoteTerminalProven = false;
   try {
     let prompt;
     if (job.command === 'review' || job.command === 'adversarial-review') {
@@ -47,7 +47,7 @@ export async function executeJob(input) {
       await input.onBeforeResume?.(job);
       snapshot = await client.resumeSession(input.resumeSessionId);
     } else snapshot = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
-    const sessionId = snapshot.session.sessionId;
+    sessionId = snapshot.session.sessionId;
     const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
     if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await client.setModel(sessionId, selectedModel);
     if (input.effort) snapshot = await client.setThoughtLevel(sessionId, input.effort);
@@ -59,12 +59,13 @@ export async function executeJob(input) {
       ...(input.workerLeaseId ? { workerLeaseId: input.workerLeaseId } : {}),
       ...(selectedModel ? { model: selectedModel } : {}), ...(input.effort ? { effort: input.effort } : {}),
     });
-    const beforeMessageIds = [...snapshotMessageIds(snapshot)]; const sent = await client.send(sessionId, prompt);
+    const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await client.send(sessionId, prompt);
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
     await client.waitForCompletion(sessionId);
     const finalSnapshot = await client.readSession(sessionId);
+    remoteTerminalProven = true;
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
     const resultArtifact = await writeArtifact({ dataRoot, workspace, directory: 'results', jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
     const succeeded = await input.store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
@@ -72,6 +73,13 @@ export async function executeJob(input) {
   } catch (error) {
     const current = await input.store.readJob(workspace, job.id).catch(() => running);
     if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
+      if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven) {
+        try { await client.stopSession(sessionId); }
+        catch (stopError) {
+          await input.store.transitionJob(workspace, job.id, ['running'], 'running', { lastCancelError: safeError(stopError).message }).catch(() => {});
+          throw error;
+        }
+      }
       await input.store.transitionJob(workspace, job.id, [current.status], 'failed', { error: safeError(error), finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
     }
     throw error;

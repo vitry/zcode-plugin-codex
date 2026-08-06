@@ -10,6 +10,7 @@ import { writeResultArtifact } from '../scripts/lib/review.mjs';
 import * as transferModule from '../scripts/lib/transfer.mjs';
 import { extractImportedHistory, executeTransfer, resolveTransferSource, TRANSFER_LIMITS } from '../scripts/lib/transfer.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
+import { withWorkerLease } from '../scripts/lib/recovery.mjs';
 
 const source = 'codex-thread-1';
 function thread(overrides = {}) {
@@ -80,6 +81,16 @@ test('creates imported history, writes a durable result, and succeeds the tracke
   assert.match(output.result, /^Imported from Codex/m); assert.match(output.result, /ZCode session ID: zcode-session-1/); assert.match(output.resumeCommand, /^'\/Applications\/Z Code\/zcode' --profile 'a b' --resume zcode-session-1$/);
   const storage = await resolveWorkspaceStorage(context);
   assert.equal(await readFile(join(storage.directory, output.job.resultArtifact), 'utf8'), output.result);
+});
+
+test('Transfer persists and holds its exact worker lease before reading Codex history', async () => {
+  const context = await executionFixture(); /** @type {any} */ let observed;
+  await assert.rejects(executeTransfer({ ...context, sourceThreadId: source, launch: { command: 'zcode', args: [] }, readThread: async () => {
+    observed = await context.store.readJob(context.workspace, context.job.id);
+    await assert.rejects(withWorkerLease({ dataRoot: context.dataRoot, workspace: context.workspace, jobId: observed.id, workerLeaseId: observed.workerLeaseId, timeoutMs: 0 }, async () => {}), { code: 'LOCK_TIMEOUT' });
+    throw new Error('stop after lease observation');
+  }, createClient: async () => context.client }), /stop after lease observation/);
+  const persisted = /** @type {any} */ (observed); assert.equal(persisted.status, 'running'); assert.equal(persisted.childPid, process.pid); assert.match(persisted.workerLeaseId, /^[a-f0-9]{64}$/);
 });
 
 test('thread/read and conversion failures happen before ZCode creation and durably fail the job', async () => {

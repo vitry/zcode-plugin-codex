@@ -34,7 +34,7 @@ export async function runCompanion(argv, runtime = {}) {
   if (!dataRoot) throw new PluginError('DATA_ROOT_REQUIRED', 'Plugin data root is not configured.', { category: 'configuration', remedy: 'Run $zcode:setup.' });
   if (parsed.command === 'setup') return runSetup({ pluginRoot: env.PLUGIN_ROOT, dataRoot, cwd, reviewGate: parsed.options.reviewGate, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
   const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
-  if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck });
+  if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies });
   const caller = runtime.caller ?? await identity.consumeCallerContext(requireAuthorization(runtime.authorization, ['callerContext']).callerContext, { workspace: cwd });
   const reconcile = () => reconcileOwnedJobs({ store, dataRoot, workspace: cwd, ownerSessionId: caller.sessionId, createClient: async (job, ownerId) => {
     const launch = await discoverLaunch(env);
@@ -144,7 +144,7 @@ function codexAppServerOptions(env, cwd) {
 }
 
 /** @param {any} input */
-async function runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization, startupAck }) {
+async function runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization, startupAck, dependencies }) {
   const jobId = parsed.positionals[0]; const job = await store.readJob(cwd, jobId);
   if (authorization.jobId !== jobId) throw authorizationInputError();
   const record = await readJobSpec(dataRoot, cwd, jobId);
@@ -154,13 +154,16 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', specDigest: recomputed });
   if (!sameJson(consumed.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
-  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, caller: { sessionId: job.ownerSessionId }, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
+  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, caller: { sessionId: job.ownerSessionId }, dependencies, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
 
 /** @param {any} context */
 async function executeWithWorkerLease(context) {
   const workerLeaseId = randomBytes(32).toString('hex');
-  return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, () => executeReserved({ ...context, childPid: process.pid, workerLeaseId }));
+  return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, async () => {
+    const job = await context.store.claimJobWorker(context.cwd, context.job.id, { childPid: process.pid, workerLeaseId });
+    return executeReserved({ ...context, job, childPid: process.pid, workerLeaseId });
+  });
 }
 
 /** @param {any} context */
@@ -168,7 +171,7 @@ async function executeReserved(context) {
   const { cwd, env, dataRoot, store, job, spec } = context;
   let client;
   try {
-    const launch = await discoverLaunch(env); const ownerId = ownerIdForSession(job.ownerSessionId);
+    const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
     client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId, env });
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
@@ -184,7 +187,9 @@ async function executeReserved(context) {
 }
 
 /** @param {NodeJS.ProcessEnv} env */
-async function discoverLaunch(env) {
+/** @param {NodeJS.ProcessEnv} env @param {any} [dependencies] */
+async function discoverLaunch(env, dependencies = {}) {
+  if (dependencies?.discoverLaunch) return dependencies.discoverLaunch(env);
   return (await discoverZCode({ explicitPath: env.ZCODE_PATH, env })).launch;
 }
 

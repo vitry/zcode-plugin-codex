@@ -163,6 +163,22 @@ test('jobs follow queued -> running -> succeeded and persist complete metadata',
   assert.deepEqual(await store.listJobs(workspace), [succeeded]);
 });
 
+test('a queued job durably claims one exact worker before long-running setup', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput });
+  const workerLeaseId = 'a'.repeat(64);
+  const claimed = await store.claimJobWorker(workspace, job.id, { childPid: 4321, workerLeaseId });
+  assert.equal(claimed.status, 'queued');
+  assert.equal(claimed.childPid, 4321);
+  assert.equal(claimed.workerLeaseId, workerLeaseId);
+  assert.deepEqual(await store.claimJobWorker(workspace, job.id, { childPid: 4321, workerLeaseId }), claimed, 'the exact worker may observe its durable claim again');
+  await assert.rejects(store.claimJobWorker(workspace, job.id, { childPid: 4322, workerLeaseId: 'b'.repeat(64) }), { code: 'WORKER_LEASE_CONFLICT' });
+  const running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString() });
+  assert.equal(running.workerLeaseId, workerLeaseId);
+  assert.equal(running.childPid, 4321);
+});
+
 test('cancellation can finish or return to running with the stop error', async () => {
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });

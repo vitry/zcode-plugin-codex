@@ -20,3 +20,13 @@ test('background startup timeout terminates and reaps the unacknowledged worker'
   const pid = Number(await readFile(pidFile, 'utf8'));
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
 });
+
+test('background startup schedules the production acknowledgement deadline at 30 seconds', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-background-worker-default-'));
+  const worker = join(directory, 'worker.mjs'); let scheduled;
+  t.after(() => rm(directory, { force: true, recursive: true }));
+  await writeFile(worker, "import { writeSync } from 'node:fs'; writeSync(4, 'ready\\n'); setTimeout(() => {}, 20);\n");
+  const result = await startBackgroundWorker({ companionPath: worker, jobId: 'b'.repeat(64), executionCapability: 'private-capability', cwd: directory, env: process.env,
+    dependencies: { setTimeout: (callback, milliseconds) => { scheduled = milliseconds; return globalThis.setTimeout(callback, milliseconds); }, clearTimeout: (timer) => globalThis.clearTimeout(timer) } });
+  assert.equal(scheduled, 30_000); assert.ok(typeof result.pid === 'number' && result.pid > 0);
+});

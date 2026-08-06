@@ -1,7 +1,10 @@
+import { randomBytes } from 'node:crypto';
+
 import { PluginError } from './errors.mjs';
 import { hasControl, isSafeIdentifier } from './identifier.mjs';
 import { withJobCancellationLock } from './job-control.mjs';
 import { removeResultArtifact, writeResultArtifact } from './review.mjs';
+import { withWorkerLease } from './recovery.mjs';
 import { IMPORTED_HISTORY_SOURCE } from './zcode-client.mjs';
 
 export const TRANSFER_LIMITS = Object.freeze({
@@ -60,6 +63,16 @@ export function extractImportedHistory(thread, expectedThreadId) {
  * @param {{job:any,workspace:string,dataRoot:string,store:any,sourceThreadId:string,launch?:{command:string,args:string[]},resolveLaunch?:()=>Promise<{command:string,args:string[]}>,readThread:()=>Promise<unknown>,createClient:(launch:{command:string,args:string[]})=>Promise<any>,writeResult?:(input:any)=>Promise<string>,removeResult?:(input:any)=>Promise<void>}} input
  */
 export async function executeTransfer(input) {
+  validateExecution(input);
+  const workerLeaseId = randomBytes(32).toString('hex');
+  return withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: input.job.id, workerLeaseId }, async () => {
+    const job = await input.store.claimJobWorker(input.workspace, input.job.id, { childPid: process.pid, workerLeaseId });
+    return executeClaimedTransfer({ ...input, job });
+  });
+}
+
+/** @param {any} input */
+async function executeClaimedTransfer(input) {
   const { job, workspace, dataRoot, store, sourceThreadId } = input;
   let client; let running = job;
   try {
@@ -90,7 +103,7 @@ export async function executeTransfer(input) {
   } catch (error) {
     await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
       const current = await store?.readJob(workspace, job?.id).catch(() => running);
-      if (current?.status === 'running') await store.transitionJob(workspace, job.id, ['running'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Transfer failed' }, finishedAt: new Date().toISOString(), exitCode: 1 });
+      if (['queued', 'running'].includes(current?.status)) await store.transitionJob(workspace, job.id, [current.status], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Transfer failed' }, finishedAt: new Date().toISOString(), exitCode: 1 });
     }).catch(() => {});
     throw error;
   } finally { await client?.close().catch(() => {}); }
