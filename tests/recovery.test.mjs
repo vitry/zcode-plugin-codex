@@ -1,10 +1,13 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { closeSync, constants, openSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
@@ -23,6 +26,7 @@ const companionCli = fileURLToPath(new URL('../scripts/zcode-companion.mjs', imp
 const fakeZCode = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 const cancelAttemptChild = fileURLToPath(new URL('./fixtures/cancel-attempt-child.mjs', import.meta.url));
 const cancelLockHolder = fileURLToPath(new URL('./fixtures/cancel-lock-holder.mjs', import.meta.url));
+const execFileAsync = promisify(execFile);
 
 function spawnCancelAttempt(args) {
   const child = spawn(process.execPath, [cancelAttemptChild, ...args], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] }); let stdout = ''; let stderr = '';
@@ -33,12 +37,15 @@ function spawnCancelAttempt(args) {
 
 function runWriterProbe(mode) {
   const child = spawn(process.execPath, [writerProbe, mode], { stdio: ['ignore', 'pipe', 'pipe', 'ignore', 'pipe'] });
-  let stdout = ''; let stderr = ''; child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+  let stdout = ''; let stderr = ''; let internalError = null; let exited = false; let streamClosed = !child.stdio[4]; let exitCode;
+  child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
   if (mode === 'early-close') child.stdio[4].destroy();
   if (mode === 'slow-read') { child.stdio[4].pause(); setTimeout(() => { child.stdio[4].on('data', () => {}); child.stdio[4].resume(); }, 50); }
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`writer probe ${mode} exceeded hard timeout`)); }, 2_000);
-    child.once('error', (error) => { clearTimeout(timer); reject(error); }); child.once('exit', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+    const settle = () => { if (!exited || !streamClosed) return; clearTimeout(timer); resolve({ code: exitCode, stdout, stderr, internalError }); };
+    child.stdio[4]?.once('error', (error) => { internalError = error; }); child.stdio[4]?.once('close', () => { streamClosed = true; settle(); });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); }); child.once('exit', (code) => { exitCode = code; exited = true; settle(); });
   });
 }
 
@@ -354,9 +361,31 @@ test('internal response writer cancels a pending write before closing its descri
   lateCallback?.(null, 1);
 });
 
+test('successful internal response writes unref the protected socket instead of resetting its parent reader', async () => {
+  if (process.platform === 'win32') return;
+  const root = await mkdtemp(join(tmpdir(), 'zcode-fd4-')); const fifo = join(root, 'pipe');
+  await execFileAsync('mkfifo', [fifo]);
+  const readerFd = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK); const writerFd = openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK);
+  const originalDestroy = Socket.prototype.destroy; const originalUnref = Socket.prototype.unref;
+  let destroyed = 0; let unrefed = 0;
+  const isWriterSocket = (socket) => socket?._handle?.fd === writerFd;
+  Socket.prototype.destroy = function (...args) { if (isWriterSocket(this)) destroyed += 1; return originalDestroy.apply(this, args); };
+  Socket.prototype.unref = function (...args) { if (isWriterSocket(this)) unrefed += 1; return originalUnref.apply(this, args); };
+  try {
+    await writeInternalResponse({ ok: true }, writerFd, { timeoutMs: 100 });
+    assert.equal(destroyed, 0);
+    assert.equal(unrefed, 1);
+  } finally {
+    Socket.prototype.destroy = originalDestroy; Socket.prototype.unref = originalUnref;
+    try { closeSync(readerFd); } catch { /* writer path may already be closed */ }
+    try { closeSync(writerFd); } catch { /* expected while proving success does not close it */ }
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test('real fd4 writer is bounded for no-reader, slow-reader, and early-close pipes', async () => {
   const noRead = await runWriterProbe('no-read'); assert.equal(noRead.code, 0); assert.match(noRead.stdout, /INTERNAL_RESPONSE_WRITE_TIMEOUT/);
-  const slowRead = await runWriterProbe('slow-read'); assert.equal(slowRead.code, 0); assert.match(slowRead.stdout, /ok/);
+  const slowRead = await runWriterProbe('slow-read'); assert.equal(slowRead.code, 0); assert.match(slowRead.stdout, /ok/); assert.equal(slowRead.internalError, null);
   const earlyClose = await runWriterProbe('early-close'); assert.equal(earlyClose.code, 0); assert.match(earlyClose.stdout, /INTERNAL_RESPONSE_WRITE_FAILED/);
 });
 

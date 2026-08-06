@@ -269,9 +269,13 @@ export function writeInternalResponse(value, fd = 4, options = {}) {
     let offset = 0; let settled = false; let closing = false;
     /** @type {(()=>void)|null} */
     let cancelPending = null;
-    const dispose = () => { if (socket && !socket.destroyed) socket.destroy(); };
+    /** @param {unknown} error */
+    const dispose = (error) => {
+      if (!socket || socket.destroyed) return;
+      if (error) socket.destroy(); else socket.unref();
+    };
     /** @param {unknown} [error] */
-    const finish = (error) => { if (settled) return; settled = true; clearTimeout(timer); dispose(); if (error) reject(error); else resolvePromise(undefined); };
+    const finish = (error) => { if (settled) return; settled = true; clearTimeout(timer); dispose(error); if (error) reject(error); else resolvePromise(undefined); };
     /** @param {unknown} cause @param {string} [code] */
     const failure = (cause, code = 'INTERNAL_RESPONSE_WRITE_FAILED') => new PluginError(code, 'Could not deliver the protected internal response.', { category: code.endsWith('TIMEOUT') ? 'timeout' : 'runtime', remedy: 'Retry the command through its installed skill.', cause });
     const timer = setTimeout(() => {
