@@ -29,5 +29,13 @@ jobs:
       - name: Production lockfile native binding smoke
         shell: bash
         run: |
-          npm ci --omit=dev
+          # Windows test brokers intentionally retain their process/native
+          # addon for the documented 30-second idle window. If npm's cleanup
+          # races that window, retry once after it has elapsed.
+          if ! npm ci --omit=dev; then
+            if [[ "$RUNNER_OS" != "Windows" ]]; then exit 1; fi
+            echo "npm ci raced an idle Windows broker; retrying after 35 seconds"
+            sleep 35
+            npm ci --omit=dev
+          fi
           node -e "const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),lock=require('fs-native-extensions');const dir=fs.mkdtempSync(path.join(os.tmpdir(),'zcode-lock-'));const file=fs.openSync(path.join(dir,'smoke.lock'),'a+');if(!lock.tryLock(file))throw new Error('native lock unavailable');lock.unlock(file);fs.closeSync(file);fs.rmSync(dir,{recursive:true});"
