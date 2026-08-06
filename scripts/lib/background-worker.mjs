@@ -11,7 +11,10 @@ export const BACKGROUND_WORKER_START_TIMEOUT_MS = 30_000;
 export async function startBackgroundWorker({ companionPath, jobId, executionCapability, cwd, env, timeoutMs = BACKGROUND_WORKER_START_TIMEOUT_MS, dependencies = {} }) {
   if (![companionPath, jobId, executionCapability, cwd].every((value) => typeof value === 'string' && value) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30_000) throw workerError('BACKGROUND_WORKER_INPUT_INVALID', 'Background worker input is invalid.');
   const spawnChild = dependencies.spawn ?? spawn;
-  const child = spawnChild(process.execPath, [companionPath, 'run-reserved-job', jobId], { cwd, env: { ...env, ZCODE_BACKGROUND_WORKER: '1' }, detached: process.platform !== 'win32', windowsHide: true, shell: false, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
+  // A background worker must survive the short-lived direct-invocation
+  // process on every platform. Windows otherwise keeps the child tied to the
+  // parent process lifetime even after the startup acknowledgement is sent.
+  const child = spawnChild(process.execPath, [companionPath, 'run-reserved-job', jobId], { cwd, env: { ...env, ZCODE_BACKGROUND_WORKER: '1' }, detached: true, windowsHide: true, shell: false, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
   const authorization = /** @type {import('node:stream').Writable} */ (child.stdio[3]); const acknowledgements = /** @type {import('node:stream').Readable} */ (child.stdio[4]);
   authorization.on('error', consumePipeError); acknowledgements.on('error', consumePipeError);
   authorization.end(`${JSON.stringify({ executionCapability, jobId })}\n`);
