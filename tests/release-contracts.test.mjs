@@ -95,12 +95,17 @@ test('security, changelog, and provenance are release-ready', () => {
 test('CI runs full and packed native suites on three platforms and Node 22.13', () => {
   const workflow = read('.github/workflows/ci.yml');
   const eventBlock = /^on:\n[ ]{2}push:\n[ ]{4}branches: \[main\]\n[ ]{2}pull_request:\n\npermissions:$/m;
-  assert.match(workflow, eventBlock);
-  const filteredPullRequestWorkflow = workflow.replace(
-    /^([ ]{2}pull_request:)\n/m,
-    '$1\n    branches: [main]\n',
-  );
-  assert.doesNotMatch(filteredPullRequestWorkflow, eventBlock);
+  const assertEventBlock = (source) => {
+    const normalizedSource = source.replaceAll('\r\n', '\n');
+    assert.match(normalizedSource, eventBlock);
+    const filteredPullRequestWorkflow = normalizedSource.replace(
+      /^([ ]{2}pull_request:)\n/m,
+      '$1\n    branches: [main]\n',
+    );
+    assert.doesNotMatch(filteredPullRequestWorkflow, eventBlock);
+  };
+  assertEventBlock(workflow);
+  assertEventBlock(workflow.replaceAll(/\r?\n/g, '\r\n'));
   for (const os of ['ubuntu-latest', 'macos-latest', 'windows-latest']) assert.match(workflow, new RegExp(os));
   assert.match(workflow, /22\.13\.0/);
   assert.match(workflow, /lts\/\*/);
