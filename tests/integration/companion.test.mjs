@@ -145,8 +145,12 @@ test('caller authorization is absent from the running process command line and p
   const caller = await context.identity.createCallerContext({ sessionId: 'codex-session', turnId: 'turn-ps', workspace: context.workspace, permissionMode: 'workspace-write' });
   const child = spawn(process.execPath, [cli, 'status', reserved.json.job.id, '--wait', '--timeout-ms', '500'], { cwd: context.workspace, env: context.env, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], shell: false });
   let stdout = ''; let stderr = ''; let internal = ''; child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError); child.stdio[4]?.on('data', (chunk) => { internal += chunk; }); /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: caller })}\n`);
-  const inspected = await run('ps', ['-p', String(child.pid), '-o', 'command=']);
-  assert.equal(inspected.code, 0); assert.doesNotMatch(inspected.stdout, new RegExp(caller));
+  // `ps -p` is not a portable process-inspection primitive; Windows stream and
+  // internal-channel assertions below still cover the no-leakage contract.
+  if (process.platform !== 'win32') {
+    const inspected = await run('ps', ['-p', String(child.pid), '-o', 'command=']);
+    assert.equal(inspected.code, 0); assert.doesNotMatch(inspected.stdout, new RegExp(caller));
+  }
   const code = await new Promise((resolvePromise, reject) => { child.once('error', reject); child.once('exit', resolvePromise); });
   assert.notEqual(code, 0); assert.doesNotMatch(`${stdout}${stderr}`, new RegExp(caller)); assert.equal(JSON.parse(internal).error.code, 'JOB_WAIT_TIMEOUT');
 });
