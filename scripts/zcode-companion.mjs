@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import process from 'node:process';
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync as closeFdSync, createReadStream, createWriteStream, realpathSync } from 'node:fs';
+import { closeSync as closeFdSync, createReadStream, realpathSync } from 'node:fs';
+import { Socket } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { join, resolve, sep } from 'node:path';
 
@@ -253,21 +254,22 @@ export function writeInternalResponse(value, fd = 4, options = {}) {
   if (!Number.isSafeInteger(fd) || fd < 3 || !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > 1024 * 1024 || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) return Promise.reject(new PluginError('INTERNAL_RESPONSE_OPTIONS_INVALID', 'Internal response writer options are invalid.', { category: 'validation', remedy: 'Use a protected descriptor, a limit up to 1 MiB, and a positive deadline.' }));
   const data = Buffer.from(`${JSON.stringify(value)}\n`);
   if (data.length > maxBytes) return Promise.reject(new PluginError('INTERNAL_RESPONSE_TOO_LARGE', 'Internal response exceeded its limit.', { category: 'runtime', remedy: 'Inspect the job through status/result.' }));
-  /** @type {import('node:fs').WriteStream|null} */
-  let stream = null;
+  /** @type {import('node:net').Socket|null} */
+  let socket = null;
   const write = options.write ?? ((_fd, buffer, offset, length, _position, callback) => {
-    if (!stream) { stream = createWriteStream(/** @type {any} */ (null), { fd, autoClose: false }); stream.on('error', () => {}); }
-    stream.write(buffer.subarray(offset, offset + length), (error) => callback(error ? /** @type {NodeJS.ErrnoException} */ (error) : null, error ? 0 : length));
-    return { cancel: () => stream?.destroy() };
+    if (!socket) { socket = new Socket({ fd, readable: false, writable: true }); socket.on('error', () => {}); }
+    socket.write(buffer.subarray(offset, offset + length), (error) => callback(error ? /** @type {NodeJS.ErrnoException} */ (error) : null, error ? 0 : length));
+    return { cancel: () => socket?.destroy() };
   });
   const close = options.close ?? ((targetFd, callback) => {
+    if (socket) { socket.destroy(); callback(); return; }
     try { closeFdSync(targetFd); callback(); } catch (error) { callback(/** @type {NodeJS.ErrnoException} */ (error)); }
   });
   return new Promise((resolvePromise, reject) => {
     let offset = 0; let settled = false; let closing = false;
     /** @type {(()=>void)|null} */
     let cancelPending = null;
-    const dispose = () => { if (stream && !stream.destroyed) stream.destroy(); };
+    const dispose = () => { if (socket && !socket.destroyed) socket.destroy(); };
     /** @param {unknown} [error] */
     const finish = (error) => { if (settled) return; settled = true; clearTimeout(timer); dispose(); if (error) reject(error); else resolvePromise(undefined); };
     /** @param {unknown} cause @param {string} [code] */
