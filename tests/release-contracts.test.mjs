@@ -94,6 +94,10 @@ test('security, changelog, and provenance are release-ready', () => {
 
 test('CI runs full and packed native suites on three platforms and Node 22.13', () => {
   const workflow = read('.github/workflows/ci.yml');
+  /* eslint-disable no-regex-spaces */
+  assert.match(workflow, /^  push:\n    branches: \[main\]$/m);
+  assert.match(workflow, /^  pull_request:\s*$/m);
+  /* eslint-enable no-regex-spaces */
   for (const os of ['ubuntu-latest', 'macos-latest', 'windows-latest']) assert.match(workflow, new RegExp(os));
   assert.match(workflow, /22\.13\.0/);
   assert.match(workflow, /lts\/\*/);
