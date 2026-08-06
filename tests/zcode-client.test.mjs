@@ -26,6 +26,28 @@ function newTestBroker(options) {
   return new ZCodeBrokerClass({ ...options, ...(ownershipPath === undefined ? {} : { ownershipPath }) });
 }
 
+async function readRecordedCalls(record) {
+  let content;
+  try { content = await readFile(record, 'utf8'); } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  return content.split('\n').flatMap((line) => {
+    if (!line.trim()) return [];
+    try { return [JSON.parse(line)]; } catch { return []; }
+  });
+}
+
+async function waitForRecordedCalls(record, predicate, timeoutMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  let calls = [];
+  while (true) {
+    calls = await readRecordedCalls(record);
+    if (predicate(calls) || Date.now() >= deadline) return calls;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(5, deadline - Date.now())));
+  }
+}
+
 async function withClient(callback, env = {}, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-client-'));
   const record = join(directory, 'calls.jsonl');
@@ -158,7 +180,7 @@ test('permission response must be an offered option and replay is rejected', asy
     client.setPermissionHandler(async () => ({ decision: 'allow', reason: 'not offered' }));
     await client.send(created.session.sessionId, 'permission');
     await client.waitForCompletion(created.session.sessionId);
-    const calls = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    const calls = await waitForRecordedCalls(record, (entries) => entries.filter((entry) => entry.error).length >= 2);
     assert.equal(calls.filter((entry) => entry.error).length, 2);
   }, { FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_PERMISSION_REPLAY: '1' });
 });
