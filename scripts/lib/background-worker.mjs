@@ -7,11 +7,13 @@ import { terminateProcess } from './process.mjs';
 const ACK = 'ready\n';
 export const BACKGROUND_WORKER_START_TIMEOUT_MS = 30_000;
 
-/** Start the private worker, deliver its capability internally, and detach only after a bounded acknowledgement. @param {{companionPath:string,jobId:string,executionCapability:string,cwd:string,env?:NodeJS.ProcessEnv,timeoutMs?:number,dependencies?:{setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void}}} input */
+/** Start the private worker, deliver its capability internally, and detach only after a bounded acknowledgement. @param {{companionPath:string,jobId:string,executionCapability:string,cwd:string,env?:NodeJS.ProcessEnv,timeoutMs?:number,dependencies?:{spawn?:typeof spawn,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void}}} input */
 export async function startBackgroundWorker({ companionPath, jobId, executionCapability, cwd, env, timeoutMs = BACKGROUND_WORKER_START_TIMEOUT_MS, dependencies = {} }) {
   if (![companionPath, jobId, executionCapability, cwd].every((value) => typeof value === 'string' && value) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30_000) throw workerError('BACKGROUND_WORKER_INPUT_INVALID', 'Background worker input is invalid.');
-  const child = spawn(process.execPath, [companionPath, 'run-reserved-job', jobId], { cwd, env: { ...env, ZCODE_BACKGROUND_WORKER: '1' }, detached: process.platform !== 'win32', windowsHide: true, shell: false, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
+  const spawnChild = dependencies.spawn ?? spawn;
+  const child = spawnChild(process.execPath, [companionPath, 'run-reserved-job', jobId], { cwd, env: { ...env, ZCODE_BACKGROUND_WORKER: '1' }, detached: process.platform !== 'win32', windowsHide: true, shell: false, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
   const authorization = /** @type {import('node:stream').Writable} */ (child.stdio[3]); const acknowledgements = /** @type {import('node:stream').Readable} */ (child.stdio[4]);
+  authorization.on('error', consumePipeError); acknowledgements.on('error', consumePipeError);
   authorization.end(`${JSON.stringify({ executionCapability, jobId })}\n`);
   let timer; let ack = '';
   const scheduleTimeout = dependencies.setTimeout ?? setTimeout; const cancelTimeout = dependencies.clearTimeout ?? clearTimeout;
@@ -36,3 +38,4 @@ export function acknowledgeBackgroundStartup(fd = 4) {
 
 /** @param {string} code @param {string} message @param {unknown} [cause] */
 function workerError(code, message, cause) { return new PluginError(code, message, { category: 'runtime', remedy: 'Retry the background invocation from the active Codex turn.', cause }); }
+function consumePipeError() {}
