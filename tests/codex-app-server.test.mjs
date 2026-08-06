@@ -44,6 +44,8 @@ test('fake app-server persists lifecycle markers synchronously before exiting', 
   const source = await readFile(fake, 'utf8');
   assert.match(source, /appendFileSync/);
   assert.match(source, /recordLifecycle/);
+  assert.match(source, /setInterval/);
+  assert.match(source, /clearInterval/);
 });
 
 test('terminates the child on success, JSON-RPC error, malformed output, oversized line and timeout', async (t) => {

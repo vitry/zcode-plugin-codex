@@ -13,6 +13,7 @@ async function record(value) {
 function recordLifecycle(signal) {
   if (process.env.FAKE_CODEX_RECORD) appendFileSync(process.env.FAKE_CODEX_RECORD, `${JSON.stringify({ lifecycle: signal })}\n`);
 }
+const keepAlive = setInterval(() => {}, 60_000);
 
 let outputQueue = Promise.resolve();
 function write(value) {
@@ -37,6 +38,7 @@ if (process.env.FAKE_CODEX_STDERR_BYTES) {
 }
 
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
+  clearInterval(keepAlive);
   recordLifecycle(signal);
   process.exit(0);
 });
