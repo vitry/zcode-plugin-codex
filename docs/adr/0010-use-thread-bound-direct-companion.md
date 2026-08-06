@@ -44,11 +44,12 @@ an installed-plugin E2E demonstrates trusted per-call identity metadata.
 
 ## Consequences
 
-The plugin manifest must explicitly declare its native hooks. Integration tests
-must install the marketplace snapshot, discover the Skill through real Codex
-app-server, execute the installed hook, and call the installed companion through
-ordinary stdio. Tests cover absent and mismatched thread identity, two sessions
-in one workspace, pending-choice replay, shell metacharacters in tasks, and
-production-owned background launch. An opt-in authenticated `codex exec` E2E is
-the final model-driven proof; environments without authentication, credits, or a
+Codex auto-discovers native hooks at the default `hooks/hooks.json` path, so the
+optional plugin-manifest hook override is omitted. Integration tests must install
+the marketplace snapshot, prove discovery through real Codex app-server, execute
+the installed hook, and call the installed companion through ordinary stdio.
+Tests cover absent and mismatched thread identity, two sessions in one workspace,
+pending-choice replay, shell metacharacters in tasks, and production-owned
+background launch. An opt-in authenticated `codex exec` E2E is the final
+model-driven proof; environments without authentication, credits, or a
 configured model report unqualified rather than passing.

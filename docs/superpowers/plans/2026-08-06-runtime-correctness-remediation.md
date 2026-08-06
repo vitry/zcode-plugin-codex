@@ -17,7 +17,7 @@
 - `scripts/lib/background-worker.mjs`: spawn the private worker with bounded protected stdio and verify/reap startup.
 - `scripts/zcode-companion.mjs`: constant `invoke`/`invoke-choice` entrypoints, ordinary output, reconciliation entry, and orchestration.
 - `hooks/user-prompt-hook.mjs`: record original prompt and authorization facts without emitting a secret.
-- `.codex-plugin/plugin.json` and `skills/*/SKILL.md`: explicitly load hooks and use only constant direct commands.
+- `hooks/hooks.json`, `.codex-plugin/plugin.json`, and `skills/*/SKILL.md`: use Codex's default hook discovery without a redundant manifest override and use only constant direct commands.
 - `scripts/lib/prompts.mjs`: separate trusted Rescue objective from untrusted Git evidence.
 - `scripts/lib/recovery.mjs`: reconcile owned nonterminal jobs from persisted ZCode turn boundaries.
 - `scripts/lib/state.mjs` and `scripts/lib/job-control.mjs`: persist recovery fields and command-specific default selection.
@@ -55,7 +55,7 @@ Run:
 node --test tests/identity.test.mjs tests/integration/skills.test.mjs tests/integration/two-session-hooks.test.mjs tests/plugin-contracts.test.mjs tests/skills-contracts.test.mjs
 ```
 
-Expected: failures show there is no active-turn lookup, public invocation still requires FD3/FD4, hooks are undeclared, and pending-choice storage is absent.
+Expected: failures show there is no active-turn lookup, public invocation still requires FD3/FD4, default hooks are not discovered, and pending-choice storage is absent.
 
 - [ ] **Step 3: Implement the exact active-turn and prompt parser boundary**
 
@@ -77,7 +77,7 @@ Make `invoke <command>` and `invoke-choice <command> <enum>` read `CODEX_THREAD_
 
 - [ ] **Step 5: Update installed plugin contracts**
 
-Declare `"hooks": "./hooks/hooks.json"`. Replace each public Skill's FD instructions with a constant command such as:
+Place registrations at the default `hooks/hooks.json` path and omit the optional manifest hook-path override. Replace each public Skill's FD instructions with a constant command such as:
 
 ```text
 node "<plugin-root>/scripts/zcode-companion.mjs" invoke rescue
@@ -154,7 +154,7 @@ Assert that accepted sends persist `inputId`, `startRevision`, and `beforeMessag
 
 - [ ] **Step 2: Write the failing real-worker-crash test**
 
-Start a production background worker against the persistent fake ZCode peer, wait until the job is `running` with a persisted boundary, kill the worker process, change the peer to completed/stopped/missing variants, then invoke status/result/start in a new companion process. Assert completed becomes succeeded with only post-boundary output, stopped becomes cancelled, and missing/ambiguous becomes terminal failed; no case remains running.
+Start a production background worker against the persistent fake ZCode peer, wait until the job is `running` with a persisted boundary, kill the worker process, change the peer to completed/stopped/missing/ambiguous variants, then invoke status/result/start in a new companion process. Assert completed becomes succeeded with only post-boundary output, stopped becomes cancelled, and missing becomes failed. Ambiguous or known-active work must retain its guard unless `session/stop` is acknowledged; a failed stop remains retryable.
 
 - [ ] **Step 3: Verify RED**
 
@@ -166,11 +166,11 @@ Expected: recovery fields are rejected or absent, selection chooses the latest a
 
 - [ ] **Step 4: Implement recovery under the cancellation lock**
 
-`reconcileOwnedJobs({ store, dataRoot, workspace, ownerSessionId, createClient })` lists only owned nonterminal records. For each record, hold `withJobCancellationLock`, restore broker ownership, use `session/list` to establish existence and `session/read` for state/messages, compare the persisted input/revision/before-message boundary, and transition exactly once. Coordinate `cancelling` with the same lock. On unsafe ambiguity, persist a bounded recovery error and terminal `failed` status.
+`reconcileOwnedJobs({ store, dataRoot, workspace, ownerSessionId, createClient })` lists only owned nonterminal records. For each record, hold `withJobCancellationLock`, prove the exact worker lease is orphaned, restore broker ownership, use `session/list` to establish existence and `session/read` for state/messages, compare the persisted input/revision/before-message boundary, and transition exactly once. Coordinate `cancelling` with the same lock. On unsafe ambiguity, attempt bounded `session/stop`; without acknowledgement, persist a bounded retry error and retain the nonterminal guard.
 
 - [ ] **Step 5: Call reconciliation at every required entry**
 
-Run it before starting new work and before status/result/cancel selection. Do not reconcile sibling-owned jobs. Ensure connection/release/close happens in `finally` and a recovery failure for one job cannot skip terminalizing that job or leak the broker client.
+Run it before starting new work and before status/result/cancel selection. Do not reconcile sibling-owned jobs. Ensure connection/release/close happens in `finally`; a recovery failure for one job must not skip siblings, release an unsafe guard, or leak the broker client.
 
 - [ ] **Step 6: Verify GREEN and commit**
 
@@ -248,7 +248,7 @@ git commit -m "feat: persist workspace model configuration"
 
 - [ ] **Step 1: Write failing release-contract tests**
 
-Assert package/check scripts include the installed bridge E2E contract, no Skill mentions FD3/FD4/caller secrets, hooks are declared, background launch is production-owned, real ZCode release E2E requires non-empty `ZCODE_REAL_E2E_MODEL`, and the complete companion invocation uses that model.
+Assert package/check scripts include the installed bridge E2E contract, no Skill mentions FD3/FD4/caller secrets, default `hooks/hooks.json` is valid and auto-discovered without a manifest override, background launch is production-owned, real ZCode release E2E requires non-empty `ZCODE_REAL_E2E_MODEL`, and the complete companion invocation uses that model.
 
 - [ ] **Step 2: Add the opt-in authenticated Codex Skill E2E**
 
@@ -280,4 +280,3 @@ Expected: all deterministic tests pass, only explicitly unqualified authenticate
 git add package.json README.md README.zh-CN.md tests
 git commit -m "test: qualify the installed Codex ZCode bridge"
 ```
-

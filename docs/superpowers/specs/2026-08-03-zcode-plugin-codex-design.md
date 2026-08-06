@@ -54,7 +54,7 @@ Companion command interface
 
 ### Plugin package
 
-The distributable contains `.codex-plugin/plugin.json`, eight skill directories, Codex hooks, prompts, schemas, a Node.js companion runtime, and local marketplace metadata. Skills are intentionally thin: they resolve the plugin root, validate user intent where interaction is necessary, invoke the companion, and faithfully present its output.
+The distributable contains `.codex-plugin/plugin.json`, eight skill directories, Codex hooks, prompts, schemas, a Node.js companion runtime, and local marketplace metadata. Codex auto-discovers the default `hooks/hooks.json`; the optional manifest hook-path override is omitted. Skills are intentionally thin: they resolve the plugin root, validate user intent where interaction is necessary, invoke the companion, and faithfully present its output.
 
 ### Companion runtime
 
@@ -299,24 +299,31 @@ TrackedJob
 
 State changes are atomic and validated. Terminal jobs never return to a running
 state. `cancelling` is nonterminal; a failed stop may transition it back to
-`running` while recording `lastCancelError`. Foreground work also receives a job
-record so interruption does not erase its outcome. Multiple read-only reviews may
-coexist in one workspace; only one writable rescue may run there by default to
-prevent concurrent edits.
+`running` while recording `lastCancelError`. Every foreground or background
+Review, Adversarial Review, Rescue, and Transfer worker acquires and durably
+claims an exact worker lease before discovery, history reads, Git inspection, or
+ZCode session work. Foreground work therefore also receives a job record so
+interruption does not erase its outcome. Multiple read-only reviews may coexist
+in one workspace; only one writable rescue may run there by default to prevent
+concurrent edits.
 
 For every accepted ZCode turn, the job persists the minimum recovery boundary:
 the `inputId`, accepted state revision, and the set of assistant message IDs
 visible before send. On the next start, status, result, or cancel invocation,
 the companion locks each owned nonterminal job, reconnects the broker, restores
 ownership, and reconciles through `session/read` and, when needed,
-`session/list`. A remotely completed turn extracts only assistant output beyond
-the persisted boundary, writes the result artifact, and transitions to
-`succeeded`. A stopped/cancelled turn becomes `cancelled`; a missing session,
-ambiguous boundary, incompatible state, or other condition that cannot be
-safely resumed becomes an explicit terminal `failed` recovery outcome. A
-persisted `cancelling` job coordinates with the cancellation lock and either
-finishes cancellation or records a terminal recovery failure. No crash may
-leave an owned job permanently `running`.
+`session/list`. A remotely completed turn with a complete boundary extracts only
+assistant output beyond that boundary, writes the result artifact, and becomes
+`succeeded` even if local status was `cancelling`. A remotely paused/stopped turn
+becomes `cancelled`; a proven missing or terminal-error session becomes
+`failed`. Known active or protocol-ambiguous sessions receive a best-effort
+`session/stop`; only an acknowledged stop permits terminalization. If stop is
+not acknowledged, recovery retains the nonterminal job and writable guard with
+a bounded error so a later cancellation can retry. A live exact lease is never
+reconciled away; an orphan claimed queued job fails safely, while a legacy
+lease-less queued record receives a conservative bounded stale grace period.
+Orphan Transfer jobs stop a known imported session before failing; without a
+known session they may fail safely because no mutating turn was sent.
 
 ## Model and Thought-Level Selection
 
@@ -411,7 +418,7 @@ The CLI discovery order is:
 
 The runtime requires ZCode CLI 0.16.1 or newer. Discovery results may be cached with their version and observation time, but every launch verifies that the resolved target still exists. A JavaScript entrypoint is launched through the current Node executable; a native executable is launched directly.
 
-The broker starts lazily for the first active session and is reused while healthy. Codex lifecycle hooks release session ownership and stop an idle broker. Cleanup must not stop sessions or jobs owned by sibling Codex sessions. After an abnormal exit, the next start, status, result, or cancel invocation reconciles owned nonterminal jobs, including jobs left in `cancelling`, from persisted turn boundaries and ZCode session state while holding the job's recovery/cancellation lock.
+The broker starts lazily for the first active session and is reused while healthy. Codex lifecycle hooks release session ownership and stop an idle broker. Cleanup must not stop sessions or jobs owned by sibling Codex sessions. After an abnormal exit, the next start, status, result, or cancel invocation reconciles owned nonterminal jobs, including jobs left in `cancelling`, from persisted worker leases, turn boundaries, and ZCode session state while holding the job's recovery/cancellation lock. Unsafe ambiguity retains the job guard until remote terminal/missing proof or acknowledged stop.
 
 ## Local Storage
 
