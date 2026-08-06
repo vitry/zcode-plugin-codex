@@ -10,10 +10,11 @@ function runNode(source) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--input-type=module', '--eval', source], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error('Windows compatibility probe exceeded its timeout')); }, 5_000);
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('exit', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr }); });
   });
 }
 
