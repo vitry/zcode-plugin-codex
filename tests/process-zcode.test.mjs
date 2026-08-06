@@ -67,6 +67,12 @@ test('bounded writer queues on backpressure, flushes on drain, and fails at its 
   const blocked = new FakeWritable(); const capped = new BoundedWriter(blocked, { maxQueuedBytes: 5, onFailure: (error) => { failure = error; } }); capped.write('1234'); assert.throws(() => capped.write('56'), { code: 'ZCODE_WRITE_OVERFLOW' }); assert.equal(failure.code, 'ZCODE_WRITE_OVERFLOW');
 });
 
+test('protocol propagates a bounded write-drain window for large Transfer frames', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = 0; child.signalCode = null;
+  const protocol = new ZCodeProtocolClient(child, { drainTimeoutMs: 5_000 });
+  try { assert.equal(protocol.writer.drainTimeoutMs, 5_000); } finally { await protocol.close(); }
+});
+
 test('bounded writer consumes early and late stream errors and reports failure once', () => {
   class FakeWritable extends EventEmitter { constructor() { super(); this.writable = true; } write() { return true; } }
   const stream = new FakeWritable(); const failures = [];

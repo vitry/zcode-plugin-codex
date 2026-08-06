@@ -131,7 +131,7 @@ async function startPublic(context) {
 }
 
 /** @param {any} job */
-function managedWireOptionsForJob(job) { return job?.command === 'transfer' ? { maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes } : {}; }
+function managedWireOptionsForJob(job) { return job?.command === 'transfer' ? { maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes, drainTimeoutMs: TRANSFER_WIRE_LIMITS.drainTimeoutMs } : {}; }
 
 /** @param {NodeJS.ProcessEnv} env @param {string} cwd */
 function codexAppServerOptions(env, cwd) {

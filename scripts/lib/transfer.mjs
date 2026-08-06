@@ -17,6 +17,7 @@ export const TRANSFER_WIRE_LIMITS = Object.freeze({
   maxEncodedHistoryBytes: 15 * 1024 * 1024,
   maxFrameBytes: 16 * 1024 * 1024,
   maxOutboundBytes: 16 * 1024 * 1024,
+  drainTimeoutMs: 5_000,
 });
 
 /** @param {{source?:string}} options @param {{sessionId?:string,[key:string]:unknown}} caller */

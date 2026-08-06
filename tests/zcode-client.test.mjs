@@ -278,6 +278,7 @@ test('disconnect diagnostics retain only a bounded redacted stderr tail', async 
 test('managed broker clients require an explicit stable owner credential', async () => {
   await assert.rejects(createManagedZCodeClient({ dataRoot: '/tmp/data', workspace: '/tmp/workspace', launch: { command: process.execPath, args: [] } }), { code: 'ZCODE_INPUT_INVALID' });
   for (const maxOutboundBytes of [0, 64 * 1024 * 1024 + 1]) await assert.rejects(createManagedZCodeClient({ dataRoot: '/tmp/data', workspace: '/tmp/workspace', launch: { command: process.execPath, args: [] }, ownerId: 'bounded-wire-owner', maxOutboundBytes }), { code: 'ZCODE_INPUT_INVALID' });
+  for (const drainTimeoutMs of [0, 30_001]) await assert.rejects(createManagedZCodeClient({ dataRoot: '/tmp/data', workspace: '/tmp/workspace', launch: { command: process.execPath, args: [] }, ownerId: 'bounded-drain-owner', drainTimeoutMs }), { code: 'ZCODE_INPUT_INVALID' });
 });
 
 test('direct broker clients require an explicit stable owner credential before connecting', async () => {

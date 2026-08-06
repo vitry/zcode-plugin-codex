@@ -203,7 +203,7 @@ test('real CLI cancellation waits for stop acknowledgement and reports stop fail
 
 test('real CLI cancellation stops sessions owned by the Transfer broker profile', async () => {
   const context = await fixture(); const launch = { command: process.execPath, args: [fake], target: fake };
-  const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId: ownerIdForSession('codex-session'), env: context.env, maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes });
+  const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch, ownerId: ownerIdForSession('codex-session'), env: context.env, maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes, drainTimeoutMs: TRANSFER_WIRE_LIMITS.drainTimeoutMs });
   const created = await client.createSession({ workspace: context.workspace, importedHistory: { messages: [{ role: 'user', content: 'history' }] } }); await client.close();
   const store = createStateStore({ dataRoot: context.dataRoot }); const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'transfer', codexThreadId: 'codex-session', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(context.workspace, queued.id, ['queued'], 'running', { zcodeSessionId: created.session.sessionId });
@@ -381,7 +381,7 @@ test('real Transfer imports current Codex history into a resumable ZCode session
   const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)); const create = zcodeCalls.find((entry) => entry.method === 'session/create');
   assert.deepEqual(create.params.importedHistory, { source: 'claudeCode', messages: [{ role: 'user', content: 'visible request', timestamp: 1_725_000_000_000 }, { role: 'assistant', content: 'visible response', timestamp: 1_725_000_000_000 }] });
   assert.equal(zcodeCalls.some((entry) => entry.method === 'session/send'), false);
-  const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch: { command: process.execPath, args: [fake], target: fake }, ownerId: ownerIdForSession('codex-session'), env: context.env, maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes });
+  const client = await createManagedZCodeClient({ dataRoot: context.dataRoot, workspace: context.workspace, launch: { command: process.execPath, args: [fake], target: fake }, ownerId: ownerIdForSession('codex-session'), env: context.env, maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes, drainTimeoutMs: TRANSFER_WIRE_LIMITS.drainTimeoutMs });
   try { assert.equal((await client.resumeSession(transferred.json.zcodeSessionId)).session.sessionId, transferred.json.zcodeSessionId); } finally { await client.close(); }
   const storage = await resolveWorkspaceStorage(context); const artifact = await readFile(join(storage.directory, transferred.json.job.resultArtifact), 'utf8');
   const exposed = `${transferred.stdout}${transferred.stderr}${await readFile(codexRecord, 'utf8')}${await readFile(zcodeRecord, 'utf8')}${artifact}`;

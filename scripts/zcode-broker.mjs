@@ -10,7 +10,7 @@ import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, ensurePrivateDirectory, withFileLock } from './lib/fs.mjs';
 import { isSafeIdentifier } from './lib/identifier.mjs';
 import { spawnDaemon } from './lib/process.mjs';
-import { BoundedWriter, connectZCodeBroker, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
+import { BoundedWriter, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 
 const MAX_LOCAL_FRAME_BYTES = 1024 * 1024;
@@ -88,12 +88,12 @@ export async function probeBrokerHealth(record) {
   } catch { return false; } finally { await protocol?.close().catch(() => {}); }
 }
 
-/** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},env?:NodeJS.ProcessEnv,platform?:string,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number}} options */
+/** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},env?:NodeJS.ProcessEnv,platform?:string,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
 export async function ensureZCodeBroker(options) {
-  if (!validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024)) throw brokerInputError();
+  if (!validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs)) throw brokerInputError();
   const storage = await resolveWorkspaceStorage(options);
   const brokerDirectory = join(storage.directory, 'broker');
-  const profile = options.maxFrameBytes === undefined && options.maxOutboundBytes === undefined ? null : createHash('sha256').update(JSON.stringify([options.maxFrameBytes ?? null, options.maxOutboundBytes ?? null])).digest('hex').slice(0, 16);
+  const profile = options.maxFrameBytes === undefined && options.maxOutboundBytes === undefined && options.drainTimeoutMs === undefined ? null : createHash('sha256').update(JSON.stringify([options.maxFrameBytes ?? null, options.maxOutboundBytes ?? null, options.drainTimeoutMs ?? null])).digest('hex').slice(0, 16);
   const identityPath = join(brokerDirectory, profile ? `identity-${profile}.json` : 'identity.json');
   await ensurePrivateDirectory(brokerDirectory);
   return withFileLock(join(brokerDirectory, '.lock'), async () => {
@@ -104,7 +104,7 @@ export async function ensureZCodeBroker(options) {
     const endpoint = brokerEndpointFor({ platform: options.platform, dataRoot: options.dataRoot, workspace: storage.workspacePath, ...(profile ? { identity: profile } : {}) });
     if ((options.platform ?? process.platform) !== 'win32') await unlink(endpoint).catch(() => {});
     const configPath = join(brokerDirectory, `config-${instanceId}.json`);
-    await atomicWriteJson(configPath, { endpoint, instanceId, brokerToken, launch: options.launch, workspace: storage.workspacePath, idleTimeoutMs: options.idleTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, ownershipPath: join(brokerDirectory, profile ? `session-owners-${profile}.json` : 'session-owners.json'), identityPath });
+    await atomicWriteJson(configPath, { endpoint, instanceId, brokerToken, launch: options.launch, workspace: storage.workspacePath, idleTimeoutMs: options.idleTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs, ownershipPath: join(brokerDirectory, profile ? `session-owners-${profile}.json` : 'session-owners.json'), identityPath });
     const child = await spawnDaemon({ command: process.execPath, args: [fileURLToPath(import.meta.url)], target: fileURLToPath(import.meta.url) }, { args: [configPath], cwd: storage.workspacePath, env: options.env });
     const record = await writeBrokerIdentity(identityPath, { endpoint, pid: child.pid, instanceId, brokerToken });
     const deadline = Date.now() + 5_000;
@@ -118,7 +118,7 @@ export async function ensureZCodeBroker(options) {
 }
 
 export class ZCodeBroker {
-  /** @param {{endpoint:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,instanceId?:string}} options */
+  /** @param {{endpoint:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string}} options */
   constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.server = null; this.protocol = null; this.protocolPromise = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.permissionPending = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
@@ -132,7 +132,7 @@ export class ZCodeBroker {
   }
 
   accept(socket) {
-    this.sockets.add(socket); socket.zcodeWriter = new BoundedWriter(socket, { maxQueuedBytes: this.options.maxOutboundBytes, onFailure: () => socket.destroy() }); this.socketWriters.set(socket, socket.zcodeWriter); socket.setEncoding('utf8'); let buffer = '';
+    this.sockets.add(socket); socket.zcodeWriter = new BoundedWriter(socket, { maxQueuedBytes: this.options.maxOutboundBytes, drainTimeoutMs: this.options.drainTimeoutMs, onFailure: () => socket.destroy() }); this.socketWriters.set(socket, socket.zcodeWriter); socket.setEncoding('utf8'); let buffer = '';
     const authTimer = setTimeout(() => { if (!this.authenticated.has(socket)) socket.destroy(); }, 1_000); authTimer.unref?.();
     socket.authTimer = authTimer;
     socket.on('data', (chunk) => {
@@ -236,7 +236,7 @@ export class ZCodeBroker {
 
   async getProtocol() {
     if (this.protocol) return this.protocol;
-    if (!this.protocolPromise) this.protocolPromise = spawnZCodeProtocol(this.options.launch, { cwd: this.options.workspace, env: this.options.env, maxFrameBytes: this.options.maxFrameBytes, maxOutboundBytes: this.options.maxOutboundBytes });
+    if (!this.protocolPromise) this.protocolPromise = spawnZCodeProtocol(this.options.launch, { cwd: this.options.workspace, env: this.options.env, maxFrameBytes: this.options.maxFrameBytes, maxOutboundBytes: this.options.maxOutboundBytes, drainTimeoutMs: this.options.drainTimeoutMs });
     const attempt = this.protocolPromise;
     try { const protocol = await attempt; if (this.closing) { await protocol.close(); throw new PluginError('ZCODE_BROKER_CLOSING', 'The ZCode broker is closing.', { category: 'state', remedy: 'Reconnect to a healthy broker.' }); } this.protocol = protocol; } catch (error) { if (this.protocolPromise === attempt) this.protocolPromise = null; this.protocol = null; this.scheduleIdleShutdown(); throw error; }
     this.protocol.subscribe((message) => {
@@ -308,6 +308,7 @@ export class ZCodeBroker {
 
 function writeLocal(socket, value) { if (!socket.writable) return; try { socket.zcodeWriter?.write(`${JSON.stringify(value)}\n`); } catch { socket.destroy(); } }
 function validWireOption(value, maximum) { return value === undefined || Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
+function validDrainOption(value) { return value === undefined || Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAIN_TIMEOUT_MS; }
 function isProcessAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 function safeTokenEqual(left, right) { const a = Buffer.from(left); const b = Buffer.from(right); return a.length === b.length && timingSafeEqual(a, b); }
 function offeredDeny(request) { return request.options?.find((option) => option.response?.decision === 'deny')?.response ?? { decision: 'deny' }; }

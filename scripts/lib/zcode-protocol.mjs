@@ -4,10 +4,12 @@ import { spawnProcess, terminateProcess } from './process.mjs';
 
 export const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
 export const DEFAULT_MAX_OUTBOUND_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_DRAIN_TIMEOUT_MS = 1_000;
+export const MAX_DRAIN_TIMEOUT_MS = 30_000;
 export const COMPLETION_REASONS = Object.freeze(['prompt_completed', 'prompt_failed']);
 
 export class ZCodeProtocolClient {
-  /** @param {import('node:child_process').ChildProcess} child @param {{ requestTimeoutMs?:number, completionTimeoutMs?:number, maxFrameBytes?:number, maxOutboundBytes?:number }} [options] */
+  /** @param {import('node:child_process').ChildProcess} child @param {{ requestTimeoutMs?:number, completionTimeoutMs?:number, maxFrameBytes?:number, maxOutboundBytes?:number, drainTimeoutMs?:number }} [options] */
   constructor(child, options = {}) {
     this.child = child;
     this.requestTimeoutMs = boundedInteger(options.requestTimeoutMs, 30_000, 1, 3_600_000);
@@ -36,7 +38,8 @@ export class ZCodeProtocolClient {
     this.consumeTerminal = false;
     this.waiterSessions = new Set();
     this.permissionRequestIds = new Map();
-    this.writer = new BoundedWriter(child.stdin, { maxQueuedBytes: boundedInteger(options.maxOutboundBytes, DEFAULT_MAX_OUTBOUND_BYTES, 128, 64 * 1024 * 1024), onFailure: (error) => this.fail(error) });
+    this.drainTimeoutMs = boundedInteger(options.drainTimeoutMs, DEFAULT_DRAIN_TIMEOUT_MS, 1, MAX_DRAIN_TIMEOUT_MS);
+    this.writer = new BoundedWriter(child.stdin, { maxQueuedBytes: boundedInteger(options.maxOutboundBytes, DEFAULT_MAX_OUTBOUND_BYTES, 128, 64 * 1024 * 1024), drainTimeoutMs: this.drainTimeoutMs, onFailure: (error) => this.fail(error) });
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     this.stderrTail = new RedactedTail();
@@ -305,13 +308,13 @@ export class RedactedTail {
   value() { return this.tail; }
 }
 
-/** @param {{command:string,args:string[],target?:string}} launch @param {{cwd?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number}} [options] */
+/** @param {{command:string,args:string[],target?:string}} launch @param {{cwd?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} [options] */
 export async function spawnZCodeProtocol(launch, options = {}) {
   const child = await spawnProcess(launch, { args: ['app-server'], cwd: options.cwd, env: options.env });
   return new ZCodeProtocolClient(child, options);
 }
 
-/** @param {string} endpoint @param {{brokerToken:string,ownerId:string,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number}} options */
+/** @param {string} endpoint @param {{brokerToken:string,ownerId:string,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
 export async function connectZCodeBroker(endpoint, options) {
   if (!nonEmpty(endpoint) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32 || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw protocolInputError();
   const socket = net.createConnection(endpoint);

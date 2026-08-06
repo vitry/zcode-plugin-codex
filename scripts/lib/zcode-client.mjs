@@ -4,7 +4,7 @@ import { readdir } from 'node:fs/promises';
 
 import { PluginError } from './errors.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
-import { connectZCodeBroker, spawnZCodeProtocol } from './zcode-protocol.mjs';
+import { connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
 import { ensureZCodeBroker, prioritizeBrokerOwnership, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -92,7 +92,7 @@ export class ZCodeClient {
   close() { return this.protocol.close(); }
 }
 
-/** @param {{workspace:string,launch?:{command:string,args:string[],target?:string},brokerEndpoint?:string,brokerToken?:string,ownerId?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number}} options */
+/** @param {{workspace:string,launch?:{command:string,args:string[],target?:string},brokerEndpoint?:string,brokerToken?:string,ownerId?:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
 export async function createZCodeClient(options) {
   if (!plainObject(options) || !nonEmpty(options.workspace)
     || (options.brokerEndpoint === undefined) === (options.launch === undefined)
@@ -100,7 +100,7 @@ export async function createZCodeClient(options) {
     || options.launch !== undefined && !plainObject(options.launch)) throw inputError();
   const protocolOptions = {
     cwd: options.workspace, env: options.env, requestTimeoutMs: options.requestTimeoutMs,
-    completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes,
+    completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs,
   };
   const protocol = options.brokerEndpoint
     ? await connectZCodeBroker(options.brokerEndpoint, { ...protocolOptions, brokerToken: /** @type {string} */ (options.brokerToken), ownerId: /** @type {string} */ (options.ownerId) })
@@ -108,12 +108,12 @@ export async function createZCodeClient(options) {
   return new ZCodeClient(protocol);
 }
 
-/** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},ownerId:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number}} options */
+/** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},ownerId:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
 export async function createManagedZCodeClient(options) {
   if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !plainObject(options.launch) || !nonEmpty(options.ownerId) || options.ownerId.length < 16
-    || !boundedWireOption(options.maxFrameBytes, 16 * 1024 * 1024) || !boundedWireOption(options.maxOutboundBytes, 64 * 1024 * 1024)) throw inputError();
+    || !boundedWireOption(options.maxFrameBytes, 16 * 1024 * 1024) || !boundedWireOption(options.maxOutboundBytes, 64 * 1024 * 1024) || !boundedDrainOption(options.drainTimeoutMs)) throw inputError();
   const identity = await ensureZCodeBroker(options);
-  return createZCodeClient({ workspace: options.workspace, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes });
+  return createZCodeClient({ workspace: options.workspace, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs });
 }
 
 /**
@@ -179,6 +179,8 @@ function normalizeImportedHistory(history) {
 
 /** @param {unknown} value @param {number} maximum */
 function boundedWireOption(value, maximum) { return value === undefined || typeof value === 'number' && Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
+/** @param {unknown} value */
+function boundedDrainOption(value) { return value === undefined || typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAIN_TIMEOUT_MS; }
 
 /** @param {any} model */
 function validateModel(model) { requireExactObject(model, ['providerId', 'modelId'], ['variant']); requireString(model.providerId); requireString(model.modelId); if (model.variant !== undefined) requireString(model.variant); }
