@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process';
 import { createHash, randomBytes } from 'node:crypto';
-import { close as closeFd, createReadStream, realpathSync, write as writeFd } from 'node:fs';
+import { closeSync as closeFdSync, createReadStream, createWriteStream, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve, sep } from 'node:path';
 
@@ -247,33 +247,55 @@ export function readInternalEnvelope(fd = 3, options = {}) {
     stream.once('end', () => finish(() => { try { resolvePromise(JSON.parse(data)); } catch { reject(authorizationInputError()); } }));
   });
 }
-/** @param {unknown} value @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number,write?:(fd:number,buffer:Buffer,offset:number,length:number,position:null,callback:(error:NodeJS.ErrnoException|null,bytesWritten:number)=>void)=>void,close?:(fd:number,callback:(error?:NodeJS.ErrnoException|null)=>void)=>void}} [options] */
+/** @param {unknown} value @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number,write?:(fd:number,buffer:Buffer,offset:number,length:number,position:null,callback:(error:NodeJS.ErrnoException|null,bytesWritten:number)=>void)=>void|{cancel?:()=>void},close?:(fd:number,callback:(error?:NodeJS.ErrnoException|null)=>void)=>void}} [options] */
 export function writeInternalResponse(value, fd = 4, options = {}) {
   const maxBytes = options.maxBytes ?? 1024 * 1024; const timeoutMs = options.timeoutMs ?? 1_000;
   if (!Number.isSafeInteger(fd) || fd < 3 || !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > 1024 * 1024 || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) return Promise.reject(new PluginError('INTERNAL_RESPONSE_OPTIONS_INVALID', 'Internal response writer options are invalid.', { category: 'validation', remedy: 'Use a protected descriptor, a limit up to 1 MiB, and a positive deadline.' }));
   const data = Buffer.from(`${JSON.stringify(value)}\n`);
   if (data.length > maxBytes) return Promise.reject(new PluginError('INTERNAL_RESPONSE_TOO_LARGE', 'Internal response exceeded its limit.', { category: 'runtime', remedy: 'Inspect the job through status/result.' }));
-  const write = options.write ?? writeFd; const close = options.close ?? closeFd;
+  /** @type {import('node:fs').WriteStream|null} */
+  let stream = null;
+  const write = options.write ?? ((_fd, buffer, offset, length, _position, callback) => {
+    if (!stream) { stream = createWriteStream(/** @type {any} */ (null), { fd, autoClose: false }); stream.on('error', () => {}); }
+    stream.write(buffer.subarray(offset, offset + length), (error) => callback(error ? /** @type {NodeJS.ErrnoException} */ (error) : null, error ? 0 : length));
+    return { cancel: () => stream?.destroy() };
+  });
+  const close = options.close ?? ((targetFd, callback) => {
+    try { closeFdSync(targetFd); callback(); } catch (error) { callback(/** @type {NodeJS.ErrnoException} */ (error)); }
+  });
   return new Promise((resolvePromise, reject) => {
     let offset = 0; let settled = false; let closing = false;
+    /** @type {(()=>void)|null} */
+    let cancelPending = null;
+    const dispose = () => { if (stream && !stream.destroyed) stream.destroy(); };
     /** @param {unknown} [error] */
-    const finish = (error) => { if (settled) return; settled = true; clearTimeout(timer); if (error) reject(error); else resolvePromise(undefined); };
+    const finish = (error) => { if (settled) return; settled = true; clearTimeout(timer); dispose(); if (error) reject(error); else resolvePromise(undefined); };
     /** @param {unknown} cause @param {string} [code] */
     const failure = (cause, code = 'INTERNAL_RESPONSE_WRITE_FAILED') => new PluginError(code, 'Could not deliver the protected internal response.', { category: code.endsWith('TIMEOUT') ? 'timeout' : 'runtime', remedy: 'Retry the command through its installed skill.', cause });
     const timer = setTimeout(() => {
       if (settled || closing) return; closing = true;
+      const cancel = cancelPending; cancelPending = null;
+      try { cancel?.(); } catch { /* best effort abort */ }
       try { close(fd, () => {}); } catch { /* best effort abort */ }
       finish(failure(new Error('Internal response write timed out.'), 'INTERNAL_RESPONSE_WRITE_TIMEOUT'));
     }, timeoutMs);
     const next = () => {
       if (settled) return;
-      write(fd, data, offset, data.length - offset, null, (error, bytesWritten) => {
+      let completed = false;
+      /** @type {(()=>void)|null} */
+      let cancel = null;
+      const callback = (/** @type {NodeJS.ErrnoException|null} */ error, /** @type {number} */ bytesWritten) => {
+        completed = true;
+        if (cancelPending === cancel) cancelPending = null;
         if (settled) return;
         if (error) return finish(failure(error));
         if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0) return finish(failure(new Error('Internal response writer made no progress.')));
         offset += bytesWritten;
         if (offset >= data.length) finish(); else queueMicrotask(next);
-      });
+      };
+      const operation = write(fd, data, offset, data.length - offset, null, callback);
+      cancel = typeof operation?.cancel === 'function' ? operation.cancel : null;
+      if (!completed) cancelPending = cancel;
     };
     next();
   });

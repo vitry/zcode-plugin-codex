@@ -343,6 +343,17 @@ test('internal response writer times out without blocking the event loop and clo
   assert.equal(closes, 1); assert.equal(ticked, true);
 });
 
+test('internal response writer cancels a pending write before closing its descriptor', async () => {
+  let cancelled = 0; let closes = 0; let lateCallback;
+  await assert.rejects(writeInternalResponse({ ok: true }, 44, {
+    timeoutMs: 10,
+    write: (_fd, _buffer, _offset, _length, _position, callback) => { lateCallback = callback; return { cancel: () => { cancelled += 1; } }; },
+    close: (_fd, callback) => { closes += 1; callback(); },
+  }), { code: 'INTERNAL_RESPONSE_WRITE_TIMEOUT' });
+  assert.equal(cancelled, 1); assert.equal(closes, 1);
+  lateCallback?.(null, 1);
+});
+
 test('real fd4 writer is bounded for no-reader, slow-reader, and early-close pipes', async () => {
   const noRead = await runWriterProbe('no-read'); assert.equal(noRead.code, 0); assert.match(noRead.stdout, /INTERNAL_RESPONSE_WRITE_TIMEOUT/);
   const slowRead = await runWriterProbe('slow-read'); assert.equal(slowRead.code, 0); assert.match(slowRead.stdout, /ok/);
