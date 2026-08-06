@@ -291,15 +291,24 @@ test('background resume revalidates the bound candidate immediately before resum
 test('model selection is applied at create time when resolvable and after live catalog or resume otherwise', async () => {
   const context = await fixture(); const recordPath = join(context.directory, 'requests.jsonl');
   const readRequests = async () => (await readFile(recordPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  const storage = await resolveWorkspaceStorage(context);
+  await atomicWriteJson(join(storage.directory, 'config', 'models.json'), { version: 1, defaultModel: 'quick', models: { quick: { providerId: 'fake2', modelId: 'other' } } });
 
-  await companion(context, ['rescue', '--fresh', '--model', 'fake2/other', 'qualified'], { FAKE_ZCODE_RECORD: recordPath });
+  await companion(context, ['rescue', '--fresh', '--model', 'fake/model', 'qualified'], { FAKE_ZCODE_RECORD: recordPath });
   let requests = await readRequests();
-  assert.deepEqual(requests.find((request) => request.method === 'session/create').params.model, { providerId: 'fake2', modelId: 'other' });
+  assert.deepEqual(requests.find((request) => request.method === 'session/create').params.model, { providerId: 'fake', modelId: 'model' }, 'explicit model beats persisted default');
 
   await writeFile(recordPath, '');
-  await companion(context, ['rescue', '--fresh', '--model', 'quick', 'alias'], { FAKE_ZCODE_RECORD: recordPath, ZCODE_MODEL_ALIASES: JSON.stringify({ quick: { providerId: 'fake2', modelId: 'other' } }) });
+  const defaultRun = await companion(context, ['rescue', '--fresh', 'workspace default'], { FAKE_ZCODE_RECORD: recordPath });
   requests = await readRequests();
-  assert.deepEqual(requests.find((request) => request.method === 'session/create').params.model, { providerId: 'fake2', modelId: 'other' });
+  assert.deepEqual(requests.find((request) => request.method === 'session/create').params.model, { providerId: 'fake2', modelId: 'other' }, 'persisted default beats ZCode default');
+  const status = await companion(context, ['status', defaultRun.json.job.id]);
+  assert.deepEqual(status.json.modelPolicy, { configured: true, defaultModel: 'quick', aliases: ['quick'] });
+  assert.match(renderOutput(status.json), /Model policy: default=quick; aliases=quick/);
+
+  await writeFile(recordPath, '');
+  const ignoredLegacy = await companion(context, ['rescue', '--fresh', '--model', 'legacy', 'ignored'], { FAKE_ZCODE_RECORD: recordPath, ZCODE_MODEL_ALIASES: JSON.stringify({ legacy: { providerId: 'fake2', modelId: 'other' } }) });
+  assert.notEqual(ignoredLegacy.code, 0); assert.equal(ignoredLegacy.json.error.code, 'MODEL_NOT_FOUND');
 
   await writeFile(recordPath, '');
   await companion(context, ['rescue', '--fresh', '--model', 'other', 'catalog'], { FAKE_ZCODE_RECORD: recordPath });
@@ -338,6 +347,7 @@ test('status --all reports every workspace job with nonsecret ownership markers'
   assert.deepEqual(new Set(listed.json.jobs.map((/** @type {any} */ job) => job.owner)), new Set(['same-owner', 'other']));
   assert.ok(listed.json.jobs.every((/** @type {any} */ job) => !('ownerSessionId' in job) && !('ownerTurnId' in job) && !('permissionSnapshot' in job)));
   const lines = listed.stdout.trim().split('\n');
+  assert.equal(lines.pop(), 'Model policy: default=ZCode default; aliases=none');
   assert.deepEqual(lines, listed.json.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner}`));
   assert.doesNotMatch(listed.stdout, /codex-session|other-session/);
 });

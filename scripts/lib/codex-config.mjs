@@ -9,12 +9,14 @@ import { atomicWriteJson } from './fs.mjs';
 import { discoverZCode } from './zcode-discovery.mjs';
 import { createZCodeClient } from './zcode-client.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
+import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig, writeWorkspaceModelConfig } from './workspace-config.mjs';
 
 const EXPECTED_EVENTS = new Set(['sessionStart', 'userPromptSubmit', 'subagentStart', 'subagentStop', 'stop', 'sessionEnd']);
 const EXPECTED_COMMANDS = new Map([['sessionStart', 'node "$PLUGIN_ROOT/hooks/session-lifecycle-hook.mjs"'], ['userPromptSubmit', 'node "$PLUGIN_ROOT/hooks/user-prompt-hook.mjs"'], ['subagentStart', 'node "$PLUGIN_ROOT/hooks/subagent-hook.mjs"'], ['subagentStop', 'node "$PLUGIN_ROOT/hooks/subagent-hook.mjs"'], ['stop', 'node "$PLUGIN_ROOT/hooks/stop-review-gate-hook.mjs"'], ['sessionEnd', 'node "$PLUGIN_ROOT/hooks/session-end-hook.mjs"']]);
 
 export async function runSetup(input) {
   validateSetupInput(input); const pluginRoot = await trustedRoot(input.pluginRoot); const cwd = await realpath(input.cwd); const hooksPath = await realpath(join(pluginRoot, 'hooks', 'hooks.json'));
+  input = { ...input, modelPolicy: summarizeWorkspaceModelConfig(await persistSetupModelConfig({ dataRoot: input.dataRoot, workspace: cwd, env: input.env })) };
   let discovery;
   try { discovery = await (input.dependencies?.discoverZCode ?? discoverZCode)({ explicitPath: input.env.ZCODE_PATH, env: input.env }); }
   catch (error) { if (error?.code === 'ZCODE_NOT_FOUND' || error?.code === 'ZCODE_VERSION_UNSUPPORTED') return reportAndPersist(input, { path: null, version: null }, { ready: false }, error.code === 'ZCODE_NOT_FOUND' ? 'missing' : 'outdated', error.message, false); throw error; }
@@ -29,9 +31,22 @@ export async function runSetup(input) {
   } finally { await client?.close().catch(() => {}); }
 }
 
+/** @param {{dataRoot:string,workspace:string,env:NodeJS.ProcessEnv}} input */
+async function persistSetupModelConfig(input) {
+  const defaultModel = input.env.ZCODE_SETUP_DEFAULT_MODEL; const aliasesJson = input.env.ZCODE_SETUP_MODEL_ALIASES_JSON;
+  const current = await readWorkspaceModelConfig({ dataRoot: input.dataRoot, workspace: input.workspace });
+  if (defaultModel === undefined && aliasesJson === undefined) return current;
+  let models = current.models;
+  if (aliasesJson !== undefined) {
+    try { models = JSON.parse(aliasesJson); }
+    catch (cause) { throw new PluginError('WORKSPACE_MODEL_CONFIG_INVALID', 'ZCODE_SETUP_MODEL_ALIASES_JSON is invalid JSON.', { category: 'configuration', remedy: 'Provide a JSON object of bounded model aliases.', cause }); }
+  }
+  return writeWorkspaceModelConfig({ dataRoot: input.dataRoot, workspace: input.workspace, config: { version: 1, ...(defaultModel === undefined ? current.defaultModel === undefined ? {} : { defaultModel: current.defaultModel } : { defaultModel }), models } });
+}
+
 async function reportAndPersist(input, discovery, auth, status, reason, setupReady) {
   const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.cwd }); const enabled = input.reviewGate ?? await priorGateEnabled(storage.directory); const gate = { version: 1, enabled, setupReady, status }; await atomicWriteJson(join(storage.directory, 'config', 'review-gate.json'), gate);
-  return { status, ...(reason ? { reason } : {}), zcode: { path: discovery.path, version: discovery.version }, auth, hooks: { ready: setupReady }, reviewGate: { enabled } };
+  return { status, ...(reason ? { reason } : {}), zcode: { path: discovery.path, version: discovery.version }, auth, hooks: { ready: setupReady }, reviewGate: { enabled }, modelPolicy: input.modelPolicy };
 }
 async function priorGateEnabled(workspaceDirectory) { try { const { readJsonFile } = await import('./fs.mjs'); return (await readJsonFile(join(workspaceDirectory, 'config', 'review-gate.json'))).enabled === true; } catch { return false; } }
 

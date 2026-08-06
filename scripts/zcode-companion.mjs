@@ -21,6 +21,7 @@ import { reconcileOwnedJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createStateStore } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
+import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
 import { executeTransfer, resolveTransferSource, TRANSFER_WIRE_LIMITS } from './lib/transfer.mjs';
 import { reconcileBrokerOwnership } from './zcode-broker.mjs';
 
@@ -42,10 +43,11 @@ export async function runCompanion(argv, runtime = {}) {
   const controller = createJobController({ store, dataRoot, beforeWaitPoll: reconcile });
   await reconcile();
   if (parsed.command === 'status') {
-    if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId)) };
+    const modelPolicy = summarizeWorkspaceModelConfig(await readWorkspaceModelConfig({ dataRoot, workspace: cwd }));
+    if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId)), modelPolicy };
     let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
     if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs);
-    return { job };
+    return { job, modelPolicy };
   }
   if (parsed.command === 'result') {
     const job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'result');
@@ -168,9 +170,9 @@ async function executeReserved(context) {
   try {
     const launch = await discoverLaunch(env); const ownerId = ownerIdForSession(job.ownerSessionId);
     client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId, env });
-    const modelAliases = parseAliases(env.ZCODE_MODEL_ALIASES);
-    const preResolvedModel = spec.model && (spec.model.includes('/') || Object.hasOwn(modelAliases, spec.model)) ? resolveModel(spec.model, modelAliases, []) : undefined;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : spec.model, modelAliases, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); } });
+    const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
+    const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); } });
   } catch (error) {
     await client?.close().catch(() => {});
     const current = await store.readJob(cwd, job.id).catch(() => null);
@@ -195,12 +197,6 @@ async function readJobSpec(dataRoot, workspace, jobId) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const root = resolve(storage.directory, 'job-specs'); const path = resolve(root, `${jobId}.json`);
   if (!path.startsWith(`${root}${sep}`)) throw new PluginError('JOB_SPEC_INVALID', 'Job specification path is invalid.', { category: 'storage', remedy: 'Reserve a new background job.' });
   return readJsonFile(path);
-}
-/** @param {string|undefined} raw */
-function parseAliases(raw) {
-  if (!raw) return {};
-  try { const value = JSON.parse(raw); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; }
-  catch { throw new PluginError('MODEL_ALIASES_INVALID', 'Configured model aliases are invalid JSON.', { category: 'configuration', remedy: 'Run $zcode:setup and repair model aliases.' }); }
 }
 /** @param {unknown} left @param {unknown} right */
 function sameJson(left, right) { return JSON.stringify(left) === JSON.stringify(right); }

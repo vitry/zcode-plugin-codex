@@ -38,13 +38,24 @@ No public command provides unrestricted execution shortcuts. Review commands are
 
 ## Models
 
-Pass an advertised ZCode model as `provider/model`, an unambiguous exact model ID, or a configured alias. Configure aliases before starting Codex with JSON in `ZCODE_MODEL_ALIASES`, for example:
+Pass an advertised ZCode model as `provider/model`, an unambiguous exact model ID, or a configured alias. Model policy is private and scoped to the canonical workspace. Put the setup variables in the environment that launches Codex, then invoke `$zcode:setup` inside Codex:
 
-```json
-{"fast":{"providerId":"provider","modelId":"model"}}
+```bash
+ZCODE_SETUP_DEFAULT_MODEL=fast \
+ZCODE_SETUP_MODEL_ALIASES_JSON='{"fast":{"providerId":"provider","modelId":"model","variant":"optional"}}' \
+codex
+# In the Codex session: $zcode:setup
 ```
 
-The plugin never silently changes the selected model. Invalid aliases, model IDs, or effort levels fail explicitly.
+Setup persists `${PLUGIN_DATA}/workspaces/<workspace-hash>/config/models.json` with this schema:
+
+```json
+{"version":1,"defaultModel":"fast","models":{"fast":{"providerId":"provider","modelId":"model","variant":"optional"}}}
+```
+
+Resolution order is explicit `--model`, the persisted workspace default, then ZCode's own default. Runtime-only `ZCODE_MODEL_ALIASES` is ignored; aliases must be persisted through setup. The plugin verifies the exact model and advertised effort returned by ZCode before sending the task, so mismatches fail explicitly.
+
+To verify configuration, rerun `$zcode:setup`, then run `$zcode:rescue --fresh --model fast <task>` and inspect the job with `$zcode:status <job-id>`.
 
 ## Jobs, Transfer, and review gate
 

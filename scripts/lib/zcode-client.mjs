@@ -63,7 +63,9 @@ export class ZCodeClient {
   async setModel(sessionId, model) {
     requireSessionId(sessionId); validateModel(model);
     const result = await this.protocol.request('session/setModel', { sessionId, model: copyModel(model), persistAsWorkspaceLastUsed: false });
-    validateSnapshot(result, sessionId, 'session/setModel'); this.sessionCatalogs.set(sessionId, result.settings.model); return result;
+    validateSnapshot(result, sessionId, 'session/setModel');
+    if (!exactModel(result.settings.model.current) || !sameModel(result.settings.model.current, model)) throw new PluginError('ZCODE_MODEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested model.', { category: 'protocol', remedy: 'Retry with a model tuple advertised by ZCode.' });
+    this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
 
   /** @param {string} sessionId @param {string} thoughtLevel */
@@ -78,7 +80,9 @@ export class ZCodeClient {
     const actual = advertised.find((value) => value.toLowerCase() === normalized);
     if (!actual) throw new PluginError('ZCODE_THOUGHT_LEVEL_UNSUPPORTED', 'The selected model does not advertise this thought level.', { category: 'configuration', remedy: 'Choose a thought level advertised by the selected model.', details: { thoughtLevel: normalized } });
     const result = await this.protocol.request('session/setThoughtLevel', { sessionId, thoughtLevel: actual, persistAsWorkspaceLastUsed: false });
-    validateSnapshot(result, sessionId, 'session/setThoughtLevel'); this.sessionCatalogs.set(sessionId, result.settings.model); return result;
+    validateSnapshot(result, sessionId, 'session/setThoughtLevel');
+    if (typeof result.settings.thoughtLevel.current !== 'string' || result.settings.thoughtLevel.current.toLowerCase() !== actual.toLowerCase()) throw new PluginError('ZCODE_THOUGHT_LEVEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested thought level.', { category: 'protocol', remedy: 'Retry with a thought level advertised by the selected model.' });
+    this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
 
   /** @param {string} sessionId @param {number} [timeoutMs] */ waitForCompletion(sessionId, timeoutMs) { return this.protocol.waitForCompletion(sessionId, timeoutMs); }
@@ -187,6 +191,8 @@ function advertisedThoughtLevels(model) {
 }
 /** @param {any} left @param {any} right */
 function sameModel(left, right) { return left?.providerId === right?.providerId && left?.modelId === right?.modelId && (left?.variant ?? '') === (right?.variant ?? ''); }
+/** @param {unknown} value */
+function exactModel(value) { return plainObject(value) && Object.keys(value).every((key) => ['providerId', 'modelId', 'variant'].includes(key)) && Object.hasOwn(value, 'providerId') && Object.hasOwn(value, 'modelId'); }
 /** @param {unknown} value */
 function requireString(value) { if (!nonEmpty(value)) throw inputError(); }
 /** @param {unknown} value */

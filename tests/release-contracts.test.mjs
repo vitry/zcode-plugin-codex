@@ -16,7 +16,9 @@ test('English and Chinese release docs cover installation, operation, and qualif
     assert.match(source, /zcode@vitry/);
     assert.match(source, /0\.16\.1/);
     assert.match(source, /\/Applications\/ZCode\.app\/Contents\/Resources\/glm\/zcode\.cjs/);
-    assert.match(source, /ZCODE_MODEL_ALIASES/);
+    assert.match(source, /ZCODE_SETUP_DEFAULT_MODEL/);
+    assert.match(source, /ZCODE_SETUP_MODEL_ALIASES_JSON/);
+    assert.match(source, /ZCODE_MODEL_ALIASES.{0,80}(?:ignored|忽略)/i);
     for (const command of commands) assert.match(source, new RegExp(`\\$zcode:${command}`));
     assert.match(source, /permission/i);
     assert.match(source, /PLUGIN_DATA/);

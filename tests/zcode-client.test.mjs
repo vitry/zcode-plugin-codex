@@ -216,6 +216,34 @@ test('setModel refreshes selected catalog before thought validation', async () =
   });
 });
 
+test('applied model and thought responses must exactly match before send', async () => {
+  for (const returned of [
+    { providerId: 'fake', modelId: 'other' },
+    { providerId: 'fake2', modelId: 'model' },
+    { providerId: 'fake2', modelId: 'other', variant: 'unexpected' },
+  ]) await withClient(async (client, record) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await assert.rejects(client.setModel(sessionId, { providerId: 'fake2', modelId: 'other' }), { code: 'ZCODE_MODEL_APPLY_MISMATCH' });
+    assert.ok(!(await readFile(record, 'utf8')).includes('session/send'));
+  }, { FAKE_ZCODE_SET_MODEL_CURRENT: JSON.stringify(returned) });
+  await withClient(async (client) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await assert.rejects(client.setModel(sessionId, { providerId: 'fake2', modelId: 'other' }), { code: 'ZCODE_MODEL_APPLY_MISMATCH' });
+  }, { FAKE_ZCODE_SET_MODEL_CURRENT: JSON.stringify({ providerId: 'fake2', modelId: 'other', extra: true }) });
+
+  await withClient(async (client, record) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await assert.rejects(client.setThoughtLevel(sessionId, 'high'), { code: 'ZCODE_THOUGHT_LEVEL_APPLY_MISMATCH' });
+    assert.ok(!(await readFile(record, 'utf8')).includes('session/send'));
+  }, { FAKE_ZCODE_SET_THOUGHT_CURRENT: 'low' });
+
+  await withClient(async (client) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await client.setModel(sessionId, { providerId: 'fake2', modelId: 'other' });
+    await client.setThoughtLevel(sessionId, 'XHIGH');
+  });
+});
+
 test('public input validation rejects malformed imported history and extra fields', async () => {
   await withClient(async (client) => {
     await assert.rejects(client.createSession({ workspace: '/repo', importedHistory: { source: 'other', messages: [{ role: 'tool', content: 'x' }] } }), { code: 'ZCODE_INPUT_INVALID' });

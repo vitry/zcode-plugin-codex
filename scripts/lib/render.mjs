@@ -11,11 +11,14 @@ export function renderOutput(value, options = {}) {
   if (options.json) return `${JSON.stringify(redact(value))}\n`;
   if (value?.type === 'transfer' && typeof value.result === 'string') return value.result.endsWith('\n') ? value.result : `${value.result}\n`;
   if (value?.type === 'background') return `Reserved background job ${value.job.id}.\n`;
-  if (value?.jobs) return `${value.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner}`).join('\n')}\n`;
+  if (value?.jobs) return `${value.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner}`).join('\n')}\n${renderModelPolicy(value.modelPolicy)}`;
   if (value?.result !== undefined) return `${value.result}\n`;
-  if (value?.job) return `${value.job.id} ${value.job.status}\n`;
+  if (value?.job) return `${value.job.id} ${value.job.status}\n${renderModelPolicy(value.modelPolicy)}`;
   return `${JSON.stringify(redact(value))}\n`;
 }
+
+/** @param {any} policy */
+function renderModelPolicy(policy) { return policy ? `Model policy: default=${policy.defaultModel ?? 'ZCode default'}; aliases=${policy.aliases.length ? policy.aliases.join(',') : 'none'}\n` : ''; }
 
 /** Internal machine transport. Never use for user-facing rendering. @param {unknown} value */
 export function renderInternalOutput(value) { return `${JSON.stringify(value)}\n`; }

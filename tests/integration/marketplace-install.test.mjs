@@ -141,6 +141,6 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     cwd: temporary, env: { ...hookEnv, CODEX_THREAD_ID: sessionId },
   });
   assert.equal(direct.code, 0, direct.stderr || direct.stdout);
-  assert.equal(direct.stdout, '\n');
+  assert.equal(direct.stdout, '\nModel policy: default=ZCode default; aliases=none\n');
   assert.equal(direct.internal, '');
 });

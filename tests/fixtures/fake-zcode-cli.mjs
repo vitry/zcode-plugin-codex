@@ -170,10 +170,11 @@ input.on('line', async (line) => {
       break;
     }
     case 'session/setModel':
-      sessions.get(p.sessionId).settings.model.current = p.model;
+      sessions.get(p.sessionId).settings.model.current = process.env.FAKE_ZCODE_SET_MODEL_CURRENT ? JSON.parse(process.env.FAKE_ZCODE_SET_MODEL_CURRENT) : p.model;
       send({ id: message.id, result: snapshot(p.sessionId) });
       break;
     case 'session/setThoughtLevel':
+      sessions.get(p.sessionId).settings.thoughtLevel.current = process.env.FAKE_ZCODE_SET_THOUGHT_CURRENT ?? p.thoughtLevel;
       send({ id: message.id, result: snapshot(p.sessionId) });
       break;
     default:

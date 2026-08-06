@@ -3,6 +3,11 @@ import test from 'node:test';
 
 import { parseArgs, resolveModel } from '../scripts/lib/args.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
+import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
+import { readWorkspaceModelConfig, writeWorkspaceModelConfig } from '../scripts/lib/workspace-config.mjs';
+import { mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /** @param {string[]} argv @param {string} [code] */
 function rejects(argv, code = 'ARGUMENT_INVALID') {
@@ -72,4 +77,25 @@ test('model resolution uses provider/model, configured aliases, or exact catalog
   assert.throws(() => resolveModel('bad', { bad: { providerId: 'p', modelId: 'm', extra: true } }, []), { code: 'MODEL_NOT_FOUND' });
   assert.throws(() => resolveModel('missing', {}, []), { code: 'MODEL_NOT_FOUND' });
   assert.throws(() => resolveModel('spark', {}, []), { code: 'MODEL_SPARK_FORBIDDEN' });
+});
+
+test('workspace model configuration is exact, bounded, private, and canonical-workspace scoped', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-model-config-')); const dataRoot = join(root, 'data'); const first = join(root, 'first'); const second = join(root, 'second'); await mkdir(first); await mkdir(second);
+  const configured = { version: 1, defaultModel: 'fast', models: { fast: { providerId: 'p', modelId: 'm', variant: 'v' } } };
+  await writeWorkspaceModelConfig({ dataRoot, workspace: first, config: configured });
+  assert.deepEqual(await readWorkspaceModelConfig({ dataRoot, workspace: first }), configured);
+  assert.deepEqual(await readWorkspaceModelConfig({ dataRoot, workspace: second }), { version: 1, models: {} });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: first });
+  assert.equal((await stat(join(storage.directory, 'config'))).mode & 0o777, 0o700);
+  assert.equal((await stat(join(storage.directory, 'config', 'models.json'))).mode & 0o777, 0o600);
+  for (const config of [
+    { ...configured, extra: true },
+    { ...configured, version: 2 },
+    { ...configured, defaultModel: 'x'.repeat(513) },
+    { version: 1, models: { ['__proto__']: { providerId: 'p', modelId: 'm' } } },
+    { version: 1, models: { bad: { providerId: 'p', modelId: 'm', extra: true } } },
+    { version: 1, models: Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`alias-${index}`, { providerId: 'p', modelId: 'm' }])) },
+  ]) await assert.rejects(writeWorkspaceModelConfig({ dataRoot, workspace: first, config }), { code: 'WORKSPACE_MODEL_CONFIG_INVALID' });
+  await writeFile(join(storage.directory, 'config', 'models.json'), `{"version":1,"models":{},"padding":"${'x'.repeat(1024 * 1024)}"}`);
+  await assert.rejects(readWorkspaceModelConfig({ dataRoot, workspace: first }), { code: 'WORKSPACE_MODEL_CONFIG_INVALID' });
 });

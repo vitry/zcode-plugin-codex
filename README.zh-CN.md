@@ -38,13 +38,24 @@ codex plugin add zcode@vitry
 
 ## 模型
 
-`--model` 可使用 ZCode 公布的 `provider/model`、唯一的精确 model ID 或已配置 alias。启动 Codex 前通过 `ZCODE_MODEL_ALIASES` 配置 JSON，例如：
+`--model` 可使用 ZCode 公布的 `provider/model`、唯一的精确 model ID 或已配置 alias。模型策略是私有配置，并按 canonical workspace 隔离。把 setup 变量放入启动 Codex 的环境，然后在 Codex 中调用 `$zcode:setup`：
 
-```json
-{"fast":{"providerId":"provider","modelId":"model"}}
+```bash
+ZCODE_SETUP_DEFAULT_MODEL=fast \
+ZCODE_SETUP_MODEL_ALIASES_JSON='{"fast":{"providerId":"provider","modelId":"model","variant":"optional"}}' \
+codex
+# 进入 Codex session 后执行：$zcode:setup
 ```
 
-插件不会静默改变模型；无效 alias、model ID 或 effort 会明确失败。
+Setup 会把以下 schema 写入 `${PLUGIN_DATA}/workspaces/<workspace-hash>/config/models.json`：
+
+```json
+{"version":1,"defaultModel":"fast","models":{"fast":{"providerId":"provider","modelId":"model","variant":"optional"}}}
+```
+
+解析优先级为：显式 `--model`、已持久化的 workspace 默认值、ZCode 自身默认值。运行阶段的旧变量 `ZCODE_MODEL_ALIASES` 会被忽略；alias 必须通过 setup 持久化。发送任务前，插件会校验 ZCode 返回的模型精确 tuple 和已公布的 effort，任何不一致都会明确失败。
+
+验证时可重新运行 `$zcode:setup`，再执行 `$zcode:rescue --fresh --model fast <任务>`，并用 `$zcode:status <job-id>` 检查任务。
 
 ## 任务、Transfer 与 review gate
 
