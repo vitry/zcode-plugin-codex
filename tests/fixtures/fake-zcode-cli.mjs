@@ -108,7 +108,7 @@ input.on('line', async (line) => {
       if (process.env.FAKE_ZCODE_SYNC_BATCH !== 'stale-valid') send(response);
       if (process.env.FAKE_ZCODE_PERMISSION === '1') {
         const id = permissionId++;
-        const params = { requestId: `permission-${id}`, sessionId: p.sessionId, toolCallId: 'tool-1', toolName: 'write', reason: 'fixture', riskLevel: 'medium', input: { secret: 'never-log-me' }, options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }, { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] };
+        const params = { requestId: `permission-${id}`, sessionId: p.sessionId, toolCallId: 'tool-1', toolName: 'write', reason: 'fixture', riskLevel: process.env.FAKE_ZCODE_PERMISSION_RISK ?? 'medium', input: { secret: 'never-log-me' }, options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }, { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] };
         if (process.env.FAKE_ZCODE_PERMISSION_MALFORMED === '1') delete params.options[0].optionId;
         send({ id, method: 'interaction/requestPermission', params });
         if (process.env.FAKE_ZCODE_PERMISSION_REPLAY === '1') send({ id: permissionId++, method: 'interaction/requestPermission', params });

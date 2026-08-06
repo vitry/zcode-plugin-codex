@@ -36,13 +36,18 @@ test('ships exactly the eight namespaced ZCode skills', () => {
   }
 });
 
-test('skills resolve the installed plugin root and forward argv unchanged', () => {
+test('skills resolve the installed plugin root and use constant direct companion commands', () => {
   for (const name of expected) {
     const source = skill(name);
     assert.match(source, /two directories above this `SKILL\.md`/);
     assert.match(source, /absolute canonical plugin root/);
-    assert.match(source, /preserve (?:the )?raw argument vector unchanged/i);
-    assert.match(source, new RegExp(`scripts/zcode-companion\\.mjs.*${name}`));
+    if (name === 'setup') assert.match(source, /preserve (?:the )?raw argument vector unchanged/i);
+    else {
+      assert.match(source, new RegExp(`scripts/zcode-companion\\.mjs" invoke ${name}`));
+      assert.match(source, /available terminal tool/i);
+      assert.doesNotMatch(source, /without a shell/i);
+      assert.doesNotMatch(source, /raw argument vector|<raw-arguments>|protected descriptor|FD3|FD4/i);
+    }
     assert.match(source, /present.*output.*verbatim/is);
     assert.doesNotMatch(source, /session\/(?:create|send|read|resume|stop|list|setModel|setThoughtLevel)|interaction\/requestPermission/);
   }
@@ -54,11 +59,7 @@ test('public skills enforce authorization and do not expose removed flags', () =
     assert.doesNotMatch(source, /(?:^|\s)(?:spark|--force|--prompt-file|--write)(?:\s|$|`)/m);
     if (name === 'setup') {
       assert.doesNotMatch(source, /ZCODE_CALLER_CONTEXT|caller-context|caller context/i);
-    } else {
-      assert.match(source, /ZCODE_CALLER_CONTEXT/);
-      assert.match(source, /protected descriptor/);
-      assert.match(source, /never (?:print|render|log|persist)/i);
-    }
+    } else assert.doesNotMatch(source, /ZCODE_CALLER_CONTEXT|caller-context|caller context|execution capability/i);
   }
 });
 
@@ -70,17 +71,13 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   }
   const source = skill('rescue');
   assert.match(source, /defaults? to foreground/i);
-  assert.match(source, /built-in.*subagent/i);
-  assert.match(source, /only when `--background` is explicit/i);
+  assert.doesNotMatch(source, /built-in.*subagent|forwarding subagent/i);
 });
 
-test('background forwarding agent accepts only job ID and one-time capability', () => {
+test('background execution is production-owned and public skills do not forward capabilities', () => {
   const source = readFileSync(new URL('agents/zcode-rescue.md', root), 'utf8');
-  assert.match(source, /reserved job ID/i);
-  assert.match(source, /one-time execution capability/i);
-  assert.match(source, /run-reserved-job/);
-  assert.match(source, /never.*caller-context/i);
-  assert.match(source, /exactly once/i);
+  for (const name of expected.filter((value) => value !== 'setup')) assert.doesNotMatch(skill(name), /zcode:zcode-rescue|forwarding subagent|one-time execution capability/i);
+  assert.ok(source.length > 0);
   assert.doesNotMatch(source, /--prompt-file|--write|spark|--force/);
 });
 

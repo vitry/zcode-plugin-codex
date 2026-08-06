@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process';
 import { createHash } from 'node:crypto';
-import { close as closeFd, createReadStream, write as writeFd } from 'node:fs';
+import { close as closeFd, createReadStream, realpathSync, write as writeFd } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve, sep } from 'node:path';
 
@@ -14,6 +14,8 @@ import { createIdentityStore } from './lib/identity.mjs';
 import { createJobController, ownerIdForSession } from './lib/job-control.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
+import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
+import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createStateStore } from './lib/state.mjs';
@@ -23,16 +25,15 @@ import { reconcileBrokerOwnership } from './zcode-broker.mjs';
 
 const backgroundBindings = new WeakMap();
 
-/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any}} [runtime] */
+/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
   const parsed = parseArgs(argv); const dataRoot = env.ZCODE_DATA_ROOT ?? env.PLUGIN_DATA;
   if (!dataRoot) throw new PluginError('DATA_ROOT_REQUIRED', 'Plugin data root is not configured.', { category: 'configuration', remedy: 'Run $zcode:setup.' });
   if (parsed.command === 'setup') return runSetup({ pluginRoot: env.PLUGIN_ROOT, dataRoot, cwd, reviewGate: parsed.options.reviewGate, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
   const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
-  if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']) });
-  const authorization = requireAuthorization(runtime.authorization, ['callerContext']);
-  const caller = await identity.consumeCallerContext(authorization.callerContext, { workspace: cwd });
+  if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck });
+  const caller = runtime.caller ?? await identity.consumeCallerContext(requireAuthorization(runtime.authorization, ['callerContext']).callerContext, { workspace: cwd });
   const controller = createJobController({ store, dataRoot });
   if (parsed.command === 'status') {
     if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId)) };
@@ -54,7 +55,29 @@ export async function runCompanion(argv, runtime = {}) {
     try { return { job: await cancelling.cancel(cwd, selected.id, caller.sessionId) }; }
     finally { await client.close().catch(() => {}); }
   }
-  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, dependencies: runtime.dependencies });
+  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground });
+}
+
+/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,dependencies?:any}} [runtime] */
+export async function runDirectInvocation(argv, runtime = {}) {
+  const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = env.ZCODE_DATA_ROOT ?? env.PLUGIN_DATA;
+  if (!dataRoot) throw new PluginError('DATA_ROOT_REQUIRED', 'Plugin data root is not configured.', { category: 'configuration', remedy: 'Run $zcode:setup.' });
+  const sessionId = env.CODEX_THREAD_ID; if (typeof sessionId !== 'string' || !sessionId) throw new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' });
+  const [entry, command, choice, ...extra] = argv; if (!['invoke', 'invoke-choice'].includes(entry) || typeof command !== 'string' || extra.length) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
+  const identity = createIdentityStore({ dataRoot }); const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd }); const invocations = createInvocationStore({ dataRoot });
+  /** @type {any} */ let invocation; let executionCaller = caller;
+  if (entry === 'invoke-choice') { invocation = await invocations.consumePending({ sessionId, workspace: cwd, command, choice }); executionCaller = invocation.caller; }
+  else {
+    if (choice !== undefined) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
+    invocation = parseRecordedInvocation(command, caller.prompt);
+    if (requiresExecutionChoice(command, invocation.argv)) {
+      await invocations.savePending({ sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode, command, spec: { argv: invocation.argv } });
+      return { type: 'needs-choice', choices: ['wait', 'background'] };
+    }
+  }
+  const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies });
+  if (output?.type === 'needs-choice') await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv } });
+  return output;
 }
 
 /** @param {any} context */
@@ -75,7 +98,7 @@ async function startPublic(context) {
       createClient: (launch) => (context.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: job.workspace, launch, ownerId: ownerIdForSession(caller.sessionId), env: context.env, ...managedWireOptionsForJob(job) }),
     });
   }
-  const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' '), task: parsed.positionals.join(' '), model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined });
+  const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' ') || context.originalPrompt, task: parsed.positionals.join(' ') || context.originalPrompt, model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined });
   if (parsed.options.execution === 'background') {
     const specDigest = digestSpec(spec);
     const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', specDigest };
@@ -83,6 +106,10 @@ async function startPublic(context) {
     try {
       await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, spec, specDigest);
       capability = await (context.dependencies?.createExecutionCapability ?? ((/** @type {any} */ input) => identity.createExecutionCapability(input)))({ ...binding, permissionSnapshot });
+      if (context.autoLaunchBackground) {
+        await (context.dependencies?.startBackgroundWorker ?? startBackgroundWorker)({ companionPath: fileURLToPath(import.meta.url), jobId: job.id, executionCapability: capability, cwd, env: context.env });
+        return { type: 'background', job };
+      }
       const output = (context.dependencies?.buildBackgroundOutput ?? ((/** @type {any} */ value) => value))({ type: 'background', job, privateInvocation: ['run-reserved-job', job.id], executionCapability: capability });
       backgroundBindings.set(output, { identity, store, capability, binding });
       return output;
@@ -109,7 +136,7 @@ function codexAppServerOptions(env, cwd) {
 }
 
 /** @param {any} input */
-async function runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization }) {
+async function runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization, startupAck }) {
   const jobId = parsed.positionals[0]; const job = await store.readJob(cwd, jobId);
   if (authorization.jobId !== jobId) throw authorizationInputError();
   const record = await readJobSpec(dataRoot, cwd, jobId);
@@ -119,6 +146,7 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', specDigest: recomputed });
   if (!sameJson(consumed.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
+  await startupAck?.();
   return executeReserved({ parsed, cwd, env, dataRoot, identity, store, job, spec, caller: { sessionId: job.ownerSessionId } });
 }
 
@@ -255,11 +283,17 @@ async function failQueuedJob(store, workspace, jobId, error) {
 async function main() {
   let output;
   try {
-    const setup = process.argv[2] === 'setup'; const authorization = setup ? undefined : await readInternalEnvelope();
-    output = await runCompanion(process.argv.slice(2), { authorization });
-    if (!setup) await writeInternalResponse(output); process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
+    const entry = process.argv[2]; const setup = entry === 'setup'; const direct = entry === 'invoke' || entry === 'invoke-choice'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1'; const authorization = setup || direct ? undefined : await readInternalEnvelope();
+    output = direct ? await runDirectInvocation(process.argv.slice(2)) : await runCompanion(process.argv.slice(2), { authorization, ...(worker ? { startupAck: acknowledgeBackgroundStartup } : {}) });
+    if (!setup && !direct && !worker) await writeInternalResponse(output); if (!worker) process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
   }
-  catch (error) { if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); if (process.argv[2] !== 'setup') try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1; }
+  catch (error) { if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const entry = process.argv[2]; const protectedOutput = entry !== 'setup' && entry !== 'invoke' && entry !== 'invoke-choice' && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1; }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await main();
+if (process.argv[1] && sameEntryPath(fileURLToPath(import.meta.url), resolve(process.argv[1]))) await main();
+
+/** Treat marketplace symlink entrypoints as the installed companion itself. @param {string} left @param {string} right */
+function sameEntryPath(left, right) {
+  try { return realpathSync(left) === realpathSync(right); }
+  catch { return left === right; }
+}

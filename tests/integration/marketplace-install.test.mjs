@@ -10,6 +10,7 @@ import test from 'node:test';
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { runProcess, terminateProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
+import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const expectedSkills = ['adversarial-review', 'cancel', 'rescue', 'result', 'review', 'setup', 'status', 'transfer'];
@@ -121,4 +122,25 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.ok(nativeBinding.startsWith(`${await realpath(installedRoot)}/`));
   const { withFileLock } = await import(pathToFileURL(join(installedRoot, 'scripts', 'lib', 'fs.mjs')).href);
   assert.equal(await withFileLock(join(temporary, 'snapshot-native.lock'), async () => 'locked'), 'locked');
+
+  const pluginData = join(temporary, 'plugin-data');
+  const hookEnv = { ...env, PLUGIN_ROOT: installedRoot, PLUGIN_DATA: pluginData };
+  const sessionId = 'installed-session'; const turnId = 'installed-turn';
+  const lifecycle = await runChild(process.execPath, [join(installedRoot, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: temporary, env: hookEnv, ordinaryInput: true,
+    input: { session_id: sessionId, cwd: temporary, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+  });
+  assert.equal(lifecycle.code, 0, lifecycle.stderr || lifecycle.stdout);
+  const prompt = await runChild(process.execPath, [join(installedRoot, 'hooks', 'user-prompt-hook.mjs')], {
+    cwd: temporary, env: hookEnv, ordinaryInput: true,
+    input: { session_id: sessionId, turn_id: turnId, cwd: temporary, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:status --all' },
+  });
+  assert.equal(prompt.code, 0, prompt.stderr || prompt.stdout);
+  assert.doesNotMatch(prompt.stdout, /ZCODE_CALLER_CONTEXT|callerContext/);
+  const direct = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'invoke', 'status'], {
+    cwd: temporary, env: { ...hookEnv, CODEX_THREAD_ID: sessionId },
+  });
+  assert.equal(direct.code, 0, direct.stderr || direct.stdout);
+  assert.equal(direct.stdout, '\n');
+  assert.equal(direct.internal, '');
 });

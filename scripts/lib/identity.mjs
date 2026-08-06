@@ -31,7 +31,7 @@ export function createIdentityStore({ dataRoot }) {
       if (!isNonEmptyString(sessionId)) throw invalidIdentityInput();
       const storage = await identityStorage(dataRoot, workspace);
       await withFileLock(storage.lockPath, async () => {
-        for (const directory of [storage.callersDirectory, storage.gatesDirectory]) {
+        for (const directory of [storage.callersDirectory, storage.activeTurnsDirectory, storage.gatesDirectory]) {
           for (const name of await readdir(directory)) {
             if (!name.endsWith('.json')) continue;
             const path = join(directory, name);
@@ -54,14 +54,30 @@ export function createIdentityStore({ dataRoot }) {
 
     /** Atomically starts one caller turn and revokes older turns for this exact session. @param {CallerContextInput} input */
     async beginCallerTurn(input) {
-      validateCallerInput(input); const storage = await identityStorage(dataRoot, input.workspace); const { token, digest, record } = callerRecord(input, storage.workspacePath);
-      await withFileLock(storage.lockPath, async () => { await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId !== input.turnId); await atomicWriteJson(join(storage.callersDirectory, `${digest}.json`), record); }); return token;
+      validateCallerInput(input); const storage = await identityStorage(dataRoot, input.workspace); const { token, digest, record } = callerRecord(input, storage.workspacePath); const active = activeTurnRecord(input, storage.workspacePath);
+      await withFileLock(storage.lockPath, async () => { await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId !== input.turnId); await atomicWriteJson(join(storage.callersDirectory, `${digest}.json`), record); await atomicWriteJson(join(storage.activeTurnsDirectory, `${activeTurnKey(input.sessionId, storage.workspacePath)}.json`), active); }); return token;
+    },
+
+    /** Resolve only the exact ambient session and canonical workspace. @param {{sessionId:string,workspace:string,now?:Date|number|string}} expected */
+    async resolveActiveTurn(expected) {
+      validateActiveExpected(expected); const storage = await identityStorage(dataRoot, expected.workspace); const key = activeTurnKey(expected.sessionId, storage.workspacePath);
+      return withFileLock(storage.lockPath, async () => {
+        const record = await readAuthorizationRecord(join(storage.activeTurnsDirectory, `${key}.json`), 'ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
+        if (!isActiveTurnRecord(record) || !safeEqual(record.key, key) || !safeEqual(record.sessionId, expected.sessionId) || record.workspace !== storage.workspacePath) throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
+        if (toTimestamp(expected.now) >= Date.parse(record.expiresAt)) throw authorizationError('ACTIVE_TURN_EXPIRED', 'The active turn has expired.', 'Submit a new prompt in this Codex thread.');
+        return publicRecord(record);
+      });
     },
 
     /** Revokes every caller credential for one exact completed turn. @param {GateBaselineIdentity} input */
     async endCallerTurn(input) {
       validateTurnIdentity(input); const storage = await identityStorage(dataRoot, input.workspace);
-      await withFileLock(storage.lockPath, () => removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId === input.turnId));
+      await withFileLock(storage.lockPath, async () => {
+        await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId === input.turnId); const path = join(storage.activeTurnsDirectory, `${activeTurnKey(input.sessionId, storage.workspacePath)}.json`); let current;
+        try { current = await readJsonFile(path); } catch (error) { if (error instanceof PluginError && error.code === 'JSON_READ_FAILED' && /** @type {any} */ (error.cause)?.code === 'ENOENT') return; throw error; }
+        if (!isActiveTurnRecord(current)) throw invalidAuthorizationRecord('active turn');
+        if (current.turnId === input.turnId) await unlink(path);
+      });
     },
 
     /** @param {string} token @param {{ workspace: string, now?: Date | number | string }} expected */
@@ -257,16 +273,19 @@ async function identityStorage(dataRoot, workspace) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const identityDirectory = join(storage.directory, 'identity');
   const callersDirectory = join(identityDirectory, 'callers');
+  const activeTurnsDirectory = join(identityDirectory, 'active-turns');
   const capabilitiesDirectory = join(identityDirectory, 'capabilities');
   const gatesDirectory = join(identityDirectory, 'gates');
   await Promise.all([
     ensurePrivateDirectory(callersDirectory),
+    ensurePrivateDirectory(activeTurnsDirectory),
     ensurePrivateDirectory(capabilitiesDirectory),
     ensurePrivateDirectory(gatesDirectory),
   ]);
   return {
     ...storage,
     callersDirectory,
+    activeTurnsDirectory,
     capabilitiesDirectory,
     gatesDirectory,
     lockPath: join(identityDirectory, '.lock'),
@@ -310,6 +329,15 @@ function callerRecord(input, workspacePath) {
   return { token, digest, record: { digest, sessionId: input.sessionId, turnId: input.turnId, workspace: workspacePath, permissionMode: input.permissionMode, createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + CALLER_LIFETIME_MS).toISOString() } };
 }
 
+/** @param {CallerContextInput} input @param {string} workspacePath */
+function activeTurnRecord(input, workspacePath) {
+  const createdAt = toTimestamp(input.now); const key = activeTurnKey(input.sessionId, workspacePath);
+  return { key, sessionId: input.sessionId, turnId: input.turnId, workspace: workspacePath, permissionMode: input.permissionMode, prompt: input.prompt ?? '', createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + CALLER_LIFETIME_MS).toISOString() };
+}
+
+/** @param {string} sessionId @param {string} workspace */
+function activeTurnKey(sessionId, workspace) { return createHash('sha256').update(JSON.stringify([sessionId, workspace])).digest('hex'); }
+
 /** @param {string} directory @param {(record:any)=>boolean} predicate */
 async function removeCallerRecords(directory, predicate) {
   for (const name of await readdir(directory)) {
@@ -347,8 +375,12 @@ function safeEqual(left, right) {
 function validateCallerInput(input) {
   if (!isPlainObject(input) || !isNonEmptyString(input.sessionId)
     || !isNonEmptyString(input.turnId) || !isNonEmptyString(input.workspace)
-    || !PERMISSION_MODES.includes(input.permissionMode)) throw invalidIdentityInput();
+    || !PERMISSION_MODES.includes(input.permissionMode)
+    || input.prompt !== undefined && (typeof input.prompt !== 'string' || Buffer.byteLength(input.prompt) > 64 * 1024)) throw invalidIdentityInput();
 }
+
+/** @param {any} input */
+function validateActiveExpected(input) { if (!isPlainObject(input) || !isNonEmptyString(input.sessionId) || !isNonEmptyString(input.workspace)) throw invalidIdentityInput(); }
 
 /** @param {any} input */
 function validateTurnIdentity(input) {
@@ -408,6 +440,9 @@ function isCallerRecord(record) {
     && PERMISSION_MODES.includes(record.permissionMode) && isDate(record.createdAt)
     && isDate(record.expiresAt) && Date.parse(record.expiresAt) > Date.parse(record.createdAt);
 }
+
+/** @param {any} record */
+function isActiveTurnRecord(record) { return isPlainObject(record) && isDigest(record.key) && isNonEmptyString(record.sessionId) && isNonEmptyString(record.turnId) && isNonEmptyString(record.workspace) && PERMISSION_MODES.includes(record.permissionMode) && typeof record.prompt === 'string' && Buffer.byteLength(record.prompt) <= 64 * 1024 && isDate(record.createdAt) && isDate(record.expiresAt) && Date.parse(record.expiresAt) > Date.parse(record.createdAt); }
 
 /** @param {any} record */
 function isExecutionRecord(record) {
@@ -499,6 +534,7 @@ function authorizationError(code, message, remedy = 'Use the exact credential is
  * @property {string} turnId
  * @property {string} workspace
  * @property {string} permissionMode
+ * @property {string} [prompt]
  * @property {Date | number | string} [now]
  */
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readdir, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -150,6 +150,42 @@ test('caller contexts from interleaved sessions never become a workspace-wide fa
     identity.consumeCallerContext('forged-token', { workspace: workspaceA, now }),
     (error) => error instanceof PluginError && error.code === 'CALLER_CONTEXT_INVALID',
   );
+});
+
+test('active turns resolve only by exact session and canonical workspace without exposing a token', async () => {
+  const { identity, workspaceA, workspaceB } = await fixture();
+  const now = new Date('2026-08-04T00:00:00.000Z');
+  await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait repair auth', now });
+  await identity.beginCallerTurn({ sessionId: 'session-b', turnId: 'turn-b', workspace: workspaceA, permissionMode: 'read-only', prompt: '$zcode:review --wait', now });
+
+  assert.deepEqual(await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: workspaceA, now }), {
+    sessionId: 'session-a', turnId: 'turn-a', workspace: await realpath(workspaceA), permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait repair auth',
+    createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
+  });
+  await assert.rejects(identity.resolveActiveTurn({ sessionId: 'missing', workspace: workspaceA, now }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+  await assert.rejects(identity.resolveActiveTurn({ sessionId: 'session-a', workspace: workspaceB, now }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+  await assert.rejects(identity.resolveActiveTurn({ sessionId: 'session-a', workspace: workspaceA, now: new Date(now.getTime() + 30 * 60_000) }), { code: 'ACTIVE_TURN_EXPIRED' });
+});
+
+test('pending invocation choices preserve the originating caller and are exact-session single-use', async () => {
+  const { dataRoot, workspaceA } = await fixture();
+  const { createInvocationStore } = await import('../scripts/lib/invocation.mjs');
+  const pending = createInvocationStore({ dataRoot });
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', spec: { argv: ['rescue', 'literal task'] } });
+  await assert.rejects(pending.consumePending({ sessionId: 'session-b', workspace: workspaceA, command: 'rescue', choice: 'resume' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+  assert.deepEqual(await pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume' }), {
+    argv: ['rescue', '--resume', 'literal task'],
+    caller: { sessionId: 'session-a', turnId: 'turn-a', workspace: await realpath(workspaceA), permissionMode: 'workspace-write' },
+  });
+  await assert.rejects(pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+});
+
+test('ending an active turn does not hide corrupted private identity state', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture();
+  await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default', prompt: 'work' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const directory = join(storage.directory, 'identity', 'active-turns'); const [name] = await readdir(directory);
+  await atomicWriteJson(join(directory, name), { corrupted: true });
+  await assert.rejects(identity.endCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA }), { code: 'AUTHORIZATION_RECORD_INVALID' });
 });
 
 test('execution capability is exact-match and atomically single-use', async () => {

@@ -11,6 +11,7 @@ const requiredManifestFields = [
   'author',
   'description',
   'homepage',
+  'hooks',
   'interface',
   'keywords',
   'license',
@@ -45,6 +46,7 @@ function assertManifestContract(manifest) {
   );
   assert.match(manifest.version, semverPattern);
   assert.equal(manifest.skills, './skills/');
+  assert.equal(manifest.hooks, './hooks/hooks.json');
 
   for (const field of requiredInterfaceFields) {
     assert.equal(
@@ -111,7 +113,7 @@ test('plugin manifest exposes the native Codex plugin contract', () => {
 test('plugin manifest contract rejects unsupported components and fields', () => {
   const manifest = readJson('.codex-plugin/plugin.json');
 
-  for (const field of ['hooks', 'mcpServers', 'apps', 'unknownField']) {
+  for (const field of ['mcpServers', 'apps', 'unknownField']) {
     assert.throws(
       () => assertManifestContract({ ...manifest, [field]: './missing.json' }),
       /exactly the supported top-level fields/,

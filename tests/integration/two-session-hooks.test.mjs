@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
@@ -16,7 +17,11 @@ const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
 
 function child(command, args, { cwd, env, input, protectedInput = false }) {
   return runChild(command, args, { cwd, env, input, protectedInput, ordinaryInput: !protectedInput })
-    .then((result) => ({ ...result, json: protectedInput ? JSON.parse(result.internal) : result.stdout ? JSON.parse(result.stdout) : null }));
+    .then((result) => {
+      if (protectedInput) return { ...result, json: JSON.parse(result.internal) };
+      if (!result.stdout) return { ...result, json: null };
+      try { return { ...result, json: JSON.parse(result.stdout) }; } catch { return { ...result, json: result.stdout }; }
+    });
 }
 
 async function git(cwd, args) {
@@ -42,11 +47,6 @@ async function hook(ctx, script, input) {
   return result.json;
 }
 
-function token(output) {
-  const value = output.hookSpecificOutput.additionalContext.match(/ZCODE_CALLER_CONTEXT=([A-Za-z0-9_-]+)/)?.[1];
-  assert.ok(value); return value;
-}
-
 function companion(ctx, argv, caller, extraEnv = {}) {
   return child(process.execPath, [cli, ...argv], { cwd: ctx.workspace, env: { ...ctx.env, ...extraEnv }, input: { callerContext: caller }, protectedInput: true });
 }
@@ -55,15 +55,18 @@ function thread(id) {
   return { id, ephemeral: false, turns: [{ items: [{ type: 'userMessage', content: [{ type: 'text', text: `hello ${id}` }] }] }] };
 }
 
-test('real hooks keep two interleaved Codex sessions isolated through transfer, rescue, defaults and cancellation', async (t) => {
+test('legacy protected companion calls remain isolated after real hooks stop exposing caller tokens', async (t) => {
   const ctx = await fixture(t);
+  const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   const sessions = [
     { id: 'session-a', turn: 'turn-a', permission: 'acceptEdits' },
     { id: 'session-b', turn: 'turn-b', permission: 'plan' },
   ];
   for (const session of sessions) {
     await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: session.id, cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: session.permission, source: 'startup' });
-    session.caller = token(await hook(ctx, 'user-prompt-hook.mjs', { session_id: session.id, turn_id: session.turn, cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: session.permission, prompt: 'work' }));
+    const output = await hook(ctx, 'user-prompt-hook.mjs', { session_id: session.id, turn_id: session.turn, cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: session.permission, prompt: 'work' });
+    assert.doesNotMatch(JSON.stringify(output), /ZCODE_CALLER_CONTEXT|callerContext/);
+    session.caller = await identity.createCallerContext({ sessionId: session.id, turnId: session.turn, workspace: ctx.workspace, permissionMode: session.permission });
   }
   const [a, b] = sessions;
   assert.notEqual(a.caller, b.caller);
@@ -123,4 +126,22 @@ test('real hooks keep two interleaved Codex sessions isolated through transfer, 
     assert.equal(cancelled.json.job.id, session.queued.id);
     assert.equal(cancelled.json.job.status, 'cancelled');
   }
+});
+
+test('real prompt hooks keep direct ambient-thread invocation exact in one workspace', async (t) => {
+  const ctx = await fixture(t);
+  for (const session of [
+    { id: 'session-a', turn: 'turn-a', prompt: '$zcode:rescue --fresh --wait repair alpha' },
+    { id: 'session-b', turn: 'turn-b', prompt: '$zcode:rescue --fresh --wait repair beta' },
+  ]) {
+    await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: session.id, cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' });
+    const output = await hook(ctx, 'user-prompt-hook.mjs', { session_id: session.id, turn_id: session.turn, cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: session.prompt });
+    assert.doesNotMatch(JSON.stringify(output), /ZCODE_CALLER_CONTEXT|callerContext/);
+  }
+  const a = await child(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'session-a' } });
+  const b = await child(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'session-b' } });
+  assert.equal(a.code, 0, a.stderr || a.stdout); assert.equal(b.code, 0, b.stderr || b.stdout);
+  const jobs = await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace);
+  assert.equal(jobs.filter((job) => job.ownerSessionId === 'session-a').length, 1);
+  assert.equal(jobs.filter((job) => job.ownerSessionId === 'session-b').length, 1);
 });
