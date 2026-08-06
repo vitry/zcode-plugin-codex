@@ -61,7 +61,9 @@ test('setup persists model policy only from explicit setup environment variables
   const configured = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true }, zcodeEnv: { ZCODE_SETUP_DEFAULT_MODEL: 'fast', ZCODE_SETUP_MODEL_ALIASES_JSON: JSON.stringify({ fast: { providerId: 'fake2', modelId: 'other' } }), ZCODE_MODEL_ALIASES: JSON.stringify({ ignored: { providerId: 'fake', modelId: 'model' } }) } });
   await runSetup(configured.options); const storage = await resolveWorkspaceStorage({ dataRoot: configured.dataRoot, workspace: configured.cwd }); const path = join(storage.directory, 'config', 'models.json');
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { version: 1, defaultModel: 'fast', models: { fast: { providerId: 'fake2', modelId: 'other' } } });
-  assert.equal((await stat(join(storage.directory, 'config'))).mode & 0o777, 0o700); assert.equal((await stat(path)).mode & 0o777, 0o600);
+  const configDirectory = await stat(join(storage.directory, 'config')); const modelFile = await stat(path);
+  if (process.platform === 'win32') { assert.equal(configDirectory.isDirectory(), true); assert.equal(modelFile.isFile(), true); }
+  else { assert.equal(configDirectory.mode & 0o777, 0o700); assert.equal(modelFile.mode & 0o777, 0o600); }
   assert.deepEqual((await runSetup({ ...configured.options, env: { ...configured.options.env, ZCODE_SETUP_DEFAULT_MODEL: 'fake/model', ZCODE_SETUP_MODEL_ALIASES_JSON: undefined } })).modelPolicy, { configured: true, defaultModel: 'fake/model', aliases: ['fast'] });
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { version: 1, defaultModel: 'fake/model', models: { fast: { providerId: 'fake2', modelId: 'other' } } }, 'unspecified aliases are preserved');
   assert.deepEqual((await runSetup({ ...configured.options, env: { ...configured.options.env, ZCODE_SETUP_DEFAULT_MODEL: undefined, ZCODE_SETUP_MODEL_ALIASES_JSON: JSON.stringify({ careful: { providerId: 'fake', modelId: 'model' } }) } })).modelPolicy, { configured: true, defaultModel: 'fake/model', aliases: ['careful'] });

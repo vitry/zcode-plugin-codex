@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PluginError } from './errors.mjs';
@@ -59,12 +59,23 @@ async function validateHooks(result, cwd, pluginRoot, hooksPath) {
   for (const hook of entry.hooks) {
     if (hook?.source !== 'plugin') continue;
     let sourcePath; try { sourcePath = await realpath(hook.sourcePath); } catch { continue; }
-    if (sourcePath === hooksPath && sourcePath.startsWith(`${pluginRoot}/`) && typeof hook.pluginId === 'string' && /^zcode@[A-Za-z0-9_-]+$/.test(hook.pluginId)) ownHooks.push({ ...hook, sourcePath });
+    if (sourcePath === hooksPath && isWithinDirectory(pluginRoot, sourcePath) && typeof hook.pluginId === 'string' && /^zcode@[A-Za-z0-9_-]+$/.test(hook.pluginId)) ownHooks.push({ ...hook, sourcePath });
   }
   if (ownHooks.length !== EXPECTED_EVENTS.size) return { ok: false, reason: 'missing-or-invalid-hooks' };
   const seen = new Set();
   for (const hook of ownHooks) { if (hook.handlerType !== 'command' || hook.command !== EXPECTED_COMMANDS.get(hook.eventName) || !hook.enabled || !EXPECTED_EVENTS.has(hook.eventName) || seen.has(hook.eventName) || typeof hook.key !== 'string' || !hook.key || control(hook.key) || typeof hook.currentHash !== 'string' || !/^[a-f0-9]{64}$/.test(hook.currentHash) || !['managed', 'untrusted', 'trusted', 'modified'].includes(hook.trustStatus)) return { ok: false, reason: 'foreign-or-outdated-hooks' }; seen.add(hook.eventName); }
   return { ok: seen.size === EXPECTED_EVENTS.size, hooks: ownHooks };
+}
+/**
+ * Check a canonical path against a canonical directory without assuming a
+ * particular platform's separator.  `startsWith(`${root}/`)` rejects every
+ * Windows path because canonical paths use `\\` there.
+ * @param {string} directory
+ * @param {string} target
+ */
+function isWithinDirectory(directory, target) {
+  const descendant = relative(directory, target);
+  return descendant === '' || (!isAbsolute(descendant) && descendant !== '..' && !descendant.startsWith(`..${sep}`));
 }
 function userVersion(config) { const layer = Array.isArray(config?.layers) ? config.layers.find((item) => item?.name?.type === 'user') : null; if (typeof layer?.version !== 'string' || !layer.version) throw new PluginError('CODEX_CONFIG_VERSION_MISSING', 'Codex user config version is unavailable.', { category: 'protocol', remedy: 'Restart Codex and rerun $zcode:setup.' }); return layer.version; }
 /**

@@ -733,7 +733,7 @@ test('workspace storage hashes the real path and creates private directories', a
   assert.equal(first.workspaceKey, second.workspaceKey);
   assert.match(first.workspaceKey, /^[a-f0-9]{64}$/);
   assert.equal(first.directory, join(dataRoot, 'workspaces', first.workspaceKey));
-  assert.equal((await stat(first.directory)).mode & 0o777, 0o700);
+  const workspaceDirectory = await stat(first.directory); if (process.platform === 'win32') assert.equal(workspaceDirectory.isDirectory(), true); else assert.equal(workspaceDirectory.mode & 0o777, 0o700);
 });
 
 test('atomic JSON writes use private files and leave no sibling temporary artifact', async () => {
@@ -750,7 +750,7 @@ test('atomic JSON writes use private files and leave no sibling temporary artifa
   const parsed = JSON.parse(await readFile(path, 'utf8'));
   assert.ok(parsed.writer === 'a' || parsed.writer === 'b');
   assert.equal(parsed.payload, parsed.writer.repeat(1000));
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  const recordFile = await stat(path); if (process.platform === 'win32') assert.equal(recordFile.isFile(), true); else assert.equal(recordFile.mode & 0o777, 0o600);
   assert.deepEqual(await readdir(directory), ['record.json']);
 });
 

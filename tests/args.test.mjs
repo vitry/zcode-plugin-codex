@@ -86,8 +86,9 @@ test('workspace model configuration is exact, bounded, private, and canonical-wo
   assert.deepEqual(await readWorkspaceModelConfig({ dataRoot, workspace: first }), configured);
   assert.deepEqual(await readWorkspaceModelConfig({ dataRoot, workspace: second }), { version: 1, models: {} });
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace: first });
-  assert.equal((await stat(join(storage.directory, 'config'))).mode & 0o777, 0o700);
-  assert.equal((await stat(join(storage.directory, 'config', 'models.json'))).mode & 0o777, 0o600);
+  const configDirectory = await stat(join(storage.directory, 'config')); const modelFile = await stat(join(storage.directory, 'config', 'models.json'));
+  if (process.platform === 'win32') { assert.equal(configDirectory.isDirectory(), true); assert.equal(modelFile.isFile(), true); }
+  else { assert.equal(configDirectory.mode & 0o777, 0o700); assert.equal(modelFile.mode & 0o777, 0o600); }
   for (const config of [
     { ...configured, extra: true },
     { ...configured, version: 2 },

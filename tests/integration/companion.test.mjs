@@ -76,7 +76,7 @@ test('real CLI runs foreground review/adversarial/rescue and persists private ar
   assert.ok(Object.values(owners.sessions).every((owner) => owner === ownerIdForSession('codex-session')));
   for (const directory of ['prompts', 'results']) {
     const entries = await readdir(join(storage.directory, directory)); assert.ok(entries.length >= 3);
-    for (const entry of entries) assert.equal((await stat(join(storage.directory, directory, entry))).mode & 0o777, 0o600);
+    for (const entry of entries) { const entryStat = await stat(join(storage.directory, directory, entry)); if (process.platform === 'win32') assert.equal(entryStat.isFile(), true); else assert.equal(entryStat.mode & 0o777, 0o600); }
   }
   const allText = (await Promise.all((await readdir(join(storage.directory, 'prompts'))).map((name) => readFile(join(storage.directory, 'prompts', name), 'utf8')))).join('\n');
   assert.match(allText, /UNTRUSTED GIT DATA/); assert.match(allText, /focus on auth/); assert.doesNotMatch(allText, new RegExp(context.caller));

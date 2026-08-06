@@ -27,7 +27,7 @@ test('ships exactly the eight namespaced ZCode skills', () => {
   assert.deepEqual(readdirSync(new URL('skills/', root), { withFileTypes: true })
     .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(), expected);
   for (const name of expected) {
-    const source = skill(name);
+    const source = skill(name).replaceAll('\r\n', '\n');
     assert.match(source, new RegExp(`^---\\nname: ${name}\\n`));
     assert.match(source, /^description: Use when /m);
     assert.match(source, new RegExp(`\\$zcode:${name.replace('-', '\\-')}`));
