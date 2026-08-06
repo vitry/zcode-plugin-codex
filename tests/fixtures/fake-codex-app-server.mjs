@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // @ts-nocheck
+import { appendFileSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 import process from 'node:process';
 import readline from 'node:readline';
@@ -8,6 +9,9 @@ const input = readline.createInterface({ input: process.stdin, crlfDelay: Infini
 
 async function record(value) {
   if (process.env.FAKE_CODEX_RECORD) await appendFile(process.env.FAKE_CODEX_RECORD, `${JSON.stringify(value)}\n`);
+}
+function recordLifecycle(signal) {
+  if (process.env.FAKE_CODEX_RECORD) appendFileSync(process.env.FAKE_CODEX_RECORD, `${JSON.stringify({ lifecycle: signal })}\n`);
 }
 
 let outputQueue = Promise.resolve();
@@ -32,8 +36,8 @@ if (process.env.FAKE_CODEX_STDERR_BYTES) {
   process.stderr.write(text.repeat(Math.ceil(Number(process.env.FAKE_CODEX_STDERR_BYTES) / text.length)));
 }
 
-for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, async () => {
-  await record({ lifecycle: signal });
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
+  recordLifecycle(signal);
   process.exit(0);
 });
 process.on('exit', () => { if (process.env.FAKE_CODEX_EXIT_MARKER) process.stderr.write(process.env.FAKE_CODEX_EXIT_MARKER); });

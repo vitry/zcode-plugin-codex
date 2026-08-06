@@ -40,6 +40,12 @@ test('uses codex app-server and a 15 second deadline by default', async () => {
   assert.equal(CODEX_APP_SERVER_DEFAULT_TIMEOUT_MS, 15_000);
 });
 
+test('fake app-server persists lifecycle markers synchronously before exiting', async () => {
+  const source = await readFile(fake, 'utf8');
+  assert.match(source, /appendFileSync/);
+  assert.match(source, /recordLifecycle/);
+});
+
 test('terminates the child on success, JSON-RPC error, malformed output, oversized line and timeout', async (t) => {
   /** @type {Array<[Record<string,string>,Record<string,number>,string|null]>} */ const cases = [
     [{}, {}, null],
