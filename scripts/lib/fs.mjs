@@ -13,7 +13,7 @@ import { basename, dirname, join } from 'node:path';
 import { PluginError, wrapError } from './errors.mjs';
 
 const require = createRequire(import.meta.url);
-const { tryLock, unlock } = /** @type {{ tryLock(fd: number): boolean, unlock(fd: number): void }} */ (
+const { tryLock, unlock, swap } = /** @type {{ tryLock(fd: number): boolean, unlock(fd: number): void, swap(from: string, to: string): Promise<void> }} */ (
   require('fs-native-extensions')
 );
 
@@ -54,7 +54,18 @@ export async function atomicWriteJson(path, value) {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryPath, path);
+    try {
+      await rename(temporaryPath, path);
+    } catch (error) {
+      // Node's Windows rename cannot replace an existing destination.  The
+      // native swap helper uses MoveFileEx(REPLACE_EXISTING) on Windows and
+      // keeps the replacement operation within the filesystem primitive
+      // instead of opening an unlink/rename window.  The old destination is
+      // left at temporaryPath and is removed after the swap.
+      if (process.platform !== 'win32' || /** @type {NodeJS.ErrnoException} */ (error)?.code !== 'EPERM') throw error;
+      await swap(temporaryPath, path);
+      await unlink(temporaryPath);
+    }
     await chmod(path, 0o600);
     await syncDirectory(directory);
   } catch (error) {

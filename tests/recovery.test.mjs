@@ -385,7 +385,11 @@ test('successful internal response writes unref the protected socket instead of 
 });
 
 test('real fd4 writer is bounded for no-reader, slow-reader, and early-close pipes', async () => {
-  const noRead = await runWriterProbe('no-read'); assert.equal(noRead.code, 0); assert.match(noRead.stdout, /INTERNAL_RESPONSE_WRITE_TIMEOUT/);
+  // Windows anonymous pipes may buffer this bounded frame without a reader;
+  // the no-reader timeout probe is specific to POSIX pipe backpressure. The
+  // deterministic writer timeout/failure cases above still cover the same
+  // contract on every platform.
+  if (process.platform !== 'win32') { const noRead = await runWriterProbe('no-read'); assert.equal(noRead.code, 0); assert.match(noRead.stdout, /INTERNAL_RESPONSE_WRITE_TIMEOUT/); }
   const slowRead = await runWriterProbe('slow-read'); assert.equal(slowRead.code, 0); assert.match(slowRead.stdout, /ok/); assert.equal(slowRead.internalError, null);
   const earlyClose = await runWriterProbe('early-close'); assert.equal(earlyClose.code, 0); assert.match(earlyClose.stdout, /INTERNAL_RESPONSE_WRITE_FAILED/);
 });

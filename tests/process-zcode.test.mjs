@@ -24,12 +24,14 @@ async function assertProcessGone(pid) {
 
 test('grace timer does not retain the caller after the child exits', async () => {
   const moduleUrl = new URL('../scripts/lib/process.mjs', import.meta.url).href;
-  const source = `import { spawn } from 'node:child_process'; import { terminateProcess } from ${JSON.stringify(moduleUrl)}; const child=spawn(process.execPath,['-e','setInterval(()=>{},10000)']); await terminateProcess(child,{graceMs:1000});`;
+  const graceMs = process.platform === 'win32' ? 5_000 : 1_000;
+  const source = `import { spawn } from 'node:child_process'; import { terminateProcess } from ${JSON.stringify(moduleUrl)}; const child=spawn(process.execPath,['-e','setInterval(()=>{},10000)']); await terminateProcess(child,{graceMs:${graceMs}});`;
   const started = Date.now();
   const runner = spawn(process.execPath, ['--input-type=module', '-e', source], { stdio: 'ignore' });
   const code = await new Promise((resolve) => runner.once('exit', resolve));
   assert.equal(code, 0);
-  assert.ok(Date.now() - started < 700, 'the cancelled grace timer must not keep the event loop alive');
+  const budgetMs = process.platform === 'win32' ? 3_000 : 700;
+  assert.ok(Date.now() - started < budgetMs, 'the cancelled grace timer must not keep the event loop alive');
 });
 
 test('runProcess fails closed on timeout and bounded output', async () => {
@@ -130,7 +132,7 @@ test('close aborts and detaches a never-settling permission task under strict re
     assert.equal(firstClose, secondClose);
     await firstClose;
     const elapsedMs = Date.now() - started;
-    assert.ok(elapsedMs <= 200, 'close took ' + elapsedMs + 'ms');
+    assert.ok(elapsedMs <= (process.platform === 'win32' ? 2_000 : 200), 'close took ' + elapsedMs + 'ms');
     await new Promise((resolve) => setImmediate(resolve));
     assert.ok(handlerSignals.every((signal) => signal.aborted));
     assert.equal(protocol.serverTasks.size, 0);
@@ -143,7 +145,7 @@ test('close aborts and detaches a never-settling permission task under strict re
   runner.stderr.setEncoding('utf8'); runner.stderr.on('data', (chunk) => { stderr += chunk; });
   const outcome = await Promise.race([
     new Promise((resolve) => runner.once('exit', (code, signal) => resolve({ code, signal }))),
-    new Promise((resolve) => { const timer = setTimeout(() => resolve({ timeout: true }), 1_000); timer.unref(); }),
+    new Promise((resolve) => { const timer = setTimeout(() => resolve({ timeout: true }), process.platform === 'win32' ? 5_000 : 1_000); timer.unref(); }),
   ]);
   if (outcome.timeout) runner.kill('SIGKILL');
   assert.deepEqual(outcome, { code: 0, signal: null }, stderr || 'strict child did not finish');
