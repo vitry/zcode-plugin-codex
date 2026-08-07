@@ -24,6 +24,7 @@ const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
 const completionSignalProbe = join(root, 'tests', 'fixtures', 'completion-signal-probe.cjs');
 const signalHandlerProbe = join(root, 'tests', 'fixtures', 'signal-handler-probe.cjs');
 const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs');
+const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-companion-'));
@@ -135,7 +136,7 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   ]);
 });
 
-test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves no running job', async (t) => {
+test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves no running job', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const record = join(context.directory, 'interrupt.jsonl'); await writeFile(record, '');
   const child = spawn(process.execPath, [cli, 'rescue', '--fresh', 'interrupt me'], {
     cwd: context.workspace,
@@ -198,6 +199,7 @@ test('signal probe marks handled only after the wrapped handler returns', async 
       clearInterval(keepAlive);
       setImmediate(() => process.exit(0));
     });
+    setImmediate(() => process.emit('SIGINT'));
   `;
   const child = spawn(process.execPath, ['--require', signalHandlerProbe, '--eval', script], {
     env: { ...process.env, ZCODE_SIGNAL_HANDLER_PROBE: marker }, stdio: ['ignore', 'pipe', 'pipe'], shell: false,
@@ -205,14 +207,12 @@ test('signal probe marks handled only after the wrapped handler returns', async 
   let stdout = ''; let exited = false; child.stdout?.on('data', (chunk) => { stdout += chunk; });
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
   const exitPromise = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
-  await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'ready', 'probe handler was not installed');
-  child.kill('SIGINT');
   assert.deepEqual(await exitPromise, { code: 0, signal: null });
   assert.equal(stdout, 'ready');
   assert.equal(await readFile(marker, 'utf8'), 'handled');
 });
 
-test('foreground SIGINT wins while the protected authorization envelope is incomplete', async (t) => {
+test('foreground SIGINT wins while the protected authorization envelope is incomplete', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const marker = join(context.directory, 'signal-handler.txt');
   const child = spawn(process.execPath, ['--require', signalHandlerProbe, cli, 'rescue', '--fresh', 'interrupt authorization'], {
     cwd: context.workspace,
@@ -527,7 +527,7 @@ test('real CLI status wait stays alive until its timeout', async () => {
   assert.equal(waited.code, 1); assert.equal(waited.json.error.code, 'JOB_WAIT_TIMEOUT');
 });
 
-test('real CLI status wait exits immediately without protocol output on SIGINT', async (t) => {
+test('real CLI status wait exits immediately without protocol output on SIGINT', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const marker = join(context.directory, 'status-wait.txt');
   const store = createStateStore({ dataRoot: context.dataRoot });
   const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
@@ -555,7 +555,7 @@ test('real CLI status wait exits immediately without protocol output on SIGINT',
   assert.equal((await store.readJob(context.workspace, queued.id)).status, 'running');
 });
 
-test('foreground Transfer observes SIGTERM after its bounded create RPC and exits 143', async (t) => {
+test('foreground Transfer observes SIGTERM after its bounded create RPC and exits 143', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const zcodeRecord = join(context.directory, 'transfer-interrupt.jsonl'); await writeFile(zcodeRecord, '');
   const sourceThread = { id: 'codex-session', ephemeral: false, turns: [{ startedAt: 1_725_000_000, items: [{ type: 'agentMessage', text: 'visible response' }] }] };
   const child = spawn(process.execPath, [cli, 'transfer'], {
