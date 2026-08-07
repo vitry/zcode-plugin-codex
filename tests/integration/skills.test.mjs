@@ -70,7 +70,7 @@ async function fixture(t) {
   const callerB = await identity.createCallerContext({ sessionId: 'codex-b', turnId: 'turn-b', workspace, permissionMode: 'read-only' });
   const env = { ...process.env, PLUGIN_DATA: dataRoot, PLUGIN_ROOT: root, ZCODE_PATH: fakeZCode };
   t.after(() => cleanupFixture(directory));
-  return { workspace, callerA, callerB, env };
+  return { workspace, dataRoot, callerA, callerB, env };
 }
 
 function invoke(ctx, rawArgv, authorization, extraEnv = {}, ordinaryStdio = false) {
@@ -124,7 +124,13 @@ test('all eight skill commands preserve argv and execute across the CLI fd bound
   assert.equal(cancelled.json.job.status, 'cancelled');
 
   const setupArgv = ['setup'];
-  const setup = await invoke(ctx, setupArgv, undefined, { FAKE_ZCODE_VERSION: '0.1.0' }, true);
+  const setupConfig = { config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } }, origins: {}, layers: [{ name: { type: 'user', file: join(ctx.dataRoot, 'config.toml') }, version: 'version-1', config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } } }] };
+  const setup = await invoke(ctx, setupArgv, undefined, {
+    FAKE_ZCODE_VERSION: '0.1.0',
+    CODEX_APP_SERVER_PATH: process.execPath,
+    CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+    FAKE_CODEX_CONFIG_RESULT: JSON.stringify(setupConfig),
+  }, true);
   assert.equal(setup.code, 0, setup.stderr || setup.stdout);
   assert.match(setup.stdout, /outdated/);
   invocations.push({ argv: setupArgv, result: setup });

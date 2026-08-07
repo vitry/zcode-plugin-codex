@@ -17,7 +17,7 @@ codex plugin marketplace add vitry/zcode-plugin-codex --ref marketplace
 codex plugin add zcode@vitry
 ```
 
-发布 workflow 会在该分支生成 `.agents/plugins/marketplace.json` 和带生产依赖的 `plugins/zcode/`。安装后重启 Codex，再在目标工作区运行 `$zcode:setup`。不要把 hooks 从插件缓存复制到别处。
+发布 workflow 会在该分支生成 `.agents/plugins/marketplace.json` 和带生产依赖的 `plugins/zcode/`。安装后重启 Codex，再在目标工作区运行 `$zcode:setup`。首次运行可能把 marketplace 专属的数据目录加入 Codex writable roots；若返回 `restart-required`，重启 Codex 后再次运行 setup。不要把 hooks 从插件缓存复制到别处。
 
 插件依次检查 `ZCODE_PATH`、`PATH` 中的 `zcode`、平台目录，以及 macOS 内置路径 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`。Setup 会报告缺失、版本过低、未认证或 hook 不可信，但不会下载 ZCode，也不会代替用户登录。
 
@@ -47,7 +47,7 @@ codex
 # 进入 Codex session 后执行：$zcode:setup
 ```
 
-Setup 会把以下 schema 写入 `${PLUGIN_DATA}/workspaces/<workspace-hash>/config/models.json`：
+Setup 会把以下 schema 写入 `$CODEX_HOME/plugins/data/zcode-<marketplace>/workspaces/<workspace-hash>/config/models.json`（hook 注入的 `PLUGIN_DATA` 会解析到同一目录）：
 
 ```json
 {"version":1,"defaultModel":"fast","models":{"fast":{"providerId":"provider","modelId":"model","variant":"optional"}}}
@@ -59,7 +59,7 @@ Setup 会把以下 schema 写入 `${PLUGIN_DATA}/workspaces/<workspace-hash>/con
 
 ## 任务、Transfer 与 review gate
 
-每次运行都会先建立持久、带 owner 的 job。状态保存在 `${PLUGIN_DATA}/workspaces/<workspace-hash>/`，使用私有权限；prompt、result、session ID 和日志都不会写进仓库。后续 turn 仍可使用 `$zcode:status`、`$zcode:result`、`$zcode:cancel`，但 sibling Codex session 无法接管任务。
+每次运行都会先建立持久、带 owner 的 job。已安装插件的状态保存在 `$CODEX_HOME/plugins/data/zcode-<marketplace>/workspaces/<workspace-hash>/`，使用私有权限；prompt、result、session ID 和日志都不会写进仓库或插件缓存。后续 turn 仍可使用 `$zcode:status`、`$zcode:result`、`$zcode:cancel`，但 sibling Codex session 无法接管任务。
 
 Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺序排列、用户可见的 user/assistant 文本；不转移隐藏推理、工具状态、permission 或 job ownership。
 
@@ -72,6 +72,7 @@ Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺�
 - Authentication 不可用：在 ZCode 自身完成认证，再重新 setup。
 - 后台任务：按输出使用 `$zcode:status <job-id> --wait`、`$zcode:result <job-id>` 或 `$zcode:cancel <job-id>`。
 - Hook trust / restart required：只让 setup 信任当前安装插件的精确 hook hash，重启后再次检查。
+- `plugin-data-root-added`：setup 只把稳定数据目录加入 Codex 配置，尚未写入插件状态；重启 Codex 后再次运行 setup。
 
 macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。发布前应在已认证机器运行 `ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualified`。如需同时验证“已安装 marketplace → 真实 Codex → ZCode”桥接，还要设置 `ZCODE_CODEX_SKILLS_E2E=1`；该测试会消耗已认证 Codex 账户的额度。缺少 opt-in、认证、模型或额度时，测试只会给出结构化的 `unqualified` skip，绝不会算作通过；未知执行错误仍会让测试失败。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
 

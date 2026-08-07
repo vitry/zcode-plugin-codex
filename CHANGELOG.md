@@ -2,6 +2,11 @@
 
 All notable changes follow Semantic Versioning.
 
+## Unreleased
+
+- Fixed installed `$zcode:*` skills failing with `DATA_ROOT_REQUIRED` when Codex does not inject `PLUGIN_DATA` into ordinary skill commands.
+- Added marketplace-qualified plugin-data discovery and a restart-safe `$zcode:setup` bootstrap that configures the data directory as a writable root before persisting state.
+
 ## 0.1.0 - 2026-08-06
 
 - Added eight native `$zcode:*` skills for review, adversarial review, Rescue, Transfer, job inspection, cancellation, and setup.

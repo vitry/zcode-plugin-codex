@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -138,8 +138,8 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   `], { cwd: temporary, env });
   assert.equal(lockProbe.code, 0, lockProbe.stderr || lockProbe.stdout);
 
-  const pluginData = join(temporary, 'plugin-data');
-  const hookEnv = { ...env, PLUGIN_ROOT: installedRoot, PLUGIN_DATA: pluginData };
+  const pluginData = join(await realpath(codexHome), 'plugins', 'data', 'zcode-vitry');
+  const hookEnv = { ...env };
   const sessionId = 'installed-session'; const turnId = 'installed-turn';
   const lifecycle = await runChild(process.execPath, [join(installedRoot, 'hooks', 'session-lifecycle-hook.mjs')], {
     cwd: temporary, env: hookEnv, ordinaryInput: true,
@@ -158,4 +158,51 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.equal(direct.code, 0, direct.stderr || direct.stdout);
   assert.equal(direct.stdout, '\nModel policy: default=ZCode default; aliases=none\n');
   assert.equal(direct.internal, '');
+
+  const setupRecord = join(temporary, 'setup-requests.jsonl');
+  await writeFile(setupRecord, '');
+  const setupConfig = { config: { sandbox_workspace_write: { writable_roots: [] } }, origins: {}, layers: [{ name: { type: 'user', file: join(codexHome, 'config.toml') }, version: 'version-1', config: {} }] };
+  const setup = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'setup'], {
+    cwd: temporary,
+    env: {
+      ...env,
+      CODEX_APP_SERVER_PATH: process.execPath,
+      CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
+      FAKE_CODEX_RECORD: setupRecord,
+      FAKE_CODEX_CONFIG_RESULT: JSON.stringify(setupConfig),
+    },
+  });
+  assert.equal(setup.code, 0, setup.stderr || setup.stdout);
+  assert.equal(JSON.parse(setup.stdout).status, 'restart-required');
+  const setupCalls = (await readFile(setupRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.deepEqual(setupCalls.find((call) => call.method === 'config/batchWrite').params.edits, [{
+    keyPath: 'sandbox_workspace_write.writable_roots', value: [pluginData], mergeStrategy: 'replace',
+  }]);
+
+  const hookEvents = ['sessionStart', 'userPromptSubmit', 'subagentStart', 'subagentStop', 'stop', 'sessionEnd'];
+  const hookScripts = ['session-lifecycle-hook.mjs', 'user-prompt-hook.mjs', 'subagent-hook.mjs', 'subagent-hook.mjs', 'stop-review-gate-hook.mjs', 'session-end-hook.mjs'];
+  const installedHooks = hookEvents.map((eventName, index) => ({
+    key: `installed-hook-${index}`, currentHash: `${index}`.repeat(64), enabled: true, eventName, handlerType: 'command', source: 'plugin',
+    sourcePath: join(installedRoot, 'hooks', 'hooks.json'), trustStatus: 'trusted', pluginId: 'zcode@vitry',
+    command: `node "$PLUGIN_ROOT/hooks/${hookScripts[index]}"`,
+  }));
+  const readyConfig = { config: { features: { hooks: true }, sandbox_workspace_write: { writable_roots: [pluginData] } }, origins: {}, layers: [{ name: { type: 'user', file: join(codexHome, 'config.toml') }, version: 'version-2', config: { sandbox_workspace_write: { writable_roots: [pluginData] } } }] };
+  const rerun = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'setup'], {
+    cwd: temporary,
+    env: {
+      ...env,
+      ZCODE_PATH: join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs'),
+      CODEX_APP_SERVER_PATH: process.execPath,
+      CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
+      FAKE_CODEX_RECORD: setupRecord,
+      FAKE_CODEX_CONFIG_RESULT: JSON.stringify(readyConfig),
+      FAKE_CODEX_HOOKS_RESULT: JSON.stringify({ data: [{ cwd: await realpath(temporary), errors: [], warnings: [], hooks: installedHooks }] }),
+      FAKE_ZCODE_RECORD: join(temporary, 'setup-zcode-requests.jsonl'),
+    },
+  });
+  assert.equal(rerun.code, 0, rerun.stderr || rerun.stdout);
+  assert.equal(JSON.parse(rerun.stdout).status, 'ready');
+  const workspaceEntries = await readdir(join(pluginData, 'workspaces'));
+  assert.equal(workspaceEntries.length, 1);
+  assert.equal(JSON.parse(await readFile(join(pluginData, 'workspaces', workspaceEntries[0], 'config', 'review-gate.json'), 'utf8')).setupReady, true);
 });

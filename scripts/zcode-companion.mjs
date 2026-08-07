@@ -13,6 +13,7 @@ import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
 import { createJobController, ownerIdForSession } from './lib/job-control.mjs';
+import { resolvePluginDataRoot } from './lib/plugin-data.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
@@ -27,13 +28,13 @@ import { executeTransfer, resolveTransferSource, TRANSFER_WIRE_LIMITS } from './
 import { reconcileBrokerOwnership } from './zcode-broker.mjs';
 
 const backgroundBindings = new WeakMap();
+const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
 
 /** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
-  const parsed = parseArgs(argv); const dataRoot = env.ZCODE_DATA_ROOT ?? env.PLUGIN_DATA;
-  if (!dataRoot) throw new PluginError('DATA_ROOT_REQUIRED', 'Plugin data root is not configured.', { category: 'configuration', remedy: 'Run $zcode:setup.' });
-  if (parsed.command === 'setup') return runSetup({ pluginRoot: env.PLUGIN_ROOT, dataRoot, cwd, reviewGate: parsed.options.reviewGate, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
+  const parsed = parseArgs(argv); const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
+  if (parsed.command === 'setup') return runSetup({ pluginRoot: activePluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
   const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies });
   const caller = runtime.caller ?? await identity.consumeCallerContext(requireAuthorization(runtime.authorization, ['callerContext']).callerContext, { workspace: cwd });
@@ -69,8 +70,7 @@ export async function runCompanion(argv, runtime = {}) {
 
 /** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,dependencies?:any}} [runtime] */
 export async function runDirectInvocation(argv, runtime = {}) {
-  const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = env.ZCODE_DATA_ROOT ?? env.PLUGIN_DATA;
-  if (!dataRoot) throw new PluginError('DATA_ROOT_REQUIRED', 'Plugin data root is not configured.', { category: 'configuration', remedy: 'Run $zcode:setup.' });
+  const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
   const sessionId = env.CODEX_THREAD_ID; if (typeof sessionId !== 'string' || !sessionId) throw new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' });
   const [entry, command, choice, ...extra] = argv; if (!['invoke', 'invoke-choice'].includes(entry) || typeof command !== 'string' || extra.length) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
   const identity = createIdentityStore({ dataRoot }); const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd }); const invocations = createInvocationStore({ dataRoot });
