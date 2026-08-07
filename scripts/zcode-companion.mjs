@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process';
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync as closeFdSync, createReadStream, realpathSync } from 'node:fs';
+import { closeSync as closeFdSync, realpathSync } from 'node:fs';
 import { Socket } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { join, resolve, sep } from 'node:path';
@@ -251,22 +251,39 @@ async function validateResumeCandidate(store, workspace, ownerSessionId, spec) {
   if (candidate.ownerSessionId !== ownerSessionId || candidate.command !== 'rescue' || candidate.zcodeSessionId !== spec.resumeSessionId || !['running', 'succeeded', 'failed'].includes(candidate.status)) throw new PluginError('RESUME_CANDIDATE_INVALID', 'The bound rescue candidate is no longer eligible.', { category: 'authorization', remedy: 'Reserve a fresh rescue job.' });
 }
 
-/** @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number,signal?:AbortSignal}} [options] */
+/** @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number,signal?:AbortSignal,createStream?:(fd:number)=>any}} [options] */
 export function readInternalEnvelope(fd = 3, options = {}) {
   const maxBytes = options.maxBytes ?? 64 * 1024; const timeoutMs = options.timeoutMs ?? 5_000;
   if (!Number.isSafeInteger(fd) || fd < 3 || !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw authorizationInputError();
   options.signal?.throwIfAborted();
   return new Promise((resolvePromise, reject) => {
-    const stream = createReadStream('', { fd, autoClose: false }); let data = ''; let bytes = 0; let settled = false;
+    const stream = options.createStream?.(fd) ?? new Socket({ fd, readable: true, writable: false });
+    let data = ''; let bytes = 0; let settled = false; let closed = false; let cleaned = false;
+    /** @type {{resolve:true,value:any}|{resolve:false,value:unknown}|null} */
+    let outcome = null;
+    /** @type {NodeJS.Timeout|undefined} */ let timer;
     let removeAbortListener = () => {};
-    /** @param {()=>void} callback @param {boolean} [closeDescriptor] */
-    const finish = (callback, closeDescriptor = false) => { if (settled) return; settled = true; clearTimeout(timer); removeAbortListener(); stream.destroy(); if (closeDescriptor) try { closeFdSync(fd); } catch { /* abort cleanup must not replace the signal reason */ } callback(); };
-    const timer = setTimeout(() => finish(() => reject(authorizationInputError())), timeoutMs);
-    stream.on('data', (chunk) => { bytes += chunk.length; if (bytes > maxBytes) finish(() => reject(authorizationInputError())); else data += chunk.toString('utf8'); });
-    stream.once('error', () => finish(() => reject(authorizationInputError())));
-    stream.once('end', () => finish(() => { try { resolvePromise(JSON.parse(data)); } catch { reject(authorizationInputError()); } }));
+    const cleanup = () => { if (cleaned) return; cleaned = true; if (timer) clearTimeout(timer); removeAbortListener(); };
+    const settleAfterClose = () => {
+      if (settled || !closed || !outcome) return;
+      settled = true; cleanup();
+      if (outcome.resolve) resolvePromise(outcome.value); else reject(outcome.value);
+    };
+    /** @param {boolean} resolve @param {unknown} value */
+    const finish = (resolve, value) => {
+      if (outcome) return;
+      outcome = resolve ? { resolve: true, value } : { resolve: false, value };
+      cleanup();
+      if (!stream.destroyed) stream.destroy();
+      settleAfterClose();
+    };
+    stream.once('close', () => { closed = true; if (!outcome) outcome = { resolve: false, value: authorizationInputError() }; settleAfterClose(); });
+    stream.on('data', (/** @type {Buffer} */ chunk) => { if (outcome) return; bytes += chunk.length; if (bytes > maxBytes) finish(false, authorizationInputError()); else data += chunk.toString('utf8'); });
+    stream.once('error', () => finish(false, authorizationInputError()));
+    stream.once('end', () => { try { finish(true, JSON.parse(data)); } catch { finish(false, authorizationInputError()); } });
+    timer = setTimeout(() => finish(false, authorizationInputError()), timeoutMs);
     if (options.signal) {
-      const onAbort = () => finish(() => reject(options.signal?.reason), true);
+      const onAbort = () => finish(false, options.signal?.reason);
       options.signal.addEventListener('abort', onAbort, { once: true });
       removeAbortListener = () => options.signal?.removeEventListener('abort', onAbort);
       if (options.signal.aborted) onAbort();

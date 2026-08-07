@@ -1,6 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { closeSync, constants, openSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { Socket } from 'node:net';
@@ -11,6 +12,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
 import { createJobController, ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { buildPrompt } from '../scripts/lib/prompts.mjs';
@@ -18,9 +20,10 @@ import { loadReviewOutputSchema, validateJsonSchema } from '../scripts/lib/revie
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { releaseManagedZCodeOwner } from '../scripts/lib/zcode-client.mjs';
-import { failBackgroundDelivery, runCompanion, writeInternalResponse } from '../scripts/zcode-companion.mjs';
+import { failBackgroundDelivery, readInternalEnvelope, runCompanion, writeInternalResponse } from '../scripts/zcode-companion.mjs';
 
 const writerProbe = fileURLToPath(new URL('./fixtures/internal-writer-child.mjs', import.meta.url));
+const readerAbortProbe = fileURLToPath(new URL('./fixtures/internal-reader-abort-child.mjs', import.meta.url));
 const cancellingHolder = fileURLToPath(new URL('./fixtures/cancelling-holder.mjs', import.meta.url));
 const companionCli = fileURLToPath(new URL('../scripts/zcode-companion.mjs', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
@@ -343,6 +346,46 @@ test('internal response writer handles partial writes and stable pipe failures',
   } });
   assert.equal(Buffer.concat(chunks).toString(), '{"ok":true}\n');
   for (const code of ['EPIPE', 'EBADF']) await assert.rejects(writeInternalResponse({ ok: true }, 44, { timeoutMs: 100, write: (_fd, _buffer, _offset, _length, _position, callback) => queueMicrotask(() => callback(Object.assign(new Error(code), { code }), 0)) }), { code: 'INTERNAL_RESPONSE_WRITE_FAILED' });
+});
+
+test('aborting a real fd3 read rejects the original reason and releases the child process', async (t) => {
+  const child = spawn(process.execPath, [readerAbortProbe], { stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
+  let stdout = ''; let stderr = ''; let exited = false;
+  child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+  t.after(() => { child.stdio[3]?.destroy(); if (!exited) child.kill('SIGKILL'); });
+  const exitPromise = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  /** @type {NodeJS.Timeout|undefined} */ let deadline;
+  const exit = await Promise.race([exitPromise, new Promise((resolve, reject) => { void resolve; deadline = setTimeout(() => reject(new Error('aborted fd3 reader retained its pipe handle')), 2_000); })]).finally(() => clearTimeout(deadline));
+  assert.deepEqual(exit, { code: 0, signal: null }, stderr);
+  assert.equal(stdout, 'rejected-original\n');
+});
+
+test('internal envelope abort waits for the owned read stream to close', async () => {
+  const stream = new EventEmitter(); stream.destroyed = false; let destroys = 0;
+  stream.destroy = () => { stream.destroyed = true; destroys += 1; };
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'wait for close');
+  let settled = false;
+  const reading = readInternalEnvelope(33, { signal: controller.signal, createStream: () => stream });
+  reading.then(() => { settled = true; }, () => { settled = true; });
+  controller.abort(interruption);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(destroys, 1); assert.equal(settled, false);
+  stream.emit('close');
+  await assert.rejects(reading, (error) => error === interruption);
+});
+
+test('internal envelope closes its owned stream once on success, error, and timeout', async () => {
+  for (const mode of ['success', 'error', 'timeout']) {
+    const stream = new EventEmitter(); stream.destroyed = false; let destroys = 0;
+    stream.destroy = () => { stream.destroyed = true; destroys += 1; queueMicrotask(() => stream.emit('close')); };
+    const reading = readInternalEnvelope(33, { timeoutMs: 5, createStream: () => stream });
+    if (mode === 'success') { stream.emit('data', Buffer.from('{"ok":true}')); stream.emit('end'); }
+    if (mode === 'error') stream.emit('error', new Error('pipe failed'));
+    if (mode === 'success') assert.deepEqual(await reading, { ok: true });
+    else await assert.rejects(reading, { code: 'INTERNAL_AUTHORIZATION_INVALID' });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(destroys, 1, mode);
+  }
 });
 
 test('internal response writer times out without blocking the event loop and closes once', async () => {
