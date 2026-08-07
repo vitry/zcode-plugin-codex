@@ -7,6 +7,7 @@ import { PluginError } from './errors.mjs';
 import { resolveModel } from './args.mjs';
 import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
+import { createProgressReporter } from './progress.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -30,11 +31,17 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
   let running = job; let sessionId; let sendAttempted = false; let remoteTerminalProven = false;
+  let reporter;
+  let unsubscribe = () => {};
+  /** @type {unknown} */
+  let primaryError;
+  /** @type {any} */
+  let output;
   try {
     let prompt;
     if (job.command === 'review' || job.command === 'adversarial-review') {
@@ -48,6 +55,13 @@ export async function executeJob(input) {
       snapshot = await client.resumeSession(input.resumeSessionId);
     } else snapshot = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
     sessionId = snapshot.session.sessionId;
+    reporter = createProgressReporter({
+      sessionId,
+      ...(input.progressWriter ? { write: input.progressWriter } : {}),
+      persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
+      ...input.progressDependencies,
+    });
+    unsubscribe = client.subscribe(reporter.observe);
     const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
     if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await client.setModel(sessionId, selectedModel);
     if (input.effort) snapshot = await client.setThoughtLevel(sessionId, input.effort);
@@ -59,6 +73,7 @@ export async function executeJob(input) {
       ...(input.workerLeaseId ? { workerLeaseId: input.workerLeaseId } : {}),
       ...(selectedModel ? { model: selectedModel } : {}), ...(input.effort ? { effort: input.effort } : {}),
     });
+    reporter.observe({ method: 'state.updated', params: { scope: 'session', sessionId, reason: 'prompt_started' } });
     const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await client.send(sessionId, prompt);
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
     await input.onBoundaryPersisted?.(running);
@@ -68,22 +83,38 @@ export async function executeJob(input) {
     remoteTerminalProven = true;
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
     const resultArtifact = await writeArtifact({ dataRoot, workspace, directory: 'results', jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
+    await reporter.flush();
     const succeeded = await input.store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
-    return { job: succeeded, result };
+    output = { job: succeeded, result };
   } catch (error) {
+    primaryError = error;
     const current = await input.store.readJob(workspace, job.id).catch(() => running);
     if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
+      let canFail = true;
       if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven) {
         try { await client.stopSession(sessionId); }
         catch (stopError) {
           await input.store.transitionJob(workspace, job.id, ['running'], 'running', { lastCancelError: safeError(stopError).message }).catch(() => {});
-          throw error;
+          canFail = false;
         }
       }
-      await input.store.transitionJob(workspace, job.id, [current.status], 'failed', { error: safeError(error), finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
+      if (canFail) await input.store.transitionJob(workspace, job.id, [current.status], 'failed', { error: safeError(error), finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
     }
-    throw error;
-  } finally { await client.close().catch(() => {}); }
+  }
+  // Cleanup order is part of the progress lifecycle contract.
+  const cleanupErrors = [];
+  try { unsubscribe(); } catch (error) { cleanupErrors.push(error); }
+  try { reporter?.close(); } catch (error) { cleanupErrors.push(error); }
+  try { await reporter?.flush(); } catch (error) { cleanupErrors.push(error); }
+  try { await client.close(); } catch (error) { cleanupErrors.push(error); }
+  const distinctCleanupErrors = cleanupErrors.filter((error) => error !== primaryError);
+  if (primaryError) {
+    if (distinctCleanupErrors.length) throw new AggregateError([primaryError, ...distinctCleanupErrors], 'ZCode execution and progress cleanup failed.');
+    throw primaryError;
+  }
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, 'ZCode progress cleanup failed.');
+  return output;
 }
 
 /** @param {{dataRoot:string,workspace:string,artifact:string}} input */

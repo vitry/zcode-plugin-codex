@@ -92,6 +92,26 @@ test('rescue task semantics reach the fake peer as the authorized objective', as
   assert.match(sent.params.content, /UNTRUSTED GIT DATA/);
 });
 
+test('foreground rescue streams safe progress to stderr and durably exposes it through status', async () => {
+  const context = await fixture();
+  const result = await companion(context, ['rescue', '--fresh', 'surface progress'], { FAKE_ZCODE_PROGRESS: '1' });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.stdout, 'done\n');
+  assert.match(result.stderr, /\[zcode\] ZCode started the delegated turn\./);
+  assert.match(result.stderr, /\[zcode\] ZCode is generating a response\./);
+  assert.match(result.stderr, /\[zcode\] ZCode started a tool call\./);
+  assert.match(result.stderr, /\[zcode\] ZCode completed a tool call\./);
+  const status = await companion(context, ['status', result.json.job.id]);
+  assert.equal(status.code, 0, `${status.stderr}${status.stdout}`);
+  assert.equal(status.json.job.phase, 'finalizing');
+  assert.ok(Date.parse(status.json.job.lastActivityAt));
+  assert.deepEqual(status.json.job.progressPreview, [
+    'ZCode is generating a response.',
+    'ZCode started a tool call.',
+    'ZCode completed a tool call.',
+    'ZCode completed the delegated turn.',
+  ]);
+});
+
 test('background reservation exposes one private invocation, which is single-use', async () => {
   const context = await fixture();
   const reserved = await companion(context, ['review', '--background']);

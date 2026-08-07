@@ -19,6 +19,7 @@ async function setup() {
 }
 
 const reservation = { ownerSessionId: 'session-a', ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
+const silentSubscribe = () => () => {};
 
 /** @param {string} root @param {string} workspace @param {string} jobId */
 async function attemptFixture(root, workspace, jobId) {
@@ -236,7 +237,7 @@ test('executor failure cannot steal cancellation terminal ownership', async () =
   const completion = new Promise((resolve, reject) => { rejectCompletion = () => reject(new Error('stopped')); });
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
-    setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-cancel-race', stateRevision: 1 }), waitForCompletion: () => { signalWaitStarted(); return completion; },
+    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-cancel-race', stateRevision: 1 }), waitForCompletion: () => { signalWaitStarted(); return completion; },
     readSession: async () => ({}), close: async () => {},
   };
   const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' });
@@ -256,7 +257,7 @@ test('executor persists the accepted turn boundary and worker identity before st
   let acknowledged = null;
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-boundary' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [{ info: { messageId: 'before-1' } }] }),
-    setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-boundary', stateRevision: 19 }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-boundary', stateRevision: 19 }),
     waitForCompletion: async () => { throw new Error('simulated worker crash after acknowledgement'); }, stopSession: async () => {}, close: async () => {},
   };
   const workerLeaseId = 'a'.repeat(64);
@@ -266,12 +267,86 @@ test('executor persists the accepted turn boundary and worker identity before st
   const persisted = await store.readJob(workspace, job.id); assert.equal(persisted.status, 'failed'); assert.equal(persisted.inputId, 'input-boundary'); assert.equal(persisted.childPid, 4321); assert.equal(persisted.workerLeaseId, workerLeaseId);
 });
 
+test('executor reports only same-session progress and drains persistence before success', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {string[]} */
+  const lines = [];
+  /** @type {any[]} */
+  const persisted = [];
+  /** @type {string[]} */
+  const order = [];
+  /** @type {null|((message:any)=>void)} */ let handler = null; let unsubscribes = 0; let closes = 0; /** @type {null|(()=>void)} */ let intervalCallback = null; let cleared = 0;
+  const wrapped = {
+    ...store,
+    updateJobProgress: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {any} */ event) => {
+      order.push(`persist:${event.phase}`); persisted.push(event);
+      await new Promise((resolve) => setImmediate(resolve));
+      return store.updateJobProgress(workspaceArg, jobId, event);
+    },
+    transitionJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => {
+      if (next === 'succeeded') order.push('transition:succeeded');
+      return store.transitionJob(workspaceArg, jobId, expected, next, patch);
+    },
+  };
+  const notification = (/** @type {string} */ sessionId, /** @type {string} */ reason, /** @type {number} */ revision) => ({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId, revision, reason, patch: {} } });
+  const emit = (/** @type {any} */ message) => { if (!handler) throw new Error('progress handler missing'); handler(message); };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-progress' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {},
+    subscribe: (/** @type {(message:any)=>void} */ subscriber) => { handler = subscriber; return () => { unsubscribes += 1; handler = null; }; },
+    send: async () => ({ inputId: 'input-progress', stateRevision: 1 }),
+    waitForCompletion: async () => {
+      emit(notification('zs-sibling', 'tool_call_started', 2));
+      emit(notification('zs-progress', 'model_streaming', 2));
+      emit(notification('zs-progress', 'tool_call_started', 3));
+      emit(notification('zs-progress', 'prompt_completed', 4));
+    },
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-progress', parentMessageId: 'input-progress' }, parts: [{ type: 'text', text: 'done' }] }] }),
+    close: async () => { closes += 1; },
+  };
+  const result = await executeJob({
+    job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task',
+    progressWriter: (line) => lines.push(line),
+    progressDependencies: {
+      now: () => new Date().toISOString(),
+      setInterval: (callback) => { intervalCallback = callback; return { unref() {} }; },
+      clearInterval: () => { cleared += 1; },
+    },
+  });
+  assert.equal(result.job.status, 'succeeded'); assert.equal(typeof intervalCallback, 'function');
+  assert.deepEqual(lines, [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode is generating a response.\n',
+    '[zcode] ZCode started a tool call.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
+  ]);
+  assert.deepEqual(persisted.map((event) => event.message), lines.map((line) => line.slice(8, -1)));
+  assert.ok(order.lastIndexOf('persist:finalizing') < order.indexOf('transition:succeeded'));
+  assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
+});
+
+test('executor failure still unsubscribes, stops heartbeat, and closes the client', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  let handler = null; let unsubscribes = 0; let cleared = 0; let closes = 0;
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-progress-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    setPermissionHandler: () => {}, subscribe: (/** @type {(message:any)=>void} */ subscriber) => { handler = subscriber; return () => { unsubscribes += 1; handler = null; }; },
+    send: async () => ({ inputId: 'input-progress-failure', stateRevision: 1 }),
+    waitForCompletion: async () => { throw new Error('progress wait failed'); }, stopSession: async () => {}, close: async () => { closes += 1; },
+  };
+  await assert.rejects(executeJob({
+    job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: () => {},
+    progressDependencies: { now: () => new Date().toISOString(), setInterval: () => ({ unref() {} }), clearInterval: () => { cleared += 1; } },
+  }), /progress wait failed/);
+  assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
+});
+
 test('accepted send with boundary persistence failure requires remote stop proof before releasing the guard', async () => {
   for (const stopSucceeds of [true, false]) {
     const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0;
     const boundaryError = new Error('boundary fsync refused');
     const wrapped = /** @type {typeof store} */ ({ ...store, transitionJob: async (workspaceArg, jobId, expectedStatuses, nextStatus, patch = {}) => { if (patch.inputId) throw boundaryError; return store.transitionJob(workspaceArg, jobId, expectedStatuses, nextStatus, patch); } });
-    const client = { createSession: async () => ({ session: { sessionId: 'zs-boundary-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, send: async () => ({ inputId: 'accepted-not-durable', stateRevision: 2 }), stopSession: async () => { stops += 1; if (!stopSucceeds) throw new Error('stop not acknowledged'); }, close: async () => {} };
+    const client = { createSession: async () => ({ session: { sessionId: 'zs-boundary-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'accepted-not-durable', stateRevision: 2 }), stopSession: async () => { stops += 1; if (!stopSucceeds) throw new Error('stop not acknowledged'); }, close: async () => {} };
     await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' }), boundaryError);
     const persisted = await store.readJob(workspace, job.id); assert.equal(stops, 1); assert.equal(persisted.status, stopSucceeds ? 'failed' : 'running');
     if (!stopSucceeds) { assert.match(persisted.lastCancelError, /stop not acknowledged/); await assert.rejects(store.reserveJob({ workspace, ...reservation, ownerTurnId: 'later' }), { code: 'WRITABLE_JOB_EXISTS' }); }
@@ -281,7 +356,7 @@ test('accepted send with boundary persistence failure requires remote stop proof
 test('wait and read ambiguity retain the running guard when remote stop is unacknowledged', async () => {
   for (const stage of ['wait', 'read']) {
     const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0;
-    const client = { createSession: async () => ({ session: { sessionId: `zs-${stage}-failure` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, send: async () => ({ inputId: `input-${stage}`, stateRevision: 3 }), waitForCompletion: async () => { if (stage === 'wait') throw new Error('wait protocol ambiguous'); }, readSession: async () => { throw new Error('read protocol ambiguous'); }, stopSession: async () => { stops += 1; throw new Error(`${stage} stop refused`); }, close: async () => {} };
+    const client = { createSession: async () => ({ session: { sessionId: `zs-${stage}-failure` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: `input-${stage}`, stateRevision: 3 }), waitForCompletion: async () => { if (stage === 'wait') throw new Error('wait protocol ambiguous'); }, readSession: async () => { throw new Error('read protocol ambiguous'); }, stopSession: async () => { stops += 1; throw new Error(`${stage} stop refused`); }, close: async () => {} };
     await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }), new RegExp(`${stage} protocol ambiguous`));
     const persisted = await store.readJob(workspace, job.id); assert.equal(stops, 1, stage); assert.equal(persisted.status, 'running', stage); assert.match(persisted.lastCancelError, new RegExp(`${stage} stop refused`));
   }
@@ -289,7 +364,7 @@ test('wait and read ambiguity retain the running guard when remote stop is unack
 
 test('artifact directory fsync failure fails the job before success', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
-  const client = { createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-artifact-failure', stateRevision: 1 }), waitForCompletion: async () => ({}), readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-artifact', parentMessageId: 'input-artifact-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {} };
+  const client = { createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-artifact-failure', stateRevision: 1 }), waitForCompletion: async () => ({}), readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-artifact', parentMessageId: 'input-artifact-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {} };
   const error = Object.assign(new Error('disk sync failed'), { code: 'EIO' });
   await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', syncDirectory: async () => { throw error; } }), { code: 'ARTIFACT_WRITE_FAILED' });
   assert.equal((await store.readJob(workspace, job.id)).status, 'failed');
