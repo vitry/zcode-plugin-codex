@@ -36,7 +36,10 @@ export function decidePermission(request, permissionSnapshot, command) {
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
-  let running = job; let sessionId; let sendAttempted = false; let remoteTerminalProven = false;
+  let running = job;
+  /** @type {string|undefined} */
+  let sessionId;
+  let sendAttempted = false; let remoteTerminalProven = false;
   /** @type {any} */
   let reporter;
   let unsubscribe = () => {};
@@ -66,11 +69,17 @@ export async function executeJob(input) {
     if (input.resumeSessionId) {
       await input.onBeforeResume?.(job);
       input.signal?.throwIfAborted();
-      snapshot = await client.resumeSession(input.resumeSessionId);
-    } else snapshot = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
-    sessionId = snapshot.session.sessionId;
+      sessionId = input.resumeSessionId;
+      snapshot = await boundedStep(() => client.resumeSession(input.resumeSessionId), input.signal);
+    } else snapshot = await boundedStep(async () => {
+      const created = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
+      sessionId = created?.session?.sessionId;
+      return created;
+    }, input.signal);
+    const activeSessionId = /** @type {string} */ (sessionId ?? snapshot.session.sessionId);
+    sessionId = activeSessionId;
     reporter = createProgressReporter({
-      sessionId,
+      sessionId: activeSessionId,
       deferred: true,
       ...(input.progressWriter ? { write: input.progressWriter } : {}),
       persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
@@ -78,24 +87,24 @@ export async function executeJob(input) {
     });
     unsubscribe = client.subscribe(reporter.observe);
     const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
-    if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await client.setModel(sessionId, selectedModel);
-    if (input.effort) snapshot = await client.setThoughtLevel(sessionId, input.effort);
+    if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
+    if (input.effort) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
     client.setPermissionHandler((/** @type {any} */ request) => decidePermission(request, job.permissionSnapshot, job.command));
     const now = new Date().toISOString();
     running = await input.store.transitionJob(workspace, job.id, ['queued'], 'running', {
-      startedAt: now, zcodeSessionId: sessionId, promptArtifact,
+      startedAt: now, zcodeSessionId: activeSessionId, promptArtifact,
       ...(input.childPid ? { childPid: input.childPid } : {}),
       ...(input.workerLeaseId ? { workerLeaseId: input.workerLeaseId } : {}),
       ...(selectedModel ? { model: selectedModel } : {}), ...(input.effort ? { effort: input.effort } : {}),
     });
     input.signal?.throwIfAborted();
-    const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await client.send(sessionId, prompt);
-    reporter.activate({ method: 'state.updated', params: { scope: 'session', sessionId, reason: 'prompt_started' } });
+    const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
+    reporter.activate({ method: 'state.updated', params: { scope: 'session', sessionId: activeSessionId, reason: 'prompt_started' } });
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
-    await waitForCompletionOrAbort(client.waitForCompletion(sessionId), input.signal);
-    const finalSnapshot = await client.readSession(sessionId);
+    await waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
+    const finalSnapshot = await client.readSession(activeSessionId);
     remoteTerminalProven = true;
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
     const resultArtifact = await writeArtifact({ dataRoot, workspace, directory: 'results', jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
@@ -107,8 +116,14 @@ export async function executeJob(input) {
     primaryError = error;
     const current = await input.store.readJob(workspace, job.id).catch(() => running);
     if (isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
-      const cancellation = createJobController({ store: input.store, dataRoot, stopSession: (id) => client.stopSession(id) });
-      await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => {});
+      if (current.status === 'queued' && sessionId) {
+        let stopped = false;
+        try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
+        if (stopped) await input.store.transitionJob(workspace, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null }).catch(() => {});
+      } else {
+        const cancellation = createJobController({ store: input.store, dataRoot, stopSession: (id) => client.stopSession(id) });
+        await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => {});
+      }
     } else if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
       let canFail = true;
       if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven) {
@@ -131,6 +146,13 @@ export async function executeJob(input) {
   }
   if (cleanupErrors.length) throw progressFailure(cleanupErrors);
   return output;
+}
+
+/** @template T @param {()=>Promise<T>} operation @param {AbortSignal|undefined} signal */
+async function boundedStep(operation, signal) {
+  signal?.throwIfAborted();
+  try { const value = await operation(); signal?.throwIfAborted(); return value; }
+  catch (error) { signal?.throwIfAborted(); throw error; }
 }
 
 /** @param {{dataRoot:string,workspace:string,artifact:string}} input */

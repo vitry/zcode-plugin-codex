@@ -5,7 +5,7 @@ import { PluginError } from './errors.mjs';
 const SIGNAL_EXIT_CODES = Object.freeze({ SIGINT: 130, SIGTERM: 143 });
 
 /**
- * @param {{process?:{on:(event:string,listener:()=>void)=>unknown,removeListener:(event:string,listener:()=>void)=>unknown,exitCode?:string|number|null},foreground?:boolean}} [options]
+ * @param {{process?:{on:(event:string,listener:()=>void)=>unknown,removeListener:(event:string,listener:()=>void)=>unknown},foreground?:boolean}} [options]
  */
 export function createForegroundSignalController(options = {}) {
   const processLike = options.process ?? process;
@@ -13,7 +13,6 @@ export function createForegroundSignalController(options = {}) {
   let cleaned = false;
   const handlers = Object.fromEntries(Object.entries(SIGNAL_EXIT_CODES).map(([signal, exitCode]) => [signal, () => {
     if (controller.signal.aborted) return;
-    processLike.exitCode = exitCode;
     controller.abort(new PluginError('JOB_INTERRUPTED', `Foreground ZCode job interrupted by ${signal}.`, {
       category: 'interruption',
       remedy: 'Retry the command when you are ready.',

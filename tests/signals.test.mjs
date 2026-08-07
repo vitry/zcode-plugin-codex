@@ -6,7 +6,7 @@ import { PluginError } from '../scripts/lib/errors.mjs';
 import { waitForCompletionOrAbort } from '../scripts/lib/progress.mjs';
 import { createForegroundSignalController } from '../scripts/lib/signals.mjs';
 
-test('foreground signal controller aborts once with signal-specific interruption exit codes and cleans up', () => {
+test('foreground signal controller aborts once without setting the process exit code and cleans up', () => {
   /** @type {Array<[string,number]>} */
   const cases = [['SIGINT', 130], ['SIGTERM', 143]];
   for (const [name, exitCode] of cases) {
@@ -21,11 +21,11 @@ test('foreground signal controller aborts once with signal-specific interruption
     assert.equal(reason.code, 'JOB_INTERRUPTED');
     assert.equal(reason.details.signal, name);
     assert.equal(reason.details.exitCode, exitCode);
-    assert.equal(processLike.exitCode, exitCode);
+    assert.equal(processLike.exitCode, undefined);
 
     processLike.emit(name === 'SIGINT' ? 'SIGTERM' : 'SIGINT');
     assert.equal(controller.signal.reason, reason);
-    assert.equal(processLike.exitCode, exitCode);
+    assert.equal(processLike.exitCode, undefined);
     controller.cleanup();
     controller.cleanup();
     assert.equal(processLike.listenerCount('SIGINT'), 0);

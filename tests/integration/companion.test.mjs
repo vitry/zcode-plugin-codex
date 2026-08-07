@@ -21,6 +21,7 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fake = join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
+const completionSignalProbe = join(root, 'tests', 'fixtures', 'completion-signal-probe.cjs');
 const signalHandlerProbe = join(root, 'tests', 'fixtures', 'signal-handler-probe.cjs');
 const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs');
 
@@ -158,6 +159,33 @@ test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves 
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.ok(jobs[0].finishedAt); assert.equal(jobs[0].resultArtifact, undefined);
   assert.equal(stdout, ''); assert.equal(internal, ''); assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|"error"/);
+});
+
+test('real CLI completion that wins before SIGINT remains succeeded with exit zero', async () => {
+  const context = await fixture();
+  const result = await run(process.execPath, ['--require', completionSignalProbe, cli, 'rescue', '--fresh', 'completion wins'], {
+    cwd: context.workspace,
+    env: { ...context.env, ZCODE_COMPLETION_SIGNAL_PROBE: '1' },
+    input: { callerContext: context.caller },
+  });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
+  assert.equal(result.stdout, 'done\n'); assert.doesNotMatch(result.stderr, /Interrupted by SIGINT|JOB_INTERRUPTED/);
+  assert.equal(JSON.parse(result.internal).job.status, 'succeeded');
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'succeeded'); assert.equal(jobs[0].exitCode, 0);
+});
+
+test('real CLI successful status is not flipped by SIGINT during output', async () => {
+  const context = await fixture(); const completed = await companion(context, ['review']);
+  assert.equal(completed.code, 0, `${completed.stderr}${completed.stdout}`);
+  const result = await run(process.execPath, ['--require', completionSignalProbe, cli, 'status', completed.json.job.id], {
+    cwd: context.workspace,
+    env: { ...context.env, ZCODE_COMPLETION_SIGNAL_PROBE: '1' },
+    input: { callerContext: context.caller },
+  });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
+  assert.match(result.stdout, /^Job: /); assert.doesNotMatch(result.stderr, /Interrupted by SIGINT|JOB_INTERRUPTED/);
+  assert.equal(JSON.parse(result.internal).job.status, 'succeeded');
 });
 
 test('foreground SIGINT wins while the protected authorization envelope is incomplete', async (t) => {

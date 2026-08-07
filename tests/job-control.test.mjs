@@ -329,6 +329,21 @@ test('foreground interruption after an accepted send stops exactly once and dura
   assert.equal(persisted.resultArtifact, undefined);
 });
 
+test('send transport rejection after abort preserves the interruption and stops exactly once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0;
+  const interruption = new PluginError('JOB_INTERRUPTED', 'send interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-send-reject' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => { controller.abort(interruption); throw new Error('transport closed after abort'); },
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-send-reject'); stops += 1; }, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal }), (error) => error === interruption);
+  const persisted = await store.readJob(workspace, job.id);
+  assert.equal(stops, 1); assert.equal(persisted.status, 'cancelled'); assert.equal(persisted.resultArtifact, undefined);
+});
+
 test('foreground interruption keeps running on stop failure, bounds the error, and rethrows the interruption', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const controller = new AbortController(); let waitStarted = () => {};
@@ -369,6 +384,59 @@ test('an interruption before session creation is observed at the safe boundary a
   const client = { createSession: async () => { creates += 1; }, close: async () => {} };
   await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal }), (error) => error === interruption);
   assert.equal(creates, 0); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
+test('session creation completion observes abort before configuration and stops the known session once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let permissions = 0; let stops = 0;
+  const interruption = new PluginError('JOB_INTERRUPTED', 'create interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    createSession: async () => { controller.abort(interruption); return { session: { sessionId: 'zs-create-abort' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }; },
+    setPermissionHandler: () => { permissions += 1; }, subscribe: silentSubscribe,
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-create-abort'); stops += 1; }, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal }), (error) => error === interruption);
+  assert.equal(permissions, 0); assert.equal(stops, 1);
+  assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
+test('resume transport rejection after abort preserves the interruption and stops the known session once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0;
+  const interruption = new PluginError('JOB_INTERRUPTED', 'resume interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    resumeSession: async () => { controller.abort(interruption); throw new Error('resume transport closed'); },
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-resume-abort'); stops += 1; }, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', resumeSessionId: 'zs-resume-abort', signal: controller.signal }), (error) => error === interruption);
+  assert.equal(stops, 1); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
+test('model RPC rejection after abort preserves the interruption and stops the known session once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0;
+  const interruption = new PluginError('JOB_INTERRUPTED', 'model interrupted', { category: 'interruption', remedy: 'retry' });
+  const selectedModel = { providerId: 'p', modelId: 'new' };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-model-abort' }, settings: { model: { current: { providerId: 'p', modelId: 'old' }, available: [] } }, messages: [] }),
+    subscribe: silentSubscribe, setModel: async () => { controller.abort(interruption); throw new Error('model transport closed'); },
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-model-abort'); stops += 1; }, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', model: selectedModel, signal: controller.signal }), (error) => error === interruption);
+  assert.equal(stops, 1); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
+test('thought RPC rejection after abort preserves the interruption and stops the known session once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0;
+  const interruption = new PluginError('JOB_INTERRUPTED', 'thought interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-thought-abort' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    subscribe: silentSubscribe, setThoughtLevel: async () => { controller.abort(interruption); throw new Error('thought transport closed'); },
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-thought-abort'); stops += 1; }, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', effort: 'high', signal: controller.signal }), (error) => error === interruption);
+  assert.equal(stops, 1); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
 });
 
 test('interruptions are observed immediately before resume and send RPC boundaries', async () => {
