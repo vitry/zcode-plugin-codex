@@ -58,6 +58,34 @@ test('already enabled and trusted hooks report ready without config writes', asy
   const zcodeCalls = (await readFile(ctx.zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.deepEqual(zcodeCalls.map((call) => call.method), ['session/create', 'session/stop']);
 });
 
+test('setup accepts Codex sha256-prefixed hook hashes and persists their trust state', async (t) => {
+  const prefixed = hookMetadata(root).map((hook, index) => ({ ...hook, currentHash: `sha256:${index.toString(16).repeat(64)}` }));
+  const ctx = await context({ hooks: prefixed });
+  const report = await runSetup(ctx.options);
+  assert.equal(report.status, 'restart-required', JSON.stringify(report));
+  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse).filter((call) => call.method);
+  const batch = calls.find((call) => call.method === 'config/batchWrite');
+  const trust = batch.params.edits.find((edit) => edit.keyPath === 'hooks.state').value;
+  assert.deepEqual(trust, Object.fromEntries(prefixed.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])));
+
+  for (const [label, currentHash] of [
+    ['malformed prefix', `sha512:${'a'.repeat(64)}`],
+    ['uppercase hex', `sha256:${'A'.repeat(64)}`],
+    ['non-hex characters', `sha256:${'g'.repeat(64)}`],
+    ['wrong length', `sha256:${'a'.repeat(63)}`],
+    ['arbitrary hash', 'not-a-hash'],
+  ]) {
+    await t.test(label, async () => {
+      const malformed = prefixed.map((hook, index) => index === 0 ? { ...hook, currentHash } : hook);
+      const malformedContext = await context({ hooks: malformed });
+      const malformedReport = await runSetup(malformedContext.options);
+      assert.equal(malformedReport.status, 'untrusted');
+      assert.equal(malformedReport.reason, 'foreign-or-outdated-hooks');
+      assert.ok(!(await readFile(malformedContext.record, 'utf8')).includes('config/batchWrite'));
+    });
+  }
+});
+
 test('setup bootstraps an absent writable plugin-data root before writing workspace state', async () => {
   const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
   const dataRoot = join(ctx.dataRoot, 'codex-home', 'plugins', 'data', 'zcode-vitry');

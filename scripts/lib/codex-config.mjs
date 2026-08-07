@@ -105,7 +105,7 @@ async function validateHooks(result, cwd, pluginRoot, hooksPath) {
   }
   if (ownHooks.length !== EXPECTED_EVENTS.size) return { ok: false, reason: 'missing-or-invalid-hooks' };
   const seen = new Set();
-  for (const hook of ownHooks) { if (hook.handlerType !== 'command' || hook.command !== EXPECTED_COMMANDS.get(hook.eventName) || !hook.enabled || !EXPECTED_EVENTS.has(hook.eventName) || seen.has(hook.eventName) || typeof hook.key !== 'string' || !hook.key || control(hook.key) || typeof hook.currentHash !== 'string' || !/^[a-f0-9]{64}$/.test(hook.currentHash) || !['managed', 'untrusted', 'trusted', 'modified'].includes(hook.trustStatus)) return { ok: false, reason: 'foreign-or-outdated-hooks' }; seen.add(hook.eventName); }
+  for (const hook of ownHooks) { if (hook.handlerType !== 'command' || hook.command !== EXPECTED_COMMANDS.get(hook.eventName) || !hook.enabled || !EXPECTED_EVENTS.has(hook.eventName) || seen.has(hook.eventName) || typeof hook.key !== 'string' || !hook.key || control(hook.key) || typeof hook.currentHash !== 'string' || !/^(?:sha256:)?[a-f0-9]{64}$/.test(hook.currentHash) || !['managed', 'untrusted', 'trusted', 'modified'].includes(hook.trustStatus)) return { ok: false, reason: 'foreign-or-outdated-hooks' }; seen.add(hook.eventName); }
   return { ok: seen.size === EXPECTED_EVENTS.size, hooks: ownHooks };
 }
 /**
