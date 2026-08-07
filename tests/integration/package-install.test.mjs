@@ -16,17 +16,17 @@ async function run(launch, cwd) {
 }
 
 /** @param {string[]} args */
-function node18Launch(args) {
-  const configured = process.env.NODE18_BINARY;
+function node22Launch(args) {
+  const configured = process.env.NODE22_BINARY;
   if (configured) return { command: configured, args, options: { shell: false } };
-  return npxLaunch(['--yes', 'node@18.18.0', ...args]);
+  return npxLaunch(['--yes', 'node@22.13.0', ...args]);
 }
 
-test('packed production install loads and locks on Node 18 with pinned resolver', async (t) => {
-  const probe = await run(node18Launch(['--version']), rootPath);
+test('packed production install loads and locks on Node 22.13', async (t) => {
+  const probe = await run(node22Launch(['--version']), rootPath);
   if (probe.code !== 0) {
-    if (process.env.CI) assert.fail(`Node 18.18 is mandatory in CI: ${probe.stderr || probe.stdout}`);
-    t.skip('Node 18.18 is unavailable; CI must set NODE18_BINARY or allow npx download');
+    if (process.env.CI) assert.fail(`Node 22.13 is mandatory in CI: ${probe.stderr || probe.stdout}`);
+    t.skip('Node 22.13 is unavailable; CI must set NODE22_BINARY or allow npx download');
     return;
   }
 
@@ -63,13 +63,13 @@ test('packed production install loads and locks on Node 18 with pinned resolver'
     });
     if (!resolverMain.startsWith(bundledRoot)) throw new Error('external resolver=' + resolverMain);
     const resolver = require(path.join(path.dirname(resolverMain), 'package.json'));
-    if (resolver.version !== '1.9.4') throw new Error('resolver=' + resolver.version);
+    if (resolver.version !== '1.10.1') throw new Error('resolver=' + resolver.version);
     import(path.join(pluginRoot, 'scripts/lib/fs.mjs')).then(async ({ withFileLock }) => {
       const lockPath = path.join(process.cwd(), 'smoke.lock');
       const result = await withFileLock(lockPath, async () => 'locked');
       if (result !== 'locked') throw new Error('lock failed');
     });
   `;
-  const result = await run(node18Launch(['--eval', smoke]), consumerDirectory);
+  const result = await run(node22Launch(['--eval', smoke]), consumerDirectory);
   assert.equal(result.code, 0, result.stderr || result.stdout);
 });

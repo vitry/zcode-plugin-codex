@@ -8,7 +8,7 @@ ZCode for Codex is a native Codex marketplace plugin that delegates independent 
 
 - Codex with native plugins and hooks enabled.
 - ZCode CLI `>=0.16.1`, installed and authenticated for at least one model.
-- Node.js `>=18.18.0` (the plugin packages its production native lock dependency).
+- Node.js `>=22.13.0` (the plugin packages its production native lock dependency).
 
 Install from the production snapshot published on this repository's `marketplace` branch; the source-code root on `main` is not itself a marketplace catalog:
 

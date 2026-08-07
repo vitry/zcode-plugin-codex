@@ -8,7 +8,7 @@ ZCode for Codex 是原生 Codex marketplace 插件：由 Codex 保持用户交�
 
 - 支持原生插件与 hooks 的 Codex。
 - 已安装 ZCode CLI `>=0.16.1`，并至少为一个模型完成认证。
-- Node.js `>=18.18.0`；插件包内自带生产环境原生锁依赖。
+- Node.js `>=22.13.0`；插件包内自带生产环境原生锁依赖。
 
 从本仓库 `marketplace` 分支发布的生产快照安装；`main` 上的源码根目录本身不是 marketplace catalog：
 

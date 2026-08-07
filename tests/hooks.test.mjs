@@ -351,10 +351,11 @@ test('Stop gate suppresses continuation/nested runs, fails open when setup is no
     const stop = stopFields(base);
     const script = name === 'timeout' ? join(root, 'tests/fixtures/stop-gate-with-timeout.mjs') : 'stop-review-gate-hook.mjs';
     const result = await runHook(script, { ...stop, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_GATE_RESULT: fake, ...extra }, { absolute: name === 'timeout' });
+    const calls = ['failure', 'read-failure', 'timeout'].includes(name) ? (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
+    if (name === 'timeout') assert.ok(calls.some((call) => call.method === 'session/send'), 'timeout must reach the intended completion wait');
     assert.equal(result.code, 0); if (expected.decision) assert.equal(result.json.decision, expected.decision); else assert.deepEqual(result.json, expected);
     if (expected.reason) assert.equal(result.json.reason, expected.reason); if (result.json.reason) assert.ok(result.json.reason.length <= 1000);
     if (['failure', 'read-failure', 'timeout'].includes(name)) {
-      const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
       assert.ok(calls.some((call) => call.method === 'session/stop'), `${name} must stop its created review session`);
     }
   });
