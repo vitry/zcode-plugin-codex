@@ -15,6 +15,7 @@ const input = readline.createInterface({ input: process.stdin });
 let permissionId = 9000;
 let sendCount = 0;
 let resumeCount = 0;
+let pendingRuntimePreferencesCreate;
 const pendingCompletionTimers = new Map();
 
 const defaultModel = { providerId: 'fake', modelId: 'model' };
@@ -56,6 +57,28 @@ function send(message) {
 }
 function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
 
+function completeCreate(message) {
+  const p = message.params ?? {};
+  const sessionId = process.env.FAKE_ZCODE_SESSION_ID ?? p.sessionId ?? `session-${sessions.size + 1}`;
+  sessions.set(sessionId, { sessionId, workspacePath: p.workspace?.workspacePath ?? '/repo', settings: settings(p.model ?? defaultModel), messages: [] });
+  const result = snapshot(sessionId);
+  if (process.env.FAKE_ZCODE_FUTURE_FIELDS === '1') { result.futureEnvelope = { ignored: true }; result.protocol.futureProtocolField = 'ignored'; result.projection.futureProjectionField = 'new'; result.settings.model.available[0].futureCatalogField = 42; }
+  if (process.env.FAKE_ZCODE_PROTOCOL_VERSION) result.protocol.version = Number(process.env.FAKE_ZCODE_PROTOCOL_VERSION);
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-workspace') delete result.session.workspace;
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'empty-message') result.messages = [{}];
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-session-kind') result.session.sessionKind = 'main';
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-subagent-kind') result.session.sessionKind = 'subagent';
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-protocol') result.protocol = { name: 'zcode', version: '0.16.1' };
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-model-label') delete result.settings.model.available[0].label;
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'string-message-model') result.messages[0].info.model = 'fake/model';
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-goal-stats') result.goalStats.tokensUsed = -1;
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-permission-origin') result.projection.pendingPermissions = [{ requestId: 'request-1', toolCallId: 'tool-1', toolName: 'write', reason: 'test', riskLevel: 'low', origin: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }], requestedAt: 1 }];
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-runtime-cache') result.runtime.contextUsage = { used: 0, size: 1, cache: { inputTokens: -1 } };
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-timeline-trigger') result.messages[0].parts = [{ partId: 'part-timeline-1', sessionId, messageId: 'message-user-1', type: 'timeline', timelineType: 'context_compaction', display: 'separator', trigger: 'invented' }];
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-provider-options') result.settings.model.available[0].reasoning.providerOptionsByLevel = { low: 3 };
+  send({ id: message.id, result });
+}
+
 input.on('line', async (line) => {
   let message;
   try {
@@ -64,6 +87,12 @@ input.on('line', async (line) => {
     return;
   }
   await record(message);
+  if (!message.method && pendingRuntimePreferencesCreate && message.id === pendingRuntimePreferencesCreate.runtimePreferencesId && message.error?.code === -32601) {
+    const pending = pendingRuntimePreferencesCreate;
+    pendingRuntimePreferencesCreate = undefined;
+    completeCreate(pending.message);
+    return;
+  }
   if (!message.method) return;
   if (process.env.FAKE_ZCODE_DISCONNECT === message.method) process.exit(7);
   if (process.env.FAKE_ZCODE_MALFORMED === message.method) {
@@ -88,24 +117,13 @@ input.on('line', async (line) => {
   const p = message.params ?? {};
   switch (message.method) {
     case 'session/create': {
-      const sessionId = process.env.FAKE_ZCODE_SESSION_ID ?? p.sessionId ?? `session-${sessions.size + 1}`;
-      sessions.set(sessionId, { sessionId, workspacePath: p.workspace?.workspacePath ?? '/repo', settings: settings(p.model ?? defaultModel), messages: [] });
-      const result = snapshot(sessionId);
-      if (process.env.FAKE_ZCODE_FUTURE_FIELDS === '1') { result.futureEnvelope = { ignored: true }; result.protocol.futureProtocolField = 'ignored'; result.projection.futureProjectionField = 'new'; result.settings.model.available[0].futureCatalogField = 42; }
-      if (process.env.FAKE_ZCODE_PROTOCOL_VERSION) result.protocol.version = Number(process.env.FAKE_ZCODE_PROTOCOL_VERSION);
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-workspace') delete result.session.workspace;
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'empty-message') result.messages = [{}];
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-session-kind') result.session.sessionKind = 'main';
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-subagent-kind') result.session.sessionKind = 'subagent';
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-protocol') result.protocol = { name: 'zcode', version: '0.16.1' };
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-model-label') delete result.settings.model.available[0].label;
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'string-message-model') result.messages[0].info.model = 'fake/model';
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-goal-stats') result.goalStats.tokensUsed = -1;
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-permission-origin') result.projection.pendingPermissions = [{ requestId: 'request-1', toolCallId: 'tool-1', toolName: 'write', reason: 'test', riskLevel: 'low', origin: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }], requestedAt: 1 }];
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-runtime-cache') result.runtime.contextUsage = { used: 0, size: 1, cache: { inputTokens: -1 } };
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-timeline-trigger') result.messages[0].parts = [{ partId: 'part-timeline-1', sessionId, messageId: 'message-user-1', type: 'timeline', timelineType: 'context_compaction', display: 'separator', trigger: 'invented' }];
-      if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-provider-options') result.settings.model.available[0].reasoning.providerOptionsByLevel = { low: 3 };
-      send({ id: message.id, result });
+      if (process.env.FAKE_ZCODE_RUNTIME_PREFERENCES_ID !== undefined) {
+        const runtimePreferencesId = process.env.FAKE_ZCODE_RUNTIME_PREFERENCES_ID;
+        pendingRuntimePreferencesCreate = { message, runtimePreferencesId };
+        send({ id: runtimePreferencesId, method: 'session/requestRuntimePreferences', params: { sessionId: 'session-1', scope: 'runtime-materialization' } });
+        break;
+      }
+      completeCreate(message);
       break;
     }
     case 'session/send': {

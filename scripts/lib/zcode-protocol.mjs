@@ -1,4 +1,5 @@
 import { PluginError } from './errors.mjs';
+import { isSafeIdentifier } from './identifier.mjs';
 import net from 'node:net';
 import { spawnProcess, terminateProcess } from './process.mjs';
 
@@ -197,7 +198,7 @@ export class ZCodeProtocolClient {
 
   /** @param {any} message @param {AbortSignal} signal */
   async handleServerRequest(message, signal) {
-    if (!Number.isSafeInteger(message.id) || typeof message.method !== 'string' || !plainObject(message.params)) { this.fail(malformedFrame()); return; }
+    if (!isServerRequestId(message.id) || typeof message.method !== 'string' || !plainObject(message.params)) { this.fail(malformedFrame()); return; }
     if (message.method !== 'interaction/requestPermission') { if (!this.closed) this.sendFrame({ id: message.id, error: { code: -32601, message: 'Unsupported server request.' } }); return; }
     try {
       validatePermissionRequest(message.params);
@@ -342,6 +343,8 @@ function isTerminalNotification(message) { return message.method === 'state.upda
 function boundedInteger(value, fallback, minimum, maximum) { if (value === undefined) return fallback; if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw protocolInputError(); return value; }
 /** @param {number} milliseconds */
 function boundedDelay(milliseconds) { return new Promise((resolve) => { setTimeout(resolve, milliseconds); }); }
+/** @param {unknown} value */
+function isServerRequestId(value) { return Number.isSafeInteger(value) || isSafeIdentifier(value); }
 /** @param {unknown} value */
 function nonEmpty(value) { return typeof value === 'string' && value.length > 0; }
 /** @param {unknown} value @returns {value is Record<string,any>} */

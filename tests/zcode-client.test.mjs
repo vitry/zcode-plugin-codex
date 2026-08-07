@@ -84,6 +84,23 @@ test('typed operations use real 0.16.1 method and parameter shapes', async () =>
   });
 });
 
+test('session/create answers runtime preference requests with the exact string ID', async () => {
+  await withClient(async (client, record) => {
+    const created = await client.createSession({ workspace: '/repo' });
+    assert.equal(created.session.sessionId, 'session-1');
+    const calls = await readRecordedCalls(record);
+    assert.ok(calls.some((entry) => entry.id === 'server-1' && entry.error?.code === -32601));
+  }, { FAKE_ZCODE_RUNTIME_PREFERENCES_ID: 'server-1' });
+});
+
+test('session/create rejects unsafe string server request IDs', async () => {
+  for (const serverRequestId of ['', 'x'.repeat(513), 'server\u001b[31m']) {
+    await withClient(async (client) => {
+      await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_PROTOCOL_MALFORMED' });
+    }, { FAKE_ZCODE_RUNTIME_PREFERENCES_ID: serverRequestId });
+  }
+});
+
 test('send waits only for matching-session completion and answers permission request', async () => {
   await withClient(async (client, record) => {
     const created = await client.createSession({ workspace: '/repo' });
