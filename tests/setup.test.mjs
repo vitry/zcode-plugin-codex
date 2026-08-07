@@ -99,6 +99,20 @@ test('setup detects a higher-precedence writable-root override immediately after
   await assert.rejects(stat(dataRoot), { code: 'ENOENT' });
 });
 
+test('setup writes profile roots with the matching profile file and version', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  const dataRoot = join(ctx.dataRoot, 'profile-plugin-data'); const baseFile = join(ctx.dataRoot, 'config.toml'); const profileFile = join(ctx.dataRoot, 'profiles', 'work.toml');
+  const base = { name: { type: 'user', file: baseFile, profile: null }, version: 'base-version', config: { sandbox_workspace_write: { writable_roots: ['/base-root'] } } };
+  const profile = { name: { type: 'user', file: profileFile, profile: 'work' }, version: 'profile-version', config: { sandbox_workspace_write: { writable_roots: ['/profile-root'] } } };
+  const before = { config: { sandbox_workspace_write: { writable_roots: ['/profile-root'] } }, origins: {}, layers: [base, profile] };
+  const after = { ...before, config: { sandbox_workspace_write: { writable_roots: ['/profile-root', dataRoot] } }, layers: [base, { ...profile, version: 'profile-version-2', config: { sandbox_workspace_write: { writable_roots: ['/profile-root', dataRoot] } } }] };
+  await runSetup({ ...ctx.options, dataRoot, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([before, after]) } });
+  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const params = calls.find((call) => call.method === 'config/batchWrite').params;
+  assert.equal(params.filePath, profileFile); assert.equal(params.expectedVersion, 'profile-version');
+  assert.deepEqual(params.edits[0].value, ['/profile-root', dataRoot]);
+});
+
 test('setup persists model policy only from explicit setup environment variables', async () => {
   const configured = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true }, zcodeEnv: { ZCODE_SETUP_DEFAULT_MODEL: 'fast', ZCODE_SETUP_MODEL_ALIASES_JSON: JSON.stringify({ fast: { providerId: 'fake2', modelId: 'other' } }), ZCODE_MODEL_ALIASES: JSON.stringify({ ignored: { providerId: 'fake', modelId: 'model' } }) } });
   await runSetup(configured.options); const storage = await resolveWorkspaceStorage({ dataRoot: configured.dataRoot, workspace: configured.cwd }); const path = join(storage.directory, 'config', 'models.json');
