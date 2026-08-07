@@ -69,11 +69,13 @@ function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { 
 
 test('default hooks/hooks.json registers bounded native lifecycle hooks without a manifest override', async () => {
   const hooks = JSON.parse(await readFile(join(root, 'hooks/hooks.json'), 'utf8'));
+  const contextCapableEvents = new Set(['SessionStart', 'UserPromptSubmit', 'SubagentStart']);
   assert.deepEqual(Object.keys(hooks.hooks).sort(), ['SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
-  for (const groups of Object.values(hooks.hooks)) for (const group of groups) for (const hook of group.hooks) {
+  for (const [eventName, groups] of Object.entries(hooks.hooks)) for (const group of groups) for (const hook of group.hooks) {
     assert.match(hook.command, /^node "\$PLUGIN_ROOT\/hooks\/[a-z-]+\.mjs"$/);
     assert.ok(Number.isSafeInteger(hook.timeout) && hook.timeout > 0);
-    assert.ok(Number.isSafeInteger(hook.additionalContextLimit) && hook.additionalContextLimit > 0);
+    if (contextCapableEvents.has(eventName)) assert.ok(Number.isSafeInteger(hook.additionalContextLimit) && hook.additionalContextLimit > 0);
+    else assert.equal(Object.hasOwn(hook, 'additionalContextLimit'), false, `${eventName} cannot emit additionalContext`);
   }
   assert.equal(hooks.hooks.Stop[0].hooks[0].timeout, 900);
   assert.ok(hooks.hooks.SessionEnd[0].hooks[0].timeout <= 3);
