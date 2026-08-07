@@ -98,7 +98,7 @@ test('rejects invalid observation timestamps', () => {
   }
 });
 
-test('reports immediately, suppresses consecutive duplicates, and serializes persistence', async () => {
+test('reports the in-flight event immediately, suppresses duplicates, and serializes pending output with persistence', async () => {
   const lines = [];
   const persistenceStarted = [];
   const persisted = [];
@@ -125,15 +125,16 @@ test('reports immediately, suppresses consecutive duplicates, and serializes per
   currentTime = '2026-08-08T00:00:01.000Z';
   reporter.observe(notification('api_retry'));
 
-  assert.deepEqual(lines, [
-    '[zcode] ZCode started a tool call.\n',
-    '[zcode] ZCode is retrying the model request.\n',
-  ]);
+  assert.deepEqual(lines, ['[zcode] ZCode started a tool call.\n']);
   await Promise.resolve();
   assert.deepEqual(persistenceStarted, ['ZCode started a tool call.']);
   releases.shift()();
   await secondStarted;
   assert.deepEqual(persistenceStarted, ['ZCode started a tool call.', 'ZCode is retrying the model request.']);
+  assert.deepEqual(lines, [
+    '[zcode] ZCode started a tool call.\n',
+    '[zcode] ZCode is retrying the model request.\n',
+  ]);
   releases.shift()();
   await reporter.flush();
   assert.deepEqual(persisted, [
@@ -162,6 +163,9 @@ test('bounds pending persistence and output while retaining the latest event und
   assert.equal(calls.at(-1).phase, 'finalizing');
   assert.equal(calls.at(-1).message, 'ZCode completed the delegated turn.');
   assert.equal(persisted.at(-1).phase, 'finalizing');
+  assert.equal(lines.length, calls.length);
+  assert.ok(lines.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS, lines.length);
+  assert.equal(lines.at(-1), '[zcode] ZCode completed the delegated turn.\n');
   reporter.close();
 });
 

@@ -72,6 +72,12 @@ export function createProgressReporter({
   /** @type {unknown} */
   let reporterError;
   const recordError = (/** @type {unknown} */ error) => { if (!hasReporterError) { hasReporterError = true; reporterError = error; } };
+  /** @param {{phase:string,message:string,observedAt:string}} event */
+  const writeEvent = (event) => {
+    if (typeof write !== 'function') return;
+    try { write(`[zcode] ${event.message}\n`); }
+    catch (error) { recordError(error); }
+  };
   /** @type {any} */
   let timer = null;
   const startTimer = () => {
@@ -90,6 +96,7 @@ export function createProgressReporter({
   /** @param {{phase:string,message:string,observedAt:string}} event */
   const startPersist = (event) => {
     if (typeof persist !== 'function') return;
+    writeEvent(event);
     let operation;
     try { operation = Promise.resolve(persist(event)); }
     catch (error) { recordError(error); operation = Promise.resolve(); }
@@ -102,11 +109,10 @@ export function createProgressReporter({
   };
   /** @param {{phase:string,message:string,observedAt:string}} event */
   const enqueue = (event) => {
-    if (typeof persist !== 'function') return true;
-    if (inFlight === null) { startPersist(event); return true; }
-    if (pending.length < MAX_PROGRESS_PENDING_EVENTS) { pending.push(event); return true; }
+    if (typeof persist !== 'function') { writeEvent(event); return; }
+    if (inFlight === null) { startPersist(event); return; }
+    if (pending.length < MAX_PROGRESS_PENDING_EVENTS) { pending.push(event); return; }
     pending[pending.length - 1] = event;
-    return false;
   };
   /** @param {{phase:string,message:string,observedAt:string}} event */
   const dispatch = (event) => {
@@ -114,11 +120,7 @@ export function createProgressReporter({
     const key = `${event.phase}\u0000${event.message}`;
     if (key === previousKey) return null;
     previousKey = key;
-    const admitted = enqueue(event);
-    if (admitted && typeof write === 'function') {
-      try { write(`[zcode] ${event.message}\n`); }
-      catch (error) { recordError(error); }
-    }
+    enqueue(event);
     return event;
   };
   if (active) startTimer();
