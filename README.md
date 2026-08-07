@@ -63,6 +63,24 @@ To verify configuration, rerun `$zcode:setup`, then run `$zcode:rescue --fresh -
 
 Every run is reserved as a durable, owner-scoped job. Installed plugin state lives beneath `$CODEX_HOME/plugins/data/zcode-<marketplace>/workspaces/<workspace-hash>/` with private permissions; prompts, results, session IDs, and logs are never written into the repository or plugin cache. `$zcode:status`, `$zcode:result`, and `$zcode:cancel` work across later turns in the same Codex session, while sibling sessions cannot adopt a job.
 
+Foreground runs stream ZCode activity to the current terminal. If no new activity arrives, they emit a 20-second heartbeat so a long model or tool call remains visibly alive. The same safe activity is stored on the job; `$zcode:status <job-id>` shows its phase, last activity time, and recent progress previews. For example:
+
+```text
+$zcode:rescue --wait repair the failing tests
+[zcode] ZCode started a tool call.
+[zcode] Still waiting for ZCode; last activity 20s ago.
+
+$zcode:status <job-id>
+Status: running
+Phase: running
+Progress:
+  - ZCode started a tool call.
+```
+
+Background jobs have a separate lifecycle: ending the launching foreground command or Codex turn does not automatically cancel them. Use `$zcode:status <job-id>` to inspect one and `$zcode:cancel <job-id>` for explicit cancellation; ownership remains limited to the Codex session that reserved the job.
+
+On supported foreground paths, `SIGINT` and `SIGTERM` are observed at safe protocol boundaries. Before a ZCode session exists, interruption cancels the queued reservation. Once the exact persisted ZCode session ID exists, the plugin sends `session/stop` only for that session. A confirmed stop durably marks the job cancelled; if `session/stop` fails or times out, the job remains running with the cancellation error available through status so cancellation can be retried. This is intentionally a session-level boundary: the plugin does not claim to stop or kill arbitrary detached grandchildren created by ZCode or nested tools.
+
 Transfer reads a persisted Codex thread through `codex app-server` and imports only ordered visible user/assistant text. It does not transfer hidden reasoning, tools, permissions, or ZCode job ownership.
 
 The optional Stop review gate runs a bounded foreground read-only review only after a changed, user-driven parent turn. Enable or disable it with `$zcode:setup`; a Codex restart may be required. Missing, outdated, or unauthenticated ZCode fails open with setup guidance. Once a review session starts, malformed, failed, or timed-out review output blocks conservatively.
