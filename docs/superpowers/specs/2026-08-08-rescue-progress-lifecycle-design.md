@@ -53,9 +53,10 @@ small public event:
 ```
 
 The normalizer accepts a bounded, control-free `reason` and maps known reason
-families to stable phases. Unknown safe reasons are humanized without inspecting
-their patch. Terminal reasons become `finalizing`. Invalid, oversized, cross-
-session, or non-`state.updated` notifications are ignored.
+families to stable phases and fixed public messages. Unknown safe reasons produce
+the generic message `ZCode reported activity`; their raw value and patch are not
+rendered. Terminal reasons become `finalizing`. Invalid, oversized, cross-session,
+or non-`state.updated` notifications are ignored.
 
 The reporter has two sinks:
 
