@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { PluginError } from '../scripts/lib/errors.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
 import { writeResultArtifact } from '../scripts/lib/review.mjs';
@@ -68,7 +69,10 @@ async function executionFixture(readThread = async () => thread()) {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-transfer-')); const workspace = join(directory, 'repo'); const dataRoot = join(directory, 'data'); await mkdir(workspace);
   const store = createStateStore({ dataRoot });
   const job = await store.reserveJob({ workspace, ownerSessionId: 'codex-owner', ownerTurnId: 'turn-owner', command: 'transfer', codexThreadId: source, readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
-  /** @type {any[]} */ const calls = []; const client = { createSession: async (/** @type {any} */ payload) => { calls.push(payload); return { session: { sessionId: 'zcode-session-1' } }; }, close: async () => { calls.push('close'); } };
+  /** @type {any[]} */
+  const calls = [];
+  /** @type {any} */
+  const client = { createSession: async (/** @type {any} */ payload) => { calls.push(payload); return { session: { sessionId: 'zcode-session-1' } }; }, close: async () => { calls.push('close'); } };
   return { calls, client, dataRoot, directory, job, readThread, store, workspace };
 }
 
@@ -148,5 +152,47 @@ test('artifact failure terminalization joins successful and failed cancellation 
     const cancelling = controller.cancel(context.workspace, context.job.id, 'codex-owner'); await stopEntered.promise; releaseWriter.resolve(); await new Promise((resolve) => setTimeout(resolve, 20)); assert.equal(settled, false);
     releaseStop.resolve(); if (stopSucceeds) assert.equal((await cancelling).status, 'cancelled'); else await assert.rejects(cancelling, { code: 'JOB_CANCEL_FAILED' });
     assert.match((await transfer).error?.message ?? '', /disk refused/); const final = await context.store.readJob(context.workspace, context.job.id); assert.equal(final.status, stopSucceeds ? 'cancelled' : 'failed'); assert.equal(final.resultArtifact, undefined);
+  }
+});
+
+test('Transfer interruption during Codex read cancels without creating a remote session', async () => {
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'read interrupted'); const context = await executionFixture(); let creates = 0;
+  await assert.rejects(executeTransfer({ ...context, sourceThreadId: source, launch: { command: 'zcode', args: [] }, signal: controller.signal, readThread: async () => { controller.abort(interruption); throw new Error('bounded read failed after interruption'); }, createClient: async () => { creates += 1; return context.client; } }), (error) => error === interruption);
+  const persisted = await context.store.readJob(context.workspace, context.job.id);
+  assert.equal(creates, 0); assert.equal(persisted.status, 'cancelled'); assert.ok(persisted.finishedAt); assert.equal(persisted.zcodeSessionId, undefined); assert.equal(persisted.resultArtifact, undefined);
+});
+
+test('Transfer interruption after create persists and stops the exact remote session once', async () => {
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'create interrupted'); const context = await executionFixture(); let stops = 0; let closes = 0;
+  context.client.createSession = async () => { controller.abort(interruption); return { session: { sessionId: 'zcode-interrupted-create' } }; };
+  context.client.stopSession = async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zcode-interrupted-create'); stops += 1; };
+  context.client.close = async () => { closes += 1; };
+  await assert.rejects(executeTransfer({ ...context, sourceThreadId: source, launch: { command: 'zcode', args: [] }, signal: controller.signal, createClient: async () => context.client }), (error) => error === interruption);
+  const persisted = await context.store.readJob(context.workspace, context.job.id);
+  assert.equal(stops, 1); assert.equal(closes, 1); assert.equal(persisted.zcodeSessionId, 'zcode-interrupted-create'); assert.equal(persisted.status, 'cancelled'); assert.equal(persisted.resultArtifact, undefined);
+});
+
+test('Transfer interruption preserves running and the original interruption when remote stop fails', async () => {
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'stop interrupted'); const context = await executionFixture(); let stops = 0;
+  context.client.createSession = async () => { controller.abort(interruption); return { session: { sessionId: 'zcode-stop-refused' } }; };
+  context.client.stopSession = async () => { stops += 1; throw new Error(`stop-refused-${'x'.repeat(4_000)}`); };
+  await assert.rejects(executeTransfer({ ...context, sourceThreadId: source, launch: { command: 'zcode', args: [] }, signal: controller.signal, createClient: async () => context.client }), (error) => error === interruption);
+  const persisted = await context.store.readJob(context.workspace, context.job.id);
+  assert.equal(stops, 1); assert.equal(persisted.status, 'running'); assert.equal(persisted.zcodeSessionId, 'zcode-stop-refused'); assert.match(persisted.lastCancelError, /^stop-refused-/); assert.ok(Buffer.byteLength(persisted.lastCancelError) <= 2_048);
+});
+
+test('Transfer interruption removes a written result while a completed finalization still wins', async () => {
+  {
+    const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'artifact interrupted'); const context = await executionFixture(); let artifact = '';
+    context.client.stopSession = async () => {};
+    await assert.rejects(executeTransfer({ ...context, sourceThreadId: source, launch: { command: 'zcode', args: [] }, signal: controller.signal, createClient: async () => context.client, writeResult: async (input) => { artifact = await writeResultArtifact(input); controller.abort(interruption); return artifact; } }), (error) => error === interruption);
+    const persisted = await context.store.readJob(context.workspace, context.job.id); assert.equal(persisted.status, 'cancelled'); assert.equal(persisted.resultArtifact, undefined);
+    const storage = await resolveWorkspaceStorage(context); await assert.rejects(readFile(join(storage.directory, artifact), 'utf8'), { code: 'ENOENT' });
+  }
+  {
+    const controller = new AbortController(); const context = await executionFixture();
+    const wrapped = { ...context.store, transitionJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => { const result = await context.store.transitionJob(workspace, jobId, expected, next, patch); if (next === 'succeeded') controller.abort(new PluginError('JOB_INTERRUPTED', 'late')); return result; } };
+    const output = await executeTransfer({ ...context, store: wrapped, sourceThreadId: source, launch: { command: 'zcode', args: [] }, signal: controller.signal, createClient: async () => context.client });
+    assert.equal(output.job.status, 'succeeded'); assert.ok(output.job.resultArtifact); assert.equal((await context.store.readJob(context.workspace, context.job.id)).status, 'succeeded');
   }
 });

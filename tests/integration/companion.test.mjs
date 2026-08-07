@@ -474,6 +474,28 @@ test('real CLI status wait stays alive until its timeout', async () => {
   assert.equal(waited.code, 1); assert.equal(waited.json.error.code, 'JOB_WAIT_TIMEOUT');
 });
 
+test('foreground Transfer observes SIGTERM after its bounded create RPC and exits 143', async (t) => {
+  const context = await fixture(); const zcodeRecord = join(context.directory, 'transfer-interrupt.jsonl'); await writeFile(zcodeRecord, '');
+  const sourceThread = { id: 'codex-session', ephemeral: false, turns: [{ startedAt: 1_725_000_000, items: [{ type: 'agentMessage', text: 'visible response' }] }] };
+  const child = spawn(process.execPath, [cli, 'transfer'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]), FAKE_CODEX_THREAD_JSON: JSON.stringify(sourceThread), FAKE_ZCODE_RECORD: zcodeRecord, FAKE_ZCODE_DELAY_MS: '200' },
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let internal = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+  child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError); /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: context.caller })}\n`);
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const exitPromise = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  const recorded = async () => (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  await waitFor(async () => (await recorded()).some((frame) => frame.method === 'session/create'), 'Transfer create RPC did not start'); child.kill('SIGTERM');
+  const exit = await exitPromise; assert.deepEqual(exit, { code: 143, signal: null });
+  const calls = await recorded(); const sessionId = calls.find((frame) => frame.method === 'session/stop')?.params?.sessionId;
+  assert.equal(typeof sessionId, 'string'); assert.equal(calls.filter((frame) => frame.method === 'session/stop' && frame.params.sessionId === sessionId).length, 1);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace); assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.equal(jobs[0].zcodeSessionId, sessionId); assert.equal(jobs[0].resultArtifact, undefined);
+  assert.equal(stdout, ''); assert.equal(internal, ''); assert.match(stderr, /Interrupted by SIGTERM\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|"error"/);
+});
+
 test('real Transfer imports current Codex history into a resumable ZCode session without leaking caller authorization', async () => {
   const context = await fixture(); const codexRecord = join(context.directory, 'codex.jsonl'); const zcodeRecord = join(context.directory, 'zcode.jsonl');
   await writeFile(codexRecord, ''); await writeFile(zcodeRecord, '');

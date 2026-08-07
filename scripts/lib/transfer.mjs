@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 
 import { PluginError } from './errors.mjs';
 import { hasControl, isSafeIdentifier } from './identifier.mjs';
-import { withJobCancellationLock } from './job-control.mjs';
+import { createJobController, withJobCancellationLock } from './job-control.mjs';
 import { removeResultArtifact, writeResultArtifact } from './review.mjs';
 import { withWorkerLease } from './recovery.mjs';
 import { IMPORTED_HISTORY_SOURCE } from './zcode-client.mjs';
@@ -61,7 +61,7 @@ export function extractImportedHistory(thread, expectedThreadId) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,sourceThreadId:string,launch?:{command:string,args:string[]},resolveLaunch?:()=>Promise<{command:string,args:string[]}>,readThread:()=>Promise<unknown>,createClient:(launch:{command:string,args:string[]})=>Promise<any>,writeResult?:(input:any)=>Promise<string>,removeResult?:(input:any)=>Promise<void>}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,sourceThreadId:string,launch?:{command:string,args:string[]},resolveLaunch?:()=>Promise<{command:string,args:string[]}>,readThread:()=>Promise<unknown>,createClient:(launch:{command:string,args:string[]})=>Promise<any>,writeResult?:(input:any)=>Promise<string>,removeResult?:(input:any)=>Promise<void>,signal?:AbortSignal}} input
  */
 export async function executeTransfer(input) {
   validateExecution(input);
@@ -76,39 +76,92 @@ export async function executeTransfer(input) {
 async function executeClaimedTransfer(input) {
   const { job, workspace, dataRoot, store, sourceThreadId } = input;
   let client; let running = job;
+  /** @type {string|undefined} */ let sessionId;
+  /** @type {string|undefined} */ let resultArtifact;
+  /** @type {string|undefined} */ let result;
+  /** @type {string|undefined} */ let resumeCommand;
   try {
     validateExecution(input);
     running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString() });
-    const importedHistory = extractImportedHistory(await input.readThread(), sourceThreadId);
-    const launch = input.launch ?? await /** @type {()=>Promise<{command:string,args:string[]}>} */ (input.resolveLaunch)();
+    input.signal?.throwIfAborted();
+    const importedHistory = extractImportedHistory(await boundedStep(input.readThread, input.signal), sourceThreadId);
+    input.signal?.throwIfAborted();
+    const launch = input.launch ?? await boundedStep(/** @type {()=>Promise<{command:string,args:string[]}>} */ (input.resolveLaunch), input.signal);
     validateLaunch(launch);
-    client = await input.createClient(launch);
-    const snapshot = await client.createSession({ workspace, importedHistory });
-    const sessionId = snapshot?.session?.sessionId;
+    client = await boundedStep(() => input.createClient(launch), input.signal);
+    input.signal?.throwIfAborted();
+    let snapshot;
+    try { snapshot = await client.createSession({ workspace, importedHistory }); }
+    catch (error) { input.signal?.throwIfAborted(); throw error; }
+    sessionId = snapshot?.session?.sessionId;
     if (!isSafeIdentifier(sessionId)) throw new PluginError('ZCODE_OUTPUT_INVALID', 'ZCode returned an invalid imported session.', { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.' });
     running = await store.transitionJob(workspace, job.id, ['running'], 'running', { zcodeSessionId: sessionId });
-    const resumeCommand = buildResumeCommand(launch, sessionId);
-    const result = `Imported from Codex\nZCode session ID: ${sessionId}\nResume in ZCode: ${resumeCommand}\n`;
-    const resultArtifact = await (input.writeResult ?? writeResultArtifact)({ dataRoot, workspace, jobId: job.id, contents: result });
-    const succeeded = await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
+    input.signal?.throwIfAborted();
+    resumeCommand = buildResumeCommand(launch, /** @type {string} */ (sessionId));
+    result = `Imported from Codex\nZCode session ID: ${sessionId}\nResume in ZCode: ${resumeCommand}\n`;
+    input.signal?.throwIfAborted();
+    try { resultArtifact = await (input.writeResult ?? writeResultArtifact)({ dataRoot, workspace, jobId: job.id, contents: result }); }
+    catch (error) { input.signal?.throwIfAborted(); throw error; }
+    input.signal?.throwIfAborted();
+    const finalized = await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
       const current = await store.readJob(workspace, job.id);
-      if (current.status === 'cancelled') return current;
+      if (current.status === 'succeeded') return { job: current };
+      if (input.signal?.aborted) return { interrupted: true };
+      if (current.status === 'cancelled') return { job: current };
       if (current.status !== 'running') throw new PluginError('TRANSFER_FINALIZE_CONFLICT', `Transfer job ${job.id} cannot finalize from ${current.status}.`, { category: 'state', remedy: 'Inspect the job status and retry with a new Transfer.' });
-      return store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
+      return { job: await store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 }) };
     });
+    if (finalized.interrupted) throw input.signal?.reason;
+    const succeeded = finalized.job;
     if (succeeded.status === 'cancelled') {
       await (input.removeResult ?? removeResultArtifact)({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact });
       throw new PluginError('TRANSFER_CANCELLED', `Transfer job ${job.id} was cancelled.`, { category: 'state', remedy: 'Run Transfer again if the imported session is still needed.' });
     }
     return { type: 'transfer', job: succeeded, result, zcodeSessionId: sessionId, resumeCommand };
-  } catch (error) {
-    await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
-      const current = await store?.readJob(workspace, job?.id).catch(() => running);
-      if (['queued', 'running'].includes(current?.status)) await store.transitionJob(workspace, job.id, [current.status], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Transfer failed' }, finishedAt: new Date().toISOString(), exitCode: 1 });
-    }).catch(() => {});
+  } catch (caught) {
+    const error = input.signal?.aborted ? input.signal.reason : caught;
+    const current = await store?.readJob(workspace, job?.id).catch(() => running);
+    if (isInterruption(error)) {
+      if (current?.status === 'succeeded' && sessionId && resultArtifact && result && resumeCommand) return { type: 'transfer', job: current, result, zcodeSessionId: sessionId, resumeCommand };
+      if (resultArtifact) await (input.removeResult ?? removeResultArtifact)({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
+      await cancelInterruptedTransfer({ ...input, job, client }).catch(() => {});
+    } else {
+      await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
+        const latest = await store?.readJob(workspace, job?.id).catch(() => running);
+        if (['queued', 'running'].includes(latest?.status)) await store.transitionJob(workspace, job.id, [latest.status], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Transfer failed' }, finishedAt: new Date().toISOString(), exitCode: 1 });
+      }).catch(() => {});
+    }
     throw error;
   } finally { await client?.close().catch(() => {}); }
 }
+
+/** @template T @param {()=>Promise<T>} operation @param {AbortSignal|undefined} signal */
+async function boundedStep(operation, signal) {
+  signal?.throwIfAborted();
+  try { const value = await operation(); signal?.throwIfAborted(); return value; }
+  catch (error) { signal?.throwIfAborted(); throw error; }
+}
+
+/** @param {any} input */
+async function cancelInterruptedTransfer(input) {
+  const current = await input.store.readJob(input.workspace, input.job.id);
+  if (['succeeded', 'failed', 'cancelled'].includes(current.status)) return current;
+  if (current.zcodeSessionId && input.client) {
+    const controller = createJobController({ store: input.store, dataRoot: input.dataRoot, stopSession: (sessionId) => input.client.stopSession(sessionId) });
+    return controller.cancel(input.workspace, current.id, current.ownerSessionId);
+  }
+  return withJobCancellationLock({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: current.id }, async () => {
+    let latest = await input.store.readJob(input.workspace, current.id);
+    if (['succeeded', 'failed', 'cancelled'].includes(latest.status)) return latest;
+    if (latest.status === 'queued') return input.store.transitionJob(input.workspace, latest.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+    if (latest.status === 'running') latest = await input.store.transitionJob(input.workspace, latest.id, ['running'], 'cancelling', latest.lastCancelError ? { lastCancelError: null } : {});
+    if (latest.status === 'cancelling') return input.store.transitionJob(input.workspace, latest.id, ['cancelling'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+    return latest;
+  });
+}
+
+/** @param {unknown} error */
+function isInterruption(error) { return error instanceof PluginError && error.code === 'JOB_INTERRUPTED'; }
 
 /** @param {{command:string,args:string[]}} launch @param {string} sessionId */
 export function buildResumeCommand(launch, sessionId) { return [launch.command, ...launch.args, '--resume', sessionId].map(shellQuote).join(' '); }
