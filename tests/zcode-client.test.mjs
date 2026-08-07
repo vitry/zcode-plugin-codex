@@ -84,6 +84,32 @@ test('typed operations use real 0.16.1 method and parameter shapes', async () =>
   });
 });
 
+test('session/create answers runtime preference requests with the exact string ID', async () => {
+  await withClient(async (client, record) => {
+    const created = await client.createSession({ workspace: '/repo' });
+    assert.equal(created.session.sessionId, 'session-1');
+    const calls = await readRecordedCalls(record);
+    const response = calls.find((entry) => entry.id === 'server-1' && !entry.method);
+    assert.deepEqual(response, { id: 'server-1', error: { code: -32601, message: 'Unsupported server request.' } });
+  }, { FAKE_ZCODE_RUNTIME_PREFERENCES_ID: 'server-1' });
+});
+
+test('session/create rejects unsafe string server request IDs', async (t) => {
+  const cases = [
+    ['empty', ''],
+    ['oversized', 'x'.repeat(513)],
+    ['C0 control', 'server\u001b[31m'],
+    ['C1 U+0085 control', 'server\u0085'],
+    ['C1 U+009B control', 'server\u009b'],
+    ['C1 U+009F control', 'server\u009f'],
+  ];
+  for (const [name, serverRequestId] of cases) {
+    await t.test(name, () => withClient(async (client) => {
+      await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_PROTOCOL_MALFORMED' });
+    }, { FAKE_ZCODE_RUNTIME_PREFERENCES_ID: serverRequestId }));
+  }
+});
+
 test('send waits only for matching-session completion and answers permission request', async () => {
   await withClient(async (client, record) => {
     const created = await client.createSession({ workspace: '/repo' });
@@ -221,6 +247,54 @@ test('malformed, oversized, disconnect and request error fail closed', async (t)
   for (const [env, options, code] of cases) await t.test(code, () => withClient(async (client) => {
     await assert.rejects(client.listSessions(), { code });
   }, env, options));
+});
+
+test('request failures retain only a bounded safe remote error code', async (t) => {
+  await t.test('safe discriminator', () => withClient(async (client) => {
+    await assert.rejects(client.listSessions(), (error) => {
+      assert.equal(error.code, 'ZCODE_REQUEST_FAILED');
+      assert.deepEqual(error.details, { method: 'session/list', rpcCode: -32099, remoteCode: 'model_config_missing' });
+      assert.doesNotMatch(JSON.stringify(error.details), /remote-api-key-must-not-leak/);
+      return true;
+    });
+  }, {
+    FAKE_ZCODE_ERROR: 'session/list',
+    FAKE_ZCODE_ERROR_DATA_CODE: 'model_config_missing',
+    FAKE_ZCODE_ERROR_DATA_SECRET: 'remote-api-key-must-not-leak',
+  }));
+
+  for (const [name, remoteCode] of [
+    ['oversized', 'x'.repeat(129)],
+    ['C0 control', 'model\u001bconfig'],
+    ['C1 control', 'model\u0085config'],
+  ]) {
+    await t.test(name, () => withClient(async (client) => {
+      await assert.rejects(client.listSessions(), (error) => {
+        assert.equal(error.code, 'ZCODE_REQUEST_FAILED');
+        assert.deepEqual(error.details, { method: 'session/list', rpcCode: -32099 });
+        return true;
+      });
+    }, { FAKE_ZCODE_ERROR: 'session/list', FAKE_ZCODE_ERROR_DATA_CODE: remoteCode }));
+  }
+});
+
+test('RPC errors with missing or non-integer codes fail closed without leaking code contents', async (t) => {
+  const cases = [
+    ['missing', { FAKE_ZCODE_ERROR_OMIT_CODE: '1' }],
+    ['string', { FAKE_ZCODE_ERROR_CODE_JSON: JSON.stringify('-32099') }],
+    ['object', { FAKE_ZCODE_ERROR_CODE_JSON: JSON.stringify({ value: -32099 }) }],
+    ['secret-bearing object', { FAKE_ZCODE_ERROR_CODE_JSON: JSON.stringify({ apiKey: 'rpc-code-secret-must-not-leak' }) }],
+  ];
+  for (const [name, env] of cases) {
+    await t.test(name, () => withClient(async (client) => {
+      await assert.rejects(client.listSessions(), (error) => {
+        assert.equal(error.code, 'ZCODE_PROTOCOL_MALFORMED');
+        assert.deepEqual(error.details, {});
+        assert.doesNotMatch(JSON.stringify(error), /rpc-code-secret-must-not-leak/);
+        return true;
+      });
+    }, { FAKE_ZCODE_ERROR: 'session/list', ...env }));
+  }
 });
 
 test('thought level validates vocabulary and advertised values without guessing', async () => {

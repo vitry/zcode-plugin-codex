@@ -6,6 +6,8 @@ All notable changes follow Semantic Versioning.
 
 - Fixed installed `$zcode:*` skills failing with `DATA_ROOT_REQUIRED` when Codex does not inject `PLUGIN_DATA` into ordinary skill commands.
 - Added marketplace-qualified plugin-data discovery and a restart-safe `$zcode:setup` bootstrap that configures the data directory as a writable root before persisting state.
+- Added ZCode CLI 0.16.1 compatibility for runtime-preference server requests with string IDs.
+- Improved `$zcode:setup` guidance when the ZCode CLI has no model provider configured, including the distinction between Desktop and CLI settings and API-key providers that do not require OAuth.
 
 ## 0.1.0 - 2026-08-06
 

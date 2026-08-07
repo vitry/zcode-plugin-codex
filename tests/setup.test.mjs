@@ -149,6 +149,63 @@ test('plugin-level authentication diagnostic is session/create based and actiona
   assert.match(unavailable.remedy, /authenticate.*ZCode/i);
 });
 
+test('plugin-level authentication diagnostic identifies a missing ZCode CLI model provider', async () => {
+  const ready = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  const discovery = { launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode } };
+  const diagnostic = await diagnoseZCodeAuth({
+    workspace: ready.cwd,
+    discovery,
+    env: {
+      ...ready.options.env,
+      FAKE_ZCODE_ERROR: 'session/create',
+      FAKE_ZCODE_ERROR_DATA_CODE: 'model_config_missing',
+      FAKE_ZCODE_ERROR_DATA_SECRET: 'remote-api-key-must-not-leak',
+    },
+  });
+  assert.equal(diagnostic.ready, false);
+  assert.equal(diagnostic.status, 'unauthenticated');
+  assert.match(diagnostic.reason, /ZCode CLI model provider is not configured/i);
+  assert.match(diagnostic.remedy, /configure an API-key provider in ZCode CLI/i);
+  assert.match(diagnostic.remedy, /run \$zcode:setup again/i);
+  assert.doesNotMatch(`${diagnostic.reason} ${diagnostic.remedy}`, /OAuth|log ?in|remote-api-key-must-not-leak/i);
+});
+
+test('plugin-level authentication diagnostic keeps the generic remedy for other remote codes', async () => {
+  const ready = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  const discovery = { launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode } };
+  const diagnostic = await diagnoseZCodeAuth({
+    workspace: ready.cwd,
+    discovery,
+    env: { ...ready.options.env, FAKE_ZCODE_ERROR: 'session/create', FAKE_ZCODE_ERROR_DATA_CODE: 'provider_rate_limited' },
+  });
+  assert.equal(diagnostic.ready, false);
+  assert.equal(diagnostic.status, 'unauthenticated');
+  assert.equal(diagnostic.reason, 'ZCode session/create could not prove model authentication.');
+  assert.equal(diagnostic.remedy, 'Authenticate with ZCode, then run $zcode:setup again.');
+});
+
+test('plugin-level authentication diagnostic does not mislabel model provider codes from other methods', async () => {
+  const diagnostic = await diagnoseZCodeAuth({
+    workspace: '/repo',
+    discovery: { launch: { command: 'unused', args: [] } },
+    createClient: async () => ({
+      createSession: async () => {
+        throw Object.assign(new Error('future request failed'), {
+          code: 'ZCODE_REQUEST_FAILED',
+          details: { method: 'session/list', remoteCode: 'model_config_missing' },
+        });
+      },
+      close: async () => {},
+    }),
+  });
+  assert.deepEqual(diagnostic, {
+    ready: false,
+    status: 'unauthenticated',
+    reason: 'ZCode session/create could not prove model authentication.',
+    remedy: 'Authenticate with ZCode, then run $zcode:setup again.',
+  });
+});
+
 test('setup selects only its qualified marketplace hooks from mixed hooks/list output', async () => {
   const foreign = await mkdtemp(join(tmpdir(), 'foreign-hooks-')); await mkdir(join(foreign, 'hooks')); await writeFile(join(foreign, 'hooks/hooks.json'), '{}');
   const own = hookMetadata(root); const other = hookMetadata(foreign, 'untrusted', 'other-plugin@someone').map((hook, index) => ({ ...hook, key: `other-${index}` }));

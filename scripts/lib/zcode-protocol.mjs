@@ -1,4 +1,5 @@
 import { PluginError } from './errors.mjs';
+import { isSafeIdentifier } from './identifier.mjs';
 import net from 'node:net';
 import { spawnProcess, terminateProcess } from './process.mjs';
 
@@ -185,19 +186,22 @@ export class ZCodeProtocolClient {
     if (!pending) { this.fail(new PluginError('ZCODE_RESPONSE_UNCORRELATED', 'ZCode sent an uncorrelated response.', { category: 'protocol', remedy: 'Restart ZCode and retry.', details: { id: message.id } })); return; }
     this.pending.delete(message.id); clearTimeout(pending.timer);
     if ('error' in message) {
-      if (!plainObject(message.error) || typeof message.error.message !== 'string') { pending.reject(malformedFrame()); this.fail(malformedFrame()); return; }
+      if (!plainObject(message.error) || typeof message.error.message !== 'string' || !Number.isSafeInteger(message.error.code)) { pending.reject(malformedFrame()); this.fail(malformedFrame()); return; }
       const remote = message.error.data?.pluginError;
       if (plainObject(remote) && nonEmpty(remote.code) && nonEmpty(remote.category) && nonEmpty(remote.remedy)) {
         pending.reject(new PluginError(remote.code, message.error.message, { category: remote.category, remedy: remote.remedy, details: plainObject(remote.details) ? remote.details : {} }));
         return;
       }
-      pending.reject(new PluginError('ZCODE_REQUEST_FAILED', `ZCode ${pending.method} failed: ${message.error.message}`, { category: 'runtime', remedy: 'Inspect the request and retry.', details: { method: pending.method, rpcCode: message.error.code } }));
+      /** @type {{method:string,rpcCode:unknown,remoteCode?:string}} */
+      const details = { method: pending.method, rpcCode: message.error.code };
+      if (isSafeRemoteCode(message.error.data?.code)) details.remoteCode = message.error.data.code;
+      pending.reject(new PluginError('ZCODE_REQUEST_FAILED', `ZCode ${pending.method} failed: ${message.error.message}`, { category: 'runtime', remedy: 'Inspect the request and retry.', details }));
     } else pending.resolve(message.result);
   }
 
   /** @param {any} message @param {AbortSignal} signal */
   async handleServerRequest(message, signal) {
-    if (!Number.isSafeInteger(message.id) || typeof message.method !== 'string' || !plainObject(message.params)) { this.fail(malformedFrame()); return; }
+    if (!isServerRequestId(message.id) || typeof message.method !== 'string' || !plainObject(message.params)) { this.fail(malformedFrame()); return; }
     if (message.method !== 'interaction/requestPermission') { if (!this.closed) this.sendFrame({ id: message.id, error: { code: -32601, message: 'Unsupported server request.' } }); return; }
     try {
       validatePermissionRequest(message.params);
@@ -342,6 +346,12 @@ function isTerminalNotification(message) { return message.method === 'state.upda
 function boundedInteger(value, fallback, minimum, maximum) { if (value === undefined) return fallback; if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw protocolInputError(); return value; }
 /** @param {number} milliseconds */
 function boundedDelay(milliseconds) { return new Promise((resolve) => { setTimeout(resolve, milliseconds); }); }
+/** @param {unknown} value */
+function isServerRequestId(value) { return Number.isSafeInteger(value) || isSafeIdentifier(value) && !hasC1Control(/** @type {string} */ (value)); }
+/** @param {unknown} value */
+function isSafeRemoteCode(value) { return isSafeIdentifier(value, 128) && !hasC1Control(/** @type {string} */ (value)); }
+/** @param {string} value */
+function hasC1Control(value) { return [...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code >= 128 && code <= 159; }); }
 /** @param {unknown} value */
 function nonEmpty(value) { return typeof value === 'string' && value.length > 0; }
 /** @param {unknown} value @returns {value is Record<string,any>} */

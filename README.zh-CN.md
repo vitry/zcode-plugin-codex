@@ -7,7 +7,7 @@ ZCode for Codex 是原生 Codex marketplace 插件：由 Codex 保持用户交�
 ## 环境与安装
 
 - 支持原生插件与 hooks 的 Codex。
-- 已安装 ZCode CLI `>=0.16.1`，并至少为一个模型完成认证。
+- 已安装 ZCode CLI `>=0.16.1`，并至少配置了一个模型。
 - Node.js `>=22.13.0`；插件包内自带生产环境原生锁依赖。
 
 从本仓库 `marketplace` 分支发布的生产快照安装；`main` 上的源码根目录本身不是 marketplace catalog：
@@ -19,7 +19,9 @@ codex plugin add zcode@vitry
 
 发布 workflow 会在该分支生成 `.agents/plugins/marketplace.json` 和带生产依赖的 `plugins/zcode/`。安装后重启 Codex，再在目标工作区运行 `$zcode:setup`。首次运行可能把 marketplace 专属的数据目录加入 Codex writable roots；若返回 `restart-required`，重启 Codex 后再次运行 setup。不要把 hooks 从插件缓存复制到别处。
 
-插件依次检查 `ZCODE_PATH`、`PATH` 中的 `zcode`、平台目录，以及 macOS 内置路径 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`。Setup 会报告缺失、版本过低、未认证或 hook 不可信，但不会下载 ZCode，也不会代替用户登录。
+插件依次检查 `ZCODE_PATH`、`PATH` 中的 `zcode`、平台目录，以及 macOS 内置路径 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`。Setup 会报告缺失、版本过低、未配置、未认证或 hook 不可信，但不会下载 ZCode、配置 provider，也不会代替用户登录。
+
+ZCode Desktop 与 ZCode CLI 分别保存 model provider 设置。运行 `$zcode:setup` 前，请在 ZCode CLI 自身配置 provider；仅在 Desktop 中配置并不足以供 `zcode app-server` 使用。如果 CLI 中已配置 API-key provider，则不需要 OAuth 登录。插件不会读取或复制 Desktop 的 provider 设置或 API key，也绝不会记录或持久化这些 key。
 
 ## 命令
 
@@ -69,12 +71,13 @@ Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺�
 
 - `ZCODE_NOT_FOUND` / `ZCODE_VERSION_UNSUPPORTED`：安装或升级 ZCode，必要时设置 `ZCODE_PATH`，再运行 `$zcode:setup`。
 - `INTERNAL_AUTHORIZATION_INVALID`：重启 Codex，确认 hooks 已启用且可信，再运行 setup；不要手工复制 caller-context。
-- Authentication 不可用：在 ZCode 自身完成认证，再重新 setup。
+- `model_config_missing`：在 ZCode CLI 自身配置 model provider，再重新 setup。Desktop provider 设置与 CLI 分离；API-key provider 不要求 OAuth。
+- 已配置的 CLI provider 无法认证：在 ZCode 自身完成认证，再重新 setup。
 - 后台任务：按输出使用 `$zcode:status <job-id> --wait`、`$zcode:result <job-id>` 或 `$zcode:cancel <job-id>`。
 - Hook trust / restart required：只让 setup 信任当前安装插件的精确 hook hash，重启后再次检查。
 - `plugin-data-root-added`：setup 只把稳定数据目录加入 Codex 配置，尚未写入插件状态；重启 Codex 后再次运行 setup。
 
-macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。发布前应在已认证机器运行 `ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualified`。如需同时验证“已安装 marketplace → 真实 Codex → ZCode”桥接，还要设置 `ZCODE_CODEX_SKILLS_E2E=1`；该测试会消耗已认证 Codex 账户的额度。缺少 opt-in、认证、模型或额度时，测试只会给出结构化的 `unqualified` skip，绝不会算作通过；未知执行错误仍会让测试失败。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
+macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。协议客户端可处理 CLI 0.16.1 发出的 string-ID runtime-preference server request。发布前应在 CLI model provider 可用的机器上运行 `ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualified`。如需同时验证“已安装 marketplace → 真实 Codex → ZCode”桥接，还要设置 `ZCODE_CODEX_SKILLS_E2E=1`；该测试会消耗已认证 Codex 账户的额度。缺少 opt-in、provider 配置或认证、模型或额度时，测试只会给出结构化的 `unqualified` skip，绝不会算作通过；未知执行错误仍会让测试失败。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
 
 ## 许可证与来源
 
