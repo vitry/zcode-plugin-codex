@@ -50,7 +50,7 @@ export async function runCompanion(argv, runtime = {}) {
     const modelPolicy = summarizeWorkspaceModelConfig(await readWorkspaceModelConfig({ dataRoot, workspace: cwd }));
     if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId)), modelPolicy };
     let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
-    if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs);
+    if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs, runtime.signal);
     return { job, modelPolicy };
   }
   if (parsed.command === 'result') {

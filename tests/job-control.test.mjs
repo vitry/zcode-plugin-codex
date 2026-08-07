@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { mkdir, mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -66,6 +67,62 @@ test('wait reaches terminal state or returns a stable timeout error', async () =
   assert.equal((await controller.wait(workspace, job.id, 100)).status, 'cancelled');
   const active = await store.reserveJob({ workspace, ...reservation });
   await assert.rejects(controller.wait(workspace, active.id, 0), { code: 'JOB_WAIT_TIMEOUT' });
+});
+
+test('wait rejects an already-aborted signal before polling', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation });
+  const interruption = new PluginError('JOB_INTERRUPTED', 'Interrupted by SIGINT.');
+  const abort = new AbortController(); abort.abort(interruption);
+  let polls = 0;
+  const controller = createJobController({ store, beforeWaitPoll: async () => { polls += 1; } });
+  await assert.rejects(controller.wait(workspace, job.id, 100, abort.signal), (error) => error === interruption);
+  assert.equal(polls, 0);
+});
+
+test('wait interrupts a pending poll and handles its later rejection', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {()=>void} */ let startPoll = () => {};
+  /** @type {Promise<void>} */ const pollStarted = new Promise((resolve) => { startPoll = resolve; });
+  /** @type {(error:Error)=>void} */ let rejectPoll = () => {};
+  const controller = createJobController({ store, beforeWaitPoll: () => new Promise((resolve, reject) => { void resolve; rejectPoll = reject; startPoll(); }) });
+  const abort = new AbortController();
+  const interruption = new PluginError('JOB_INTERRUPTED', 'Interrupted by SIGTERM.');
+  const waiting = controller.wait(workspace, job.id, 10_000, abort.signal);
+  await pollStarted; abort.abort(interruption);
+  const outcome = await Promise.race([
+    waiting.catch((error) => error),
+    new Promise((resolve) => setTimeout(() => resolve('deadline'), 25)),
+  ]);
+  assert.equal(outcome, interruption);
+  rejectPoll(new Error('late reconciliation failure'));
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test('wait clears its polling timer and abort listener when interrupted', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation });
+  const timerToken = { timer: true };
+  /** @type {()=>void} */ let announceTimer = () => {};
+  /** @type {Promise<void>} */ const timerStarted = new Promise((resolve) => { announceTimer = resolve; });
+  let cleared;
+  const controller = createJobController({
+    store,
+    pollIntervalMs: 1_000,
+    setTimeout: () => { announceTimer(); return timerToken; },
+    clearTimeout: (token) => { cleared = token; },
+  });
+  const abort = new AbortController();
+  const interruption = new PluginError('JOB_INTERRUPTED', 'Interrupted by SIGINT.');
+  const waiting = controller.wait(workspace, job.id, 10_000, abort.signal);
+  const enteredDelay = await Promise.race([timerStarted.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 25))]);
+  assert.equal(getEventListeners(abort.signal, 'abort').length, 1);
+  abort.abort(interruption);
+  await assert.rejects(waiting, (error) => error === interruption);
+  assert.equal(enteredDelay, true);
+  assert.equal(cleared, timerToken);
+  assert.equal(getEventListeners(abort.signal, 'abort').length, 0);
 });
 
 test('queued cancellation is safe and terminal cancellation is idempotent', async () => {

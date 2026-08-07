@@ -22,6 +22,7 @@ const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fake = join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
 const signalHandlerProbe = join(root, 'tests', 'fixtures', 'signal-handler-probe.cjs');
+const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs');
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-companion-'));
@@ -472,6 +473,34 @@ test('real CLI status wait stays alive until its timeout', async () => {
   const reserved = await companion(context, ['review', '--background']);
   const waited = await companion(context, ['status', reserved.json.job.id, '--wait', '--timeout-ms', '20']);
   assert.equal(waited.code, 1); assert.equal(waited.json.error.code, 'JOB_WAIT_TIMEOUT');
+});
+
+test('real CLI status wait exits immediately without protocol output on SIGINT', async (t) => {
+  const context = await fixture(); const marker = join(context.directory, 'status-wait.txt');
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(context.workspace, queued.id, ['queued'], 'running', { childPid: process.pid, zcodeSessionId: 'status-wait-session' });
+  const child = spawn(process.execPath, ['--require', statusWaitProbe, cli, 'status', queued.id, '--wait', '--timeout-ms', '10000'], {
+    cwd: context.workspace,
+    env: { ...context.env, ZCODE_STATUS_WAIT_PROBE: marker },
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let internal = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+  child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
+  /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: context.caller })}\n`);
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const exitPromise = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+
+  await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'waiting', 'status command did not enter its polling wait');
+  child.kill('SIGINT');
+  /** @type {NodeJS.Timeout|undefined} */ let deadline;
+  const exit = await Promise.race([exitPromise, new Promise((resolve, reject) => { void resolve; deadline = setTimeout(() => { if (!exited) child.kill('SIGKILL'); reject(new Error('status wait did not exit promptly after SIGINT')); }, 1_000); })]).finally(() => clearTimeout(deadline));
+
+  assert.deepEqual(exit, { code: 130, signal: null });
+  assert.equal(stdout, ''); assert.equal(internal, '');
+  assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|JOB_WAIT_TIMEOUT|"error"/);
+  assert.equal((await store.readJob(context.workspace, queued.id)).status, 'running');
 });
 
 test('foreground Transfer observes SIGTERM after its bounded create RPC and exits 143', async (t) => {

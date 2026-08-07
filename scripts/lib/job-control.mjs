@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { createCancelAttemptStore } from './cancel-attempt.mjs';
 import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
+import { waitForCompletionOrAbort } from './progress.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
@@ -25,12 +26,13 @@ export function ownerIdForSession(sessionId) {
   return createHash('sha256').update(JSON.stringify(['zcode-owner-v1', sessionId])).digest('hex');
 }
 
-/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
+/** @param {{store:any,dataRoot?:string,stopSession?:(sessionId:string)=>Promise<unknown>,pollIntervalMs?:number,clock?:()=>number,delay?:(ms:number)=>Promise<void>,setTimeout?:(callback:()=>void,ms:number)=>any,clearTimeout?:(timer:any)=>void,beforeWaitPoll?:()=>Promise<unknown>,afterRollbackBeforeSettle?:()=>Promise<void>,afterFollowerSelected?:()=>Promise<void>,afterObservationBeforeLock?:()=>Promise<void>}} options */
 export function createJobController(options) {
   if (!options?.store) throw new PluginError('JOB_CONTROLLER_INPUT_INVALID', 'A state store is required.', { category: 'validation', remedy: 'Provide the Task 2 state store.' });
   const pollIntervalMs = options.pollIntervalMs ?? 50;
   const clock = options.clock ?? Date.now;
-  const delay = options.delay ?? pollDelay;
+  const scheduleTimeout = options.setTimeout ?? globalThis.setTimeout;
+  const cancelTimeout = options.clearTimeout ?? globalThis.clearTimeout;
   /** @type {Map<string,Promise<any>>} */
   const inFlight = new Map();
   return {
@@ -45,15 +47,19 @@ export function createJobController(options) {
       if (!selected) throw new PluginError('OWNED_JOB_NOT_FOUND', 'No matching owned job was found.', { category: 'authorization', remedy: 'Check the job ID and invoke the command from its owning Codex session.' });
       return selected;
     },
-    /** @param {string} workspace @param {string} jobId @param {number} timeoutMs */
-    async wait(workspace, jobId, timeoutMs) {
+    /** @param {string} workspace @param {string} jobId @param {number} timeoutMs @param {AbortSignal} [signal] */
+    async wait(workspace, jobId, timeoutMs, signal) {
       const started = clock();
       while (true) {
-        await options.beforeWaitPoll?.();
-        const job = await options.store.readJob(workspace, jobId);
+        signal?.throwIfAborted();
+        await abortable(() => options.beforeWaitPoll?.(), signal);
+        const job = await abortable(() => options.store.readJob(workspace, jobId), signal);
         if (TERMINAL.has(job.status)) return job;
         if (clock() - started >= timeoutMs) throw new PluginError('JOB_WAIT_TIMEOUT', `Timed out waiting for job ${jobId}.`, { category: 'timeout', remedy: `Retry $zcode:status ${jobId} --wait.`, details: { jobId, status: job.status, timeoutMs } });
-        await delay(Math.min(pollIntervalMs, Math.max(0, timeoutMs - (clock() - started))));
+        const waitMs = Math.min(pollIntervalMs, Math.max(0, timeoutMs - (clock() - started)));
+        const customDelay = options.delay;
+        if (customDelay) await abortable(() => customDelay(waitMs), signal);
+        else await pollDelay(waitMs, signal, scheduleTimeout, cancelTimeout);
       }
     },
     /** @param {string} workspace @param {string} jobId @param {string} ownerSessionId */
@@ -155,8 +161,29 @@ function completedDuringAcquisition(observed, current) {
     && ['failed', 'succeeded', 'finalize-pending'].includes(current.status);
 }
 
-/** @param {number} milliseconds */
-function pollDelay(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
+/** @param {number} milliseconds @param {AbortSignal} [signal] @param {(callback:()=>void,ms:number)=>any} [schedule] @param {(timer:any)=>void} [cancel] */
+function pollDelay(milliseconds, signal, schedule = globalThis.setTimeout, cancel = globalThis.clearTimeout) {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = /** @type {any} */ (undefined);
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
+    const onAbort = () => { if (settled) return; settled = true; if (timer !== undefined) cancel(timer); cleanup(); reject(signal?.reason); };
+    const onTimer = () => { if (settled) return; settled = true; cleanup(); resolve(undefined); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    if (!settled) {
+      timer = schedule(onTimer, milliseconds);
+      if (settled) cancel(timer);
+    }
+  });
+}
+/** @template T @param {()=>T|Promise<T>} operation @param {AbortSignal} [signal] */
+function abortable(operation, signal) {
+  signal?.throwIfAborted();
+  const completion = Promise.resolve().then(() => { signal?.throwIfAborted(); return operation(); });
+  return waitForCompletionOrAbort(completion, signal);
+}
 /** @param {any} job @param {'status'|'result'|'cancel'} eligibility */
 function eligibleImplicit(job, eligibility) {
   if (eligibility === 'cancel') return ['queued', 'running', 'cancelling'].includes(job.status);
