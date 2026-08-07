@@ -6,7 +6,7 @@
 
 **Architecture:** Introduce a focused plugin-data path resolver, use it at every companion and hook entry point, and extend setup's existing Codex app-server configuration transaction to preserve and add the required writable root before any state write. Installed cache identity determines the marketplace-qualified namespace; source checkouts use an unqualified development namespace.
 
-**Tech Stack:** Node.js 18.18+ ESM, Codex app-server JSONL configuration API, Node built-in test runner, JSDoc/TypeScript checking, ESLint.
+**Tech Stack:** Node.js 22.13+ ESM, Codex app-server JSONL configuration API, Node built-in test runner, JSDoc/TypeScript checking, ESLint.
 
 ---
 
