@@ -3,6 +3,26 @@ export const MAX_PROGRESS_PREVIEW_ENTRIES = 4;
 export const MAX_PROGRESS_MESSAGE_BYTES = 256;
 export const PROGRESS_HEARTBEAT_MS = 20_000;
 
+/** @template T @param {Promise<T>} completion @param {AbortSignal|undefined} signal @returns {Promise<T>} */
+export async function waitForCompletionOrAbort(completion, signal) {
+  const completionPromise = Promise.resolve(completion);
+  // The completion RPC remains in flight after interruption. Keep its later
+  // rejection observed even after the abort side wins the race.
+  completionPromise.catch(() => {});
+  if (!signal) return completionPromise;
+  signal.throwIfAborted();
+  /** @type {()=>void} */
+  let removeAbortListener = () => {};
+  const interrupted = new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+  });
+  interrupted.catch(() => {});
+  try { return await Promise.race([completionPromise, interrupted]); }
+  finally { removeAbortListener(); }
+}
+
 const KNOWN_PROGRESS = new Map([
   ['prompt_started', ['starting', 'ZCode started the delegated turn.']],
   ['model_streaming', ['running', 'ZCode is generating a response.']],

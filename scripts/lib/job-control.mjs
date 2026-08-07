@@ -123,7 +123,7 @@ async function performCancellation(input, attempts, election) {
     if (!cancelling.zcodeSessionId || !input.options.stopSession) throw new Error('No live ZCode session stop handler is available.');
     await input.options.stopSession(cancelling.zcodeSessionId);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'ZCode stop failed';
+    const message = boundedCancelMessage(error instanceof Error ? error.message : 'ZCode stop failed');
     await input.options.store.transitionJob(input.workspace, job.id, ['cancelling'], 'running', { lastCancelError: message });
     await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'failed-pending-release', message);
     await input.options.afterRollbackBeforeSettle?.();
@@ -167,3 +167,13 @@ function eligibleImplicit(job, eligibility) {
 function finalizeError(jobId, cause) { return new PluginError('JOB_CANCEL_FINALIZE_FAILED', `ZCode stopped, but job ${jobId} could not be finalized as cancelled.`, { category: 'storage', remedy: 'Retry cancellation to reconcile and finalize the cancelling job.', cause }); }
 /** @param {string} jobId @param {string} message @param {unknown} [cause] */
 function cancelError(jobId, message, cause) { return new PluginError('JOB_CANCEL_FAILED', `Could not cancel job ${jobId}: ${message}`, { category: 'runtime', remedy: 'The job remains running; retry cancellation or inspect the ZCode session.', ...(cause ? { cause } : {}) }); }
+/** @param {string} message */
+function boundedCancelMessage(message) {
+  let result = ''; let bytes = 0;
+  for (const character of message) {
+    const characterBytes = Buffer.byteLength(character);
+    if (bytes + characterBytes > 2_048) break;
+    result += character; bytes += characterBytes;
+  }
+  return result || 'ZCode stop failed';
+}

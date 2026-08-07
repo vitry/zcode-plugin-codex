@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
+import { PluginError } from '../../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
@@ -14,6 +15,7 @@ import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
 import { createManagedZCodeClient } from '../../scripts/lib/zcode-client.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
+import { runCompanion } from '../../scripts/zcode-companion.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
@@ -55,9 +57,27 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
+/** @param {()=>Promise<boolean>} predicate @param {string} message */
+async function waitFor(predicate, message) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(message);
+}
+
 test('module import has no CLI side effects', async () => {
   const result = await run(process.execPath, ['--input-type=module', '--eval', `await import(${JSON.stringify(new URL('../../scripts/zcode-companion.mjs', import.meta.url).href)}); process.stdout.write('imported')`]);
   assert.deepEqual({ code: result.code, stdout: result.stdout, stderr: result.stderr }, { code: 0, stdout: 'imported', stderr: '' });
+});
+
+test('an already-aborted foreground invocation cancels its reservation before launcher discovery', async () => {
+  const context = await fixture(); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'before discovery'); controller.abort(interruption); let discoveries = 0;
+  await assert.rejects(runCompanion(['rescue', '--fresh', 'task'], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'turn-1', permissionMode: 'workspace-write' }, signal: controller.signal, dependencies: { discoverLaunch: async () => { discoveries += 1; throw new Error('must not discover'); } } }), (error) => error === interruption);
+  assert.equal(discoveries, 0);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled');
 });
 
 test('real CLI runs foreground review/adversarial/rescue and persists private artifacts', async () => {
@@ -112,6 +132,32 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   ]);
 });
 
+test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves no running job', async (t) => {
+  const context = await fixture(); const record = join(context.directory, 'interrupt.jsonl'); await writeFile(record, '');
+  const child = spawn(process.execPath, [cli, 'rescue', '--fresh', 'interrupt me'], {
+    cwd: context.workspace,
+    env: { ...context.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' },
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+    shell: false,
+  });
+  let stdout = ''; let stderr = ''; let internal = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+  child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
+  /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: context.caller })}\n`);
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+
+  const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  await waitFor(async () => (await recorded()).some((frame) => frame.method === 'session/send'), 'foreground send was not accepted');
+  child.kill('SIGINT');
+  const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  assert.deepEqual(exit, { code: 130, signal: null });
+  const calls = await recorded(); const sentSession = calls.find((frame) => frame.method === 'session/send').params.sessionId;
+  assert.equal(calls.filter((frame) => frame.method === 'session/stop' && frame.params.sessionId === sentSession).length, 1);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.ok(jobs[0].finishedAt); assert.equal(jobs[0].resultArtifact, undefined);
+  assert.equal(stdout, ''); assert.equal(internal, ''); assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|"error"/);
+});
+
 test('background reservation exposes one private invocation, which is single-use', async () => {
   const context = await fixture();
   const reserved = await companion(context, ['review', '--background']);
@@ -125,6 +171,20 @@ test('background reservation exposes one private invocation, which is single-use
   assert.equal(first.code, 0, first.stderr); assert.equal(first.json.job.status, 'succeeded');
   const replay = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.notEqual(replay.code, 0); assert.equal(replay.json.error.code, 'EXECUTION_CAPABILITY_CONSUMED');
+});
+
+test('a non-worker reserved-job invocation receives the foreground abort signal', async () => {
+  const context = await fixture(); const reserved = await companion(context, ['review', '--background']);
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'reserved foreground'); controller.abort(interruption); let discoveries = 0;
+  await assert.rejects(runCompanion(reserved.json.privateInvocation, {
+    cwd: context.workspace,
+    env: context.env,
+    authorization: { executionCapability: reserved.json.executionCapability, jobId: reserved.json.job.id },
+    signal: controller.signal,
+    dependencies: { discoverLaunch: async () => { discoveries += 1; throw new Error('must not discover'); } },
+  }), (error) => error === interruption);
+  assert.equal(discoveries, 0);
+  assert.equal((await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, reserved.json.job.id)).status, 'cancelled');
 });
 
 test('status/list/result and queued cancellation enforce owned job semantics', async () => {

@@ -7,7 +7,8 @@ import { PluginError } from './errors.mjs';
 import { resolveModel } from './args.mjs';
 import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
-import { createProgressReporter } from './progress.mjs';
+import { createJobController } from './job-control.mjs';
+import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -61,8 +62,10 @@ export async function executeJob(input) {
     } else prompt = await buildPrompt({ command: 'rescue', task: input.task });
     const promptArtifact = await writeArtifact({ dataRoot, workspace, directory: 'prompts', jobId: job.id, contents: prompt }, { syncDirectory: input.syncDirectory });
     let snapshot;
+    input.signal?.throwIfAborted();
     if (input.resumeSessionId) {
       await input.onBeforeResume?.(job);
+      input.signal?.throwIfAborted();
       snapshot = await client.resumeSession(input.resumeSessionId);
     } else snapshot = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
     sessionId = snapshot.session.sessionId;
@@ -85,11 +88,12 @@ export async function executeJob(input) {
       ...(selectedModel ? { model: selectedModel } : {}), ...(input.effort ? { effort: input.effort } : {}),
     });
     reporter.observe({ method: 'state.updated', params: { scope: 'session', sessionId, reason: 'prompt_started' } });
+    input.signal?.throwIfAborted();
     const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await client.send(sessionId, prompt);
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
-    await client.waitForCompletion(sessionId);
+    await waitForCompletionOrAbort(client.waitForCompletion(sessionId), input.signal);
     const finalSnapshot = await client.readSession(sessionId);
     remoteTerminalProven = true;
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
@@ -101,7 +105,10 @@ export async function executeJob(input) {
   } catch (error) {
     primaryError = error;
     const current = await input.store.readJob(workspace, job.id).catch(() => running);
-    if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
+    if (isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
+      const cancellation = createJobController({ store: input.store, dataRoot, stopSession: (id) => client.stopSession(id) });
+      await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => {});
+    } else if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
       let canFail = true;
       if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven) {
         try { await client.stopSession(sessionId); }
@@ -241,6 +248,8 @@ function invalidReviewResult(cause) { return new PluginError('REVIEW_RESULT_INVA
 function validResponse(response) { return response && typeof response === 'object' && ['allow', 'deny'].includes(response.decision); }
 /** @param {unknown} error */
 function safeError(error) { return { message: error instanceof Error ? error.message.slice(0, 2048) : 'Unknown execution failure' }; }
+/** @param {unknown} error */
+function isInterruption(error) { return error instanceof PluginError && error.code === 'JOB_INTERRUPTED'; }
 /** @param {unknown[]} errors */
 function progressFailure(errors) {
   const first = errors[0];
