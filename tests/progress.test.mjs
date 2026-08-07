@@ -31,6 +31,7 @@ function notification(reason, patch = {}, overrides = {}) {
 test('exports fixed progress bounds and phases', () => {
   assert.deepEqual(PROGRESS_PHASES, ['starting', 'running', 'waiting', 'finalizing']);
   assert.equal(MAX_PROGRESS_PREVIEW_ENTRIES, 4);
+  assert.equal(progressModule.MAX_PROGRESS_PENDING_EVENTS, 4);
   assert.equal(MAX_PROGRESS_MESSAGE_BYTES, 256);
   assert.equal(PROGRESS_HEARTBEAT_MS, 20_000);
 });
@@ -139,6 +140,29 @@ test('reports immediately, suppresses consecutive duplicates, and serializes per
     { phase: 'running', message: 'ZCode started a tool call.', observedAt },
     { phase: 'waiting', message: 'ZCode is retrying the model request.', observedAt: currentTime },
   ]);
+});
+
+test('bounds pending persistence and output while retaining the latest event under flood', async () => {
+  const calls = []; const persisted = []; const lines = [];
+  let releaseFirst = () => {};
+  const firstBlocked = new Promise((resolve) => { releaseFirst = () => resolve(undefined); });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line),
+    persist: async (event) => { calls.push(event); if (calls.length === 1) await firstBlocked; persisted.push(event); },
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  for (let index = 0; index < 100_000; index += 1) reporter.observe(notification(index % 2 === 0 ? 'tool_call_started' : 'api_retry'));
+  reporter.observe(notification('prompt_completed'));
+  await Promise.resolve();
+  const callsWhileBlocked = calls.length; const linesWhileBlocked = lines.length;
+  releaseFirst(); await reporter.flush();
+  assert.equal(callsWhileBlocked, 1);
+  assert.ok(calls.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS, calls.length);
+  assert.ok(linesWhileBlocked <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS, linesWhileBlocked);
+  assert.equal(calls.at(-1).phase, 'finalizing');
+  assert.equal(calls.at(-1).message, 'ZCode completed the delegated turn.');
+  assert.equal(persisted.at(-1).phase, 'finalizing');
+  reporter.close();
 });
 
 test('emits an unpersisted 20-second heartbeat and closes idempotently', async () => {

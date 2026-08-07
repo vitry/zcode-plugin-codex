@@ -1,5 +1,6 @@
 export const PROGRESS_PHASES = Object.freeze(['starting', 'running', 'waiting', 'finalizing']);
 export const MAX_PROGRESS_PREVIEW_ENTRIES = 4;
+export const MAX_PROGRESS_PENDING_EVENTS = 4;
 export const MAX_PROGRESS_MESSAGE_BYTES = 256;
 export const PROGRESS_HEARTBEAT_MS = 20_000;
 
@@ -63,7 +64,10 @@ export function createProgressReporter({
   /** @type {Array<{phase:string,message:string,observedAt:string}>} */
   const buffered = [];
   const bufferedKeys = new Set();
-  let persistence = Promise.resolve();
+  /** @type {Array<{phase:string,message:string,observedAt:string}>} */
+  const pending = [];
+  /** @type {Promise<void>|null} */
+  let inFlight = null;
   let hasReporterError = false;
   /** @type {unknown} */
   let reporterError;
@@ -84,19 +88,37 @@ export function createProgressReporter({
     timer?.unref?.();
   };
   /** @param {{phase:string,message:string,observedAt:string}} event */
+  const startPersist = (event) => {
+    if (typeof persist !== 'function') return;
+    let operation;
+    try { operation = Promise.resolve(persist(event)); }
+    catch (error) { recordError(error); operation = Promise.resolve(); }
+    const tracked = operation.catch((error) => { recordError(error); }).then(() => {
+      inFlight = null;
+      const next = pending.shift();
+      if (next) startPersist(next);
+    });
+    inFlight = tracked;
+  };
+  /** @param {{phase:string,message:string,observedAt:string}} event */
+  const enqueue = (event) => {
+    if (typeof persist !== 'function') return true;
+    if (inFlight === null) { startPersist(event); return true; }
+    if (pending.length < MAX_PROGRESS_PENDING_EVENTS) { pending.push(event); return true; }
+    pending[pending.length - 1] = event;
+    return false;
+  };
+  /** @param {{phase:string,message:string,observedAt:string}} event */
   const dispatch = (event) => {
     lastActivityAt = event.observedAt;
     const key = `${event.phase}\u0000${event.message}`;
     if (key === previousKey) return null;
     previousKey = key;
-    if (typeof write === 'function') {
+    const admitted = enqueue(event);
+    if (admitted && typeof write === 'function') {
       try { write(`[zcode] ${event.message}\n`); }
       catch (error) { recordError(error); }
     }
-    if (typeof persist === 'function') persistence = persistence.then(async () => {
-      try { await persist(event); }
-      catch (error) { recordError(error); }
-    });
     return event;
   };
   if (active) startTimer();
@@ -127,7 +149,10 @@ export function createProgressReporter({
       for (const event of buffered) dispatch({ ...event, observedAt: activatedAt });
       buffered.length = 0; bufferedKeys.clear(); return true;
     },
-    async flush() { await persistence; if (hasReporterError) throw reporterError; },
+    async flush() {
+      while (inFlight !== null) await inFlight;
+      if (hasReporterError) throw reporterError;
+    },
     close() {
       closed = true; buffered.length = 0; bufferedKeys.clear();
       if (timer === null) return;
