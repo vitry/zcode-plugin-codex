@@ -62,6 +62,7 @@ function safeInline(value) {
   if (typeof value !== 'string' || value.length === 0) return '—';
   const controlFree = [...value].map((character) => {
     const code = /** @type {number} */ (character.codePointAt(0));
+    if (isBidiControl(code)) return '';
     return code <= 31 || code >= 127 && code <= 159 ? ' ' : character;
   }).join('');
   return escapeMarkdown(controlFree.replace(/\s+/g, ' ').trim());
@@ -75,7 +76,13 @@ function safeProgress(message) {
 
 /** @param {string} value */
 function escapeMarkdown(value) {
-  return value.replace(/([\\`*_{}[\]<>#!|])/g, '\\$1').replace(/^([-+])/, '\\$1');
+  return value.replace(/([\\`*_{}[\]<>#!|~])/g, '\\$1').replace(/^([-+])/, '\\$1');
+}
+
+/** @param {number} code */
+function isBidiControl(code) {
+  return code === 0x061c || code === 0x200e || code === 0x200f
+    || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
 }
 
 /** @param {string} value @param {number} maxBytes */

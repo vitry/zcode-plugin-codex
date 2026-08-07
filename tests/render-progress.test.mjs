@@ -75,14 +75,15 @@ test('compact job lists include phase and only the latest safe preview', () => {
       owner: 'same-owner',
       phase: 'running',
       lastActivityAt: '2026-08-08T00:04:00.000Z',
-      progressPreview: ['old preview', 'latest `preview`\nforged line'],
+      progressPreview: ['old preview', 'latest `preview`\nforged \u202Eline ~~strike~~'],
     }],
   });
 
   assert.doesNotMatch(output, /old preview/);
   assert.match(output, /phase=running/);
   assert.match(output, /activity=2026-08-08T00:04:00\.000Z/);
-  assert.match(output, /latest=latest \\`preview\\` forged line/);
+  assert.match(output, /latest=latest \\`preview\\` forged line \\~\\~strike\\~\\~/);
+  assert.doesNotMatch(output, /\u202E/);
   assert.equal(output.trim().split('\n').length, 1);
 });
 

@@ -194,8 +194,11 @@ export function createStateStore(options) {
         const job = await readJobRecord(path, jobId, storage.workspacePath);
         if (job.status === 'queued' || TERMINAL_STATUSES.has(job.status)) return job;
         const observedAtMs = Date.parse(event.observedAt);
+        const currentTime = Date.now();
         const activityFloor = Date.parse(job.lastActivityAt ?? job.startedAt ?? job.createdAt);
-        if (observedAtMs < activityFloor) throw invalidProgressInput(['observedAt']);
+        if (observedAtMs < activityFloor || observedAtMs > currentTime) {
+          throw invalidProgressInput(['observedAt']);
+        }
         const progressPreview = job.progressPreview ?? [];
         const messages = progressPreview.at(-1) === event.message
           ? progressPreview
@@ -206,7 +209,7 @@ export function createStateStore(options) {
           lastActivityAt: event.observedAt,
           progressPreview: messages,
           updatedAt: new Date(Math.max(
-            Date.now(),
+            currentTime,
             Date.parse(job.updatedAt),
             observedAtMs,
           )).toISOString(),
@@ -412,7 +415,8 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
     && job.status !== 'queued'
     && lastActivityAt !== undefined
     && lastActivityAt >= (startedAt ?? createdAt)
-    && Date.parse(job.updatedAt) >= lastActivityAt;
+    && Date.parse(job.updatedAt) >= lastActivityAt
+    && (!terminal || finishedAt !== undefined && finishedAt >= lastActivityAt);
   const validTimeline = validShape
     && Date.parse(job.updatedAt) >= createdAt
     && (startedAt === undefined || Date.parse(job.updatedAt) >= startedAt)
@@ -461,6 +465,8 @@ function validateJobPatch(job, nextStatus, patch, jobId) {
   if ('finishedAt' in patch && (!isIsoTimestamp(patch.finishedAt)
     || Date.parse(/** @type {string} */ (patch.finishedAt))
       < Date.parse(job.startedAt ?? job.createdAt)
+    || typeof job.lastActivityAt === 'string'
+      && Date.parse(/** @type {string} */ (patch.finishedAt)) < Date.parse(job.lastActivityAt)
     || !TERMINAL_STATUSES.has(nextStatus))) invalidFields.push('finishedAt');
   if ('promptArtifact' in patch
     && (!isSafeArtifact(patch.promptArtifact) || !writesRunningMetadata)) {
@@ -557,8 +563,14 @@ function isSafeProgressMessage(value) {
     && Buffer.byteLength(value) <= MAX_PROGRESS_MESSAGE_BYTES
     && ![...value].some((character) => {
       const code = /** @type {number} */ (character.codePointAt(0));
-      return code <= 31 || code >= 127 && code <= 159;
+      return code <= 31 || code >= 127 && code <= 159 || isBidiControl(code);
     });
+}
+
+/** @param {number} code */
+function isBidiControl(code) {
+  return code === 0x061c || code === 0x200e || code === 0x200f
+    || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
 }
 
 /** @param {unknown} value */
