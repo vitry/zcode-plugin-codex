@@ -39,6 +39,7 @@ function renderJob(job) {
   const previews = Array.isArray(job.progressPreview)
     ? job.progressPreview.filter((/** @type {unknown} */ message) => typeof message === 'string').slice(-4)
     : [];
+  const lastCancellationError = renderCancellationError(job.lastCancelError);
   const lines = [
     `Job: ${safeInline(job.id)}`,
     `Command: ${safeInline(job.command)}`,
@@ -49,12 +50,23 @@ function renderJob(job) {
     `Finished: ${safeInline(job.finishedAt)}`,
     `${timingLabel}: ${timing}`,
     `Last activity: ${safeInline(job.lastActivityAt)}`,
+    ...(lastCancellationError === null
+      ? [] : [`Last cancellation error: ${lastCancellationError}`]),
     'Progress:',
     ...(previews.length > 0
       ? previews.map((/** @type {string} */ message) => `  - ${safeProgress(message)}`)
       : ['  - none']),
   ];
   return `${lines.join('\n')}\n`;
+}
+
+/** @param {unknown} value */
+function renderCancellationError(value) {
+  const message = typeof value === 'string' ? value
+    : value && typeof value === 'object' && 'message' in value
+      && typeof value.message === 'string' ? value.message : null;
+  if (message === null || message.trim().length === 0) return null;
+  return boundUtf8(safeInline(message), 2_048);
 }
 
 /** @param {unknown} value */

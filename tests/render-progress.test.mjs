@@ -41,9 +41,31 @@ test('renders a bounded detailed active-job progress report with elapsed time', 
     assert.match(output, /Progress:\n {2}- ZCode started the delegated turn\.\n {2}- ZCode started a tool call\.\n {2}- ZCode is retrying the model request\.\n {2}- \\\*\\\*ZCode completed a tool call\.\\\*\\\*/);
     assert.match(output, /Model policy: default=quick; aliases=quick/);
     assert.doesNotMatch(output, / {2}- \*\*ZCode/);
+    assert.doesNotMatch(output, /Last cancellation error:/);
   } finally {
     Date.now = originalNow;
   }
+});
+
+test('detailed status safely renders a bounded last cancellation error', () => {
+  const job = {
+    id,
+    command: 'rescue',
+    status: 'running',
+    createdAt: '2026-08-08T00:00:00.000Z',
+    updatedAt: '2026-08-08T00:00:01.000Z',
+    lastCancelError: 'stop **refused**\nretry \u202Esoon ~~later~~',
+  };
+  const output = renderOutput({ job });
+  assert.match(output, /Last cancellation error: stop \\\*\\\*refused\\\*\\\* retry soon \\~\\~later\\~\\~/);
+  assert.doesNotMatch(output, /\u202E|\nretry/);
+
+  const raw = renderOutput({ job: { ...job, lastCancelError: 'x'.repeat(3_000) } });
+  const line = raw.split('\n').find((/** @type {string} */ entry) => entry.startsWith('Last cancellation error: '));
+  assert.ok(line);
+  const renderedError = line.slice('Last cancellation error: '.length);
+  assert.ok(Buffer.byteLength(renderedError) <= 2_048);
+  assert.match(renderedError, /\.\.\.$/);
 });
 
 test('renders terminal duration and keeps result rendering unchanged', () => {
