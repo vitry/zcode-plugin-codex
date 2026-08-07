@@ -71,6 +71,7 @@ export async function executeJob(input) {
     sessionId = snapshot.session.sessionId;
     reporter = createProgressReporter({
       sessionId,
+      deferred: true,
       ...(input.progressWriter ? { write: input.progressWriter } : {}),
       persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
       ...input.progressDependencies,
@@ -87,9 +88,9 @@ export async function executeJob(input) {
       ...(input.workerLeaseId ? { workerLeaseId: input.workerLeaseId } : {}),
       ...(selectedModel ? { model: selectedModel } : {}), ...(input.effort ? { effort: input.effort } : {}),
     });
-    reporter.observe({ method: 'state.updated', params: { scope: 'session', sessionId, reason: 'prompt_started' } });
     input.signal?.throwIfAborted();
     const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await client.send(sessionId, prompt);
+    reporter.activate({ method: 'state.updated', params: { scope: 'session', sessionId, reason: 'prompt_started' } });
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };

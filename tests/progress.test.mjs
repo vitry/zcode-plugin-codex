@@ -262,6 +262,39 @@ test('writer failures do not interrupt observation or persistence and surface af
   }
 });
 
+test('deferred reporter buffers only bounded normalized events and activates starting-first', async () => {
+  const lines = []; const persisted = []; let intervalCalls = 0; let currentTime = observedAt;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', deferred: true,
+    write: (line) => lines.push(line), persist: async (event) => persisted.push(event), now: () => currentTime,
+    setInterval: () => { intervalCalls += 1; return { unref() {} }; }, clearInterval: () => {},
+  });
+  for (const reason of ['model_streaming', 'model_streaming', 'tool_call_started', 'api_retry', 'tool_call_result', 'prompt_completed']) {
+    reporter.observe(notification(reason, { secret: `raw-${reason}` }));
+  }
+  assert.equal(intervalCalls, 0); assert.deepEqual(lines, []); assert.deepEqual(persisted, []);
+  currentTime = '2026-08-08T00:00:10.000Z';
+  reporter.activate(notification('prompt_started'));
+  await reporter.flush();
+  assert.equal(intervalCalls, 1);
+  assert.deepEqual(lines, [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode started a tool call.\n',
+    '[zcode] ZCode is retrying the model request.\n',
+    '[zcode] ZCode completed a tool call.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
+  ]);
+  assert.deepEqual(persisted.map(({ phase, message, observedAt: at }) => ({ phase, message, observedAt: at })), [
+    { phase: 'starting', message: 'ZCode started the delegated turn.', observedAt: currentTime },
+    { phase: 'running', message: 'ZCode started a tool call.', observedAt: currentTime },
+    { phase: 'waiting', message: 'ZCode is retrying the model request.', observedAt: currentTime },
+    { phase: 'running', message: 'ZCode completed a tool call.', observedAt: currentTime },
+    { phase: 'finalizing', message: 'ZCode completed the delegated turn.', observedAt: currentTime },
+  ]);
+  assert.doesNotMatch(JSON.stringify(persisted), /raw-|secret/);
+  reporter.close();
+});
+
 test('does not create a heartbeat interval without a writer', () => {
   let intervalCalls = 0;
   const reporter = progressModule.createProgressReporter({

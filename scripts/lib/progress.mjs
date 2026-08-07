@@ -44,19 +44,25 @@ export function normalizeZCodeProgress(notification, sessionId, observedAt) {
 }
 
 /**
- * @param {{sessionId:string,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
+ * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
  */
 export function createProgressReporter({
   sessionId,
+  deferred = false,
   write,
   persist,
   now = () => new Date().toISOString(),
   setInterval: setIntervalFn = globalThis.setInterval,
   clearInterval: clearIntervalFn = globalThis.clearInterval,
 }) {
-  let lastActivityAt = now();
+  let active = !deferred;
+  let closed = false;
+  let lastActivityAt = active ? now() : null;
   /** @type {string|null} */
   let previousKey = null;
+  /** @type {Array<{phase:string,message:string,observedAt:string}>} */
+  const buffered = [];
+  const bufferedKeys = new Set();
   let persistence = Promise.resolve();
   let hasReporterError = false;
   /** @type {unknown} */
@@ -64,7 +70,8 @@ export function createProgressReporter({
   const recordError = (/** @type {unknown} */ error) => { if (!hasReporterError) { hasReporterError = true; reporterError = error; } };
   /** @type {any} */
   let timer = null;
-  if (typeof write === 'function') {
+  const startTimer = () => {
+    if (timer !== null || typeof write !== 'function') return;
     timer = setIntervalFn(() => {
       const currentTime = now();
       if (!validTimestamp(currentTime) || !validTimestamp(lastActivityAt)) return;
@@ -74,30 +81,55 @@ export function createProgressReporter({
       try { write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`); }
       catch (error) { recordError(error); }
     }, PROGRESS_HEARTBEAT_MS);
-  }
-  timer?.unref?.();
+    timer?.unref?.();
+  };
+  /** @param {{phase:string,message:string,observedAt:string}} event */
+  const dispatch = (event) => {
+    lastActivityAt = event.observedAt;
+    const key = `${event.phase}\u0000${event.message}`;
+    if (key === previousKey) return null;
+    previousKey = key;
+    if (typeof write === 'function') {
+      try { write(`[zcode] ${event.message}\n`); }
+      catch (error) { recordError(error); }
+    }
+    if (typeof persist === 'function') persistence = persistence.then(async () => {
+      try { await persist(event); }
+      catch (error) { recordError(error); }
+    });
+    return event;
+  };
+  if (active) startTimer();
 
   return {
     /** @param {unknown} notification */
     observe(notification) {
+      if (closed) return null;
       const event = normalizeZCodeProgress(notification, sessionId, now());
       if (event === null) return null;
-      lastActivityAt = event.observedAt;
       const key = `${event.phase}\u0000${event.message}`;
-      if (key === previousKey) return null;
-      previousKey = key;
-      if (typeof write === 'function') {
-        try { write(`[zcode] ${event.message}\n`); }
-        catch (error) { recordError(error); }
+      if (!active) {
+        if (bufferedKeys.has(key)) return null;
+        if (buffered.length === MAX_PROGRESS_PREVIEW_ENTRIES) {
+          const removed = buffered.shift();
+          if (removed) bufferedKeys.delete(`${removed.phase}\u0000${removed.message}`);
+        }
+        buffered.push(event); bufferedKeys.add(key); return event;
       }
-      if (typeof persist === 'function') persistence = persistence.then(async () => {
-        try { await persist(event); }
-        catch (error) { recordError(error); }
-      });
-      return event;
+      return dispatch(event);
+    },
+    /** @param {unknown} initialNotification */
+    activate(initialNotification) {
+      if (active || closed) return false;
+      const activatedAt = now(); active = true; lastActivityAt = activatedAt; startTimer();
+      const initial = normalizeZCodeProgress(initialNotification, sessionId, activatedAt);
+      if (initial) dispatch(initial);
+      for (const event of buffered) dispatch({ ...event, observedAt: activatedAt });
+      buffered.length = 0; bufferedKeys.clear(); return true;
     },
     async flush() { await persistence; if (hasReporterError) throw reporterError; },
     close() {
+      closed = true; buffered.length = 0; bufferedKeys.clear();
       if (timer === null) return;
       clearIntervalFn(timer);
       timer = null;

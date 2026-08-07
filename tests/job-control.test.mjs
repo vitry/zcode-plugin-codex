@@ -413,6 +413,45 @@ test('executor reports only same-session progress and drains persistence before 
   assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
 });
 
+test('slow send has no progress side effects until accepted', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {string[]} */
+  const lines = [];
+  let intervalCalls = 0; let fireInterval = () => {};
+  /** @type {(value:any)=>void} */ let resolveSend = () => {};
+  /** @type {()=>void} */ let signalSendStarted = () => {};
+  const sendStarted = new Promise((resolve) => { signalSendStarted = () => resolve(undefined); });
+  const sendCompletion = new Promise((resolve) => { resolveSend = resolve; });
+  let currentTime = new Date().toISOString();
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-slow-send' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => { signalSendStarted(); return sendCompletion; }, waitForCompletion: async () => {},
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-slow-send', parentMessageId: 'input-slow-send' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+  };
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line), progressDependencies: { now: () => currentTime, setInterval: (callback) => { intervalCalls += 1; fireInterval = callback; return { unref() {} }; }, clearInterval: () => {} } });
+  await sendStarted;
+  currentTime = new Date(Date.parse(currentTime) + 21_000).toISOString(); fireInterval();
+  assert.equal(intervalCalls, 0); assert.deepEqual(lines, []);
+  const beforeAccepted = await store.readJob(workspace, job.id); assert.equal(beforeAccepted.phase, undefined); assert.equal(beforeAccepted.progressPreview, undefined);
+  currentTime = new Date().toISOString(); resolveSend({ inputId: 'input-slow-send', stateRevision: 1 });
+  assert.equal((await execution).job.status, 'succeeded'); assert.match(lines[0], /started the delegated turn/);
+});
+
+test('rejected send never activates progress or heartbeat', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {string[]} */
+  const lines = [];
+  let intervalCalls = 0;
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-rejected-send' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => { throw new Error('send rejected'); }, stopSession: async () => {}, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line), progressDependencies: { now: () => new Date().toISOString(), setInterval: () => { intervalCalls += 1; return { unref() {} }; }, clearInterval: () => {} } }), /send rejected/);
+  const failed = await store.readJob(workspace, job.id);
+  assert.equal(intervalCalls, 0); assert.deepEqual(lines, []); assert.equal(failed.status, 'failed'); assert.equal(failed.phase, undefined); assert.equal(failed.progressPreview, undefined);
+});
+
 test('writer failure still persists progress and fails with a stable progress error', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   /** @type {any[]} */
