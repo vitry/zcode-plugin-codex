@@ -388,6 +388,15 @@ test('internal envelope closes its owned stream once on success, error, and time
   }
 });
 
+test('internal envelope maps synchronous stream construction failures to its stable error', async () => {
+  await assert.rejects(
+    readInternalEnvelope(33, { createStream: () => { throw new TypeError('secret unsupported descriptor'); } }),
+    (error) => error instanceof PluginError
+      && error.code === 'INTERNAL_AUTHORIZATION_INVALID'
+      && !error.message.includes('secret'),
+  );
+});
+
 test('internal response writer times out without blocking the event loop and closes once', async () => {
   let closes = 0; let ticked = false; setImmediate(() => { ticked = true; });
   await assert.rejects(writeInternalResponse({ ok: true }, 44, { timeoutMs: 10, write: () => {}, close: (_fd, callback) => { closes += 1; callback(); } }), { code: 'INTERNAL_RESPONSE_WRITE_TIMEOUT' });

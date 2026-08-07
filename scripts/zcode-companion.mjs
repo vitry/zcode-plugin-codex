@@ -257,7 +257,9 @@ export function readInternalEnvelope(fd = 3, options = {}) {
   if (!Number.isSafeInteger(fd) || fd < 3 || !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw authorizationInputError();
   options.signal?.throwIfAborted();
   return new Promise((resolvePromise, reject) => {
-    const stream = options.createStream?.(fd) ?? new Socket({ fd, readable: true, writable: false });
+    let stream;
+    try { stream = options.createStream?.(fd) ?? new Socket({ fd, readable: true, writable: false }); }
+    catch { reject(authorizationInputError()); return; }
     let data = ''; let bytes = 0; let settled = false; let closed = false; let cleaned = false;
     /** @type {{resolve:true,value:any}|{resolve:false,value:unknown}|null} */
     let outcome = null;
