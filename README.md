@@ -17,7 +17,7 @@ codex plugin marketplace add vitry/zcode-plugin-codex --ref marketplace
 codex plugin add zcode@vitry
 ```
 
-The release workflow builds `.agents/plugins/marketplace.json` plus `plugins/zcode/` with production dependencies on that branch. Restart Codex after installation, then run `$zcode:setup` in the target workspace. Do not copy hooks out of the installed plugin cache.
+The release workflow builds `.agents/plugins/marketplace.json` plus `plugins/zcode/` with production dependencies on that branch. Restart Codex after installation, then run `$zcode:setup` in the target workspace. On the first run, setup may add the marketplace-qualified plugin data directory to Codex's writable roots; if it reports `restart-required`, restart Codex and rerun setup. Do not copy hooks out of the installed plugin cache.
 
 Discovery checks `ZCODE_PATH`, `zcode` on `PATH`, platform locations, and on macOS the bundled `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`. Setup reports missing, outdated, unauthenticated, or untrusted installations; it does not download ZCode or sign in for you.
 
@@ -47,7 +47,7 @@ codex
 # In the Codex session: $zcode:setup
 ```
 
-Setup persists `${PLUGIN_DATA}/workspaces/<workspace-hash>/config/models.json` with this schema:
+Setup persists `$CODEX_HOME/plugins/data/zcode-<marketplace>/workspaces/<workspace-hash>/config/models.json` (the hook-provided `PLUGIN_DATA` resolves to the same root) with this schema:
 
 ```json
 {"version":1,"defaultModel":"fast","models":{"fast":{"providerId":"provider","modelId":"model","variant":"optional"}}}
@@ -59,7 +59,7 @@ To verify configuration, rerun `$zcode:setup`, then run `$zcode:rescue --fresh -
 
 ## Jobs, Transfer, and review gate
 
-Every run is reserved as a durable, owner-scoped job. Plugin state lives beneath `${PLUGIN_DATA}/workspaces/<workspace-hash>/` with private permissions; prompts, results, session IDs, and logs are never written into the repository. `$zcode:status`, `$zcode:result`, and `$zcode:cancel` work across later turns in the same Codex session, while sibling sessions cannot adopt a job.
+Every run is reserved as a durable, owner-scoped job. Installed plugin state lives beneath `$CODEX_HOME/plugins/data/zcode-<marketplace>/workspaces/<workspace-hash>/` with private permissions; prompts, results, session IDs, and logs are never written into the repository or plugin cache. `$zcode:status`, `$zcode:result`, and `$zcode:cancel` work across later turns in the same Codex session, while sibling sessions cannot adopt a job.
 
 Transfer reads a persisted Codex thread through `codex app-server` and imports only ordered visible user/assistant text. It does not transfer hidden reasoning, tools, permissions, or ZCode job ownership.
 
@@ -72,6 +72,7 @@ The optional Stop review gate runs a bounded foreground read-only review only af
 - Authentication unavailable: authenticate with ZCode itself, then rerun setup.
 - Background work: use `$zcode:status <job-id> --wait`, `$zcode:result <job-id>`, or `$zcode:cancel <job-id>` exactly as reported.
 - Hook trust or restart required: let setup trust only this installed plugin's exact hook hashes, restart Codex, and rerun setup.
+- `plugin-data-root-added`: setup added the stable plugin data root to Codex configuration without writing plugin state; restart Codex and rerun setup.
 
 macOS with ZCode Desktop 3.6.5 and CLI 0.16.1+ is the release qualification target. Run `ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualified` on an authenticated machine before marking a release qualified. To include the installed-marketplace-to-real-Codex bridge, also set `ZCODE_CODEX_SKILLS_E2E=1`; this consumes authenticated Codex credits. Missing opt-in, authentication, model, or credits produces a structured `unqualified` skip, never a pass. An unknown execution failure remains a test failure. Linux and Windows are code-supported by fake-protocol CI, but are not real-CLI qualified yet.
 

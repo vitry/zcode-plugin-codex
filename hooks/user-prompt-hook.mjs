@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { resolvePluginDataRoot } from '../scripts/lib/plugin-data.mjs';
 import { fingerprintWorkspace, isOwnedSession, unreadJobs } from './lib/hook-state.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
 try {
-  const input = await readHookInput('UserPromptSubmit'); const dataRoot = process.env.PLUGIN_DATA; if (!dataRoot) throw new Error('PLUGIN_DATA required');
+  const input = await readHookInput('UserPromptSubmit'); const dataRoot = resolvePluginDataRoot({ env: process.env, pluginRoot: resolve(fileURLToPath(new URL('../', import.meta.url))) });
   if (!await isOwnedSession(dataRoot, input)) { process.stdout.write('{}'); process.exit(0); }
   const identity = createIdentityStore({ dataRoot }); await identity.beginCallerTurn({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd, permissionMode: input.permission_mode, prompt: input.prompt });
   try { const fingerprint = await fingerprintWorkspace(input.cwd); await identity.recordGateBaseline({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd, fingerprint, permissionSnapshot: { permissionMode: input.permission_mode } }); } catch (error) { if (error?.code === 'GATE_BASELINE_EXISTS') { /* another exact hook invocation already recorded it */ } else { /* review gating is optional; caller authorization is not */ } }

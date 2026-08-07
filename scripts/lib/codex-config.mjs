@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { PluginError } from './errors.mjs';
@@ -16,19 +17,60 @@ const EXPECTED_COMMANDS = new Map([['sessionStart', 'node "$PLUGIN_ROOT/hooks/se
 
 export async function runSetup(input) {
   validateSetupInput(input); const pluginRoot = await trustedRoot(input.pluginRoot); const cwd = await realpath(input.cwd); const hooksPath = await realpath(join(pluginRoot, 'hooks', 'hooks.json'));
-  input = { ...input, modelPolicy: summarizeWorkspaceModelConfig(await persistSetupModelConfig({ dataRoot: input.dataRoot, workspace: cwd, env: input.env })) };
-  let discovery;
-  try { discovery = await (input.dependencies?.discoverZCode ?? discoverZCode)({ explicitPath: input.env.ZCODE_PATH, env: input.env }); }
-  catch (error) { if (error?.code === 'ZCODE_NOT_FOUND' || error?.code === 'ZCODE_VERSION_UNSUPPORTED') return reportAndPersist(input, { path: null, version: null }, { ready: false }, error.code === 'ZCODE_NOT_FOUND' ? 'missing' : 'outdated', error.message, false); throw error; }
   let client;
   try {
-    client = await startClient({ ...input.codex, cwd, env: input.env }); const config = await client.request('config/read', { cwd, includeLayers: true }); const hooks = await client.request('hooks/list', { cwds: [cwd] }); const inspected = await validateHooks(hooks, cwd, pluginRoot, hooksPath);
+    client = await startClient({ ...input.codex, cwd, env: input.env }); const config = await client.request('config/read', { cwd, includeLayers: true }); const userLayer = selectWritableUserLayer(config?.layers); const writeTarget = userWriteTarget(userLayer);
+    const rootBootstrap = await writableRootBootstrap(config, input.dataRoot, userLayer);
+    if (rootBootstrap.required) {
+      await client.request('config/batchWrite', { edits: [{ keyPath: 'sandbox_workspace_write.writable_roots', value: rootBootstrap.roots, mergeStrategy: 'replace' }], ...writeTarget, reloadUserConfig: true });
+      const updated = await client.request('config/read', { cwd, includeLayers: true });
+      if (!await hasEffectiveWritableRoot(updated, input.dataRoot)) throw dataRootOverridden();
+      return { status: 'restart-required', reason: 'plugin-data-root-added', zcode: { path: null, version: null }, auth: { ready: false, status: 'deferred' }, hooks: { ready: false }, reviewGate: { enabled: false, deferred: true }, modelPolicy: { configured: false, aliases: [] } };
+    }
+    input = { ...input, modelPolicy: summarizeWorkspaceModelConfig(await persistSetupModelConfig({ dataRoot: input.dataRoot, workspace: cwd, env: input.env })) };
+    let discovery;
+    try { discovery = await (input.dependencies?.discoverZCode ?? discoverZCode)({ explicitPath: input.env.ZCODE_PATH, env: input.env }); }
+    catch (error) { if (error?.code === 'ZCODE_NOT_FOUND' || error?.code === 'ZCODE_VERSION_UNSUPPORTED') return reportAndPersist(input, { path: null, version: null }, { ready: false }, error.code === 'ZCODE_NOT_FOUND' ? 'missing' : 'outdated', error.message, false); throw error; }
+    const hooks = await client.request('hooks/list', { cwds: [cwd] }); const inspected = await validateHooks(hooks, cwd, pluginRoot, hooksPath);
     if (!inspected.ok) return reportAndPersist(input, discovery, { ready: false }, 'untrusted', inspected.reason, false);
     const auth = await diagnoseZCodeAuth({ workspace: cwd, discovery, env: input.env }); if (!auth.ready) return reportAndPersist(input, discovery, auth, 'unauthenticated', auth.reason, false);
     const edits = []; if (config?.config?.features?.hooks !== true) edits.push({ keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' }); const trust = {}; for (const hook of inspected.hooks) if (!['trusted', 'managed'].includes(hook.trustStatus)) trust[hook.key] = { trusted_hash: hook.currentHash }; if (Object.keys(trust).length) edits.push({ keyPath: 'hooks.state', value: trust, mergeStrategy: 'upsert' });
-    let status = 'ready'; if (edits.length) { await client.request('config/batchWrite', { edits, expectedVersion: userVersion(config), reloadUserConfig: true }); status = 'restart-required'; }
+    let status = 'ready'; if (edits.length) { await client.request('config/batchWrite', { edits, ...writeTarget, reloadUserConfig: true }); status = 'restart-required'; }
     return reportAndPersist(input, discovery, auth, status, null, true);
   } finally { await client?.close().catch(() => {}); }
+}
+
+async function writableRootBootstrap(config, dataRoot, user) {
+  const effective = config?.config?.sandbox_workspace_write?.writable_roots;
+  const effectiveRoots = Array.isArray(effective) ? effective.filter((value) => typeof value === 'string') : [];
+  const canonicalDataRoot = await canonicalConfigPath(dataRoot);
+  for (const root of effectiveRoots) if (platformPathEqual(await canonicalConfigPath(root), canonicalDataRoot)) return { required: false, roots: effectiveRoots };
+  const userRoots = user?.config?.sandbox_workspace_write?.writable_roots;
+  if (Array.isArray(userRoots)) {
+    for (const root of userRoots) if (typeof root === 'string' && platformPathEqual(await canonicalConfigPath(root), canonicalDataRoot)) throw dataRootOverridden();
+  }
+  return { required: true, roots: [...(Array.isArray(userRoots) ? userRoots.filter((value) => typeof value === 'string') : []), dataRoot] };
+}
+
+async function canonicalConfigPath(value) { try { return await realpath(value); } catch { return resolve(value); } }
+async function hasEffectiveWritableRoot(config, dataRoot) {
+  const roots = config?.config?.sandbox_workspace_write?.writable_roots;
+  if (!Array.isArray(roots)) return false;
+  const canonicalDataRoot = await canonicalConfigPath(dataRoot);
+  for (const root of roots) if (typeof root === 'string' && platformPathEqual(await canonicalConfigPath(root), canonicalDataRoot)) return true;
+  return false;
+}
+export function platformPathEqual(left, right, platform = process.platform) { return platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right; }
+function dataRootOverridden() { return new PluginError('PLUGIN_DATA_ROOT_OVERRIDDEN', 'The plugin data root is configured but overridden by a higher-precedence Codex layer.', { category: 'configuration', remedy: 'Add the ZCode plugin data root to the higher-precedence sandbox_workspace_write.writable_roots setting, restart Codex, and rerun $zcode:setup.' }); }
+function selectWritableUserLayer(layers) {
+  const users = Array.isArray(layers) ? layers.filter((layer) => layer?.name?.type === 'user') : [];
+  return users.find((layer) => layer.name.profile != null && Array.isArray(layer?.config?.sandbox_workspace_write?.writable_roots))
+    ?? users.find((layer) => layer.name.profile === null || layer.name.profile === undefined)
+    ?? null;
+}
+function userWriteTarget(layer) {
+  if (typeof layer?.version !== 'string' || !layer.version) throw new PluginError('CODEX_CONFIG_VERSION_MISSING', 'Codex user config version is unavailable.', { category: 'protocol', remedy: 'Restart Codex and rerun $zcode:setup.' });
+  return { filePath: typeof layer?.name?.file === 'string' && layer.name.file ? layer.name.file : null, expectedVersion: layer.version };
 }
 
 /** @param {{dataRoot:string,workspace:string,env:NodeJS.ProcessEnv}} input */
@@ -77,7 +119,6 @@ function isWithinDirectory(directory, target) {
   const descendant = relative(directory, target);
   return descendant === '' || (!isAbsolute(descendant) && descendant !== '..' && !descendant.startsWith(`..${sep}`));
 }
-function userVersion(config) { const layer = Array.isArray(config?.layers) ? config.layers.find((item) => item?.name?.type === 'user') : null; if (typeof layer?.version !== 'string' || !layer.version) throw new PluginError('CODEX_CONFIG_VERSION_MISSING', 'Codex user config version is unavailable.', { category: 'protocol', remedy: 'Restart Codex and rerun $zcode:setup.' }); return layer.version; }
 /**
  * Prove model authentication by creating, then stopping, a harmless session.
  * @param {{workspace:string,discovery:{launch:{command:string,args:string[],target?:string}},env?:NodeJS.ProcessEnv,createClient?:(options:any)=>Promise<any>,requestTimeoutMs?:number}} input

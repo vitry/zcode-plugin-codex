@@ -12,6 +12,7 @@ import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { readJsonFile } from '../scripts/lib/fs.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { resolvePluginDataRoot } from '../scripts/lib/plugin-data.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { fingerprintWorkspace, finishGateRun, isForwarding, isOwnedSession, writeGateRun } from './lib/hook-state.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
@@ -34,7 +35,7 @@ export async function runStopReviewGate(input, options) {
 }
 
 async function main() {
-  try { const input = await readHookInput('Stop'); const dataRoot = process.env.PLUGIN_DATA; if (!dataRoot) throw new Error('PLUGIN_DATA required'); output(await runStopReviewGate(input, { dataRoot, env: process.env })); }
+  try { const input = await readHookInput('Stop'); const dataRoot = resolvePluginDataRoot({ env: process.env, pluginRoot: root }); output(await runStopReviewGate(input, { dataRoot, env: process.env })); }
   catch (error) { output({ decision: 'block', reason: cap(`ZCode review gate failed safely (${error?.code ?? 'HOOK_FAILED'}). Run $zcode:setup, then retry the final check.`) }); }
 }
 
