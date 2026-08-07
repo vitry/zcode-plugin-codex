@@ -186,7 +186,7 @@ export class ZCodeProtocolClient {
     if (!pending) { this.fail(new PluginError('ZCODE_RESPONSE_UNCORRELATED', 'ZCode sent an uncorrelated response.', { category: 'protocol', remedy: 'Restart ZCode and retry.', details: { id: message.id } })); return; }
     this.pending.delete(message.id); clearTimeout(pending.timer);
     if ('error' in message) {
-      if (!plainObject(message.error) || typeof message.error.message !== 'string') { pending.reject(malformedFrame()); this.fail(malformedFrame()); return; }
+      if (!plainObject(message.error) || typeof message.error.message !== 'string' || !Number.isSafeInteger(message.error.code)) { pending.reject(malformedFrame()); this.fail(malformedFrame()); return; }
       const remote = message.error.data?.pluginError;
       if (plainObject(remote) && nonEmpty(remote.code) && nonEmpty(remote.category) && nonEmpty(remote.remedy)) {
         pending.reject(new PluginError(remote.code, message.error.message, { category: remote.category, remedy: remote.remedy, details: plainObject(remote.details) ? remote.details : {} }));

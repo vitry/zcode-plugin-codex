@@ -119,7 +119,8 @@ input.on('line', async (line) => {
   const delay = Number(process.env.FAKE_ZCODE_DELAY_MS ?? 0);
   if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
   if (process.env.FAKE_ZCODE_ERROR === message.method) {
-    const error = { code: -32099, message: 'fixture request failed' };
+    const error = { message: 'fixture request failed' };
+    if (process.env.FAKE_ZCODE_ERROR_OMIT_CODE !== '1') error.code = process.env.FAKE_ZCODE_ERROR_CODE_JSON === undefined ? -32099 : JSON.parse(process.env.FAKE_ZCODE_ERROR_CODE_JSON);
     if (process.env.FAKE_ZCODE_ERROR_DATA_CODE !== undefined) {
       error.data = { code: process.env.FAKE_ZCODE_ERROR_DATA_CODE, secret: process.env.FAKE_ZCODE_ERROR_DATA_SECRET ?? 'fixture-secret-must-not-leak' };
     }

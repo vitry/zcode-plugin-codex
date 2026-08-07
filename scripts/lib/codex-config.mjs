@@ -132,7 +132,7 @@ export async function diagnoseZCodeAuth(input) {
     sessionId = snapshot.session.sessionId;
     return { ready: true, status: 'authenticated' };
   } catch (error) {
-    if (error?.code === 'ZCODE_REQUEST_FAILED' && error.details?.remoteCode === 'model_config_missing') {
+    if (error?.code === 'ZCODE_REQUEST_FAILED' && error.details?.method === 'session/create' && error.details.remoteCode === 'model_config_missing') {
       return { ready: false, status: 'unauthenticated', reason: 'ZCode CLI model provider is not configured.', remedy: 'Configure an API-key provider in ZCode CLI, then run $zcode:setup again.' };
     }
     return { ready: false, status: 'unauthenticated', reason: 'ZCode session/create could not prove model authentication.', remedy: 'Authenticate with ZCode, then run $zcode:setup again.' };

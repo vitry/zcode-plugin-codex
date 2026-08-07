@@ -278,6 +278,25 @@ test('request failures retain only a bounded safe remote error code', async (t) 
   }
 });
 
+test('RPC errors with missing or non-integer codes fail closed without leaking code contents', async (t) => {
+  const cases = [
+    ['missing', { FAKE_ZCODE_ERROR_OMIT_CODE: '1' }],
+    ['string', { FAKE_ZCODE_ERROR_CODE_JSON: JSON.stringify('-32099') }],
+    ['object', { FAKE_ZCODE_ERROR_CODE_JSON: JSON.stringify({ value: -32099 }) }],
+    ['secret-bearing object', { FAKE_ZCODE_ERROR_CODE_JSON: JSON.stringify({ apiKey: 'rpc-code-secret-must-not-leak' }) }],
+  ];
+  for (const [name, env] of cases) {
+    await t.test(name, () => withClient(async (client) => {
+      await assert.rejects(client.listSessions(), (error) => {
+        assert.equal(error.code, 'ZCODE_PROTOCOL_MALFORMED');
+        assert.deepEqual(error.details, {});
+        assert.doesNotMatch(JSON.stringify(error), /rpc-code-secret-must-not-leak/);
+        return true;
+      });
+    }, { FAKE_ZCODE_ERROR: 'session/list', ...env }));
+  }
+});
+
 test('thought level validates vocabulary and advertised values without guessing', async () => {
   await withClient(async (client) => {
     const created = await client.createSession({ workspace: '/repo' });
