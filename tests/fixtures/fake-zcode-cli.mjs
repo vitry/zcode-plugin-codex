@@ -57,6 +57,18 @@ function send(message) {
 }
 function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
 
+function isUnsupportedRuntimePreferencesResponse(message, pending) {
+  return Object.keys(message).length === 2
+    && message.id === pending.runtimePreferencesId
+    && !Object.hasOwn(message, 'method')
+    && !Object.hasOwn(message, 'result')
+    && message.error !== null
+    && typeof message.error === 'object'
+    && !Array.isArray(message.error)
+    && message.error.code === -32601
+    && typeof message.error.message === 'string';
+}
+
 function completeCreate(message) {
   const p = message.params ?? {};
   const sessionId = process.env.FAKE_ZCODE_SESSION_ID ?? p.sessionId ?? `session-${sessions.size + 1}`;
@@ -87,10 +99,11 @@ input.on('line', async (line) => {
     return;
   }
   await record(message);
-  if (!message.method && pendingRuntimePreferencesCreate && message.id === pendingRuntimePreferencesCreate.runtimePreferencesId && message.error?.code === -32601) {
+  if (!message.method && pendingRuntimePreferencesCreate) {
     const pending = pendingRuntimePreferencesCreate;
     pendingRuntimePreferencesCreate = undefined;
-    completeCreate(pending.message);
+    if (isUnsupportedRuntimePreferencesResponse(message, pending)) completeCreate(pending.message);
+    else send({ id: pending.message.id, error: { code: -32098, message: 'invalid runtime preference response' } });
     return;
   }
   if (!message.method) return;

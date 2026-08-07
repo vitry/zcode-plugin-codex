@@ -89,15 +89,24 @@ test('session/create answers runtime preference requests with the exact string I
     const created = await client.createSession({ workspace: '/repo' });
     assert.equal(created.session.sessionId, 'session-1');
     const calls = await readRecordedCalls(record);
-    assert.ok(calls.some((entry) => entry.id === 'server-1' && entry.error?.code === -32601));
+    const response = calls.find((entry) => entry.id === 'server-1' && !entry.method);
+    assert.deepEqual(response, { id: 'server-1', error: { code: -32601, message: 'Unsupported server request.' } });
   }, { FAKE_ZCODE_RUNTIME_PREFERENCES_ID: 'server-1' });
 });
 
-test('session/create rejects unsafe string server request IDs', async () => {
-  for (const serverRequestId of ['', 'x'.repeat(513), 'server\u001b[31m']) {
-    await withClient(async (client) => {
+test('session/create rejects unsafe string server request IDs', async (t) => {
+  const cases = [
+    ['empty', ''],
+    ['oversized', 'x'.repeat(513)],
+    ['C0 control', 'server\u001b[31m'],
+    ['C1 U+0085 control', 'server\u0085'],
+    ['C1 U+009B control', 'server\u009b'],
+    ['C1 U+009F control', 'server\u009f'],
+  ];
+  for (const [name, serverRequestId] of cases) {
+    await t.test(name, () => withClient(async (client) => {
       await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_PROTOCOL_MALFORMED' });
-    }, { FAKE_ZCODE_RUNTIME_PREFERENCES_ID: serverRequestId });
+    }, { FAKE_ZCODE_RUNTIME_PREFERENCES_ID: serverRequestId }));
   }
 });
 

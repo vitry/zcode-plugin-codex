@@ -344,7 +344,9 @@ function boundedInteger(value, fallback, minimum, maximum) { if (value === undef
 /** @param {number} milliseconds */
 function boundedDelay(milliseconds) { return new Promise((resolve) => { setTimeout(resolve, milliseconds); }); }
 /** @param {unknown} value */
-function isServerRequestId(value) { return Number.isSafeInteger(value) || isSafeIdentifier(value); }
+function isServerRequestId(value) { return Number.isSafeInteger(value) || isSafeIdentifier(value) && !hasC1Control(/** @type {string} */ (value)); }
+/** @param {string} value */
+function hasC1Control(value) { return [...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code >= 128 && code <= 159; }); }
 /** @param {unknown} value */
 function nonEmpty(value) { return typeof value === 'string' && value.length > 0; }
 /** @param {unknown} value @returns {value is Record<string,any>} */
