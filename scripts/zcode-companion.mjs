@@ -18,7 +18,6 @@ import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
-import { waitForCompletionOrAbort } from './lib/progress.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
@@ -252,18 +251,26 @@ async function validateResumeCandidate(store, workspace, ownerSessionId, spec) {
   if (candidate.ownerSessionId !== ownerSessionId || candidate.command !== 'rescue' || candidate.zcodeSessionId !== spec.resumeSessionId || !['running', 'succeeded', 'failed'].includes(candidate.status)) throw new PluginError('RESUME_CANDIDATE_INVALID', 'The bound rescue candidate is no longer eligible.', { category: 'authorization', remedy: 'Reserve a fresh rescue job.' });
 }
 
-/** @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number}} [options] */
+/** @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number,signal?:AbortSignal}} [options] */
 export function readInternalEnvelope(fd = 3, options = {}) {
   const maxBytes = options.maxBytes ?? 64 * 1024; const timeoutMs = options.timeoutMs ?? 5_000;
   if (!Number.isSafeInteger(fd) || fd < 3 || !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw authorizationInputError();
+  options.signal?.throwIfAborted();
   return new Promise((resolvePromise, reject) => {
     const stream = createReadStream('', { fd, autoClose: false }); let data = ''; let bytes = 0; let settled = false;
-    /** @param {()=>void} callback */
-    const finish = (callback) => { if (settled) return; settled = true; clearTimeout(timer); stream.destroy(); callback(); };
+    let removeAbortListener = () => {};
+    /** @param {()=>void} callback @param {boolean} [closeDescriptor] */
+    const finish = (callback, closeDescriptor = false) => { if (settled) return; settled = true; clearTimeout(timer); removeAbortListener(); stream.destroy(); if (closeDescriptor) try { closeFdSync(fd); } catch { /* abort cleanup must not replace the signal reason */ } callback(); };
     const timer = setTimeout(() => finish(() => reject(authorizationInputError())), timeoutMs);
     stream.on('data', (chunk) => { bytes += chunk.length; if (bytes > maxBytes) finish(() => reject(authorizationInputError())); else data += chunk.toString('utf8'); });
     stream.once('error', () => finish(() => reject(authorizationInputError())));
     stream.once('end', () => finish(() => { try { resolvePromise(JSON.parse(data)); } catch { reject(authorizationInputError()); } }));
+    if (options.signal) {
+      const onAbort = () => finish(() => reject(options.signal?.reason), true);
+      options.signal.addEventListener('abort', onAbort, { once: true });
+      removeAbortListener = () => options.signal?.removeEventListener('abort', onAbort);
+      if (options.signal.aborted) onAbort();
+    }
   });
 }
 /** @param {unknown} value @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number,write?:(fd:number,buffer:Buffer,offset:number,length:number,position:null,callback:(error:NodeJS.ErrnoException|null,bytesWritten:number)=>void)=>void|{cancel?:()=>void},close?:(fd:number,callback:(error?:NodeJS.ErrnoException|null)=>void)=>void}} [options] */
@@ -342,7 +349,7 @@ async function main() {
   let output; const entry = process.argv[2]; const setup = entry === 'setup'; const direct = entry === 'invoke' || entry === 'invoke-choice'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
   const signalController = !setup && !worker ? createForegroundSignalController({ process }) : null;
   try {
-    const authorization = setup || direct ? undefined : await waitForCompletionOrAbort(readInternalEnvelope(), signalController?.signal);
+    const authorization = setup || direct ? undefined : await readInternalEnvelope(3, { signal: signalController?.signal });
     const foregroundProgress = worker ? {} : {
       progressWriter: (/** @type {string} */ line) => process.stderr.write(line),
       progressDependencies: { now: () => new Date().toISOString(), setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval },

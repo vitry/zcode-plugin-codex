@@ -171,13 +171,15 @@ test('foreground SIGINT wins while the protected authorization envelope is incom
   child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
   child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const exitPromise = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
 
   await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'ready', 'foreground signal handler was not installed');
   /** @type {import('node:stream').Writable} */ (child.stdio[3]).write('{');
   child.kill('SIGINT');
   await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'handled', 'SIGINT did not enter the installed handler');
-  /** @type {import('node:stream').Writable} */ (child.stdio[3]).end();
-  const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  /** @type {NodeJS.Timeout|undefined} */
+  let exitTimer;
+  const exit = await Promise.race([exitPromise, new Promise((resolve, reject) => { void resolve; exitTimer = setTimeout(() => { if (!exited) child.kill('SIGKILL'); reject(new Error('foreground process retained incomplete fd3 after SIGINT')); }, 1_000); })]).finally(() => clearTimeout(exitTimer));
 
   assert.deepEqual(exit, { code: 130, signal: null });
   assert.equal(stdout, ''); assert.equal(internal, '');
