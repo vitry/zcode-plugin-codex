@@ -284,7 +284,10 @@ test('executor reports only same-session progress and drains persistence before 
       return store.updateJobProgress(workspaceArg, jobId, event);
     },
     transitionJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => {
-      if (next === 'succeeded') order.push('transition:succeeded');
+      if (next === 'succeeded') {
+        order.push('transition:succeeded');
+        if (handler) handler(notification('zs-progress', 'api_retry', 5));
+      }
       return store.transitionJob(workspaceArg, jobId, expected, next, patch);
     },
   };
@@ -322,6 +325,7 @@ test('executor reports only same-session progress and drains persistence before 
   ]);
   assert.deepEqual(persisted.map((event) => event.message), lines.map((line) => line.slice(8, -1)));
   assert.ok(order.lastIndexOf('persist:finalizing') < order.indexOf('transition:succeeded'));
+  assert.equal(order.includes('persist:waiting'), false);
   assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
 });
 

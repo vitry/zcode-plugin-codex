@@ -36,12 +36,23 @@ export function decidePermission(request, permissionSnapshot, command) {
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
   let running = job; let sessionId; let sendAttempted = false; let remoteTerminalProven = false;
+  /** @type {any} */
   let reporter;
   let unsubscribe = () => {};
   /** @type {unknown} */
   let primaryError;
   /** @type {any} */
   let output;
+  let progressCleaned = false;
+  const cleanupProgress = async () => {
+    if (progressCleaned) return [];
+    progressCleaned = true;
+    const errors = [];
+    try { unsubscribe(); } catch (error) { errors.push(error); }
+    try { reporter?.close(); } catch (error) { errors.push(error); }
+    try { await reporter?.flush(); } catch (error) { errors.push(error); }
+    return errors;
+  };
   try {
     let prompt;
     if (job.command === 'review' || job.command === 'adversarial-review') {
@@ -83,7 +94,9 @@ export async function executeJob(input) {
     remoteTerminalProven = true;
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
     const resultArtifact = await writeArtifact({ dataRoot, workspace, directory: 'results', jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
-    await reporter.flush();
+    const terminalCleanupErrors = await cleanupProgress();
+    if (terminalCleanupErrors.length === 1) throw terminalCleanupErrors[0];
+    if (terminalCleanupErrors.length > 1) throw new AggregateError(terminalCleanupErrors, 'ZCode progress cleanup failed.');
     const succeeded = await input.store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
     output = { job: succeeded, result };
   } catch (error) {
@@ -102,10 +115,7 @@ export async function executeJob(input) {
     }
   }
   // Cleanup order is part of the progress lifecycle contract.
-  const cleanupErrors = [];
-  try { unsubscribe(); } catch (error) { cleanupErrors.push(error); }
-  try { reporter?.close(); } catch (error) { cleanupErrors.push(error); }
-  try { await reporter?.flush(); } catch (error) { cleanupErrors.push(error); }
+  const cleanupErrors = await cleanupProgress();
   try { await client.close(); } catch (error) { cleanupErrors.push(error); }
   const distinctCleanupErrors = cleanupErrors.filter((error) => error !== primaryError);
   if (primaryError) {
