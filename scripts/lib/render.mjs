@@ -20,10 +20,8 @@ export function renderOutput(value, options = {}) {
 /** @param {any} job */
 function renderCompactJob(job) {
   const fields = [job.id, job.status, job.command, job.owner].map((value) => safeInline(value));
-  if (typeof job.phase === 'string') fields.push(`phase=${safeInline(job.phase)}`);
-  if (typeof job.lastActivityAt === 'string') {
-    fields.push(`activity=${safeInline(job.lastActivityAt)}`);
-  }
+  fields.push(`phase=${safeInline(job.phase)}`);
+  fields.push(`activity=${safeInline(job.lastActivityAt)}`);
   const latest = Array.isArray(job.progressPreview) ? job.progressPreview.at(-1) : undefined;
   if (typeof latest === 'string') fields.push(`latest=${safeProgress(latest)}`);
   return fields.join(' ');

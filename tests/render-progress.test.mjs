@@ -86,6 +86,12 @@ test('compact job lists include phase and only the latest safe preview', () => {
   assert.equal(output.trim().split('\n').length, 1);
 });
 
+test('compact legacy and queued jobs show explicit missing progress placeholders', () => {
+  assert.equal(renderOutput({
+    jobs: [{ id, status: 'queued', command: 'review', owner: 'same-owner' }],
+  }), `${id} queued review same-owner phase=— activity=—\n`);
+});
+
 test('JSON output remains structurally unchanged and redacted', () => {
   const value = {
     job: { id, status: 'running', phase: 'running', progressPreview: ['safe'] },

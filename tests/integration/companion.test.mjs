@@ -355,7 +355,7 @@ test('status --all reports every workspace job with nonsecret ownership markers'
   assert.ok(listed.json.jobs.every((/** @type {any} */ job) => !('ownerSessionId' in job) && !('ownerTurnId' in job) && !('permissionSnapshot' in job)));
   const lines = listed.stdout.trim().split('\n');
   assert.equal(lines.pop(), 'Model policy: default=ZCode default; aliases=none');
-  assert.deepEqual(lines, listed.json.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner}`));
+  assert.deepEqual(lines, listed.json.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner} phase=— activity=—`));
   assert.doesNotMatch(listed.stdout, /codex-session|other-session/);
 });
 
