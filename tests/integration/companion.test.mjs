@@ -21,6 +21,7 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fake = join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
+const signalHandlerProbe = join(root, 'tests', 'fixtures', 'signal-handler-probe.cjs');
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-companion-'));
@@ -156,6 +157,31 @@ test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves 
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.ok(jobs[0].finishedAt); assert.equal(jobs[0].resultArtifact, undefined);
   assert.equal(stdout, ''); assert.equal(internal, ''); assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|"error"/);
+});
+
+test('foreground SIGINT wins while the protected authorization envelope is incomplete', async (t) => {
+  const context = await fixture(); const marker = join(context.directory, 'signal-handler.txt');
+  const child = spawn(process.execPath, ['--require', signalHandlerProbe, cli, 'rescue', '--fresh', 'interrupt authorization'], {
+    cwd: context.workspace,
+    env: { ...context.env, ZCODE_SIGNAL_HANDLER_PROBE: marker },
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+    shell: false,
+  });
+  let stdout = ''; let stderr = ''; let internal = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+  child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+
+  await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'ready', 'foreground signal handler was not installed');
+  /** @type {import('node:stream').Writable} */ (child.stdio[3]).write('{');
+  child.kill('SIGINT');
+  await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'handled', 'SIGINT did not enter the installed handler');
+  /** @type {import('node:stream').Writable} */ (child.stdio[3]).end();
+  const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+
+  assert.deepEqual(exit, { code: 130, signal: null });
+  assert.equal(stdout, ''); assert.equal(internal, '');
+  assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /INTERNAL_AUTHORIZATION_INVALID|"error"/);
 });
 
 test('background reservation exposes one private invocation, which is single-use', async () => {

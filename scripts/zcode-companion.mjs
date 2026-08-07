@@ -18,6 +18,7 @@ import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
+import { waitForCompletionOrAbort } from './lib/progress.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
@@ -341,7 +342,7 @@ async function main() {
   let output; const entry = process.argv[2]; const setup = entry === 'setup'; const direct = entry === 'invoke' || entry === 'invoke-choice'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
   const signalController = !setup && !worker ? createForegroundSignalController({ process }) : null;
   try {
-    const authorization = setup || direct ? undefined : await readInternalEnvelope();
+    const authorization = setup || direct ? undefined : await waitForCompletionOrAbort(readInternalEnvelope(), signalController?.signal);
     const foregroundProgress = worker ? {} : {
       progressWriter: (/** @type {string} */ line) => process.stderr.write(line),
       progressDependencies: { now: () => new Date().toISOString(), setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval },
