@@ -249,6 +249,35 @@ test('malformed, oversized, disconnect and request error fail closed', async (t)
   }, env, options));
 });
 
+test('request failures retain only a bounded safe remote error code', async (t) => {
+  await t.test('safe discriminator', () => withClient(async (client) => {
+    await assert.rejects(client.listSessions(), (error) => {
+      assert.equal(error.code, 'ZCODE_REQUEST_FAILED');
+      assert.deepEqual(error.details, { method: 'session/list', rpcCode: -32099, remoteCode: 'model_config_missing' });
+      assert.doesNotMatch(JSON.stringify(error.details), /remote-api-key-must-not-leak/);
+      return true;
+    });
+  }, {
+    FAKE_ZCODE_ERROR: 'session/list',
+    FAKE_ZCODE_ERROR_DATA_CODE: 'model_config_missing',
+    FAKE_ZCODE_ERROR_DATA_SECRET: 'remote-api-key-must-not-leak',
+  }));
+
+  for (const [name, remoteCode] of [
+    ['oversized', 'x'.repeat(129)],
+    ['C0 control', 'model\u001bconfig'],
+    ['C1 control', 'model\u0085config'],
+  ]) {
+    await t.test(name, () => withClient(async (client) => {
+      await assert.rejects(client.listSessions(), (error) => {
+        assert.equal(error.code, 'ZCODE_REQUEST_FAILED');
+        assert.deepEqual(error.details, { method: 'session/list', rpcCode: -32099 });
+        return true;
+      });
+    }, { FAKE_ZCODE_ERROR: 'session/list', FAKE_ZCODE_ERROR_DATA_CODE: remoteCode }));
+  }
+});
+
 test('thought level validates vocabulary and advertised values without guessing', async () => {
   await withClient(async (client) => {
     const created = await client.createSession({ workspace: '/repo' });

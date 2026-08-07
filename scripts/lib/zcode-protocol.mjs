@@ -192,7 +192,10 @@ export class ZCodeProtocolClient {
         pending.reject(new PluginError(remote.code, message.error.message, { category: remote.category, remedy: remote.remedy, details: plainObject(remote.details) ? remote.details : {} }));
         return;
       }
-      pending.reject(new PluginError('ZCODE_REQUEST_FAILED', `ZCode ${pending.method} failed: ${message.error.message}`, { category: 'runtime', remedy: 'Inspect the request and retry.', details: { method: pending.method, rpcCode: message.error.code } }));
+      /** @type {{method:string,rpcCode:unknown,remoteCode?:string}} */
+      const details = { method: pending.method, rpcCode: message.error.code };
+      if (isSafeRemoteCode(message.error.data?.code)) details.remoteCode = message.error.data.code;
+      pending.reject(new PluginError('ZCODE_REQUEST_FAILED', `ZCode ${pending.method} failed: ${message.error.message}`, { category: 'runtime', remedy: 'Inspect the request and retry.', details }));
     } else pending.resolve(message.result);
   }
 
@@ -345,6 +348,8 @@ function boundedInteger(value, fallback, minimum, maximum) { if (value === undef
 function boundedDelay(milliseconds) { return new Promise((resolve) => { setTimeout(resolve, milliseconds); }); }
 /** @param {unknown} value */
 function isServerRequestId(value) { return Number.isSafeInteger(value) || isSafeIdentifier(value) && !hasC1Control(/** @type {string} */ (value)); }
+/** @param {unknown} value */
+function isSafeRemoteCode(value) { return isSafeIdentifier(value, 128) && !hasC1Control(/** @type {string} */ (value)); }
 /** @param {string} value */
 function hasC1Control(value) { return [...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code >= 128 && code <= 159; }); }
 /** @param {unknown} value */
