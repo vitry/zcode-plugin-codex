@@ -78,6 +78,19 @@ test('rejects notifications outside the safe same-session boundary', () => {
   for (const frame of cases) assert.equal(normalizeZCodeProgress(frame, 'session-a', observedAt), null);
 });
 
+test('enforces the reason limit in UTF-8 bytes at a multibyte boundary', () => {
+  const reason256 = `${'é'.repeat(127)}ab`;
+  const reason257 = `${'é'.repeat(127)}abc`;
+  assert.equal(Buffer.byteLength(reason256), 256);
+  assert.equal(Buffer.byteLength(reason257), 257);
+  assert.deepEqual(normalizeZCodeProgress(notification(reason256), 'session-a', observedAt), {
+    phase: 'running',
+    message: 'ZCode reported activity.',
+    observedAt,
+  });
+  assert.equal(normalizeZCodeProgress(notification(reason257), 'session-a', observedAt), null);
+});
+
 test('rejects invalid observation timestamps', () => {
   for (const timestamp of [undefined, null, '', 'not-a-date', 0, '2026-02-30T00:00:00.000Z']) {
     assert.equal(normalizeZCodeProgress(notification('tool_call_started'), 'session-a', timestamp), null);
@@ -165,4 +178,72 @@ test('emits an unpersisted 20-second heartbeat and closes idempotently', async (
   reporter.close();
   reporter.close();
   assert.deepEqual(cleared, [timer]);
+});
+
+test('duplicate activity refreshes the heartbeat clock without repeating output or persistence', async () => {
+  const lines = [];
+  const persisted = [];
+  let intervalCallback;
+  let currentTime = observedAt;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    write: (line) => lines.push(line),
+    persist: async (event) => persisted.push(event),
+    now: () => currentTime,
+    setInterval: (callback) => { intervalCallback = callback; return { unref() {} }; },
+    clearInterval: () => {},
+  });
+
+  reporter.observe(notification('tool_call_progress'));
+  currentTime = '2026-08-08T00:00:19.000Z';
+  reporter.observe(notification('tool_call_progress'));
+  currentTime = '2026-08-08T00:00:21.000Z';
+  intervalCallback();
+  await reporter.flush();
+
+  assert.deepEqual(lines, ['[zcode] ZCode tool work is still running.\n']);
+  assert.deepEqual(persisted, [{ phase: 'running', message: 'ZCode tool work is still running.', observedAt }]);
+  reporter.close();
+});
+
+test('persistence failures stay handled, do not poison later work, and surface from flush', async () => {
+  const firstError = new Error('first persistence failed');
+  const attempts = [];
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    persist: async (event) => {
+      attempts.push(event.message);
+      if (attempts.length === 1) throw firstError;
+    },
+    now: () => observedAt,
+    setInterval: () => ({ unref() {} }),
+    clearInterval: () => {},
+  });
+
+  try {
+    reporter.observe(notification('tool_call_started'));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+    reporter.observe(notification('api_retry'));
+    await assert.rejects(reporter.flush(), (error) => error === firstError);
+    assert.deepEqual(attempts, ['ZCode started a tool call.', 'ZCode is retrying the model request.']);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+    reporter.close();
+  }
+});
+
+test('does not create a heartbeat interval without a writer', () => {
+  let intervalCalls = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    now: () => observedAt,
+    setInterval: () => { intervalCalls += 1; return { unref() {} }; },
+    clearInterval: () => {},
+  });
+  assert.equal(intervalCalls, 0);
+  reporter.close();
 });

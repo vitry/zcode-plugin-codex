@@ -38,14 +38,21 @@ export function createProgressReporter({
   /** @type {string|null} */
   let previousKey = null;
   let persistence = Promise.resolve();
-  let timer = setIntervalFn(() => {
-    const currentTime = now();
-    if (typeof write !== 'function' || !validTimestamp(currentTime) || !validTimestamp(lastActivityAt)) return;
-    const elapsedMs = Date.parse(currentTime) - Date.parse(lastActivityAt);
-    if (elapsedMs < PROGRESS_HEARTBEAT_MS) return;
-    const seconds = Math.floor(elapsedMs / 1_000);
-    write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`);
-  }, PROGRESS_HEARTBEAT_MS);
+  let hasPersistenceError = false;
+  /** @type {unknown} */
+  let persistenceError;
+  /** @type {any} */
+  let timer = null;
+  if (typeof write === 'function') {
+    timer = setIntervalFn(() => {
+      const currentTime = now();
+      if (!validTimestamp(currentTime) || !validTimestamp(lastActivityAt)) return;
+      const elapsedMs = Date.parse(currentTime) - Date.parse(lastActivityAt);
+      if (elapsedMs < PROGRESS_HEARTBEAT_MS) return;
+      const seconds = Math.floor(elapsedMs / 1_000);
+      write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`);
+    }, PROGRESS_HEARTBEAT_MS);
+  }
   timer?.unref?.();
 
   return {
@@ -53,15 +60,18 @@ export function createProgressReporter({
     observe(notification) {
       const event = normalizeZCodeProgress(notification, sessionId, now());
       if (event === null) return null;
+      lastActivityAt = event.observedAt;
       const key = `${event.phase}\u0000${event.message}`;
       if (key === previousKey) return null;
       previousKey = key;
-      lastActivityAt = event.observedAt;
       if (typeof write === 'function') write(`[zcode] ${event.message}\n`);
-      if (typeof persist === 'function') persistence = persistence.then(() => persist(event));
+      if (typeof persist === 'function') persistence = persistence.then(async () => {
+        try { await persist(event); }
+        catch (error) { if (!hasPersistenceError) { hasPersistenceError = true; persistenceError = error; } }
+      });
       return event;
     },
-    flush() { return persistence; },
+    async flush() { await persistence; if (hasPersistenceError) throw persistenceError; },
     close() {
       if (timer === null) return;
       clearIntervalFn(timer);
