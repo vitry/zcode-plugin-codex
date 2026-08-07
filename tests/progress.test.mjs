@@ -236,6 +236,32 @@ test('persistence failures stay handled, do not poison later work, and surface f
   }
 });
 
+test('writer failures do not interrupt observation or persistence and surface after drain', async () => {
+  const writerError = new Error('writer failed');
+  const persisted = [];
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    write: () => { throw writerError; },
+    persist: async (event) => persisted.push(event),
+    now: () => observedAt,
+    setInterval: () => ({ unref() {} }),
+    clearInterval: () => {},
+  });
+  try {
+    assert.doesNotThrow(() => reporter.observe(notification('tool_call_started')));
+    await assert.rejects(reporter.flush(), (error) => error === writerError);
+    assert.deepEqual(persisted, [{ phase: 'running', message: 'ZCode started a tool call.', observedAt }]);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+    reporter.close();
+  }
+});
+
 test('does not create a heartbeat interval without a writer', () => {
   let intervalCalls = 0;
   const reporter = progressModule.createProgressReporter({

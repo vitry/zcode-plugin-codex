@@ -95,8 +95,7 @@ export async function executeJob(input) {
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
     const resultArtifact = await writeArtifact({ dataRoot, workspace, directory: 'results', jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
     const terminalCleanupErrors = await cleanupProgress();
-    if (terminalCleanupErrors.length === 1) throw terminalCleanupErrors[0];
-    if (terminalCleanupErrors.length > 1) throw new AggregateError(terminalCleanupErrors, 'ZCode progress cleanup failed.');
+    if (terminalCleanupErrors.length) throw progressFailure(terminalCleanupErrors);
     const succeeded = await input.store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
     output = { job: succeeded, result };
   } catch (error) {
@@ -116,14 +115,13 @@ export async function executeJob(input) {
   }
   // Cleanup order is part of the progress lifecycle contract.
   const cleanupErrors = await cleanupProgress();
-  try { await client.close(); } catch (error) { cleanupErrors.push(error); }
+  await client.close().catch(() => {});
   const distinctCleanupErrors = cleanupErrors.filter((error) => error !== primaryError);
   if (primaryError) {
-    if (distinctCleanupErrors.length) throw new AggregateError([primaryError, ...distinctCleanupErrors], 'ZCode execution and progress cleanup failed.');
+    attachCleanupFailure(primaryError, distinctCleanupErrors);
     throw primaryError;
   }
-  if (cleanupErrors.length === 1) throw cleanupErrors[0];
-  if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, 'ZCode progress cleanup failed.');
+  if (cleanupErrors.length) throw progressFailure(cleanupErrors);
   return output;
 }
 
@@ -243,6 +241,21 @@ function invalidReviewResult(cause) { return new PluginError('REVIEW_RESULT_INVA
 function validResponse(response) { return response && typeof response === 'object' && ['allow', 'deny'].includes(response.decision); }
 /** @param {unknown} error */
 function safeError(error) { return { message: error instanceof Error ? error.message.slice(0, 2048) : 'Unknown execution failure' }; }
+/** @param {unknown[]} errors */
+function progressFailure(errors) {
+  const first = errors[0];
+  if (first instanceof PluginError) { attachCleanupFailure(first, errors.slice(1)); return first; }
+  return new PluginError('ZCODE_PROGRESS_FAILED', 'ZCode progress reporting failed.', { category: 'runtime', remedy: 'Retry the delegated task and inspect the progress output channel.', cause: first, details: { additionalFailureCount: Math.max(0, errors.length - 1) } });
+}
+/** @param {unknown} primary @param {unknown[]} cleanupErrors */
+function attachCleanupFailure(primary, cleanupErrors) {
+  if (!cleanupErrors.length || !(primary instanceof Error)) return;
+  const failure = progressFailure(cleanupErrors);
+  try {
+    if (!('cause' in primary)) Object.defineProperty(primary, 'cause', { value: failure, configurable: true });
+    else if (primary instanceof PluginError) primary.details = { ...primary.details, cleanupFailure: safeError(failure) };
+  } catch { /* Cleanup diagnostics must never replace the primary failure. */ }
+}
 /** @param {unknown} error */
 function errorCode(error) { return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined; }
 /** @param {any} left @param {any} right */

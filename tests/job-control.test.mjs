@@ -297,7 +297,7 @@ test('executor reports only same-session progress and drains persistence before 
     createSession: async () => ({ session: { sessionId: 'zs-progress' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {},
     subscribe: (/** @type {(message:any)=>void} */ subscriber) => { handler = subscriber; return () => { unsubscribes += 1; handler = null; }; },
-    send: async () => ({ inputId: 'input-progress', stateRevision: 1 }),
+    send: async () => { emit(notification('zs-progress', 'tool_call_result', 1)); return { inputId: 'input-progress', stateRevision: 1 }; },
     waitForCompletion: async () => {
       emit(notification('zs-sibling', 'tool_call_started', 2));
       emit(notification('zs-progress', 'model_streaming', 2));
@@ -305,7 +305,7 @@ test('executor reports only same-session progress and drains persistence before 
       emit(notification('zs-progress', 'prompt_completed', 4));
     },
     readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-progress', parentMessageId: 'input-progress' }, parts: [{ type: 'text', text: 'done' }] }] }),
-    close: async () => { closes += 1; },
+    close: async () => { closes += 1; throw new Error('close refused after success'); },
   };
   const result = await executeJob({
     job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task',
@@ -319,6 +319,7 @@ test('executor reports only same-session progress and drains persistence before 
   assert.equal(result.job.status, 'succeeded'); assert.equal(typeof intervalCallback, 'function');
   assert.deepEqual(lines, [
     '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode completed a tool call.\n',
     '[zcode] ZCode is generating a response.\n',
     '[zcode] ZCode started a tool call.\n',
     '[zcode] ZCode completed the delegated turn.\n',
@@ -326,7 +327,38 @@ test('executor reports only same-session progress and drains persistence before 
   assert.deepEqual(persisted.map((event) => event.message), lines.map((line) => line.slice(8, -1)));
   assert.ok(order.lastIndexOf('persist:finalizing') < order.indexOf('transition:succeeded'));
   assert.equal(order.includes('persist:waiting'), false);
+  assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
   assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
+});
+
+test('writer failure still persists progress and fails with a stable progress error', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {any[]} */
+  const persisted = [];
+  const wrapped = { ...store, updateJobProgress: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {any} */ event) => { persisted.push(event); return store.updateJobProgress(workspaceArg, jobId, event); } };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-writer-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-writer-failure', stateRevision: 1 }), waitForCompletion: async () => {},
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-writer-failure', parentMessageId: 'input-writer-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: () => { throw new Error('stderr closed'); } }), (error) => error instanceof PluginError && error.code === 'ZCODE_PROGRESS_FAILED');
+  assert.ok(persisted.some((event) => event.message === 'ZCode started the delegated turn.'));
+  assert.equal((await store.readJob(workspace, job.id)).status, 'failed');
+});
+
+test('cleanup failures preserve the primary PluginError envelope and close once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const primary = new PluginError('PRIMARY_STABLE', 'primary failure', { category: 'protocol', remedy: 'keep this remedy' }); let closes = 0;
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-primary-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-primary-failure', stateRevision: 1 }),
+    waitForCompletion: async () => { throw primary; }, stopSession: async () => {}, close: async () => { closes += 1; throw new Error('close is advisory'); },
+  };
+  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: () => { throw new Error('writer cleanup failed'); } }).catch((error) => error);
+  assert.equal(caught, primary);
+  assert.deepEqual((await import('../scripts/lib/render.mjs')).errorEnvelope(caught), { error: { code: 'PRIMARY_STABLE', category: 'protocol', message: 'primary failure', remedy: 'keep this remedy', details: {} } });
+  assert.equal(closes, 1);
 });
 
 test('executor failure still unsubscribes, stops heartbeat, and closes the client', async () => {

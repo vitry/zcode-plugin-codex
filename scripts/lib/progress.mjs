@@ -38,9 +38,10 @@ export function createProgressReporter({
   /** @type {string|null} */
   let previousKey = null;
   let persistence = Promise.resolve();
-  let hasPersistenceError = false;
+  let hasReporterError = false;
   /** @type {unknown} */
-  let persistenceError;
+  let reporterError;
+  const recordError = (/** @type {unknown} */ error) => { if (!hasReporterError) { hasReporterError = true; reporterError = error; } };
   /** @type {any} */
   let timer = null;
   if (typeof write === 'function') {
@@ -50,7 +51,8 @@ export function createProgressReporter({
       const elapsedMs = Date.parse(currentTime) - Date.parse(lastActivityAt);
       if (elapsedMs < PROGRESS_HEARTBEAT_MS) return;
       const seconds = Math.floor(elapsedMs / 1_000);
-      write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`);
+      try { write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`); }
+      catch (error) { recordError(error); }
     }, PROGRESS_HEARTBEAT_MS);
   }
   timer?.unref?.();
@@ -64,14 +66,17 @@ export function createProgressReporter({
       const key = `${event.phase}\u0000${event.message}`;
       if (key === previousKey) return null;
       previousKey = key;
-      if (typeof write === 'function') write(`[zcode] ${event.message}\n`);
+      if (typeof write === 'function') {
+        try { write(`[zcode] ${event.message}\n`); }
+        catch (error) { recordError(error); }
+      }
       if (typeof persist === 'function') persistence = persistence.then(async () => {
         try { await persist(event); }
-        catch (error) { if (!hasPersistenceError) { hasPersistenceError = true; persistenceError = error; } }
+        catch (error) { recordError(error); }
       });
       return event;
     },
-    async flush() { await persistence; if (hasPersistenceError) throw persistenceError; },
+    async flush() { await persistence; if (hasReporterError) throw reporterError; },
     close() {
       if (timer === null) return;
       clearIntervalFn(timer);
