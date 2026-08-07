@@ -162,6 +162,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   const setupRecord = join(temporary, 'setup-requests.jsonl');
   await writeFile(setupRecord, '');
   const setupConfig = { config: { sandbox_workspace_write: { writable_roots: [] } }, origins: {}, layers: [{ name: { type: 'user', file: join(codexHome, 'config.toml') }, version: 'version-1', config: {} }] };
+  const setupConfigured = { config: { sandbox_workspace_write: { writable_roots: [pluginData] } }, origins: {}, layers: [{ name: { type: 'user', file: join(codexHome, 'config.toml') }, version: 'version-2', config: { sandbox_workspace_write: { writable_roots: [pluginData] } } }] };
   const setup = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'setup'], {
     cwd: temporary,
     env: {
@@ -169,7 +170,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
       CODEX_APP_SERVER_PATH: process.execPath,
       CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
       FAKE_CODEX_RECORD: setupRecord,
-      FAKE_CODEX_CONFIG_RESULT: JSON.stringify(setupConfig),
+      FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([setupConfig, setupConfigured]),
     },
   });
   assert.equal(setup.code, 0, setup.stderr || setup.stdout);

@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { PluginError } from './errors.mjs';
@@ -22,6 +23,8 @@ export async function runSetup(input) {
     const rootBootstrap = await writableRootBootstrap(config, input.dataRoot);
     if (rootBootstrap.required) {
       await client.request('config/batchWrite', { edits: [{ keyPath: 'sandbox_workspace_write.writable_roots', value: rootBootstrap.roots, mergeStrategy: 'replace' }], expectedVersion: userVersion(config), reloadUserConfig: true });
+      const updated = await client.request('config/read', { cwd, includeLayers: true });
+      if (!await hasEffectiveWritableRoot(updated, input.dataRoot)) throw dataRootOverridden();
       return { status: 'restart-required', reason: 'plugin-data-root-added', zcode: { path: null, version: null }, auth: { ready: false, status: 'deferred' }, hooks: { ready: false }, reviewGate: { enabled: false, deferred: true }, modelPolicy: { configured: false, aliases: [] } };
     }
     input = { ...input, modelPolicy: summarizeWorkspaceModelConfig(await persistSetupModelConfig({ dataRoot: input.dataRoot, workspace: cwd, env: input.env })) };
@@ -39,20 +42,27 @@ export async function runSetup(input) {
 
 async function writableRootBootstrap(config, dataRoot) {
   const effective = config?.config?.sandbox_workspace_write?.writable_roots;
-  const roots = Array.isArray(effective) ? effective.filter((value) => typeof value === 'string') : [];
+  const effectiveRoots = Array.isArray(effective) ? effective.filter((value) => typeof value === 'string') : [];
   const canonicalDataRoot = await canonicalConfigPath(dataRoot);
-  for (const root of roots) if (await canonicalConfigPath(root) === canonicalDataRoot) return { required: false, roots };
+  for (const root of effectiveRoots) if (platformPathEqual(await canonicalConfigPath(root), canonicalDataRoot)) return { required: false, roots: effectiveRoots };
   const user = Array.isArray(config?.layers) ? config.layers.find((item) => item?.name?.type === 'user') : null;
   const userRoots = user?.config?.sandbox_workspace_write?.writable_roots;
   if (Array.isArray(userRoots)) {
-    for (const root of userRoots) if (typeof root === 'string' && await canonicalConfigPath(root) === canonicalDataRoot) {
-      throw new PluginError('PLUGIN_DATA_ROOT_OVERRIDDEN', 'The plugin data root is configured but overridden by a higher-precedence Codex layer.', { category: 'configuration', remedy: 'Add the ZCode plugin data root to the higher-precedence sandbox_workspace_write.writable_roots setting, restart Codex, and rerun $zcode:setup.' });
-    }
+    for (const root of userRoots) if (typeof root === 'string' && platformPathEqual(await canonicalConfigPath(root), canonicalDataRoot)) throw dataRootOverridden();
   }
-  return { required: true, roots: [...roots, dataRoot] };
+  return { required: true, roots: [...(Array.isArray(userRoots) ? userRoots.filter((value) => typeof value === 'string') : []), dataRoot] };
 }
 
 async function canonicalConfigPath(value) { try { return await realpath(value); } catch { return resolve(value); } }
+async function hasEffectiveWritableRoot(config, dataRoot) {
+  const roots = config?.config?.sandbox_workspace_write?.writable_roots;
+  if (!Array.isArray(roots)) return false;
+  const canonicalDataRoot = await canonicalConfigPath(dataRoot);
+  for (const root of roots) if (typeof root === 'string' && platformPathEqual(await canonicalConfigPath(root), canonicalDataRoot)) return true;
+  return false;
+}
+export function platformPathEqual(left, right, platform = process.platform) { return platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right; }
+function dataRootOverridden() { return new PluginError('PLUGIN_DATA_ROOT_OVERRIDDEN', 'The plugin data root is configured but overridden by a higher-precedence Codex layer.', { category: 'configuration', remedy: 'Add the ZCode plugin data root to the higher-precedence sandbox_workspace_write.writable_roots setting, restart Codex, and rerun $zcode:setup.' }); }
 
 /** @param {{dataRoot:string,workspace:string,env:NodeJS.ProcessEnv}} input */
 async function persistSetupModelConfig(input) {

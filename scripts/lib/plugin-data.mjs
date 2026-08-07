@@ -30,7 +30,7 @@ export function resolvePluginDataRoot({ env = process.env, pluginRoot } = {}) {
 function installedIdentity(pluginRoot, codexHome) {
   if (!pluginRoot) return null;
   if (hasControl(pluginRoot)) throw invalidRoot();
-  const cache = join(codexHome, 'plugins', 'cache');
+  const cache = canonicalPath(join(codexHome, 'plugins', 'cache'));
   const canonical = canonicalPath(pluginRoot);
   const rawRelative = relative(cache, canonical);
   const looksInstalled = rawRelative === '' || (!rawRelative.startsWith('..') && !isAbsolute(rawRelative));

@@ -66,13 +66,37 @@ test('setup bootstraps an absent writable plugin-data root before writing worksp
     origins: {},
     layers: [{ name: { type: 'user', file: join(ctx.dataRoot, 'config.toml') }, version: 'version-1', config: {} }],
   };
-  const report = await runSetup({ ...ctx.options, dataRoot, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configResult) } });
+  const configuredResult = { ...configResult, config: { ...configResult.config, sandbox_workspace_write: { writable_roots: ['/existing/root', dataRoot] } }, layers: [{ ...configResult.layers[0], version: 'version-2', config: { sandbox_workspace_write: { writable_roots: [dataRoot] } } }] };
+  const report = await runSetup({ ...ctx.options, dataRoot, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([configResult, configuredResult]) } });
   assert.equal(report.status, 'restart-required');
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).filter((call) => call.method);
   const batch = calls.find((call) => call.method === 'config/batchWrite');
-  assert.deepEqual(batch.params.edits, [{ keyPath: 'sandbox_workspace_write.writable_roots', value: ['/existing/root', dataRoot], mergeStrategy: 'replace' }]);
+  assert.deepEqual(batch.params.edits, [{ keyPath: 'sandbox_workspace_write.writable_roots', value: [dataRoot], mergeStrategy: 'replace' }]);
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace: ctx.cwd });
   await assert.rejects(readFile(join(storage.directory, 'config', 'review-gate.json')), { code: 'ENOENT' });
+});
+
+test('setup preserves user writable roots without globalizing effective project roots', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  const dataRoot = join(ctx.dataRoot, 'stable-plugin-data');
+  const before = { config: { sandbox_workspace_write: { writable_roots: ['/project-only'] } }, origins: {}, layers: [{ name: { type: 'user', file: join(ctx.dataRoot, 'config.toml') }, version: 'version-1', config: { sandbox_workspace_write: { writable_roots: ['/user-only'] } } }] };
+  const after = { ...before, config: { sandbox_workspace_write: { writable_roots: ['/project-only', dataRoot] } }, layers: [{ ...before.layers[0], version: 'version-2', config: { sandbox_workspace_write: { writable_roots: ['/user-only', dataRoot] } } }] };
+  const report = await runSetup({ ...ctx.options, dataRoot, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([before, after]) } });
+  assert.equal(report.status, 'restart-required');
+  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.deepEqual(calls.find((call) => call.method === 'config/batchWrite').params.edits[0].value, ['/user-only', dataRoot]);
+  assert.equal(calls.filter((call) => call.method === 'config/read').length, 2);
+});
+
+test('setup detects a higher-precedence writable-root override immediately after writing user config', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  const dataRoot = join(ctx.dataRoot, 'overridden-plugin-data');
+  const before = { config: { sandbox_workspace_write: { writable_roots: ['/project-only'] } }, origins: {}, layers: [{ name: { type: 'user', file: join(ctx.dataRoot, 'config.toml') }, version: 'version-1', config: {} }] };
+  const after = { ...before, layers: [{ ...before.layers[0], version: 'version-2', config: { sandbox_workspace_write: { writable_roots: [dataRoot] } } }] };
+  await assert.rejects(runSetup({ ...ctx.options, dataRoot, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([before, after]) } }), { code: 'PLUGIN_DATA_ROOT_OVERRIDDEN' });
+  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.deepEqual(calls.filter((call) => call.method).map((call) => call.method), ['initialize', 'initialized', 'config/read', 'config/batchWrite', 'config/read']);
+  await assert.rejects(stat(dataRoot), { code: 'ENOENT' });
 });
 
 test('setup persists model policy only from explicit setup environment variables', async () => {

@@ -45,6 +45,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
 process.on('exit', () => { if (process.env.FAKE_CODEX_EXIT_MARKER) process.stderr.write(process.env.FAKE_CODEX_EXIT_MARKER); });
 
 let inputQueue = Promise.resolve();
+let configReadIndex = 0;
 input.on('line', (line) => { inputQueue = inputQueue.then(() => handleLine(line)); });
 
 async function handleLine(line) {
@@ -73,7 +74,11 @@ async function handleLine(line) {
     write({ id: request.id, result: { thread } });
     return;
   }
-  if (request.method === 'config/read') { write({ id: request.id, result: JSON.parse(process.env.FAKE_CODEX_CONFIG_RESULT ?? '{"config":{},"origins":{},"layers":[]}') }); return; }
+  if (request.method === 'config/read') {
+    const results = process.env.FAKE_CODEX_CONFIG_RESULTS_JSON ? JSON.parse(process.env.FAKE_CODEX_CONFIG_RESULTS_JSON) : null;
+    const result = Array.isArray(results) ? results[Math.min(configReadIndex++, results.length - 1)] : JSON.parse(process.env.FAKE_CODEX_CONFIG_RESULT ?? '{"config":{},"origins":{},"layers":[]}');
+    write({ id: request.id, result }); return;
+  }
   if (request.method === 'hooks/list') { write({ id: request.id, result: JSON.parse(process.env.FAKE_CODEX_HOOKS_RESULT ?? '{"data":[]}') }); return; }
   if (request.method === 'config/batchWrite') { write({ id: request.id, result: { filePath: process.env.FAKE_CODEX_CONFIG_PATH ?? '/tmp/config.toml', status: 'ok', version: 'version-2' } }); }
 }
