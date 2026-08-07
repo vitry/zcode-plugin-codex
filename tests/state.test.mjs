@@ -589,6 +589,117 @@ test('tracked job fields persist through their legal lifecycle phases', async ()
   assert.deepEqual(await store.readJob(workspace, cancelledJob.id), cancelled);
 });
 
+test('running and cancelling jobs persist bounded monotonic progress', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const queued = await store.reserveJob({ workspace, ...jobInput });
+  const startedAt = new Date(Date.parse(queued.createdAt) + 1_000).toISOString();
+  let job = await store.transitionJob(workspace, queued.id, ['queued'], 'running', { startedAt });
+  const identity = {
+    id: job.id,
+    workspace: job.workspace,
+    ownerSessionId: job.ownerSessionId,
+    ownerTurnId: job.ownerTurnId,
+    command: job.command,
+    readOnly: job.readOnly,
+    permissionSnapshot: job.permissionSnapshot,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+  };
+
+  for (let index = 1; index <= 5; index += 1) {
+    const observedAt = new Date(Date.parse(startedAt) + index * 1_000).toISOString();
+    const previousUpdatedAt = job.updatedAt;
+    job = await store.updateJobProgress(workspace, job.id, {
+      phase: index === 5 ? 'waiting' : 'running',
+      message: `Progress ${index}`,
+      observedAt,
+    });
+    assert.ok(Date.parse(job.updatedAt) >= Date.parse(previousUpdatedAt));
+    assert.ok(Date.parse(job.updatedAt) >= Date.parse(observedAt));
+  }
+
+  assert.equal(job.phase, 'waiting');
+  assert.equal(job.lastActivityAt, new Date(Date.parse(startedAt) + 5_000).toISOString());
+  assert.deepEqual(job.progressPreview, ['Progress 2', 'Progress 3', 'Progress 4', 'Progress 5']);
+  assert.deepEqual({
+    id: job.id,
+    workspace: job.workspace,
+    ownerSessionId: job.ownerSessionId,
+    ownerTurnId: job.ownerTurnId,
+    command: job.command,
+    readOnly: job.readOnly,
+    permissionSnapshot: job.permissionSnapshot,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+  }, identity);
+
+  const duplicate = await store.updateJobProgress(workspace, job.id, {
+    phase: 'running',
+    message: 'Progress 5',
+    observedAt: new Date(Date.parse(startedAt) + 6_000).toISOString(),
+  });
+  assert.equal(duplicate.phase, 'running');
+  assert.deepEqual(duplicate.progressPreview, job.progressPreview);
+
+  const cancelling = await store.transitionJob(workspace, job.id, ['running'], 'cancelling');
+  const cancellingProgress = await store.updateJobProgress(workspace, job.id, {
+    phase: 'finalizing',
+    message: 'Stopping ZCode.',
+    observedAt: new Date(Date.parse(startedAt) + 7_000).toISOString(),
+  });
+  assert.equal(cancellingProgress.status, 'cancelling');
+  assert.equal(cancellingProgress.phase, 'finalizing');
+  assert.ok(Date.parse(cancellingProgress.updatedAt) >= Date.parse(cancelling.updatedAt));
+});
+
+test('progress is a no-op once queued or terminal lifecycle state wins', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const queued = await store.reserveJob({ workspace, ...jobInput });
+  const event = {
+    phase: 'starting',
+    message: 'ZCode started the delegated turn.',
+    observedAt: queued.updatedAt,
+  };
+  assert.deepEqual(await store.updateJobProgress(workspace, queued.id, event), queued);
+
+  const running = await store.transitionJob(workspace, queued.id, ['queued'], 'running');
+  const succeeded = await store.transitionJob(workspace, running.id, ['running'], 'succeeded');
+  assert.deepEqual(await store.updateJobProgress(workspace, succeeded.id, event), succeeded);
+  assert.deepEqual(await store.readJob(workspace, succeeded.id), succeeded);
+});
+
+test('progress rejects malformed, unsafe, and out-of-timeline events', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const queued = await store.reserveJob({ workspace, ...jobInput });
+  const startedAt = new Date(Date.parse(queued.createdAt) + 1_000).toISOString();
+  const running = await store.transitionJob(workspace, queued.id, ['queued'], 'running', { startedAt });
+  const observedAt = new Date(Date.parse(startedAt) + 1_000).toISOString();
+  const valid = { phase: 'running', message: 'Safe progress.', observedAt };
+  const invalidEvents = /** @type {any[]} */ ([
+    null,
+    [],
+    { ...valid, phase: 'unknown' },
+    { ...valid, observedAt: 'tomorrow' },
+    { ...valid, observedAt: new Date(Date.parse(startedAt) - 1).toISOString() },
+    { ...valid, message: 'x'.repeat(257) },
+    { ...valid, message: `${'é'.repeat(127)}abc` },
+    { ...valid, message: 'line one\nline two' },
+    { ...valid, message: '\u001b[31mspoof' },
+    { ...valid, extra: true },
+  ]);
+
+  for (const event of invalidEvents) {
+    await assert.rejects(
+      store.updateJobProgress(workspace, running.id, event),
+      (error) => error instanceof PluginError && error.code === 'JOB_PROGRESS_INPUT_INVALID',
+    );
+  }
+  assert.deepEqual(await store.readJob(workspace, running.id), running);
+});
+
 test('accepted send boundaries persist for durable worker recovery', async () => {
   const { dataRoot, workspace } = await fixture(); const store = createStateStore({ dataRoot });
   const queued = await store.reserveJob({ workspace, ...jobInput });
