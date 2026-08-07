@@ -11,8 +11,8 @@ if (marker) {
   process.on = function on(event, listener) {
     if (event !== 'SIGINT') return originalOn.call(this, event, listener);
     const wrapped = function wrapped(...args) {
-      writeFileSync(marker, 'handled');
-      return Reflect.apply(listener, this, args);
+      try { return Reflect.apply(listener, this, args); }
+      finally { writeFileSync(marker, 'handled'); }
     };
     wrappers.set(listener, wrapped);
     const result = originalOn.call(this, event, wrapped);

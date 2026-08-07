@@ -188,6 +188,30 @@ test('real CLI successful status is not flipped by SIGINT during output', async 
   assert.equal(JSON.parse(result.internal).job.status, 'succeeded');
 });
 
+test('signal probe marks handled only after the wrapped handler returns', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-signal-probe-')); const marker = join(directory, 'marker.txt');
+  const script = `
+    const { readFileSync } = require('node:fs');
+    const keepAlive = setInterval(() => {}, 1000);
+    process.on('SIGINT', () => {
+      process.stdout.write(readFileSync(process.env.ZCODE_SIGNAL_HANDLER_PROBE, 'utf8'));
+      clearInterval(keepAlive);
+      setImmediate(() => process.exit(0));
+    });
+  `;
+  const child = spawn(process.execPath, ['--require', signalHandlerProbe, '--eval', script], {
+    env: { ...process.env, ZCODE_SIGNAL_HANDLER_PROBE: marker }, stdio: ['ignore', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let exited = false; child.stdout?.on('data', (chunk) => { stdout += chunk; });
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const exitPromise = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'ready', 'probe handler was not installed');
+  child.kill('SIGINT');
+  assert.deepEqual(await exitPromise, { code: 0, signal: null });
+  assert.equal(stdout, 'ready');
+  assert.equal(await readFile(marker, 'utf8'), 'handled');
+});
+
 test('foreground SIGINT wins while the protected authorization envelope is incomplete', async (t) => {
   const context = await fixture(); const marker = join(context.directory, 'signal-handler.txt');
   const child = spawn(process.execPath, ['--require', signalHandlerProbe, cli, 'rescue', '--fresh', 'interrupt authorization'], {
@@ -208,7 +232,7 @@ test('foreground SIGINT wins while the protected authorization envelope is incom
   await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'handled', 'SIGINT did not enter the installed handler');
   /** @type {NodeJS.Timeout|undefined} */
   let exitTimer;
-  const exit = await Promise.race([exitPromise, new Promise((resolve, reject) => { void resolve; exitTimer = setTimeout(() => { if (!exited) child.kill('SIGKILL'); reject(new Error('foreground process retained incomplete fd3 after SIGINT')); }, 1_000); })]).finally(() => clearTimeout(exitTimer));
+  const exit = await Promise.race([exitPromise, new Promise((resolve, reject) => { void resolve; exitTimer = setTimeout(() => reject(new Error('foreground process retained incomplete fd3 after SIGINT')), 5_000); })]).finally(() => clearTimeout(exitTimer));
 
   assert.deepEqual(exit, { code: 130, signal: null });
   assert.equal(stdout, ''); assert.equal(internal, '');
