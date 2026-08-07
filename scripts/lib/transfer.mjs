@@ -88,7 +88,9 @@ async function executeClaimedTransfer(input) {
     input.signal?.throwIfAborted();
     const launch = input.launch ?? await boundedStep(/** @type {()=>Promise<{command:string,args:string[]}>} */ (input.resolveLaunch), input.signal);
     validateLaunch(launch);
-    client = await boundedStep(() => input.createClient(launch), input.signal);
+    input.signal?.throwIfAborted();
+    try { client = await input.createClient(launch); }
+    catch (error) { input.signal?.throwIfAborted(); throw error; }
     input.signal?.throwIfAborted();
     let snapshot;
     try { snapshot = await client.createSession({ workspace, importedHistory }); }

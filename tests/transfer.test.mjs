@@ -162,6 +162,14 @@ test('Transfer interruption during Codex read cancels without creating a remote 
   assert.equal(creates, 0); assert.equal(persisted.status, 'cancelled'); assert.ok(persisted.finishedAt); assert.equal(persisted.zcodeSessionId, undefined); assert.equal(persisted.resultArtifact, undefined);
 });
 
+test('Transfer owns and closes a client returned after createClient observes interruption', async () => {
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'client interrupted'); const context = await executionFixture(); let closes = 0; let sessions = 0;
+  context.client.close = async () => { closes += 1; }; context.client.createSession = async () => { sessions += 1; return { session: { sessionId: 'must-not-create' } }; };
+  await assert.rejects(executeTransfer({ ...context, sourceThreadId: source, launch: { command: 'zcode', args: [] }, signal: controller.signal, createClient: async () => { controller.abort(interruption); return context.client; } }), (error) => error === interruption);
+  const persisted = await context.store.readJob(context.workspace, context.job.id);
+  assert.equal(closes, 1); assert.equal(sessions, 0); assert.equal(persisted.status, 'cancelled'); assert.equal(persisted.zcodeSessionId, undefined); assert.equal(persisted.resultArtifact, undefined);
+});
+
 test('Transfer interruption after create persists and stops the exact remote session once', async () => {
   const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'create interrupted'); const context = await executionFixture(); let stops = 0; let closes = 0;
   context.client.createSession = async () => { controller.abort(interruption); return { session: { sessionId: 'zcode-interrupted-create' } }; };
