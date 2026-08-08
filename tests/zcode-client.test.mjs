@@ -419,6 +419,7 @@ test('managed broker clients require an explicit stable owner credential', async
 test('existing managed client connects to the exact healthy wire profile without ensuring a broker', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-exact-'));
   const exactWire = { maxFrameBytes: 16 * 1024 * 1024, maxOutboundBytes: 16 * 1024 * 1024 };
+  assert.equal(brokerIdentityNameForWireOptions(exactWire), 'identity-fc55dc554b54c5fb.json');
   let defaultBroker; let exactBroker; let client;
   try {
     defaultBroker = await createPersistedTestBroker({ dataRoot: directory, workspace: directory, tokenByte: '1', instanceByte: 'a' });

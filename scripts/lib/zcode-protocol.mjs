@@ -320,9 +320,16 @@ export async function spawnZCodeProtocol(launch, options = {}) {
 
 /** @param {string} endpoint @param {{brokerToken:string,ownerId:string,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
 export async function connectZCodeBroker(endpoint, options) {
-  if (!nonEmpty(endpoint) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32 || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw protocolInputError();
+  if (!nonEmpty(endpoint) || !plainObject(options) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32 || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw protocolInputError();
+  const requestTimeoutMs = boundedInteger(options.requestTimeoutMs, 30_000, 1, 3_600_000);
   const socket = net.createConnection(endpoint);
-  await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+  await new Promise((resolve, reject) => {
+    const cleanup = () => { clearTimeout(timer); socket.off('connect', onConnect); socket.off('error', onError); };
+    const onConnect = () => { cleanup(); resolve(undefined); };
+    const onError = (/** @type {Error} */ error) => { cleanup(); socket.destroy(); reject(error); };
+    const timer = setTimeout(() => { cleanup(); socket.destroy(); reject(requestTimeout('broker/connect', requestTimeoutMs)); }, requestTimeoutMs);
+    timer.unref?.(); socket.once('connect', onConnect); socket.once('error', onError);
+  });
   /** @type {any} */
   const transport = {
     stdout: socket, stdin: socket, stderr: null, exitCode: null, signalCode: null,
@@ -333,9 +340,17 @@ export async function connectZCodeBroker(endpoint, options) {
     },
     kill() { transport.exitCode = 0; socket.destroy(); return true; },
   };
-  const protocol = new ZCodeProtocolClient(transport, options);
-  await protocol.request('broker/auth', { token: options.brokerToken, ownerId: options.ownerId });
-  return protocol;
+  /** @type {ZCodeProtocolClient|undefined} */
+  let protocol;
+  try {
+    protocol = new ZCodeProtocolClient(transport, options);
+    await protocol.request('broker/auth', { token: options.brokerToken, ownerId: options.ownerId });
+    return protocol;
+  } catch (error) {
+    socket.destroy();
+    await protocol?.close().catch(() => {});
+    throw error;
+  }
 }
 
 /** @param {any} message @param {unknown} sessionId */
@@ -358,6 +373,8 @@ function nonEmpty(value) { return typeof value === 'string' && value.length > 0;
 function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function disconnected() { return new PluginError('ZCODE_DISCONNECTED', 'The ZCode connection is closed.', { category: 'runtime', remedy: 'Create a new client and retry.' }); }
 function protocolInputError() { return new PluginError('ZCODE_PROTOCOL_INPUT_INVALID', 'ZCode protocol input is invalid.', { category: 'validation', remedy: 'Provide a valid method, params, session, and bounded timeout.' }); }
+/** @param {string} method @param {number} timeoutMs */
+function requestTimeout(method, timeoutMs) { return new PluginError('ZCODE_REQUEST_TIMEOUT', `ZCode request timed out: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method, timeoutMs } }); }
 function malformedFrame() { return new PluginError('ZCODE_PROTOCOL_MALFORMED', 'ZCode sent a malformed protocol frame.', { category: 'protocol', remedy: 'Restart ZCode and retry.' }); }
 function frameTooLarge() { return new PluginError('ZCODE_PROTOCOL_FRAME_TOO_LARGE', 'A ZCode protocol frame exceeded the configured limit.', { category: 'protocol', remedy: 'Reduce request size or inspect the peer for invalid output.' }); }
 /** @param {unknown} error @param {string} [stderrTail] */
