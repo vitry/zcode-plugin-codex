@@ -87,7 +87,7 @@ function executorClient(text = 'executor result') {
 async function settle(input, createClient, ownerSessionId = 'owner-a') {
   return settleEndedOwnerWritableJob({
     store: input.store, dataRoot: input.dataRoot, workspace: input.workspace,
-    ownerSessionId, lockTimeoutMs: 0, requestTimeoutMs: 250, createClient,
+    ownerSessionId, lockTimeoutMs: 0, requestTimeoutMs: 250, createClient, signal: input.signal,
   });
 }
 
@@ -136,20 +136,117 @@ test('SessionEnd preserves a completion that races an acknowledged stop', async 
   const stored = await input.store.readJob(input.workspace, value.id); assert.equal(stored.status, 'succeeded'); assert.equal(stops, 1);
 });
 
-test('SessionEnd keeps jobs nonterminal when the existing client, read, or stop is unavailable', async () => {
-  for (const scenario of ['null-client', 'read-timeout', 'stop-failure']) {
+test('SessionEnd archives its writable job when the existing broker is unavailable', async () => {
+  const input = await fixture(); const value = await job(input);
+  await settle(input, async () => null);
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.equal(stored.status, 'failed');
+  assert.equal(stored.error.message, 'SessionEnd found no healthy existing ZCode broker identity; the orphan was archived.');
+  assert.equal(stored.lastCancelError, undefined);
+});
+
+test('SessionEnd retains its writable job when existing client creation fails generically', async () => {
+  const input = await fixture(); const value = await job(input);
+  await settle(input, async () => { throw new Error('local owner store cannot be read'); });
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.equal(stored.status, 'running');
+  assert.match(stored.lastCancelError, /local owner store cannot be read/);
+  assert.ok(Buffer.byteLength(stored.lastCancelError, 'utf8') <= 2_048);
+});
+
+test('SessionEnd propagates native and arbitrary abort reasons before archival', async () => {
+  for (const [mode, returnsNull] of [['native', false], ['arbitrary', true]]) {
+    const controller = new AbortController(); const input = { ...await fixture(), signal: controller.signal }; const value = await job(input);
+    const reason = mode === 'native' ? undefined : Object.freeze({ source: 'arbitrary SessionEnd abort' });
+    const settlement = settle(input, async () => {
+      controller.abort(reason);
+      if (returnsNull) return null;
+      throw new PluginError('ZCODE_DISCONNECTED', 'disconnect raced SessionEnd abort', { category: 'runtime', remedy: 'restart' });
+    });
+    await assert.rejects(settlement, (error) => error === controller.signal.reason, mode);
+    const stored = await input.store.readJob(input.workspace, value.id);
+    assert.equal(stored.status, 'running', mode);
+    assert.equal(stored.lastCancelError, undefined, mode);
+  }
+});
+
+test('SessionEnd does not archive broker absence while the exact worker lease is held', async () => {
+  const input = await fixture(); const lease = 'f'.repeat(64); const value = await job(input, { workerLeaseId: lease }); let clients = 0;
+  await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: value.id, workerLeaseId: lease }, () => settle(input, async () => { clients += 1; return null; }));
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.equal(stored.status, 'running');
+  assert.equal(stored.lastCancelError, undefined);
+  assert.equal(clients, 1);
+});
+
+test('SessionEnd does not archive broker absence without an exact worker lease', async () => {
+  const input = await fixture(); const value = await job(input, { claim: false });
+  await settle(input, async () => null);
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.equal(stored.status, 'running');
+  assert.equal(stored.lastCancelError, 'SessionEnd found no healthy existing ZCode broker identity; the orphan was archived.');
+});
+
+test('SessionEnd can stop through a reachable broker while the exact worker lease is held', async () => {
+  const input = await fixture(); const lease = 'a'.repeat(64); const value = await job(input, { workerLeaseId: lease }); let stops = 0;
+  await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: value.id, workerLeaseId: lease }, () => settle(input, async (current) => clientFor(current, {
+    reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }],
+    onStop: () => { stops += 1; },
+  })));
+  assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled');
+  assert.equal(stops, 1);
+});
+
+test('SessionEnd propagates an abort observed by every successful client operation', async () => {
+  for (const phase of ['create', 'read', 'stop', 'reread']) {
+    const controller = new AbortController(); const input = { ...await fixture(), signal: controller.signal }; const value = await job(input); const reason = Object.freeze({ phase });
+    const abortAfter = (value) => { if (phase === value) controller.abort(reason); };
+    let reads = 0;
+    const settlement = settle(input, async (current) => {
+      abortAfter('create');
+      return {
+        readSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); reads += 1; abortAfter(reads === 1 ? 'read' : 'reread'); return { projection: { status: reads === 1 ? 'running' : 'paused' }, runtime: { stateRevision: 8 }, messages: [] }; },
+        stopSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); abortAfter('stop'); },
+        close: async () => {},
+      };
+    });
+    await assert.rejects(settlement, (error) => error === reason, phase);
+    assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'running', phase);
+  }
+});
+
+test('SessionEnd archives its writable job when the existing protocol disconnects', async () => {
+  for (const [code, expected] of [
+    ['ZCODE_BROKER_PROTOCOL_UNAVAILABLE', 'The reachable ZCode broker reported no existing ZCode Protocol; the orphan was archived.'],
+    ['ZCODE_DISCONNECTED', 'The established ZCode control channel disconnected during orphan recovery; the orphan was archived.'],
+  ]) {
+    const input = await fixture(); const value = await job(input, { ownerTurnId: code }); let closes = 0;
+    await settle(input, async (current) => clientFor(current, {
+      readError: new PluginError(code, 'endpoint=/secret.sock token=secret owner=secret session=secret', { category: 'runtime', remedy: 'restart' }),
+      onClose: () => { closes += 1; },
+    }));
+    const stored = await input.store.readJob(input.workspace, value.id);
+    assert.equal(stored.status, 'failed', code);
+    assert.equal(stored.error.message, expected, code);
+    assert.doesNotMatch(stored.error.message, /secret/, code);
+    assert.equal(stored.lastCancelError, undefined);
+    assert.equal(closes, 1);
+  }
+});
+
+test('SessionEnd keeps jobs nonterminal when a reachable protocol read or stop is unacknowledged', async () => {
+  for (const scenario of ['read-timeout', 'stop-failure']) {
     const input = await fixture(); const value = await job(input, { ownerTurnId: scenario }); let closes = 0;
-    await settle(input, async (current) => scenario === 'null-client' ? null : clientFor(current, {
+    await settle(input, async (current) => clientFor(current, {
       ...(scenario === 'read-timeout' ? { readError: new PluginError('ZCODE_REQUEST_TIMEOUT', 'read timed out', { category: 'timeout', remedy: 'retry' }) } : {}),
       ...(scenario === 'stop-failure' ? { stopError: new Error('stop refused') } : {}), onClose: () => { closes += 1; },
     }));
     const stored = await input.store.readJob(input.workspace, value.id);
     assert.ok(['running', 'cancelling'].includes(stored.status), scenario);
     assert.ok(typeof stored.lastCancelError === 'string' && stored.lastCancelError.length > 0 && stored.lastCancelError.length <= 2_048, scenario);
-    if (scenario === 'null-client') assert.match(stored.lastCancelError, /existing ZCode broker is unavailable/i);
     if (scenario === 'read-timeout') assert.match(stored.lastCancelError, /read timed out/i);
     if (scenario === 'stop-failure') assert.match(stored.lastCancelError, /stop refused/i);
-    assert.equal(closes, scenario === 'null-client' ? 0 : 1);
+    assert.equal(closes, 1);
   }
 });
 

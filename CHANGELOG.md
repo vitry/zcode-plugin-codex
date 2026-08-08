@@ -10,7 +10,7 @@ All notable changes follow Semantic Versioning.
 - Improved `$zcode:setup` guidance when the ZCode CLI has no model provider configured, including the distinction between Desktop and CLI settings and API-key providers that do not require OAuth.
 - Added foreground activity output, a 20-second heartbeat, and durable status previews for long-running ZCode work.
 - Added bounded foreground `SIGINT` and `SIGTERM` handling: the plugin cancels before session creation or sends `session/stop` only to the exact persisted ZCode session, while background jobs continue until completion or explicit cancellation with `$zcode:cancel`.
-- Added safe orphan settlement through best-effort `SessionEnd` handling and a reservation-time crash fallback, while preserving owner-only access and retaining the writable guard when liveness or remote-stop acknowledgement is uncertain.
+- Added safe orphan settlement through best-effort `SessionEnd` handling and a reservation-time crash fallback while preserving owner-only access. A broker-unavailable orphan with a free worker lease is archived as `failed` and releases the writable guard; an unacknowledged stop on a reachable control channel still retains the guard.
 - Kept the package version at `0.1.0` for these Unreleased behavior changes.
 
 ## 0.1.0 - 2026-08-06

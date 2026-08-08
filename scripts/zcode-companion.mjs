@@ -143,6 +143,7 @@ async function reservePublicJob(context, reservation) {
       store: context.store,
       dataRoot: context.dataRoot,
       workspace: context.cwd,
+      signal: context.signal,
       createClient: async (job) => {
         context.signal?.throwIfAborted();
         const launch = await discoverLaunch(context.env, context.dependencies);
