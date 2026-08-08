@@ -39,6 +39,52 @@ export async function scavengeWritableJobs(input) {
   return outcomes;
 }
 
+/**
+ * Best-effort settlement for the ending owner's one active writable Rescue.
+ * Unlike orphan scavenging, SessionEnd is an explicit owner lifecycle signal, so
+ * an accepted remote turn may be stopped even while its worker lease is held.
+ * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,lockTimeoutMs?:number,requestTimeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>}} input
+ */
+export async function settleEndedOwnerWritableJob(input) {
+  const selected = (await input.store.listJobs(input.workspace))
+    .filter((/** @type {any} */ job) => job.ownerSessionId === input.ownerSessionId
+      && job.command === 'rescue' && job.readOnly === false && !TERMINAL.has(job.status))
+    .at(-1);
+  if (!selected) return null;
+  try {
+    return await withJobCancellationLock({
+      dataRoot: input.dataRoot,
+      workspace: input.workspace,
+      jobId: selected.id,
+      timeoutMs: input.lockTimeoutMs ?? 0,
+    }, async () => {
+      const current = await input.store.readJob(input.workspace, selected.id);
+      if (current.id !== selected.id || current.ownerSessionId !== input.ownerSessionId
+        || current.command !== 'rescue' || current.readOnly !== false || TERMINAL.has(current.status)) return current;
+      if (current.status === 'queued' && !isDigest(current.workerLeaseId)) return cancelQueuedJob(input, current);
+      if (current.status === 'queued') {
+        try {
+          return await withWorkerLease({
+            dataRoot: input.dataRoot,
+            workspace: input.workspace,
+            jobId: current.id,
+            workerLeaseId: current.workerLeaseId,
+            timeoutMs: 0,
+          }, () => cancelQueuedJob(input, current));
+        } catch (error) {
+          if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return current;
+          throw error;
+        }
+      }
+      if (!['running', 'cancelling'].includes(current.status) || typeof current.zcodeSessionId !== 'string') return current;
+      return settleEndedRemoteJob(input, current);
+    });
+  } catch (error) {
+    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return input.store.readJob(input.workspace, selected.id);
+    throw error;
+  }
+}
+
 /** @param {any} input */
 async function settleSelectedJob(input) {
   return withJobCancellationLock({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: input.selectedJobId }, async () => {
@@ -118,6 +164,49 @@ async function cancelJob(input, job) {
     if (current.status === 'running') await input.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling');
     return await input.store.transitionJob(input.workspace, job.id, ['cancelling'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
   } catch (error) { return conflictWinner(input, job, error); }
+}
+/** @param {any} input @param {any} job */
+async function cancelQueuedJob(input, job) {
+  const current = await input.store.readJob(input.workspace, job.id);
+  if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
+  try { return await input.store.transitionJob(input.workspace, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null }); }
+  catch (error) { return conflictWinner(input, job, error); }
+}
+
+/** @param {any} input @param {any} job */
+async function settleEndedRemoteJob(input, job) {
+  let client;
+  try {
+    client = await input.createClient(job, ownerIdForSession(job.ownerSessionId));
+    if (!client) return job;
+    let snapshot;
+    try { snapshot = await client.readSession(job.zcodeSessionId); }
+    catch { return input.store.readJob(input.workspace, job.id); }
+    const completed = await completeEndedJob(input, job, snapshot);
+    if (completed) return completed;
+    if (!REMOTE_ACTIVE.has(snapshot?.projection?.status)) return input.store.readJob(input.workspace, job.id);
+    try { await client.stopSession(job.zcodeSessionId); }
+    catch { return input.store.readJob(input.workspace, job.id); }
+    try { snapshot = await client.readSession(job.zcodeSessionId); }
+    catch { return cancelJob(input, job); }
+    return await completeEndedJob(input, job, snapshot) ?? cancelJob(input, job);
+  } catch {
+    return input.store.readJob(input.workspace, job.id);
+  } finally { await client?.close().catch(() => {}); }
+}
+
+/** Return null when completion is not proven and leave the durable job active. @param {any} input @param {any} job @param {any} snapshot */
+async function completeEndedJob(input, job, snapshot) {
+  if (!hasBoundary(job) || !Number.isSafeInteger(snapshot?.runtime?.stateRevision)
+    || snapshot.runtime.stateRevision < job.startRevision || !['completed', 'idle'].includes(snapshot?.projection?.status)) return null;
+  try {
+    const result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
+    const resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
+    return await input.store.transitionJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
+  } catch (error) {
+    if (isTransitionConflict(error)) return input.store.readJob(input.workspace, job.id);
+    return null;
+  }
 }
 /** @param {any} input @param {any} job @param {any} snapshot @param {'fail'|'cancel'} [invalidResult] */
 async function completeJob(input, job, snapshot, invalidResult = 'fail') {

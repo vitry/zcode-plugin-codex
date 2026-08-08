@@ -6,9 +6,38 @@ import { resolve } from 'node:path';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { resolvePluginDataRoot } from '../scripts/lib/plugin-data.mjs';
-import { releaseManagedZCodeOwner } from '../scripts/lib/zcode-client.mjs';
+import { settleEndedOwnerWritableJob } from '../scripts/lib/recovery.mjs';
+import { createStateStore } from '../scripts/lib/state.mjs';
+import { createExistingManagedZCodeClient, releaseManagedZCodeOwner } from '../scripts/lib/zcode-client.mjs';
 import { cleanupSession } from './lib/hook-state.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
-try { const input = await readHookInput('SessionEnd'); const dataRoot = resolvePluginDataRoot({ env: process.env, pluginRoot: resolve(fileURLToPath(new URL('../', import.meta.url))) }); await Promise.allSettled([releaseManagedZCodeOwner({ dataRoot, workspace: input.cwd, ownerId: ownerIdForSession(input.session_id), requestTimeoutMs: 750 }), cleanupSession(dataRoot, input.cwd, input.session_id), createIdentityStore({ dataRoot }).cleanupSession(input.cwd, input.session_id)]); }
-catch (error) { process.stderr.write(`ZCode session cleanup advisory failed: ${error?.code ?? 'HOOK_FAILED'}\n`); process.exitCode = 1; }
+try {
+  const input = await readHookInput('SessionEnd');
+  const dataRoot = resolvePluginDataRoot({ env: process.env, pluginRoot: resolve(fileURLToPath(new URL('../', import.meta.url))) });
+  const ownerSessionId = input.session_id;
+  const ownerId = ownerIdForSession(ownerSessionId);
+  const store = createStateStore({ dataRoot });
+  await settleEndedOwnerWritableJob({
+    store,
+    dataRoot,
+    workspace: input.cwd,
+    ownerSessionId,
+    requestTimeoutMs: 250,
+    lockTimeoutMs: 0,
+    createClient: (job, derivedOwnerId) => createExistingManagedZCodeClient({
+      dataRoot,
+      workspace: input.cwd,
+      ownerId: derivedOwnerId,
+      requestTimeoutMs: 250,
+    }),
+  }).catch(() => null);
+  await releaseManagedZCodeOwner({ dataRoot, workspace: input.cwd, ownerId, requestTimeoutMs: 500 }).catch(() => null);
+  await Promise.allSettled([
+    cleanupSession(dataRoot, input.cwd, ownerSessionId),
+    createIdentityStore({ dataRoot }).cleanupSession(input.cwd, ownerSessionId),
+  ]);
+} catch (error) {
+  process.stderr.write(`ZCode session cleanup advisory failed: ${error?.code ?? 'HOOK_FAILED'}\n`);
+  process.exitCode = 1;
+}
