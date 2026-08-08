@@ -294,7 +294,7 @@ test('request failures retain only a bounded safe remote error code', async (t) 
     FAKE_ZCODE_ERROR: 'session/list',
     FAKE_ZCODE_ERROR_DATA_CODE: 'model_config_missing',
     FAKE_ZCODE_ERROR_DATA_SECRET: 'remote-api-key-must-not-leak',
-  }));
+  }, { requestTimeoutMs: 2_000, completionTimeoutMs: 2_000 }));
 
   for (const [name, remoteCode] of [
     ['oversized', 'x'.repeat(129)],
@@ -307,7 +307,7 @@ test('request failures retain only a bounded safe remote error code', async (t) 
         assert.deepEqual(error.details, { method: 'session/list', rpcCode: -32099 });
         return true;
       });
-    }, { FAKE_ZCODE_ERROR: 'session/list', FAKE_ZCODE_ERROR_DATA_CODE: remoteCode }));
+    }, { FAKE_ZCODE_ERROR: 'session/list', FAKE_ZCODE_ERROR_DATA_CODE: remoteCode }, { requestTimeoutMs: 2_000, completionTimeoutMs: 2_000 }));
   }
 });
 
