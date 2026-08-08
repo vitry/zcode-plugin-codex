@@ -178,20 +178,20 @@ async function settleEndedRemoteJob(input, job) {
   let client;
   try {
     client = await input.createClient(job, ownerIdForSession(job.ownerSessionId));
-    if (!client) return job;
+    if (!client) return retainAfterStopFailure(input, job, recoveryError('The existing ZCode broker is unavailable during SessionEnd settlement.'));
     let snapshot;
     try { snapshot = await client.readSession(job.zcodeSessionId); }
-    catch { return input.store.readJob(input.workspace, job.id); }
+    catch (error) { return retainAfterStopFailure(input, job, error); }
     const completed = await completeEndedJob(input, job, snapshot);
     if (completed) return completed;
     if (!REMOTE_ACTIVE.has(snapshot?.projection?.status)) return input.store.readJob(input.workspace, job.id);
     try { await client.stopSession(job.zcodeSessionId); }
-    catch { return input.store.readJob(input.workspace, job.id); }
+    catch (error) { return retainAfterStopFailure(input, job, error); }
     try { snapshot = await client.readSession(job.zcodeSessionId); }
     catch { return cancelJob(input, job); }
     return await completeEndedJob(input, job, snapshot) ?? cancelJob(input, job);
-  } catch {
-    return input.store.readJob(input.workspace, job.id);
+  } catch (error) {
+    return retainAfterStopFailure(input, job, error);
   } finally { await client?.close().catch(() => {}); }
 }
 
@@ -240,7 +240,11 @@ async function retainAfterStopFailure(input, job, error) {
   if (TERMINAL.has(current.status)) return current;
   const message = recoveryMessage(error);
   try { return await input.store.transitionJob(input.workspace, job.id, [current.status], 'running', { lastCancelError: message }); }
-  catch (transitionError) { return conflictWinner(input, job, transitionError); }
+  catch (transitionError) {
+    const winner = await input.store.readJob(input.workspace, job.id);
+    if (TERMINAL.has(winner.status)) return winner;
+    return conflictWinner(input, job, transitionError);
+  }
 }
 /** @param {any} input @param {any} job @param {unknown} error */
 async function conflictWinner(input, job, error) {

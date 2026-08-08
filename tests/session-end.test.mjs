@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { settleEndedOwnerWritableJob, withWorkerLease } from '../scripts/lib/recovery.mjs';
+import { executeJob } from '../scripts/lib/review.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
@@ -73,6 +74,16 @@ function clientFor(value, options = {}) {
   };
 }
 
+function executorClient(text = 'executor result') {
+  return {
+    createSession: async () => ({ session: { sessionId: 'remote-a' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: () => () => {},
+    send: async () => ({ inputId: 'input-a', stateRevision: 7 }), waitForCompletion: async () => {},
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'executor-answer', parentMessageId: 'input-a' }, parts: [{ type: 'text', text }] }] }),
+    close: async () => {},
+  };
+}
+
 async function settle(input, createClient, ownerSessionId = 'owner-a') {
   return settleEndedOwnerWritableJob({
     store: input.store, dataRoot: input.dataRoot, workspace: input.workspace,
@@ -132,9 +143,30 @@ test('SessionEnd keeps jobs nonterminal when the existing client, read, or stop 
       ...(scenario === 'read-timeout' ? { readError: new PluginError('ZCODE_REQUEST_TIMEOUT', 'read timed out', { category: 'timeout', remedy: 'retry' }) } : {}),
       ...(scenario === 'stop-failure' ? { stopError: new Error('stop refused') } : {}), onClose: () => { closes += 1; },
     }));
-    assert.ok(['running', 'cancelling'].includes((await input.store.readJob(input.workspace, value.id)).status), scenario);
+    const stored = await input.store.readJob(input.workspace, value.id);
+    assert.ok(['running', 'cancelling'].includes(stored.status), scenario);
+    assert.ok(typeof stored.lastCancelError === 'string' && stored.lastCancelError.length > 0 && stored.lastCancelError.length <= 2_048, scenario);
+    if (scenario === 'null-client') assert.match(stored.lastCancelError, /existing ZCode broker is unavailable/i);
+    if (scenario === 'read-timeout') assert.match(stored.lastCancelError, /read timed out/i);
+    if (scenario === 'stop-failure') assert.match(stored.lastCancelError, /stop refused/i);
     assert.equal(closes, scenario === 'null-client' ? 0 : 1);
   }
+});
+
+test('SessionEnd maintenance failure never overwrites a terminal executor race', async () => {
+  const input = await fixture(); const value = await job(input); let raced = false;
+  const wrapped = {
+    ...input.store,
+    transitionJob: async (workspace, jobId, expected, next, patch = {}) => {
+      if (!raced && next === 'running' && patch.lastCancelError) {
+        raced = true;
+        await input.store.transitionJob(workspace, jobId, ['running'], 'failed', { error: { message: 'executor won maintenance failure race' }, finishedAt: new Date().toISOString(), exitCode: 1 });
+      }
+      return input.store.transitionJob(workspace, jobId, expected, next, patch);
+    },
+  };
+  await settle({ ...input, store: wrapped }, async (current) => clientFor(current, { stopError: new Error('stop failed late') }));
+  const stored = await input.store.readJob(input.workspace, value.id); assert.equal(stored.status, 'failed'); assert.equal(stored.error.message, 'executor won maintenance failure race'); assert.equal(stored.lastCancelError, undefined);
 });
 
 test('SessionEnd ignores foreign-owner and read-only jobs', async () => {
@@ -170,4 +202,38 @@ test('SessionEnd never overwrites a terminal executor race', async () => {
   };
   await settle({ ...input, store: wrapped }, async (current) => clientFor(current, { reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }] }));
   const stored = await input.store.readJob(input.workspace, value.id); assert.equal(stored.status, 'failed'); assert.equal(stored.error.message, 'executor failed first');
+});
+
+test('executeJob holds the cancellation lock across result artifact publication', async () => {
+  const input = await fixture(); const reservation = await job(input, { claim: false, status: 'queued' }); let observed;
+  const output = await executeJob({
+    job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client: executorClient(), task: 'finish',
+    syncDirectory: async (directory) => {
+      if (!directory.endsWith('/results')) return;
+      observed = await settle(input, async (current) => clientFor(current, { reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }] }));
+    },
+  });
+  assert.equal(observed.status, 'running', 'nonblocking SessionEnd must lose while executor publishes under the cancellation lock'); assert.equal(output.job.status, 'succeeded');
+});
+
+test('executeJob respects a SessionEnd completion winner without rewriting its result artifact', async () => {
+  const input = await fixture(); const reservation = await job(input, { claim: false, status: 'queued' });
+  const output = await executeJob({
+    job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client: executorClient('late executor result'), task: 'finish',
+    onBoundaryPersisted: async (running) => {
+      await settle(input, async (current) => clientFor(current, { reads: [{ ...completed('maintenance result'), messages: [{ info: { role: 'assistant', messageId: 'maintenance-answer', parentMessageId: running.inputId }, parts: [{ type: 'text', text: 'maintenance result' }] }] }] }));
+    },
+  });
+  const stored = await input.store.readJob(input.workspace, reservation.id); const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
+  assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'maintenance result'); assert.equal(stored.status, 'succeeded'); assert.equal(await readFile(join(storage.directory, stored.resultArtifact), 'utf8'), 'maintenance result');
+});
+
+test('executeJob does not write a result after SessionEnd cancellation wins', async () => {
+  const input = await fixture(); const reservation = await job(input, { claim: false, status: 'queued' });
+  await assert.rejects(executeJob({
+    job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client: executorClient(), task: 'finish',
+    onBoundaryPersisted: async () => settle(input, async (current) => clientFor(current, { reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }] })),
+  }), { code: 'JOB_TERMINAL' });
+  const stored = await input.store.readJob(input.workspace, reservation.id); const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
+  assert.equal(stored.status, 'cancelled'); await assert.rejects(readFile(join(storage.directory, 'results', `${reservation.id}.md`)), { code: 'ENOENT' });
 });
