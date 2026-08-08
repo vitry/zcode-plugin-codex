@@ -341,6 +341,23 @@ test('a new owner scavenges one orphan blocker and retries writable reservation 
   assert.equal(calls.filter((entry) => entry === 'list').length, 1); assert.doesNotMatch(JSON.stringify(output), new RegExp(orphan.id));
 });
 
+test('a new owner archives a historical orphan when its managed control channel is unavailable', async () => {
+  const context = await fixture(); const { job: orphan, store } = await reserveOrphan(context); let discoveries = 0; let clients = 0;
+  const output = await runCompanion(['rescue', '--background', '--fresh', 'repair after lost broker'], {
+    cwd: context.workspace,
+    env: context.env,
+    caller: caller('new-owner'),
+    dependencies: {
+      discoverLaunch: async () => { discoveries += 1; return { command: process.execPath, args: [fake], target: fake }; },
+      createManagedZCodeClient: async () => { clients += 1; throw new PluginError('ZCODE_DISCONNECTED', 'The ZCode process connection failed.', { category: 'runtime', remedy: 'Restart the operation.' }); },
+    },
+  });
+  const archived = await store.readJob(context.workspace, orphan.id);
+  assert.equal(archived.status, 'failed'); assert.match(archived.error.message, /control channel.*unavailable.*orphan/i);
+  assert.equal(output.type, 'background'); assert.notEqual(output.job.id, orphan.id); assert.equal(output.job.ownerSessionId, 'new-owner');
+  assert.equal(discoveries, 1); assert.equal(clients, 1);
+});
+
 test('a pre-aborted writable conflict propagates its reason before broker reconciliation', async () => {
   const context = await fixture(); const { job: orphan, store } = await reserveOrphan(context); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'abort before scavenging'); controller.abort(interruption); let discoveries = 0; let clients = 0;
   await assert.rejects(

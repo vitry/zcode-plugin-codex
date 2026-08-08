@@ -136,20 +136,43 @@ test('SessionEnd preserves a completion that races an acknowledged stop', async 
   const stored = await input.store.readJob(input.workspace, value.id); assert.equal(stored.status, 'succeeded'); assert.equal(stops, 1);
 });
 
-test('SessionEnd keeps jobs nonterminal when the existing client, read, or stop is unavailable', async () => {
-  for (const scenario of ['null-client', 'read-timeout', 'stop-failure']) {
+test('SessionEnd archives its writable job when the existing broker is unavailable', async () => {
+  const input = await fixture(); const value = await job(input);
+  await settle(input, async () => null);
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.equal(stored.status, 'failed');
+  assert.match(stored.error.message, /SessionEnd.*control channel.*unavailable.*orphan/i);
+  assert.equal(stored.lastCancelError, undefined);
+});
+
+test('SessionEnd archives its writable job when the existing protocol disconnects', async () => {
+  for (const code of ['ZCODE_BROKER_PROTOCOL_UNAVAILABLE', 'ZCODE_DISCONNECTED']) {
+    const input = await fixture(); const value = await job(input, { ownerTurnId: code }); let closes = 0;
+    await settle(input, async (current) => clientFor(current, {
+      readError: new PluginError(code, `control lost: ${code}`, { category: 'runtime', remedy: 'restart' }),
+      onClose: () => { closes += 1; },
+    }));
+    const stored = await input.store.readJob(input.workspace, value.id);
+    assert.equal(stored.status, 'failed', code);
+    assert.match(stored.error.message, /SessionEnd.*control channel.*unavailable.*orphan/i);
+    assert.equal(stored.lastCancelError, undefined);
+    assert.equal(closes, 1);
+  }
+});
+
+test('SessionEnd keeps jobs nonterminal when a reachable protocol read or stop is unacknowledged', async () => {
+  for (const scenario of ['read-timeout', 'stop-failure']) {
     const input = await fixture(); const value = await job(input, { ownerTurnId: scenario }); let closes = 0;
-    await settle(input, async (current) => scenario === 'null-client' ? null : clientFor(current, {
+    await settle(input, async (current) => clientFor(current, {
       ...(scenario === 'read-timeout' ? { readError: new PluginError('ZCODE_REQUEST_TIMEOUT', 'read timed out', { category: 'timeout', remedy: 'retry' }) } : {}),
       ...(scenario === 'stop-failure' ? { stopError: new Error('stop refused') } : {}), onClose: () => { closes += 1; },
     }));
     const stored = await input.store.readJob(input.workspace, value.id);
     assert.ok(['running', 'cancelling'].includes(stored.status), scenario);
     assert.ok(typeof stored.lastCancelError === 'string' && stored.lastCancelError.length > 0 && stored.lastCancelError.length <= 2_048, scenario);
-    if (scenario === 'null-client') assert.match(stored.lastCancelError, /existing ZCode broker is unavailable/i);
     if (scenario === 'read-timeout') assert.match(stored.lastCancelError, /read timed out/i);
     if (scenario === 'stop-failure') assert.match(stored.lastCancelError, /stop refused/i);
-    assert.equal(closes, scenario === 'null-client' ? 0 : 1);
+    assert.equal(closes, 1);
   }
 });
 

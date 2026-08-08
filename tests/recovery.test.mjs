@@ -140,6 +140,37 @@ test('workspace scavenging never inspects a blocker whose exact worker lease is 
   assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
 });
 
+test('workspace scavenging archives an orphan when its managed control channel cannot be established', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture);
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({
+    store, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+    reconcileOwnership: async () => {},
+    createClient: async () => { throw new PluginError('ZCODE_DISCONNECTED', 'The ZCode process connection failed.', { category: 'runtime', remedy: 'Restart the operation.' }); },
+  });
+  const recovered = await store.readJob(fixture.workspace, job.id);
+  assert.equal(recovered.status, 'failed');
+  assert.match(recovered.error.message, /control channel.*unavailable.*orphan/i);
+  assert.equal(recovered.lastCancelError, undefined);
+});
+
+test('workspace scavenging archives an orphan when its established control channel disconnects', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture); let closes = 0;
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({
+    store, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+    reconcileOwnership: async () => {},
+    createClient: async () => ({
+      listSessions: async () => { throw new PluginError('ZCODE_DISCONNECTED', 'The ZCode process disconnected.', { category: 'runtime', remedy: 'Restart the operation.' }); },
+      close: async () => { closes += 1; },
+    }),
+  });
+  const recovered = await store.readJob(fixture.workspace, job.id);
+  assert.equal(recovered.status, 'failed');
+  assert.match(recovered.error.message, /control channel.*unavailable.*orphan/i);
+  assert.equal(closes, 1);
+});
+
 test('workspace scavenging ignores read-only and terminal jobs', async () => {
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
   const terminal = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'old-terminal', ownerTurnId: 'terminal', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
