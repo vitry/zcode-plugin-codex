@@ -42,6 +42,10 @@ message carries the distinction while the public state model remains small:
 Reservation-time scavenging may terminalize a broker-unavailable job only after
 the existing orphan selection rules prove its worker lease is free. A held exact
 worker lease continues to block admission and prevents any remote inspection.
+Because this path is entered by a new Rescue request, it may use the existing
+managed-client behavior to start or recover a broker and query the persisted
+session before giving up. SessionEnd remains existing-only and never starts a
+broker or ZCode process.
 
 SessionEnd may terminalize only the ending Codex session's exact active writable
 Rescue job. Claimed queued jobs still obey their worker-lease fence. Running or
@@ -51,9 +55,11 @@ to SessionEnd.
 The terminal broker-unavailable cases are:
 
 1. No healthy identity exists for the exact writable Rescue broker profile.
-2. The identity exists but the broker cannot be connected or authenticated.
+2. SessionEnd finds an identity but cannot connect or authenticate, or
+   reservation-time recovery cannot establish its managed client.
 3. The broker is reachable, but existing-only access reports that it has no
    existing ZCode Protocol child.
+4. A previously established control connection reports `ZCODE_DISCONNECTED`.
 
 A correctly queried `session/list` that omits the persisted `zcodeSessionId`
 remains a separate, already-terminal missing-session condition: the session was
@@ -63,7 +69,7 @@ The following conditions remain nonterminal:
 
 - An exact worker lease is held.
 - A healthy broker and protocol are reachable, but `session/read` fails or times
-  out for a reason that does not prove the control channel is absent.
+  out for a reason other than an explicit disconnect.
 - A healthy broker and protocol receive `session/stop`, but the request is
   rejected, times out, or otherwise lacks acknowledgement.
 
@@ -77,8 +83,8 @@ For reservation-time recovery:
 1. Select the durable active writable Rescue and acquire its cancellation lock.
 2. Reread and validate owner, command, status, and exact worker lease.
 3. If the lease is held, return unchanged.
-4. If the lease is free, reconcile the durable owner mapping and attempt the
-   existing broker connection.
+4. If the lease is free, reconcile the durable owner mapping and establish the
+   normal managed recovery client, starting or recovering a broker if needed.
 5. If the exact control channel is unavailable, transition the job to `failed`.
 6. The caller performs its one existing atomic reservation retry, which can now
    admit the new Rescue.
@@ -111,7 +117,7 @@ The terminal error must be bounded by the existing recovery-message limit and
 must distinguish at least:
 
 - existing broker unavailable during SessionEnd settlement;
-- existing broker unavailable during orphan recovery;
+- managed broker/control channel unavailable during orphan recovery;
 - existing ZCode Protocol unavailable within a reachable broker;
 - persisted ZCode session missing from the correct session catalog.
 
