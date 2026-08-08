@@ -24,6 +24,14 @@ _Avoid_: Command execution, request
 A persisted record of a Companion Run, including its ownership, lifecycle state, progress, and stored result.
 _Avoid_: Process, thread
 
+**Orphaned Job**:
+A nonterminal Tracked Job whose exact worker-lifetime lease is no longer held, proving that its local executor has disappeared.
+_Avoid_: Stale job, dead session
+
+**Lifecycle Maintenance Principal**:
+Internal authority derived only from a validated Orphaned Job's original owner and used to settle that job without transferring user-visible ownership.
+_Avoid_: Impersonated owner, adopted owner
+
 **Review**:
 A read-only Companion Run that evaluates repository changes and returns findings without modifying the workspace.
 _Avoid_: Audit

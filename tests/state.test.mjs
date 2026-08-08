@@ -886,12 +886,25 @@ test('a workspace permits one writable job while read-only jobs remain concurren
   const rejection = attempts.find(({ status }) => status === 'rejected');
   assert.ok(rejection && rejection.status === 'rejected');
   assert.equal(rejection.reason.code, 'WRITABLE_JOB_EXISTS');
+  assert.equal(rejection.reason.remedy, 'Retry later or inspect the redacted workspace list with $zcode:status --all.');
+  assert.doesNotMatch(rejection.reason.remedy, /read-only/i);
 
   const readOnlyJobs = await Promise.all([
     store.reserveJob({ workspace, ...jobInput, ownerTurnId: 'read-a', readOnly: true }),
     store.reserveJob({ workspace, ...jobInput, ownerTurnId: 'read-b', readOnly: true }),
   ]);
   assert.equal(readOnlyJobs.length, 2);
+});
+
+test('writable exclusion remedy does not advertise a read-only rescue mode', async () => {
+  const { dataRoot, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+  await store.reserveJob({ workspace, ...jobInput });
+  await assert.rejects(
+    store.reserveJob({ workspace, ...jobInput, ownerTurnId: 'blocked-turn' }),
+    (error) => error instanceof PluginError && error.code === 'WRITABLE_JOB_EXISTS'
+      && error.remedy === 'Retry later or inspect the redacted workspace list with $zcode:status --all.'
+      && !/read-only/i.test(error.remedy),
+  );
 });
 
 test('workspace storage hashes the real path and creates private directories', async () => {

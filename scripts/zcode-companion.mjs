@@ -19,7 +19,7 @@ import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
-import { reconcileOwnedJobs, withWorkerLease } from './lib/recovery.mjs';
+import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { createStateStore } from './lib/state.mjs';
@@ -102,7 +102,7 @@ async function startPublic(context) {
   }
   const permissionSnapshot = Object.freeze({ permissionMode: caller.permissionMode });
   const transferSource = parsed.command === 'transfer' ? resolveTransferSource(parsed.options, caller) : undefined;
-  const job = await store.reserveJob({ workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) });
+  const job = await reservePublicJob(context, { workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) });
   if (parsed.command === 'transfer') {
     return executeTransfer({ job, workspace: job.workspace, dataRoot, store, sourceThreadId: /** @type {string} */ (transferSource), signal: context.signal, resolveLaunch: () => discoverLaunch(context.env),
       readThread: () => (context.dependencies?.readCodexThread ?? readCodexThread)(transferSource, codexAppServerOptions(context.env, job.workspace)),
@@ -131,6 +131,28 @@ async function startPublic(context) {
     }
   }
   return executeWithWorkerLease({ ...context, job, spec });
+}
+
+/** @param {any} context @param {any} reservation */
+async function reservePublicJob(context, reservation) {
+  try { return await context.store.reserveJob(reservation); }
+  catch (error) {
+    if (reservation.readOnly || !(error instanceof PluginError) || error.code !== 'WRITABLE_JOB_EXISTS') throw error;
+    context.signal?.throwIfAborted();
+    await scavengeWritableJobs({
+      store: context.store,
+      dataRoot: context.dataRoot,
+      workspace: context.cwd,
+      createClient: async (job) => {
+        context.signal?.throwIfAborted();
+        const launch = await discoverLaunch(context.env, context.dependencies);
+        context.signal?.throwIfAborted();
+        return (context.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot: context.dataRoot, workspace: job.workspace, launch, ownerId: ownerIdForSession(job.ownerSessionId), env: context.env, ...managedWireOptionsForJob(job) });
+      },
+    });
+    context.signal?.throwIfAborted();
+    return context.store.reserveJob(reservation);
+  }
 }
 
 /** @param {any} job */

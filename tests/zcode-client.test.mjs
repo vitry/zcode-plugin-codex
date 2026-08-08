@@ -1,14 +1,14 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import test from 'node:test';
 
-import { createManagedZCodeClient, createZCodeClient } from '../scripts/lib/zcode-client.mjs';
-import { brokerEndpointFor, ensureZCodeBroker, reconcileBrokerOwnership, ZCodeBroker as ZCodeBrokerClass } from '../scripts/zcode-broker.mjs';
+import { createExistingManagedZCodeClient, createManagedZCodeClient, createZCodeClient } from '../scripts/lib/zcode-client.mjs';
+import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, reconcileBrokerOwnership, writeBrokerIdentity, ZCodeBroker as ZCodeBrokerClass } from '../scripts/zcode-broker.mjs';
 import { withFileLock } from '../scripts/lib/fs.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
@@ -24,6 +24,39 @@ async function waitForProcessExit(pid, timeoutMs = 2_000) {
 function newTestBroker(options) {
   const ownershipPath = options.ownershipPath ?? (typeof options.endpoint === 'string' && options.endpoint.startsWith('\\\\.\\pipe\\') ? join(options.workspace, '.test-session-owners.json') : undefined);
   return new ZCodeBrokerClass({ ...options, ...(ownershipPath === undefined ? {} : { ownershipPath }) });
+}
+
+async function createPersistedTestBroker({ dataRoot, workspace, tokenByte, instanceByte, record, ...wireOptions }) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const identityName = brokerIdentityNameForWireOptions(wireOptions);
+  const profile = identityName === 'identity.json' ? undefined : identityName.slice('identity-'.length, -'.json'.length);
+  const endpoint = brokerEndpointFor({ dataRoot, workspace: storage.workspacePath, ...(profile ? { identity: profile } : {}) });
+  const brokerToken = tokenByte.repeat(64);
+  const instanceId = instanceByte.repeat(48);
+  const broker = await newTestBroker({ endpoint, brokerToken, instanceId, workspace: storage.workspacePath, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, ...(record ? { FAKE_ZCODE_RECORD: record } : {}) }, ...wireOptions }).start();
+  await writeBrokerIdentity(join(storage.directory, 'broker', identityName), { endpoint, pid: process.pid, instanceId, brokerToken });
+  return broker;
+}
+
+async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangHealth = false, closeAfterHealth = false }) {
+  const sockets = new Set();
+  const server = net.createServer((socket) => {
+    sockets.add(socket); socket.setEncoding('utf8'); let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk; let newline = buffer.indexOf('\n');
+      while (newline !== -1) {
+        const frame = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); newline = buffer.indexOf('\n');
+        if (frame.method === 'broker/auth' && frame.params?.token === brokerToken) socket.write(`${JSON.stringify({ id: frame.id, result: { authenticated: true } })}\n`);
+        else if (frame.method === 'broker/health' && !hangHealth) {
+          socket.write(`${JSON.stringify({ id: frame.id, result: { ok: true, pid: process.pid, instanceId } })}\n`);
+          if (closeAfterHealth) server.close();
+        }
+      }
+    });
+    socket.once('close', () => sockets.delete(socket));
+  });
+  await new Promise((resolvePromise, reject) => { server.once('error', reject); server.listen(endpoint, resolvePromise); });
+  return async () => { for (const socket of sockets) socket.destroy(); if (server.listening) await new Promise((resolvePromise) => server.close(resolvePromise)); };
 }
 
 async function readRecordedCalls(record) {
@@ -261,7 +294,7 @@ test('request failures retain only a bounded safe remote error code', async (t) 
     FAKE_ZCODE_ERROR: 'session/list',
     FAKE_ZCODE_ERROR_DATA_CODE: 'model_config_missing',
     FAKE_ZCODE_ERROR_DATA_SECRET: 'remote-api-key-must-not-leak',
-  }));
+  }, { requestTimeoutMs: 2_000, completionTimeoutMs: 2_000 }));
 
   for (const [name, remoteCode] of [
     ['oversized', 'x'.repeat(129)],
@@ -274,7 +307,7 @@ test('request failures retain only a bounded safe remote error code', async (t) 
         assert.deepEqual(error.details, { method: 'session/list', rpcCode: -32099 });
         return true;
       });
-    }, { FAKE_ZCODE_ERROR: 'session/list', FAKE_ZCODE_ERROR_DATA_CODE: remoteCode }));
+    }, { FAKE_ZCODE_ERROR: 'session/list', FAKE_ZCODE_ERROR_DATA_CODE: remoteCode }, { requestTimeoutMs: 2_000, completionTimeoutMs: 2_000 }));
   }
 });
 
@@ -381,6 +414,80 @@ test('managed broker clients require an explicit stable owner credential', async
   await assert.rejects(createManagedZCodeClient({ dataRoot: '/tmp/data', workspace: '/tmp/workspace', launch: { command: process.execPath, args: [] } }), { code: 'ZCODE_INPUT_INVALID' });
   for (const maxOutboundBytes of [0, 64 * 1024 * 1024 + 1]) await assert.rejects(createManagedZCodeClient({ dataRoot: '/tmp/data', workspace: '/tmp/workspace', launch: { command: process.execPath, args: [] }, ownerId: 'bounded-wire-owner', maxOutboundBytes }), { code: 'ZCODE_INPUT_INVALID' });
   for (const drainTimeoutMs of [0, 30_001]) await assert.rejects(createManagedZCodeClient({ dataRoot: '/tmp/data', workspace: '/tmp/workspace', launch: { command: process.execPath, args: [] }, ownerId: 'bounded-drain-owner', drainTimeoutMs }), { code: 'ZCODE_INPUT_INVALID' });
+});
+
+test('existing managed client connects to the exact healthy wire profile without ensuring a broker', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-exact-'));
+  const exactWire = { maxFrameBytes: 16 * 1024 * 1024, maxOutboundBytes: 16 * 1024 * 1024 };
+  assert.equal(brokerIdentityNameForWireOptions(exactWire), 'identity-fc55dc554b54c5fb.json');
+  let defaultBroker; let exactBroker; let client;
+  try {
+    defaultBroker = await createPersistedTestBroker({ dataRoot: directory, workspace: directory, tokenByte: '1', instanceByte: 'a' });
+    exactBroker = await createPersistedTestBroker({ dataRoot: directory, workspace: directory, tokenByte: '2', instanceByte: 'b', ...exactWire });
+    client = await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-exact-owner', requestTimeoutMs: 100, ...exactWire });
+    assert.ok(client);
+    assert.equal(defaultBroker.owners, 0);
+    assert.equal(exactBroker.owners, 1);
+  } finally {
+    await client?.close().catch(() => {}); await exactBroker?.close(); await defaultBroker?.close(); await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('existing managed client returns null and never spawns when the broker is absent', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-absent-'));
+  try {
+    assert.equal(await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-absent-owner', requestTimeoutMs: 50 }), null);
+    await assert.rejects(createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-no-launch-owner', requestTimeoutMs: 50, launch: { command: process.execPath, args: [fixture] } }), { code: 'ZCODE_INPUT_INVALID' });
+    await assert.rejects(createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-no-env-owner', requestTimeoutMs: 50, env: process.env }), { code: 'ZCODE_INPUT_INVALID' });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('existing managed client does not fall back to a sibling wire profile', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-sibling-')); let defaultBroker;
+  try {
+    defaultBroker = await createPersistedTestBroker({ dataRoot: directory, workspace: directory, tokenByte: '3', instanceByte: 'c' });
+    const client = await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-sibling-owner', requestTimeoutMs: 50, maxFrameBytes: 4096 });
+    assert.equal(client, null);
+    assert.equal(defaultBroker.owners, 0);
+  } finally { await defaultBroker?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('existing managed client bounds an unhealthy broker probe', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-hung-')); const wireOptions = { maxFrameBytes: 4096 }; let closeServer;
+  try {
+    for (const requestTimeoutMs of [0, 3_600_001]) await assert.rejects(createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-invalid-timeout', requestTimeoutMs, ...wireOptions }), { code: 'ZCODE_INPUT_INVALID' });
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const identityName = brokerIdentityNameForWireOptions(wireOptions); const profile = identityName.slice('identity-'.length, -'.json'.length); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath, identity: profile }); const brokerToken = '4'.repeat(64); const instanceId = 'd'.repeat(48);
+    closeServer = await createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangHealth: true });
+    await writeBrokerIdentity(join(storage.directory, 'broker', identityName), { endpoint, pid: process.pid, instanceId, brokerToken });
+    const startedAt = Date.now();
+    assert.equal(await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-hung-owner', requestTimeoutMs: 40, ...wireOptions }), null);
+    assert.ok(Date.now() - startedAt < 500);
+  } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('existing managed client returns null when the broker dies between health and connect', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-race-')); let closeServer;
+  try {
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const identityName = brokerIdentityNameForWireOptions(); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const brokerToken = '5'.repeat(64); const instanceId = 'e'.repeat(48);
+    closeServer = await createHealthOnlyServer(endpoint, { brokerToken, instanceId, closeAfterHealth: true });
+    await writeBrokerIdentity(join(storage.directory, 'broker', identityName), { endpoint, pid: process.pid, instanceId, brokerToken });
+    assert.equal(await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-race-owner', requestTimeoutMs: 100 }), null);
+  } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('existing managed client cannot lazily spawn a child protocol while normal managed clients still can', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-no-child-')); const record = join(directory, 'calls.jsonl'); const ownerId = 'existing-no-child-owner'; const remoteSessionId = 'existing-no-child-session'; let broker; let existingClient; let normalClient;
+  try {
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const brokerDirectory = join(storage.directory, 'broker'); const ownershipPath = join(brokerDirectory, 'session-owners.json'); await mkdir(brokerDirectory, { recursive: true }); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [remoteSessionId]: ownerId } }));
+    const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const brokerToken = '6'.repeat(64); const instanceId = 'f'.repeat(48); const launch = { command: process.execPath, args: [fixture], target: fixture };
+    broker = await newTestBroker({ endpoint, ownershipPath, brokerToken, instanceId, workspace: storage.workspacePath, launch, env: { ...process.env, FAKE_ZCODE_RECORD: record } }).start();
+    await writeBrokerIdentity(join(brokerDirectory, 'identity.json'), { endpoint, pid: process.pid, instanceId, brokerToken });
+    existingClient = await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId, requestTimeoutMs: 100 }); assert.ok(existingClient);
+    await assert.rejects(existingClient.readSession(remoteSessionId), { code: 'ZCODE_BROKER_PROTOCOL_UNAVAILABLE' }); assert.equal(broker.protocol, null); assert.equal(broker.protocolPromise, null); await assert.rejects(readFile(record, 'utf8'), { code: 'ENOENT' });
+    await existingClient.close(); existingClient = null;
+    normalClient = await createManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId, launch, env: { ...process.env, FAKE_ZCODE_RECORD: record }, requestTimeoutMs: 500 });
+    assert.equal((await normalClient.readSession(remoteSessionId)).session.sessionId, remoteSessionId); assert.ok((await readFile(record, 'utf8')).includes('session/read'));
+  } finally { await existingClient?.close().catch(() => {}); await normalClient?.close().catch(() => {}); await broker?.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('named-pipe broker construction requires an explicit ownership path', () => {

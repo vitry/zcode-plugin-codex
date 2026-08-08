@@ -15,6 +15,7 @@ import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
 import { createManagedZCodeClient } from '../../scripts/lib/zcode-client.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
+import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { runCompanion } from '../../scripts/zcode-companion.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -69,6 +70,52 @@ async function waitFor(predicate, message) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(message);
+}
+
+/** @param {any} context @param {{ownerSessionId?:string,ownerTurnId?:string,workerLeaseId?:string,zcodeSessionId?:string}} [options] */
+async function reserveOrphan(context, options = {}) {
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const ownerSessionId = options.ownerSessionId ?? 'departed-owner';
+  const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId, ownerTurnId: options.ownerTurnId ?? 'departed-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const workerLeaseId = options.workerLeaseId ?? 'd'.repeat(64);
+  await store.claimJobWorker(context.workspace, queued.id, { childPid: 999999, workerLeaseId });
+  let running = await store.transitionJob(context.workspace, queued.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: options.zcodeSessionId ?? 'orphan-session' });
+  running = await store.transitionJob(context.workspace, queued.id, ['running'], 'running', { inputId: 'accepted-input', startRevision: 7, beforeMessageIds: ['historical'] });
+  return { job: running, store, workerLeaseId };
+}
+
+/** @param {string} sessionId @param {string} [turnId] */
+function caller(sessionId, turnId = `${sessionId}-turn`) { return { sessionId, turnId, permissionMode: 'workspace-write' }; }
+
+/** @param {any[]} [calls] */
+function missingRemoteDependencies(calls = []) {
+  return {
+    discoverLaunch: async () => { calls.push('discover'); return { command: process.execPath, args: [fake], target: fake }; },
+    createManagedZCodeClient: async (/** @type {any} */ options) => {
+      calls.push({ type: 'client', ownerId: options.ownerId });
+      return { listSessions: async () => { calls.push('list'); return { sessions: [] }; }, close: async () => { calls.push('close'); } };
+    },
+  };
+}
+
+async function recoverForeignCompletion() {
+  const context = await fixture(); const ownerA = caller('departed-owner', 'owner-a-turn'); const ownerB = caller('new-owner', 'owner-b-turn');
+  const { job: orphan, store } = await reserveOrphan(context, { ownerSessionId: ownerA.sessionId, ownerTurnId: ownerA.turnId });
+  const dependencies = {
+    discoverLaunch: async () => ({ command: process.execPath, args: [fake], target: fake }),
+    createManagedZCodeClient: async (/** @type {any} */ options) => {
+      assert.equal(options.ownerId, ownerIdForSession(ownerA.sessionId));
+      return {
+        listSessions: async () => ({ sessions: [{ sessionId: orphan.zcodeSessionId }] }),
+        readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'recovered-answer', parentMessageId: orphan.inputId }, parts: [{ type: 'text', text: 'owner A recovered result' }] }] }),
+        close: async () => {},
+      };
+    },
+  };
+  const started = await runCompanion(['rescue', '--background', '--fresh', 'new owner work'], { cwd: context.workspace, env: context.env, caller: ownerB, dependencies });
+  assert.equal(started.type, 'background'); assert.doesNotMatch(JSON.stringify(started), new RegExp(orphan.id));
+  const recovered = await store.readJob(context.workspace, orphan.id); assert.equal(recovered.status, 'succeeded'); assert.equal(recovered.ownerSessionId, ownerA.sessionId);
+  return { context, orphan, ownerA, ownerB };
 }
 
 test('module import has no CLI side effects', async () => {
@@ -281,6 +328,99 @@ test('status/list/result and queued cancellation enforce owned job semantics', a
   assert.equal(cancelled.code, 0); assert.equal(cancelled.json.job.status, 'cancelled');
   const status = await companion(context, ['status', id, '--wait', '--timeout-ms', '10']);
   assert.equal(status.code, 0); assert.equal(status.json.job.status, 'cancelled');
+});
+
+test('a new owner scavenges one orphan blocker and retries writable reservation exactly once', async () => {
+  const context = await fixture(); const { job: orphan, store } = await reserveOrphan(context);
+  /** @type {any[]} */
+  const calls = [];
+  const output = await runCompanion(['rescue', '--background', '--fresh', 'repair after crash'], { cwd: context.workspace, env: context.env, caller: caller('new-owner'), dependencies: missingRemoteDependencies(calls) });
+  assert.equal(output.type, 'background'); assert.notEqual(output.job.id, orphan.id);
+  assert.equal((await store.readJob(context.workspace, orphan.id)).status, 'failed');
+  const jobs = await store.listJobs(context.workspace); assert.equal(jobs.filter((job) => ['queued', 'running', 'cancelling'].includes(job.status) && !job.readOnly).length, 1);
+  assert.equal(calls.filter((entry) => entry === 'list').length, 1); assert.doesNotMatch(JSON.stringify(output), new RegExp(orphan.id));
+});
+
+test('a pre-aborted writable conflict propagates its reason before broker reconciliation', async () => {
+  const context = await fixture(); const { job: orphan, store } = await reserveOrphan(context); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'abort before scavenging'); controller.abort(interruption); let discoveries = 0; let clients = 0;
+  await assert.rejects(
+    runCompanion(['rescue', '--background', '--fresh', 'do not scavenge'], { cwd: context.workspace, env: context.env, caller: caller('new-owner'), signal: controller.signal, dependencies: { discoverLaunch: async () => { discoveries += 1; throw new Error('must not discover'); }, createManagedZCodeClient: async () => { clients += 1; throw new Error('must not create'); } } }),
+    (error) => error === interruption,
+  );
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+  await assert.rejects(readFile(join(storage.directory, 'broker', 'session-owners.json')), { code: 'ENOENT' });
+  assert.equal(discoveries, 0); assert.equal(clients, 0); assert.deepEqual(await store.readJob(context.workspace, orphan.id), orphan);
+});
+
+test('an abort during writable-conflict scavenging propagates its reason before final reserve', async () => {
+  const context = await fixture(); const { job: orphan, store } = await reserveOrphan(context); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'abort during scavenging'); let clients = 0;
+  await assert.rejects(
+    runCompanion(['rescue', '--background', '--fresh', 'stop before retry'], { cwd: context.workspace, env: context.env, caller: caller('new-owner'), signal: controller.signal, dependencies: { discoverLaunch: async () => { controller.abort(interruption); return { command: process.execPath, args: [fake], target: fake }; }, createManagedZCodeClient: async () => { clients += 1; throw new Error('must not create after abort'); } } }),
+    (error) => error === interruption,
+  );
+  assert.equal(clients, 0); const jobs = await store.listJobs(context.workspace); assert.equal(jobs.length, 1); assert.equal(jobs[0].id, orphan.id); assert.equal(jobs[0].status, 'running');
+});
+
+test('a live exact worker lease keeps a new owner blocked without remote inspection', async () => {
+  const context = await fixture(); const { job: orphan, store, workerLeaseId } = await reserveOrphan(context); let discoveries = 0; let clients = 0;
+  await withWorkerLease({ dataRoot: context.dataRoot, workspace: context.workspace, jobId: orphan.id, workerLeaseId }, async () => {
+    await assert.rejects(
+      runCompanion(['rescue', '--background', '--fresh', 'must wait'], { cwd: context.workspace, env: context.env, caller: caller('new-owner'), dependencies: { discoverLaunch: async () => { discoveries += 1; throw new Error('must not inspect'); }, createManagedZCodeClient: async () => { clients += 1; throw new Error('must not create'); } } }),
+      (error) => error instanceof PluginError && error.code === 'WRITABLE_JOB_EXISTS',
+    );
+  });
+  assert.equal(discoveries, 0); assert.equal(clients, 0); assert.deepEqual(await store.readJob(context.workspace, orphan.id), orphan);
+});
+
+test('an unacknowledged orphan stop preserves WRITABLE_JOB_EXISTS with an honest remedy', async () => {
+  const context = await fixture(); const { job: orphan, store } = await reserveOrphan(context); let stops = 0;
+  const dependencies = {
+    discoverLaunch: async () => ({ command: process.execPath, args: [fake], target: fake }),
+    createManagedZCodeClient: async () => ({
+      listSessions: async () => ({ sessions: [{ sessionId: orphan.zcodeSessionId }] }),
+      readSession: async () => ({ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }),
+      stopSession: async () => { stops += 1; throw new Error('stop not acknowledged'); },
+      close: async () => {},
+    }),
+  };
+  await assert.rejects(
+    runCompanion(['rescue', '--background', '--fresh', 'must remain blocked'], { cwd: context.workspace, env: context.env, caller: caller('new-owner'), dependencies }),
+    (error) => error instanceof PluginError && error.code === 'WRITABLE_JOB_EXISTS' && error.remedy === 'Retry later or inspect the redacted workspace list with $zcode:status --all.',
+  );
+  const retained = await store.readJob(context.workspace, orphan.id); assert.equal(stops, 1); assert.equal(retained.status, 'running'); assert.match(retained.lastCancelError, /stop not acknowledged/);
+});
+
+test('two new owners racing through scavenging admit at most one writable rescue', async () => {
+  const context = await fixture(); const { job: orphan, store } = await reserveOrphan(context);
+  /** @type {any[]} */
+  const calls = [];
+  const attempts = await Promise.allSettled(['new-owner-b', 'new-owner-c'].map((sessionId) => runCompanion(['rescue', '--background', '--fresh', `repair by ${sessionId}`], { cwd: context.workspace, env: context.env, caller: caller(sessionId), dependencies: missingRemoteDependencies(calls) })));
+  assert.equal(attempts.filter((attempt) => attempt.status === 'fulfilled').length, 1);
+  const rejected = attempts.find((attempt) => attempt.status === 'rejected'); assert.ok(rejected && rejected.status === 'rejected'); assert.equal(rejected.reason.code, 'WRITABLE_JOB_EXISTS');
+  assert.equal((await store.readJob(context.workspace, orphan.id)).status, 'failed');
+  const activeWritable = (await store.listJobs(context.workspace)).filter((/** @type {any} */ job) => ['queued', 'running', 'cancelling'].includes(job.status) && !job.readOnly);
+  assert.equal(activeWritable.length, 1); assert.ok(['new-owner-b', 'new-owner-c'].includes(activeWritable[0].ownerSessionId));
+});
+
+test('the owner that triggers scavenging cannot status result cancel or resume the recovered job', async () => {
+  const { context, orphan, ownerB } = await recoverForeignCompletion();
+  for (const argv of [['status', orphan.id], ['result', orphan.id], ['cancel', orphan.id]]) {
+    await assert.rejects(runCompanion(argv, { cwd: context.workspace, env: context.env, caller: ownerB }), (error) => error instanceof PluginError && error.code === 'OWNED_JOB_NOT_FOUND');
+  }
+  await assert.rejects(runCompanion(['rescue', '--resume', 'adopt foreign session'], { cwd: context.workspace, env: context.env, caller: ownerB }), (error) => error instanceof PluginError && error.code === 'RESUME_CANDIDATE_NOT_FOUND');
+});
+
+test('status --all reports a scavenged foreign job only through redacted other-owner metadata', async () => {
+  const { context, orphan, ownerB } = await recoverForeignCompletion();
+  const listed = await runCompanion(['status', '--all'], { cwd: context.workspace, env: context.env, caller: ownerB });
+  const foreign = listed.jobs.find((/** @type {any} */ job) => job.id === orphan.id); assert.ok(foreign); assert.equal(foreign.owned, false); assert.equal(foreign.owner, 'other');
+  assert.ok(!('ownerSessionId' in foreign) && !('ownerTurnId' in foreign) && !('permissionSnapshot' in foreign));
+});
+
+test('a recovered foreign completion remains readable only by its original owner', async () => {
+  const { context, orphan, ownerA, ownerB } = await recoverForeignCompletion();
+  await assert.rejects(runCompanion(['result', orphan.id], { cwd: context.workspace, env: context.env, caller: ownerB }), (error) => error instanceof PluginError && error.code === 'OWNED_JOB_NOT_FOUND');
+  const result = await runCompanion(['result', orphan.id], { cwd: context.workspace, env: context.env, caller: ownerA }); assert.equal(result.result, 'owner A recovered result');
 });
 
 test('caller context is mandatory and diagnostics do not leak tokens or fake permission secrets', async () => {

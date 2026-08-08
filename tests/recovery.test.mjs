@@ -89,7 +89,8 @@ async function waitForJob(store, workspace, jobId, predicate, timeoutMs = 5_000)
 
 async function orphanJob(fixture, options = {}) {
   const store = createStateStore({ dataRoot: fixture.dataRoot });
-  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: options.turnId ?? 'orphan', command: options.command ?? 'rescue', ...(options.command === 'transfer' ? { codexThreadId: 'owner' } : {}), readOnly: options.readOnly ?? false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const ownerSessionId = options.ownerSessionId ?? 'owner';
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId, ownerTurnId: options.turnId ?? 'orphan', command: options.command ?? 'rescue', ...(options.command === 'transfer' ? { codexThreadId: ownerSessionId } : {}), readOnly: options.readOnly ?? false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   const workerLeaseId = options.workerLeaseId ?? 'd'.repeat(64);
   if (options.claim !== false) await store.claimJobWorker(fixture.workspace, job.id, { childPid: 999999, workerLeaseId });
   if (options.status === 'queued') return { job: await store.readJob(fixture.workspace, job.id), store, workerLeaseId };
@@ -107,6 +108,130 @@ function recoveryClient(job, options = {}) {
     close: async () => { options.onClose?.(); },
   };
 }
+
+test('cross-owner scavenging derives maintenance ownership from each durable writable blocker', async () => {
+  const fixture = await context(); const reconciled = []; const clientOwners = [];
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  for (const ownerSessionId of ['departed-owner-a', 'departed-owner-b']) {
+    const { job, store } = await orphanJob(fixture, { ownerSessionId, turnId: ownerSessionId });
+    await scavengeWritableJobs({
+      store, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+      reconcileOwnership: async (input) => { reconciled.push(input); },
+      createClient: async (current, ownerId) => { clientOwners.push({ jobId: current.id, ownerId }); return recoveryClient(current, { missing: true }); },
+    });
+    assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'failed');
+  }
+  assert.deepEqual(reconciled.map(({ ownerId, ownedSessionIds }) => ({ ownerId, ownedSessionIds })), [
+    { ownerId: ownerIdForSession('departed-owner-a'), ownedSessionIds: ['orphan-session'] },
+    { ownerId: ownerIdForSession('departed-owner-b'), ownedSessionIds: ['orphan-session'] },
+  ]);
+  assert.deepEqual(clientOwners.map(({ ownerId }) => ownerId), [ownerIdForSession('departed-owner-a'), ownerIdForSession('departed-owner-b')]);
+});
+
+test('workspace scavenging never inspects a blocker whose exact worker lease is held', async () => {
+  const fixture = await context(); const { job, store, workerLeaseId } = await orphanJob(fixture); let ownershipCalls = 0; let clientCalls = 0;
+  const { scavengeWritableJobs, withWorkerLease } = await import('../scripts/lib/recovery.mjs');
+  await withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace, jobId: job.id, workerLeaseId }, () => scavengeWritableJobs({
+    store, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+    reconcileOwnership: async () => { ownershipCalls += 1; },
+    createClient: async () => { clientCalls += 1; throw new Error('held lease must prevent inspection'); },
+  }));
+  assert.equal(ownershipCalls, 0); assert.equal(clientCalls, 0);
+  assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
+});
+
+test('workspace scavenging ignores read-only and terminal jobs', async () => {
+  const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
+  const terminal = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'old-terminal', ownerTurnId: 'terminal', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(fixture.workspace, terminal.id, ['queued'], 'failed', { error: { message: 'already done' }, finishedAt: new Date().toISOString(), exitCode: 1 });
+  const readOnly = await orphanJob(fixture, { ownerSessionId: 'old-reader', turnId: 'reader', readOnly: true });
+  const writable = await orphanJob(fixture, { ownerSessionId: 'old-writer', turnId: 'writer' }); const inspected = [];
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async (job) => { inspected.push(job.id); return recoveryClient(job, { missing: true }); } });
+  assert.deepEqual(inspected, [writable.job.id]);
+  assert.equal((await store.readJob(fixture.workspace, terminal.id)).status, 'failed');
+  assert.equal((await store.readJob(fixture.workspace, readOnly.job.id)).status, 'running');
+});
+
+test('workspace scavenging preserves an unclaimed reservation through claim grace and fails it after expiry', async () => {
+  const fixture = await context(); const now = Date.now();
+  const { job, store } = await orphanJob(fixture, { claim: false, status: 'queued' }); const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace });
+  await atomicWriteJson(join(storage.directory, 'jobs', `${job.id}.json`), { ...job, createdAt: new Date(now - 60_000).toISOString() });
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  const input = { store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, now: () => now, reconcileOwnership: async () => { throw new Error('queued reservation needs no ownership'); }, createClient: async () => { throw new Error('queued reservation needs no client'); } };
+  await scavengeWritableJobs(input); assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'queued');
+  await atomicWriteJson(join(storage.directory, 'jobs', `${job.id}.json`), { ...(await store.readJob(fixture.workspace, job.id)), createdAt: new Date(now - 600_000).toISOString() });
+  await scavengeWritableJobs(input); assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'failed');
+});
+
+test('workspace scavenging stops an active orphan and rereads completion before terminalizing', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture); let reads = 0; let stops = 0;
+  const completed = { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'answer', parentMessageId: 'accepted-input' }, parts: [{ type: 'text', text: 'completion won the stop race' }] }] };
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => ({
+    listSessions: async () => ({ sessions: [{ sessionId: job.zcodeSessionId }] }),
+    readSession: async () => { reads += 1; return reads === 1 ? { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] } : completed; },
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  }) });
+  const recovered = await store.readJob(fixture.workspace, job.id);
+  assert.equal(recovered.status, 'succeeded'); assert.equal(stops, 1); assert.equal(reads, 2); assert.ok(recovered.resultArtifact);
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace });
+  assert.equal(await readFile(join(storage.directory, recovered.resultArtifact), 'utf8'), 'completion won the stop race');
+});
+
+test('acknowledged stop cancels a cancelling orphan when post-stop completion has no valid result', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture, { status: 'cancelling' }); let reads = 0; let stops = 0;
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => ({
+    listSessions: async () => ({ sessions: [{ sessionId: job.zcodeSessionId }] }),
+    readSession: async () => { reads += 1; return { projection: { status: reads === 1 ? 'running' : 'completed' }, runtime: { stateRevision: 8 }, messages: [] }; },
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  }) });
+  const recovered = await store.readJob(fixture.workspace, job.id);
+  assert.equal(recovered.status, 'cancelled'); assert.equal(stops, 1); assert.equal(reads, 2); assert.equal(recovered.resultArtifact, undefined);
+});
+
+test('workspace scavenging retains the writable guard when active stop is unacknowledged', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture); const longError = `stop refused ${'x'.repeat(3_000)}`;
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { stopError: new Error(longError) }) });
+  const recovered = await store.readJob(fixture.workspace, job.id);
+  assert.equal(recovered.status, 'running'); assert.match(recovered.lastCancelError, /stop refused/); assert.ok(recovered.lastCancelError.length <= 2_048);
+  await assert.rejects(store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'new-owner', ownerTurnId: 'new', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'WRITABLE_JOB_EXISTS' });
+});
+
+test('workspace scavenging maps paused running to failed but requires stop acknowledgement for cancelling', async () => {
+  for (const [status, stopAcknowledged, expected] of [['running', true, 'failed'], ['cancelling', true, 'cancelled'], ['cancelling', false, 'running']]) {
+    const fixture = await context(); const { job, store } = await orphanJob(fixture, { status, turnId: `${status}-${stopAcknowledged}` }); let stops = 0;
+    const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+    await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, {
+      snapshot: { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }, onStop: () => { stops += 1; }, ...(stopAcknowledged ? {} : { stopError: new Error('paused stop refused') }),
+    }) });
+    const recovered = await store.readJob(fixture.workspace, job.id);
+    assert.equal(recovered.status, expected, `${status}/${stopAcknowledged}`); assert.equal(stops, status === 'cancelling' ? 1 : 0);
+  }
+});
+
+test('workspace scavenging fails an orphan whose persisted remote session is missing', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture); let stops = 0;
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { missing: true, onStop: () => { stops += 1; } }) });
+  assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'failed'); assert.equal(stops, 0);
+});
+
+test('terminal completion racing orphan settlement is never overwritten', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture); let raced = false;
+  const wrapped = { ...store, transitionJob: async (...args) => {
+    if (!raced && args[3] === 'failed') {
+      raced = true;
+      await store.transitionJob(fixture.workspace, job.id, ['running'], 'succeeded', { resultArtifact: `results/${job.id}.md`, finishedAt: new Date().toISOString(), exitCode: 0 });
+    }
+    return store.transitionJob(...args);
+  } };
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] } }) });
+  assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'succeeded');
+});
 
 test('background preparation failures terminalize the reservation and release the writable slot', async () => {
   for (const dependency of ['writeJobSpec', 'createExecutionCapability']) {
@@ -218,7 +343,7 @@ test('cancelling recovery distinguishes completed, stopped, active-acked, and ac
     await reconcileOwnedJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, ownerSessionId: 'owner', reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot, onStop: () => { stops += 1; }, ...(mode === 'active-unacked' ? { stopError: new Error('retry stop') } : {}) }) });
     const recovered = await store.readJob(fixture.workspace, job.id);
     assert.equal(recovered.status, mode === 'completed' ? 'succeeded' : mode === 'active-unacked' ? 'running' : 'cancelled', mode);
-    assert.equal(stops, mode.startsWith('active') ? 1 : 0, mode);
+    assert.equal(stops, mode === 'paused' || mode.startsWith('active') ? 1 : 0, mode);
     if (mode === 'active-unacked') assert.match(recovered.lastCancelError, /retry stop/);
   }
 });
@@ -264,7 +389,7 @@ test('orphan Transfer stops a known remote session before failure and retains it
 });
 
 test('a crashed real background worker reconciles remote terminal state without failing remote active work', async (t) => {
-  for (const [remoteMode, expectedStatus] of [['completed', 'succeeded'], ['stopped', 'cancelled'], ['missing', 'failed']]) {
+  for (const [remoteMode, expectedStatus] of [['completed', 'succeeded'], ['stopped', 'failed'], ['missing', 'failed']]) {
     const fixture = await context(); const control = join(fixture.root, 'recovery-control.json'); await writeFile(control, JSON.stringify({ mode: 'active' }));
     const env = { ...fixture.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' };
     const started = await runCompanion(['rescue', '--background', '--fresh', `recover ${remoteMode}`], { cwd: fixture.workspace, env, authorization: { callerContext: fixture.callerContext }, autoLaunchBackground: true });

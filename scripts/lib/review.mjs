@@ -7,7 +7,7 @@ import { PluginError } from './errors.mjs';
 import { resolveModel } from './args.mjs';
 import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
-import { createJobController } from './job-control.mjs';
+import { createJobController, withJobCancellationLock } from './job-control.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
@@ -107,11 +107,9 @@ export async function executeJob(input) {
     const finalSnapshot = await client.readSession(activeSessionId);
     remoteTerminalProven = true;
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
-    const resultArtifact = await writeArtifact({ dataRoot, workspace, directory: 'results', jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
     const terminalCleanupErrors = await cleanupProgress();
     if (terminalCleanupErrors.length) throw progressFailure(terminalCleanupErrors);
-    const succeeded = await input.store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
-    output = { job: succeeded, result };
+    output = await publishSuccessfulResult({ input, job, workspace, dataRoot, result });
   } catch (error) {
     primaryError = error;
     const current = await input.store.readJob(workspace, job.id).catch(() => running);
@@ -146,6 +144,35 @@ export async function executeJob(input) {
   }
   if (cleanupErrors.length) throw progressFailure(cleanupErrors);
   return output;
+}
+
+/** Serialize executor terminal publication with cancellation and lifecycle maintenance. @param {{input:any,job:any,workspace:string,dataRoot:string,result:string}} publication */
+async function publishSuccessfulResult({ input, job, workspace, dataRoot, result }) {
+  return withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
+    const current = await input.store.readJob(workspace, job.id);
+    if (current.status === 'succeeded') return { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: current.resultArtifact }) };
+    if (['failed', 'cancelled'].includes(current.status)) throw terminalPublicationError(job.id, current.status);
+    if (current.status !== 'running') throw statusPublicationError(job.id, current.status);
+    const resultArtifact = await writeResultArtifact({ dataRoot, workspace, jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
+    try {
+      const succeeded = await input.store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
+      return { job: succeeded, result };
+    } catch (error) {
+      const winner = await input.store.readJob(workspace, job.id).catch(() => null);
+      if (winner?.resultArtifact !== resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
+      throw error;
+    }
+  });
+}
+
+/** @param {string} jobId @param {string} status */
+function terminalPublicationError(jobId, status) {
+  return new PluginError('JOB_TERMINAL', `Job ${jobId} is already terminal.`, { category: 'state', remedy: 'Create a new job instead of changing a terminal job.', details: { jobId, status } });
+}
+
+/** @param {string} jobId @param {string} status */
+function statusPublicationError(jobId, status) {
+  return new PluginError('JOB_STATUS_CONFLICT', `Job ${jobId} changed status unexpectedly.`, { category: 'state', remedy: 'Reload the job and retry from its current status.', details: { actualStatus: status, expectedStatuses: ['running'], jobId } });
 }
 
 /** @template T @param {()=>Promise<T>} operation @param {AbortSignal|undefined} signal */

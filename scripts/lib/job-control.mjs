@@ -195,7 +195,7 @@ function finalizeError(jobId, cause) { return new PluginError('JOB_CANCEL_FINALI
 /** @param {string} jobId @param {string} message @param {unknown} [cause] */
 function cancelError(jobId, message, cause) { return new PluginError('JOB_CANCEL_FAILED', `Could not cancel job ${jobId}: ${message}`, { category: 'runtime', remedy: 'The job remains running; retry cancellation or inspect the ZCode session.', ...(cause ? { cause } : {}) }); }
 /** @param {string} message */
-function boundedCancelMessage(message) {
+export function boundedCancelMessage(message) {
   let result = ''; let bytes = 0;
   for (const character of message) {
     const characterBytes = Buffer.byteLength(character);

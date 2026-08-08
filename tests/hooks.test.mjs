@@ -12,6 +12,7 @@ import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createManagedZCodeClient, createZCodeClient, releaseManagedZCodeOwner } from '../scripts/lib/zcode-client.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
+import { runCompanion } from '../scripts/zcode-companion.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
@@ -61,6 +62,19 @@ async function workspace() {
     const child = spawn('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'init'], { cwd }); child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`git commit ${code}`)));
   });
   return { cwd, data, env: { PLUGIN_DATA: data } };
+}
+
+async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId, peerEnv = {} }) {
+  const store = createStateStore({ dataRoot: data });
+  let value = await store.reserveJob({ workspace: cwd, ownerSessionId, ownerTurnId: `turn-${ownerSessionId}`, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  value = await store.claimJobWorker(cwd, value.id, { childPid: 999_999, workerLeaseId: 'd'.repeat(64) });
+  const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: ownerIdForSession(ownerSessionId), env: { ...process.env, ...peerEnv } });
+  await client.createSession({ workspace: cwd, sessionId: remoteSessionId });
+  const sent = await client.send(remoteSessionId, 'recover this accepted turn');
+  await client.close();
+  value = await store.transitionJob(cwd, value.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: remoteSessionId });
+  value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds: ['message-user-history', 'message-assistant-history'] });
+  return { store, job: value };
 }
 
 async function writeGateConfig(data, cwd, value) { const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); await mkdir(join(storage.directory, 'config'), { recursive: true }); await writeFile(join(storage.directory, 'config/review-gate.json'), JSON.stringify(value)); }
@@ -184,6 +198,53 @@ test('SessionEnd releases only its broker owner sessions and lets the idle broke
   assert.ok(!calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-b'));
   const deadline = Date.now() + 2_000; while (Date.now() < deadline && processAlive(identity.pid)) await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(processAlive(identity.pid), false, 'released idle broker must exit promptly');
+});
+
+test('SessionEnd settles its writable job before generic owner release and preserves siblings', async () => {
+  const { cwd, data, env } = await workspace(); const record = join(data, 'settlement-order.jsonl'); const control = join(data, 'recovery-control.json');
+  await writeFile(record, ''); await writeFile(control, JSON.stringify({ mode: 'active' }));
+  const { store, job } = await acceptedWritableJob({ data, cwd, ownerSessionId: 'settled-owner', remoteSessionId: 'settled-remote', peerEnv: { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: control } });
+  let sibling = await store.reserveJob({ workspace: cwd, ownerSessionId: 'sibling-owner', ownerTurnId: 'sibling-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'default' } });
+  sibling = await store.transitionJob(cwd, sibling.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'sibling-remote' });
+  const ended = await runHook('session-end-hook.mjs', { session_id: 'settled-owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
+  assert.equal(ended.code, 0, ended.stderr); assert.equal((await store.readJob(cwd, job.id)).status, 'cancelled'); assert.equal((await store.readJob(cwd, sibling.id)).status, 'running');
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); const readIndex = calls.findIndex((call) => call.method === 'session/read' && call.params?.sessionId === 'settled-remote'); const stopIndex = calls.findIndex((call) => call.method === 'session/stop' && call.params?.sessionId === 'settled-remote');
+  assert.ok(readIndex >= 0 && stopIndex > readIndex, 'durable read/stop settlement must precede generic release cleanup'); assert.ok(!calls.some((call) => call.params?.sessionId === 'sibling-remote'));
+});
+
+test('SessionEnd never starts a broker when exact existing settlement is unavailable', async () => {
+  const { cwd, data, env } = await workspace(); const record = join(data, 'no-spawn.jsonl'); const store = createStateStore({ dataRoot: data });
+  let value = await store.reserveJob({ workspace: cwd, ownerSessionId: 'absent-owner', ownerTurnId: 'absent-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  value = await store.transitionJob(cwd, value.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'absent-remote' });
+  value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: 'accepted-input', startRevision: 1, beforeMessageIds: [] });
+  const identity = createIdentityStore({ dataRoot: data }); await identity.createCallerContext({ sessionId: 'absent-owner', turnId: 'turn', workspace: cwd, permissionMode: 'default' });
+  const ended = await runHook('session-end-hook.mjs', { session_id: 'absent-owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: record });
+  assert.equal(ended.code, 0, ended.stderr); assert.equal((await store.readJob(cwd, value.id)).status, 'running'); await assert.rejects(readFile(record, 'utf8'), { code: 'ENOENT' }); await assert.rejects(identity.resolveActiveTurn({ sessionId: 'absent-owner', workspace: cwd }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+  const hookSource = await readFile(join(root, 'hooks/session-end-hook.mjs'), 'utf8'); assert.match(hookSource, /createExistingManagedZCodeClient/); assert.doesNotMatch(hookSource, /maxFrameBytes|maxOutboundBytes|drainTimeoutMs/, 'writable Rescue is pinned to the default managed broker profile');
+});
+
+test('SessionEnd existing-only settlement never lazily spawns ZCode and generic release never terminalizes the job', async () => {
+  const { cwd, data, env } = await workspace(); const record = join(data, 'historical-release.jsonl'); await writeFile(record, ''); const store = createStateStore({ dataRoot: data }); const ownerSessionId = 'historical-job-owner'; const ownerId = ownerIdForSession(ownerSessionId);
+  let value = await store.reserveJob({ workspace: cwd, ownerSessionId, ownerTurnId: 'historical-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }); value = await store.transitionJob(cwd, value.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'historical-job-remote' }); value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: 'accepted-input', startRevision: 7, beforeMessageIds: [] });
+  await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId, ownedSessionIds: [value.zcodeSessionId] }); await ensureZCodeBroker({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, env: { ...process.env, FAKE_ZCODE_RECORD: record } });
+  const ended = await runHook('session-end-hook.mjs', { session_id: ownerSessionId, cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); const retained = await store.readJob(cwd, value.id); assert.equal(retained.status, 'running'); assert.match(retained.lastCancelError, /existing ZCode protocol is unavailable/i); assert.equal(await readFile(record, 'utf8'), '');
+});
+
+test('SessionEnd remains bounded when existing stop acknowledgement is unavailable', async () => {
+  const { cwd, data, env } = await workspace(); const record = join(data, 'bounded-settlement.jsonl'); const control = join(data, 'bounded-control.json'); await writeFile(record, ''); await writeFile(control, JSON.stringify({ mode: 'active' }));
+  const { store, job } = await acceptedWritableJob({ data, cwd, ownerSessionId: 'bounded-owner', remoteSessionId: 'bounded-remote', peerEnv: { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_SUPPRESS_METHOD: 'session/stop' } });
+  const started = Date.now(); const ended = await runHook('session-end-hook.mjs', { session_id: 'bounded-owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
+  assert.equal(ended.code, 0, ended.stderr); assert.ok(Date.now() - started < 2_500); assert.ok(['running', 'cancelling'].includes((await store.readJob(cwd, job.id)).status));
+});
+
+test('a failed SessionEnd stop is later settled by reservation scavenging before owner B is admitted', async (t) => {
+  const { cwd, data, env } = await workspace(); const record = join(data, 'fallback.jsonl'); const control = join(data, 'fallback-control.json'); await writeFile(record, ''); await writeFile(control, JSON.stringify({ mode: 'active' }));
+  const { store, job } = await acceptedWritableJob({ data, cwd, ownerSessionId: 'fallback-owner-a', remoteSessionId: 'fallback-remote', peerEnv: { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: control, FAKE_ZCODE_STOP_ERROR_PREFIX: 'fallback-remote' } });
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const brokerIdentity = JSON.parse(await readFile(join(storage.directory, 'broker/identity.json'), 'utf8')); t.after(() => { try { process.kill(brokerIdentity.pid, 'SIGTERM'); } catch { /* exited */ } });
+  const ended = await runHook('session-end-hook.mjs', { session_id: 'fallback-owner-a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); assert.ok(['running', 'cancelling'].includes((await store.readJob(cwd, job.id)).status));
+  await writeFile(control, JSON.stringify({ mode: 'completed' }));
+  const admitted = await runCompanion(['rescue', '--background', '--fresh', 'owner B continues'], { cwd, env: { ...process.env, PLUGIN_DATA: data, ZCODE_DATA_ROOT: data, ZCODE_PATH: fakeZCode }, caller: { sessionId: 'fallback-owner-b', turnId: 'fallback-turn-b', permissionMode: 'workspace-write' }, autoLaunchBackground: false });
+  assert.equal(admitted.type, 'background'); assert.equal(admitted.job.ownerSessionId, 'fallback-owner-b'); assert.ok(['succeeded', 'failed'].includes((await store.readJob(cwd, job.id)).status), 'reservation scavenging must safely terminalize the released orphan before admission');
 });
 
 test('SessionEnd drains deferred owner batches without touching siblings or looping on failures', async () => {

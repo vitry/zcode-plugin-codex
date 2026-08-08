@@ -58,7 +58,7 @@ export function createStateStore(options) {
         if (!reservation.readOnly && jobs.some(isActiveWritableJob)) {
           throw new PluginError('WRITABLE_JOB_EXISTS', 'This workspace already has an active writable rescue job.', {
             category: 'state',
-            remedy: 'Wait for the writable job to finish or run this job read-only.',
+            remedy: 'Retry later or inspect the redacted workspace list with $zcode:status --all.',
             details: { workspaceKey: storage.workspaceKey },
           });
         }
