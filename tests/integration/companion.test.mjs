@@ -349,11 +349,11 @@ test('a new owner archives a historical orphan when its managed control channel 
     caller: caller('new-owner'),
     dependencies: {
       discoverLaunch: async () => { discoveries += 1; return { command: process.execPath, args: [fake], target: fake }; },
-      createManagedZCodeClient: async () => { clients += 1; throw new PluginError('ZCODE_DISCONNECTED', 'The ZCode process connection failed.', { category: 'runtime', remedy: 'Restart the operation.' }); },
+      createManagedZCodeClient: async () => { clients += 1; throw new PluginError('ZCODE_DISCONNECTED', 'endpoint=/secret.sock token=secret owner=secret session=secret', { category: 'runtime', remedy: 'Restart the operation.' }); },
     },
   });
   const archived = await store.readJob(context.workspace, orphan.id);
-  assert.equal(archived.status, 'failed'); assert.match(archived.error.message, /control channel.*unavailable.*orphan/i);
+  assert.equal(archived.status, 'failed'); assert.equal(archived.error.message, 'Reservation-time recovery could not establish the managed ZCode control channel; the orphan was archived.'); assert.doesNotMatch(archived.error.message, /secret/);
   assert.equal(output.type, 'background'); assert.notEqual(output.job.id, orphan.id); assert.equal(output.job.ownerSessionId, 'new-owner');
   assert.equal(discoveries, 1); assert.equal(clients, 1);
 });

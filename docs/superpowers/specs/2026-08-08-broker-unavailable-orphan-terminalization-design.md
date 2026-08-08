@@ -124,7 +124,11 @@ must distinguish at least:
 - existing broker unavailable during SessionEnd settlement;
 - managed broker/control channel unavailable during orphan recovery;
 - existing ZCode Protocol unavailable within a reachable broker;
+- an established control channel disconnecting later during recovery;
 - persisted ZCode session missing from the correct session catalog.
+
+These categories use static bounded messages and never persist broker endpoints,
+tokens, owner credentials, or session identifiers from the underlying error.
 
 `$zcode:status --all` remains redacted. Users only need to retry Rescue; no
 manual force command, job-file deletion, or protocol-level recovery is exposed.

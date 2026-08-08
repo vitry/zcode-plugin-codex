@@ -141,7 +141,7 @@ test('SessionEnd archives its writable job when the existing broker is unavailab
   await settle(input, async () => null);
   const stored = await input.store.readJob(input.workspace, value.id);
   assert.equal(stored.status, 'failed');
-  assert.match(stored.error.message, /SessionEnd.*control channel.*unavailable.*orphan/i);
+  assert.equal(stored.error.message, 'SessionEnd found no healthy existing ZCode broker identity; the orphan was archived.');
   assert.equal(stored.lastCancelError, undefined);
 });
 
@@ -184,7 +184,7 @@ test('SessionEnd does not archive broker absence without an exact worker lease',
   await settle(input, async () => null);
   const stored = await input.store.readJob(input.workspace, value.id);
   assert.equal(stored.status, 'running');
-  assert.match(stored.lastCancelError, /control channel.*unavailable/i);
+  assert.equal(stored.lastCancelError, 'SessionEnd found no healthy existing ZCode broker identity; the orphan was archived.');
 });
 
 test('SessionEnd can stop through a reachable broker while the exact worker lease is held', async () => {
@@ -216,15 +216,19 @@ test('SessionEnd propagates an abort observed by every successful client operati
 });
 
 test('SessionEnd archives its writable job when the existing protocol disconnects', async () => {
-  for (const code of ['ZCODE_BROKER_PROTOCOL_UNAVAILABLE', 'ZCODE_DISCONNECTED']) {
+  for (const [code, expected] of [
+    ['ZCODE_BROKER_PROTOCOL_UNAVAILABLE', 'The reachable ZCode broker reported no existing ZCode Protocol; the orphan was archived.'],
+    ['ZCODE_DISCONNECTED', 'The established ZCode control channel disconnected during orphan recovery; the orphan was archived.'],
+  ]) {
     const input = await fixture(); const value = await job(input, { ownerTurnId: code }); let closes = 0;
     await settle(input, async (current) => clientFor(current, {
-      readError: new PluginError(code, `control lost: ${code}`, { category: 'runtime', remedy: 'restart' }),
+      readError: new PluginError(code, 'endpoint=/secret.sock token=secret owner=secret session=secret', { category: 'runtime', remedy: 'restart' }),
       onClose: () => { closes += 1; },
     }));
     const stored = await input.store.readJob(input.workspace, value.id);
     assert.equal(stored.status, 'failed', code);
-    assert.match(stored.error.message, /SessionEnd.*control channel.*unavailable.*orphan/i);
+    assert.equal(stored.error.message, expected, code);
+    assert.doesNotMatch(stored.error.message, /secret/, code);
     assert.equal(stored.lastCancelError, undefined);
     assert.equal(closes, 1);
   }
