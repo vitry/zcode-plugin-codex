@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -216,7 +216,7 @@ test('executeJob holds the cancellation lock across result artifact publication'
   const output = await executeJob({
     job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client: executorClient(), task: 'finish',
     syncDirectory: async (directory) => {
-      if (!directory.endsWith('/results')) return;
+      if (basename(directory) !== 'results') return;
       observed = await settle(input, async (current) => clientFor(current, { reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }] }));
     },
   });
