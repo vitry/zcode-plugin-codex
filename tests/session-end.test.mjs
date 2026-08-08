@@ -198,13 +198,14 @@ test('SessionEnd can stop through a reachable broker while the exact worker leas
 });
 
 test('SessionEnd propagates an abort observed by every successful client operation', async () => {
-  for (const phase of ['create', 'read', 'stop']) {
+  for (const phase of ['create', 'read', 'stop', 'reread']) {
     const controller = new AbortController(); const input = { ...await fixture(), signal: controller.signal }; const value = await job(input); const reason = Object.freeze({ phase });
     const abortAfter = (value) => { if (phase === value) controller.abort(reason); };
+    let reads = 0;
     const settlement = settle(input, async (current) => {
       abortAfter('create');
       return {
-        readSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); abortAfter('read'); return { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }; },
+        readSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); reads += 1; abortAfter(reads === 1 ? 'read' : 'reread'); return { projection: { status: reads === 1 ? 'running' : 'paused' }, runtime: { stateRevision: 8 }, messages: [] }; },
         stopSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); abortAfter('stop'); },
         close: async () => {},
       };

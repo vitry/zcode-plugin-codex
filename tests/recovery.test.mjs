@@ -195,9 +195,10 @@ test('workspace scavenging propagates native and arbitrary abort reasons before 
 });
 
 test('workspace scavenging propagates an abort observed by every successful client operation', async () => {
-  for (const phase of ['create', 'list', 'read', 'stop']) {
+  for (const phase of ['create', 'list', 'read', 'stop', 'reread']) {
     const fixture = await context(); const { job, store } = await orphanJob(fixture); const controller = new AbortController(); const reason = Object.freeze({ phase });
     const abortAfter = (value) => { if (phase === value) controller.abort(reason); };
+    let reads = 0;
     const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
     const scavenging = scavengeWritableJobs({
       store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, signal: controller.signal,
@@ -206,7 +207,7 @@ test('workspace scavenging propagates an abort observed by every successful clie
         abortAfter('create');
         return {
           listSessions: async () => { abortAfter('list'); return { sessions: [{ sessionId: job.zcodeSessionId }] }; },
-          readSession: async () => { abortAfter('read'); return { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }; },
+          readSession: async () => { reads += 1; abortAfter(reads === 1 ? 'read' : 'reread'); return { projection: { status: reads === 1 ? 'running' : 'paused' }, runtime: { stateRevision: 8 }, messages: [] }; },
           stopSession: async () => { abortAfter('stop'); },
           close: async () => {},
         };
