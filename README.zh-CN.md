@@ -63,7 +63,7 @@ Setup 会把以下 schema 写入 `$CODEX_HOME/plugins/data/zcode-<marketplace>/w
 
 每次运行都会先建立持久、带 owner 的 job。已安装插件的状态保存在 `$CODEX_HOME/plugins/data/zcode-<marketplace>/workspaces/<workspace-hash>/`，使用私有权限；prompt、result、session ID 和日志都不会写进仓库或插件缓存。后续 turn 仍可使用 `$zcode:status`、`$zcode:result`、`$zcode:cancel`，但 sibling Codex session 无法接管任务。
 
-`SessionEnd` 会对结束会话的可写 Rescue 执行 best-effort 结算。若进程在结算完成前退出，后续 Rescue 会在预留时执行崩溃回退，并可结算可证明的孤儿可写 job；结算不会转移 ownership，仍只有原 owner 能读取其结果。仍被持有的 worker lease 会保留 writable guard，未确认的 `session/stop` 也会保留 writable guard。其他会话只能通过 `$zcode:status --all` 查看脱敏后的 workspace 信息。
+`SessionEnd` 会对结束会话的可写 Rescue 执行 best-effort 结算。已 claim 的 queued reservation 在其 worker lease 仍被持有时保持不变。若进程在结算完成前退出，后续 Rescue 会执行预留时的崩溃回退，并可结算可证明的孤儿可写 job；结算不会转移 ownership，仍只有原 owner 能读取其结果。在这个预留时的崩溃回退中，仍被持有的精确 worker lease 会保留 writable guard。未确认的 `session/stop` 在两条结算路径中也会保留 writable guard。其他会话只能通过 `$zcode:status --all` 查看脱敏后的 workspace 信息。
 
 前台运行会把 ZCode 活动流式显示在当前终端。如果没有新活动，则每 20 秒输出一次心跳，让耗时较长的模型请求或工具调用仍然可见。同一份安全活动也会持久化到 job；`$zcode:status <job-id>` 会显示阶段、最后活动时间和近期进度预览。例如：
 
