@@ -66,6 +66,36 @@ test('Unreleased changelog records progress and interruption behavior without a 
   assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
 });
 
+test('release docs explain safe orphan settlement without weakening job ownership', () => {
+  const english = read('README.md');
+  assert.match(english, /SessionEnd.{0,160}best-effort/i);
+  assert.match(english, /later Rescue.{0,200}provably orphaned/i);
+  assert.match(english, /does not transfer ownership/i);
+  assert.match(english, /held worker lease.{0,160}writable guard/i);
+  assert.match(english, /unacknowledged `session\/stop`.{0,160}writable guard/i);
+  assert.match(english, /\$zcode:status --all.{0,160}redacted/i);
+
+  const chinese = read('README.zh-CN.md');
+  assert.match(chinese, /SessionEnd.{0,160}best-effort/i);
+  assert.match(chinese, /后续 Rescue.{0,200}可证明的孤儿/i);
+  assert.match(chinese, /不会转移 ownership/i);
+  assert.match(chinese, /worker lease.{0,160}writable guard/i);
+  assert.match(chinese, /未确认的 `session\/stop`.{0,160}writable guard/i);
+  assert.match(chinese, /\$zcode:status --all.{0,160}脱敏/i);
+
+  for (const source of [english, chinese]) {
+    assert.doesNotMatch(source, /force[- ]release/i);
+    assert.doesNotMatch(source, /cross-owner result access/i);
+    assert.doesNotMatch(source, /read-only Rescue/i);
+  }
+
+  const changelog = read('CHANGELOG.md');
+  assert.match(changelog, /safe orphan settlement/i);
+  assert.match(changelog, /SessionEnd/i);
+  assert.match(changelog, /reservation-time crash fallback/i);
+  assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
+});
+
 test('marketplace catalog and publisher describe an installable vitry snapshot', () => {
   const catalog = JSON.parse(read('marketplace/.agents/plugins/marketplace.json'));
   assert.equal(catalog.name, 'vitry');
