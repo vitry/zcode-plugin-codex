@@ -58,6 +58,19 @@ export function brokerEndpointFor(options) {
   return join('/tmp', `zcode-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`, `${digest}.sock`);
 }
 
+export function brokerIdentityNameForWireOptions(options = {}) {
+  const profile = options.maxFrameBytes === undefined
+    && options.maxOutboundBytes === undefined
+    && options.drainTimeoutMs === undefined
+    ? null
+    : createHash('sha256').update(JSON.stringify([
+      options.maxFrameBytes ?? null,
+      options.maxOutboundBytes ?? null,
+      options.drainTimeoutMs ?? null,
+    ])).digest('hex').slice(0, 16);
+  return profile ? `identity-${profile}.json` : 'identity.json';
+}
+
 /** @param {string} path @param {{endpoint:string,pid?:number,instanceId?:string,brokerToken?:string}} input */
 export async function writeBrokerIdentity(path, input) {
   if (!input || typeof input.endpoint !== 'string') throw brokerInputError();
@@ -79,11 +92,12 @@ export async function readHealthyBrokerIdentity(path, options = {}) {
   return value;
 }
 
-/** @param {{endpoint:string,brokerToken:string,pid:number,instanceId:string}} record */
-export async function probeBrokerHealth(record) {
+/** @param {{endpoint:string,brokerToken:string,pid:number,instanceId:string}} record @param {number} [requestTimeoutMs] */
+export async function probeBrokerHealth(record, requestTimeoutMs = 1_000) {
+  if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 3_600_000) throw brokerInputError();
   let protocol;
   try {
-    protocol = await connectZCodeBroker(record.endpoint, { brokerToken: record.brokerToken, ownerId: `health-${record.instanceId}`, requestTimeoutMs: 1_000 });
+    protocol = await connectZCodeBroker(record.endpoint, { brokerToken: record.brokerToken, ownerId: `health-${record.instanceId}`, requestTimeoutMs });
     const result = await protocol.request('broker/health', {});
     return result?.ok === true && result.pid === record.pid && result.instanceId === record.instanceId;
   } catch { return false; } finally { await protocol?.close().catch(() => {}); }
@@ -94,8 +108,9 @@ export async function ensureZCodeBroker(options) {
   if (!validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs)) throw brokerInputError();
   const storage = await resolveWorkspaceStorage(options);
   const brokerDirectory = join(storage.directory, 'broker');
-  const profile = options.maxFrameBytes === undefined && options.maxOutboundBytes === undefined && options.drainTimeoutMs === undefined ? null : createHash('sha256').update(JSON.stringify([options.maxFrameBytes ?? null, options.maxOutboundBytes ?? null, options.drainTimeoutMs ?? null])).digest('hex').slice(0, 16);
-  const identityPath = join(brokerDirectory, profile ? `identity-${profile}.json` : 'identity.json');
+  const identityName = brokerIdentityNameForWireOptions(options);
+  const profile = identityName === 'identity.json' ? null : identityName.slice('identity-'.length, -'.json'.length);
+  const identityPath = join(brokerDirectory, identityName);
   await ensurePrivateDirectory(brokerDirectory);
   return withFileLock(join(brokerDirectory, '.lock'), async () => {
     const existing = await readHealthyBrokerIdentity(identityPath);

@@ -6,7 +6,7 @@ import { PluginError } from './errors.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
 import { connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
-import { ensureZCodeBroker, prioritizeBrokerOwnership, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
+import { brokerIdentityNameForWireOptions, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const THOUGHT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
@@ -116,6 +116,22 @@ export async function createManagedZCodeClient(options) {
   return createZCodeClient({ workspace: options.workspace, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs });
 }
 
+/** @param {{dataRoot:string,workspace:string,ownerId:string,requestTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
+export async function createExistingManagedZCodeClient(options) {
+  requireExactObject(options, ['dataRoot', 'workspace', 'ownerId'], ['requestTimeoutMs', 'maxFrameBytes', 'maxOutboundBytes', 'drainTimeoutMs']);
+  if (!nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !nonEmpty(options.ownerId) || options.ownerId.length < 16
+    || !boundedRequestOption(options.requestTimeoutMs) || !boundedWireOption(options.maxFrameBytes, 16 * 1024 * 1024) || !boundedWireOption(options.maxOutboundBytes, 64 * 1024 * 1024) || !boundedDrainOption(options.drainTimeoutMs)) throw inputError();
+  const storage = await resolveWorkspaceStorage(options);
+  const identityName = brokerIdentityNameForWireOptions(options);
+  const identity = await readHealthyBrokerIdentity(resolve(storage.directory, 'broker', identityName), {
+    healthProbe: (record) => probeBrokerHealth(record, options.requestTimeoutMs),
+  });
+  if (!identity) return null;
+  try {
+    return await createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs: options.requestTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs });
+  } catch { return null; }
+}
+
 /**
  * Releases an exact lifecycle owner from brokers that already exist. This
  * function never calls ensureZCodeBroker and therefore cannot start ZCode from
@@ -181,6 +197,8 @@ function normalizeImportedHistory(history) {
 function boundedWireOption(value, maximum) { return value === undefined || typeof value === 'number' && Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
 /** @param {unknown} value */
 function boundedDrainOption(value) { return value === undefined || typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAIN_TIMEOUT_MS; }
+/** @param {unknown} value */
+function boundedRequestOption(value) { return value === undefined || typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 3_600_000; }
 
 /** @param {any} model */
 function validateModel(model) { requireExactObject(model, ['providerId', 'modelId'], ['variant']); requireString(model.providerId); requireString(model.modelId); if (model.variant !== undefined) requireString(model.variant); }
