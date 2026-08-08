@@ -318,9 +318,10 @@ export async function spawnZCodeProtocol(launch, options = {}) {
   return new ZCodeProtocolClient(child, options);
 }
 
-/** @param {string} endpoint @param {{brokerToken:string,ownerId:string,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
+/** @param {string} endpoint @param {{brokerToken:string,ownerId:string,existingProtocolOnly?:boolean,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
 export async function connectZCodeBroker(endpoint, options) {
-  if (!nonEmpty(endpoint) || !plainObject(options) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32 || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw protocolInputError();
+  if (!nonEmpty(endpoint) || !plainObject(options) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32 || !nonEmpty(options.ownerId) || options.ownerId.length < 16
+    || options.existingProtocolOnly !== undefined && typeof options.existingProtocolOnly !== 'boolean') throw protocolInputError();
   const requestTimeoutMs = boundedInteger(options.requestTimeoutMs, 30_000, 1, 3_600_000);
   const socket = net.createConnection(endpoint);
   await new Promise((resolve, reject) => {
@@ -344,7 +345,9 @@ export async function connectZCodeBroker(endpoint, options) {
   let protocol;
   try {
     protocol = new ZCodeProtocolClient(transport, options);
-    await protocol.request('broker/auth', { token: options.brokerToken, ownerId: options.ownerId });
+    const authenticated = await protocol.request('broker/auth', { token: options.brokerToken, ownerId: options.ownerId, ...(options.existingProtocolOnly === undefined ? {} : { existingProtocolOnly: options.existingProtocolOnly }) });
+    if (!plainObject(authenticated) || authenticated.authenticated !== true
+      || options.existingProtocolOnly === true && authenticated.existingProtocolOnly !== true) throw brokerCapabilityUnavailable();
     return protocol;
   } catch (error) {
     socket.destroy();
@@ -373,6 +376,7 @@ function nonEmpty(value) { return typeof value === 'string' && value.length > 0;
 function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function disconnected() { return new PluginError('ZCODE_DISCONNECTED', 'The ZCode connection is closed.', { category: 'runtime', remedy: 'Create a new client and retry.' }); }
 function protocolInputError() { return new PluginError('ZCODE_PROTOCOL_INPUT_INVALID', 'ZCode protocol input is invalid.', { category: 'validation', remedy: 'Provide a valid method, params, session, and bounded timeout.' }); }
+function brokerCapabilityUnavailable() { return new PluginError('ZCODE_BROKER_CAPABILITY_UNAVAILABLE', 'The broker did not authenticate the requested connection capability.', { category: 'protocol', remedy: 'Restart the broker with the current ZCode plugin version.' }); }
 /** @param {string} method @param {number} timeoutMs */
 function requestTimeout(method, timeoutMs) { return new PluginError('ZCODE_REQUEST_TIMEOUT', `ZCode request timed out: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method, timeoutMs } }); }
 function malformedFrame() { return new PluginError('ZCODE_PROTOCOL_MALFORMED', 'ZCode sent a malformed protocol frame.', { category: 'protocol', remedy: 'Restart ZCode and retry.' }); }

@@ -223,11 +223,11 @@ test('SessionEnd never starts a broker when exact existing settlement is unavail
   const hookSource = await readFile(join(root, 'hooks/session-end-hook.mjs'), 'utf8'); assert.match(hookSource, /createExistingManagedZCodeClient/); assert.doesNotMatch(hookSource, /maxFrameBytes|maxOutboundBytes|drainTimeoutMs/, 'writable Rescue is pinned to the default managed broker profile');
 });
 
-test('generic releasedSessionIds never terminalize a durable job', async () => {
+test('SessionEnd existing-only settlement never lazily spawns ZCode and generic release never terminalizes the job', async () => {
   const { cwd, data, env } = await workspace(); const record = join(data, 'historical-release.jsonl'); await writeFile(record, ''); const store = createStateStore({ dataRoot: data }); const ownerSessionId = 'historical-job-owner'; const ownerId = ownerIdForSession(ownerSessionId);
   let value = await store.reserveJob({ workspace: cwd, ownerSessionId, ownerTurnId: 'historical-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }); value = await store.transitionJob(cwd, value.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'historical-job-remote' }); value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: 'accepted-input', startRevision: 7, beforeMessageIds: [] });
   await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId, ownedSessionIds: [value.zcodeSessionId] }); await ensureZCodeBroker({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, env: { ...process.env, FAKE_ZCODE_RECORD: record } });
-  const ended = await runHook('session-end-hook.mjs', { session_id: ownerSessionId, cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); assert.equal((await store.readJob(cwd, value.id)).status, 'running');
+  const ended = await runHook('session-end-hook.mjs', { session_id: ownerSessionId, cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); const retained = await store.readJob(cwd, value.id); assert.equal(retained.status, 'running'); assert.match(retained.lastCancelError, /existing ZCode protocol is unavailable/i); assert.equal(await readFile(record, 'utf8'), '');
 });
 
 test('SessionEnd remains bounded when existing stop acknowledgement is unavailable', async () => {

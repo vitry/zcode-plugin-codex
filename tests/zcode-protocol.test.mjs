@@ -34,3 +34,30 @@ test('broker connect bounds authentication and closes the socket when the peer n
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('broker connect rejects a malformed existing-protocol-only capability before opening a socket', async () => {
+  await assert.rejects(connectZCodeBroker('/definitely-missing-zcode-broker', {
+    brokerToken: 'a'.repeat(64), ownerId: 'protocol-capability-owner', existingProtocolOnly: 'yes', requestTimeoutMs: 40,
+  }), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
+});
+
+test('broker connect fails closed when an older broker does not acknowledge existing-protocol-only', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-protocol-capability-'));
+  const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\zcode-protocol-${randomUUID()}` : join(directory, 'broker.sock');
+  const sockets = new Set();
+  const server = net.createServer((socket) => {
+    sockets.add(socket); socket.setEncoding('utf8'); let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk; const newline = buffer.indexOf('\n'); if (newline === -1) return;
+      const frame = JSON.parse(buffer.slice(0, newline));
+      socket.write(`${JSON.stringify({ id: frame.id, result: { authenticated: true } })}\n`);
+    });
+    socket.once('close', () => sockets.delete(socket));
+  });
+  await new Promise((resolvePromise, reject) => { server.once('error', reject); server.listen(endpoint, resolvePromise); });
+  try {
+    await assert.rejects(connectZCodeBroker(endpoint, { brokerToken: 'a'.repeat(64), ownerId: 'protocol-capability-owner', existingProtocolOnly: true, requestTimeoutMs: 100 }), { code: 'ZCODE_BROKER_CAPABILITY_UNAVAILABLE' });
+    for (let turn = 0; turn < 20 && sockets.size; turn += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    assert.equal(sockets.size, 0);
+  } finally { for (const socket of sockets) socket.destroy(); await new Promise((resolvePromise) => server.close(resolvePromise)); await rm(directory, { recursive: true, force: true }); }
+});

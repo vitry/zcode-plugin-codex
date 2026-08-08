@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -473,6 +473,21 @@ test('existing managed client returns null when the broker dies between health a
     await writeBrokerIdentity(join(storage.directory, 'broker', identityName), { endpoint, pid: process.pid, instanceId, brokerToken });
     assert.equal(await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-race-owner', requestTimeoutMs: 100 }), null);
   } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('existing managed client cannot lazily spawn a child protocol while normal managed clients still can', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-no-child-')); const record = join(directory, 'calls.jsonl'); const ownerId = 'existing-no-child-owner'; const remoteSessionId = 'existing-no-child-session'; let broker; let existingClient; let normalClient;
+  try {
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const brokerDirectory = join(storage.directory, 'broker'); const ownershipPath = join(brokerDirectory, 'session-owners.json'); await mkdir(brokerDirectory, { recursive: true }); await writeFile(ownershipPath, JSON.stringify({ version: 1, sessions: { [remoteSessionId]: ownerId } }));
+    const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const brokerToken = '6'.repeat(64); const instanceId = 'f'.repeat(48); const launch = { command: process.execPath, args: [fixture], target: fixture };
+    broker = await newTestBroker({ endpoint, ownershipPath, brokerToken, instanceId, workspace: storage.workspacePath, launch, env: { ...process.env, FAKE_ZCODE_RECORD: record } }).start();
+    await writeBrokerIdentity(join(brokerDirectory, 'identity.json'), { endpoint, pid: process.pid, instanceId, brokerToken });
+    existingClient = await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId, requestTimeoutMs: 100 }); assert.ok(existingClient);
+    await assert.rejects(existingClient.readSession(remoteSessionId), { code: 'ZCODE_BROKER_PROTOCOL_UNAVAILABLE' }); assert.equal(broker.protocol, null); assert.equal(broker.protocolPromise, null); await assert.rejects(readFile(record, 'utf8'), { code: 'ENOENT' });
+    await existingClient.close(); existingClient = null;
+    normalClient = await createManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId, launch, env: { ...process.env, FAKE_ZCODE_RECORD: record }, requestTimeoutMs: 500 });
+    assert.equal((await normalClient.readSession(remoteSessionId)).session.sessionId, remoteSessionId); assert.ok((await readFile(record, 'utf8')).includes('session/read'));
+  } finally { await existingClient?.close().catch(() => {}); await normalClient?.close().catch(() => {}); await broker?.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('named-pipe broker construction requires an explicit ownership path', () => {
