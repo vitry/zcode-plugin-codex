@@ -1,5 +1,5 @@
 import { PluginError } from './errors.mjs';
-import { ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
+import { boundedCancelMessage, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
 import { extractFinalResult, writeResultArtifact } from './review.mjs';
 import { withFileLock } from './fs.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -254,7 +254,7 @@ async function conflictWinner(input, job, error) {
 /** @param {unknown} error */
 function isTransitionConflict(error) { return error instanceof PluginError && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT'].includes(error.code); }
 /** @param {unknown} error */
-function recoveryMessage(error) { return (error instanceof Error ? error.message : 'Unknown recovery failure').slice(0, 2_048); }
+function recoveryMessage(error) { return boundedCancelMessage(error instanceof Error ? error.message : 'Unknown recovery failure'); }
 /** @param {string} message */
 function recoveryError(message) { return new PluginError('JOB_RECOVERY_FAILED', message, { category: 'state', remedy: 'Inspect the durable job and its ZCode session.' }); }
 /** @param {string} directory @param {string} jobId @param {string} workerLeaseId */

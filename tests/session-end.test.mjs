@@ -169,6 +169,13 @@ test('SessionEnd maintenance failure never overwrites a terminal executor race',
   const stored = await input.store.readJob(input.workspace, value.id); assert.equal(stored.status, 'failed'); assert.equal(stored.error.message, 'executor won maintenance failure race'); assert.equal(stored.lastCancelError, undefined);
 });
 
+test('SessionEnd bounds multibyte maintenance failures by UTF-8 bytes without splitting emoji', async () => {
+  const input = await fixture(); const value = await job(input); const failure = `停止失败🚫${'诊断🚧'.repeat(1_000)}`;
+  await settle(input, async (current) => clientFor(current, { stopError: new Error(failure) }));
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.match(stored.lastCancelError, /^停止失败🚫诊断🚧/); assert.ok(Buffer.byteLength(stored.lastCancelError, 'utf8') <= 2_048); assert.doesNotMatch(stored.lastCancelError, /\uFFFD/);
+});
+
 test('SessionEnd ignores foreign-owner and read-only jobs', async () => {
   const foreignInput = await fixture(); const foreign = await job(foreignInput, { ownerSessionId: 'owner-b' }); let clients = 0;
   await settle(foreignInput, async () => { clients += 1; throw new Error('must not inspect foreign job'); });
