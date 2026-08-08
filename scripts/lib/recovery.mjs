@@ -119,15 +119,15 @@ async function cancelJob(input, job) {
     return await input.store.transitionJob(input.workspace, job.id, ['cancelling'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
   } catch (error) { return conflictWinner(input, job, error); }
 }
-/** @param {any} input @param {any} job @param {any} snapshot */
-async function completeJob(input, job, snapshot) {
+/** @param {any} input @param {any} job @param {any} snapshot @param {'fail'|'cancel'} [invalidResult] */
+async function completeJob(input, job, snapshot, invalidResult = 'fail') {
   try {
     const result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
     const resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
     return await input.store.transitionJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
   } catch (error) {
     if (isTransitionConflict(error)) return input.store.readJob(input.workspace, job.id);
-    return failJob(input, job, error);
+    return invalidResult === 'cancel' ? cancelJob(input, job) : failJob(input, job, error);
   }
 }
 /** @param {any} input @param {any} job @param {any} client @param {unknown} error */
@@ -137,7 +137,7 @@ async function stopThenSettle(input, job, client, error) {
   let snapshot;
   try { snapshot = await client.readSession(job.zcodeSessionId); } catch { /* acknowledged stop is sufficient for status-appropriate settlement */ }
   if (snapshot && hasBoundary(job) && Number.isSafeInteger(snapshot?.runtime?.stateRevision) && snapshot.runtime.stateRevision >= job.startRevision
-    && ['completed', 'idle'].includes(snapshot?.projection?.status)) return completeJob(input, job, snapshot);
+    && ['completed', 'idle'].includes(snapshot?.projection?.status)) return completeJob(input, job, snapshot, job.status === 'cancelling' ? 'cancel' : 'fail');
   return job.status === 'cancelling' ? cancelJob(input, job) : failJob(input, job, error);
 }
 /** @param {any} job @param {any} client */

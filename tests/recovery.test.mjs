@@ -179,6 +179,18 @@ test('workspace scavenging stops an active orphan and rereads completion before 
   assert.equal(await readFile(join(storage.directory, recovered.resultArtifact), 'utf8'), 'completion won the stop race');
 });
 
+test('acknowledged stop cancels a cancelling orphan when post-stop completion has no valid result', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture, { status: 'cancelling' }); let reads = 0; let stops = 0;
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await scavengeWritableJobs({ store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => ({
+    listSessions: async () => ({ sessions: [{ sessionId: job.zcodeSessionId }] }),
+    readSession: async () => { reads += 1; return { projection: { status: reads === 1 ? 'running' : 'completed' }, runtime: { stateRevision: 8 }, messages: [] }; },
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  }) });
+  const recovered = await store.readJob(fixture.workspace, job.id);
+  assert.equal(recovered.status, 'cancelled'); assert.equal(stops, 1); assert.equal(reads, 2); assert.equal(recovered.resultArtifact, undefined);
+});
+
 test('workspace scavenging retains the writable guard when active stop is unacknowledged', async () => {
   const fixture = await context(); const { job, store } = await orphanJob(fixture); const longError = `stop refused ${'x'.repeat(3_000)}`;
   const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
