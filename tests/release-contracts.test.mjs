@@ -73,7 +73,9 @@ test('release docs explain safe orphan settlement without weakening job ownershi
   assert.match(english, /later Rescue.{0,200}provably orphaned/i);
   assert.match(english, /does not transfer ownership/i);
   assert.match(english, /reservation-time crash fallback.{0,240}held exact worker lease.{0,160}writable guard/i);
-  assert.match(english, /unacknowledged `session\/stop`.{0,160}writable guard/i);
+  assert.match(english, /exact worker lease is free.{0,240}(?:broker|control channel).{0,80}unavailable.{0,160}failed.{0,160}releases the writable guard/is);
+  assert.match(english, /abandonment.{0,100}not confirmed remote stop/is);
+  assert.match(english, /reachable broker.{0,160}unacknowledged `session\/stop`.{0,160}keeps the writable guard/is);
   assert.match(english, /\$zcode:status --all.{0,160}redacted/i);
 
   const chinese = read('README.zh-CN.md');
@@ -82,13 +84,17 @@ test('release docs explain safe orphan settlement without weakening job ownershi
   assert.match(chinese, /后续 Rescue.{0,200}可证明的孤儿/i);
   assert.match(chinese, /不会转移 ownership/i);
   assert.match(chinese, /预留时的崩溃回退.{0,240}持有的精确 worker lease.{0,160}writable guard/i);
-  assert.match(chinese, /未确认的 `session\/stop`.{0,160}writable guard/i);
+  assert.match(chinese, /精确 worker lease 已释放.{0,240}(?:broker|控制通道).{0,80}不可用.{0,160}failed.{0,160}释放 writable guard/is);
+  assert.match(chinese, /放弃追踪.{0,100}不代表远端停止已确认/is);
+  assert.match(chinese, /broker 仍可连接.{0,160}未确认的 `session\/stop`.{0,160}保留 writable guard/is);
   assert.match(chinese, /\$zcode:status --all.{0,160}脱敏/i);
 
   const changelog = read('CHANGELOG.md');
   assert.match(changelog, /safe orphan settlement/i);
   assert.match(changelog, /SessionEnd/i);
   assert.match(changelog, /reservation-time crash fallback/i);
+  assert.match(changelog, /broker-unavailable orphan.{0,160}failed.{0,160}writable guard/i);
+  assert.match(changelog, /unacknowledged stop.{0,160}reachable control channel.{0,160}guard/i);
   assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
 });
 
