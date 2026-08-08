@@ -154,6 +154,69 @@ test('workspace scavenging archives an orphan when its managed control channel c
   assert.equal(recovered.lastCancelError, undefined);
 });
 
+test('workspace scavenging retains an orphan when managed client creation fails generically', async () => {
+  for (const mode of ['generic-error', 'null-client']) {
+    const fixture = await context(); const { job, store } = await orphanJob(fixture);
+    const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+    await scavengeWritableJobs({
+      store, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+      reconcileOwnership: async () => {},
+      createClient: async () => {
+        if (mode === 'generic-error') throw new Error('local recovery configuration is invalid');
+        return null;
+      },
+    });
+    const recovered = await store.readJob(fixture.workspace, job.id);
+    assert.equal(recovered.status, 'running', mode);
+    assert.match(recovered.lastCancelError, /recovery client is unavailable|local recovery configuration is invalid/, mode);
+    assert.ok(Buffer.byteLength(recovered.lastCancelError, 'utf8') <= 2_048, mode);
+  }
+});
+
+test('workspace scavenging propagates native and arbitrary abort reasons before archival', async () => {
+  for (const [mode, returnsNull] of [['native', false], ['arbitrary', true]]) {
+    const fixture = await context(); const { job, store } = await orphanJob(fixture); const controller = new AbortController();
+    const reason = mode === 'native' ? undefined : Object.freeze({ source: 'arbitrary caller abort' });
+    const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+    const scavenging = scavengeWritableJobs({
+      store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, signal: controller.signal,
+      reconcileOwnership: async () => {},
+      createClient: async () => {
+        controller.abort(reason);
+        if (returnsNull) return null;
+        throw new PluginError('ZCODE_DISCONNECTED', 'disconnect raced caller abort', { category: 'runtime', remedy: 'restart' });
+      },
+    });
+    await assert.rejects(scavenging, (error) => error === controller.signal.reason, mode);
+    const recovered = await store.readJob(fixture.workspace, job.id);
+    assert.equal(recovered.status, 'running', mode);
+    assert.equal(recovered.lastCancelError, undefined, mode);
+  }
+});
+
+test('workspace scavenging propagates an abort observed by every successful client operation', async () => {
+  for (const phase of ['create', 'list', 'read', 'stop']) {
+    const fixture = await context(); const { job, store } = await orphanJob(fixture); const controller = new AbortController(); const reason = Object.freeze({ phase });
+    const abortAfter = (value) => { if (phase === value) controller.abort(reason); };
+    const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+    const scavenging = scavengeWritableJobs({
+      store, dataRoot: fixture.dataRoot, workspace: fixture.workspace, signal: controller.signal,
+      reconcileOwnership: async () => {},
+      createClient: async () => {
+        abortAfter('create');
+        return {
+          listSessions: async () => { abortAfter('list'); return { sessions: [{ sessionId: job.zcodeSessionId }] }; },
+          readSession: async () => { abortAfter('read'); return { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }; },
+          stopSession: async () => { abortAfter('stop'); },
+          close: async () => {},
+        };
+      },
+    });
+    await assert.rejects(scavenging, (error) => error === reason, phase);
+    assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running', phase);
+  }
+});
+
 test('workspace scavenging archives an orphan when its established control channel disconnects', async () => {
   const fixture = await context(); const { job, store } = await orphanJob(fixture); let closes = 0;
   const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');

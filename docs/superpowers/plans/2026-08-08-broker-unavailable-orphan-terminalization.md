@@ -31,8 +31,9 @@
 - [ ] **Step 1: Write reservation-time failing tests**
 
 Add focused tests that construct a running writable Rescue with a free exact
-worker lease and assert that managed-client establishment failure and an
-explicit protocol disconnect produce a terminal failure:
+worker lease and assert that an explicit managed-client disconnect and an
+established protocol disconnect produce a terminal failure. Generic local
+client-creation failures remain active with a bounded diagnostic:
 
 ```js
 test('reservation scavenging archives an orphan when its existing broker is unavailable', async () => {
@@ -74,7 +75,8 @@ test('reservation scavenging archives an orphan when its established control cha
 - [ ] **Step 2: Write SessionEnd failing tests**
 
 Change the absent-client expectation from active-with-`lastCancelError` to a
-terminal `failed` record, then add the reachable-broker/no-protocol case:
+terminal `failed` record for a claimed job whose exact worker lease is free,
+then add the reachable-broker/no-protocol case with the same lease proof:
 
 ```js
 test('SessionEnd archives its exact writable job when the existing broker is unavailable', async () => {
@@ -173,15 +175,19 @@ function unavailableError(context) {
 
 Move ownership reconciliation outside the client-establishment `try` so a local
 owner-store failure does not masquerade as broker loss. Update `reconcileOrphan`
-so managed-client establishment failure calls `failJob` with the
-reservation-time diagnostic. Once a client exists, terminalize only explicit
-`ZCODE_BROKER_PROTOCOL_UNAVAILABLE` or `ZCODE_DISCONNECTED`; retain timeouts,
+so only explicit `ZCODE_BROKER_PROTOCOL_UNAVAILABLE` or `ZCODE_DISCONNECTED`
+client-establishment failures call `failJob`; generic local configuration,
+storage, and validation failures retain the job with a bounded diagnostic. Once
+a client exists, apply the same narrow classification and retain timeouts,
 request rejections, malformed results, and unacknowledged stops.
 
 Update `settleEndedRemoteJob` so a `null` client and recognized existing-protocol
-unavailability call `failJob` with the SessionEnd diagnostic. Keep read/stop
-timeouts, rejections, malformed responses, and unacknowledged stops routed to
-`retainAfterStopFailure`.
+unavailability call `failJob` with the SessionEnd diagnostic only after a
+nonblocking exact-worker-lease acquisition proves the worker is gone. Keep a
+held lease active without removing SessionEnd's reachable-broker stop authority.
+Keep generic client creation failures, read/stop timeouts, rejections, malformed
+responses, and unacknowledged stops routed to `retainAfterStopFailure`. Before
+any archival catch, propagate the exact reason from an aborted input signal.
 
 Do not change worker-lease selection, public ownership, or terminal conflict
 handling.

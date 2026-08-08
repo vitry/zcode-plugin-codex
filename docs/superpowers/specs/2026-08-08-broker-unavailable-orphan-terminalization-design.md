@@ -48,15 +48,16 @@ session before giving up. SessionEnd remains existing-only and never starts a
 broker or ZCode process.
 
 SessionEnd may terminalize only the ending Codex session's exact active writable
-Rescue job. Claimed queued jobs still obey their worker-lease fence. Running or
-cancelling jobs may use the existing owner lifecycle authority already granted
-to SessionEnd.
+Rescue job after proving its exact worker lease is free. A held lease prevents
+broker-unavailable archival for queued, running, and cancelling jobs. SessionEnd
+retains its existing owner lifecycle authority to inspect and stop an accepted
+running turn through a reachable broker even while that worker lease is held.
 
 The terminal broker-unavailable cases are:
 
 1. No healthy identity exists for the exact writable Rescue broker profile.
-2. SessionEnd finds an identity but cannot connect or authenticate, or
-   reservation-time recovery cannot establish its managed client.
+2. Existing-only client lookup returns `null`, explicitly proving that no
+   healthy broker is available for SessionEnd.
 3. The broker is reachable, but existing-only access reports that it has no
    existing ZCode Protocol child.
 4. A previously established control connection reports `ZCODE_DISCONNECTED`.
@@ -68,6 +69,8 @@ created previously but is no longer present in the queried ZCode catalog.
 The following conditions remain nonterminal:
 
 - An exact worker lease is held.
+- Client creation fails with a local configuration, storage, validation, or
+  other error that is not an explicit control-channel-unavailable code.
 - A healthy broker and protocol are reachable, but `session/read` fails or times
   out for a reason other than an explicit disconnect.
 - A healthy broker and protocol receive `session/stop`, but the request is
@@ -95,7 +98,9 @@ For SessionEnd:
    lock and reread it.
 2. Preserve the queued-worker lease rules and completion-wins race handling.
 3. Attempt existing-only settlement without spawning a broker or ZCode process.
-4. If the exact control channel is unavailable, transition the job to `failed`.
+4. If the exact control channel is unavailable, reacquire the exact worker lease
+   without waiting and transition the job to `failed` only when that proves the
+   worker is gone. A held lease leaves the job active.
 5. Continue generic owner release and caller-state cleanup as advisory cleanup.
 
 ## Concurrency and Ownership
@@ -128,9 +133,15 @@ manual force command, job-file deletion, or protocol-level recovery is exposed.
 
 Add test-first coverage proving:
 
-- SessionEnd with an absent or unreachable exact broker records `failed`, starts
-  no broker or ZCode child, and still cleans caller state.
+- SessionEnd with a free exact worker lease and an absent or unreachable exact
+  broker records `failed`, starts no broker or ZCode child, and still cleans
+  caller state.
 - SessionEnd with a reachable broker but no existing protocol records `failed`.
+- SessionEnd with a held exact worker lease and an unavailable broker remains
+  active, while reachable-broker read/stop settlement remains available.
+- Native and caller-defined abort reasons propagate exactly and never archive
+  the durable job; generic client-creation failures remain active with a bounded
+  diagnostic.
 - Reservation scavenging with a free exact worker lease and absent/unreachable
   broker records `failed`, then admits the new owner in the same Rescue attempt.
 - The historical-orphan shape (persisted session ID, dead worker, no broker)

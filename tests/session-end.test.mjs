@@ -87,7 +87,7 @@ function executorClient(text = 'executor result') {
 async function settle(input, createClient, ownerSessionId = 'owner-a') {
   return settleEndedOwnerWritableJob({
     store: input.store, dataRoot: input.dataRoot, workspace: input.workspace,
-    ownerSessionId, lockTimeoutMs: 0, requestTimeoutMs: 250, createClient,
+    ownerSessionId, lockTimeoutMs: 0, requestTimeoutMs: 250, createClient, signal: input.signal,
   });
 }
 
@@ -143,6 +143,75 @@ test('SessionEnd archives its writable job when the existing broker is unavailab
   assert.equal(stored.status, 'failed');
   assert.match(stored.error.message, /SessionEnd.*control channel.*unavailable.*orphan/i);
   assert.equal(stored.lastCancelError, undefined);
+});
+
+test('SessionEnd retains its writable job when existing client creation fails generically', async () => {
+  const input = await fixture(); const value = await job(input);
+  await settle(input, async () => { throw new Error('local owner store cannot be read'); });
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.equal(stored.status, 'running');
+  assert.match(stored.lastCancelError, /local owner store cannot be read/);
+  assert.ok(Buffer.byteLength(stored.lastCancelError, 'utf8') <= 2_048);
+});
+
+test('SessionEnd propagates native and arbitrary abort reasons before archival', async () => {
+  for (const [mode, returnsNull] of [['native', false], ['arbitrary', true]]) {
+    const controller = new AbortController(); const input = { ...await fixture(), signal: controller.signal }; const value = await job(input);
+    const reason = mode === 'native' ? undefined : Object.freeze({ source: 'arbitrary SessionEnd abort' });
+    const settlement = settle(input, async () => {
+      controller.abort(reason);
+      if (returnsNull) return null;
+      throw new PluginError('ZCODE_DISCONNECTED', 'disconnect raced SessionEnd abort', { category: 'runtime', remedy: 'restart' });
+    });
+    await assert.rejects(settlement, (error) => error === controller.signal.reason, mode);
+    const stored = await input.store.readJob(input.workspace, value.id);
+    assert.equal(stored.status, 'running', mode);
+    assert.equal(stored.lastCancelError, undefined, mode);
+  }
+});
+
+test('SessionEnd does not archive broker absence while the exact worker lease is held', async () => {
+  const input = await fixture(); const lease = 'f'.repeat(64); const value = await job(input, { workerLeaseId: lease }); let clients = 0;
+  await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: value.id, workerLeaseId: lease }, () => settle(input, async () => { clients += 1; return null; }));
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.equal(stored.status, 'running');
+  assert.equal(stored.lastCancelError, undefined);
+  assert.equal(clients, 1);
+});
+
+test('SessionEnd does not archive broker absence without an exact worker lease', async () => {
+  const input = await fixture(); const value = await job(input, { claim: false });
+  await settle(input, async () => null);
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.equal(stored.status, 'running');
+  assert.match(stored.lastCancelError, /control channel.*unavailable/i);
+});
+
+test('SessionEnd can stop through a reachable broker while the exact worker lease is held', async () => {
+  const input = await fixture(); const lease = 'a'.repeat(64); const value = await job(input, { workerLeaseId: lease }); let stops = 0;
+  await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: value.id, workerLeaseId: lease }, () => settle(input, async (current) => clientFor(current, {
+    reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }],
+    onStop: () => { stops += 1; },
+  })));
+  assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled');
+  assert.equal(stops, 1);
+});
+
+test('SessionEnd propagates an abort observed by every successful client operation', async () => {
+  for (const phase of ['create', 'read', 'stop']) {
+    const controller = new AbortController(); const input = { ...await fixture(), signal: controller.signal }; const value = await job(input); const reason = Object.freeze({ phase });
+    const abortAfter = (value) => { if (phase === value) controller.abort(reason); };
+    const settlement = settle(input, async (current) => {
+      abortAfter('create');
+      return {
+        readSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); abortAfter('read'); return { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }; },
+        stopSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); abortAfter('stop'); },
+        close: async () => {},
+      };
+    });
+    await assert.rejects(settlement, (error) => error === reason, phase);
+    assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'running', phase);
+  }
 });
 
 test('SessionEnd archives its writable job when the existing protocol disconnects', async () => {
