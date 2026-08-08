@@ -7,6 +7,8 @@ import { PluginError } from './errors.mjs';
 import { resolveModel } from './args.mjs';
 import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
+import { createJobController } from './job-control.mjs';
+import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -30,11 +32,31 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
-  let running = job; let sessionId; let sendAttempted = false; let remoteTerminalProven = false;
+  let running = job;
+  /** @type {string|undefined} */
+  let sessionId;
+  let sendAttempted = false; let remoteTerminalProven = false;
+  /** @type {any} */
+  let reporter;
+  let unsubscribe = () => {};
+  /** @type {unknown} */
+  let primaryError;
+  /** @type {any} */
+  let output;
+  let progressCleaned = false;
+  const cleanupProgress = async () => {
+    if (progressCleaned) return [];
+    progressCleaned = true;
+    const errors = [];
+    try { unsubscribe(); } catch (error) { errors.push(error); }
+    try { reporter?.close(); } catch (error) { errors.push(error); }
+    try { await reporter?.flush(); } catch (error) { errors.push(error); }
+    return errors;
+  };
   try {
     let prompt;
     if (job.command === 'review' || job.command === 'adversarial-review') {
@@ -43,47 +65,94 @@ export async function executeJob(input) {
     } else prompt = await buildPrompt({ command: 'rescue', task: input.task });
     const promptArtifact = await writeArtifact({ dataRoot, workspace, directory: 'prompts', jobId: job.id, contents: prompt }, { syncDirectory: input.syncDirectory });
     let snapshot;
+    input.signal?.throwIfAborted();
     if (input.resumeSessionId) {
       await input.onBeforeResume?.(job);
-      snapshot = await client.resumeSession(input.resumeSessionId);
-    } else snapshot = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
-    sessionId = snapshot.session.sessionId;
+      input.signal?.throwIfAborted();
+      sessionId = input.resumeSessionId;
+      snapshot = await boundedStep(() => client.resumeSession(input.resumeSessionId), input.signal);
+    } else snapshot = await boundedStep(async () => {
+      const created = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
+      sessionId = created?.session?.sessionId;
+      return created;
+    }, input.signal);
+    const activeSessionId = /** @type {string} */ (sessionId ?? snapshot.session.sessionId);
+    sessionId = activeSessionId;
+    reporter = createProgressReporter({
+      sessionId: activeSessionId,
+      deferred: true,
+      ...(input.progressWriter ? { write: input.progressWriter } : {}),
+      persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
+      ...input.progressDependencies,
+    });
+    unsubscribe = client.subscribe(reporter.observe);
     const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
-    if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await client.setModel(sessionId, selectedModel);
-    if (input.effort) snapshot = await client.setThoughtLevel(sessionId, input.effort);
+    if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
+    if (input.effort) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
     client.setPermissionHandler((/** @type {any} */ request) => decidePermission(request, job.permissionSnapshot, job.command));
     const now = new Date().toISOString();
     running = await input.store.transitionJob(workspace, job.id, ['queued'], 'running', {
-      startedAt: now, zcodeSessionId: sessionId, promptArtifact,
+      startedAt: now, zcodeSessionId: activeSessionId, promptArtifact,
       ...(input.childPid ? { childPid: input.childPid } : {}),
       ...(input.workerLeaseId ? { workerLeaseId: input.workerLeaseId } : {}),
       ...(selectedModel ? { model: selectedModel } : {}), ...(input.effort ? { effort: input.effort } : {}),
     });
-    const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await client.send(sessionId, prompt);
+    input.signal?.throwIfAborted();
+    const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
+    reporter.activate({ method: 'state.updated', params: { scope: 'session', sessionId: activeSessionId, reason: 'prompt_started' } });
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
-    await client.waitForCompletion(sessionId);
-    const finalSnapshot = await client.readSession(sessionId);
+    await waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
+    const finalSnapshot = await client.readSession(activeSessionId);
     remoteTerminalProven = true;
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
     const resultArtifact = await writeArtifact({ dataRoot, workspace, directory: 'results', jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
+    const terminalCleanupErrors = await cleanupProgress();
+    if (terminalCleanupErrors.length) throw progressFailure(terminalCleanupErrors);
     const succeeded = await input.store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
-    return { job: succeeded, result };
+    output = { job: succeeded, result };
   } catch (error) {
+    primaryError = error;
     const current = await input.store.readJob(workspace, job.id).catch(() => running);
-    if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
+    if (isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
+      if (current.status === 'queued' && sessionId) {
+        let stopped = false;
+        try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
+        if (stopped) await input.store.transitionJob(workspace, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null }).catch(() => {});
+      } else {
+        const cancellation = createJobController({ store: input.store, dataRoot, stopSession: (id) => client.stopSession(id) });
+        await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => {});
+      }
+    } else if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
+      let canFail = true;
       if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven) {
         try { await client.stopSession(sessionId); }
         catch (stopError) {
           await input.store.transitionJob(workspace, job.id, ['running'], 'running', { lastCancelError: safeError(stopError).message }).catch(() => {});
-          throw error;
+          canFail = false;
         }
       }
-      await input.store.transitionJob(workspace, job.id, [current.status], 'failed', { error: safeError(error), finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
+      if (canFail) await input.store.transitionJob(workspace, job.id, [current.status], 'failed', { error: safeError(error), finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
     }
-    throw error;
-  } finally { await client.close().catch(() => {}); }
+  }
+  // Cleanup order is part of the progress lifecycle contract.
+  const cleanupErrors = await cleanupProgress();
+  await client.close().catch(() => {});
+  const distinctCleanupErrors = cleanupErrors.filter((error) => error !== primaryError);
+  if (primaryError) {
+    attachCleanupFailure(primaryError, distinctCleanupErrors);
+    throw primaryError;
+  }
+  if (cleanupErrors.length) throw progressFailure(cleanupErrors);
+  return output;
+}
+
+/** @template T @param {()=>Promise<T>} operation @param {AbortSignal|undefined} signal */
+async function boundedStep(operation, signal) {
+  signal?.throwIfAborted();
+  try { const value = await operation(); signal?.throwIfAborted(); return value; }
+  catch (error) { signal?.throwIfAborted(); throw error; }
 }
 
 /** @param {{dataRoot:string,workspace:string,artifact:string}} input */
@@ -202,6 +271,23 @@ function invalidReviewResult(cause) { return new PluginError('REVIEW_RESULT_INVA
 function validResponse(response) { return response && typeof response === 'object' && ['allow', 'deny'].includes(response.decision); }
 /** @param {unknown} error */
 function safeError(error) { return { message: error instanceof Error ? error.message.slice(0, 2048) : 'Unknown execution failure' }; }
+/** @param {unknown} error */
+function isInterruption(error) { return error instanceof PluginError && error.code === 'JOB_INTERRUPTED'; }
+/** @param {unknown[]} errors */
+function progressFailure(errors) {
+  const first = errors[0];
+  if (first instanceof PluginError) { attachCleanupFailure(first, errors.slice(1)); return first; }
+  return new PluginError('ZCODE_PROGRESS_FAILED', 'ZCode progress reporting failed.', { category: 'runtime', remedy: 'Retry the delegated task and inspect the progress output channel.', cause: first, details: { additionalFailureCount: Math.max(0, errors.length - 1) } });
+}
+/** @param {unknown} primary @param {unknown[]} cleanupErrors */
+function attachCleanupFailure(primary, cleanupErrors) {
+  if (!cleanupErrors.length || !(primary instanceof Error)) return;
+  const failure = progressFailure(cleanupErrors);
+  try {
+    if (!('cause' in primary)) Object.defineProperty(primary, 'cause', { value: failure, configurable: true });
+    else if (primary instanceof PluginError) primary.details = { ...primary.details, cleanupFailure: safeError(failure) };
+  } catch { /* Cleanup diagnostics must never replace the primary failure. */ }
+}
 /** @param {unknown} error */
 function errorCode(error) { return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined; }
 /** @param {any} left @param {any} right */

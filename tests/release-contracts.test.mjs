@@ -31,6 +31,41 @@ test('English and Chinese release docs cover installation, operation, and qualif
   }
 });
 
+test('release docs explain progress reporting and supported interruption boundaries', () => {
+  const english = read('README.md');
+  assert.match(english, /foreground runs? stream(?:s)? ZCode activity/i);
+  assert.match(english, /20-second heartbeat/i);
+  assert.match(english, /status.{0,100}progress previews/i);
+  assert.match(english, /background jobs?.{0,160}(?:do not|does not|won't) automatically cancel/i);
+  assert.match(english, /\$zcode:cancel/);
+  assert.match(english, /SIGINT.*SIGTERM/i);
+  assert.match(english, /session\/stop/);
+  assert.match(english, /exact persisted ZCode session/i);
+  assert.match(english, /does not claim to (?:stop|kill).{0,100}detached grandchildren/i);
+
+  const chinese = read('README.zh-CN.md');
+  assert.match(chinese, /前台运行.{0,80}ZCode 活动/);
+  assert.match(chinese, /20 秒.{0,20}心跳/);
+  assert.match(chinese, /status.{0,100}进度预览/i);
+  assert.match(chinese, /后台任务.{0,160}不会自动取消/);
+  assert.match(chinese, /\$zcode:cancel/);
+  assert.match(chinese, /SIGINT.*SIGTERM/i);
+  assert.match(chinese, /session\/stop/);
+  assert.match(chinese, /精确持久化的 ZCode session/);
+  assert.match(chinese, /不(?:声称|保证)(?:停止|终止|杀死).{0,100}detached grandchildren/i);
+});
+
+test('Unreleased changelog records progress and interruption behavior without a version bump', () => {
+  const changelog = read('CHANGELOG.md');
+  assert.match(changelog, /foreground activity/i);
+  assert.match(changelog, /20-second heartbeat/i);
+  assert.match(changelog, /status previews/i);
+  assert.match(changelog, /background.{0,120}explicit cancellation/i);
+  assert.match(changelog, /SIGINT.*SIGTERM/i);
+  assert.match(changelog, /session\/stop/);
+  assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
+});
+
 test('marketplace catalog and publisher describe an installable vitry snapshot', () => {
   const catalog = JSON.parse(read('marketplace/.agents/plugins/marketplace.json'));
   assert.equal(catalog.name, 'vitry');

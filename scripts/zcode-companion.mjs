@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process';
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync as closeFdSync, createReadStream, realpathSync } from 'node:fs';
+import { closeSync as closeFdSync, realpathSync } from 'node:fs';
 import { Socket } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { join, resolve, sep } from 'node:path';
@@ -12,7 +12,7 @@ import { runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
-import { createJobController, ownerIdForSession } from './lib/job-control.mjs';
+import { createJobController, ownerIdForSession, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataRoot } from './lib/plugin-data.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
@@ -21,6 +21,7 @@ import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
+import { createForegroundSignalController } from './lib/signals.mjs';
 import { createStateStore } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
@@ -30,15 +31,16 @@ import { reconcileBrokerOwnership } from './zcode-broker.mjs';
 const backgroundBindings = new WeakMap();
 const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
 
-/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean}} [runtime] */
+/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
   const parsed = parseArgs(argv); const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
   if (parsed.command === 'setup') return runSetup({ pluginRoot: activePluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
   const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
-  if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies });
+  if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies, signal: runtime.signal });
   const caller = runtime.caller ?? await identity.consumeCallerContext(requireAuthorization(runtime.authorization, ['callerContext']).callerContext, { workspace: cwd });
   const reconcile = () => reconcileOwnedJobs({ store, dataRoot, workspace: cwd, ownerSessionId: caller.sessionId, createClient: async (job, ownerId) => {
+    runtime.signal?.throwIfAborted();
     const launch = await discoverLaunch(env);
     return (runtime.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: cwd, launch, ownerId, env, ...managedWireOptionsForJob(job) });
   } });
@@ -48,7 +50,7 @@ export async function runCompanion(argv, runtime = {}) {
     const modelPolicy = summarizeWorkspaceModelConfig(await readWorkspaceModelConfig({ dataRoot, workspace: cwd }));
     if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId)), modelPolicy };
     let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
-    if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs);
+    if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs, runtime.signal);
     return { job, modelPolicy };
   }
   if (parsed.command === 'result') {
@@ -59,16 +61,16 @@ export async function runCompanion(argv, runtime = {}) {
   if (parsed.command === 'cancel') {
     const selected = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'cancel');
     if (!['running', 'cancelling'].includes(selected.status)) return { job: await controller.cancel(cwd, selected.id, caller.sessionId) };
-    const launch = await discoverLaunch(env);
+    runtime.signal?.throwIfAborted(); const launch = await discoverLaunch(env);
     const client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId: ownerIdForSession(caller.sessionId), env, ...managedWireOptionsForJob(selected) });
     const cancelling = createJobController({ store, dataRoot, stopSession: (sessionId) => client.stopSession(sessionId) });
     try { return { job: await cancelling.cancel(cwd, selected.id, caller.sessionId) }; }
     finally { await client.close().catch(() => {}); }
   }
-  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground });
+  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
 }
 
-/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,dependencies?:any}} [runtime] */
+/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,dependencies?:any,progressWriter?:(line:string)=>void,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runDirectInvocation(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
   const sessionId = env.CODEX_THREAD_ID; if (typeof sessionId !== 'string' || !sessionId) throw new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' });
@@ -84,7 +86,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
       return { type: 'needs-choice', choices: ['wait', 'background'] };
     }
   }
-  const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies });
+  const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
   if (output?.type === 'needs-choice') await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv } });
   return output;
 }
@@ -102,7 +104,7 @@ async function startPublic(context) {
   const transferSource = parsed.command === 'transfer' ? resolveTransferSource(parsed.options, caller) : undefined;
   const job = await store.reserveJob({ workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) });
   if (parsed.command === 'transfer') {
-    return executeTransfer({ job, workspace: job.workspace, dataRoot, store, sourceThreadId: /** @type {string} */ (transferSource), resolveLaunch: () => discoverLaunch(context.env),
+    return executeTransfer({ job, workspace: job.workspace, dataRoot, store, sourceThreadId: /** @type {string} */ (transferSource), signal: context.signal, resolveLaunch: () => discoverLaunch(context.env),
       readThread: () => (context.dependencies?.readCodexThread ?? readCodexThread)(transferSource, codexAppServerOptions(context.env, job.workspace)),
       createClient: (launch) => (context.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: job.workspace, launch, ownerId: ownerIdForSession(caller.sessionId), env: context.env, ...managedWireOptionsForJob(job) }),
     });
@@ -145,7 +147,7 @@ function codexAppServerOptions(env, cwd) {
 }
 
 /** @param {any} input */
-async function runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization, startupAck, dependencies }) {
+async function runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization, startupAck, dependencies, signal }) {
   const jobId = parsed.positionals[0]; const job = await store.readJob(cwd, jobId);
   if (authorization.jobId !== jobId) throw authorizationInputError();
   const record = await readJobSpec(dataRoot, cwd, jobId);
@@ -155,7 +157,7 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', specDigest: recomputed });
   if (!sameJson(consumed.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
-  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, caller: { sessionId: job.ownerSessionId }, dependencies, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
+  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
 
 /** @param {any} context */
@@ -172,15 +174,20 @@ async function executeReserved(context) {
   const { cwd, env, dataRoot, store, job, spec } = context;
   let client;
   try {
+    context.signal?.throwIfAborted();
     const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
     client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId, env });
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); } });
+    const executionClient = client; client = undefined;
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); } });
   } catch (error) {
     await client?.close().catch(() => {});
     const current = await store.readJob(cwd, job.id).catch(() => null);
-    if (current?.status === 'queued') {
+    if (isInterruption(error) && current?.status === 'queued') {
+      if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});
+      else await createJobController({ store, dataRoot }).cancel(cwd, job.id, job.ownerSessionId).catch(() => {});
+    } else if (!isInterruption(error) && current?.status === 'queued') {
       await store.transitionJob(cwd, job.id, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution failed' }, finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
     }
     throw error;
@@ -206,6 +213,16 @@ async function readJobSpec(dataRoot, workspace, jobId) {
 }
 /** @param {unknown} left @param {unknown} right */
 function sameJson(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
+/** @param {unknown} error */
+function isInterruption(error) { return error instanceof PluginError && error.code === 'JOB_INTERRUPTED'; }
+/** @param {any} context */
+async function cancelClaimedQueuedInterruption(context) {
+  return withJobCancellationLock({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id }, async () => {
+    const current = await context.store.readJob(context.cwd, context.job.id);
+    if (current.status !== 'queued' || current.workerLeaseId !== context.workerLeaseId) return current;
+    return context.store.transitionJob(context.cwd, current.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+  });
+}
 
 /** @param {unknown} value @param {string[]} keys @returns {any} */
 function requireAuthorization(value, keys) {
@@ -234,18 +251,45 @@ async function validateResumeCandidate(store, workspace, ownerSessionId, spec) {
   if (candidate.ownerSessionId !== ownerSessionId || candidate.command !== 'rescue' || candidate.zcodeSessionId !== spec.resumeSessionId || !['running', 'succeeded', 'failed'].includes(candidate.status)) throw new PluginError('RESUME_CANDIDATE_INVALID', 'The bound rescue candidate is no longer eligible.', { category: 'authorization', remedy: 'Reserve a fresh rescue job.' });
 }
 
-/** @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number}} [options] */
+/** @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number,signal?:AbortSignal,createStream?:(fd:number)=>any}} [options] */
 export function readInternalEnvelope(fd = 3, options = {}) {
   const maxBytes = options.maxBytes ?? 64 * 1024; const timeoutMs = options.timeoutMs ?? 5_000;
   if (!Number.isSafeInteger(fd) || fd < 3 || !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw authorizationInputError();
+  options.signal?.throwIfAborted();
   return new Promise((resolvePromise, reject) => {
-    const stream = createReadStream('', { fd, autoClose: false }); let data = ''; let bytes = 0; let settled = false;
-    /** @param {()=>void} callback */
-    const finish = (callback) => { if (settled) return; settled = true; clearTimeout(timer); stream.destroy(); callback(); };
-    const timer = setTimeout(() => finish(() => reject(authorizationInputError())), timeoutMs);
-    stream.on('data', (chunk) => { bytes += chunk.length; if (bytes > maxBytes) finish(() => reject(authorizationInputError())); else data += chunk.toString('utf8'); });
-    stream.once('error', () => finish(() => reject(authorizationInputError())));
-    stream.once('end', () => finish(() => { try { resolvePromise(JSON.parse(data)); } catch { reject(authorizationInputError()); } }));
+    let stream;
+    try { stream = options.createStream?.(fd) ?? new Socket({ fd, readable: true, writable: false }); }
+    catch { reject(authorizationInputError()); return; }
+    let data = ''; let bytes = 0; let settled = false; let closed = false; let cleaned = false;
+    /** @type {{resolve:true,value:any}|{resolve:false,value:unknown}|null} */
+    let outcome = null;
+    /** @type {NodeJS.Timeout|undefined} */ let timer;
+    let removeAbortListener = () => {};
+    const cleanup = () => { if (cleaned) return; cleaned = true; if (timer) clearTimeout(timer); removeAbortListener(); };
+    const settleAfterClose = () => {
+      if (settled || !closed || !outcome) return;
+      settled = true; cleanup();
+      if (outcome.resolve) resolvePromise(outcome.value); else reject(outcome.value);
+    };
+    /** @param {boolean} resolve @param {unknown} value */
+    const finish = (resolve, value) => {
+      if (outcome) return;
+      outcome = resolve ? { resolve: true, value } : { resolve: false, value };
+      cleanup();
+      if (!stream.destroyed) stream.destroy();
+      settleAfterClose();
+    };
+    stream.once('close', () => { closed = true; if (!outcome) outcome = { resolve: false, value: authorizationInputError() }; settleAfterClose(); });
+    stream.on('data', (/** @type {Buffer} */ chunk) => { if (outcome) return; bytes += chunk.length; if (bytes > maxBytes) finish(false, authorizationInputError()); else data += chunk.toString('utf8'); });
+    stream.once('error', () => finish(false, authorizationInputError()));
+    stream.once('end', () => { try { finish(true, JSON.parse(data)); } catch { finish(false, authorizationInputError()); } });
+    timer = setTimeout(() => finish(false, authorizationInputError()), timeoutMs);
+    if (options.signal) {
+      const onAbort = () => finish(false, options.signal?.reason);
+      options.signal.addEventListener('abort', onAbort, { once: true });
+      removeAbortListener = () => options.signal?.removeEventListener('abort', onAbort);
+      if (options.signal.aborted) onAbort();
+    }
   });
 }
 /** @param {unknown} value @param {number} [fd] @param {{maxBytes?:number,timeoutMs?:number,write?:(fd:number,buffer:Buffer,offset:number,length:number,position:null,callback:(error:NodeJS.ErrnoException|null,bytesWritten:number)=>void)=>void|{cancel?:()=>void},close?:(fd:number,callback:(error?:NodeJS.ErrnoException|null)=>void)=>void}} [options] */
@@ -321,13 +365,28 @@ async function failQueuedJob(store, workspace, jobId, error) {
 }
 
 async function main() {
-  let output;
+  let output; const entry = process.argv[2]; const setup = entry === 'setup'; const direct = entry === 'invoke' || entry === 'invoke-choice'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
+  const signalController = !setup && !worker ? createForegroundSignalController({ process }) : null;
   try {
-    const entry = process.argv[2]; const setup = entry === 'setup'; const direct = entry === 'invoke' || entry === 'invoke-choice'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1'; const authorization = setup || direct ? undefined : await readInternalEnvelope();
-    output = direct ? await runDirectInvocation(process.argv.slice(2)) : await runCompanion(process.argv.slice(2), { authorization, ...(worker ? { startupAck: acknowledgeBackgroundStartup } : {}) });
+    const authorization = setup || direct ? undefined : await readInternalEnvelope(3, { signal: signalController?.signal });
+    const foregroundProgress = worker ? {} : {
+      progressWriter: (/** @type {string} */ line) => process.stderr.write(line),
+      progressDependencies: { now: () => new Date().toISOString(), setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval },
+      ...(signalController ? { signal: signalController.signal } : {}),
+    };
+    output = direct ? await runDirectInvocation(process.argv.slice(2), foregroundProgress) : await runCompanion(process.argv.slice(2), { authorization, ...foregroundProgress, ...(worker ? { startupAck: acknowledgeBackgroundStartup } : {}) });
     if (!setup && !direct && !worker) await writeInternalResponse(output); if (!worker) process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
   }
-  catch (error) { if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const entry = process.argv[2]; const protectedOutput = entry !== 'setup' && entry !== 'invoke' && entry !== 'invoke-choice' && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1; }
+  catch (error) {
+    if (error instanceof PluginError && error.code === 'JOB_INTERRUPTED') {
+      const signal = typeof error.details.signal === 'string' ? error.details.signal : 'signal';
+      process.stderr.write(`Interrupted by ${signal}.\n`);
+      if (typeof error.details.exitCode === 'number') process.exitCode = error.details.exitCode;
+      return;
+    }
+    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = entry !== 'setup' && entry !== 'invoke' && entry !== 'invoke-choice' && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
+  }
+  finally { signalController?.cleanup(); }
 }
 
 if (process.argv[1] && sameEntryPath(fileURLToPath(import.meta.url), resolve(process.argv[1]))) await main();

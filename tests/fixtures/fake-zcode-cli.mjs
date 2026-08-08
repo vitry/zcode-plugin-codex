@@ -171,7 +171,14 @@ input.on('line', async (line) => {
         if (process.env.FAKE_ZCODE_PERMISSION_REPLAY === '1') send({ id: permissionId++, method: 'interaction/requestPermission', params });
       }
       const notificationSession = process.env.FAKE_ZCODE_CROSS_SESSION ?? p.sessionId;
-      const completion = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: stateRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };
+      let notificationRevision = stateRevision;
+      if (process.env.FAKE_ZCODE_PROGRESS === '1') {
+        for (const reason of ['model_streaming', 'tool_call_started', 'tool_call_result']) {
+          notificationRevision += 1;
+          send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: notificationRevision, reason, patch: {} } });
+        }
+      }
+      const completion = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: notificationRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };
       if (process.env.FAKE_ZCODE_SYNC_BATCH === 'stale-valid') sendBatch([response, { method: 'state.updated', params: { ...completion.params, revision: stateRevision } }, completion]);
       else if (process.env.FAKE_ZCODE_SYNC_COMPLETE === '1') send(completion);
       else if (!(process.env.FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION === '1' && sendCount === 1)

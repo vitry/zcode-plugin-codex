@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
+import { PluginError } from '../../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
@@ -14,11 +15,16 @@ import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
 import { createManagedZCodeClient } from '../../scripts/lib/zcode-client.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
+import { runCompanion } from '../../scripts/zcode-companion.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fake = join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
+const completionSignalProbe = join(root, 'tests', 'fixtures', 'completion-signal-probe.cjs');
+const signalHandlerProbe = join(root, 'tests', 'fixtures', 'signal-handler-probe.cjs');
+const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs');
+const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-companion-'));
@@ -55,9 +61,27 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
+/** @param {()=>Promise<boolean>} predicate @param {string} message */
+async function waitFor(predicate, message) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(message);
+}
+
 test('module import has no CLI side effects', async () => {
   const result = await run(process.execPath, ['--input-type=module', '--eval', `await import(${JSON.stringify(new URL('../../scripts/zcode-companion.mjs', import.meta.url).href)}); process.stdout.write('imported')`]);
   assert.deepEqual({ code: result.code, stdout: result.stdout, stderr: result.stderr }, { code: 0, stdout: 'imported', stderr: '' });
+});
+
+test('an already-aborted foreground invocation cancels its reservation before launcher discovery', async () => {
+  const context = await fixture(); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'before discovery'); controller.abort(interruption); let discoveries = 0;
+  await assert.rejects(runCompanion(['rescue', '--fresh', 'task'], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'turn-1', permissionMode: 'workspace-write' }, signal: controller.signal, dependencies: { discoverLaunch: async () => { discoveries += 1; throw new Error('must not discover'); } } }), (error) => error === interruption);
+  assert.equal(discoveries, 0);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled');
 });
 
 test('real CLI runs foreground review/adversarial/rescue and persists private artifacts', async () => {
@@ -92,6 +116,129 @@ test('rescue task semantics reach the fake peer as the authorized objective', as
   assert.match(sent.params.content, /UNTRUSTED GIT DATA/);
 });
 
+test('foreground rescue streams safe progress to stderr and durably exposes it through status', async () => {
+  const context = await fixture();
+  const result = await companion(context, ['rescue', '--fresh', 'surface progress'], { FAKE_ZCODE_PROGRESS: '1' });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.stdout, 'done\n');
+  assert.match(result.stderr, /\[zcode\] ZCode started the delegated turn\./);
+  assert.match(result.stderr, /\[zcode\] ZCode is generating a response\./);
+  assert.match(result.stderr, /\[zcode\] ZCode started a tool call\./);
+  assert.match(result.stderr, /\[zcode\] ZCode completed a tool call\./);
+  const status = await companion(context, ['status', result.json.job.id]);
+  assert.equal(status.code, 0, `${status.stderr}${status.stdout}`);
+  assert.equal(status.json.job.phase, 'finalizing');
+  assert.ok(Date.parse(status.json.job.lastActivityAt));
+  assert.deepEqual(status.json.job.progressPreview, [
+    'ZCode is generating a response.',
+    'ZCode started a tool call.',
+    'ZCode completed a tool call.',
+    'ZCode completed the delegated turn.',
+  ]);
+});
+
+test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves no running job', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const record = join(context.directory, 'interrupt.jsonl'); await writeFile(record, '');
+  const child = spawn(process.execPath, [cli, 'rescue', '--fresh', 'interrupt me'], {
+    cwd: context.workspace,
+    env: { ...context.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' },
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+    shell: false,
+  });
+  let stdout = ''; let stderr = ''; let internal = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+  child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
+  /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: context.caller })}\n`);
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+
+  const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  await waitFor(async () => (await recorded()).some((frame) => frame.method === 'session/send'), 'foreground send was not accepted');
+  child.kill('SIGINT');
+  const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  assert.deepEqual(exit, { code: 130, signal: null });
+  const calls = await recorded(); const sentSession = calls.find((frame) => frame.method === 'session/send').params.sessionId;
+  assert.equal(calls.filter((frame) => frame.method === 'session/stop' && frame.params.sessionId === sentSession).length, 1);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.ok(jobs[0].finishedAt); assert.equal(jobs[0].resultArtifact, undefined);
+  assert.equal(stdout, ''); assert.equal(internal, ''); assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|"error"/);
+});
+
+test('real CLI completion that wins before SIGINT remains succeeded with exit zero', async () => {
+  const context = await fixture();
+  const result = await run(process.execPath, ['--require', completionSignalProbe, cli, 'rescue', '--fresh', 'completion wins'], {
+    cwd: context.workspace,
+    env: { ...context.env, ZCODE_COMPLETION_SIGNAL_PROBE: '1' },
+    input: { callerContext: context.caller },
+  });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
+  assert.equal(result.stdout, 'done\n'); assert.doesNotMatch(result.stderr, /Interrupted by SIGINT|JOB_INTERRUPTED/);
+  assert.equal(JSON.parse(result.internal).job.status, 'succeeded');
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'succeeded'); assert.equal(jobs[0].exitCode, 0);
+});
+
+test('real CLI successful status is not flipped by SIGINT during output', async () => {
+  const context = await fixture(); const completed = await companion(context, ['review']);
+  assert.equal(completed.code, 0, `${completed.stderr}${completed.stdout}`);
+  const result = await run(process.execPath, ['--require', completionSignalProbe, cli, 'status', completed.json.job.id], {
+    cwd: context.workspace,
+    env: { ...context.env, ZCODE_COMPLETION_SIGNAL_PROBE: '1' },
+    input: { callerContext: context.caller },
+  });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
+  assert.match(result.stdout, /^Job: /); assert.doesNotMatch(result.stderr, /Interrupted by SIGINT|JOB_INTERRUPTED/);
+  assert.equal(JSON.parse(result.internal).job.status, 'succeeded');
+});
+
+test('signal probe marks handled only after the wrapped handler returns', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-signal-probe-')); const marker = join(directory, 'marker.txt');
+  const script = `
+    const { readFileSync } = require('node:fs');
+    const keepAlive = setInterval(() => {}, 1000);
+    process.on('SIGINT', () => {
+      process.stdout.write(readFileSync(process.env.ZCODE_SIGNAL_HANDLER_PROBE, 'utf8'));
+      clearInterval(keepAlive);
+      setImmediate(() => process.exit(0));
+    });
+    setImmediate(() => process.emit('SIGINT'));
+  `;
+  const child = spawn(process.execPath, ['--require', signalHandlerProbe, '--eval', script], {
+    env: { ...process.env, ZCODE_SIGNAL_HANDLER_PROBE: marker }, stdio: ['ignore', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let exited = false; child.stdout?.on('data', (chunk) => { stdout += chunk; });
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const exitPromise = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  assert.deepEqual(await exitPromise, { code: 0, signal: null });
+  assert.equal(stdout, 'ready');
+  assert.equal(await readFile(marker, 'utf8'), 'handled');
+});
+
+test('foreground SIGINT wins while the protected authorization envelope is incomplete', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const marker = join(context.directory, 'signal-handler.txt');
+  const child = spawn(process.execPath, ['--require', signalHandlerProbe, cli, 'rescue', '--fresh', 'interrupt authorization'], {
+    cwd: context.workspace,
+    env: { ...context.env, ZCODE_SIGNAL_HANDLER_PROBE: marker },
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+    shell: false,
+  });
+  let stdout = ''; let stderr = ''; let internal = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+  child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const exitPromise = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+
+  await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'ready', 'foreground signal handler was not installed');
+  /** @type {import('node:stream').Writable} */ (child.stdio[3]).write('{');
+  child.kill('SIGINT');
+  await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'handled', 'SIGINT did not enter the installed handler');
+  /** @type {NodeJS.Timeout|undefined} */
+  let exitTimer;
+  const exit = await Promise.race([exitPromise, new Promise((resolve, reject) => { void resolve; exitTimer = setTimeout(() => reject(new Error('foreground process retained incomplete fd3 after SIGINT')), 5_000); })]).finally(() => clearTimeout(exitTimer));
+
+  assert.deepEqual(exit, { code: 130, signal: null });
+  assert.equal(stdout, ''); assert.equal(internal, '');
+  assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /INTERNAL_AUTHORIZATION_INVALID|"error"/);
+});
+
 test('background reservation exposes one private invocation, which is single-use', async () => {
   const context = await fixture();
   const reserved = await companion(context, ['review', '--background']);
@@ -105,6 +252,20 @@ test('background reservation exposes one private invocation, which is single-use
   assert.equal(first.code, 0, first.stderr); assert.equal(first.json.job.status, 'succeeded');
   const replay = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.notEqual(replay.code, 0); assert.equal(replay.json.error.code, 'EXECUTION_CAPABILITY_CONSUMED');
+});
+
+test('a non-worker reserved-job invocation receives the foreground abort signal', async () => {
+  const context = await fixture(); const reserved = await companion(context, ['review', '--background']);
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'reserved foreground'); controller.abort(interruption); let discoveries = 0;
+  await assert.rejects(runCompanion(reserved.json.privateInvocation, {
+    cwd: context.workspace,
+    env: context.env,
+    authorization: { executionCapability: reserved.json.executionCapability, jobId: reserved.json.job.id },
+    signal: controller.signal,
+    dependencies: { discoverLaunch: async () => { discoveries += 1; throw new Error('must not discover'); } },
+  }), (error) => error === interruption);
+  assert.equal(discoveries, 0);
+  assert.equal((await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, reserved.json.job.id)).status, 'cancelled');
 });
 
 test('status/list/result and queued cancellation enforce owned job semantics', async () => {
@@ -355,7 +516,7 @@ test('status --all reports every workspace job with nonsecret ownership markers'
   assert.ok(listed.json.jobs.every((/** @type {any} */ job) => !('ownerSessionId' in job) && !('ownerTurnId' in job) && !('permissionSnapshot' in job)));
   const lines = listed.stdout.trim().split('\n');
   assert.equal(lines.pop(), 'Model policy: default=ZCode default; aliases=none');
-  assert.deepEqual(lines, listed.json.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner}`));
+  assert.deepEqual(lines, listed.json.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner} phase=— activity=—`));
   assert.doesNotMatch(listed.stdout, /codex-session|other-session/);
 });
 
@@ -364,6 +525,56 @@ test('real CLI status wait stays alive until its timeout', async () => {
   const reserved = await companion(context, ['review', '--background']);
   const waited = await companion(context, ['status', reserved.json.job.id, '--wait', '--timeout-ms', '20']);
   assert.equal(waited.code, 1); assert.equal(waited.json.error.code, 'JOB_WAIT_TIMEOUT');
+});
+
+test('real CLI status wait exits immediately without protocol output on SIGINT', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const marker = join(context.directory, 'status-wait.txt');
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(context.workspace, queued.id, ['queued'], 'running', { childPid: process.pid, zcodeSessionId: 'status-wait-session' });
+  const child = spawn(process.execPath, ['--require', statusWaitProbe, cli, 'status', queued.id, '--wait', '--timeout-ms', '10000'], {
+    cwd: context.workspace,
+    env: { ...context.env, ZCODE_STATUS_WAIT_PROBE: marker },
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let internal = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+  child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
+  /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: context.caller })}\n`);
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const exitPromise = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+
+  await waitFor(async () => await readFile(marker, 'utf8').catch(() => '') === 'waiting', 'status command did not enter its polling wait');
+  child.kill('SIGINT');
+  /** @type {NodeJS.Timeout|undefined} */ let deadline;
+  const exit = await Promise.race([exitPromise, new Promise((resolve, reject) => { void resolve; deadline = setTimeout(() => { if (!exited) child.kill('SIGKILL'); reject(new Error('status wait did not exit promptly after SIGINT')); }, 1_000); })]).finally(() => clearTimeout(deadline));
+
+  assert.deepEqual(exit, { code: 130, signal: null });
+  assert.equal(stdout, ''); assert.equal(internal, '');
+  assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|JOB_WAIT_TIMEOUT|"error"/);
+  assert.equal((await store.readJob(context.workspace, queued.id)).status, 'running');
+});
+
+test('foreground Transfer observes SIGTERM after its bounded create RPC and exits 143', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const zcodeRecord = join(context.directory, 'transfer-interrupt.jsonl'); await writeFile(zcodeRecord, '');
+  const sourceThread = { id: 'codex-session', ephemeral: false, turns: [{ startedAt: 1_725_000_000, items: [{ type: 'agentMessage', text: 'visible response' }] }] };
+  const child = spawn(process.execPath, [cli, 'transfer'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]), FAKE_CODEX_THREAD_JSON: JSON.stringify(sourceThread), FAKE_ZCODE_RECORD: zcodeRecord, FAKE_ZCODE_DELAY_MS: '200' },
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let internal = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
+  child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError); /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ callerContext: context.caller })}\n`);
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const exitPromise = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  const recorded = async () => (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  await waitFor(async () => (await recorded()).some((frame) => frame.method === 'session/create'), 'Transfer create RPC did not start'); child.kill('SIGTERM');
+  const exit = await exitPromise; assert.deepEqual(exit, { code: 143, signal: null });
+  const calls = await recorded(); const sessionId = calls.find((frame) => frame.method === 'session/stop')?.params?.sessionId;
+  assert.equal(typeof sessionId, 'string'); assert.equal(calls.filter((frame) => frame.method === 'session/stop' && frame.params.sessionId === sessionId).length, 1);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace); assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.equal(jobs[0].zcodeSessionId, sessionId); assert.equal(jobs[0].resultArtifact, undefined);
+  assert.equal(stdout, ''); assert.equal(internal, ''); assert.match(stderr, /Interrupted by SIGTERM\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|"error"/);
 });
 
 test('real Transfer imports current Codex history into a resumable ZCode session without leaking caller authorization', async () => {

@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import { PluginError } from './errors.mjs';
 import { atomicWriteJson, ensurePrivateDirectory, readJsonFile, withFileLock } from './fs.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
+import {
+  MAX_PROGRESS_MESSAGE_BYTES,
+  MAX_PROGRESS_PREVIEW_ENTRIES,
+  PROGRESS_PHASES,
+} from './progress.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 export const JOB_STATUSES = Object.freeze([
@@ -176,6 +181,45 @@ export function createStateStore(options) {
       });
     },
 
+    /**
+     * @param {string} workspace
+     * @param {string} jobId
+     * @param {{phase:string,message:string,observedAt:string}} event
+     */
+    async updateJobProgress(workspace, jobId, event) {
+      validateProgressInput(workspace, jobId, event);
+      const storage = await jobStorage(dataRoot, workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const path = jobPath(storage.jobsDirectory, jobId);
+        const job = await readJobRecord(path, jobId, storage.workspacePath);
+        if (job.status === 'queued' || TERMINAL_STATUSES.has(job.status)) return job;
+        const observedAtMs = Date.parse(event.observedAt);
+        const currentTime = Date.now();
+        const activityFloor = Date.parse(job.lastActivityAt ?? job.startedAt ?? job.createdAt);
+        if (observedAtMs < activityFloor || observedAtMs > currentTime) {
+          throw invalidProgressInput(['observedAt']);
+        }
+        const progressPreview = job.progressPreview ?? [];
+        const messages = progressPreview.at(-1) === event.message
+          ? progressPreview
+          : [...progressPreview, event.message].slice(-MAX_PROGRESS_PREVIEW_ENTRIES);
+        const updated = {
+          ...job,
+          phase: event.phase,
+          lastActivityAt: event.observedAt,
+          progressPreview: messages,
+          updatedAt: new Date(Math.max(
+            currentTime,
+            Date.parse(job.updatedAt),
+            observedAtMs,
+          )).toISOString(),
+        };
+        validateJobRecord(updated, jobId, storage.workspacePath);
+        await atomicWriteJson(path, updated);
+        return updated;
+      });
+    },
+
     /** @param {string} workspace @param {string} jobId */
     async readJob(workspace, jobId) {
       const storage = await jobStorage(dataRoot, workspace);
@@ -286,6 +330,32 @@ function validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus,
   }
 }
 
+/** @param {unknown} workspace @param {unknown} jobId @param {unknown} event */
+function validateProgressInput(workspace, jobId, event) {
+  const invalidFields = [];
+  if (!isNonEmptyString(workspace)) invalidFields.push('workspace');
+  if (!isDigest(jobId)) invalidFields.push('jobId');
+  if (!isPlainJsonObject(event)) invalidFields.push('event');
+  else {
+    const fields = Object.keys(event);
+    const extraFields = fields.filter((field) => !['message', 'observedAt', 'phase'].includes(field));
+    if (extraFields.length > 0) invalidFields.push(...extraFields);
+    if (!PROGRESS_PHASES.includes(event.phase)) invalidFields.push('phase');
+    if (!isSafeProgressMessage(event.message)) invalidFields.push('message');
+    if (!isIsoTimestamp(event.observedAt)) invalidFields.push('observedAt');
+  }
+  if (invalidFields.length > 0) throw invalidProgressInput(invalidFields);
+}
+
+/** @param {string[]} invalidFields */
+function invalidProgressInput(invalidFields) {
+  return new PluginError('JOB_PROGRESS_INPUT_INVALID', 'Job progress input is invalid.', {
+    category: 'state',
+    remedy: 'Provide one fixed phase, bounded control-free message, and ISO observation timestamp.',
+    details: { invalidFields },
+  });
+}
+
 /** @param {any} job @param {string} expectedJobId @param {string} expectedWorkspacePath @returns {any} */
 function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
   const validShape = isPlainJsonObject(job)
@@ -311,7 +381,10 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
     && (!('promptArtifact' in job) || isSafeArtifact(job.promptArtifact))
     && (!('resultArtifact' in job) || isSafeArtifact(job.resultArtifact))
     && (!('error' in job) || isTrackedError(job.error))
-    && (!('lastCancelError' in job) || isCancellationError(job.lastCancelError));
+    && (!('lastCancelError' in job) || isCancellationError(job.lastCancelError))
+    && (!('phase' in job) || PROGRESS_PHASES.includes(job.phase))
+    && (!('lastActivityAt' in job) || isIsoTimestamp(job.lastActivityAt))
+    && (!('progressPreview' in job) || validProgressPreview(job.progressPreview));
   const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
   const hasBoundary = boundaryFields.some((field) => field in job);
   const validBoundary = !hasBoundary || boundaryFields.every((field) => field in job)
@@ -334,13 +407,23 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
   const createdAt = validShape ? Date.parse(job.createdAt) : Number.NaN;
   const startedAt = validShape && 'startedAt' in job ? Date.parse(job.startedAt) : undefined;
   const finishedAt = validShape && 'finishedAt' in job ? Date.parse(job.finishedAt) : undefined;
+  const lastActivityAt = validShape && 'lastActivityAt' in job
+    ? Date.parse(job.lastActivityAt) : undefined;
+  const progressFields = ['phase', 'lastActivityAt', 'progressPreview'];
+  const hasProgress = progressFields.some((field) => field in job);
+  const validProgress = !hasProgress || progressFields.every((field) => field in job)
+    && job.status !== 'queued'
+    && lastActivityAt !== undefined
+    && lastActivityAt >= (startedAt ?? createdAt)
+    && Date.parse(job.updatedAt) >= lastActivityAt
+    && (!terminal || finishedAt !== undefined && finishedAt >= lastActivityAt);
   const validTimeline = validShape
     && Date.parse(job.updatedAt) >= createdAt
     && (startedAt === undefined || Date.parse(job.updatedAt) >= startedAt)
     && (finishedAt === undefined || Date.parse(job.updatedAt) >= finishedAt)
     && (startedAt === undefined || startedAt >= createdAt)
     && (finishedAt === undefined || finishedAt >= (startedAt ?? createdAt));
-  if (!validLifecycle || !validTimeline) {
+  if (!validLifecycle || !validProgress || !validTimeline) {
     throw new PluginError('JOB_RECORD_INVALID', 'Persisted job record failed schema validation.', {
       category: 'state',
       remedy: 'Restore or remove the corrupted job record.',
@@ -382,6 +465,8 @@ function validateJobPatch(job, nextStatus, patch, jobId) {
   if ('finishedAt' in patch && (!isIsoTimestamp(patch.finishedAt)
     || Date.parse(/** @type {string} */ (patch.finishedAt))
       < Date.parse(job.startedAt ?? job.createdAt)
+    || typeof job.lastActivityAt === 'string'
+      && Date.parse(/** @type {string} */ (patch.finishedAt)) < Date.parse(job.lastActivityAt)
     || !TERMINAL_STATUSES.has(nextStatus))) invalidFields.push('finishedAt');
   if ('promptArtifact' in patch
     && (!isSafeArtifact(patch.promptArtifact) || !writesRunningMetadata)) {
@@ -462,6 +547,30 @@ function validBeforeMessageIds(value) {
     if (bytes > BEFORE_MESSAGE_IDS_MAX_BYTES) return false;
   }
   return true;
+}
+
+/** @param {unknown} value */
+function validProgressPreview(value) {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.length <= MAX_PROGRESS_PREVIEW_ENTRIES
+    && value.every(isSafeProgressMessage);
+}
+
+/** @param {unknown} value */
+function isSafeProgressMessage(value) {
+  return isNonEmptyString(value)
+    && Buffer.byteLength(value) <= MAX_PROGRESS_MESSAGE_BYTES
+    && ![...value].some((character) => {
+      const code = /** @type {number} */ (character.codePointAt(0));
+      return code <= 31 || code >= 127 && code <= 159 || isBidiControl(code);
+    });
+}
+
+/** @param {number} code */
+function isBidiControl(code) {
+  return code === 0x061c || code === 0x200e || code === 0x200f
+    || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
 }
 
 /** @param {unknown} value */

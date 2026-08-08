@@ -8,6 +8,9 @@ All notable changes follow Semantic Versioning.
 - Added marketplace-qualified plugin-data discovery and a restart-safe `$zcode:setup` bootstrap that configures the data directory as a writable root before persisting state.
 - Added ZCode CLI 0.16.1 compatibility for runtime-preference server requests with string IDs.
 - Improved `$zcode:setup` guidance when the ZCode CLI has no model provider configured, including the distinction between Desktop and CLI settings and API-key providers that do not require OAuth.
+- Added foreground activity output, a 20-second heartbeat, and durable status previews for long-running ZCode work.
+- Added bounded foreground `SIGINT` and `SIGTERM` handling: the plugin cancels before session creation or sends `session/stop` only to the exact persisted ZCode session, while background jobs continue until completion or explicit cancellation with `$zcode:cancel`.
+- Kept the package version at `0.1.0` for these Unreleased behavior changes.
 
 ## 0.1.0 - 2026-08-06
 

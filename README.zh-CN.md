@@ -63,6 +63,24 @@ Setup 会把以下 schema 写入 `$CODEX_HOME/plugins/data/zcode-<marketplace>/w
 
 每次运行都会先建立持久、带 owner 的 job。已安装插件的状态保存在 `$CODEX_HOME/plugins/data/zcode-<marketplace>/workspaces/<workspace-hash>/`，使用私有权限；prompt、result、session ID 和日志都不会写进仓库或插件缓存。后续 turn 仍可使用 `$zcode:status`、`$zcode:result`、`$zcode:cancel`，但 sibling Codex session 无法接管任务。
 
+前台运行会把 ZCode 活动流式显示在当前终端。如果没有新活动，则每 20 秒输出一次心跳，让耗时较长的模型请求或工具调用仍然可见。同一份安全活动也会持久化到 job；`$zcode:status <job-id>` 会显示阶段、最后活动时间和近期进度预览。例如：
+
+```text
+$zcode:rescue --wait 修复失败的测试
+[zcode] ZCode started a tool call.
+[zcode] Still waiting for ZCode; last activity 20s ago.
+
+$zcode:status <job-id>
+Status: running
+Phase: running
+Progress:
+  - ZCode started a tool call.
+```
+
+后台任务有独立生命周期：启动它的前台命令或 Codex turn 结束时，后台任务不会自动取消。用 `$zcode:status <job-id>` 查看，用 `$zcode:cancel <job-id>` 显式取消；ownership 仍只属于预留该 job 的 Codex session。
+
+在支持的前台路径上，插件会在安全协议边界处理 `SIGINT` 和 `SIGTERM`。ZCode session 尚未建立时，中断会取消排队中的预留；精确持久化的 ZCode session ID 一旦存在，插件只会对该 session 发送 `session/stop`。停止得到确认后，job 会持久标记为 cancelled；如果 `session/stop` 失败或超时，job 会保持 running，并通过 status 暴露取消错误，以便重试取消。这是刻意限定的 session 级边界：插件不声称停止或杀死 ZCode 或嵌套工具创建的任意 detached grandchildren。
+
 Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺序排列、用户可见的 user/assistant 文本；不转移隐藏推理、工具状态、permission 或 job ownership。
 
 可选 Stop review gate 只会在用户驱动的父 turn 确实改变工作区后执行有界、前台、只读审查。用 `$zcode:setup` 开关，可能需要重启 Codex。ZCode 缺失、过旧或未认证时会附 setup 指引并 fail open；一旦审查会话已启动，畸形、失败或超时输出会保守阻止结束。

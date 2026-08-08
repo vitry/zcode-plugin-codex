@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { mkdir, mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +20,7 @@ async function setup() {
 }
 
 const reservation = { ownerSessionId: 'session-a', ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
+const silentSubscribe = () => () => {};
 
 /** @param {string} root @param {string} workspace @param {string} jobId */
 async function attemptFixture(root, workspace, jobId) {
@@ -65,6 +67,62 @@ test('wait reaches terminal state or returns a stable timeout error', async () =
   assert.equal((await controller.wait(workspace, job.id, 100)).status, 'cancelled');
   const active = await store.reserveJob({ workspace, ...reservation });
   await assert.rejects(controller.wait(workspace, active.id, 0), { code: 'JOB_WAIT_TIMEOUT' });
+});
+
+test('wait rejects an already-aborted signal before polling', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation });
+  const interruption = new PluginError('JOB_INTERRUPTED', 'Interrupted by SIGINT.');
+  const abort = new AbortController(); abort.abort(interruption);
+  let polls = 0;
+  const controller = createJobController({ store, beforeWaitPoll: async () => { polls += 1; } });
+  await assert.rejects(controller.wait(workspace, job.id, 100, abort.signal), (error) => error === interruption);
+  assert.equal(polls, 0);
+});
+
+test('wait interrupts a pending poll and handles its later rejection', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {()=>void} */ let startPoll = () => {};
+  /** @type {Promise<void>} */ const pollStarted = new Promise((resolve) => { startPoll = resolve; });
+  /** @type {(error:Error)=>void} */ let rejectPoll = () => {};
+  const controller = createJobController({ store, beforeWaitPoll: () => new Promise((resolve, reject) => { void resolve; rejectPoll = reject; startPoll(); }) });
+  const abort = new AbortController();
+  const interruption = new PluginError('JOB_INTERRUPTED', 'Interrupted by SIGTERM.');
+  const waiting = controller.wait(workspace, job.id, 10_000, abort.signal);
+  await pollStarted; abort.abort(interruption);
+  const outcome = await Promise.race([
+    waiting.catch((error) => error),
+    new Promise((resolve) => setTimeout(() => resolve('deadline'), 25)),
+  ]);
+  assert.equal(outcome, interruption);
+  rejectPoll(new Error('late reconciliation failure'));
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test('wait clears its polling timer and abort listener when interrupted', async () => {
+  const { workspace, store } = await setup();
+  const job = await store.reserveJob({ workspace, ...reservation });
+  const timerToken = { timer: true };
+  /** @type {()=>void} */ let announceTimer = () => {};
+  /** @type {Promise<void>} */ const timerStarted = new Promise((resolve) => { announceTimer = resolve; });
+  let cleared;
+  const controller = createJobController({
+    store,
+    pollIntervalMs: 1_000,
+    setTimeout: () => { announceTimer(); return timerToken; },
+    clearTimeout: (token) => { cleared = token; },
+  });
+  const abort = new AbortController();
+  const interruption = new PluginError('JOB_INTERRUPTED', 'Interrupted by SIGINT.');
+  const waiting = controller.wait(workspace, job.id, 10_000, abort.signal);
+  const enteredDelay = await Promise.race([timerStarted.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 25))]);
+  assert.equal(getEventListeners(abort.signal, 'abort').length, 1);
+  abort.abort(interruption);
+  await assert.rejects(waiting, (error) => error === interruption);
+  assert.equal(enteredDelay, true);
+  assert.equal(cleared, timerToken);
+  assert.equal(getEventListeners(abort.signal, 'abort').length, 0);
 });
 
 test('queued cancellation is safe and terminal cancellation is idempotent', async () => {
@@ -236,7 +294,7 @@ test('executor failure cannot steal cancellation terminal ownership', async () =
   const completion = new Promise((resolve, reject) => { rejectCompletion = () => reject(new Error('stopped')); });
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
-    setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-cancel-race', stateRevision: 1 }), waitForCompletion: () => { signalWaitStarted(); return completion; },
+    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-cancel-race', stateRevision: 1 }), waitForCompletion: () => { signalWaitStarted(); return completion; },
     readSession: async () => ({}), close: async () => {},
   };
   const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' });
@@ -250,13 +308,163 @@ test('executor failure cannot steal cancellation terminal ownership', async () =
   assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
 });
 
+test('foreground interruption after an accepted send stops exactly once and durably cancels without a result', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0; let waitStarted = () => {};
+  const waiting = new Promise((resolve) => { waitStarted = () => resolve(undefined); });
+  const completion = new Promise(() => {});
+  const interruption = new PluginError('JOB_INTERRUPTED', 'interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-interrupted' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-interrupted', stateRevision: 4 }),
+    waitForCompletion: () => { waitStarted(); return completion; },
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-interrupted'); stops += 1; }, close: async () => {},
+  };
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal });
+  await waiting; controller.abort(interruption);
+  await assert.rejects(execution, (error) => error === interruption);
+  const persisted = await store.readJob(workspace, job.id);
+  assert.equal(stops, 1); assert.equal(persisted.status, 'cancelled'); assert.ok(persisted.finishedAt);
+  assert.equal(persisted.resultArtifact, undefined);
+});
+
+test('send transport rejection after abort preserves the interruption and stops exactly once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0;
+  const interruption = new PluginError('JOB_INTERRUPTED', 'send interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-send-reject' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => { controller.abort(interruption); throw new Error('transport closed after abort'); },
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-send-reject'); stops += 1; }, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal }), (error) => error === interruption);
+  const persisted = await store.readJob(workspace, job.id);
+  assert.equal(stops, 1); assert.equal(persisted.status, 'cancelled'); assert.equal(persisted.resultArtifact, undefined);
+});
+
+test('foreground interruption keeps running on stop failure, bounds the error, and rethrows the interruption', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let waitStarted = () => {};
+  const waiting = new Promise((resolve) => { waitStarted = () => resolve(undefined); });
+  const interruption = new PluginError('JOB_INTERRUPTED', 'interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-stop-refused' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-stop-refused', stateRevision: 5 }), waitForCompletion: () => { waitStarted(); return new Promise(() => {}); },
+    stopSession: async () => { throw new Error(`refused-${'x'.repeat(4_000)}`); }, close: async () => {},
+  };
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal });
+  await waiting; controller.abort(interruption);
+  await assert.rejects(execution, (error) => error === interruption);
+  const persisted = await store.readJob(workspace, job.id);
+  assert.equal(persisted.status, 'running'); assert.match(persisted.lastCancelError, /^refused-/);
+  assert.ok(Buffer.byteLength(persisted.lastCancelError) <= 2_048); assert.equal(persisted.finishedAt, undefined);
+});
+
+test('completion that wins the signal race remains successful', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0;
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-completion-wins' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-completion-wins', stateRevision: 6 }), waitForCompletion: async () => {},
+    readSession: async () => { controller.abort(new PluginError('JOB_INTERRUPTED', 'late')); return { messages: [{ info: { role: 'assistant', messageId: 'assistant-completion-wins', parentMessageId: 'input-completion-wins' }, parts: [{ type: 'text', text: 'done' }] }] }; },
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  };
+  const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal });
+  assert.equal(result.job.status, 'succeeded'); assert.equal(stops, 0);
+  assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+});
+
+test('an interruption before session creation is observed at the safe boundary and cancels the queued job', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'early'); controller.abort(interruption); let creates = 0;
+  const client = { createSession: async () => { creates += 1; }, close: async () => {} };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal }), (error) => error === interruption);
+  assert.equal(creates, 0); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
+test('session creation completion observes abort before configuration and stops the known session once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let permissions = 0; let stops = 0;
+  const interruption = new PluginError('JOB_INTERRUPTED', 'create interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    createSession: async () => { controller.abort(interruption); return { session: { sessionId: 'zs-create-abort' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }; },
+    setPermissionHandler: () => { permissions += 1; }, subscribe: silentSubscribe,
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-create-abort'); stops += 1; }, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', signal: controller.signal }), (error) => error === interruption);
+  assert.equal(permissions, 0); assert.equal(stops, 1);
+  assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
+test('resume transport rejection after abort preserves the interruption and stops the known session once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0;
+  const interruption = new PluginError('JOB_INTERRUPTED', 'resume interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    resumeSession: async () => { controller.abort(interruption); throw new Error('resume transport closed'); },
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-resume-abort'); stops += 1; }, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', resumeSessionId: 'zs-resume-abort', signal: controller.signal }), (error) => error === interruption);
+  assert.equal(stops, 1); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
+test('model RPC rejection after abort preserves the interruption and stops the known session once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0;
+  const interruption = new PluginError('JOB_INTERRUPTED', 'model interrupted', { category: 'interruption', remedy: 'retry' });
+  const selectedModel = { providerId: 'p', modelId: 'new' };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-model-abort' }, settings: { model: { current: { providerId: 'p', modelId: 'old' }, available: [] } }, messages: [] }),
+    subscribe: silentSubscribe, setModel: async () => { controller.abort(interruption); throw new Error('model transport closed'); },
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-model-abort'); stops += 1; }, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', model: selectedModel, signal: controller.signal }), (error) => error === interruption);
+  assert.equal(stops, 1); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
+test('thought RPC rejection after abort preserves the interruption and stops the known session once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const controller = new AbortController(); let stops = 0;
+  const interruption = new PluginError('JOB_INTERRUPTED', 'thought interrupted', { category: 'interruption', remedy: 'retry' });
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-thought-abort' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    subscribe: silentSubscribe, setThoughtLevel: async () => { controller.abort(interruption); throw new Error('thought transport closed'); },
+    stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-thought-abort'); stops += 1; }, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', effort: 'high', signal: controller.signal }), (error) => error === interruption);
+  assert.equal(stops, 1); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+});
+
+test('interruptions are observed immediately before resume and send RPC boundaries', async () => {
+  {
+    const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'before resume'); let resumes = 0;
+    const client = { resumeSession: async () => { resumes += 1; }, close: async () => {} };
+    await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', resumeSessionId: 'zs-resume', signal: controller.signal, onBeforeResume: async () => controller.abort(interruption) }), (error) => error === interruption);
+    assert.equal(resumes, 0); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+  }
+  {
+    const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'before send'); let sends = 0; let stops = 0;
+    const wrapped = { ...store, transitionJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,any>} */ patch = {}) => { const result = await store.transitionJob(workspaceArg, jobId, expected, next, patch); if (next === 'running' && patch.zcodeSessionId) controller.abort(interruption); return result; } };
+    const client = {
+      createSession: async () => ({ session: { sessionId: 'zs-before-send' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+      setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => { sends += 1; }, stopSession: async (/** @type {string} */ sessionId) => { assert.equal(sessionId, 'zs-before-send'); stops += 1; }, close: async () => {},
+    };
+    await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', signal: controller.signal }), (error) => error === interruption);
+    assert.equal(sends, 0); assert.equal(stops, 1); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled');
+  }
+});
+
 test('executor persists the accepted turn boundary and worker identity before startup acknowledgement', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   /** @type {any} */
   let acknowledged = null;
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-boundary' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [{ info: { messageId: 'before-1' } }] }),
-    setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-boundary', stateRevision: 19 }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-boundary', stateRevision: 19 }),
     waitForCompletion: async () => { throw new Error('simulated worker crash after acknowledgement'); }, stopSession: async () => {}, close: async () => {},
   };
   const workerLeaseId = 'a'.repeat(64);
@@ -266,12 +474,161 @@ test('executor persists the accepted turn boundary and worker identity before st
   const persisted = await store.readJob(workspace, job.id); assert.equal(persisted.status, 'failed'); assert.equal(persisted.inputId, 'input-boundary'); assert.equal(persisted.childPid, 4321); assert.equal(persisted.workerLeaseId, workerLeaseId);
 });
 
+test('executor reports only same-session progress and drains persistence before success', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {string[]} */
+  const lines = [];
+  /** @type {any[]} */
+  const persisted = [];
+  /** @type {string[]} */
+  const order = [];
+  /** @type {null|((message:any)=>void)} */ let handler = null; let unsubscribes = 0; let closes = 0; /** @type {null|(()=>void)} */ let intervalCallback = null; let cleared = 0;
+  const wrapped = {
+    ...store,
+    updateJobProgress: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {any} */ event) => {
+      order.push(`persist:${event.phase}`); persisted.push(event);
+      await new Promise((resolve) => setImmediate(resolve));
+      return store.updateJobProgress(workspaceArg, jobId, event);
+    },
+    transitionJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => {
+      if (next === 'succeeded') {
+        order.push('transition:succeeded');
+        if (handler) handler(notification('zs-progress', 'api_retry', 5));
+      }
+      return store.transitionJob(workspaceArg, jobId, expected, next, patch);
+    },
+  };
+  const notification = (/** @type {string} */ sessionId, /** @type {string} */ reason, /** @type {number} */ revision) => ({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId, revision, reason, patch: {} } });
+  const emit = (/** @type {any} */ message) => { if (!handler) throw new Error('progress handler missing'); handler(message); };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-progress' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {},
+    subscribe: (/** @type {(message:any)=>void} */ subscriber) => { handler = subscriber; return () => { unsubscribes += 1; handler = null; }; },
+    send: async () => { emit(notification('zs-progress', 'tool_call_result', 1)); return { inputId: 'input-progress', stateRevision: 1 }; },
+    waitForCompletion: async () => {
+      emit(notification('zs-sibling', 'tool_call_started', 2));
+      emit(notification('zs-progress', 'model_streaming', 2));
+      emit(notification('zs-progress', 'tool_call_started', 3));
+      emit(notification('zs-progress', 'prompt_completed', 4));
+    },
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-progress', parentMessageId: 'input-progress' }, parts: [{ type: 'text', text: 'done' }] }] }),
+    close: async () => { closes += 1; throw new Error('close refused after success'); },
+  };
+  const result = await executeJob({
+    job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task',
+    progressWriter: (line) => lines.push(line),
+    progressDependencies: {
+      now: () => new Date().toISOString(),
+      setInterval: (callback) => { intervalCallback = callback; return { unref() {} }; },
+      clearInterval: () => { cleared += 1; },
+    },
+  });
+  assert.equal(result.job.status, 'succeeded'); assert.equal(typeof intervalCallback, 'function');
+  assert.deepEqual(lines, [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode completed a tool call.\n',
+    '[zcode] ZCode is generating a response.\n',
+    '[zcode] ZCode started a tool call.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
+  ]);
+  assert.deepEqual(persisted.map((event) => event.message), lines.map((line) => line.slice(8, -1)));
+  assert.ok(order.lastIndexOf('persist:finalizing') < order.indexOf('transition:succeeded'));
+  assert.equal(order.includes('persist:waiting'), false);
+  assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+  assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
+});
+
+test('slow send has no progress side effects until accepted', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {string[]} */
+  const lines = [];
+  let intervalCalls = 0; let fireInterval = () => {};
+  /** @type {(value:any)=>void} */ let resolveSend = () => {};
+  /** @type {()=>void} */ let signalSendStarted = () => {};
+  const sendStarted = new Promise((resolve) => { signalSendStarted = () => resolve(undefined); });
+  const sendCompletion = new Promise((resolve) => { resolveSend = resolve; });
+  let currentTime = new Date().toISOString();
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-slow-send' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => { signalSendStarted(); return sendCompletion; }, waitForCompletion: async () => {},
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-slow-send', parentMessageId: 'input-slow-send' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+  };
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line), progressDependencies: { now: () => currentTime, setInterval: (callback) => { intervalCalls += 1; fireInterval = callback; return { unref() {} }; }, clearInterval: () => {} } });
+  await sendStarted;
+  currentTime = new Date(Date.parse(currentTime) + 21_000).toISOString(); fireInterval();
+  assert.equal(intervalCalls, 0); assert.deepEqual(lines, []);
+  const beforeAccepted = await store.readJob(workspace, job.id); assert.equal(beforeAccepted.phase, undefined); assert.equal(beforeAccepted.progressPreview, undefined);
+  currentTime = new Date().toISOString(); resolveSend({ inputId: 'input-slow-send', stateRevision: 1 });
+  assert.equal((await execution).job.status, 'succeeded'); assert.match(lines[0], /started the delegated turn/);
+});
+
+test('rejected send never activates progress or heartbeat', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {string[]} */
+  const lines = [];
+  let intervalCalls = 0;
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-rejected-send' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => { throw new Error('send rejected'); }, stopSession: async () => {}, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line), progressDependencies: { now: () => new Date().toISOString(), setInterval: () => { intervalCalls += 1; return { unref() {} }; }, clearInterval: () => {} } }), /send rejected/);
+  const failed = await store.readJob(workspace, job.id);
+  assert.equal(intervalCalls, 0); assert.deepEqual(lines, []); assert.equal(failed.status, 'failed'); assert.equal(failed.phase, undefined); assert.equal(failed.progressPreview, undefined);
+});
+
+test('writer failure still persists progress and fails with a stable progress error', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {any[]} */
+  const persisted = [];
+  const wrapped = { ...store, updateJobProgress: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {any} */ event) => { persisted.push(event); return store.updateJobProgress(workspaceArg, jobId, event); } };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-writer-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-writer-failure', stateRevision: 1 }), waitForCompletion: async () => {},
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-writer-failure', parentMessageId: 'input-writer-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: () => { throw new Error('stderr closed'); } }), (error) => error instanceof PluginError && error.code === 'ZCODE_PROGRESS_FAILED');
+  assert.ok(persisted.some((event) => event.message === 'ZCode started the delegated turn.'));
+  assert.equal((await store.readJob(workspace, job.id)).status, 'failed');
+});
+
+test('cleanup failures preserve the primary PluginError envelope and close once', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const primary = new PluginError('PRIMARY_STABLE', 'primary failure', { category: 'protocol', remedy: 'keep this remedy' }); let closes = 0;
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-primary-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-primary-failure', stateRevision: 1 }),
+    waitForCompletion: async () => { throw primary; }, stopSession: async () => {}, close: async () => { closes += 1; throw new Error('close is advisory'); },
+  };
+  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: () => { throw new Error('writer cleanup failed'); } }).catch((error) => error);
+  assert.equal(caught, primary);
+  assert.deepEqual((await import('../scripts/lib/render.mjs')).errorEnvelope(caught), { error: { code: 'PRIMARY_STABLE', category: 'protocol', message: 'primary failure', remedy: 'keep this remedy', details: {} } });
+  assert.equal(closes, 1);
+});
+
+test('executor failure still unsubscribes, stops heartbeat, and closes the client', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  let handler = null; let unsubscribes = 0; let cleared = 0; let closes = 0;
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-progress-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    setPermissionHandler: () => {}, subscribe: (/** @type {(message:any)=>void} */ subscriber) => { handler = subscriber; return () => { unsubscribes += 1; handler = null; }; },
+    send: async () => ({ inputId: 'input-progress-failure', stateRevision: 1 }),
+    waitForCompletion: async () => { throw new Error('progress wait failed'); }, stopSession: async () => {}, close: async () => { closes += 1; },
+  };
+  await assert.rejects(executeJob({
+    job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: () => {},
+    progressDependencies: { now: () => new Date().toISOString(), setInterval: () => ({ unref() {} }), clearInterval: () => { cleared += 1; } },
+  }), /progress wait failed/);
+  assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
+});
+
 test('accepted send with boundary persistence failure requires remote stop proof before releasing the guard', async () => {
   for (const stopSucceeds of [true, false]) {
     const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0;
     const boundaryError = new Error('boundary fsync refused');
     const wrapped = /** @type {typeof store} */ ({ ...store, transitionJob: async (workspaceArg, jobId, expectedStatuses, nextStatus, patch = {}) => { if (patch.inputId) throw boundaryError; return store.transitionJob(workspaceArg, jobId, expectedStatuses, nextStatus, patch); } });
-    const client = { createSession: async () => ({ session: { sessionId: 'zs-boundary-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, send: async () => ({ inputId: 'accepted-not-durable', stateRevision: 2 }), stopSession: async () => { stops += 1; if (!stopSucceeds) throw new Error('stop not acknowledged'); }, close: async () => {} };
+    const client = { createSession: async () => ({ session: { sessionId: 'zs-boundary-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'accepted-not-durable', stateRevision: 2 }), stopSession: async () => { stops += 1; if (!stopSucceeds) throw new Error('stop not acknowledged'); }, close: async () => {} };
     await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' }), boundaryError);
     const persisted = await store.readJob(workspace, job.id); assert.equal(stops, 1); assert.equal(persisted.status, stopSucceeds ? 'failed' : 'running');
     if (!stopSucceeds) { assert.match(persisted.lastCancelError, /stop not acknowledged/); await assert.rejects(store.reserveJob({ workspace, ...reservation, ownerTurnId: 'later' }), { code: 'WRITABLE_JOB_EXISTS' }); }
@@ -281,7 +638,7 @@ test('accepted send with boundary persistence failure requires remote stop proof
 test('wait and read ambiguity retain the running guard when remote stop is unacknowledged', async () => {
   for (const stage of ['wait', 'read']) {
     const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); let stops = 0;
-    const client = { createSession: async () => ({ session: { sessionId: `zs-${stage}-failure` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, send: async () => ({ inputId: `input-${stage}`, stateRevision: 3 }), waitForCompletion: async () => { if (stage === 'wait') throw new Error('wait protocol ambiguous'); }, readSession: async () => { throw new Error('read protocol ambiguous'); }, stopSession: async () => { stops += 1; throw new Error(`${stage} stop refused`); }, close: async () => {} };
+    const client = { createSession: async () => ({ session: { sessionId: `zs-${stage}-failure` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: `input-${stage}`, stateRevision: 3 }), waitForCompletion: async () => { if (stage === 'wait') throw new Error('wait protocol ambiguous'); }, readSession: async () => { throw new Error('read protocol ambiguous'); }, stopSession: async () => { stops += 1; throw new Error(`${stage} stop refused`); }, close: async () => {} };
     await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }), new RegExp(`${stage} protocol ambiguous`));
     const persisted = await store.readJob(workspace, job.id); assert.equal(stops, 1, stage); assert.equal(persisted.status, 'running', stage); assert.match(persisted.lastCancelError, new RegExp(`${stage} stop refused`));
   }
@@ -289,7 +646,7 @@ test('wait and read ambiguity retain the running guard when remote stop is unack
 
 test('artifact directory fsync failure fails the job before success', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
-  const client = { createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-artifact-failure', stateRevision: 1 }), waitForCompletion: async () => ({}), readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-artifact', parentMessageId: 'input-artifact-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {} };
+  const client = { createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-artifact-failure', stateRevision: 1 }), waitForCompletion: async () => ({}), readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-artifact', parentMessageId: 'input-artifact-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {} };
   const error = Object.assign(new Error('disk sync failed'), { code: 'EIO' });
   await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', syncDirectory: async () => { throw error; } }), { code: 'ARTIFACT_WRITE_FAILED' });
   assert.equal((await store.readJob(workspace, job.id)).status, 'failed');
