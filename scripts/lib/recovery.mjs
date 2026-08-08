@@ -7,6 +7,7 @@ import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 const REMOTE_ACTIVE = new Set(['running', 'waiting']);
+const CONTROL_CHANNEL_UNAVAILABLE = new Set(['ZCODE_BROKER_PROTOCOL_UNAVAILABLE', 'ZCODE_DISCONNECTED']);
 export const LEGACY_QUEUED_STALE_MS = 5 * 60_000;
 
 /** Hold the exact production worker identity for its full lifetime. @param {{dataRoot:string,workspace:string,jobId:string,workerLeaseId:string,timeoutMs?:number}} input @param {()=>Promise<any>} operation */
@@ -112,22 +113,36 @@ async function settleSelectedJob(input) {
 /** @param {any} input @param {any} job */
 async function reconcileOrphan(input, job) {
   let client;
+  if (job.status === 'queued') return failJob(input, job, recoveryError('Queued worker reservation is orphaned.'));
+  if (typeof job.zcodeSessionId !== 'string') return failJob(input, job, recoveryError('Worker exited before a remote session was accepted.'));
+  const ownerId = ownerIdForSession(job.ownerSessionId);
   try {
-    if (job.status === 'queued') return failJob(input, job, recoveryError('Queued worker reservation is orphaned.'));
-    if (typeof job.zcodeSessionId !== 'string') return failJob(input, job, recoveryError('Worker exited before a remote session was accepted.'));
-    const ownerId = ownerIdForSession(job.ownerSessionId);
     await (input.reconcileOwnership ?? reconcileBrokerOwnership)({ dataRoot: input.dataRoot, workspace: input.workspace, ownerId, ownedSessionIds: [job.zcodeSessionId] });
+  } catch (error) {
+    return retainAfterStopFailure(input, job, error);
+  }
+  try {
     client = await input.createClient(job, ownerId);
+  } catch (error) {
+    if (isInterruption(error)) throw error;
+    return input.intent === 'scavenge'
+      ? failJob(input, job, unavailableOrphanError('reservation-time recovery'))
+      : retainAfterStopFailure(input, job, error);
+  }
+  if (!client) return input.intent === 'scavenge'
+    ? failJob(input, job, unavailableOrphanError('reservation-time recovery'))
+    : retainAfterStopFailure(input, job, recoveryError('The ZCode recovery client is unavailable.'));
+  try {
     let listed;
     try { listed = await client.listSessions(); }
-    catch (error) { return stopThenSettle(input, job, client, error); }
+    catch (error) { return input.intent === 'scavenge' && controlChannelUnavailable(error) ? failJob(input, job, unavailableOrphanError('reservation-time recovery')) : stopThenSettle(input, job, client, error); }
     if (!Array.isArray(listed?.sessions)) return stopThenSettle(input, job, client, recoveryError('ZCode session listing is malformed during recovery.'));
     if (!listed.sessions.some((/** @type {any} */ session) => session.sessionId === job.zcodeSessionId)) return failJob(input, job, recoveryError('ZCode session is missing during recovery.'));
     if (job.command === 'transfer') return stopThenSettle(input, job, client, recoveryError('Transfer worker exited before local finalization.'));
     if (!hasBoundary(job)) return stopThenSettle(input, job, client, recoveryError('The durable turn boundary is incomplete.'));
     let snapshot;
     try { snapshot = await client.readSession(job.zcodeSessionId); }
-    catch (error) { return stopThenSettle(input, job, client, error); }
+    catch (error) { return input.intent === 'scavenge' && controlChannelUnavailable(error) ? failJob(input, job, unavailableOrphanError('reservation-time recovery')) : stopThenSettle(input, job, client, error); }
     if (!Number.isSafeInteger(snapshot?.runtime?.stateRevision) || snapshot.runtime.stateRevision < job.startRevision) return stopThenSettle(input, job, client, recoveryError('ZCode recovery state is older than the accepted turn boundary.'));
     const remoteStatus = snapshot?.projection?.status;
     if (REMOTE_ACTIVE.has(remoteStatus)) {
@@ -143,7 +158,9 @@ async function reconcileOrphan(input, job) {
   } catch (error) {
     const current = await input.store.readJob(input.workspace, job.id);
     if (TERMINAL.has(current.status)) return current;
-    return client ? stopThenSettle(input, current, client, error) : retainAfterStopFailure(input, current, error);
+    return input.intent === 'scavenge' && controlChannelUnavailable(error)
+      ? failJob(input, current, unavailableOrphanError('reservation-time recovery'))
+      : stopThenSettle(input, current, client, error);
   } finally { await client?.close().catch(() => {}); }
 }
 
@@ -177,21 +194,24 @@ async function cancelQueuedJob(input, job) {
 async function settleEndedRemoteJob(input, job) {
   let client;
   try {
-    client = await input.createClient(job, ownerIdForSession(job.ownerSessionId));
-    if (!client) return retainAfterStopFailure(input, job, recoveryError('The existing ZCode broker is unavailable during SessionEnd settlement.'));
+    try { client = await input.createClient(job, ownerIdForSession(job.ownerSessionId)); }
+    catch { return failJob(input, job, unavailableOrphanError('SessionEnd')); }
+    if (!client) return failJob(input, job, unavailableOrphanError('SessionEnd'));
     let snapshot;
     try { snapshot = await client.readSession(job.zcodeSessionId); }
-    catch (error) { return retainAfterStopFailure(input, job, error); }
+    catch (error) { return controlChannelUnavailable(error) ? failJob(input, job, unavailableOrphanError('SessionEnd')) : retainAfterStopFailure(input, job, error); }
     const completed = await completeEndedJob(input, job, snapshot);
     if (completed) return completed;
     if (!REMOTE_ACTIVE.has(snapshot?.projection?.status)) return input.store.readJob(input.workspace, job.id);
     try { await client.stopSession(job.zcodeSessionId); }
-    catch (error) { return retainAfterStopFailure(input, job, error); }
+    catch (error) { return controlChannelUnavailable(error) ? failJob(input, job, unavailableOrphanError('SessionEnd')) : retainAfterStopFailure(input, job, error); }
     try { snapshot = await client.readSession(job.zcodeSessionId); }
     catch { return cancelJob(input, job); }
     return await completeEndedJob(input, job, snapshot) ?? cancelJob(input, job);
   } catch (error) {
-    return retainAfterStopFailure(input, job, error);
+    return controlChannelUnavailable(error)
+      ? failJob(input, job, unavailableOrphanError('SessionEnd'))
+      : retainAfterStopFailure(input, job, error);
   } finally { await client?.close().catch(() => {}); }
 }
 
@@ -222,7 +242,9 @@ async function completeJob(input, job, snapshot, invalidResult = 'fail') {
 /** @param {any} input @param {any} job @param {any} client @param {unknown} error */
 async function stopThenSettle(input, job, client, error) {
   const stopped = await stopRemote(job, client);
-  if (!stopped.ok) return retainAfterStopFailure(input, job, stopped.error);
+  if (!stopped.ok) return input.intent === 'scavenge' && controlChannelUnavailable(stopped.error)
+    ? failJob(input, job, unavailableOrphanError('reservation-time recovery'))
+    : retainAfterStopFailure(input, job, stopped.error);
   let snapshot;
   try { snapshot = await client.readSession(job.zcodeSessionId); } catch { /* acknowledged stop is sufficient for status-appropriate settlement */ }
   if (snapshot && hasBoundary(job) && Number.isSafeInteger(snapshot?.runtime?.stateRevision) && snapshot.runtime.stateRevision >= job.startRevision
@@ -253,6 +275,12 @@ async function conflictWinner(input, job, error) {
 }
 /** @param {unknown} error */
 function isTransitionConflict(error) { return error instanceof PluginError && ['JOB_TERMINAL', 'JOB_STATUS_CONFLICT'].includes(error.code); }
+/** @param {unknown} error */
+function isInterruption(error) { return error instanceof PluginError && error.code === 'JOB_INTERRUPTED'; }
+/** @param {unknown} error */
+function controlChannelUnavailable(error) { return error instanceof PluginError && CONTROL_CHANNEL_UNAVAILABLE.has(error.code); }
+/** @param {string} context */
+function unavailableOrphanError(context) { return recoveryError(`${context} lost the ZCode control channel; it is unavailable, so the orphan was archived.`); }
 /** @param {unknown} error */
 function recoveryMessage(error) { return boundedCancelMessage(error instanceof Error ? error.message : 'Unknown recovery failure'); }
 /** @param {string} message */
