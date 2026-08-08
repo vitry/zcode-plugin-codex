@@ -138,6 +138,7 @@ async function reservePublicJob(context, reservation) {
   try { return await context.store.reserveJob(reservation); }
   catch (error) {
     if (reservation.readOnly || !(error instanceof PluginError) || error.code !== 'WRITABLE_JOB_EXISTS') throw error;
+    context.signal?.throwIfAborted();
     await scavengeWritableJobs({
       store: context.store,
       dataRoot: context.dataRoot,
@@ -149,6 +150,7 @@ async function reservePublicJob(context, reservation) {
         return (context.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot: context.dataRoot, workspace: job.workspace, launch, ownerId: ownerIdForSession(job.ownerSessionId), env: context.env, ...managedWireOptionsForJob(job) });
       },
     });
+    context.signal?.throwIfAborted();
     return context.store.reserveJob(reservation);
   }
 }
