@@ -10,6 +10,8 @@ export const MANAGED_ROLE_SCHEMA_VERSION = 1;
 export const MANAGED_ROLE_DESCRIPTION = 'Runs the fixed ZCode Rescue forwarder in an isolated Codex subagent.';
 
 const PLACEHOLDER = '{{PLUGIN_ROOT}}';
+const MANAGED_SETUP_LEAF_PATHS = new Set(['features.hooks', 'hooks.state']);
+const MAX_ADDITIONAL_LEAVES = MANAGED_SETUP_LEAF_PATHS.size;
 
 /** @typedef {Record<string, any>} AnyRecord */
 /** @typedef {'prepared'|'role-written'|'config-written'|'receipt-prepared'} ManagedRoleJournalPhase */
@@ -451,14 +453,61 @@ function isManagedRoleJournal(value, rolePath) {
     || journal.receiptExisted && typeof journal.previousReceiptBase64 !== 'string'
     || !journal.previousRegistration || typeof journal.previousRegistration !== 'object'
     || !journal.previousMetadata || typeof journal.previousMetadata !== 'object'
-    || journal.previousAdditional !== undefined && !Array.isArray(journal.previousAdditional)
-    || journal.desiredAdditional !== undefined && !Array.isArray(journal.desiredAdditional)) return false;
+    || !validAdditionalJournalEntries(journal.previousAdditional, journal.desiredAdditional)) return false;
   if (['config-written', 'receipt-prepared'].includes(journal.phase) && (typeof journal.configVersion !== 'string' || !journal.configVersion)) return false;
   if (journal.phase === 'receipt-prepared') {
     if (!isSha256(journal.intendedReceiptSha256) || typeof journal.intendedReceiptBase64 !== 'string') return false;
     try { if (sha256(Buffer.from(journal.intendedReceiptBase64, 'base64')) !== journal.intendedReceiptSha256) return false; } catch { return false; }
   }
   return true;
+}
+
+/** @param {unknown} previousValue @param {unknown} desiredValue */
+function validAdditionalJournalEntries(previousValue, desiredValue) {
+  const previous = previousValue ?? [];
+  const desired = desiredValue ?? [];
+  if (!Array.isArray(previous) || !Array.isArray(desired)
+    || previous.length > MAX_ADDITIONAL_LEAVES || desired.length > MAX_ADDITIONAL_LEAVES) return false;
+  return validUniqueEntries(previous, (entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+      || !MANAGED_SETUP_LEAF_PATHS.has(entry.keyPath) || typeof entry.present !== 'boolean') return false;
+    const keys = Object.keys(entry).sort();
+    if (!entry.present) return sameKeys(keys, ['keyPath', 'present']);
+    return sameKeys(keys, ['keyPath', 'present', 'value']) && isPersistableJson(entry.value);
+  }) && validUniqueEntries(desired, (entry) => entry && typeof entry === 'object' && !Array.isArray(entry)
+    && MANAGED_SETUP_LEAF_PATHS.has(entry.keyPath)
+    && sameKeys(Object.keys(entry).sort(), ['keyPath', 'value']) && isPersistableJson(entry.value));
+}
+
+/** @param {AnyRecord[]} entries @param {(entry:AnyRecord)=>boolean} validate */
+function validUniqueEntries(entries, validate) {
+  const keys = new Set();
+  for (const entry of entries) {
+    if (!validate(entry) || keys.has(entry.keyPath)) return false;
+    keys.add(entry.keyPath);
+  }
+  return true;
+}
+
+/** @param {string[]} actual @param {string[]} expected */
+function sameKeys(actual, expected) { return actual.length === expected.length && actual.every((key, index) => key === expected[index]); }
+
+/** @param {unknown} value */
+function isPersistableJson(value) {
+  let nodes = 0;
+  /** @type {(current:unknown,depth:number)=>boolean} */
+  const visit = (current, depth) => {
+    if (++nodes > 10_000 || depth > 32) return false;
+    if (current === null || typeof current === 'string' || typeof current === 'boolean') return true;
+    if (typeof current === 'number') return Number.isFinite(current);
+    if (Array.isArray(current)) return current.length <= 1_000 && current.every((item) => visit(item, depth + 1));
+    if (!current || typeof current !== 'object') return false;
+    const prototype = Object.getPrototypeOf(current);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const entries = Object.entries(current);
+    return entries.length <= 1_000 && entries.every(([key, item]) => !hasControl(key) && visit(item, depth + 1));
+  };
+  return visit(value, 0);
 }
 
 /** @param {AnyRecord} config */

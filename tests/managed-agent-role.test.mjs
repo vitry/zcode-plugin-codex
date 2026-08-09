@@ -797,3 +797,39 @@ test('managed Rescue role reports precise recovery for a malformed transaction j
   assert.match(error.remedy, /restore.*remove.*transaction.*\$zcode:setup/is);
   assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
 });
+
+test('managed Rescue role rejects malformed additional journal entries without touching recovery evidence', async (t) => {
+  const cases = [
+    { name: 'empty previous entry', previousAdditional: [{}], desiredAdditional: [] },
+    { name: 'undefined desired key', previousAdditional: [], desiredAdditional: [{ value: true }] },
+    { name: 'control key', previousAdditional: [], desiredAdditional: [{ keyPath: 'features.hooks\nforeign', value: true }] },
+    { name: 'duplicate key', previousAdditional: [], desiredAdditional: [{ keyPath: 'features.hooks', value: true }, { keyPath: 'features.hooks', value: false }] },
+    { name: 'too many entries', previousAdditional: [], desiredAdditional: [{ keyPath: 'features.hooks', value: true }, { keyPath: 'hooks.state', value: {} }, { keyPath: 'features.hooks', value: false }] },
+    { name: 'unpersistable desired value', previousAdditional: [], desiredAdditional: [{ keyPath: 'features.hooks', value: undefined }] },
+    { name: 'missing present value', previousAdditional: [{ keyPath: 'features.hooks', present: true }], desiredAdditional: [] },
+    { name: 'value on absent previous leaf', previousAdditional: [{ keyPath: 'features.hooks', present: false, value: false }], desiredAdditional: [] },
+    { name: 'unexpected previous key', previousAdditional: [{ keyPath: 'features.hooks', present: false, extra: true }], desiredAdditional: [] },
+  ];
+  for (const entry of cases) await t.test(entry.name, async () => {
+    const ctx = await fixture();
+    await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
+    await writeFile(ctx.paths.rolePath, 'partial');
+    await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
+      schemaVersion: 1, phase: 'role-written', rolePath: ctx.paths.rolePath,
+      roleExisted: false, receiptExisted: false,
+      intendedSha256: createHash('sha256').update('partial').digest('hex'),
+      previousRegistration: { present: false }, previousMetadata: { present: false },
+      previousAdditional: entry.previousAdditional, desiredAdditional: entry.desiredAdditional,
+    })}\n`);
+    let writes = 0;
+    let error;
+    await assert.rejects(reconcileManagedRescueRole({
+      ...common(ctx, configState({})), batchWrite: async () => { writes += 1; return {}; }, readConfig: async () => configState({}),
+    }), (candidate) => { error = candidate; return candidate?.code === 'MANAGED_ROLE_ROLLBACK_INCOMPLETE'; });
+    assert.equal(writes, 0);
+    assert.equal(error.details.transactionPath, ctx.paths.transactionPath);
+    assert.deepEqual(error.details.remaining, [ctx.paths.transactionPath]);
+    assert.equal(await readFile(ctx.paths.rolePath, 'utf8'), 'partial');
+    assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+  });
+});
