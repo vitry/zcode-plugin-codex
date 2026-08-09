@@ -351,7 +351,7 @@ test('managed Rescue role rolls back all proven setup leaves after post-write sh
   ]);
 });
 
-test('managed Rescue role does not roll back config for a journal that never reached config mutation', async () => {
+test('managed Rescue role preserves evidence when role-written recovery finds unjournaled foreign config', async () => {
   const ctx = await fixture();
   await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
   await writeFile(ctx.paths.rolePath, 'partial');
@@ -370,8 +370,10 @@ test('managed Rescue role does not roll back config for a journal that never rea
   const foreign = configState({ role: roleConfig('/foreign.toml') });
   await assert.rejects(reconcileManagedRescueRole({
     ...common(ctx, foreign), batchWrite: async () => { writes += 1; return {}; }, readConfig: async () => foreign,
-  }), { code: 'MANAGED_ROLE_CONFLICT' });
+  }), { code: 'MANAGED_ROLE_ROLLBACK_INCOMPLETE' });
   assert.equal(writes, 0);
+  assert.equal((await stat(ctx.paths.rolePath)).isFile(), true);
+  assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
 });
 
 test('managed Rescue role rejects unsafe symlink installation paths', async () => {
@@ -491,10 +493,11 @@ test('managed Rescue role rolls back an applied config write with the current se
   await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
 });
 
-test('managed Rescue role never rolls back foreign config after an ambiguous applied-write failure', async () => {
+test('managed Rescue role preserves all recovery evidence for mixed config after an ambiguous applied-write failure', async () => {
   const ctx = await fixture();
   let current = configState({});
   let writes = 0;
+  let error;
   await assert.rejects(reconcileManagedRescueRole({
     ...common(ctx, current),
     batchWrite: async () => {
@@ -503,9 +506,89 @@ test('managed Rescue role never rolls back foreign config after an ambiguous app
       throw Object.assign(new Error('response lost after foreign write won'), { code: 'CODEX_CONFIG_REQUEST_FAILED' });
     },
     readConfig: async () => current,
-  }), { code: 'MANAGED_ROLE_RECONCILE_FAILED' });
+  }), (candidate) => { error = candidate; return candidate?.code === 'MANAGED_ROLE_ROLLBACK_INCOMPLETE'; });
   assert.equal(writes, 1);
   assert.equal(current.config.agents[MANAGED_ROLE_NAME].description, 'foreign concurrent role');
+  assert.equal((await stat(ctx.paths.rolePath)).isFile(), true);
+  assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+  assert.ok(error.details.remaining.includes(ctx.paths.rolePath));
+  assert.ok(error.details.remaining.includes(ctx.paths.receiptPath));
+  assert.ok(error.details.remaining.includes(ctx.configTarget.filePath));
+  assert.ok(error.details.remaining.includes(ctx.paths.transactionPath));
+});
+
+test('managed Rescue role treats partially applied or concurrently changed intended leaves as incomplete', async (t) => {
+  const cases = [
+    {
+      name: 'additional leaf',
+      additionalEdits: [{ keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' }],
+      change(config) { config.config.features.hooks = false; },
+    },
+    { name: 'spawn metadata', change(config) { config.config.features.multi_agent_v2.hide_spawn_agent_metadata = true; } },
+    { name: 'Role description', change(config) { config.config.agents[MANAGED_ROLE_NAME].description = 'concurrent description'; } },
+    { name: 'Role path', change(config) { config.config.agents[MANAGED_ROLE_NAME].config_file = '/concurrent.toml'; } },
+  ];
+  for (const entry of cases) await t.test(entry.name, async () => {
+    const ctx = await fixture();
+    let current = configState({});
+    let writes = 0;
+    await assert.rejects(reconcileManagedRescueRole({
+      ...common(ctx, current), additionalEdits: entry.additionalEdits,
+      batchWrite: async () => {
+        writes += 1;
+        current = configState({ role: roleConfig(ctx.paths.rolePath), version: 'v2' });
+        entry.change(current);
+        throw Object.assign(new Error('response lost after partial or concurrent mutation'), { code: 'CODEX_CONFIG_REQUEST_FAILED' });
+      },
+      readConfig: async () => current,
+    }), { code: 'MANAGED_ROLE_ROLLBACK_INCOMPLETE' });
+    assert.equal(writes, 1);
+    assert.equal((await stat(ctx.paths.rolePath)).isFile(), true);
+    assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+  });
+});
+
+test('managed Rescue role distinguishes exact previous absent, false, and unpersistable undefined leaves', async (t) => {
+  for (const prior of ['absent', 'false', 'undefined']) await t.test(prior, async () => {
+    const ctx = await fixture();
+    const current = configState({});
+    if (prior === 'absent') {
+      delete current.config.features.hooks;
+      delete current.config.features.multi_agent_v2.hide_spawn_agent_metadata;
+    } else if (prior === 'undefined') {
+      current.config.features.hooks = undefined;
+      current.config.features.multi_agent_v2.hide_spawn_agent_metadata = undefined;
+    }
+    let writes = 0;
+    const expectedCode = prior === 'undefined' ? 'MANAGED_ROLE_ROLLBACK_INCOMPLETE' : 'MANAGED_ROLE_RECONCILE_FAILED';
+    await assert.rejects(reconcileManagedRescueRole({
+      ...common(ctx, current), additionalEdits: [{ keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' }],
+      batchWrite: async () => { writes += 1; throw Object.assign(new Error('write not applied'), { code: 'CODEX_CONFIG_REQUEST_FAILED' }); },
+      readConfig: async () => current,
+    }), { code: expectedCode });
+    assert.equal(writes, 1);
+    if (prior === 'undefined') {
+      assert.equal((await stat(ctx.paths.rolePath)).isFile(), true);
+      assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+    } else {
+      await assert.rejects(readFile(ctx.paths.rolePath), { code: 'ENOENT' });
+      await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
+    }
+  });
+});
+
+test('managed Rescue role treats an invalid config reread as unprovable even when leaves appear absent', async () => {
+  const ctx = await fixture();
+  const initial = configState({});
+  delete initial.config.features.multi_agent_v2.hide_spawn_agent_metadata;
+  let current = initial;
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, initial),
+    batchWrite: async () => { current = {}; throw Object.assign(new Error('response lost'), { code: 'CODEX_CONFIG_REQUEST_FAILED' }); },
+    readConfig: async () => current,
+  }), { code: 'MANAGED_ROLE_ROLLBACK_INCOMPLETE' });
+  assert.equal((await stat(ctx.paths.rolePath)).isFile(), true);
+  assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
 });
 
 test('managed Rescue role recovers an interrupted owned transaction before retrying', async () => {

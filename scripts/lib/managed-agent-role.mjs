@@ -129,9 +129,9 @@ export async function reconcileManagedRescueRole(input) {
     } catch (cause) {
       if (!configMutated && journal.phase === 'role-written') {
         const detected = await detectAppliedConfig(input, prepared, journal);
-        configMutated = detected.mutated;
-        if (detected.expectedVersion !== null) writeVersion = detected.expectedVersion;
-        else if (configMutated) writeVersion = null;
+        if (detected.state === 'incomplete') throw incompleteAppliedConfigError(prepared, input);
+        configMutated = detected.state === 'applied-exact';
+        if (configMutated) writeVersion = detected.expectedVersion;
       }
       const recovery = await rollback({ prepared, input, journal, configMutated, expectedVersion: writeVersion });
       if (!recovery.complete) {
@@ -192,6 +192,10 @@ async function prepare(input, requireSafe) {
 /** @param {string} dataRoot @param {AnyRecord} paths */
 async function pathSafety(dataRoot, paths) {
   try {
+    // These checks reject static path confusion and cooperating lock/advisory
+    // races. The 0700 plugin-data boundary assumes no hostile same-UID process;
+    // Node and the bundled native module expose no cross-platform dirfd-relative
+    // create/rename primitive that could bind every later write to this inode.
     const rootStats = await lstat(dataRoot);
     if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) return { safe: false, reason: 'The plugin data root is not a real directory.' };
     const roleDirectory = join(dataRoot, 'agent-roles');
@@ -237,8 +241,9 @@ async function recoverInterruptedTransaction(prepared, input) {
   let recoveryVersion = journal.configVersion ?? input.configTarget.expectedVersion;
   if (!configMutated && journal.phase === 'role-written') {
     const detected = await detectAppliedConfig(input, prepared, journal);
-    configMutated = detected.mutated;
-    recoveryVersion = detected.expectedVersion;
+    if (detected.state === 'incomplete') throw incompleteAppliedConfigError(prepared, input);
+    configMutated = detected.state === 'applied-exact';
+    if (configMutated) recoveryVersion = detected.expectedVersion;
   }
   const recovery = await rollback({ prepared, input, journal, configMutated, expectedVersion: recoveryVersion });
   if (!recovery.complete) throw rollbackError(prepared, input, [...recovery.remaining, prepared.paths.transactionPath], 'Could not recover the interrupted managed Role transaction.');
@@ -283,9 +288,39 @@ async function rollback({ prepared, input, journal, configMutated, expectedVersi
 /** @param {AnyRecord} input @param {AnyRecord} prepared @param {ManagedRoleJournal} journal */
 async function detectAppliedConfig(input, prepared, journal) {
   let currentConfig;
-  try { currentConfig = await input.readConfig(); } catch { return { mutated: true, expectedVersion: null }; }
-  if (!configLeavesOwned(currentConfig, input.configTarget.filePath, prepared.paths.rolePath, journal.desiredAdditional ?? [])) return { mutated: false, expectedVersion: null };
-  return { mutated: true, expectedVersion: selectedTargetVersion(currentConfig, input.configTarget.filePath) };
+  try { currentConfig = await input.readConfig(); } catch { return { state: 'incomplete', expectedVersion: null }; }
+  if (!validConfigRead(currentConfig)) return { state: 'incomplete', expectedVersion: null };
+  if (configLeavesOwned(currentConfig, input.configTarget.filePath, prepared.paths.rolePath, journal.desiredAdditional ?? [])) {
+    const expectedVersion = selectedTargetVersion(currentConfig, input.configTarget.filePath);
+    return expectedVersion === null ? { state: 'incomplete', expectedVersion: null } : { state: 'applied-exact', expectedVersion };
+  }
+  if (configLeavesMatchPrevious(currentConfig, input.configTarget.filePath, journal)) return { state: 'not-applied', expectedVersion: null };
+  return { state: 'incomplete', expectedVersion: null };
+}
+
+/** @param {AnyRecord} config @param {string} filePath @param {ManagedRoleJournal} journal */
+function configLeavesMatchPrevious(config, filePath, journal) {
+  return leafMatches(targetRegistration(config, filePath), journal.previousRegistration)
+    && leafMatches(targetMetadata(config, filePath), journal.previousMetadata)
+    && (journal.previousAdditional ?? []).every((entry) => leafMatches(targetLeaf(config, filePath, entry.keyPath), entry));
+}
+
+/** @param {AnyRecord} current @param {AnyRecord} expected */
+function leafMatches(current, expected) {
+  if (typeof expected?.present !== 'boolean' || current.present !== expected.present) return false;
+  if (!expected.present) return true;
+  if (!Object.hasOwn(expected, 'value') || expected.value === undefined) return false;
+  return JSON.stringify(current.value) === JSON.stringify(expected.value);
+}
+
+/** @param {AnyRecord} prepared @param {AnyRecord} input */
+function incompleteAppliedConfigError(prepared, input) {
+  return rollbackError(prepared, input, [
+    prepared.paths.rolePath,
+    prepared.paths.receiptPath,
+    input.configTarget.filePath,
+    prepared.paths.transactionPath,
+  ], 'Managed Rescue Role config state is mixed or unprovable; recovery evidence was preserved.');
 }
 
 /** @param {AnyRecord} config @param {string} filePath */
