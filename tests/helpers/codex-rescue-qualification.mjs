@@ -203,12 +203,111 @@ function finalExecMessage(frames) {
 function extractCommands(input) {
   const source = boundedString(input);
   if (!source) return [];
-  const matches = [...source.matchAll(/\bcmd\s*:\s*("(?:[^"\\]|\\.)*")/gu)];
-  const commands = [];
-  for (const match of matches) {
-    try { commands.push(JSON.parse(match[1])); } catch { mismatch('child-command-encoding', 'The structured exec cmd string is malformed.'); }
+  const prefix = 'const r = await tools.exec_command(';
+  const suffixes = [
+    ');\ntext(r.output);\n',
+    '); text(r.output);\n',
+    ');\ntext(r.output);\nif (r.session_id) text(`SESSION_ID=${r.session_id}`);\n',
+  ];
+  const suffix = suffixes.find((candidate) => source.endsWith(candidate));
+  if (!source.startsWith(prefix) || !suffix || source.indexOf('tools.exec_command', prefix.length) !== -1) {
+    mismatch('child-command-encoding', 'The exec evidence does not match one captured 0.147 wrapper.');
   }
-  return commands;
+  const objectSource = source.slice(prefix.length, -suffix.length);
+  const values = parseTopLevelExecObject(objectSource);
+  return typeof values.get('cmd') === 'string' ? [values.get('cmd')] : [];
+}
+
+function parseTopLevelExecObject(source) {
+  let offset = skipWhitespace(source, 0);
+  if (source[offset] !== '{') mismatch('child-command-encoding', 'The captured exec argument must be one object literal.');
+  offset += 1;
+  const values = new Map();
+  let propertyExpected = false;
+  while (true) {
+    offset = skipWhitespace(source, offset);
+    if (source[offset] === '}') {
+      if (propertyExpected) mismatch('child-command-encoding', 'The captured exec argument has a trailing comma.');
+      offset += 1;
+      break;
+    }
+    const keyResult = readObjectKey(source, offset);
+    const key = keyResult.value;
+    offset = skipWhitespace(source, keyResult.offset);
+    if (source[offset] !== ':') mismatch('child-command-encoding', 'The captured exec argument has a malformed property.');
+    if (values.has(key)) mismatch('child-command-encoding', 'The captured exec argument has a duplicate property.');
+    const valueResult = readJsonValue(source, offset + 1);
+    values.set(key, valueResult.value);
+    offset = skipWhitespace(source, valueResult.offset);
+    if (source[offset] === ',') { offset += 1; propertyExpected = true; continue; }
+    propertyExpected = false;
+    if (source[offset] !== '}') mismatch('child-command-encoding', 'The captured exec argument has unexpected trailing syntax.');
+  }
+  if (skipWhitespace(source, offset) !== source.length) mismatch('child-command-encoding', 'The captured exec argument contains more than one value.');
+  return values;
+}
+
+function readObjectKey(source, offset) {
+  if (source[offset] === '"') {
+    const token = readJsonStringToken(source, offset);
+    let value;
+    try { value = JSON.parse(token.value); } catch { mismatch('child-command-encoding', 'The captured exec argument has an invalid quoted property key.'); }
+    return { value, offset: token.offset };
+  }
+  const match = /^[A-Za-z_$][A-Za-z0-9_$]*/u.exec(source.slice(offset));
+  if (!match) mismatch('child-command-encoding', 'The captured exec argument has an unsupported property key.');
+  return { value: match[0], offset: offset + match[0].length };
+}
+
+function readJsonValue(source, offset) {
+  const start = skipWhitespace(source, offset);
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+  let cursor = start;
+  for (; cursor < source.length; cursor += 1) {
+    const character = source[cursor];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') { inString = true; continue; }
+    if (character === "'" || character === '`') mismatch('child-command-encoding', 'The captured exec argument uses an unsupported value literal.');
+    if (character === '{' || character === '[') { stack.push(character); continue; }
+    if (character === '}' || character === ']') {
+      if (stack.length === 0) {
+        if (character === '}') break;
+        mismatch('child-command-encoding', 'The captured exec argument has an unmatched delimiter.');
+      }
+      const opening = stack.pop();
+      if ((opening === '{') !== (character === '}')) mismatch('child-command-encoding', 'The captured exec argument has mismatched delimiters.');
+      continue;
+    }
+    if (character === ',' && stack.length === 0) break;
+  }
+  if (inString || stack.length > 0 || cursor === start) mismatch('child-command-encoding', 'The captured exec argument has an incomplete value.');
+  const raw = source.slice(start, cursor).trim();
+  let value;
+  try { value = JSON.parse(raw); } catch { mismatch('child-command-encoding', 'The captured exec argument value is not JSON.'); }
+  return { value, offset: cursor };
+}
+
+function readJsonStringToken(source, offset) {
+  let escaped = false;
+  for (let cursor = offset + 1; cursor < source.length; cursor += 1) {
+    const character = source[cursor];
+    if (escaped) { escaped = false; continue; }
+    if (character === '\\') { escaped = true; continue; }
+    if (character === '"') return { value: source.slice(offset, cursor + 1), offset: cursor + 1 };
+  }
+  mismatch('child-command-encoding', 'The captured exec argument has an unterminated property key.');
+}
+
+function skipWhitespace(source, offset) {
+  while (offset < source.length && /\s/u.test(source[offset])) offset += 1;
+  return offset;
 }
 
 function parseObject(value, code) {

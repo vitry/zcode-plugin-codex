@@ -122,6 +122,32 @@ test('fails linked evidence with a second child command', () => {
   );
 });
 
+test('accepts the captured unquoted-key 0.147 exec wrapper as an explicit legacy variant', () => {
+  const input = fixture();
+  input.rollouts[1][1] = structuredExecUnquoted(expectedCommand);
+  assert.equal(qualifyCodexRescueEvidence(input, options()).publicOutput, expectedPublicOutput);
+  input.rollouts[1][1] = structuredExecUnquotedInline(expectedCommand);
+  assert.equal(qualifyCodexRescueEvidence(input, options()).publicOutput, expectedPublicOutput);
+});
+
+test('rejects duplicate malformed nested and repeated exec command evidence', () => {
+  const cases = [
+    { source: `const r = await tools.exec_command({"cmd":${JSON.stringify(expectedCommand)},"cmd":"evil"});\ntext(r.output);\n`, code: 'child-command-encoding' },
+    { source: `const r = await tools.exec_command({"cmd":${JSON.stringify(expectedCommand)},});\ntext(r.output);\n`, code: 'child-command-encoding' },
+    { source: `const r = await tools.exec_command({"\\x":"bad","cmd":${JSON.stringify(expectedCommand)}});\ntext(r.output);\n`, code: 'child-command-encoding' },
+    { source: `const r = await tools.exec_command({"metadata":{"cmd":${JSON.stringify(expectedCommand)}},"cmd":"evil"});\ntext(r.output);\n`, code: 'child-command-mismatch' },
+    { source: `const a = await tools.exec_command({"cmd":${JSON.stringify(expectedCommand)}});\nconst r = await tools.exec_command({"cmd":${JSON.stringify(expectedCommand)}});\ntext(r.output);\n`, code: 'child-command-encoding' },
+  ];
+  for (const { source, code } of cases) {
+    const input = fixture();
+    input.rollouts[1][1].payload.input = source;
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
+    );
+  }
+});
+
 test('fails an observed but unsupported function_call exec_command shape', () => {
   const input = fixture();
   input.rollouts[1][1] = { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: expectedCommand }) } };
@@ -208,5 +234,13 @@ function fixture() {
 }
 
 function structuredExec(command) {
+  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-1', input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: '/repo' })});\ntext(r.output);\n` } };
+}
+
+function structuredExecUnquoted(command) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-1', input: `const r = await tools.exec_command({cmd:${JSON.stringify(command)},workdir:"/repo"});\ntext(r.output);\n` } };
+}
+
+function structuredExecUnquotedInline(command) {
+  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-1', input: `const r = await tools.exec_command({cmd:${JSON.stringify(command)},workdir:"/repo"}); text(r.output);\n` } };
 }
