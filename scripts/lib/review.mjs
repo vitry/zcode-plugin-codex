@@ -9,7 +9,7 @@ import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
 import { createJobController, withJobCancellationLock } from './job-control.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
-import { createConversationProgressDescriber } from './conversation-progress.mjs';
+import { createDeferredConversationProgressObserver } from './conversation-progress.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -43,7 +43,7 @@ export async function executeJob(input) {
   let sendAttempted = false; let remoteTerminalProven = false;
   /** @type {any} */
   let reporter;
-  /** @type {any} */ let conversationDescriber;
+  /** @type {any} */ let conversationObserver;
   let unsubscribeNotifications = () => {}; let unsubscribeConversation = async () => {};
   /** @type {unknown} */
   let primaryError;
@@ -53,7 +53,7 @@ export async function executeJob(input) {
   const cleanupProgress = async () => {
     if (progressCleaned) return;
     progressCleaned = true;
-    try { conversationDescriber?.markTerminal(); } catch { /* progress-only */ }
+    try { conversationObserver?.markTerminal(); } catch { /* progress-only */ }
     try { reporter?.close(); } catch { /* progress-only */ }
     try { Promise.resolve(unsubscribeConversation()).catch(() => {}); } catch { /* progress-only */ }
     try { unsubscribeNotifications(); } catch { /* progress-only */ }
@@ -80,23 +80,24 @@ export async function executeJob(input) {
     }, input.signal);
     const activeSessionId = /** @type {string} */ (sessionId ?? snapshot.session.sessionId);
     sessionId = activeSessionId;
-    let conversationSubscription;
-    if (typeof client.subscribeConversation === 'function') {
-      try {
-        conversationSubscription = await client.subscribeConversation(activeSessionId, { connectionId: `companion-${randomBytes(12).toString('hex')}`, clientMode: 'desktop-continuous' });
-        unsubscribeConversation = conversationSubscription.unsubscribe;
-        conversationDescriber = await createConversationProgressDescriber({ sessionId: activeSessionId, subscriptionId: conversationSubscription.subscriptionId, workspace });
-      } catch { conversationDescriber = undefined; }
-    }
+    conversationObserver = createDeferredConversationProgressObserver({ sessionId: activeSessionId, workspace });
     reporter = createProgressReporter({
       sessionId: activeSessionId,
       deferred: true,
       ...(input.progressWriter ? { write: input.progressWriter } : {}),
       persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
-      ...(conversationDescriber ? { describeNotification: conversationDescriber.observe } : {}),
+      describeNotification: conversationObserver.observe,
       ...input.progressDependencies,
     });
     try { unsubscribeNotifications = client.subscribe(reporter.observe); } catch { unsubscribeNotifications = () => {}; }
+    if (typeof client.subscribeConversation === 'function') {
+      try {
+        const conversationSubscription = await client.subscribeConversation(activeSessionId, { connectionId: `companion-${randomBytes(12).toString('hex')}`, clientMode: 'desktop-continuous' });
+        // Register cleanup before binding can perform any asynchronous work.
+        unsubscribeConversation = conversationSubscription.unsubscribe;
+        await conversationObserver.bind(conversationSubscription.subscriptionId);
+      } catch { conversationObserver.fail(); }
+    } else conversationObserver.fail();
     const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
     if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
     if (input.effort) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
@@ -115,7 +116,7 @@ export async function executeJob(input) {
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
     await waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
-    conversationDescriber?.markTerminal();
+    conversationObserver?.markTerminal();
     await cleanupProgress();
     const finalSnapshot = await client.readSession(activeSessionId);
     remoteTerminalProven = true;

@@ -58,7 +58,7 @@ function send(message) {
 }
 function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
 function conversationNotification({ sessionId, subscriptionId, deliveryKind, ordinal, deltas, topic = `conversation/${sessionId}` }) {
-  return { method: 'v4/conversation/frame', params: { wireVersion: 3, kind: 'complete', deliveryKind, logicalFrameId: `frame-${ordinal}`, logicalFrameOrdinal: ordinal, topic, subscriptionId, frame: { topic, subscriptionId, fromSeq: ordinal, toSeq: ordinal, sentAt: new Date().toISOString(), payload: { kind: 'deltas', deltas } } } };
+  return { method: 'v4/conversation/frame', params: { wireVersion: 3, kind: 'complete', deliveryKind, logicalFrameId: `frame-${ordinal}`, logicalFrameOrdinal: ordinal, topic, subscriptionId, frame: { topic, subscriptionId, fromSeq: ordinal, toSeq: ordinal, sentAt: 1_786_233_600_000, payload: { kind: 'deltas', deltas } } } };
 }
 
 function isUnsupportedRuntimePreferencesResponse(message, pending) {
@@ -169,9 +169,9 @@ input.on('line', async (line) => {
       if (process.env.FAKE_ZCODE_SYNC_BATCH !== 'stale-valid') send(response);
       const subscription = conversationSubscriptions.get(p.sessionId);
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1' && subscription) {
-        const base = { rowId: 41, turnId: 'turn-1', createdAt: '2026-08-09T00:00:00.000Z', createdAtSeq: 41, kind: 'toolCall', toolCallId: 'tool-command-1', toolName: 'Bash', input: { command: 'npm\ttest', reasoning: 'reasoning must stay private', brokerToken: 'capability must stay private' }, inputText: '{"command":"raw output"}', startedAt: '2026-08-09T00:00:00.000Z' };
+        const base = { rowId: 41, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 41, kind: 'toolCall', toolCallId: 'tool-command-1', toolName: 'Bash', input: { command: 'npm\ttest', reasoning: 'reasoning must stay private', brokerToken: 'capability must stay private' }, inputText: '{"command":"raw output"}', startedAt: 1_786_233_600_000 };
         send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 2, deltas: [{ op: 'row.upserted', row: { ...base, status: 'inputStreaming' } }] }));
-        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 3, deltas: [{ op: 'row.upserted', row: { ...base, status: 'success', endedAt: '2026-08-09T00:00:00.025Z', output: { text: 'raw output must stay private' } } }] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 3, deltas: [{ op: 'row.upserted', row: { ...base, status: 'success', endedAt: 1_786_233_600_025, output: { text: 'raw output must stay private' } } }] }));
         send(conversationNotification({ sessionId: p.sessionId, subscriptionId: 'foreign-subscription', deliveryKind: 'online', ordinal: 4, deltas: [{ op: 'row.upserted', row: { ...base, rowId: 42, toolCallId: 'foreign', input: { command: 'FOREIGN_SECRET' }, status: 'started' } }] }));
       }
       if (process.env.FAKE_ZCODE_PERMISSION === '1') {
@@ -204,8 +204,9 @@ input.on('line', async (line) => {
       if (process.env.FAKE_ZCODE_CONVERSATION_SUBSCRIBE_FAIL === '1') { send({ id: message.id, error: { code: -32601, message: 'unsupported conversation subscription' } }); break; }
       const sessionId = typeof p.topic === 'string' && p.topic.startsWith('conversation/') ? p.topic.slice('conversation/'.length) : '';
       const subscriptionId = `subscription-${sessionId}`; conversationSubscriptions.set(sessionId, subscriptionId);
+      if (process.env.FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'online', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 39, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 39, kind: 'toolCall', toolCallId: 'prebind', toolName: 'Bash', status: 'running', inputText: '{"command":"echo prebind"}', input: { command: 'echo prebind' }, startedAt: 1_786_233_600_000 } }] }));
       send({ id: message.id, result: { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1' } } });
-      if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 40, turnId: 'turn-1', createdAt: '2026-08-09T00:00:00.000Z', createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: '2026-08-09T00:00:00.000Z' } }] }));
+      if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 40, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: 1_786_233_600_000 } }] }));
       break;
     }
     case 'v4/conversation/unsubscribe':

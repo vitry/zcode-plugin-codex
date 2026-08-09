@@ -98,7 +98,8 @@ export class ZCodeClient {
       clientMode: options.clientMode,
     }), 'v4/conversation/subscribe');
     const ack = result.ack;
-    if (!plainObject(ack) || !boundedPublicIdentifier(ack.subscriptionId) || ack.mode !== 'snapshot' || !boundedPublicIdentifier(ack.logEpoch)) throw outputError('v4/conversation/subscribe');
+    if (!exactObjectKeys(result, ['ack']) || !plainObject(ack) || !exactObjectKeys(ack, ['subscriptionId', 'mode', 'logEpoch'])
+      || !boundedPublicIdentifier(ack.subscriptionId) || !['snapshot', 'resume'].includes(ack.mode) || !boundedPublicIdentifier(ack.logEpoch)) throw outputError('v4/conversation/subscribe');
     let unsubscribed = false;
     return {
       subscriptionId: ack.subscriptionId,
@@ -249,6 +250,8 @@ function plainObject(value) { return value !== null && typeof value === 'object'
 function nonEmpty(value) { return typeof value === 'string' && value.length > 0; }
 /** @param {unknown} value */
 function boundedPublicIdentifier(value) { return typeof value === 'string' && value.length > 0 && value.length <= 256 && ![...value].some((character) => { const code = character.codePointAt(0) ?? 0; return code <= 31 || code >= 127 && code <= 159; }); }
+/** @param {Record<string,any>} value @param {string[]} keys */
+function exactObjectKeys(value, keys) { const actual = Object.keys(value); return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
 function inputError() { return new PluginError('ZCODE_INPUT_INVALID', 'ZCode client input is invalid.', { category: 'validation', remedy: 'Provide only documented fields with valid runtime types.' }); }
 /** @param {unknown} value @param {string} method */
 function requireObjectResult(value, method) { if (!plainObject(value)) throw outputError(method); return value; }

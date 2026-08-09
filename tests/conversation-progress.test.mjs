@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { createConversationProgressDescriber, normalizePreview } from '../scripts/lib/conversation-progress.mjs';
+import { createConversationProgressDescriber, createDeferredConversationProgressObserver, normalizePreview } from '../scripts/lib/conversation-progress.mjs';
 import { conversationFrame, toolRow, turnRow } from './fixtures/conversation-progress-frames.mjs';
 
 const observedAt = '2026-08-09T00:00:01.000Z';
@@ -31,7 +31,7 @@ test('describes only allowlisted online tool and turn lifecycle fields', async (
     ['Grep', { pattern: 'needle' }, 'Searching files: needle.'],
     ['Glob', { pattern: '**/*.mjs' }, 'Finding files: **/*.mjs.'],
     ['WebSearch', { query: 'safe query' }, 'Searching the web: safe query.'],
-    ['Unknown\u0007Tool', { command: 'SECRET_COMMAND' }, 'Running a ZCode tool.'],
+    ['UnknownTool', { command: 'SECRET_COMMAND' }, 'Running tool: UnknownTool.'],
   ];
   let ordinal = 1;
   for (const [toolName, input, message] of cases) {
@@ -50,7 +50,7 @@ test('emits at most one meaningful start and terminal per tool and rejects stale
   const start = toolRow({ status: 'inputStreaming', input: { command: 'echo ok' } });
   assert.equal((await describer.observe(conversationFrame({ ordinal: 2, deltas: [start] }), observedAt)).length, 1);
   assert.equal((await describer.observe(conversationFrame({ ordinal: 3, deltas: [toolRow({ status: 'pendingApproval', input: { command: 'echo ok' } })] }), observedAt)).length, 0);
-  const terminal = await describer.observe(conversationFrame({ ordinal: 4, deltas: [toolRow({ status: 'success', input: { command: 'echo ok' }, endedAt: '2026-08-09T00:00:00.125Z' })] }), observedAt);
+  const terminal = await describer.observe(conversationFrame({ ordinal: 4, deltas: [toolRow({ status: 'success', input: { command: 'echo ok' }, endedAt: 1_786_233_600_125 })] }), observedAt);
   assert.equal(terminal[0].message, 'Command completed: echo ok (125ms).');
   assert.equal((await describer.observe(conversationFrame({ ordinal: 4, deltas: [start] }), observedAt)).length, 0);
   assert.equal((await describer.observe(conversationFrame({ ordinal: 5, subscriptionId: 'foreign', deltas: [start] }), observedAt)).length, 0);
@@ -65,7 +65,7 @@ test('serializes concurrent frames and latches a turn terminal state', async () 
   const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
   const [started, completed] = await Promise.all([
     describer.observe(conversationFrame({ ordinal: 1, deltas: [toolRow({ status: 'inputStreaming', input: { command: 'echo ordered' } })] }), observedAt),
-    describer.observe(conversationFrame({ ordinal: 2, deltas: [toolRow({ status: 'success', input: { command: 'echo ordered' }, endedAt: '2026-08-09T00:00:00.010Z' })] }), observedAt),
+    describer.observe(conversationFrame({ ordinal: 2, deltas: [toolRow({ status: 'success', input: { command: 'echo ordered' }, endedAt: 1_786_233_600_010 })] }), observedAt),
   ]);
   assert.equal(started[0].message, 'Running command: echo ordered.');
   assert.equal(completed[0].message, 'Command completed: echo ordered (10ms).');
@@ -102,4 +102,122 @@ test('canonical path containment rejects traversal outside paths and symlink esc
     assert.equal(events[0].message, 'Running tool: Read.');
     assert.doesNotMatch(JSON.stringify(events), /outside|secret|CHAIN|CAPABILITY|brokerToken/); ordinal += 1;
   }
+});
+
+test('accepts a new file only when its symlink ancestor canonically stays inside the workspace', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-')); await mkdir(join(workspace, 'real')); await symlink(join(workspace, 'real'), join(workspace, 'alias'));
+  const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const events = await describer.observe(conversationFrame({ deltas: [toolRow({ toolName: 'Write', input: { file_path: join(workspace, 'alias', 'new.txt') } })] }), observedAt);
+  assert.equal(events[0].message, 'Writing: real/new.txt.');
+});
+
+test('fails closed on every missing extra mistyped controlled or unverified captured field before rendering', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const mutations = [
+    (frame) => { delete frame.params.logicalFrameId; },
+    (frame) => { frame.params.hostile = 'SECRET_EXTRA'; },
+    (frame) => { frame.params.logicalFrameOrdinal = '1'; },
+    (frame) => { frame.params.logicalFrameId = 'bad\u0000frame'; },
+    (frame) => { frame.params.frame.sentAt = '2026-08-09T00:00:00.000Z'; },
+    (frame) => { frame.params.frame.hostile = 'SECRET_EXTRA'; },
+    (frame) => { frame.params.frame.payload.hostile = 'SECRET_EXTRA'; },
+    (frame) => { frame.params.frame.payload.deltas[0].hostile = 'SECRET_EXTRA'; },
+    (frame) => { delete frame.params.frame.payload.deltas[0].row.createdAtSeq; },
+    (frame) => { frame.params.frame.payload.deltas[0].row.hostile = 'SECRET_EXTRA'; },
+    (frame) => { frame.params.frame.payload.deltas[0].row.toolName = 'Bash\u0085SECRET'; },
+    (frame) => { frame.params.frame.payload.deltas[0].row.createdAt = Number.NaN; },
+    (frame) => { frame.params.frame.payload.deltas[0].row.display = { kind: 'mcp_tool', serverName: 'server', toolName: 'tool', hostile: 'SECRET_EXTRA' }; },
+    (frame) => { frame.params.frame.payload.deltas[0].row.status = 'completed'; },
+    (frame) => { frame.params.frame.payload.deltas[0].row.status = 'failed'; },
+    (frame) => { frame.params.frame.payload.deltas[0].row.status = 'denied'; },
+  ];
+  for (const mutate of mutations) {
+    const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const frame = conversationFrame({ deltas: [toolRow({ input: { command: 'DO_NOT_LEAK' } })] }); mutate(frame);
+    const events = await describer.observe(frame, observedAt);
+    assert.deepEqual(events, []); assert.doesNotMatch(JSON.stringify(events), /DO_NOT_LEAK|SECRET_EXTRA/);
+  }
+  for (const key of ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameId', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame']) {
+    const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params[key];
+    assert.deepEqual(await describer.observe(frame, observedAt), [], `missing params.${key}`);
+  }
+  for (const key of ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'sentAt', 'payload']) {
+    const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params.frame[key];
+    assert.deepEqual(await describer.observe(frame, observedAt), [], `missing frame.${key}`);
+  }
+  for (const key of ['op', 'row']) {
+    const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params.frame.payload.deltas[0][key];
+    assert.deepEqual(await describer.observe(frame, observedAt), [], `missing delta.${key}`);
+  }
+  for (const key of ['rowId', 'turnId', 'createdAt', 'createdAtSeq', 'kind', 'toolCallId', 'toolName', 'status', 'inputText']) {
+    const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const frame = conversationFrame({ deltas: [toolRow()] }); delete frame.params.frame.payload.deltas[0].row[key];
+    assert.deepEqual(await describer.observe(frame, observedAt), [], `missing tool row.${key}`);
+  }
+  const hostileTurn = conversationFrame({ deltas: [turnRow()] }); hostileTurn.params.frame.payload.deltas[0].row.originMeta = { backgroundSource: 'bash', workId: 'work', title: 'title', hostile: 'SECRET_EXTRA' };
+  const turnDescriber = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  assert.deepEqual(await turnDescriber.observe(hostileTurn, observedAt), []);
+});
+
+test('uses continuous captured sequence and ordinal watermarks without invalid frames poisoning them', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const frame = (ordinal, fromSeq, toSeq, rowId) => conversationFrame({ ordinal, fromSeq, toSeq, deltas: [toolRow({ rowId, input: { command: `echo ${rowId}` } })] });
+  assert.equal((await describer.observe(frame(7, 10, 10, 1), observedAt)).length, 1);
+  assert.deepEqual(await describer.observe(frame(8, 1, 11, 2), observedAt), []);
+  assert.deepEqual(await describer.observe(frame(8, 12, 12, 2), observedAt), []);
+  assert.deepEqual(await describer.observe(frame(8, 11, 10, 2), observedAt), []);
+  const invalid = frame(8, 11, 11, 2); invalid.params.frame.payload.deltas[0].row.extra = true;
+  assert.deepEqual(await describer.observe(invalid, observedAt), []);
+  assert.equal((await describer.observe(frame(8, 11, 11, 2), observedAt)).length, 1);
+  assert.deepEqual(await describer.observe(frame(8, 11, 11, 3), observedAt), []);
+  assert.deepEqual(await describer.observe(frame(10, 12, 12, 3), observedAt), []);
+  assert.equal((await describer.observe(frame(9, 12, 12, 3), observedAt)).length, 1);
+});
+
+test('recognizes only captured tool failure statuses and turn failure terminal states', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const toolDescriber = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const failed = await toolDescriber.observe(conversationFrame({ deltas: [toolRow({ status: 'error', input: { command: 'false' }, endedAt: 1_786_233_600_010 })] }), observedAt);
+  assert.equal(failed[0].message, 'Command failed: false (10ms).');
+  const turnDescriber = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const turnFailed = await turnDescriber.observe(conversationFrame({ deltas: [turnRow({ state: 'failed' })] }), observedAt);
+  assert.equal(turnFailed[0].message, 'ZCode turn ended without success.');
+  assert.deepEqual(await turnDescriber.observe(conversationFrame({ ordinal: 2, deltas: [toolRow()] }), observedAt), []);
+});
+
+test('bounds direct concurrent observations, path stalls, frame fanout, and tracked tool cardinality', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  let pathCalls = 0;
+  const stalled = await createConversationProgressDescriber(
+    { sessionId: 'session-1', subscriptionId: 'sub-1', workspace },
+    { pathTimeoutMs: 20, resolvePath: async () => { pathCalls += 1; return new Promise(() => {}); } },
+  );
+  const observations = Array.from({ length: 40 }, (_, index) => stalled.observe(conversationFrame({ ordinal: index + 1, deltas: [toolRow({ rowId: index + 1, toolName: 'Read', input: { file_path: 'x' } })] }), observedAt));
+  const settled = await Promise.all(observations);
+  assert.ok(pathCalls <= 5); assert.equal(settled.filter((events) => events.length > 0).length, pathCalls);
+
+  const bounded = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const huge = conversationFrame({ ordinal: 1, deltas: Array.from({ length: 65 }, (_, rowId) => toolRow({ rowId: rowId + 1 })) });
+  assert.deepEqual(await bounded.observe(huge, observedAt), []);
+  assert.equal((await bounded.observe(conversationFrame({ ordinal: 1, deltas: [toolRow()] }), observedAt)).length, 1);
+
+  const cardinality = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  for (let index = 1; index <= 256; index += 1) assert.equal((await cardinality.observe(conversationFrame({ ordinal: index, deltas: [toolRow({ rowId: index })] }), observedAt)).length, 1);
+  assert.deepEqual(await cardinality.observe(conversationFrame({ ordinal: 257, deltas: [toolRow({ rowId: 257 })] }), observedAt), []);
+});
+
+test('bounds the prebind subscribe-response buffer to four notifications and drains it in order', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const deferred = createDeferredConversationProgressObserver({ sessionId: 'session-1', workspace });
+  const observations = Array.from({ length: 5 }, (_, index) => deferred.observe(conversationFrame({ ordinal: index + 1, deltas: [toolRow({ rowId: index + 1 })] }), observedAt));
+  assert.deepEqual(await observations[4], []);
+  await deferred.bind('sub-1');
+  const drained = await Promise.all(observations.slice(0, 4));
+  assert.equal(drained.flat().length, 4);
+  deferred.markTerminal();
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 5, deltas: [toolRow({ rowId: 5 })] }), observedAt), []);
 });

@@ -195,6 +195,15 @@ test('conversation online progress reaches stderr and preview while initial and 
   assert.doesNotMatch(JSON.stringify(status.json.job.progressPreview), /INITIAL_SECRET|FOREIGN_SECRET/);
 });
 
+test('conversation online progress sent before the subscribe response is buffered until the subscription binds', async () => {
+  const context = await fixture();
+  const result = await companion(context, ['rescue', '--fresh', 'prebind conversation progress'], { FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE: '1' });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.result, 'done');
+  assert.match(result.stderr, /Running command: echo prebind\./);
+  const status = await companion(context, ['status', result.json.job.id]);
+  assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: echo prebind/);
+});
+
 test('conversation subscribe and unsubscribe failures are observational and preserve the exact result', async () => {
   for (const failure of ['subscribe', 'unsubscribe']) {
     const context = await fixture();

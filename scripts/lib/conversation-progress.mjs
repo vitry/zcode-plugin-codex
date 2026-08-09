@@ -3,11 +3,18 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 const PREVIEW_LIMIT = 96;
 const START_STATUSES = new Set(['inputStreaming', 'pendingApproval', 'running']);
-const SUCCESS_STATUSES = new Set(['success', 'completed']);
-const FAILURE_STATUSES = new Set(['failed', 'error', 'cancelled', 'denied']);
+const SUCCESS_STATUSES = new Set(['success']);
+const FAILURE_STATUSES = new Set(['error', 'cancelled']);
+const TOOL_STATUSES = new Set([...START_STATUSES, ...SUCCESS_STATUSES, ...FAILURE_STATUSES]);
+const TURN_STATES = new Set(['running', 'completedSuccess', 'completedInterrupted', 'failed']);
+const TURN_ORIGINS = new Set(['userInput', 'backgroundResult', 'goalContinuation', 'editRerun']);
 const MAX_WIRE_TEXT = 1_048_576;
 const MAX_DURATION_MS = 86_400_000;
 const MAX_PUBLIC_MESSAGE_BYTES = 256;
+const MAX_DELTAS_PER_FRAME = 64;
+const MAX_TRACKED_ROWS = 256;
+const MAX_PENDING_OBSERVATIONS = 4;
+const PATH_RESOLUTION_TIMEOUT_MS = 100;
 const CONVERSATION_WIRE_VERSION = 3;
 
 /** @param {unknown} value @param {number} [limit] */
@@ -23,86 +30,224 @@ export function normalizePreview(value, limit = PREVIEW_LIMIT) {
 
 /**
  * @param {{sessionId:string,subscriptionId:string,workspace:string}} options
+ * @param {{resolvePath?:(value:unknown,workspaceRoot:string)=>Promise<string|null>,pathTimeoutMs?:number}} [dependencies]
  * @returns {Promise<{observe:(notification:unknown,observedAt:string)=>Promise<Array<{phase:string,message:string,observedAt:string}>>,markTerminal:()=>void}>}
  */
-export async function createConversationProgressDescriber({ sessionId, subscriptionId, workspace }) {
+export async function createConversationProgressDescriber({ sessionId, subscriptionId, workspace }, dependencies = {}) {
   const workspaceRoot = await realpath(resolve(workspace));
+  const topic = `conversation/${sessionId}`;
+  const resolvePath = dependencies.resolvePath ?? containedRelativePath;
+  const requestedPathTimeout = dependencies.pathTimeoutMs;
+  const pathTimeoutMs = Number.isSafeInteger(requestedPathTimeout) && /** @type {number} */ (requestedPathTimeout) >= 1 ? /** @type {number} */ (requestedPathTimeout) : PATH_RESOLUTION_TIMEOUT_MS;
   const toolStates = new Map();
   const rowStates = new Map();
-  let lastOrdinal = 0; let lastSeq = -1; let terminal = false; let observationTail = Promise.resolve();
+  /** @type {Array<{notification:unknown,observedAt:string,resolve:(events:any[])=>void}>} */
+  const pending = [];
+  let active = false;
+  /** @type {number|undefined} */
+  let lastOrdinal;
+  /** @type {number|undefined} */
+  let lastSeq;
+  let terminal = false;
 
-  return {
+  /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<Array<{phase:string,message:string,observedAt:string}>>,markTerminal:()=>void}} */
+  const api = {
     observe(notification, observedAt) {
-      const operation = observationTail.then(() => observeFrame(notification, observedAt));
-      observationTail = operation.catch(() => []).then(() => {});
-      return operation;
+      if (terminal) return Promise.resolve([]);
+      return new Promise((resolveResult) => {
+        if (active && pending.length >= MAX_PENDING_OBSERVATIONS) { resolveResult([]); return; }
+        pending.push({ notification, observedAt, resolve: resolveResult });
+        drain();
+      });
     },
-    markTerminal() { terminal = true; },
+    markTerminal() {
+      terminal = true;
+      while (pending.length > 0) pending.shift()?.resolve([]);
+    },
   };
+  return api;
+
+  function drain() {
+    if (active || pending.length === 0) return;
+    const item = pending.shift(); if (!item) return;
+    active = true;
+    Promise.resolve().then(() => observeFrame(item.notification, item.observedAt)).catch(() => []).then((events) => item.resolve(events)).finally(() => { active = false; drain(); });
+  }
 
   /** @param {unknown} notification @param {unknown} observedAt */
   async function observeFrame(notification, observedAt) {
-      if (terminal || !validTimestamp(observedAt) || !plainObject(notification) || notification.method !== 'v4/conversation/frame' || !plainObject(notification.params)) return [];
-      const wire = /** @type {any} */ (notification.params); const topic = `conversation/${sessionId}`;
-      if (wire.wireVersion !== CONVERSATION_WIRE_VERSION || wire.kind !== 'complete' || wire.deliveryKind !== 'online' || wire.topic !== topic || wire.subscriptionId !== subscriptionId
-        || !Number.isSafeInteger(wire.logicalFrameOrdinal) || wire.logicalFrameOrdinal <= lastOrdinal || !plainObject(wire.frame)
-        || wire.frame.topic !== topic || wire.frame.subscriptionId !== subscriptionId || !Number.isSafeInteger(wire.frame.fromSeq)
-        || !Number.isSafeInteger(wire.frame.toSeq) || wire.frame.fromSeq < 0 || wire.frame.toSeq < wire.frame.fromSeq || wire.frame.toSeq <= lastSeq
-        || !plainObject(wire.frame.payload) || wire.frame.payload.kind !== 'deltas' || !Array.isArray(wire.frame.payload.deltas)) return [];
-      lastOrdinal = wire.logicalFrameOrdinal; lastSeq = wire.frame.toSeq;
-      const events = [];
-      for (const delta of wire.frame.payload.deltas) {
-        if (!plainObject(delta) || !['row.appended', 'row.upserted'].includes(delta.op) || !plainObject(delta.row) || !Number.isSafeInteger(delta.row.rowId)) continue;
+    if (terminal || !validObservedAt(observedAt)) return [];
+    const validated = validateNotification(notification, topic, subscriptionId);
+    if (!validated || validated.deliveryKind !== 'online') return [];
+    if (lastOrdinal !== undefined && (validated.ordinal !== lastOrdinal + 1 || validated.fromSeq !== /** @type {number} */ (lastSeq) + 1)) return [];
+    const staged = [];
+    for (const delta of validated.deltas) {
+      if (!delta.row) continue;
+      if (delta.row.kind === 'toolCall') {
+        const event = await describeTool(delta.row, toolStates, workspaceRoot, /** @type {string} */ (observedAt), resolvePath, pathTimeoutMs, () => terminal);
+        if (terminal) return [];
+        if (event) staged.push(event);
+      } else {
         const row = delta.row;
-        if (row.kind === 'toolCall') {
-          const event = await describeTool(row, toolStates, workspaceRoot, observedAt);
-          if (terminal) return [];
-          if (event) events.push(event);
-        } else if (row.kind === 'turnHeader') {
-          const previous = rowStates.get(row.rowId); rowStates.set(row.rowId, row.state);
-          if (previous === row.state) continue;
-          if (row.state === 'running' && previous === undefined) events.push({ phase: 'starting', message: 'ZCode turn started.', observedAt });
-          else if (row.state === 'completedSuccess') { events.push({ phase: 'finalizing', message: 'ZCode turn completed.', observedAt }); terminal = true; break; }
-          else if (['failed', 'completedInterrupted'].includes(row.state)) { events.push({ phase: 'finalizing', message: 'ZCode turn ended without success.', observedAt }); terminal = true; break; }
-        }
+        const previous = rowStates.get(row.rowId);
+        if (previous === undefined && rowStates.size >= MAX_TRACKED_ROWS) continue;
+        rowStates.set(row.rowId, row.state);
+        if (previous === row.state) continue;
+        if (row.state === 'running' && previous === undefined) staged.push({ phase: 'starting', message: 'ZCode turn started.', observedAt });
+        else if (row.state === 'completedSuccess') { staged.push({ phase: 'finalizing', message: 'ZCode turn completed.', observedAt }); terminal = true; break; }
+        else if (row.state === 'failed' || row.state === 'completedInterrupted') { staged.push({ phase: 'finalizing', message: 'ZCode turn ended without success.', observedAt }); terminal = true; break; }
       }
-      return events;
+    }
+    lastOrdinal = validated.ordinal; lastSeq = validated.toSeq;
+    return staged;
   }
 }
 
-/** @param {any} row @param {Map<string,{started:boolean,terminal:boolean,message:string|null}>} states @param {string} workspaceRoot @param {string} observedAt */
-async function describeTool(row, states, workspaceRoot, observedAt) {
-  const key = safeIdentifier(row.toolCallId) ? row.toolCallId : `row-${row.rowId}`;
+/**
+ * Buffers only the small subscribe-response race window; it has no protocol
+ * interpretation until the server-provided subscription id is validated.
+ * @param {{sessionId:string,workspace:string}} options
+ */
+export function createDeferredConversationProgressObserver({ sessionId, workspace }) {
+  /** @type {Awaited<ReturnType<typeof createConversationProgressDescriber>>|undefined} */ let describer;
+  /** @type {Array<{notification:unknown,observedAt:string,resolve:(events:any[])=>void}>} */ const buffered = [];
+  let binding = false; let disabled = false; let terminal = false;
+  const resolveBufferedEmpty = () => { while (buffered.length > 0) buffered.shift()?.resolve([]); };
+  return /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<any[]>,bind:(subscriptionId:string)=>Promise<void>,fail:()=>void,markTerminal:()=>void}} */ ({
+    observe(notification, observedAt) {
+      if (terminal || disabled) return Promise.resolve([]);
+      if (describer && !binding) return describer.observe(notification, observedAt);
+      if (buffered.length >= MAX_PENDING_OBSERVATIONS) return Promise.resolve([]);
+      return new Promise((resolveResult) => buffered.push({ notification, observedAt, resolve: resolveResult }));
+    },
+    async bind(subscriptionId) {
+      if (terminal || disabled || describer) return;
+      binding = true;
+      try {
+        describer = await createConversationProgressDescriber({ sessionId, subscriptionId, workspace });
+        while (!terminal && !disabled && buffered.length > 0) {
+          const item = buffered.shift(); if (!item) break;
+          item.resolve(await describer.observe(item.notification, item.observedAt));
+        }
+      } catch (error) {
+        disabled = true; resolveBufferedEmpty(); throw error;
+      } finally { binding = false; if (terminal || disabled) resolveBufferedEmpty(); }
+    },
+    fail() { disabled = true; resolveBufferedEmpty(); },
+    markTerminal() { terminal = true; describer?.markTerminal(); resolveBufferedEmpty(); },
+  });
+}
+
+/** @param {unknown} notification @param {string} topic @param {string} subscriptionId @returns {{deliveryKind:string,ordinal:number,fromSeq:number,toSeq:number,deltas:Array<{op:string,row?:any}>}|null} */
+function validateNotification(notification, topic, subscriptionId) {
+  if (!plainObject(notification) || notification.method !== 'v4/conversation/frame' || !plainObject(notification.params)) return null;
+  const wire = notification.params;
+  if (!exactKeys(wire, ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameId', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame'])
+    || wire.wireVersion !== CONVERSATION_WIRE_VERSION || wire.kind !== 'complete'
+    || !['initial', 'online', 'recovery'].includes(wire.deliveryKind)
+    || !boundedIdentifier(wire.logicalFrameId, 256) || !positiveInteger(wire.logicalFrameOrdinal)
+    || wire.topic !== topic || wire.subscriptionId !== subscriptionId || !plainObject(wire.frame)) return null;
+  const frame = wire.frame;
+  if (!exactKeys(frame, ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'sentAt', 'payload'])
+    || frame.topic !== topic || frame.subscriptionId !== subscriptionId
+    || !nonnegativeInteger(frame.fromSeq) || !nonnegativeInteger(frame.toSeq) || frame.toSeq < frame.fromSeq
+    || !wireTimestamp(frame.sentAt) || !plainObject(frame.payload)
+    || !exactKeys(frame.payload, ['kind', 'deltas']) || frame.payload.kind !== 'deltas'
+    || !Array.isArray(frame.payload.deltas) || frame.payload.deltas.length > MAX_DELTAS_PER_FRAME) return null;
+  const deltas = [];
+  for (const value of frame.payload.deltas) {
+    const delta = validateDelta(value); if (!delta) return null; deltas.push(delta);
+  }
+  return { deliveryKind: wire.deliveryKind, ordinal: wire.logicalFrameOrdinal, fromSeq: frame.fromSeq, toSeq: frame.toSeq, deltas };
+}
+
+/** @param {unknown} value */
+function validateDelta(value) {
+  if (!plainObject(value) || typeof value.op !== 'string') return null;
+  if (value.op === 'row.appended' || value.op === 'row.upserted') {
+    if (!exactKeys(value, ['op', 'row']) || !plainObject(value.row)) return null;
+    const row = validateRow(value.row); return row ? { op: value.op, row } : null;
+  }
+  return null;
+}
+
+/** @param {Record<string,any>} row */
+function validateRow(row) {
+  const base = ['rowId', 'turnId', 'createdAt', 'createdAtSeq', 'kind'];
+  const baseOptional = ['entityId', 'productTurnId', 'visibility', 'actions'];
+  if (!wireNumber(row.rowId) || !boundedIdentifier(row.turnId, 1024) || !wireTimestamp(row.createdAt) || !wireNumber(row.createdAtSeq)
+    || row.visibility !== undefined && row.visibility !== 'visible' || row.entityId !== undefined && !boundedIdentifier(row.entityId, 1024)
+    || row.productTurnId !== undefined && !boundedIdentifier(row.productTurnId, 1024) || !validActions(row.actions)) return null;
+  if (row.kind === 'toolCall') {
+    const required = [...base, 'toolCallId', 'toolName', 'status', 'inputText'];
+    const optional = [...baseOptional, 'input', 'output', 'display', 'error', 'progress', 'approvalInteractionId', 'backgrounded', 'workId', 'startedAt', 'endedAt'];
+    if (!exactKeys(row, required, optional) || !boundedIdentifier(row.toolCallId, 1024) || !boundedIdentifier(row.toolName, 256)
+      || !TOOL_STATUSES.has(row.status) || !boundedWireText(row.inputText)
+      || row.startedAt !== undefined && !wireTimestamp(row.startedAt) || row.endedAt !== undefined && !wireTimestamp(row.endedAt)
+      || row.approvalInteractionId !== undefined && !boundedIdentifier(row.approvalInteractionId, 1024)
+      || row.workId !== undefined && !boundedIdentifier(row.workId, 1024) || row.backgrounded !== undefined && row.backgrounded !== true
+      || !validToolOutput(row.output) || !validToolError(row.error) || !validToolProgress(row.progress) || !validToolDisplay(row.display)) return null;
+    return row;
+  }
+  if (row.kind === 'turnHeader') {
+    const required = [...base, 'origin', 'state', 'startedAt'];
+    const optional = [...baseOptional, 'executionKind', 'sourceCommandId', 'historyRoundCount', 'endedAt', 'activeMs', 'workSegments', 'originMeta', 'fileChanges'];
+    if (!exactKeys(row, required, optional) || !TURN_ORIGINS.has(row.origin) || !TURN_STATES.has(row.state) || !wireTimestamp(row.startedAt)
+      || row.endedAt !== undefined && !wireTimestamp(row.endedAt) || row.executionKind !== undefined && !['agent', 'controlOnly'].includes(row.executionKind)
+      || row.sourceCommandId !== undefined && !boundedIdentifier(row.sourceCommandId, 1024)
+      || row.historyRoundCount !== undefined && !nonnegativeInteger(row.historyRoundCount)
+      || row.activeMs !== undefined && !wireNumber(row.activeMs)
+      || !validWorkSegments(row.workSegments) || !validOriginMeta(row.originMeta) || !validFileChanges(row.fileChanges)) return null;
+    return row;
+  }
+  return null;
+}
+
+/** @param {any} row @param {Map<string,{started:boolean,terminal:boolean,message:string|null}>} states @param {string} workspaceRoot @param {string} observedAt @param {(value:unknown,root:string)=>Promise<string|null>} resolvePath @param {number} timeoutMs @param {()=>boolean} isTerminal */
+async function describeTool(row, states, workspaceRoot, observedAt, resolvePath, timeoutMs, isTerminal) {
+  const key = row.toolCallId;
   const prior = states.get(key) ?? { started: false, terminal: false, message: null };
   if (prior.terminal) return null;
   const status = row.status;
   if (START_STATUSES.has(status)) {
-    if (prior.started) return null;
-    const message = fitProgressMessage(await startMessage(row, workspaceRoot));
+    if (prior.started || !states.has(key) && states.size >= MAX_TRACKED_ROWS) return null;
+    const message = fitProgressMessage(await startMessage(row, workspaceRoot, resolvePath, timeoutMs));
+    if (isTerminal()) return null;
     states.set(key, { started: true, terminal: false, message });
     return { phase: status === 'pendingApproval' ? 'waiting' : 'running', message, observedAt };
   }
   if (!SUCCESS_STATUSES.has(status) && !FAILURE_STATUSES.has(status)) return null;
-  const startMessageValue = prior.message ?? await startMessage(row, workspaceRoot);
+  if (!states.has(key) && states.size >= MAX_TRACKED_ROWS) return null;
+  const startMessageValue = prior.message ?? await startMessage(row, workspaceRoot, resolvePath, timeoutMs);
+  if (isTerminal()) return null;
   states.set(key, { started: prior.started, terminal: true, message: startMessageValue });
-  const succeeded = SUCCESS_STATUSES.has(status); const duration = durationSuffix(row.startedAt, row.endedAt);
-  return { phase: 'running', message: fitProgressMessage(terminalMessage(row, startMessageValue, succeeded, duration)), observedAt };
+  const duration = durationSuffix(row.startedAt, row.endedAt);
+  return { phase: 'running', message: fitProgressMessage(terminalMessage(row, startMessageValue, SUCCESS_STATUSES.has(status), duration)), observedAt };
 }
 
-/** @param {any} row @param {string} workspaceRoot */
-async function startMessage(row, workspaceRoot) {
+/** @param {any} row @param {string} workspaceRoot @param {(value:unknown,root:string)=>Promise<string|null>} resolvePath @param {number} timeoutMs */
+async function startMessage(row, workspaceRoot, resolvePath, timeoutMs) {
   const toolName = normalizePreview(row.toolName, 64);
   const input = plainObject(row.input) ? row.input : {};
   if (toolName === 'Bash') { const preview = normalizePreview(input.command); return preview ? `Running command: ${preview}.` : 'Running tool: Bash.'; }
   if (['Read', 'Edit', 'Write'].includes(toolName)) {
-    const path = await containedRelativePath(input.file_path, workspaceRoot);
+    const path = await boundedPath(resolvePath, input.file_path, workspaceRoot, timeoutMs);
     if (!path) return `Running tool: ${toolName}.`;
     return `${toolName === 'Read' ? 'Reading' : toolName === 'Edit' ? 'Editing' : 'Writing'}: ${path}.`;
   }
   if (toolName === 'Grep') { const preview = normalizePreview(input.pattern); return preview ? `Searching files: ${preview}.` : 'Running tool: Grep.'; }
   if (toolName === 'Glob') { const preview = normalizePreview(input.pattern); return preview ? `Finding files: ${preview}.` : 'Running tool: Glob.'; }
   if (toolName === 'WebSearch') { const preview = normalizePreview(input.query); return preview ? `Searching the web: ${preview}.` : 'Running tool: WebSearch.'; }
-  return safeIdentifier(row.toolName) ? `Running tool: ${toolName}.` : 'Running a ZCode tool.';
+  return `Running tool: ${toolName}.`;
+}
+
+/** @param {(value:unknown,root:string)=>Promise<string|null>} resolvePath @param {unknown} value @param {string} root @param {number} timeoutMs */
+async function boundedPath(resolvePath, value, root, timeoutMs) {
+  let timer;
+  try {
+    const operation = Promise.resolve().then(() => resolvePath(value, root)); operation.catch(() => {});
+    return await Promise.race([operation, new Promise((resolveResult) => { timer = setTimeout(() => resolveResult(null), timeoutMs); })]);
+  } catch { return null; } finally { if (timer) clearTimeout(timer); }
 }
 
 /** @param {any} row @param {string} started @param {boolean} succeeded @param {string} duration */
@@ -112,16 +257,14 @@ function terminalMessage(row, started, succeeded, duration) {
     const value = started.slice(17); const command = value.endsWith('.') ? value.slice(0, -1) : value;
     return `Command ${state}: ${command}${duration}.`;
   }
-  const toolName = safeIdentifier(normalizePreview(row.toolName, 64)) ? normalizePreview(row.toolName, 64) : 'ZCode tool';
-  return `${toolName} ${state}${duration}.`;
+  return `${normalizePreview(row.toolName, 64)} ${state}${duration}.`;
 }
 
 /** @param {unknown} startedAt @param {unknown} endedAt */
 function durationSuffix(startedAt, endedAt) {
-  if (!validTimestamp(startedAt) || !validTimestamp(endedAt)) return '';
-  const duration = Date.parse(endedAt) - Date.parse(startedAt);
-  if (duration < 0) return '';
-  return duration <= MAX_DURATION_MS ? ` (${duration}ms)` : '';
+  if (!wireTimestamp(startedAt) || !wireTimestamp(endedAt)) return '';
+  const duration = /** @type {number} */ (endedAt) - /** @type {number} */ (startedAt);
+  return duration >= 0 && duration <= MAX_DURATION_MS ? ` (${duration}ms)` : '';
 }
 
 /** @param {string} message */
@@ -157,9 +300,50 @@ export async function containedRelativePath(value, workspaceRoot) {
 
 /** @param {string} root @param {string} candidate */
 function isContained(root, candidate) { const value = relative(root, candidate); return value === '' || !isAbsolute(value) && value !== '..' && !value.startsWith(`..${sep}`); }
+/** @param {Record<string,any>} value @param {string[]} required @param {string[]} [optional] */
+function exactKeys(value, required, optional = []) { const keys = Object.keys(value); return required.every((key) => Object.hasOwn(value, key)) && keys.every((key) => required.includes(key) || optional.includes(key)); }
+/** @param {unknown} value @param {number} max */
+function boundedIdentifier(value, max) { return typeof value === 'string' && value.length > 0 && value.length <= max && !hasControl(value); }
 /** @param {unknown} value */
-function safeIdentifier(value) { return typeof value === 'string' && value.length > 0 && value.length <= 128 && normalizePreview(value, 128) === value; }
-/** @param {unknown} value @returns {value is string} */
-function validTimestamp(value) { if (typeof value !== 'string') return false; try { return new Date(value).toISOString() === value; } catch { return false; } }
+function boundedWireText(value) { return typeof value === 'string' && value.length <= MAX_WIRE_TEXT && !hasControl(value); }
+/** @param {string} value */
+function hasControl(value) { return [...value].some((character) => { const code = character.codePointAt(0) ?? 0; return code <= 31 || code >= 127 && code <= 159; }); }
+/** @param {unknown} value */
+function positiveInteger(value) { return typeof value === 'number' && Number.isSafeInteger(value) && value > 0; }
+/** @param {unknown} value */
+function nonnegativeInteger(value) { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
+/** @param {unknown} value */
+function wireNumber(value) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER; }
+/** @param {unknown} value */
+function wireTimestamp(value) { return wireNumber(value); }
+/** @param {unknown} value */
+function validObservedAt(value) { if (typeof value !== 'string') return false; try { return new Date(value).toISOString() === value; } catch { return false; } }
 /** @param {unknown} value @returns {value is Record<string,any>} */
 function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+/** @param {unknown} value */
+function validActions(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && exactKeys(value, [], ['canFork', 'canEdit', 'canRetry', 'canRewindFiles', 'editDisposition']) && ['canFork', 'canEdit', 'canRetry', 'canRewindFiles'].every((key) => record[key] === undefined || record[key] === true) && (record.editDisposition === undefined || ['rewind', 'fork'].includes(record.editDisposition)); }
+/** @param {unknown} value */
+function validToolOutput(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && exactKeys(value, ['text'], ['truncated']) && boundedWireText(record.text) && (record.truncated === undefined || plainObject(record.truncated) && exactKeys(record.truncated, ['totalBytes', 'ref']) && wireNumber(record.truncated.totalBytes) && boundedIdentifier(record.truncated.ref, 1024)); }
+/** @param {unknown} value */
+function validToolError(value) { return value === undefined || plainObject(value) && exactKeys(value, ['code', 'message']) && boundedIdentifier(value.code, 256) && boundedWireText(value.message); }
+/** @param {unknown} value */
+function validToolProgress(value) { return value === undefined || plainObject(value) && exactKeys(value, ['bytes', 'updatedAt'], ['previewLine']) && wireNumber(value.bytes) && wireTimestamp(value.updatedAt) && (value.previewLine === undefined || boundedWireText(value.previewLine)); }
+/** @param {unknown} value */
+function validToolDisplay(value) {
+  if (value === undefined) return true;
+  if (!plainObject(value) || typeof value.kind !== 'string') return false;
+  if (value.kind === 'node_repl_images') return exactKeys(value, ['kind', 'images'], ['truncated', 'source']) && Array.isArray(value.images) && value.images.length >= 1 && value.images.length <= 2
+    && value.images.every((image) => plainObject(image) && exactKeys(image, ['base64', 'mimeType']) && typeof image.base64 === 'string' && image.base64.length >= 1 && image.base64.length <= 204_800 && typeof image.mimeType === 'string' && /^image\/[a-z0-9.+-]+$/iu.test(image.mimeType))
+    && (value.truncated === undefined || typeof value.truncated === 'boolean') && (value.source === undefined || value.source === 'browser_turn_end');
+  if (value.kind === 'task_output') return exactKeys(value, ['kind', 'retrievalStatus'], ['taskStatus', 'output', 'truncated']) && ['success', 'not_ready', 'timeout'].includes(value.retrievalStatus)
+    && (value.taskStatus === undefined || boundedIdentifier(value.taskStatus, 64)) && (value.output === undefined || typeof value.output === 'string' && value.output.length >= 1 && value.output.length <= 2_000) && (value.truncated === undefined || value.truncated === true);
+  if (value.kind === 'respond_to_coordinator') return exactKeys(value, ['kind', 'status']) && ['success', 'failed'].includes(value.status);
+  if (value.kind === 'mcp_tool') return exactKeys(value, ['kind', 'serverName', 'toolName'], ['description']) && boundedIdentifier(value.serverName, 256) && boundedIdentifier(value.toolName, 256) && (value.description === undefined || typeof value.description === 'string' && value.description.length >= 1 && value.description.length <= 4_096);
+  return false;
+}
+/** @param {unknown} value */
+function validWorkSegments(value) { return value === undefined || Array.isArray(value) && value.length <= MAX_DELTAS_PER_FRAME && value.every((segment) => plainObject(segment) && exactKeys(segment, ['segmentId', 'startedAt'], ['triggerEntityId', 'endedAt', 'activeMs']) && boundedIdentifier(segment.segmentId, 1024) && wireTimestamp(segment.startedAt) && (segment.triggerEntityId === undefined || boundedIdentifier(segment.triggerEntityId, 1024)) && (segment.endedAt === undefined || wireTimestamp(segment.endedAt)) && (segment.activeMs === undefined || wireNumber(segment.activeMs))); }
+/** @param {unknown} value */
+function validOriginMeta(value) { return value === undefined || plainObject(value) && exactKeys(value, ['backgroundSource', 'workId', 'title']) && ['bash', 'subagent'].includes(value.backgroundSource) && boundedIdentifier(value.workId, 1024) && boundedIdentifier(value.title, 4_096); }
+/** @param {unknown} value */
+function validFileChanges(value) { return value === undefined || plainObject(value) && exactKeys(value, ['additions', 'deletions', 'files'], ['state']) && wireNumber(value.additions) && wireNumber(value.deletions) && wireNumber(value.files) && (value.state === undefined || ['active', 'reverted'].includes(value.state)); }

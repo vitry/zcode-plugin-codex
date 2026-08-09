@@ -42,6 +42,26 @@ test('conversation subscription validates options and the exact ack', async () =
   await assert.rejects(client.subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'unsupported' }), { code: 'ZCODE_INPUT_INVALID' });
 });
 
+test('conversation subscription accepts only the captured exact result and ack keys', async () => {
+  const valid = { ack: { subscriptionId: 'sub-1', mode: 'resume', logEpoch: 'epoch-7' } };
+  const resumed = await new ZCodeClient({ request: async () => structuredClone(valid) }).subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'desktop-continuous' });
+  assert.equal(resumed.subscriptionId, 'sub-1');
+  const invalid = [
+    {},
+    { ...valid, topic: 'conversation/session-1' },
+    { ack: { mode: 'snapshot', logEpoch: 'epoch-7' } },
+    { ack: { ...valid.ack, topic: 'conversation/session-1' } },
+    { ack: { ...valid.ack, subscriptionId: 7 } },
+    { ack: { ...valid.ack, subscriptionId: 'sub\u0000secret' } },
+    { ack: { ...valid.ack, mode: 'replay' } },
+    { ack: { ...valid.ack, logEpoch: '' } },
+  ];
+  for (const result of invalid) {
+    const client = new ZCodeClient({ request: async () => result });
+    await assert.rejects(client.subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'desktop-continuous' }), { code: 'ZCODE_OUTPUT_INVALID' });
+  }
+});
+
 test('conversation unsubscribe rejects a non-empty acknowledgement', async () => {
   const client = new ZCodeClient({ request: async (method) => method.endsWith('/subscribe') ? { ack: { subscriptionId: 'sub-1', mode: 'snapshot', logEpoch: 'epoch-1' } } : { unexpected: true } });
   const subscription = await client.subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'desktop-continuous' });
