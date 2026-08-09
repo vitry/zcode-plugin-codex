@@ -18,7 +18,7 @@ function runNode(source) {
   });
 }
 
-/** @param {string} moduleUrl @param {'atomicWriteJson'|'writeResultArtifact'} operation @returns {string} */
+/** @param {string} moduleUrl @param {'atomicWriteJson'|'atomicWritePrivateFile'|'writeResultArtifact'} operation @returns {string} */
 function syncFailureProbe(moduleUrl, operation) {
   return `
     import { mkdtemp, open, readFile, rm } from 'node:fs/promises';
@@ -42,7 +42,7 @@ function syncFailureProbe(moduleUrl, operation) {
       return originalSync.call(this, ...args);
     };
     try {
-      ${operation === 'atomicWriteJson' ? "await atomicWriteJson(target, { ok: true }); if (!JSON.parse(await readFile(target, 'utf8')).ok) throw new Error('atomic write did not persist');" : "const relative = await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'a'.repeat(64), contents: 'done' }); if (relative !== 'results/' + 'a'.repeat(64) + '.md') throw new Error('artifact path did not persist');"}
+      ${operation === 'atomicWriteJson' ? "await atomicWriteJson(target, { ok: true }); if (!JSON.parse(await readFile(target, 'utf8')).ok) throw new Error('atomic write did not persist');" : operation === 'atomicWritePrivateFile' ? "await atomicWritePrivateFile(target, Buffer.from('role-bytes\\n')); if ((await readFile(target, 'utf8')) !== 'role-bytes\\n') throw new Error('atomic private write did not persist');" : "const relative = await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'a'.repeat(64), contents: 'done' }); if (relative !== 'results/' + 'a'.repeat(64) + '.md') throw new Error('artifact path did not persist');"}
     } finally {
       prototype.sync = originalSync;
       await rm(directory, { recursive: true, force: true });
@@ -52,6 +52,11 @@ function syncFailureProbe(moduleUrl, operation) {
 
 test('atomic JSON writes tolerate an unsupported Windows directory fsync', async () => {
   const result = await runNode(syncFailureProbe(fsModule, 'atomicWriteJson'));
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('atomic private file writes tolerate an unsupported Windows directory fsync', async () => {
+  const result = await runNode(syncFailureProbe(fsModule, 'atomicWritePrivateFile'));
   assert.equal(result.code, 0, result.stderr || result.stdout);
 });
 

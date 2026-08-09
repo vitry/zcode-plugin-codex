@@ -41,6 +41,14 @@ export async function ensurePrivateDirectory(path) {
  * @param {unknown} value
  */
 export async function atomicWriteJson(path, value) {
+  await atomicWritePrivateFile(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/**
+ * @param {string} path
+ * @param {string|Buffer} bytes
+ */
+export async function atomicWritePrivateFile(path, bytes) {
   const directory = dirname(path);
   const temporaryPath = join(
     directory,
@@ -50,7 +58,7 @@ export async function atomicWriteJson(path, value) {
   try {
     await ensurePrivateDirectory(directory);
     handle = await open(temporaryPath, 'wx', 0o600);
-    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await handle.writeFile(bytes);
     await handle.sync();
     await handle.close();
     handle = undefined;
@@ -71,7 +79,7 @@ export async function atomicWriteJson(path, value) {
   } catch (error) {
     if (handle) await handle.close().catch(() => {});
     await unlink(temporaryPath).catch(() => {});
-    throw wrapError(error, 'ATOMIC_WRITE_FAILED', `Could not atomically write JSON: ${path}`, {
+    throw wrapError(error, 'ATOMIC_WRITE_FAILED', `Could not atomically write file: ${path}`, {
       category: 'storage',
       remedy: 'Check available disk space and permissions, then retry.',
       details: { path },

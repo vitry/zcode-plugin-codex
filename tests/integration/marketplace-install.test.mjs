@@ -119,6 +119,8 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.equal(installedManifest.name, 'zcode');
   assert.equal(Object.hasOwn(installedManifest, 'hooks'), false);
   assert.ok(JSON.parse(await readFile(join(installedRoot, 'hooks', 'hooks.json'), 'utf8')).hooks);
+  assert.match(await readFile(join(installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8'), /^developer_instructions = """/);
+  await assert.rejects(readFile(join(installedRoot, 'agents', 'zcode-rescue.md'), 'utf8'), { code: 'ENOENT' });
   const listedComponents = await listPluginComponents(temporary, env);
   const installedSkills = listedComponents.skills.data.flatMap((entry) => entry.skills)
     .filter((skill) => /^(?:zcode|zcode-plugin-codex):/.test(skill.name));
@@ -202,7 +204,24 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     },
   });
   assert.equal(rerun.code, 0, rerun.stderr || rerun.stdout);
-  assert.equal(JSON.parse(rerun.stdout).status, 'ready');
+  assert.equal(JSON.parse(rerun.stdout).status, 'restart-required');
+  const rolePath = join(pluginData, 'agent-roles', 'zcode-rescue.toml');
+  assert.match(await readFile(rolePath, 'utf8'), /invoke rescue/);
+  assert.doesNotMatch(rolePath, /cache|0\.1\.0/);
+  const fresh = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'setup'], {
+    cwd: temporary,
+    env: {
+      ...env,
+      ZCODE_PATH: join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs'),
+      CODEX_APP_SERVER_PATH: process.execPath,
+      CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
+      FAKE_CODEX_RECORD: setupRecord,
+      FAKE_CODEX_HOOKS_RESULT: JSON.stringify({ data: [{ cwd: await realpath(temporary), errors: [], warnings: [], hooks: installedHooks }] }),
+      FAKE_ZCODE_RECORD: join(temporary, 'setup-zcode-requests.jsonl'),
+    },
+  });
+  assert.equal(fresh.code, 0, fresh.stderr || fresh.stdout);
+  assert.equal(JSON.parse(fresh.stdout).status, 'ready');
   const workspaceEntries = await readdir(join(pluginData, 'workspaces'));
   assert.equal(workspaceEntries.length, 1);
   assert.equal(JSON.parse(await readFile(join(pluginData, 'workspaces', workspaceEntries[0], 'config', 'review-gate.json'), 'utf8')).setupReady, true);

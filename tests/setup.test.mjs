@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 
 import { parseArgs } from '../scripts/lib/args.mjs';
 import { diagnoseZCodeAuth, pluginRootFromModuleUrl, runSetup } from '../scripts/lib/codex-config.mjs';
+import { MANAGED_ROLE_DESCRIPTION, managedRolePaths } from '../scripts/lib/managed-agent-role.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 
@@ -41,20 +42,49 @@ test('setup uses current config/read, hooks/list and one atomic exact trust/feat
   const ctx = await context(); const report = await runSetup({ ...ctx.options, reviewGate: true });
   assert.equal(report.status, 'restart-required', JSON.stringify(report)); assert.equal(report.zcode.version, '0.16.1'); assert.equal(report.auth.ready, true); assert.equal(report.reviewGate.enabled, true);
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse).filter((call) => call.method);
-  assert.deepEqual(calls.map((call) => call.method), ['initialize', 'initialized', 'config/read', 'hooks/list', 'config/batchWrite']);
+  assert.deepEqual(calls.map((call) => call.method), ['initialize', 'initialized', 'config/read', 'hooks/list', 'config/batchWrite', 'config/read']);
   assert.deepEqual(calls[2].params, { cwd: ctx.cwd, includeLayers: true }); assert.deepEqual(calls[3].params, { cwds: [ctx.cwd] });
-  const params = calls[4].params; assert.equal(params.expectedVersion, 'version-1'); assert.equal(params.reloadUserConfig, true); assert.equal(params.edits.length, 2);
+  const params = calls[4].params; assert.equal(params.expectedVersion, 'version-1'); assert.equal(params.reloadUserConfig, true); assert.equal(params.edits.length, 4);
   assert.deepEqual(params.edits[0], { keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' });
   assert.equal(params.edits[1].keyPath, 'hooks.state'); assert.equal(params.edits[1].mergeStrategy, 'upsert');
   assert.deepEqual(Object.keys(params.edits[1].value), ['plugin-hook-0', 'plugin-hook-1', 'plugin-hook-2', 'plugin-hook-3', 'plugin-hook-4', 'plugin-hook-5']);
   assert.deepEqual(params.edits[1].value['plugin-hook-0'], { trusted_hash: '0'.repeat(64) });
+  const rolePath = managedRolePaths(await realpath(ctx.dataRoot)).rolePath;
+  assert.deepEqual(params.edits[2], { keyPath: 'agents.zcode-rescue', value: { description: MANAGED_ROLE_DESCRIPTION, config_file: rolePath }, mergeStrategy: 'upsert' });
+  assert.deepEqual(params.edits[3], { keyPath: 'features.multi_agent_v2.hide_spawn_agent_metadata', value: false, mergeStrategy: 'upsert' });
   assert.doesNotMatch(JSON.stringify(params), /plugin_hooks/); assert.doesNotMatch(JSON.stringify(params), /unrelated/);
-  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd }); const gate = JSON.parse(await readFile(join(storage.directory, 'config/review-gate.json'), 'utf8')); assert.deepEqual(gate, { version: 1, enabled: true, setupReady: true, status: 'restart-required' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd }); const gate = JSON.parse(await readFile(join(storage.directory, 'config/review-gate.json'), 'utf8')); assert.deepEqual(gate, { version: 1, enabled: true, setupReady: false, status: 'restart-required' });
 });
 
-test('already enabled and trusted hooks report ready without config writes', async () => {
+test('managed Rescue role requires a fresh setup rerun after installation before reporting ready', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  const first = await runSetup(ctx.options);
+  assert.equal(first.status, 'restart-required');
+  const paths = managedRolePaths(await realpath(ctx.dataRoot));
+  assert.match(await readFile(paths.rolePath, 'utf8'), /invoke rescue/);
+  const receipt = JSON.parse(await readFile(paths.receiptPath, 'utf8'));
+  assert.equal(receipt.role.path, paths.rolePath);
+
+  const configFile = join(ctx.dataRoot, 'config.toml');
+  const managed = { description: MANAGED_ROLE_DESCRIPTION, config_file: paths.rolePath };
+  const configured = {
+    config: { features: { hooks: true, multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { 'zcode-rescue': managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } },
+    origins: {},
+    layers: [{ name: { type: 'user', file: configFile }, version: 'version-2', config: { features: { hooks: true, multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { 'zcode-rescue': managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } } }],
+  };
+  await writeFile(ctx.record, '');
+  const second = await runSetup({ ...ctx.options, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configured) } });
+  assert.equal(second.status, 'ready');
+  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.ok(!calls.some((call) => call.method === 'config/batchWrite'));
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
+  assert.equal(JSON.parse(await readFile(join(storage.directory, 'config/review-gate.json'), 'utf8')).setupReady, true);
+});
+
+test('already enabled and trusted hooks still install the managed Rescue role before readiness', async () => {
   const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runSetup(ctx.options);
-  assert.equal(report.status, 'ready'); const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'config/batchWrite'));
+  assert.equal(report.status, 'restart-required'); const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse); const batch = calls.find((call) => call.method === 'config/batchWrite');
+  assert.deepEqual(batch.params.edits.map((edit) => edit.keyPath), ['agents.zcode-rescue', 'features.multi_agent_v2.hide_spawn_agent_metadata']);
   const zcodeCalls = (await readFile(ctx.zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.deepEqual(zcodeCalls.map((call) => call.method), ['session/create', 'session/stop']);
 });
 
@@ -159,7 +189,7 @@ test('setup persists model policy only from explicit setup environment variables
 });
 
 test('setup readiness ignores session/list and is proven by create plus cleanup', async () => {
-  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true }, zcodeEnv: { FAKE_ZCODE_ERROR: 'session/list' } }); const report = await runSetup(ctx.options); assert.equal(report.status, 'ready');
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true }, zcodeEnv: { FAKE_ZCODE_ERROR: 'session/list' } }); const report = await runSetup(ctx.options); assert.equal(report.status, 'restart-required');
   const calls = (await readFile(ctx.zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'session/list')); assert.ok(calls.some((call) => call.method === 'session/create')); assert.ok(calls.some((call) => call.method === 'session/stop'));
 });
 
@@ -268,7 +298,7 @@ test('app-server failure cannot persist a ready gate and enable/disable touches 
   }
   const failedStorage = await resolveWorkspaceStorage({ dataRoot: failed.dataRoot, workspace: failed.cwd }); await assert.rejects(readFile(join(failedStorage.directory, 'config/review-gate.json'), 'utf8'), { code: 'ENOENT' });
   const disabled = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runSetup({ ...disabled.options, reviewGate: false }); assert.equal(report.reviewGate.enabled, false);
-  const disabledStorage = await resolveWorkspaceStorage({ dataRoot: disabled.dataRoot, workspace: disabled.cwd }); const gate = JSON.parse(await readFile(join(disabledStorage.directory, 'config/review-gate.json'), 'utf8')); assert.equal(gate.enabled, false); assert.equal(gate.setupReady, true);
+  const disabledStorage = await resolveWorkspaceStorage({ dataRoot: disabled.dataRoot, workspace: disabled.cwd }); const gate = JSON.parse(await readFile(join(disabledStorage.directory, 'config/review-gate.json'), 'utf8')); assert.equal(gate.enabled, false); assert.equal(gate.setupReady, false);
 });
 
 test('review-gate toggles are isolated between workspaces sharing PLUGIN_DATA', async () => {
@@ -277,10 +307,10 @@ test('review-gate toggles are isolated between workspaces sharing PLUGIN_DATA', 
 });
 
 test('real companion setup is the only public command that needs no caller authorization', async () => {
-  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runCompanion(['setup', '--enable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) } }); assert.equal(report.status, 'ready'); assert.equal(report.reviewGate.enabled, true);
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runCompanion(['setup', '--enable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) } }); assert.equal(report.status, 'restart-required'); assert.equal(report.reviewGate.enabled, true);
   await assert.rejects(runCompanion(['status'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot } }), { code: 'INTERNAL_AUTHORIZATION_INVALID' });
 });
 
 test('setup executable succeeds on ordinary stdio without protected fd3/fd4', async () => {
-  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const result = await new Promise((resolvePromise, reject) => { const child = spawn(process.execPath, [join(root, 'scripts/zcode-companion.mjs'), 'setup', '--disable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) }, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let stderr = ''; child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.once('error', reject); child.once('exit', (code) => resolvePromise({ code, stdout, stderr })); }); assert.equal(result.code, 0, result.stderr); assert.equal(JSON.parse(result.stdout).status, 'ready'); assert.doesNotMatch(`${result.stdout}${result.stderr}`, /INTERNAL_RESPONSE/);
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const result = await new Promise((resolvePromise, reject) => { const child = spawn(process.execPath, [join(root, 'scripts/zcode-companion.mjs'), 'setup', '--disable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) }, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let stderr = ''; child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.once('error', reject); child.once('exit', (code) => resolvePromise({ code, stdout, stderr })); }); assert.equal(result.code, 0, result.stderr); assert.equal(JSON.parse(result.stdout).status, 'restart-required'); assert.doesNotMatch(`${result.stdout}${result.stderr}`, /INTERNAL_RESPONSE/);
 });

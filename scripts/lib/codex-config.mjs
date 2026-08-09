@@ -1,12 +1,13 @@
 // @ts-nocheck
 import { spawn } from 'node:child_process';
-import { realpath } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { PluginError } from './errors.mjs';
 import { atomicWriteJson } from './fs.mjs';
+import { reconcileManagedRescueRole } from './managed-agent-role.mjs';
 import { discoverZCode } from './zcode-discovery.mjs';
 import { createZCodeClient } from './zcode-client.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -35,6 +36,21 @@ export async function runSetup(input) {
     if (!inspected.ok) return reportAndPersist(input, discovery, { ready: false }, 'untrusted', inspected.reason, false);
     const auth = await diagnoseZCodeAuth({ workspace: cwd, discovery, env: input.env }); if (!auth.ready) return reportAndPersist(input, discovery, auth, 'unauthenticated', auth.reason, false);
     const edits = []; if (config?.config?.features?.hooks !== true) edits.push({ keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' }); const trust = {}; for (const hook of inspected.hooks) if (!['trusted', 'managed'].includes(hook.trustStatus)) trust[hook.key] = { trusted_hash: hook.currentHash }; if (Object.keys(trust).length) edits.push({ keyPath: 'hooks.state', value: trust, mergeStrategy: 'upsert' });
+    const packageJson = JSON.parse(await readFile(join(pluginRoot, 'package.json'), 'utf8'));
+    const template = await readFile(join(pluginRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+    const role = await reconcileManagedRescueRole({
+      dataRoot: input.dataRoot,
+      template,
+      pluginRoot,
+      pluginIdentity: 'zcode@vitry',
+      pluginVersion: packageJson.version,
+      config,
+      configTarget: writeTarget,
+      additionalEdits: edits,
+      batchWrite: (params) => client.request('config/batchWrite', params),
+      readConfig: () => client.request('config/read', { cwd, includeLayers: true }),
+    });
+    if (role.status === 'restart-required') return reportAndPersist(input, discovery, auth, 'restart-required', 'managed-role-changed', false);
     let status = 'ready'; if (edits.length) { await client.request('config/batchWrite', { edits, ...writeTarget, reloadUserConfig: true }); status = 'restart-required'; }
     return reportAndPersist(input, discovery, auth, status, null, true);
   } finally { await client?.close().catch(() => {}); }

@@ -74,11 +74,16 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   assert.doesNotMatch(source, /built-in.*subagent|forwarding subagent/i);
 });
 
-test('background execution is production-owned and public skills do not forward capabilities', () => {
-  const source = readFileSync(new URL('agents/zcode-rescue.md', root), 'utf8');
+test('managed Rescue role is a fixed TOML forwarder without capability or task material', () => {
+  assert.equal(existsSync(new URL('agents/zcode-rescue.md', root)), false);
+  const source = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
   for (const name of expected.filter((value) => value !== 'setup')) assert.doesNotMatch(skill(name), /zcode:zcode-rescue|forwarding subagent|one-time execution capability/i);
-  assert.ok(source.length > 0);
-  assert.doesNotMatch(source, /--prompt-file|--write|spark|--force/);
+  assert.match(source, /^developer_instructions = """[\s\S]+"""\n$/);
+  assert.equal((source.match(/^developer_instructions\s*=/gm) ?? []).length, 1);
+  assert.match(source, /invoke rescue/);
+  assert.match(source, /invoke-choice rescue resume/);
+  assert.match(source, /invoke-choice rescue fresh/);
+  assert.doesNotMatch(source, /--prompt-file|--write|spark|--force|\{\{(?:TASK|ARGS|JOB|SESSION|PERMISSION|CAPABILITY)[^}]*\}\}/i);
 });
 
 test('agents metadata uses quoted strings and namespaced default prompts', () => {
