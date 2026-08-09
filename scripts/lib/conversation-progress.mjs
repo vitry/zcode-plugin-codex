@@ -61,14 +61,12 @@ export async function createConversationProgressDescriber({ sessionId, subscript
       });
     },
     markGap,
-    markTerminal() {
-      terminal = true;
-      while (pending.length > 0) pending.shift()?.resolve([]);
-    },
+    markTerminal: latchTerminal,
   };
   return api;
 
   function markGap() { if (!terminal) needsRecovery = true; }
+  function latchTerminal() { terminal = true; while (pending.length > 0) pending.shift()?.resolve([]); }
 
   function drain() {
     if (active || pending.length === 0) return;
@@ -85,7 +83,8 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     if (validated.deliveryKind === 'recovery') {
       if (lastOrdinal !== undefined && (validated.ordinal <= lastOrdinal || validated.toSeq <= /** @type {number} */ (lastSeq))) return [];
       if (!needsRecovery && lastOrdinal !== undefined && (validated.ordinal !== lastOrdinal + 1 || validated.fromSeq !== /** @type {number} */ (lastSeq) + 1)) return [];
-      lastOrdinal = validated.ordinal; lastSeq = validated.toSeq; needsRecovery = false; return [];
+      lastOrdinal = validated.ordinal; lastSeq = validated.toSeq; needsRecovery = false;
+      absorbRecovery(validated.deltas); return [];
     }
     if (needsRecovery) return [];
     if (lastOrdinal !== undefined && (validated.ordinal !== lastOrdinal + 1 || validated.fromSeq !== /** @type {number} */ (lastSeq) + 1)) return [];
@@ -99,16 +98,39 @@ export async function createConversationProgressDescriber({ sessionId, subscript
       } else {
         const row = delta.row;
         const previous = rowStates.get(row.rowId);
+        if (row.state === 'completedSuccess' || row.state === 'failed' || row.state === 'completedInterrupted') {
+          if (previous !== undefined || rowStates.size < MAX_TRACKED_ROWS) rowStates.set(row.rowId, row.state);
+          staged.push({ phase: 'finalizing', message: row.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt });
+          latchTerminal(); break;
+        }
         if (previous === undefined && rowStates.size >= MAX_TRACKED_ROWS) continue;
         rowStates.set(row.rowId, row.state);
         if (previous === row.state) continue;
         if (row.state === 'running' && previous === undefined) staged.push({ phase: 'starting', message: 'ZCode turn started.', observedAt });
-        else if (row.state === 'completedSuccess') { staged.push({ phase: 'finalizing', message: 'ZCode turn completed.', observedAt }); terminal = true; break; }
-        else if (row.state === 'failed' || row.state === 'completedInterrupted') { staged.push({ phase: 'finalizing', message: 'ZCode turn ended without success.', observedAt }); terminal = true; break; }
       }
     }
     lastOrdinal = validated.ordinal; lastSeq = validated.toSeq;
     return staged;
+  }
+
+  /** @param {Array<{op:string,row?:any}>} deltas */
+  function absorbRecovery(deltas) {
+    for (const delta of deltas) {
+      const row = delta.row; if (!row) continue;
+      if (row.kind === 'toolCall') {
+        const prior = toolStates.get(row.toolCallId) ?? { started: false, terminal: false, message: null };
+        if (prior.terminal || !toolStates.has(row.toolCallId) && toolStates.size >= MAX_TRACKED_ROWS) continue;
+        if (START_STATUSES.has(row.status)) toolStates.set(row.toolCallId, { started: true, terminal: false, message: prior.message });
+        else toolStates.set(row.toolCallId, { started: prior.started, terminal: true, message: prior.message });
+        continue;
+      }
+      if (row.state === 'completedSuccess' || row.state === 'failed' || row.state === 'completedInterrupted') {
+        if (rowStates.has(row.rowId) || rowStates.size < MAX_TRACKED_ROWS) rowStates.set(row.rowId, row.state);
+        latchTerminal(); return;
+      }
+      if (!rowStates.has(row.rowId) && rowStates.size >= MAX_TRACKED_ROWS) continue;
+      rowStates.set(row.rowId, row.state);
+    }
   }
 }
 
@@ -342,7 +364,7 @@ function validActions(value) { const record = /** @type {Record<string,any>} */ 
 /** @param {unknown} value */
 function validToolOutput(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && exactKeys(value, ['text'], ['truncated']) && boundedOpaqueText(record.text) && (record.truncated === undefined || plainObject(record.truncated) && exactKeys(record.truncated, ['totalBytes', 'ref']) && wireNumber(record.truncated.totalBytes) && boundedIdentifier(record.truncated.ref, 1024)); }
 /** @param {unknown} value */
-function validToolError(value) { return value === undefined || plainObject(value) && exactKeys(value, ['code', 'message']) && boundedIdentifier(value.code, 256) && boundedWireText(value.message); }
+function validToolError(value) { return value === undefined || plainObject(value) && exactKeys(value, ['code', 'message']) && boundedIdentifier(value.code, 256) && boundedOpaqueText(value.message); }
 /** @param {unknown} value */
 function validToolProgress(value) { return value === undefined || plainObject(value) && exactKeys(value, ['bytes', 'updatedAt'], ['previewLine']) && wireNumber(value.bytes) && wireTimestamp(value.updatedAt) && (value.previewLine === undefined || boundedWireText(value.previewLine)); }
 /** @param {unknown} value */

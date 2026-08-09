@@ -249,6 +249,63 @@ test('accepts bounded captured multiline tool output without rendering any raw o
   assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 2, deltas: [huge] }), observedAt), []);
 });
 
+test('recovery silently folds terminal turn states and permanently fences later frames', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  for (const state of ['completedSuccess', 'failed', 'completedInterrupted']) {
+    const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    assert.equal((await describer.observe(conversationFrame({ ordinal: 1, deltas: [toolRow()] }), observedAt)).length, 1);
+    describer.markGap();
+    const recovery = describer.observe(conversationFrame({ ordinal: 2, deliveryKind: 'recovery', deltas: [turnRow({ state })] }), observedAt);
+    const pendingLate = describer.observe(conversationFrame({ ordinal: 3, deltas: [toolRow({ rowId: 3, input: { command: 'MUST_NOT_LEAK_AFTER_RECOVERY_TERMINAL' } })] }), observedAt);
+    assert.deepEqual(await Promise.all([recovery, pendingLate]), [[], []]);
+    assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 4, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
+  }
+});
+
+test('turn terminal latching is not weakened when bounded row tracking is full', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  for (let ordinal = 1; ordinal <= 256; ordinal += 1) {
+    assert.equal((await describer.observe(conversationFrame({ ordinal, deltas: [turnRow({ rowId: ordinal, state: 'running' })] }), observedAt)).length, 1);
+  }
+  const terminal = await describer.observe(conversationFrame({ ordinal: 257, deltas: [turnRow({ rowId: 257, state: 'completedSuccess' })] }), observedAt);
+  assert.equal(terminal[0].message, 'ZCode turn completed.');
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 258, deltas: [toolRow()] }), observedAt), []);
+});
+
+test('recovery silently folds bounded tool states without path resolution and deduplicates later updates', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-')); let pathCalls = 0;
+  const describer = await createConversationProgressDescriber(
+    { sessionId: 'session-1', subscriptionId: 'sub-1', workspace },
+    { resolvePath: async () => { pathCalls += 1; throw new Error('recovery must not resolve paths'); } },
+  );
+  assert.equal((await describer.observe(conversationFrame({ ordinal: 1, deltas: [toolRow({ toolCallId: 'tool-done' })] }), observedAt)).length, 1);
+  describer.markGap();
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 2, deliveryKind: 'recovery', deltas: [
+    toolRow({ rowId: 1, toolCallId: 'tool-done', status: 'success', toolName: 'Read', input: { file_path: 'RECOVERY_PATH_SECRET' } }),
+    toolRow({ rowId: 2, toolCallId: 'tool-running', status: 'running', toolName: 'Read', input: { file_path: 'RECOVERY_PATH_SECRET' } }),
+  ] }), observedAt), []);
+  assert.equal(pathCalls, 0);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 3, deltas: [toolRow({ rowId: 1, toolCallId: 'tool-done', status: 'success' })] }), observedAt), []);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 4, deltas: [toolRow({ rowId: 2, toolCallId: 'tool-running', status: 'running' })] }), observedAt), []);
+  const terminal = await describer.observe(conversationFrame({ ordinal: 5, deltas: [toolRow({ rowId: 2, toolCallId: 'tool-running', status: 'error', input: { command: 'safe terminal' } })] }), observedAt);
+  assert.equal(terminal.length, 1); assert.doesNotMatch(JSON.stringify(terminal), /RECOVERY_PATH_SECRET/);
+});
+
+test('accepts bounded captured multiline tool errors without rendering raw error content', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const failed = toolRow({ status: 'error', input: { command: 'safe failure' }, endedAt: 1_786_233_600_010 });
+  failed.row.error = { code: 'TOOL_FAILED', message: 'ERROR_SECRET first\nsecond\t\u0000\u0085' };
+  const events = await describer.observe(conversationFrame({ deltas: [failed] }), observedAt);
+  assert.equal(events[0].message, 'Command failed: safe failure (10ms).');
+  assert.doesNotMatch(JSON.stringify(events), /ERROR_SECRET|first|second|TOOL_FAILED/);
+  const huge = toolRow({ rowId: 2, status: 'error' }); huge.row.error = { code: 'TOOL_FAILED', message: '😀'.repeat(300_000) };
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 2, deltas: [huge] }), observedAt), []);
+  const badCode = toolRow({ rowId: 3, status: 'error' }); badCode.row.error = { code: 'BAD\nCODE', message: 'allowed opaque message' };
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 2, deltas: [badCode] }), observedAt), []);
+});
+
 test('bounds the prebind subscribe-response buffer to four notifications and drains it in order', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const deferred = createDeferredConversationProgressObserver({ sessionId: 'session-1', workspace });
