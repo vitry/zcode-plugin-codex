@@ -208,6 +208,22 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   const rolePath = join(pluginData, 'agent-roles', 'zcode-rescue.toml');
   assert.match(await readFile(rolePath, 'utf8'), /invoke rescue/);
   assert.doesNotMatch(rolePath, /cache|0\.1\.0/);
+  const ended = await runChild(process.execPath, [join(installedRoot, 'hooks', 'session-end-hook.mjs')], {
+    cwd: temporary, env: hookEnv, ordinaryInput: true,
+    input: { session_id: sessionId, cwd: temporary, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' },
+  });
+  assert.equal(ended.code, 0, ended.stderr || ended.stdout);
+  const freshSessionId = 'installed-fresh-session'; const freshTurnId = 'installed-fresh-turn';
+  const freshLifecycle = await runChild(process.execPath, [join(installedRoot, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: temporary, env: hookEnv, ordinaryInput: true,
+    input: { session_id: freshSessionId, cwd: temporary, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+  });
+  assert.equal(freshLifecycle.code, 0, freshLifecycle.stderr || freshLifecycle.stdout);
+  const freshPrompt = await runChild(process.execPath, [join(installedRoot, 'hooks', 'user-prompt-hook.mjs')], {
+    cwd: temporary, env: hookEnv, ordinaryInput: true,
+    input: { session_id: freshSessionId, turn_id: freshTurnId, cwd: temporary, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'Please verify that ZCode is set up correctly.' },
+  });
+  assert.equal(freshPrompt.code, 0, freshPrompt.stderr || freshPrompt.stdout);
   const fresh = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'setup'], {
     cwd: temporary,
     env: {

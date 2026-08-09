@@ -55,6 +55,7 @@ export async function reconcileManagedRescueRole(input) {
     await recoverInterruptedTransaction(prepared, input);
     const inspection = await inspectPrepared(prepared, input.config);
     if (inspection.status === 'ready') return { status: 'ready', changed: false, rolePath: prepared.paths.rolePath };
+    if (inspection.status === 'restart-required') return { status: 'restart-required', changed: false, rolePath: prepared.paths.rolePath };
     if (!['install-required', 'upgrade-required'].includes(inspection.status)) {
       throw roleError('MANAGED_ROLE_CONFLICT', `Managed Rescue Role reconciliation refused status: ${inspection.status}.`, {
         status: inspection.status,
@@ -117,12 +118,7 @@ export async function reconcileManagedRescueRole(input) {
     } catch (cause) {
       const recovery = await rollback({ prepared, input, journal, configMutated, expectedVersion: writeVersion });
       if (!recovery.complete) {
-        throw roleError('MANAGED_ROLE_ROLLBACK_INCOMPLETE', 'Managed Rescue Role reconciliation failed and rollback was incomplete.', {
-          rolePath: prepared.paths.rolePath,
-          transactionPath: prepared.paths.transactionPath,
-          remaining: recovery.remaining,
-          remedy: 'Restore the listed Role/config paths, remove the transaction journal, then rerun $zcode:setup.',
-        }, cause);
+        throw rollbackError(prepared, input, [...recovery.remaining, prepared.paths.transactionPath], 'Managed Rescue Role reconciliation failed and rollback was incomplete.');
       }
       throw roleError('MANAGED_ROLE_RECONCILE_FAILED', 'Managed Rescue Role reconciliation failed and owned changes were rolled back.', {
         rolePath: prepared.paths.rolePath,
@@ -153,10 +149,12 @@ async function inspectPrepared(prepared, config) {
   if (!sameRegistration(effective, prepared.paths.rolePath)) return result('drift', prepared.paths.rolePath);
   if (roleBytes === null || sha256(roleBytes) !== receipt.role.sha256) return result('drift', prepared.paths.rolePath);
   if (config.config?.features?.multi_agent_v2?.hide_spawn_agent_metadata !== false) return result('higher-precedence-conflict', prepared.paths.rolePath);
-  if (receipt.plugin.version !== prepared.input.pluginVersion
+  if (receipt.schemaVersion !== 1
+    || receipt.plugin.version !== prepared.input.pluginVersion
     || receipt.plugin.root !== prepared.pluginRoot
     || receipt.role.schemaVersion !== MANAGED_ROLE_SCHEMA_VERSION
     || receipt.role.sha256 !== prepared.digest) return result('upgrade-required', prepared.paths.rolePath);
+  if (Date.parse(prepared.input.sessionStartedAt) <= Date.parse(receipt.mutatedAt)) return result('restart-required', prepared.paths.rolePath);
   return result('ready', prepared.paths.rolePath);
 }
 
@@ -190,6 +188,16 @@ async function pathSafety(dataRoot, paths) {
       try { if ((await lstat(path)).isSymbolicLink()) return { safe: false, reason: `Managed Role path is a symlink: ${path}` }; }
       catch (error) { if (!isCode(error, 'ENOENT')) throw error; }
     }
+    try {
+      const lockStats = await lstat(paths.lockPath);
+      if (lockStats.isSymbolicLink() || !lockStats.isDirectory()) return { safe: false, reason: `Managed Role lock path is unsafe: ${paths.lockPath}` };
+      if (await realpath(paths.lockPath) !== paths.lockPath) return { safe: false, reason: `Managed Role lock path escapes its canonical root: ${paths.lockPath}` };
+      const advisoryPath = join(paths.lockPath, 'advisory.lock');
+      try { if ((await lstat(advisoryPath)).isSymbolicLink()) return { safe: false, reason: `Managed Role advisory lock is a symlink: ${advisoryPath}` }; }
+      catch (error) { if (!isCode(error, 'ENOENT')) throw error; }
+    } catch (error) {
+      if (!isCode(error, 'ENOENT')) throw error;
+    }
     return { safe: true };
   } catch (error) {
     return { safe: false, reason: `Could not validate managed Role paths: ${error instanceof Error ? error.message : 'unknown error'}` };
@@ -205,7 +213,7 @@ async function recoverInterruptedTransaction(prepared, input) {
   }
   const currentRole = await optionalBytes(prepared.paths.rolePath);
   if (!roleBytesProven(currentRole, journal)) {
-    throw roleError('MANAGED_ROLE_ROLLBACK_UNPROVEN', 'The interrupted Role bytes are not proven to be owned.', { rolePath: prepared.paths.rolePath });
+    throw rollbackError(prepared, input, [prepared.paths.rolePath, prepared.paths.transactionPath], 'The interrupted Role bytes are not proven to be owned.');
   }
   let configMutated = journal.phase === 'config-written';
   if (!configMutated && journal.phase === 'role-written') {
@@ -213,7 +221,7 @@ async function recoverInterruptedTransaction(prepared, input) {
     configMutated = configLeavesOwned(currentConfig, input.configTarget.filePath, prepared.paths.rolePath, journal.desiredAdditional ?? []);
   }
   const recovery = await rollback({ prepared, input, journal, configMutated, expectedVersion: journal.configVersion ?? input.configTarget.expectedVersion });
-  if (!recovery.complete) throw roleError('MANAGED_ROLE_ROLLBACK_INCOMPLETE', 'Could not recover the interrupted managed Role transaction.', { remaining: recovery.remaining });
+  if (!recovery.complete) throw rollbackError(prepared, input, [...recovery.remaining, prepared.paths.transactionPath], 'Could not recover the interrupted managed Role transaction.');
 }
 
 /** @param {{prepared:AnyRecord,input:AnyRecord,journal:AnyRecord,configMutated:boolean,expectedVersion:string}} input */
@@ -270,6 +278,7 @@ function makeReceipt(prepared, input, previousMetadata) {
     plugin: { identity: input.pluginIdentity, version: input.pluginVersion, root: prepared.pluginRoot },
     configTarget: { filePath: input.configTarget.filePath },
     role: { path: prepared.paths.rolePath, schemaVersion: MANAGED_ROLE_SCHEMA_VERSION, sha256: prepared.digest },
+    mutatedAt: new Date(input.now ?? Date.now()).toISOString(),
     ...(previousMetadata.present ? { priorSpawnMetadataValue: previousMetadata.value } : {}),
   };
 }
@@ -357,11 +366,13 @@ function validConfigRead(config) {
 
 /** @param {AnyRecord} receipt @param {string} rolePath @param {string} identity */
 function validReceiptBase(receipt, rolePath, identity) {
-  return receipt?.schemaVersion === 1 && receipt.roleName === MANAGED_ROLE_NAME
+  return Number.isSafeInteger(receipt?.schemaVersion) && receipt.schemaVersion >= 0 && receipt.schemaVersion <= 1 && receipt.roleName === MANAGED_ROLE_NAME
     && receipt.plugin?.identity === identity && typeof receipt.plugin?.version === 'string'
     && typeof receipt.plugin?.root === 'string' && receipt.configTarget && typeof receipt.configTarget.filePath === 'string'
-    && receipt.role?.path === rolePath && receipt.role?.schemaVersion === MANAGED_ROLE_SCHEMA_VERSION
-    && typeof receipt.role?.sha256 === 'string' && /^[a-f0-9]{64}$/.test(receipt.role.sha256);
+    && receipt.role?.path === rolePath && Number.isSafeInteger(receipt.role?.schemaVersion)
+    && receipt.role.schemaVersion >= 0 && receipt.role.schemaVersion <= MANAGED_ROLE_SCHEMA_VERSION
+    && typeof receipt.role?.sha256 === 'string' && /^[a-f0-9]{64}$/.test(receipt.role.sha256)
+    && (receipt.schemaVersion < 1 || (typeof receipt.mutatedAt === 'string' && Number.isFinite(Date.parse(receipt.mutatedAt))));
 }
 
 /** @param {string} rolePath */
@@ -391,9 +402,25 @@ function validateCommonInput(input) {
     || typeof input.pluginRoot !== 'string' || typeof input.pluginIdentity !== 'string' || !input.pluginIdentity
     || typeof input.pluginVersion !== 'string' || !input.pluginVersion || !input.configTarget
     || typeof input.configTarget.filePath !== 'string' || !input.configTarget.filePath
-    || typeof input.configTarget.expectedVersion !== 'string' || !input.configTarget.expectedVersion) {
+    || typeof input.configTarget.expectedVersion !== 'string' || !input.configTarget.expectedVersion
+    || typeof input.sessionStartedAt !== 'string' || !Number.isFinite(Date.parse(input.sessionStartedAt))) {
     throw roleError('MANAGED_ROLE_INPUT_INVALID', 'Managed Rescue Role input is invalid.');
   }
+}
+
+/** @param {AnyRecord} prepared @param {AnyRecord} input @param {string[]} remaining @param {string} message */
+function rollbackError(prepared, input, remaining, message) {
+  return new PluginError('MANAGED_ROLE_ROLLBACK_INCOMPLETE', message, {
+    category: 'configuration',
+    remedy: `Restore only proven owned state at ${prepared.paths.rolePath}, ${prepared.paths.receiptPath}, and ${input.configTarget.filePath}; remove the transaction journal ${prepared.paths.transactionPath}; then rerun $zcode:setup.`,
+    details: {
+      rolePath: prepared.paths.rolePath,
+      receiptPath: prepared.paths.receiptPath,
+      configPath: input.configTarget.filePath,
+      transactionPath: prepared.paths.transactionPath,
+      remaining: [...new Set(remaining)],
+    },
+  });
 }
 
 /** @param {any} input */

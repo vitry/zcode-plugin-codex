@@ -69,6 +69,23 @@ export function createIdentityStore({ dataRoot }) {
       });
     },
 
+    /** Resolve exactly one runtime-recorded active turn for a canonical workspace, independent of prompt text. @param {{workspace:string,now?:Date|number|string}} expected */
+    async resolveOnlyActiveTurn(expected) {
+      if (!isPlainObject(expected) || !isNonEmptyString(expected.workspace)) throw invalidIdentityInput();
+      const storage = await identityStorage(dataRoot, expected.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const active = [];
+        for (const name of await readdir(storage.activeTurnsDirectory)) {
+          if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+          let record;
+          try { record = await readJsonFile(join(storage.activeTurnsDirectory, name)); } catch { continue; }
+          if (isActiveTurnRecord(record) && record.workspace === storage.workspacePath && toTimestamp(expected.now) < Date.parse(record.expiresAt)) active.push(record);
+        }
+        if (active.length !== 1) throw setupSessionUnproven(active.length);
+        return publicRecord(active[0]);
+      });
+    },
+
     /** Revokes every caller credential for one exact completed turn. @param {GateBaselineIdentity} input */
     async endCallerTurn(input) {
       validateTurnIdentity(input); const storage = await identityStorage(dataRoot, input.workspace);
@@ -422,6 +439,13 @@ function invalidIdentityInput() {
   return new PluginError('IDENTITY_INPUT_INVALID', 'Authorization identity input is invalid.', {
     category: 'authorization',
     remedy: 'Provide all required non-empty identities and a supported mode or operation.',
+  });
+}
+
+/** @param {number} count */
+function setupSessionUnproven(count) {
+  return new PluginError('SETUP_SESSION_UNPROVEN', 'Setup could not prove exactly one active Codex session for this workspace.', {
+    category: 'authorization', remedy: 'Run $zcode:setup from one active Codex session after its lifecycle hooks have started.', details: { activeTurnCount: count },
   });
 }
 

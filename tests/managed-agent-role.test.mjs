@@ -58,6 +58,7 @@ function common(ctx, config) {
     pluginVersion: '0.1.0',
     config,
     configTarget: ctx.configTarget,
+    sessionStartedAt: '2999-01-01T00:00:00.000Z',
   };
 }
 
@@ -149,7 +150,7 @@ test('managed Rescue role installs transactionally and becomes ready only on an 
   ]);
   assert.equal(await readFile(ctx.paths.rolePath, 'utf8'), renderManagedRescueRole({ template, pluginRoot: ctx.pluginRoot }));
   const receipt = JSON.parse(await readFile(ctx.paths.receiptPath, 'utf8'));
-  assert.deepEqual(Object.keys(receipt).sort(), ['configTarget', 'plugin', 'priorSpawnMetadataValue', 'role', 'roleName', 'schemaVersion'].sort());
+  assert.deepEqual(Object.keys(receipt).sort(), ['configTarget', 'mutatedAt', 'plugin', 'priorSpawnMetadataValue', 'role', 'roleName', 'schemaVersion'].sort());
   assert.deepEqual(receipt.plugin, { identity: 'zcode@vitry', version: '0.1.0', root: ctx.pluginRoot });
   assert.equal(receipt.role.path, ctx.paths.rolePath);
   assert.match(receipt.role.sha256, /^[a-f0-9]{64}$/);
@@ -161,6 +162,27 @@ test('managed Rescue role installs transactionally and becomes ready only on an 
     readConfig: async () => current,
   });
   assert.deepEqual(ready, { status: 'ready', changed: false, rolePath: ctx.paths.rolePath });
+});
+
+test('managed Rescue role remains restart-required in the mutation session and is ready in a fresh session', async () => {
+  const ctx = await fixture();
+  let current = configState({});
+  const mutationSession = '2000-01-01T00:00:00.000Z';
+  await reconcileManagedRescueRole({
+    ...common(ctx, current), sessionStartedAt: mutationSession,
+    batchWrite: async () => { current = configState({ role: roleConfig(ctx.paths.rolePath) }); return {}; },
+    readConfig: async () => current,
+  });
+  const sameSession = await reconcileManagedRescueRole({
+    ...common(ctx, current), sessionStartedAt: mutationSession,
+    batchWrite: async () => { throw new Error('must not write'); }, readConfig: async () => current,
+  });
+  assert.deepEqual(sameSession, { status: 'restart-required', changed: false, rolePath: ctx.paths.rolePath });
+  const freshSession = await reconcileManagedRescueRole({
+    ...common(ctx, current), sessionStartedAt: '2999-01-01T00:00:00.000Z',
+    batchWrite: async () => { throw new Error('must not write'); }, readConfig: async () => current,
+  });
+  assert.deepEqual(freshSession, { status: 'ready', changed: false, rolePath: ctx.paths.rolePath });
 });
 
 test('managed Rescue role receipt records a provable prior metadata value without authorization data', async () => {
@@ -205,6 +227,22 @@ test('managed Rescue role classifies an owned old version as upgrade-required', 
   let current = configState({});
   await reconcileManagedRescueRole({ ...common(ctx, current), pluginVersion: '0.0.9', batchWrite: async () => { current = configState({ role: roleConfig(ctx.paths.rolePath) }); return {}; }, readConfig: async () => current });
   assert.equal((await inspectManagedRescueRole(common(ctx, current))).status, 'upgrade-required');
+});
+
+test('managed Rescue role upgrades a provably owned old schema but rejects unknown new schemas', async () => {
+  const ctx = await fixture();
+  let current = configState({});
+  await reconcileManagedRescueRole({ ...common(ctx, current), batchWrite: async () => { current = configState({ role: roleConfig(ctx.paths.rolePath) }); return {}; }, readConfig: async () => current });
+  const receipt = JSON.parse(await readFile(ctx.paths.receiptPath, 'utf8'));
+  receipt.schemaVersion = 0;
+  receipt.role.schemaVersion = 0;
+  delete receipt.mutatedAt;
+  await writeFile(ctx.paths.receiptPath, `${JSON.stringify(receipt)}\n`);
+  assert.equal((await inspectManagedRescueRole(common(ctx, current))).status, 'upgrade-required');
+  receipt.schemaVersion = 2;
+  receipt.role.schemaVersion = 2;
+  await writeFile(ctx.paths.receiptPath, `${JSON.stringify(receipt)}\n`);
+  assert.equal((await inspectManagedRescueRole(common(ctx, current))).status, 'drift');
 });
 
 test('managed Rescue role treats a changed selected config target as drift', async () => {
@@ -278,6 +316,35 @@ test('managed Rescue role rejects unsafe symlink installation paths', async () =
   await assert.rejects(reconcileManagedRescueRole({
     ...common(ctx, configState({})), batchWrite: async () => ({}), readConfig: async () => configState({}),
   }), { code: 'MANAGED_ROLE_PATH_UNSAFE' });
+});
+
+test('managed Rescue role rejects a symlinked lock directory without touching its target', async () => {
+  const ctx = await fixture();
+  const outside = await realpath(await mkdtemp(join(tmpdir(), 'zcode-lock-outside-')));
+  const marker = join(outside, 'marker');
+  await writeFile(marker, 'outside-safe', { mode: 0o644 });
+  await mkdir(join(ctx.dataRoot, 'agent-roles'));
+  await symlink(outside, ctx.paths.lockPath);
+  assert.equal((await inspectManagedRescueRole(common(ctx, configState({})))).status, 'unsupported');
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, configState({})), batchWrite: async () => ({}), readConfig: async () => configState({}),
+  }), { code: 'MANAGED_ROLE_PATH_UNSAFE' });
+  assert.equal(await readFile(marker, 'utf8'), 'outside-safe');
+  assert.equal((await stat(marker)).mode & 0o777, 0o644);
+});
+
+test('managed Rescue role rejects a symlinked advisory lock file without touching its target', async () => {
+  const ctx = await fixture();
+  const outside = join(await realpath(await mkdtemp(join(tmpdir(), 'zcode-lock-file-outside-'))), 'outside.lock');
+  await writeFile(outside, 'outside-lock', { mode: 0o644 });
+  await mkdir(ctx.paths.lockPath, { recursive: true });
+  await symlink(outside, join(ctx.paths.lockPath, 'advisory.lock'));
+  assert.equal((await inspectManagedRescueRole(common(ctx, configState({})))).status, 'unsupported');
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, configState({})), batchWrite: async () => ({}), readConfig: async () => configState({}),
+  }), { code: 'MANAGED_ROLE_PATH_UNSAFE' });
+  assert.equal(await readFile(outside, 'utf8'), 'outside-lock');
+  assert.equal((await stat(outside)).mode & 0o777, 0o644);
 });
 
 test('managed Rescue role rolls back owned file state on version races and leaves no ready receipt', async () => {
@@ -367,9 +434,37 @@ test('managed Rescue role preserves an unproven receipt during interrupted rollb
     previousAdditional: [],
     desiredAdditional: [],
   })}\n`);
+  let error;
   await assert.rejects(reconcileManagedRescueRole({
     ...common(ctx, current), batchWrite: async () => ({}), readConfig: async () => current,
-  }), { code: 'MANAGED_ROLE_ROLLBACK_INCOMPLETE' });
+  }), (candidate) => { error = candidate; return candidate?.code === 'MANAGED_ROLE_ROLLBACK_INCOMPLETE'; });
+  assert.equal(error.details.rolePath, ctx.paths.rolePath);
+  assert.equal(error.details.receiptPath, ctx.paths.receiptPath);
+  assert.equal(error.details.configPath, ctx.configTarget.filePath);
+  assert.equal(error.details.transactionPath, ctx.paths.transactionPath);
+  assert.match(error.remedy, /restore.*remove.*transaction.*\$zcode:setup/is);
   assert.deepEqual(await readFile(ctx.paths.receiptPath), foreignReceipt);
   assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+});
+
+test('managed Rescue role reports exact recovery paths for unproven interrupted Role bytes', async () => {
+  const ctx = await fixture();
+  await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
+  await writeFile(ctx.paths.rolePath, 'foreign-after-crash');
+  await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
+    schemaVersion: 1, phase: 'role-written', rolePath: ctx.paths.rolePath,
+    roleExisted: false, receiptExisted: false, intendedSha256: '0'.repeat(64),
+    previousRegistration: { present: false }, previousMetadata: { present: false }, previousAdditional: [], desiredAdditional: [],
+  })}\n`);
+  let error;
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, configState({})), batchWrite: async () => ({}), readConfig: async () => configState({}),
+  }), (candidate) => { error = candidate; return true; });
+  assert.equal(error.details.rolePath, ctx.paths.rolePath);
+  assert.equal(error.details.receiptPath, ctx.paths.receiptPath);
+  assert.equal(error.details.configPath, ctx.configTarget.filePath);
+  assert.equal(error.details.transactionPath, ctx.paths.transactionPath);
+  assert.ok(error.details.remaining.includes(ctx.paths.rolePath));
+  assert.ok(error.details.remaining.includes(ctx.paths.transactionPath));
+  assert.match(error.remedy, /restore.*remove.*transaction.*\$zcode:setup/is);
 });

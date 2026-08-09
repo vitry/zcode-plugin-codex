@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
   chmod,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -133,8 +134,12 @@ export async function withFileLock(lockPath, operation, options = {}) {
     });
   }
   const startedAt = Date.now();
+  await rejectSymlink(lockPath, 'lock directory');
   await ensurePrivateDirectory(lockPath);
+  const lockDirectoryStats = await lstat(lockPath);
+  if (lockDirectoryStats.isSymbolicLink() || !lockDirectoryStats.isDirectory()) throw unsafeLockPath(lockPath, 'lock directory');
   const lockFilePath = join(lockPath, 'advisory.lock');
+  await rejectSymlink(lockFilePath, 'advisory lock file');
   let handle;
   try {
     handle = await open(lockFilePath, 'a+', 0o600);
@@ -204,6 +209,19 @@ export async function withFileLock(lockPath, operation, options = {}) {
   }
   if (operationFailed) throw operationError;
   return /** @type {T} */ (result);
+}
+
+/** @param {string} path @param {string} kind */
+async function rejectSymlink(path, kind) {
+  try { if ((await lstat(path)).isSymbolicLink()) throw unsafeLockPath(path, kind); }
+  catch (error) { if (!isNodeError(error, 'ENOENT')) throw error; }
+}
+
+/** @param {string} path @param {string} kind */
+function unsafeLockPath(path, kind) {
+  return new PluginError('LOCK_PATH_UNSAFE', `The ${kind} is a symbolic link or has an unsafe type: ${path}`, {
+    category: 'storage', remedy: 'Remove the unsafe lock path and retry.', details: { path },
+  });
 }
 
 /** @param {string} directory */

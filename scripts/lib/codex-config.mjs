@@ -46,6 +46,7 @@ export async function runSetup(input) {
       pluginVersion: packageJson.version,
       config,
       configTarget: writeTarget,
+      sessionStartedAt: input.sessionStartedAt,
       additionalEdits: edits,
       batchWrite: (params) => client.request('config/batchWrite', params),
       readConfig: () => client.request('config/read', { cwd, includeLayers: true }),

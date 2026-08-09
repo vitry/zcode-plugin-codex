@@ -27,6 +27,7 @@ import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
 import { executeTransfer, resolveTransferSource, TRANSFER_WIRE_LIMITS } from './lib/transfer.mjs';
 import { reconcileBrokerOwnership } from './zcode-broker.mjs';
+import { resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
 
 const backgroundBindings = new WeakMap();
 const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
@@ -35,7 +36,11 @@ const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.u
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
   const parsed = parseArgs(argv); const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
-  if (parsed.command === 'setup') return runSetup({ pluginRoot: activePluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
+  if (parsed.command === 'setup') {
+    const activeTurn = await createIdentityStore({ dataRoot }).resolveOnlyActiveTurn({ workspace: cwd });
+    const session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId);
+    return runSetup({ pluginRoot: activePluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
+  }
   const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies, signal: runtime.signal });
   const caller = runtime.caller ?? await identity.consumeCallerContext(requireAuthorization(runtime.authorization, ['callerContext']).callerContext, { workspace: cwd });

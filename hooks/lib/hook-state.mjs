@@ -35,6 +35,18 @@ export async function recordSession(dataRoot, input) {
   const store = await paths(dataRoot, input.cwd); const id = key('session', input.session_id);
   await withFileLock(store.lock, () => atomicWriteJson(join(store.directory, `session-${id}.json`), { kind: 'session', sessionId: input.session_id, workspace: store.workspacePath, createdAt: new Date().toISOString() }));
 }
+export async function resolveRecordedSessionStart(dataRoot, workspace, sessionId) {
+  const store = await paths(dataRoot, workspace); const id = key('session', sessionId);
+  try {
+    const record = await readJsonFile(join(store.directory, `session-${id}.json`));
+    if (record.kind !== 'session' || record.sessionId !== sessionId || record.workspace !== store.workspacePath || !Number.isFinite(Date.parse(record.createdAt))) throw new Error('invalid session record');
+    return { startedAt: record.createdAt };
+  } catch (cause) {
+    throw Object.assign(new Error('Setup could not prove the active Codex SessionStart record.'), {
+      code: 'SETUP_SESSION_UNPROVEN', category: 'authorization', remedy: 'Restart Codex, then run $zcode:setup from one active session.', cause,
+    });
+  }
+}
 export async function isOwnedSession(dataRoot, input) { const store = await paths(dataRoot, input.cwd); const id = key('session', input.session_id); try { const record = await readJsonFile(join(store.directory, `session-${id}.json`)); return record.kind === 'session' && record.sessionId === input.session_id && record.workspace === store.workspacePath; } catch { return false; } }
 export async function markForwarding(dataRoot, input) { const store = await paths(dataRoot, input.cwd); const id = key('forward', input.session_id, input.turn_id); await withFileLock(store.lock, () => atomicWriteJson(join(store.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, turnId: input.turn_id, agentId: input.agent_id, active: input.hook_event_name === 'SubagentStart', updatedAt: new Date().toISOString() })); }
 export async function isForwarding(dataRoot, input) { const store = await paths(dataRoot, input.cwd); const id = key('forward', input.session_id, input.turn_id); try { return (await readJsonFile(join(store.directory, `forward-${id}.json`))).active === true; } catch { return false; } }

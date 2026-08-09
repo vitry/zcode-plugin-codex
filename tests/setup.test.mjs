@@ -9,9 +9,11 @@ import { spawn } from 'node:child_process';
 
 import { parseArgs } from '../scripts/lib/args.mjs';
 import { diagnoseZCodeAuth, pluginRootFromModuleUrl, runSetup } from '../scripts/lib/codex-config.mjs';
+import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { MANAGED_ROLE_DESCRIPTION, managedRolePaths } from '../scripts/lib/managed-agent-role.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
+import { recordSession } from '../hooks/lib/hook-state.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
@@ -35,7 +37,14 @@ async function context({ hooks = hookMetadata(root), features = { hooks: false }
   const writable = { sandbox_workspace_write: { writable_roots: [dataRoot] } };
   const configResult = { config: { features, unrelated: { preserved: true }, ...writable }, origins: {}, layers: [{ name: { type: 'user', file: join(dataRoot, 'config.toml') }, version: 'version-1', config: { unrelated: { preserved: true }, ...writable } }] };
   const hooksResult = { data: [{ cwd, errors: [], warnings: [], hooks }] };
-  return { cwd, dataRoot, record, zcodeRecord, options: { pluginRoot: root, dataRoot, cwd, reviewGate: undefined, env: { ...process.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_CODEX_RECORD: record, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configResult), FAKE_CODEX_HOOKS_RESULT: JSON.stringify(hooksResult), ...zcodeEnv, ...codexEnv }, codex: { executable: process.execPath, args: [fakeCodex], timeoutMs: 1_000 } } };
+  return { cwd, dataRoot, record, zcodeRecord, options: { pluginRoot: root, dataRoot, cwd, reviewGate: undefined, sessionStartedAt: '2000-01-01T00:00:00.000Z', env: { ...process.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_CODEX_RECORD: record, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configResult), FAKE_CODEX_HOOKS_RESULT: JSON.stringify(hooksResult), ...zcodeEnv, ...codexEnv }, codex: { executable: process.execPath, args: [fakeCodex], timeoutMs: 1_000 } } };
+}
+
+async function recordSetupSession(ctx, sessionId, prompt) {
+  await recordSession(ctx.dataRoot, { session_id: sessionId, cwd: ctx.cwd });
+  await createIdentityStore({ dataRoot: ctx.dataRoot }).beginCallerTurn({
+    sessionId, turnId: `${sessionId}-turn`, workspace: ctx.cwd, permissionMode: 'workspace-write', prompt,
+  });
 }
 
 test('setup uses current config/read, hooks/list and one atomic exact trust/features batch write', async () => {
@@ -74,7 +83,9 @@ test('managed Rescue role requires a fresh setup rerun after installation before
   };
   await writeFile(ctx.record, '');
   const second = await runSetup({ ...ctx.options, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configured) } });
-  assert.equal(second.status, 'ready');
+  assert.equal(second.status, 'restart-required');
+  const fresh = await runSetup({ ...ctx.options, sessionStartedAt: '2999-01-01T00:00:00.000Z', env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configured) } });
+  assert.equal(fresh.status, 'ready');
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.ok(!calls.some((call) => call.method === 'config/batchWrite'));
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
@@ -307,10 +318,23 @@ test('review-gate toggles are isolated between workspaces sharing PLUGIN_DATA', 
 });
 
 test('real companion setup is the only public command that needs no caller authorization', async () => {
-  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runCompanion(['setup', '--enable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) } }); assert.equal(report.status, 'restart-required'); assert.equal(report.reviewGate.enabled, true);
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); await recordSetupSession(ctx, 'natural-setup-session', 'Please configure ZCode for this workspace.'); const report = await runCompanion(['setup', '--enable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) } }); assert.equal(report.status, 'restart-required'); assert.equal(report.reviewGate.enabled, true);
   await assert.rejects(runCompanion(['status'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot } }), { code: 'INTERNAL_AUTHORIZATION_INVALID' });
 });
 
+test('real companion setup fails closed when private active-session proof is missing or ambiguous', async (t) => {
+  await t.test('missing', async () => {
+    const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+    await assert.rejects(runCompanion(['setup'], { cwd: ctx.cwd, env: ctx.options.env }), { code: 'SETUP_SESSION_UNPROVEN' });
+  });
+  await t.test('ambiguous', async () => {
+    const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+    await recordSetupSession(ctx, 'setup-a', 'Set up this project naturally.');
+    await recordSetupSession(ctx, 'setup-b', 'Configure the plugin please.');
+    await assert.rejects(runCompanion(['setup'], { cwd: ctx.cwd, env: ctx.options.env }), { code: 'SETUP_SESSION_UNPROVEN' });
+  });
+});
+
 test('setup executable succeeds on ordinary stdio without protected fd3/fd4', async () => {
-  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const result = await new Promise((resolvePromise, reject) => { const child = spawn(process.execPath, [join(root, 'scripts/zcode-companion.mjs'), 'setup', '--disable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) }, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let stderr = ''; child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.once('error', reject); child.once('exit', (code) => resolvePromise({ code, stdout, stderr })); }); assert.equal(result.code, 0, result.stderr); assert.equal(JSON.parse(result.stdout).status, 'restart-required'); assert.doesNotMatch(`${result.stdout}${result.stderr}`, /INTERNAL_RESPONSE/);
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); await recordSetupSession(ctx, 'stdio-setup-session', 'Could you get ZCode ready?'); const result = await new Promise((resolvePromise, reject) => { const child = spawn(process.execPath, [join(root, 'scripts/zcode-companion.mjs'), 'setup', '--disable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) }, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let stderr = ''; child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.once('error', reject); child.once('exit', (code) => resolvePromise({ code, stdout, stderr })); }); assert.equal(result.code, 0, result.stderr); assert.equal(JSON.parse(result.stdout).status, 'restart-required'); assert.doesNotMatch(`${result.stdout}${result.stderr}`, /INTERNAL_RESPONSE/);
 });
