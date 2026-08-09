@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,11 +9,16 @@ import test from 'node:test';
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
+import {
+  CodexRescueUnqualifiedError,
+  parseCodexRolloutJsonl,
+  qualifyCodexRescueEvidence,
+} from '../helpers/codex-rescue-qualification.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
 const optInSkip = process.env.ZCODE_CODEX_SKILLS_E2E === '1' ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_SKILLS_E2E=1 to spend authenticated Codex credits.');
-const rescueOptInSkip = process.env.ZCODE_CODEX_RESCUE_E2E === '1' ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_RESCUE_E2E=1 to qualify native Rescue routing with authenticated Codex credits.');
+const rescueOptInSkip = process.env.ZCODE_CODEX_RESCUE_E2E === '1' ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_RESCUE_E2E=1 to qualify the Codex 0.147 schema-hidden route; set ZCODE_CODEX_RESCUE_SCHEMA_MODE=named only on a host whose spawn schema exposes agent_type.');
 
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-skills-e2e-')); t.after(() => rm(temporary, { recursive: true, force: true }));
@@ -45,12 +50,13 @@ test('installed Rescue uses one isolated native child and returns its public std
   const sourceCodexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
   try { await stat(join(sourceCodexHome, 'auth.json')); await cp(join(sourceCodexHome, 'auth.json'), join(codexHome, 'auth.json')); await chmod(join(codexHome, 'auth.json'), 0o600); }
   catch { t.skip(unqualified('auth-required', 'No transferable Codex auth.json was found.')); return; }
-  const env = { ...process.env, CODEX_HOME: codexHome, HOME: home, USERPROFILE: home, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_ZCODE_CONVERSATION_PROGRESS: '1', PATH: process.env.PATH ?? '' };
+  const env = { ...process.env, CODEX_HOME: codexHome, HOME: home, USERPROFILE: home, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_ZCODE_CONVERSATION_PROGRESS: '1', FAKE_ZCODE_GATE_RESULT: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C', PATH: process.env.PATH ?? '' };
   const auth = await codex(['login', 'status'], temporary, env, 30_000); if (auth.code !== 0) { t.skip(unqualified('auth-required', 'The isolated Codex home is not authenticated.')); return; }
   await buildMarketplaceSnapshot({ root, output: marketplace, sourceRef: 'qualified-rescue-e2e', sourceSha: '0'.repeat(40), npmExecPath: process.env.NPM_CLI_JS ?? npmLaunch([]).args[0], env });
   for (const args of [['plugin', 'marketplace', 'add', marketplace, '--json'], ['plugin', 'add', 'zcode@vitry', '--json']]) { const result = await codex(args, temporary, env); assert.equal(result.code, 0, result.stderr || result.stdout); }
+  const installedPluginRoot = await findInstalledPluginRoot(codexHome);
   await git(['init', '-q'], workspace); await writeFile(join(workspace, 'tracked.txt'), 'base\n'); await git(['add', 'tracked.txt'], workspace); await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], workspace); await writeFile(join(workspace, 'tracked.txt'), 'changed\n');
-  const commonArgs = ['exec', '--ephemeral', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all', '-C', workspace];
+  const commonArgs = ['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all', '-C', workspace];
   let setupReady = false;
   for (let attempt = 0; attempt < 4 && !setupReady; attempt += 1) {
     const setup = await codex([...commonArgs, 'Use the installed $zcode:setup skill exactly once now. Return only its public output.'], workspace, env, 180_000);
@@ -63,17 +69,46 @@ test('installed Rescue uses one isolated native child and returns its public std
   const rescue = await codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait repair the fixture skill exactly once now. Return only its final public result.'], workspace, env, 240_000);
   if (skipExternalFailure(t, rescue)) return;
   assert.equal(rescue.code, 0, `codex Rescue failed\n${rescue.stdout}\n${rescue.stderr}`);
-  const lines = rescue.stdout.trim().split('\n').filter(Boolean); const frames = lines.map((line) => JSON.parse(line)); const serialized = frames.map((frame) => JSON.stringify(frame));
-  const agentOffset = serialized.findIndex((line) => /zcode_rescue|zcode-rescue/.test(line));
-  const commandOffset = serialized.findIndex((line) => /scripts\\?\/zcode-companion\.mjs.*invoke rescue/.test(line));
-  if (agentOffset < 0 || commandOffset < 0) { t.skip(unqualified('native-agent-observation-unavailable', 'Codex JSON events did not expose both child metadata and the child terminal command.')); return; }
-  assert.ok(commandOffset > agentOffset, 'the native child must exist before its constant companion command runs');
-  assert.equal(serialized.filter((line) => /scripts\\?\/zcode-companion\.mjs.*invoke rescue/.test(line)).length, 1, 'exactly one child executor command');
+  const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const schemaMode = process.env.ZCODE_CODEX_RESCUE_SCHEMA_MODE ?? 'generic-hidden';
+  assert.ok(['named', 'generic-hidden'].includes(schemaMode), 'ZCODE_CODEX_RESCUE_SCHEMA_MODE must be named or generic-hidden');
+  const expectedCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke rescue`;
+  const expectedSpawnMessage = schemaMode === 'named'
+    ? 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.'
+    : `Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:\n${expectedCommand}\nPreserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request/print/persist authorization material.`;
+  const expectedRoute = schemaMode === 'named' ? 'named' : 'generic-schema-hidden';
   const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(zcodeCalls.filter((call) => call.method === 'session/send').length, 1, 'one ZCode send after one native child spawn');
-  const parentMessages = frames.filter((frame) => /agent_message|item\.completed/.test(String(frame.type)) && !/zcode_rescue|zcode-rescue/.test(JSON.stringify(frame))).map((frame) => JSON.stringify(frame));
-  assert.doesNotMatch(parentMessages.join('\n'), /Running command: npm test|raw output must stay private|reasoning must stay private/);
-  assert.match(parentMessages.at(-1) ?? '', /done/);
+  try {
+    const evidence = qualifyCodexRescueEvidence(
+      { execFrames: frames, rollouts: await loadCodexRollouts(codexHome) },
+      {
+        schemaMode,
+        expectedTaskName: 'zcode_rescue',
+        expectedAgentPath: '/root/zcode_rescue',
+        expectedAgentType: 'zcode-rescue',
+        expectedCommand,
+        expectedSpawnMessage,
+        expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
+        forbiddenParentText: [
+          'Running command: npm test.',
+          'Command completed: npm test (25ms).',
+          'raw output must stay private',
+          'reasoning must stay private',
+          'capability must stay private',
+          'v4/conversation/frame',
+        ],
+      },
+    );
+    assert.equal(evidence.route, expectedRoute, 'qualification must record the selected native route');
+  } catch (error) {
+    if (error instanceof CodexRescueUnqualifiedError) {
+      if (error.evidence) assert.equal(error.evidence.route, expectedRoute, 'partial qualification evidence must record the selected native route');
+      const detail = error.evidence ? `Observed route ${error.evidence.route}. ${error.message}` : error.message;
+      t.skip(unqualified(error.code, detail)); return;
+    }
+    throw error;
+  }
 });
 
 async function codex(args, cwd, env, timeoutMs = 60_000) { return runProcess(codexLaunch(args, { root, env }), { cwd, env, timeoutMs, maxOutputBytes: 16 * 1024 * 1024 }); }
@@ -84,4 +119,40 @@ function skipExternalFailure(t, result) {
   if (result.code !== 0 && /unauthorized|authentication|not logged in|login required|\b401\b/i.test(output)) { t.skip(unqualified('auth-required', 'Codex authentication expired or was rejected.')); return true; }
   if (result.code !== 0 && /credit|usage limit|quota|rate.?limit|insufficient/i.test(output)) { t.skip(unqualified('credits-unavailable', 'The authenticated account has no credits available for qualification.')); return true; }
   return false;
+}
+
+async function findInstalledPluginRoot(codexHome) {
+  const cacheRoot = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode');
+  const entries = await readdir(cacheRoot, { withFileTypes: true });
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = join(cacheRoot, entry.name);
+    try { await stat(join(candidate, 'skills', 'rescue', 'SKILL.md')); candidates.push(await realpath(candidate)); } catch { continue; }
+  }
+  assert.equal(candidates.length, 1, 'isolated Codex home must contain exactly one installed ZCode plugin root');
+  return candidates[0];
+}
+
+async function loadCodexRollouts(codexHome) {
+  const pending = [{ path: join(codexHome, 'sessions'), depth: 0 }];
+  const files = [];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    let entries;
+    try { entries = await readdir(current.path, { withFileTypes: true }); }
+    catch (error) { throw new CodexRescueUnqualifiedError('rollouts-unavailable', `Codex session rollouts are unavailable: ${error.code ?? 'read-failed'}.`); }
+    for (const entry of entries) {
+      const path = join(current.path, entry.name);
+      if (entry.isDirectory() && current.depth < 6) pending.push({ path, depth: current.depth + 1 });
+      else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(path);
+      if (files.length > 64 || pending.length > 256) throw new CodexRescueUnqualifiedError('rollouts-overflow', 'Codex rollout discovery exceeded its qualification bound.');
+    }
+  }
+  if (files.length === 0) throw new CodexRescueUnqualifiedError('rollouts-unavailable', 'Codex produced no persisted rollout files.');
+  return Promise.all(files.map(async (path) => {
+    const metadata = await stat(path);
+    if (metadata.size > 16 * 1024 * 1024) throw new CodexRescueUnqualifiedError('rollout-file-oversize', 'A Codex rollout exceeds the qualification bound.');
+    return parseCodexRolloutJsonl(await readFile(path, 'utf8'));
+  }));
 }

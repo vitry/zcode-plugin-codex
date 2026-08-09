@@ -76,9 +76,9 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   assert.match(source, /fork_turns:\s*['"]none['"]/);
   assert.match(source, /agent_type:\s*['"]zcode-rescue['"]/);
   assert.match(source, /Run the installed ZCode Rescue forwarder now\. Return its public stdout verbatim\./);
-  assert.match(source, /schema (?:hides|does not expose) `agent_type`/i);
+  assert.match(source, /schema (?:omits|hides|does not expose) `agent_type`/i);
   assert.match(source, /unsupported\/reserved/i);
-  assert.match(source, /unknown `?agent_type`?[\s\S]+\$zcode:setup/i);
+  assert.match(source, /unknown\/unavailable\/invalid (?:value|Role value) `zcode-rescue`[\s\S]+\$zcode:setup/i);
   assert.match(source, /wait[\s\S]+same child/i);
   assert.doesNotMatch(source, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
 });
@@ -90,8 +90,13 @@ test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task
   assert.match(source, /node "<canonical-plugin-root>\/scripts\/zcode-companion\.mjs" invoke rescue/);
   assert.match(source, /Preserve stderr and return public stdout verbatim\./);
   assert.match(source, /Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request\/print\/persist authorization material\./);
-  assert.match(source, /spawn exactly once/i);
-  assert.match(source, /spawn(?:ing)? fails[\s\S]+no queued job or authorization artifact/i);
+  assert.match(source, /never issue a second spawn/i);
+  assert.match(source, /unknown\/unrecognized\/unsupported\/reserved (?:field\/key\/parameter|field, key, or parameter) `agent_type`/i);
+  assert.match(source, /no agent ID, start event, or activity/i);
+  assert.match(source, /unknown\/unavailable\/invalid (?:value|Role value) `zcode-rescue`/i);
+  assert.match(source, /timeout[\s\S]+ambiguous[\s\S]+never generic fallback/i);
+  assert.match(source, /may have created a child[\s\S]+same child/i);
+  assert.doesNotMatch(source, /If spawning fails[^\n]+no queued job or authorization artifact/i);
   assert.doesNotMatch(source, /spawn[^\n]*(?:task text|job ID|capability|permission snapshot)/i);
 });
 

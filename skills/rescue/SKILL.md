@@ -22,7 +22,16 @@ spawn_agent({
 })
 ```
 
-Only after the preflight returned `ready`, use the generic native-agent compatibility route when either the active schema hides `agent_type` (the schema does not expose `agent_type`) or the named request is rejected before creating a child specifically because `agent_type` is an unsupported/reserved field. An `unknown agent_type`, missing or unavailable Role, Role/config mismatch, drift, shadowing, outdated state, configuration error, ambiguous failure, or any runtime child failure requires `$zcode:setup` and is not eligible. A rejected named request must not have created a child; spawn exactly once and never start a second executor. If spawning fails, stop: because no child ran the companion, there is no queued job or authorization artifact to clean up.
+Only after the preflight returned `ready`, classify routing exactly as follows:
+
+| Observed condition | Required action |
+|---|---|
+| The active tool schema omits `agent_type` | Use the generic route. |
+| The named tool request is rejected for an unknown/unrecognized/unsupported/reserved field/key/parameter `agent_type`, and the rejection proves there is no agent ID, start event, or activity | Use the generic route; this was a pre-child schema rejection. |
+| The schema recognizes `agent_type`, but reports an unknown/unavailable/invalid Role value `zcode-rescue`, a missing Role, Role/config mismatch, drift, shadowing, or outdated state | Fail closed with `$zcode:setup`; do not use generic fallback. |
+| A timeout, ambiguous result, runtime failure, or any returned agent ID, start event, or activity | It may have created a child. Never generic fallback and never issue a second spawn. If an ID exists, wait or rejoin that same child; otherwise stop with the original failure. |
+
+Do not infer field incompatibility merely from the words `unknown`, `invalid`, or `unsupported`: the error must identify the `agent_type` field/key/parameter rather than its `zcode-rescue` value. Only a proven pre-child schema rejection guarantees that no child ran the companion and therefore no queued job or authorization artifact exists.
 
 For the generic route, substitute only the preflight-verified absolute canonical plugin root in this fixed message, then call `spawn_agent` with `task_name: 'zcode_rescue'`, `fork_turns: 'none'`, no `agent_type`, and exactly that message:
 
