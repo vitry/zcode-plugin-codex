@@ -16,6 +16,7 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const READ_TOOLS = /^(read|inspect|search|list|find|glob|grep|git(?:[-_ ]?(?:status|diff|log|show))?)$/i;
 const MUTATING_TOOLS = /(write|edit|patch|delete|remove|create|exec|shell|command|install|move|rename|commit|push)/i;
+const OPTIONAL_PROGRESS_FENCE_MS = 250;
 const REVIEW_OUTPUT_SCHEMA = await loadReviewOutputSchema();
 
 /** @param {any} request @param {any} permissionSnapshot @param {string} command */
@@ -53,11 +54,16 @@ export async function executeJob(input) {
   const cleanupProgress = async () => {
     if (progressCleaned) return;
     progressCleaned = true;
+    try { reporter?.stopAccepting(); } catch { /* progress-only */ }
+    try { unsubscribeNotifications(); } catch { reporter?.diagnose('conversation-unsubscribe-failed'); }
+    let remoteCleanup = Promise.resolve();
+    try { remoteCleanup = Promise.resolve(unsubscribeConversation()).catch(() => { reporter?.diagnose('conversation-unsubscribe-failed'); }); }
+    catch { reporter?.diagnose('conversation-unsubscribe-failed'); }
+    const initialDrain = Promise.resolve().then(() => reporter?.flush()).catch(() => {});
+    const remoteDrain = remoteCleanup.then(() => Promise.resolve()).then(() => reporter?.flush()).catch(() => {});
+    await waitForOptionalProgress(Promise.all([initialDrain, remoteDrain]), OPTIONAL_PROGRESS_FENCE_MS);
     try { conversationObserver?.markTerminal(); } catch { /* progress-only */ }
     try { reporter?.close(); } catch { /* progress-only */ }
-    try { Promise.resolve(unsubscribeConversation()).catch(() => {}); } catch { /* progress-only */ }
-    try { unsubscribeNotifications(); } catch { /* progress-only */ }
-    try { await reporter?.flush(); } catch { /* progress-only */ }
   };
   try {
     let prompt;
@@ -87,6 +93,7 @@ export async function executeJob(input) {
       ...(input.progressWriter ? { write: input.progressWriter } : {}),
       persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
       describeNotification: conversationObserver.observe,
+      onDescriptorOverflow: conversationObserver.markGap,
       ...input.progressDependencies,
     });
     try { unsubscribeNotifications = client.subscribe(reporter.observe); } catch { unsubscribeNotifications = () => {}; }
@@ -96,7 +103,7 @@ export async function executeJob(input) {
         // Register cleanup before binding can perform any asynchronous work.
         unsubscribeConversation = conversationSubscription.unsubscribe;
         await conversationObserver.bind(conversationSubscription.subscriptionId);
-      } catch { conversationObserver.fail(); }
+      } catch { conversationObserver.fail(); reporter.diagnose('conversation-subscribe-failed'); }
     } else conversationObserver.fail();
     const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
     if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
@@ -116,7 +123,6 @@ export async function executeJob(input) {
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
     await waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
-    conversationObserver?.markTerminal();
     await cleanupProgress();
     const finalSnapshot = await client.readSession(activeSessionId);
     remoteTerminalProven = true;
@@ -151,6 +157,15 @@ export async function executeJob(input) {
   await client.close().catch(() => {});
   if (primaryError) throw primaryError;
   return output;
+}
+
+/** @param {Promise<unknown>} operation @param {number} timeoutMs */
+async function waitForOptionalProgress(operation, timeoutMs) {
+  operation.catch(() => {});
+  /** @type {ReturnType<typeof setTimeout>|undefined} */ let timer;
+  try { await Promise.race([operation, new Promise((resolvePromise) => { timer = setTimeout(resolvePromise, timeoutMs); })]); }
+  catch { /* optional progress cleanup */ }
+  finally { if (timer !== undefined) clearTimeout(timer); }
 }
 
 /** Serialize executor terminal publication with cancellation and lifecycle maintenance. @param {{input:any,job:any,workspace:string,dataRoot:string,result:string}} publication */

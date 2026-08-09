@@ -1,7 +1,11 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
+import { createConversationProgressDescriber } from '../scripts/lib/conversation-progress.mjs';
 import * as progressModule from '../scripts/lib/progress.mjs';
 import {
   MAX_PROGRESS_MESSAGE_BYTES,
@@ -10,6 +14,7 @@ import {
   PROGRESS_PHASES,
   normalizeZCodeProgress,
 } from '../scripts/lib/progress.mjs';
+import { conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
 
 const observedAt = '2026-08-08T00:00:00.000Z';
 
@@ -34,6 +39,7 @@ test('exports fixed progress bounds and phases', () => {
   assert.equal(progressModule.MAX_PROGRESS_PENDING_EVENTS, 4);
   assert.equal(MAX_PROGRESS_MESSAGE_BYTES, 256);
   assert.equal(PROGRESS_HEARTBEAT_MS, 20_000);
+  assert.equal(progressModule.MAX_PROGRESS_DIAGNOSTIC_KINDS, 8);
 });
 
 test('normalizes known same-session activity to fixed public messages', () => {
@@ -259,7 +265,7 @@ test('persistence failure disables preview while writer continues and flush stay
     reporter.observe(notification('api_retry'));
     await reporter.flush();
     assert.deepEqual(attempts, ['ZCode started a tool call.']);
-    assert.deepEqual(lines, ['[zcode] ZCode started a tool call.\n', '[zcode] ZCode is retrying the model request.\n']);
+    assert.deepEqual(lines, ['[zcode] ZCode started a tool call.\n', '[zcode] ZCode progress preview was disabled.\n', '[zcode] ZCode is retrying the model request.\n']);
   } finally {
     process.off('unhandledRejection', onUnhandled);
     reporter.close();
@@ -288,6 +294,7 @@ test('writer failure permanently disables writer while persistence continues and
     assert.deepEqual(persisted, [
       { phase: 'running', message: 'ZCode started a tool call.', observedAt },
       { phase: 'waiting', message: 'ZCode is retrying the model request.', observedAt },
+      { phase: 'waiting', message: 'ZCode progress output was disabled.', observedAt },
     ]);
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(unhandled, []);
@@ -327,15 +334,39 @@ test('a conversation notification may asynchronously produce multiple bounded ev
 });
 
 test('bounds queued render work and flush cannot be held by a never-settling progress sink', async () => {
-  let calls = 0;
+  let calls = 0; const diagnostics = []; let overflows = 0;
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a', describeNotification: async () => { calls += 1; return new Promise(() => {}); },
+    onDescriptorOverflow: () => { overflows += 1; }, onDiagnostic: ({ kind }) => diagnostics.push(kind),
     now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
   });
   for (let index = 0; index < 1_000; index += 1) reporter.observe({ method: 'v4/conversation/frame', index });
   const started = Date.now(); await reporter.flush();
-  assert.ok(Date.now() - started < 1_000); assert.equal(calls, 1);
+  assert.ok(Date.now() - started < 1_000); assert.equal(calls, 1); assert.equal(overflows, 1);
+  assert.deepEqual(diagnostics, ['conversation-frame-overflow', 'progress-flush-timeout']);
   reporter.close();
+});
+
+test('reporter burst overflow pauses exact frames until a valid recovery baseline restores continuity', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-reporter-')); const lines = []; const persisted = []; const diagnostics = [];
+  const describer = await createConversationProgressDescriber(
+    { sessionId: 'session-1', subscriptionId: 'sub-1', workspace },
+    { pathTimeoutMs: 20, resolvePath: async () => new Promise(() => {}) },
+  );
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-1', write: (line) => lines.push(line), persist: async (event) => persisted.push(event),
+    describeNotification: describer.observe, onDescriptorOverflow: describer.markGap, onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  for (let ordinal = 1; ordinal <= 7; ordinal += 1) reporter.observe(conversationFrame({ ordinal, deltas: [toolRow({ rowId: ordinal, toolName: 'Read', input: { file_path: `stalled-${ordinal}` } })] }));
+  reporter.observe(conversationFrame({ ordinal: 8, deliveryKind: 'recovery', subscriptionId: 'foreign', deltas: [] }));
+  reporter.observe(conversationFrame({ ordinal: 8, deltas: [toolRow({ rowId: 8, input: { command: 'STALE_ONLINE_SECRET' } })] }));
+  reporter.observe(conversationFrame({ ordinal: 8, deliveryKind: 'recovery', deltas: [] }));
+  reporter.observe(conversationFrame({ ordinal: 9, deltas: [toolRow({ rowId: 9, input: { command: 'echo recovered reporter' } })] }));
+  await reporter.flush(); reporter.close();
+  assert.deepEqual(diagnostics, ['conversation-frame-overflow']);
+  assert.match(lines.join(''), /paused after an activity burst/); assert.match(lines.join(''), /Running command: echo recovered reporter\./);
+  assert.doesNotMatch(`${lines.join('')} ${JSON.stringify(persisted)}`, /STALE_ONLINE_SECRET|stalled-/);
 });
 
 test('close fences a delayed semantic description after terminal state progress', async () => {

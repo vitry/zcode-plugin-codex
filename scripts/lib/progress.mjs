@@ -3,7 +3,18 @@ export const MAX_PROGRESS_PREVIEW_ENTRIES = 4;
 export const MAX_PROGRESS_PENDING_EVENTS = 4;
 export const MAX_PROGRESS_MESSAGE_BYTES = 256;
 export const PROGRESS_HEARTBEAT_MS = 20_000;
+export const MAX_PROGRESS_DIAGNOSTIC_KINDS = 8;
 const PROGRESS_FLUSH_TIMEOUT_MS = 250;
+
+const PROGRESS_DIAGNOSTICS = new Map([
+  ['conversation-subscribe-failed', 'ZCode conversation progress is unavailable.'],
+  ['conversation-unsubscribe-failed', 'ZCode conversation progress cleanup was incomplete.'],
+  ['conversation-frame-overflow', 'ZCode conversation progress paused after an activity burst.'],
+  ['conversation-render-failed', 'ZCode conversation progress rendering was disabled.'],
+  ['writer-disabled', 'ZCode progress output was disabled.'],
+  ['preview-disabled', 'ZCode progress preview was disabled.'],
+  ['progress-flush-timeout', 'ZCode progress cleanup reached its time limit.'],
+]);
 
 /** @template T @param {Promise<T>} completion @param {AbortSignal|undefined} signal @returns {Promise<T>} */
 export async function waitForCompletionOrAbort(completion, signal) {
@@ -46,7 +57,7 @@ export function normalizeZCodeProgress(notification, sessionId, observedAt) {
 }
 
 /**
- * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,describeNotification?:(notification:unknown,observedAt:string)=>Array<{phase:string,message:string,observedAt:string}>|Promise<Array<{phase:string,message:string,observedAt:string}>>,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
+ * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,describeNotification?:(notification:unknown,observedAt:string)=>Array<{phase:string,message:string,observedAt:string}>|Promise<Array<{phase:string,message:string,observedAt:string}>>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
  */
 export function createProgressReporter({
   sessionId,
@@ -54,12 +65,14 @@ export function createProgressReporter({
   write,
   persist,
   describeNotification,
+  onDescriptorOverflow,
   onDiagnostic,
   now = () => new Date().toISOString(),
   setInterval: setIntervalFn = globalThis.setInterval,
   clearInterval: clearIntervalFn = globalThis.clearInterval,
 }) {
   let active = !deferred;
+  let accepting = true;
   let closed = false;
   let lastActivityAt = active ? now() : null;
   /** @type {string|null} */
@@ -74,8 +87,22 @@ export function createProgressReporter({
   let writerDisabled = false; let persistDisabled = false;
   /** @type {Promise<void>|null} */ let descriptorInFlight = null;
   /** @type {Array<{notification:unknown,observedAt:string}>} */ const descriptorPending = [];
+  let descriptorOverflowed = false;
+  const diagnosedKinds = new Set();
   /** @param {string} kind */
-  const diagnose = (kind) => { try { onDiagnostic?.({ kind }); } catch { /* diagnostics are observational */ } };
+  const diagnose = (kind) => {
+    const message = PROGRESS_DIAGNOSTICS.get(kind);
+    if (!message || diagnosedKinds.has(kind) || diagnosedKinds.size >= MAX_PROGRESS_DIAGNOSTIC_KINDS) return false;
+    diagnosedKinds.add(kind);
+    try { onDiagnostic?.({ kind }); } catch { /* diagnostics are observational */ }
+    queueMicrotask(() => {
+      if (closed) return;
+      const observedAt = now(); if (!validTimestamp(observedAt)) return;
+      const event = { phase: 'waiting', message, observedAt };
+      if (!active) bufferEvent(event); else dispatch(event);
+    });
+    return true;
+  };
   /** @param {{phase:string,message:string,observedAt:string}} event */
   const writeEvent = (event) => {
     if (typeof write !== 'function' || writerDisabled) return;
@@ -142,20 +169,28 @@ export function createProgressReporter({
     }).catch(() => diagnose('conversation-render-failed')).then(() => {
       descriptorInFlight = null;
       const next = descriptorPending.shift(); if (next) startDescribe(next);
+      else descriptorOverflowed = false;
     });
   };
   /** @param {{notification:unknown,observedAt:string}} item */
   const enqueueDescribe = (item) => {
     if (descriptorInFlight === null) { startDescribe(item); return; }
     if (descriptorPending.length < MAX_PROGRESS_PENDING_EVENTS) descriptorPending.push(item);
-    else descriptorPending[descriptorPending.length - 1] = item;
+    else {
+      descriptorPending.length = 0; descriptorPending.push(item);
+      if (!descriptorOverflowed) {
+        descriptorOverflowed = true;
+        try { onDescriptorOverflow?.(); } catch { /* overflow recovery is observational */ }
+        diagnose('conversation-frame-overflow');
+      }
+    }
   };
   if (active) startTimer();
 
   return {
     /** @param {unknown} notification */
     observe(notification) {
-      if (closed) return null;
+      if (closed || !accepting) return null;
       const observedAt = now();
       const event = normalizeZCodeProgress(notification, sessionId, observedAt);
       if (event === null && typeof describeNotification === 'function' && plainObject(notification) && notification.method === 'v4/conversation/frame') {
@@ -176,6 +211,9 @@ export function createProgressReporter({
       for (const event of buffered) dispatch({ ...event, observedAt: activatedAt });
       buffered.length = 0; bufferedKeys.clear(); return true;
     },
+    /** @param {string} kind */
+    diagnose(kind) { return diagnose(kind); },
+    stopAccepting() { accepting = false; },
     async flush() {
       const drain = async () => {
         while (descriptorInFlight !== null || inFlight !== null) {
@@ -192,7 +230,7 @@ export function createProgressReporter({
       }
     },
     close() {
-      closed = true; buffered.length = 0; bufferedKeys.clear(); descriptorPending.length = 0;
+      accepting = false; closed = true; buffered.length = 0; bufferedKeys.clear(); descriptorPending.length = 0;
       if (timer === null) return;
       clearIntervalFn(timer);
       timer = null;

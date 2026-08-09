@@ -11,6 +11,7 @@ import { createJobController, ownerIdForSession } from '../scripts/lib/job-contr
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { executeJob } from '../scripts/lib/review.mjs';
+import { conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
 
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), 'zcode-job-control-'));
@@ -623,6 +624,32 @@ test('a never-settling conversation unsubscribe cannot block authoritative succe
   try { result = await Promise.race([execution, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('unsubscribe blocked success')), 1_000); })]); }
   finally { clearTimeout(timeout); }
   assert.equal(result.result, 'done'); assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+});
+
+test('executor stops notification intake then bounded-drains already received semantic progress before terminal fencing', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {((notification:any)=>void)|undefined} */ let handler;
+  let localUnsubscribed = false;
+  /** @type {string[]} */
+  const lines = [];
+  const sessionId = 'zs-cleanup-drain'; const subscriptionId = 'subscription-1';
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    subscribeConversation: async () => ({ subscriptionId, unsubscribe: async () => {} }),
+    subscribe: (/** @type {(notification:any)=>void} */ subscriber) => { handler = subscriber; return () => {
+      localUnsubscribed = true;
+      handler?.(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, ordinal: 2, deltas: [toolRow({ rowId: 2, input: { command: 'LATE_AFTER_UNSUBSCRIBE_SECRET' } })] })));
+      throw new Error('local unsubscribe failed after callback');
+    }; },
+    setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-cleanup-drain', stateRevision: 1 }),
+    waitForCompletion: async () => { handler?.(conversationFrame(/** @type {any} */ ({ sessionId, subscriptionId, deltas: [toolRow({ input: { command: 'echo drain me' } })] }))); },
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-cleanup-drain', parentMessageId: 'input-cleanup-drain' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+  };
+  const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line) });
+  assert.equal(result.result, 'done'); assert.equal(localUnsubscribed, true);
+  assert.match(lines.join(''), /Running command: echo drain me\./);
+  assert.doesNotMatch(lines.join(''), /LATE_AFTER_UNSUBSCRIBE_SECRET/);
+  assert.match(lines.join(''), /conversation progress cleanup was incomplete/);
 });
 
 test('cleanup failures preserve the primary PluginError envelope and close once', async () => {

@@ -198,7 +198,7 @@ test('bounds direct concurrent observations, path stalls, frame fanout, and trac
   );
   const observations = Array.from({ length: 40 }, (_, index) => stalled.observe(conversationFrame({ ordinal: index + 1, deltas: [toolRow({ rowId: index + 1, toolName: 'Read', input: { file_path: 'x' } })] }), observedAt));
   const settled = await Promise.all(observations);
-  assert.ok(pathCalls <= 5); assert.equal(settled.filter((events) => events.length > 0).length, pathCalls);
+  assert.ok(pathCalls <= 5); assert.equal(settled.flat().length, 0);
 
   const bounded = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
   const huge = conversationFrame({ ordinal: 1, deltas: Array.from({ length: 65 }, (_, rowId) => toolRow({ rowId: rowId + 1 })) });
@@ -208,6 +208,45 @@ test('bounds direct concurrent observations, path stalls, frame fanout, and trac
   const cardinality = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
   for (let index = 1; index <= 256; index += 1) assert.equal((await cardinality.observe(conversationFrame({ ordinal: index, deltas: [toolRow({ rowId: index })] }), observedAt)).length, 1);
   assert.deepEqual(await cardinality.observe(conversationFrame({ ordinal: 257, deltas: [toolRow({ rowId: 257 })] }), observedAt), []);
+});
+
+test('queue overflow requires an exact newer recovery baseline before continuous online progress resumes', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createConversationProgressDescriber(
+    { sessionId: 'session-1', subscriptionId: 'sub-1', workspace },
+    { pathTimeoutMs: 20, resolvePath: async () => new Promise(() => {}) },
+  );
+  assert.equal((await describer.observe(conversationFrame({ ordinal: 1, deltas: [toolRow()] }), observedAt)).length, 1);
+  const active = describer.observe(conversationFrame({ ordinal: 2, deltas: [
+    toolRow({ rowId: 2, input: { command: 'STAGED_SECRET' } }),
+    toolRow({ rowId: 20, toolName: 'Read', input: { file_path: 'stalled' } }),
+  ] }), observedAt);
+  await new Promise((resolve) => setImmediate(resolve));
+  const burst = [active, ...Array.from({ length: 6 }, (_, index) => describer.observe(conversationFrame({ ordinal: index + 3, deltas: [toolRow({ rowId: index + 3, toolName: 'Read', input: { file_path: 'stalled' } })] }), observedAt))];
+  assert.equal((await Promise.all(burst)).flat().length, 0);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 9, deltas: [toolRow({ rowId: 9 })] }), observedAt), []);
+  const foreignRecovery = conversationFrame({ ordinal: 10, deliveryKind: 'recovery', subscriptionId: 'foreign', deltas: [] });
+  assert.deepEqual(await describer.observe(foreignRecovery, observedAt), []);
+  const staleRecovery = conversationFrame({ ordinal: 1, fromSeq: 1, toSeq: 1, deliveryKind: 'recovery', deltas: [] });
+  assert.deepEqual(await describer.observe(staleRecovery, observedAt), []);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 10, fromSeq: 10, toSeq: 10, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
+  const resumed = await describer.observe(conversationFrame({ ordinal: 11, fromSeq: 11, toSeq: 11, deltas: [toolRow({ rowId: 11, input: { command: 'echo recovered' } })] }), observedAt);
+  assert.equal(resumed[0].message, 'Running command: echo recovered.');
+  describer.markTerminal();
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 12, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 13, deltas: [toolRow({ rowId: 13 })] }), observedAt), []);
+});
+
+test('accepts bounded captured multiline tool output without rendering any raw output', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const delta = toolRow({ status: 'success', input: { command: 'safe command' }, endedAt: 1_786_233_600_010 });
+  delta.row.output = { text: 'SECRET first line\nsecond\tline\u0000' };
+  const events = await describer.observe(conversationFrame({ deltas: [delta] }), observedAt);
+  assert.equal(events[0].message, 'Command completed: safe command (10ms).');
+  assert.doesNotMatch(JSON.stringify(events), /SECRET|first line|second/);
+  const huge = toolRow({ rowId: 2, status: 'success' }); huge.row.output = { text: 'x'.repeat(1_048_577) };
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 2, deltas: [huge] }), observedAt), []);
 });
 
 test('bounds the prebind subscribe-response buffer to four notifications and drains it in order', async () => {
@@ -220,4 +259,17 @@ test('bounds the prebind subscribe-response buffer to four notifications and dra
   assert.equal(drained.flat().length, 4);
   deferred.markTerminal();
   assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 5, deltas: [toolRow({ rowId: 5 })] }), observedAt), []);
+});
+
+test('deferred observer can fence and recover more than one post-bind overflow episode', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const deferred = createDeferredConversationProgressObserver({ sessionId: 'session-1', workspace }); await deferred.bind('sub-1');
+  assert.equal((await deferred.observe(conversationFrame({ ordinal: 1, deltas: [toolRow()] }), observedAt)).length, 1);
+  deferred.markGap();
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 2, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
+  assert.equal((await deferred.observe(conversationFrame({ ordinal: 3, deltas: [toolRow({ rowId: 3 })] }), observedAt)).length, 1);
+  deferred.markGap();
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 4, deltas: [toolRow({ rowId: 4 })] }), observedAt), []);
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 5, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
+  assert.equal((await deferred.observe(conversationFrame({ ordinal: 6, deltas: [toolRow({ rowId: 6 })] }), observedAt)).length, 1);
 });

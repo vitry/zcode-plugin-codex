@@ -31,7 +31,7 @@ export function normalizePreview(value, limit = PREVIEW_LIMIT) {
 /**
  * @param {{sessionId:string,subscriptionId:string,workspace:string}} options
  * @param {{resolvePath?:(value:unknown,workspaceRoot:string)=>Promise<string|null>,pathTimeoutMs?:number}} [dependencies]
- * @returns {Promise<{observe:(notification:unknown,observedAt:string)=>Promise<Array<{phase:string,message:string,observedAt:string}>>,markTerminal:()=>void}>}
+ * @returns {Promise<{observe:(notification:unknown,observedAt:string)=>Promise<Array<{phase:string,message:string,observedAt:string}>>,markGap:()=>void,markTerminal:()=>void}>}
  */
 export async function createConversationProgressDescriber({ sessionId, subscriptionId, workspace }, dependencies = {}) {
   const workspaceRoot = await realpath(resolve(workspace));
@@ -48,24 +48,27 @@ export async function createConversationProgressDescriber({ sessionId, subscript
   let lastOrdinal;
   /** @type {number|undefined} */
   let lastSeq;
-  let terminal = false;
+  let terminal = false; let needsRecovery = false;
 
-  /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<Array<{phase:string,message:string,observedAt:string}>>,markTerminal:()=>void}} */
+  /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<Array<{phase:string,message:string,observedAt:string}>>,markGap:()=>void,markTerminal:()=>void}} */
   const api = {
     observe(notification, observedAt) {
       if (terminal) return Promise.resolve([]);
       return new Promise((resolveResult) => {
-        if (active && pending.length >= MAX_PENDING_OBSERVATIONS) { resolveResult([]); return; }
+        if (active && pending.length >= MAX_PENDING_OBSERVATIONS) { markGap(); resolveResult([]); return; }
         pending.push({ notification, observedAt, resolve: resolveResult });
         drain();
       });
     },
+    markGap,
     markTerminal() {
       terminal = true;
       while (pending.length > 0) pending.shift()?.resolve([]);
     },
   };
   return api;
+
+  function markGap() { if (!terminal) needsRecovery = true; }
 
   function drain() {
     if (active || pending.length === 0) return;
@@ -78,14 +81,20 @@ export async function createConversationProgressDescriber({ sessionId, subscript
   async function observeFrame(notification, observedAt) {
     if (terminal || !validObservedAt(observedAt)) return [];
     const validated = validateNotification(notification, topic, subscriptionId);
-    if (!validated || validated.deliveryKind !== 'online') return [];
+    if (!validated || validated.deliveryKind === 'initial') return [];
+    if (validated.deliveryKind === 'recovery') {
+      if (lastOrdinal !== undefined && (validated.ordinal <= lastOrdinal || validated.toSeq <= /** @type {number} */ (lastSeq))) return [];
+      if (!needsRecovery && lastOrdinal !== undefined && (validated.ordinal !== lastOrdinal + 1 || validated.fromSeq !== /** @type {number} */ (lastSeq) + 1)) return [];
+      lastOrdinal = validated.ordinal; lastSeq = validated.toSeq; needsRecovery = false; return [];
+    }
+    if (needsRecovery) return [];
     if (lastOrdinal !== undefined && (validated.ordinal !== lastOrdinal + 1 || validated.fromSeq !== /** @type {number} */ (lastSeq) + 1)) return [];
     const staged = [];
     for (const delta of validated.deltas) {
       if (!delta.row) continue;
       if (delta.row.kind === 'toolCall') {
-        const event = await describeTool(delta.row, toolStates, workspaceRoot, /** @type {string} */ (observedAt), resolvePath, pathTimeoutMs, () => terminal);
-        if (terminal) return [];
+        const event = await describeTool(delta.row, toolStates, workspaceRoot, /** @type {string} */ (observedAt), resolvePath, pathTimeoutMs, () => terminal || needsRecovery);
+        if (terminal || needsRecovery) return [];
         if (event) staged.push(event);
       } else {
         const row = delta.row;
@@ -111,9 +120,9 @@ export async function createConversationProgressDescriber({ sessionId, subscript
 export function createDeferredConversationProgressObserver({ sessionId, workspace }) {
   /** @type {Awaited<ReturnType<typeof createConversationProgressDescriber>>|undefined} */ let describer;
   /** @type {Array<{notification:unknown,observedAt:string,resolve:(events:any[])=>void}>} */ const buffered = [];
-  let binding = false; let disabled = false; let terminal = false;
+  let binding = false; let disabled = false; let terminal = false; let prebindGap = false;
   const resolveBufferedEmpty = () => { while (buffered.length > 0) buffered.shift()?.resolve([]); };
-  return /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<any[]>,bind:(subscriptionId:string)=>Promise<void>,fail:()=>void,markTerminal:()=>void}} */ ({
+  return /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<any[]>,bind:(subscriptionId:string)=>Promise<void>,fail:()=>void,markGap:()=>void,markTerminal:()=>void}} */ ({
     observe(notification, observedAt) {
       if (terminal || disabled) return Promise.resolve([]);
       if (describer && !binding) return describer.observe(notification, observedAt);
@@ -125,6 +134,7 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
       binding = true;
       try {
         describer = await createConversationProgressDescriber({ sessionId, subscriptionId, workspace });
+        if (prebindGap) describer.markGap();
         while (!terminal && !disabled && buffered.length > 0) {
           const item = buffered.shift(); if (!item) break;
           item.resolve(await describer.observe(item.notification, item.observedAt));
@@ -134,6 +144,13 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
       } finally { binding = false; if (terminal || disabled) resolveBufferedEmpty(); }
     },
     fail() { disabled = true; resolveBufferedEmpty(); },
+    markGap() {
+      if (terminal || disabled) return;
+      if (describer) describer.markGap();
+      else if (prebindGap) return;
+      else prebindGap = true;
+      resolveBufferedEmpty();
+    },
     markTerminal() { terminal = true; describer?.markTerminal(); resolveBufferedEmpty(); },
   });
 }
@@ -323,7 +340,7 @@ function plainObject(value) { return value !== null && typeof value === 'object'
 /** @param {unknown} value */
 function validActions(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && exactKeys(value, [], ['canFork', 'canEdit', 'canRetry', 'canRewindFiles', 'editDisposition']) && ['canFork', 'canEdit', 'canRetry', 'canRewindFiles'].every((key) => record[key] === undefined || record[key] === true) && (record.editDisposition === undefined || ['rewind', 'fork'].includes(record.editDisposition)); }
 /** @param {unknown} value */
-function validToolOutput(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && exactKeys(value, ['text'], ['truncated']) && boundedWireText(record.text) && (record.truncated === undefined || plainObject(record.truncated) && exactKeys(record.truncated, ['totalBytes', 'ref']) && wireNumber(record.truncated.totalBytes) && boundedIdentifier(record.truncated.ref, 1024)); }
+function validToolOutput(value) { const record = /** @type {Record<string,any>} */ (value); return value === undefined || plainObject(value) && exactKeys(value, ['text'], ['truncated']) && boundedOpaqueText(record.text) && (record.truncated === undefined || plainObject(record.truncated) && exactKeys(record.truncated, ['totalBytes', 'ref']) && wireNumber(record.truncated.totalBytes) && boundedIdentifier(record.truncated.ref, 1024)); }
 /** @param {unknown} value */
 function validToolError(value) { return value === undefined || plainObject(value) && exactKeys(value, ['code', 'message']) && boundedIdentifier(value.code, 256) && boundedWireText(value.message); }
 /** @param {unknown} value */
@@ -347,3 +364,5 @@ function validWorkSegments(value) { return value === undefined || Array.isArray(
 function validOriginMeta(value) { return value === undefined || plainObject(value) && exactKeys(value, ['backgroundSource', 'workId', 'title']) && ['bash', 'subagent'].includes(value.backgroundSource) && boundedIdentifier(value.workId, 1024) && boundedIdentifier(value.title, 4_096); }
 /** @param {unknown} value */
 function validFileChanges(value) { return value === undefined || plainObject(value) && exactKeys(value, ['additions', 'deletions', 'files'], ['state']) && wireNumber(value.additions) && wireNumber(value.deletions) && wireNumber(value.files) && (value.state === undefined || ['active', 'reverted'].includes(value.state)); }
+/** @param {unknown} value */
+function boundedOpaqueText(value) { return typeof value === 'string' && Buffer.byteLength(value) <= MAX_WIRE_TEXT; }

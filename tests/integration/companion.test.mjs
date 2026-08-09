@@ -210,6 +210,10 @@ test('conversation subscribe and unsubscribe failures are observational and pres
     const result = await companion(context, ['rescue', '--fresh', `${failure} failure`], { [`FAKE_ZCODE_CONVERSATION_${failure.toUpperCase()}_FAIL`]: '1' });
     assert.equal(result.code, 0, `${failure}: ${result.stderr}${result.stdout}`);
     assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
+    assert.match(result.stderr, failure === 'subscribe' ? /ZCode conversation progress is unavailable\./ : /ZCode conversation progress cleanup was incomplete\./);
+    assert.doesNotMatch(result.stderr, /unsupported conversation subscription|unsubscribe failed|-32601|-32099/);
+    const status = await companion(context, ['status', result.json.job.id]);
+    assert.match(JSON.stringify(status.json.job.progressPreview), failure === 'subscribe' ? /conversation progress is unavailable/ : /conversation progress cleanup was incomplete/);
   }
 });
 

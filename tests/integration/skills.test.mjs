@@ -125,6 +125,16 @@ test('all eight skill commands preserve argv and execute across the CLI fd bound
 
   const setupArgv = ['setup'];
   const setupConfig = { config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } }, origins: {}, layers: [{ name: { type: 'user', file: join(ctx.dataRoot, 'config.toml') }, version: 'version-1', config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } } }] };
+  const lifecycle = await runChild(process.execPath, [join(root, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: 'codex-setup', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+  });
+  assert.equal(lifecycle.code, 0, lifecycle.stderr || lifecycle.stdout);
+  const prompt = await runChild(process.execPath, [join(root, 'hooks', 'user-prompt-hook.mjs')], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: 'codex-setup', turn_id: 'turn-setup', cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:setup' },
+  });
+  assert.equal(prompt.code, 0, prompt.stderr || prompt.stdout);
   const setup = await invoke(ctx, setupArgv, undefined, {
     FAKE_ZCODE_VERSION: '0.1.0',
     CODEX_APP_SERVER_PATH: process.execPath,
