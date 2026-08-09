@@ -183,6 +183,27 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   ]);
 });
 
+test('conversation online progress reaches stderr and preview while initial and foreign frames stay private', async () => {
+  const context = await fixture();
+  const result = await companion(context, ['rescue', '--fresh', 'surface conversation progress'], { FAKE_ZCODE_CONVERSATION_PROGRESS: '1' });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.result, 'done');
+  assert.match(result.stderr, /\[zcode\] Running command: npm test\./);
+  assert.match(result.stderr, /\[zcode\] Command completed: npm test \(25ms\)\./);
+  assert.doesNotMatch(result.stderr, /INITIAL_SECRET|FOREIGN_SECRET|raw output|reasoning/);
+  const status = await companion(context, ['status', result.json.job.id]);
+  assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: npm test/);
+  assert.doesNotMatch(JSON.stringify(status.json.job.progressPreview), /INITIAL_SECRET|FOREIGN_SECRET/);
+});
+
+test('conversation subscribe and unsubscribe failures are observational and preserve the exact result', async () => {
+  for (const failure of ['subscribe', 'unsubscribe']) {
+    const context = await fixture();
+    const result = await companion(context, ['rescue', '--fresh', `${failure} failure`], { [`FAKE_ZCODE_CONVERSATION_${failure.toUpperCase()}_FAIL`]: '1' });
+    assert.equal(result.code, 0, `${failure}: ${result.stderr}${result.stdout}`);
+    assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
+  }
+});
+
 test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves no running job', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const record = join(context.directory, 'interrupt.jsonl'); await writeFile(record, '');
   const child = spawn(process.execPath, [cli, 'rescue', '--fresh', 'interrupt me'], {

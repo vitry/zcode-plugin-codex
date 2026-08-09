@@ -17,6 +17,7 @@ let sendCount = 0;
 let resumeCount = 0;
 let pendingRuntimePreferencesCreate;
 const pendingCompletionTimers = new Map();
+const conversationSubscriptions = new Map();
 
 const defaultModel = { providerId: 'fake', modelId: 'model' };
 function settings(model = defaultModel) { return { appliedProviderRevision: 'provider-revision-1', model: { current: model, available: [{ ref: model, label: 'Fixture model', reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, label: 'Other model', reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' }, permission: { mode: 'build', rulesRevision: 1 } }; }
@@ -56,6 +57,9 @@ function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
+function conversationNotification({ sessionId, subscriptionId, deliveryKind, ordinal, deltas, topic = `conversation/${sessionId}` }) {
+  return { method: 'v4/conversation/frame', params: { wireVersion: 3, kind: 'complete', deliveryKind, logicalFrameId: `frame-${ordinal}`, logicalFrameOrdinal: ordinal, topic, subscriptionId, frame: { topic, subscriptionId, fromSeq: ordinal, toSeq: ordinal, sentAt: new Date().toISOString(), payload: { kind: 'deltas', deltas } } } };
+}
 
 function isUnsupportedRuntimePreferencesResponse(message, pending) {
   return Object.keys(message).length === 2
@@ -163,6 +167,13 @@ input.on('line', async (line) => {
       const response = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision } };
       if (process.env.FAKE_ZCODE_BAD_SEND_ONCE === '1' && sendCount === 1) response.result.stateRevision = 'bad';
       if (process.env.FAKE_ZCODE_SYNC_BATCH !== 'stale-valid') send(response);
+      const subscription = conversationSubscriptions.get(p.sessionId);
+      if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1' && subscription) {
+        const base = { rowId: 41, turnId: 'turn-1', createdAt: '2026-08-09T00:00:00.000Z', createdAtSeq: 41, kind: 'toolCall', toolCallId: 'tool-command-1', toolName: 'Bash', input: { command: 'npm\ttest', reasoning: 'reasoning must stay private', brokerToken: 'capability must stay private' }, inputText: '{"command":"raw output"}', startedAt: '2026-08-09T00:00:00.000Z' };
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 2, deltas: [{ op: 'row.upserted', row: { ...base, status: 'inputStreaming' } }] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 3, deltas: [{ op: 'row.upserted', row: { ...base, status: 'success', endedAt: '2026-08-09T00:00:00.025Z', output: { text: 'raw output must stay private' } } }] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: 'foreign-subscription', deliveryKind: 'online', ordinal: 4, deltas: [{ op: 'row.upserted', row: { ...base, rowId: 42, toolCallId: 'foreign', input: { command: 'FOREIGN_SECRET' }, status: 'started' } }] }));
+      }
       if (process.env.FAKE_ZCODE_PERMISSION === '1') {
         const id = permissionId++;
         const params = { requestId: `permission-${id}`, sessionId: p.sessionId, toolCallId: 'tool-1', toolName: 'write', reason: 'fixture', riskLevel: process.env.FAKE_ZCODE_PERMISSION_RISK ?? 'medium', input: { secret: 'never-log-me' }, options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }, { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }] };
@@ -189,6 +200,18 @@ input.on('line', async (line) => {
       }
       break;
     }
+    case 'v4/conversation/subscribe': {
+      if (process.env.FAKE_ZCODE_CONVERSATION_SUBSCRIBE_FAIL === '1') { send({ id: message.id, error: { code: -32601, message: 'unsupported conversation subscription' } }); break; }
+      const sessionId = typeof p.topic === 'string' && p.topic.startsWith('conversation/') ? p.topic.slice('conversation/'.length) : '';
+      const subscriptionId = `subscription-${sessionId}`; conversationSubscriptions.set(sessionId, subscriptionId);
+      send({ id: message.id, result: { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1' } } });
+      if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 40, turnId: 'turn-1', createdAt: '2026-08-09T00:00:00.000Z', createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: '2026-08-09T00:00:00.000Z' } }] }));
+      break;
+    }
+    case 'v4/conversation/unsubscribe':
+      if (process.env.FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_FAIL === '1') send({ id: message.id, error: { code: -32099, message: 'unsubscribe failed' } });
+      else send({ id: message.id, result: {} });
+      break;
     case 'session/read': {
       const session = sessions.get(p.sessionId); applyRecoveryMode(session, await recoveryMode());
       send({ id: message.id, result: snapshot(p.sessionId, session) });

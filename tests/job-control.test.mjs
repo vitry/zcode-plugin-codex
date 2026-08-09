@@ -577,7 +577,7 @@ test('rejected send never activates progress or heartbeat', async () => {
   assert.equal(intervalCalls, 0); assert.deepEqual(lines, []); assert.equal(failed.status, 'failed'); assert.equal(failed.phase, undefined); assert.equal(failed.progressPreview, undefined);
 });
 
-test('writer failure still persists progress and fails with a stable progress error', async () => {
+test('writer failure stays observational while progress persists and the exact result succeeds', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   /** @type {any[]} */
   const persisted = [];
@@ -588,9 +588,41 @@ test('writer failure still persists progress and fails with a stable progress er
     send: async () => ({ inputId: 'input-writer-failure', stateRevision: 1 }), waitForCompletion: async () => {},
     readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-writer-failure', parentMessageId: 'input-writer-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
-  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: () => { throw new Error('stderr closed'); } }), (error) => error instanceof PluginError && error.code === 'ZCODE_PROGRESS_FAILED');
+  const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: () => { throw new Error('stderr closed'); } });
+  assert.equal(result.result, 'done');
   assert.ok(persisted.some((event) => event.message === 'ZCode started the delegated turn.'));
-  assert.equal((await store.readJob(workspace, job.id)).status, 'failed');
+  assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+});
+
+test('preview persistence failure stays observational while writer and exact result succeed', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {string[]} */ const lines = [];
+  const wrapped = { ...store, updateJobProgress: async () => { throw new Error('preview storage unavailable'); } };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-preview-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-preview-failure', stateRevision: 1 }), waitForCompletion: async () => {},
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-preview-failure', parentMessageId: 'input-preview-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+  };
+  const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: (line) => lines.push(line) });
+  assert.equal(result.result, 'done'); assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+  assert.match(lines.join(''), /ZCode started the delegated turn/);
+});
+
+test('a never-settling conversation unsubscribe cannot block authoritative success', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-unsubscribe-hang' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    subscribeConversation: async () => ({ subscriptionId: 'subscription-1', unsubscribe: () => new Promise(() => {}) }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-unsubscribe-hang', stateRevision: 1 }), waitForCompletion: async () => {},
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-unsubscribe-hang', parentMessageId: 'input-unsubscribe-hang' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+  };
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' });
+  /** @type {ReturnType<typeof setTimeout>|undefined} */ let timeout; let result;
+  try { result = await Promise.race([execution, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('unsubscribe blocked success')), 1_000); })]); }
+  finally { clearTimeout(timeout); }
+  assert.equal(result.result, 'done'); assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
 });
 
 test('cleanup failures preserve the primary PluginError envelope and close once', async () => {

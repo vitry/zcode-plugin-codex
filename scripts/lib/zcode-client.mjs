@@ -87,6 +87,29 @@ export class ZCodeClient {
 
   /** @param {string} sessionId @param {number} [timeoutMs] */ waitForCompletion(sessionId, timeoutMs) { return this.protocol.waitForCompletion(sessionId, timeoutMs); }
   /** Exact local protocol invariant used to prove whether this client owns an active turn. @param {string} sessionId */ turnState(sessionId) { requireSessionId(sessionId); return this.protocol.turnState(sessionId); }
+  /** @param {string} sessionId @param {{connectionId:string,clientMode:'desktop-continuous'|'web-remote-replayable'}} options */
+  async subscribeConversation(sessionId, options) {
+    requireSessionId(sessionId);
+    requireExactObject(options, ['connectionId', 'clientMode'], []);
+    if (!boundedPublicIdentifier(options.connectionId) || !['desktop-continuous', 'web-remote-replayable'].includes(options.clientMode)) throw inputError();
+    const result = requireObjectResult(await this.protocol.request('v4/conversation/subscribe', {
+      topic: `conversation/${sessionId}`,
+      connectionId: options.connectionId,
+      clientMode: options.clientMode,
+    }), 'v4/conversation/subscribe');
+    const ack = result.ack;
+    if (!plainObject(ack) || !boundedPublicIdentifier(ack.subscriptionId) || ack.mode !== 'snapshot' || !boundedPublicIdentifier(ack.logEpoch)) throw outputError('v4/conversation/subscribe');
+    let unsubscribed = false;
+    return {
+      subscriptionId: ack.subscriptionId,
+      unsubscribe: async () => {
+        if (unsubscribed) return;
+        unsubscribed = true;
+        const response = await this.protocol.request('v4/conversation/unsubscribe', { topic: `conversation/${sessionId}`, subscriptionId: ack.subscriptionId, connectionId: options.connectionId });
+        if (!plainObject(response) || Object.keys(response).length !== 0) throw outputError('v4/conversation/unsubscribe');
+      },
+    };
+  }
   /** @param {(message:any)=>void} handler */ subscribe(handler) { return this.protocol.subscribe(handler); }
   /** @param {(request:any,signal:AbortSignal)=>Promise<any>|any} handler */ setPermissionHandler(handler) { this.protocol.setPermissionHandler(handler); }
   close() { return this.protocol.close(); }
@@ -224,6 +247,8 @@ function requireExactObject(value, required, optional) { if (!plainObject(value)
 function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 /** @param {unknown} value @returns {value is string} */
 function nonEmpty(value) { return typeof value === 'string' && value.length > 0; }
+/** @param {unknown} value */
+function boundedPublicIdentifier(value) { return typeof value === 'string' && value.length > 0 && value.length <= 256 && ![...value].some((character) => { const code = character.codePointAt(0) ?? 0; return code <= 31 || code >= 127 && code <= 159; }); }
 function inputError() { return new PluginError('ZCODE_INPUT_INVALID', 'ZCode client input is invalid.', { category: 'validation', remedy: 'Provide only documented fields with valid runtime types.' }); }
 /** @param {unknown} value @param {string} method */
 function requireObjectResult(value, method) { if (!plainObject(value)) throw outputError(method); return value; }

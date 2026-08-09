@@ -612,7 +612,7 @@ test('running and cancelling jobs persist bounded monotonic progress', async () 
     const previousUpdatedAt = job.updatedAt;
     job = await store.updateJobProgress(workspace, job.id, {
       phase: index === 5 ? 'waiting' : 'running',
-      message: `Progress ${index}`,
+      message: index === 5 ? 'Command completed: npm test (25ms).' : `Progress ${index}`,
       observedAt,
     });
     assert.ok(Date.parse(job.updatedAt) >= Date.parse(previousUpdatedAt));
@@ -621,7 +621,7 @@ test('running and cancelling jobs persist bounded monotonic progress', async () 
 
   assert.equal(job.phase, 'waiting');
   assert.equal(job.lastActivityAt, startedAt);
-  assert.deepEqual(job.progressPreview, ['Progress 2', 'Progress 3', 'Progress 4', 'Progress 5']);
+  assert.deepEqual(job.progressPreview, ['Progress 2', 'Progress 3', 'Progress 4', 'Command completed: npm test (25ms).']);
   assert.deepEqual({
     id: job.id,
     workspace: job.workspace,
@@ -636,7 +636,7 @@ test('running and cancelling jobs persist bounded monotonic progress', async () 
 
   const duplicate = await store.updateJobProgress(workspace, job.id, {
     phase: 'running',
-    message: 'Progress 5',
+    message: 'Command completed: npm test (25ms).',
     observedAt: startedAt,
   });
   assert.equal(duplicate.phase, 'running');

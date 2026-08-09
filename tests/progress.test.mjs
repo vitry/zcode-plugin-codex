@@ -234,14 +234,15 @@ test('duplicate activity refreshes the heartbeat clock without repeating output 
   reporter.close();
 });
 
-test('persistence failures stay handled, do not poison later work, and surface from flush', async () => {
+test('persistence failure disables preview while writer continues and flush stays observational', async () => {
   const firstError = new Error('first persistence failed');
-  const attempts = [];
+  const attempts = []; const lines = [];
   const unhandled = [];
   const onUnhandled = (error) => unhandled.push(error);
   process.on('unhandledRejection', onUnhandled);
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a',
+    write: (line) => lines.push(line),
     persist: async (event) => {
       attempts.push(event.message);
       if (attempts.length === 1) throw firstError;
@@ -256,15 +257,16 @@ test('persistence failures stay handled, do not poison later work, and surface f
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(unhandled, []);
     reporter.observe(notification('api_retry'));
-    await assert.rejects(reporter.flush(), (error) => error === firstError);
-    assert.deepEqual(attempts, ['ZCode started a tool call.', 'ZCode is retrying the model request.']);
+    await reporter.flush();
+    assert.deepEqual(attempts, ['ZCode started a tool call.']);
+    assert.deepEqual(lines, ['[zcode] ZCode started a tool call.\n', '[zcode] ZCode is retrying the model request.\n']);
   } finally {
     process.off('unhandledRejection', onUnhandled);
     reporter.close();
   }
 });
 
-test('writer failures do not interrupt observation or persistence and surface after drain', async () => {
+test('writer failure permanently disables writer while persistence continues and flush resolves', async () => {
   const writerError = new Error('writer failed');
   const persisted = [];
   const unhandled = [];
@@ -274,20 +276,79 @@ test('writer failures do not interrupt observation or persistence and surface af
     sessionId: 'session-a',
     write: () => { throw writerError; },
     persist: async (event) => persisted.push(event),
+    onDiagnostic: () => { throw new Error('diagnostic sink failed'); },
     now: () => observedAt,
     setInterval: () => ({ unref() {} }),
     clearInterval: () => {},
   });
   try {
     assert.doesNotThrow(() => reporter.observe(notification('tool_call_started')));
-    await assert.rejects(reporter.flush(), (error) => error === writerError);
-    assert.deepEqual(persisted, [{ phase: 'running', message: 'ZCode started a tool call.', observedAt }]);
+    reporter.observe(notification('api_retry'));
+    await reporter.flush();
+    assert.deepEqual(persisted, [
+      { phase: 'running', message: 'ZCode started a tool call.', observedAt },
+      { phase: 'waiting', message: 'ZCode is retrying the model request.', observedAt },
+    ]);
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(unhandled, []);
   } finally {
     process.off('unhandledRejection', onUnhandled);
     reporter.close();
   }
+});
+
+test('render and diagnostic failures are swallowed without exposing their exceptions', async () => {
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    describeNotification: async () => { throw new Error('raw secret render exception'); },
+    onDiagnostic: () => { throw new Error('raw secret diagnostic exception'); },
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame', raw: 'private frame' });
+  await reporter.flush();
+  reporter.close();
+});
+
+test('a conversation notification may asynchronously produce multiple bounded events', async () => {
+  const lines = []; const persisted = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), persist: async (event) => persisted.push(event),
+    describeNotification: async () => [
+      { phase: 'running', message: 'Reading: src/a.js.', observedAt },
+      { phase: 'running', message: 'Read completed.', observedAt },
+    ],
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame' });
+  await reporter.flush();
+  assert.deepEqual(lines, ['[zcode] Reading: src/a.js.\n', '[zcode] Read completed.\n']);
+  assert.deepEqual(persisted.map((event) => event.message), ['Reading: src/a.js.', 'Read completed.']);
+  reporter.close();
+});
+
+test('bounds queued render work and flush cannot be held by a never-settling progress sink', async () => {
+  let calls = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => { calls += 1; return new Promise(() => {}); },
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  for (let index = 0; index < 1_000; index += 1) reporter.observe({ method: 'v4/conversation/frame', index });
+  const started = Date.now(); await reporter.flush();
+  assert.ok(Date.now() - started < 1_000); assert.equal(calls, 1);
+  reporter.close();
+});
+
+test('close fences a delayed semantic description after terminal state progress', async () => {
+  const lines = []; let release;
+  const delayed = new Promise((resolve) => { release = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), describeNotification: () => delayed,
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame' });
+  reporter.observe(notification('prompt_completed'));
+  reporter.close(); release([{ phase: 'running', message: 'Reading: a.txt.', observedAt }]); await reporter.flush();
+  assert.deepEqual(lines, ['[zcode] ZCode completed the delegated turn.\n']);
 });
 
 test('deferred reporter buffers only bounded normalized events and activates starting-first', async () => {

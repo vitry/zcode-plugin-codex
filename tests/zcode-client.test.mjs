@@ -7,12 +7,46 @@ import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import test from 'node:test';
 
-import { createExistingManagedZCodeClient, createManagedZCodeClient, createZCodeClient } from '../scripts/lib/zcode-client.mjs';
+import { createExistingManagedZCodeClient, createManagedZCodeClient, createZCodeClient, ZCodeClient } from '../scripts/lib/zcode-client.mjs';
 import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, reconcileBrokerOwnership, writeBrokerIdentity, ZCodeBroker as ZCodeBrokerClass } from '../scripts/zcode-broker.mjs';
 import { withFileLock } from '../scripts/lib/fs.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
+
+test('conversation subscription uses the exact v4 contract and unsubscribes once', async () => {
+  const calls = [];
+  const protocol = {
+    request: async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'v4/conversation/subscribe') return { ack: { subscriptionId: 'sub-1', mode: 'snapshot', logEpoch: 'epoch-7' } };
+      if (method === 'v4/conversation/unsubscribe') return {};
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+  const client = new ZCodeClient(protocol);
+  const subscription = await client.subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'desktop-continuous' });
+  assert.equal(subscription.subscriptionId, 'sub-1');
+  assert.deepEqual(calls[0], { method: 'v4/conversation/subscribe', params: { topic: 'conversation/session-1', connectionId: 'companion-1', clientMode: 'desktop-continuous' } });
+  await subscription.unsubscribe();
+  await subscription.unsubscribe();
+  assert.deepEqual(calls[1], { method: 'v4/conversation/unsubscribe', params: { topic: 'conversation/session-1', subscriptionId: 'sub-1', connectionId: 'companion-1' } });
+  assert.equal(calls.length, 2);
+});
+
+test('conversation subscription validates options and the exact ack', async () => {
+  const protocol = { request: async () => ({ ack: { subscriptionId: 'sub-1', mode: 'replay', logEpoch: 'epoch-7' } }) };
+  const client = new ZCodeClient(protocol);
+  await assert.rejects(client.subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'desktop-continuous' }), { code: 'ZCODE_OUTPUT_INVALID' });
+  await assert.rejects(client.subscribeConversation('session-1', { connectionId: 'x'.repeat(257), clientMode: 'desktop-continuous' }), { code: 'ZCODE_INPUT_INVALID' });
+  await assert.rejects(client.subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'unsupported' }), { code: 'ZCODE_INPUT_INVALID' });
+});
+
+test('conversation unsubscribe rejects a non-empty acknowledgement', async () => {
+  const client = new ZCodeClient({ request: async (method) => method.endsWith('/subscribe') ? { ack: { subscriptionId: 'sub-1', mode: 'snapshot', logEpoch: 'epoch-1' } } : { unexpected: true } });
+  const subscription = await client.subscribeConversation('session-1', { connectionId: 'companion-1', clientMode: 'desktop-continuous' });
+  await assert.rejects(subscription.unsubscribe(), { code: 'ZCODE_OUTPUT_INVALID' });
+});
 
 function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 async function waitForProcessExit(pid, timeoutMs = 2_000) {

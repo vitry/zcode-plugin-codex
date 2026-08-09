@@ -3,6 +3,7 @@ export const MAX_PROGRESS_PREVIEW_ENTRIES = 4;
 export const MAX_PROGRESS_PENDING_EVENTS = 4;
 export const MAX_PROGRESS_MESSAGE_BYTES = 256;
 export const PROGRESS_HEARTBEAT_MS = 20_000;
+const PROGRESS_FLUSH_TIMEOUT_MS = 250;
 
 /** @template T @param {Promise<T>} completion @param {AbortSignal|undefined} signal @returns {Promise<T>} */
 export async function waitForCompletionOrAbort(completion, signal) {
@@ -45,13 +46,15 @@ export function normalizeZCodeProgress(notification, sessionId, observedAt) {
 }
 
 /**
- * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
+ * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,describeNotification?:(notification:unknown,observedAt:string)=>Array<{phase:string,message:string,observedAt:string}>|Promise<Array<{phase:string,message:string,observedAt:string}>>,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
  */
 export function createProgressReporter({
   sessionId,
   deferred = false,
   write,
   persist,
+  describeNotification,
+  onDiagnostic,
   now = () => new Date().toISOString(),
   setInterval: setIntervalFn = globalThis.setInterval,
   clearInterval: clearIntervalFn = globalThis.clearInterval,
@@ -68,15 +71,16 @@ export function createProgressReporter({
   const pending = [];
   /** @type {Promise<void>|null} */
   let inFlight = null;
-  let hasReporterError = false;
-  /** @type {unknown} */
-  let reporterError;
-  const recordError = (/** @type {unknown} */ error) => { if (!hasReporterError) { hasReporterError = true; reporterError = error; } };
+  let writerDisabled = false; let persistDisabled = false;
+  /** @type {Promise<void>|null} */ let descriptorInFlight = null;
+  /** @type {Array<{notification:unknown,observedAt:string}>} */ const descriptorPending = [];
+  /** @param {string} kind */
+  const diagnose = (kind) => { try { onDiagnostic?.({ kind }); } catch { /* diagnostics are observational */ } };
   /** @param {{phase:string,message:string,observedAt:string}} event */
   const writeEvent = (event) => {
-    if (typeof write !== 'function') return;
+    if (typeof write !== 'function' || writerDisabled) return;
     try { write(`[zcode] ${event.message}\n`); }
-    catch (error) { recordError(error); }
+    catch { writerDisabled = true; diagnose('writer-disabled'); }
   };
   /** @type {any} */
   let timer = null;
@@ -88,19 +92,19 @@ export function createProgressReporter({
       const elapsedMs = Date.parse(currentTime) - Date.parse(lastActivityAt);
       if (elapsedMs < PROGRESS_HEARTBEAT_MS) return;
       const seconds = Math.floor(elapsedMs / 1_000);
-      try { write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`); }
-      catch (error) { recordError(error); }
+      try { if (!writerDisabled) write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`); }
+      catch { writerDisabled = true; diagnose('writer-disabled'); }
     }, PROGRESS_HEARTBEAT_MS);
     timer?.unref?.();
   };
   /** @param {{phase:string,message:string,observedAt:string}} event */
   const startPersist = (event) => {
-    if (typeof persist !== 'function') return;
+    if (typeof persist !== 'function' || persistDisabled) { writeEvent(event); return; }
     writeEvent(event);
     let operation;
     try { operation = Promise.resolve(persist(event)); }
-    catch (error) { recordError(error); operation = Promise.resolve(); }
-    const tracked = operation.catch((error) => { recordError(error); }).then(() => {
+    catch { operation = Promise.reject(new Error('progress persistence failed')); }
+    const tracked = operation.catch(() => { persistDisabled = true; pending.length = 0; diagnose('preview-disabled'); }).then(() => {
       inFlight = null;
       const next = pending.shift();
       if (next) startPersist(next);
@@ -109,7 +113,7 @@ export function createProgressReporter({
   };
   /** @param {{phase:string,message:string,observedAt:string}} event */
   const enqueue = (event) => {
-    if (typeof persist !== 'function') { writeEvent(event); return; }
+    if (typeof persist !== 'function' || persistDisabled) { writeEvent(event); return; }
     if (inFlight === null) { startPersist(event); return; }
     if (pending.length < MAX_PROGRESS_PENDING_EVENTS) { pending.push(event); return; }
     pending[pending.length - 1] = event;
@@ -123,22 +127,43 @@ export function createProgressReporter({
     enqueue(event);
     return event;
   };
+  /** @param {{notification:unknown,observedAt:string}} item */
+  const startDescribe = (item) => {
+    if (typeof describeNotification !== 'function') return;
+    let described;
+    try { described = Promise.resolve(describeNotification(item.notification, item.observedAt)); }
+    catch { diagnose('conversation-render-failed'); described = Promise.resolve([]); }
+    descriptorInFlight = described.then((events) => {
+      if (!Array.isArray(events) || closed) return;
+      for (const describedEvent of events.slice(0, MAX_PROGRESS_PENDING_EVENTS)) if (validPublicEvent(describedEvent)) {
+        if (!active) bufferEvent(describedEvent);
+        else dispatch(describedEvent);
+      }
+    }).catch(() => diagnose('conversation-render-failed')).then(() => {
+      descriptorInFlight = null;
+      const next = descriptorPending.shift(); if (next) startDescribe(next);
+    });
+  };
+  /** @param {{notification:unknown,observedAt:string}} item */
+  const enqueueDescribe = (item) => {
+    if (descriptorInFlight === null) { startDescribe(item); return; }
+    if (descriptorPending.length < MAX_PROGRESS_PENDING_EVENTS) descriptorPending.push(item);
+    else descriptorPending[descriptorPending.length - 1] = item;
+  };
   if (active) startTimer();
 
   return {
     /** @param {unknown} notification */
     observe(notification) {
       if (closed) return null;
-      const event = normalizeZCodeProgress(notification, sessionId, now());
+      const observedAt = now();
+      const event = normalizeZCodeProgress(notification, sessionId, observedAt);
+      if (event === null && typeof describeNotification === 'function' && plainObject(notification) && notification.method === 'v4/conversation/frame') {
+        enqueueDescribe({ notification, observedAt }); return null;
+      }
       if (event === null) return null;
-      const key = `${event.phase}\u0000${event.message}`;
       if (!active) {
-        if (bufferedKeys.has(key)) return null;
-        if (buffered.length === MAX_PROGRESS_PREVIEW_ENTRIES) {
-          const removed = buffered.shift();
-          if (removed) bufferedKeys.delete(`${removed.phase}\u0000${removed.message}`);
-        }
-        buffered.push(event); bufferedKeys.add(key); return event;
+        bufferEvent(event); return event;
       }
       return dispatch(event);
     },
@@ -152,16 +177,44 @@ export function createProgressReporter({
       buffered.length = 0; bufferedKeys.clear(); return true;
     },
     async flush() {
-      while (inFlight !== null) await inFlight;
-      if (hasReporterError) throw reporterError;
+      const drain = async () => {
+        while (descriptorInFlight !== null || inFlight !== null) {
+          if (descriptorInFlight !== null) await descriptorInFlight;
+          if (inFlight !== null) await inFlight;
+        }
+      };
+      /** @type {ReturnType<typeof globalThis.setTimeout>|undefined} */ let flushTimer; let timedOut = false;
+      try { await Promise.race([drain(), new Promise((resolve) => { flushTimer = globalThis.setTimeout(() => { timedOut = true; resolve(undefined); }, PROGRESS_FLUSH_TIMEOUT_MS); })]); }
+      finally { if (flushTimer !== undefined) globalThis.clearTimeout(flushTimer); }
+      if (timedOut) {
+        descriptorPending.length = 0; pending.length = 0; persistDisabled = true; writerDisabled = true;
+        diagnose('progress-flush-timeout');
+      }
     },
     close() {
-      closed = true; buffered.length = 0; bufferedKeys.clear();
+      closed = true; buffered.length = 0; bufferedKeys.clear(); descriptorPending.length = 0;
       if (timer === null) return;
       clearIntervalFn(timer);
       timer = null;
     },
   };
+
+  /** @param {{phase:string,message:string,observedAt:string}} event */
+  function bufferEvent(event) {
+    const key = `${event.phase}\u0000${event.message}`;
+    if (bufferedKeys.has(key)) return;
+    if (buffered.length === MAX_PROGRESS_PREVIEW_ENTRIES) {
+      const removed = buffered.shift();
+      if (removed) bufferedKeys.delete(`${removed.phase}\u0000${removed.message}`);
+    }
+    buffered.push(event); bufferedKeys.add(key);
+  }
+}
+
+/** @param {unknown} event */
+function validPublicEvent(event) {
+  return plainObject(event) && PROGRESS_PHASES.includes(event.phase) && typeof event.message === 'string' && event.message.length > 0
+    && Buffer.byteLength(event.message) <= MAX_PROGRESS_MESSAGE_BYTES && !hasControl(event.message) && validTimestamp(event.observedAt);
 }
 
 /** @param {unknown} value */

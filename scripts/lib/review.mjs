@@ -9,6 +9,7 @@ import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
 import { createJobController, withJobCancellationLock } from './job-control.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
+import { createConversationProgressDescriber } from './conversation-progress.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -42,20 +43,21 @@ export async function executeJob(input) {
   let sendAttempted = false; let remoteTerminalProven = false;
   /** @type {any} */
   let reporter;
-  let unsubscribe = () => {};
+  /** @type {any} */ let conversationDescriber;
+  let unsubscribeNotifications = () => {}; let unsubscribeConversation = async () => {};
   /** @type {unknown} */
   let primaryError;
   /** @type {any} */
   let output;
   let progressCleaned = false;
   const cleanupProgress = async () => {
-    if (progressCleaned) return [];
+    if (progressCleaned) return;
     progressCleaned = true;
-    const errors = [];
-    try { unsubscribe(); } catch (error) { errors.push(error); }
-    try { reporter?.close(); } catch (error) { errors.push(error); }
-    try { await reporter?.flush(); } catch (error) { errors.push(error); }
-    return errors;
+    try { conversationDescriber?.markTerminal(); } catch { /* progress-only */ }
+    try { reporter?.close(); } catch { /* progress-only */ }
+    try { Promise.resolve(unsubscribeConversation()).catch(() => {}); } catch { /* progress-only */ }
+    try { unsubscribeNotifications(); } catch { /* progress-only */ }
+    try { await reporter?.flush(); } catch { /* progress-only */ }
   };
   try {
     let prompt;
@@ -78,14 +80,23 @@ export async function executeJob(input) {
     }, input.signal);
     const activeSessionId = /** @type {string} */ (sessionId ?? snapshot.session.sessionId);
     sessionId = activeSessionId;
+    let conversationSubscription;
+    if (typeof client.subscribeConversation === 'function') {
+      try {
+        conversationSubscription = await client.subscribeConversation(activeSessionId, { connectionId: `companion-${randomBytes(12).toString('hex')}`, clientMode: 'desktop-continuous' });
+        unsubscribeConversation = conversationSubscription.unsubscribe;
+        conversationDescriber = await createConversationProgressDescriber({ sessionId: activeSessionId, subscriptionId: conversationSubscription.subscriptionId, workspace });
+      } catch { conversationDescriber = undefined; }
+    }
     reporter = createProgressReporter({
       sessionId: activeSessionId,
       deferred: true,
       ...(input.progressWriter ? { write: input.progressWriter } : {}),
       persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
+      ...(conversationDescriber ? { describeNotification: conversationDescriber.observe } : {}),
       ...input.progressDependencies,
     });
-    unsubscribe = client.subscribe(reporter.observe);
+    try { unsubscribeNotifications = client.subscribe(reporter.observe); } catch { unsubscribeNotifications = () => {}; }
     const selectedModel = input.modelRequest ? resolveModel(input.modelRequest, input.modelAliases, snapshot.settings.model.available) : input.model;
     if (selectedModel && !sameModel(snapshot.settings.model.current, selectedModel)) snapshot = await boundedStep(() => client.setModel(activeSessionId, selectedModel), input.signal);
     if (input.effort) snapshot = await boundedStep(() => client.setThoughtLevel(activeSessionId, input.effort), input.signal);
@@ -104,11 +115,11 @@ export async function executeJob(input) {
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
     await waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
+    conversationDescriber?.markTerminal();
+    await cleanupProgress();
     const finalSnapshot = await client.readSession(activeSessionId);
     remoteTerminalProven = true;
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
-    const terminalCleanupErrors = await cleanupProgress();
-    if (terminalCleanupErrors.length) throw progressFailure(terminalCleanupErrors);
     output = await publishSuccessfulResult({ input, job, workspace, dataRoot, result });
   } catch (error) {
     primaryError = error;
@@ -135,14 +146,9 @@ export async function executeJob(input) {
     }
   }
   // Cleanup order is part of the progress lifecycle contract.
-  const cleanupErrors = await cleanupProgress();
+  await cleanupProgress();
   await client.close().catch(() => {});
-  const distinctCleanupErrors = cleanupErrors.filter((error) => error !== primaryError);
-  if (primaryError) {
-    attachCleanupFailure(primaryError, distinctCleanupErrors);
-    throw primaryError;
-  }
-  if (cleanupErrors.length) throw progressFailure(cleanupErrors);
+  if (primaryError) throw primaryError;
   return output;
 }
 
@@ -300,21 +306,6 @@ function validResponse(response) { return response && typeof response === 'objec
 function safeError(error) { return { message: error instanceof Error ? error.message.slice(0, 2048) : 'Unknown execution failure' }; }
 /** @param {unknown} error */
 function isInterruption(error) { return error instanceof PluginError && error.code === 'JOB_INTERRUPTED'; }
-/** @param {unknown[]} errors */
-function progressFailure(errors) {
-  const first = errors[0];
-  if (first instanceof PluginError) { attachCleanupFailure(first, errors.slice(1)); return first; }
-  return new PluginError('ZCODE_PROGRESS_FAILED', 'ZCode progress reporting failed.', { category: 'runtime', remedy: 'Retry the delegated task and inspect the progress output channel.', cause: first, details: { additionalFailureCount: Math.max(0, errors.length - 1) } });
-}
-/** @param {unknown} primary @param {unknown[]} cleanupErrors */
-function attachCleanupFailure(primary, cleanupErrors) {
-  if (!cleanupErrors.length || !(primary instanceof Error)) return;
-  const failure = progressFailure(cleanupErrors);
-  try {
-    if (!('cause' in primary)) Object.defineProperty(primary, 'cause', { value: failure, configurable: true });
-    else if (primary instanceof PluginError) primary.details = { ...primary.details, cleanupFailure: safeError(failure) };
-  } catch { /* Cleanup diagnostics must never replace the primary failure. */ }
-}
 /** @param {unknown} error */
 function errorCode(error) { return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined; }
 /** @param {any} left @param {any} right */

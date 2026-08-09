@@ -21,7 +21,7 @@ test('renders a bounded detailed active-job progress report with elapsed time', 
         lastActivityAt: '2026-08-08T00:04:00.000Z',
         progressPreview: [
           'ZCode started the delegated turn.',
-          'ZCode started a tool call.',
+          'Running command: npm test.',
           'ZCode is retrying the model request.',
           '**ZCode completed a tool call.**',
         ],
@@ -38,7 +38,7 @@ test('renders a bounded detailed active-job progress report with elapsed time', 
     assert.match(output, /Finished: —/);
     assert.match(output, /Elapsed: 5m 0s/);
     assert.match(output, /Last activity: 2026-08-08T00:04:00\.000Z/);
-    assert.match(output, /Progress:\n {2}- ZCode started the delegated turn\.\n {2}- ZCode started a tool call\.\n {2}- ZCode is retrying the model request\.\n {2}- \\\*\\\*ZCode completed a tool call\.\\\*\\\*/);
+    assert.match(output, /Progress:\n {2}- ZCode started the delegated turn\.\n {2}- Running command: npm test\.\n {2}- ZCode is retrying the model request\.\n {2}- \\\*\\\*ZCode completed a tool call\.\\\*\\\*/);
     assert.match(output, /Model policy: default=quick; aliases=quick/);
     assert.doesNotMatch(output, / {2}- \*\*ZCode/);
     assert.doesNotMatch(output, /Last cancellation error:/);
