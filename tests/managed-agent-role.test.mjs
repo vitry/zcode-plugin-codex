@@ -1,12 +1,12 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { atomicWritePrivateFile } from '../scripts/lib/fs.mjs';
+import { atomicWritePrivateFile, withFileLock } from '../scripts/lib/fs.mjs';
 import {
   MANAGED_ROLE_DESCRIPTION,
   MANAGED_ROLE_NAME,
@@ -185,6 +185,34 @@ test('managed Rescue role remains restart-required in the mutation session and i
   assert.deepEqual(freshSession, { status: 'ready', changed: false, rolePath: ctx.paths.rolePath });
 });
 
+test('managed Rescue role commits its freshness watermark after effective verification and journals the exact receipt first', async () => {
+  const ctx = await fixture();
+  let current = configState({});
+  let effectiveVerified = false;
+  let journalVerified = false;
+  const watermark = '2025-01-01T00:00:02.000Z';
+  await reconcileManagedRescueRole({
+    ...common(ctx, current),
+    sessionStartedAt: '2025-01-01T00:00:00.000Z',
+    now: () => {
+      assert.equal(effectiveVerified, true, 'watermark must follow effective-config verification');
+      return watermark;
+    },
+    batchWrite: async () => { current = configState({ role: roleConfig(ctx.paths.rolePath) }); return {}; },
+    readConfig: async () => { effectiveVerified = true; return current; },
+    beforeReceiptCommit: async (receiptBytes) => {
+      const journal = JSON.parse(await readFile(ctx.paths.transactionPath, 'utf8'));
+      assert.equal(journal.phase, 'receipt-prepared');
+      assert.equal(journal.intendedReceiptSha256, createHash('sha256').update(receiptBytes).digest('hex'));
+      journalVerified = true;
+    },
+  });
+  assert.equal(journalVerified, true);
+  assert.equal(JSON.parse(await readFile(ctx.paths.receiptPath, 'utf8')).mutatedAt, watermark);
+  assert.equal((await inspectManagedRescueRole({ ...common(ctx, current), sessionStartedAt: '2025-01-01T00:00:01.000Z' })).status, 'restart-required');
+  assert.equal((await inspectManagedRescueRole({ ...common(ctx, current), sessionStartedAt: '2025-01-01T00:00:03.000Z' })).status, 'ready');
+});
+
 test('managed Rescue role receipt records a provable prior metadata value without authorization data', async () => {
   const ctx = await fixture();
   let current = configState({ metadata: true });
@@ -347,6 +375,45 @@ test('managed Rescue role rejects a symlinked advisory lock file without touchin
   assert.equal((await stat(outside)).mode & 0o777, 0o644);
 });
 
+test('file locking rejects a lock directory replaced by a symlink between validation and open', { skip: process.platform === 'win32' ? 'Windows cannot rename an open lock directory in this race fixture.' : false }, async () => {
+  const ctx = await fixture();
+  await withFileLock(ctx.paths.lockPath, async () => undefined);
+  const heldLock = `${ctx.paths.lockPath}.held`;
+  const outside = await realpath(await mkdtemp(join(tmpdir(), 'zcode-lock-race-outside-')));
+  const outsideAdvisory = join(outside, 'advisory.lock');
+  await writeFile(outsideAdvisory, 'outside-safe', { mode: 0o644 });
+  let injected = false;
+  await assert.rejects(withFileLock(ctx.paths.lockPath, async () => { throw new Error('must not enter'); }, {
+    beforeLockOpen: async () => {
+      injected = true;
+      await rename(ctx.paths.lockPath, heldLock);
+      await symlink(outside, ctx.paths.lockPath);
+    },
+  }), (error) => error?.code === 'LOCK_OPEN_FAILED' || error?.code === 'LOCK_PATH_UNSAFE');
+  assert.equal(injected, true);
+  assert.equal(await readFile(outsideAdvisory, 'utf8'), 'outside-safe');
+  assert.equal((await stat(outsideAdvisory)).mode & 0o777, 0o644);
+});
+
+test('file locking rejects an advisory file replaced by a symlink between validation and open', async () => {
+  const ctx = await fixture();
+  await withFileLock(ctx.paths.lockPath, async () => undefined);
+  const advisory = join(ctx.paths.lockPath, 'advisory.lock');
+  const outside = join(await realpath(await mkdtemp(join(tmpdir(), 'zcode-advisory-race-outside-'))), 'outside.lock');
+  await writeFile(outside, 'outside-safe', { mode: 0o644 });
+  let injected = false;
+  await assert.rejects(withFileLock(ctx.paths.lockPath, async () => { throw new Error('must not enter'); }, {
+    beforeLockOpen: async () => {
+      injected = true;
+      await unlink(advisory);
+      await symlink(outside, advisory);
+    },
+  }), (error) => error?.code === 'LOCK_OPEN_FAILED' || error?.code === 'LOCK_PATH_UNSAFE');
+  assert.equal(injected, true);
+  assert.equal(await readFile(outside, 'utf8'), 'outside-safe');
+  assert.equal((await stat(outside)).mode & 0o777, 0o644);
+});
+
 test('managed Rescue role rolls back owned file state on version races and leaves no ready receipt', async () => {
   const ctx = await fixture();
   await assert.rejects(reconcileManagedRescueRole({
@@ -411,6 +478,38 @@ test('managed Rescue role recovers an upgrade interrupted before new bytes were 
   assert.equal(JSON.parse(await readFile(ctx.paths.receiptPath, 'utf8')).plugin.root, nextPluginRoot);
 });
 
+test('managed Rescue role rolls back config after a crash with a journaled receipt watermark', async () => {
+  const ctx = await fixture();
+  const roleBytes = Buffer.from(renderManagedRescueRole({ template, pluginRoot: ctx.pluginRoot }));
+  await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
+  await writeFile(ctx.paths.rolePath, roleBytes);
+  await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
+    schemaVersion: 1,
+    phase: 'receipt-prepared',
+    rolePath: ctx.paths.rolePath,
+    roleExisted: false,
+    receiptExisted: false,
+    intendedSha256: createHash('sha256').update(roleBytes).digest('hex'),
+    intendedReceiptSha256: '1'.repeat(64),
+    intendedReceiptBase64: Buffer.from('not-yet-written').toString('base64'),
+    previousRegistration: { present: false },
+    previousMetadata: { present: false },
+    previousAdditional: [],
+    desiredAdditional: [],
+    configVersion: 'v2',
+  })}\n`);
+  const current = configState({ role: roleConfig(ctx.paths.rolePath) });
+  let rollbackWrites = 0;
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, current),
+    batchWrite: async () => { rollbackWrites += 1; return {}; },
+    readConfig: async () => current,
+  }), { code: 'MANAGED_ROLE_CONFLICT' });
+  assert.equal(rollbackWrites, 1);
+  await assert.rejects(readFile(ctx.paths.rolePath), { code: 'ENOENT' });
+  await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
+});
+
 test('managed Rescue role preserves an unproven receipt during interrupted rollback', async () => {
   const ctx = await fixture();
   let current = configState({});
@@ -467,4 +566,21 @@ test('managed Rescue role reports exact recovery paths for unproven interrupted 
   assert.ok(error.details.remaining.includes(ctx.paths.rolePath));
   assert.ok(error.details.remaining.includes(ctx.paths.transactionPath));
   assert.match(error.remedy, /restore.*remove.*transaction.*\$zcode:setup/is);
+});
+
+test('managed Rescue role reports precise recovery for a malformed transaction journal', async () => {
+  const ctx = await fixture();
+  await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
+  await writeFile(ctx.paths.transactionPath, '{"schemaVersion":99}\n');
+  let error;
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, configState({})), batchWrite: async () => ({}), readConfig: async () => configState({}),
+  }), (candidate) => { error = candidate; return candidate?.code === 'MANAGED_ROLE_ROLLBACK_INCOMPLETE'; });
+  assert.equal(error.details.rolePath, ctx.paths.rolePath);
+  assert.equal(error.details.receiptPath, ctx.paths.receiptPath);
+  assert.equal(error.details.configPath, ctx.configTarget.filePath);
+  assert.equal(error.details.transactionPath, ctx.paths.transactionPath);
+  assert.deepEqual(error.details.remaining, [ctx.paths.transactionPath]);
+  assert.match(error.remedy, /restore.*remove.*transaction.*\$zcode:setup/is);
+  assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
 });

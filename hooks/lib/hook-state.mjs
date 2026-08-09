@@ -33,14 +33,25 @@ export async function fingerprintWorkspace(workspace) {
 
 export async function recordSession(dataRoot, input) {
   const store = await paths(dataRoot, input.cwd); const id = key('session', input.session_id);
-  await withFileLock(store.lock, () => atomicWriteJson(join(store.directory, `session-${id}.json`), { kind: 'session', sessionId: input.session_id, workspace: store.workspacePath, createdAt: new Date().toISOString() }));
+  const recordPath = join(store.directory, `session-${id}.json`); const source = input.source ?? 'startup';
+  await withFileLock(store.lock, async () => {
+    if (source === 'compact') {
+      try {
+        const existing = await readJsonFile(recordPath);
+        if (existing.kind === 'session' && existing.sessionId === input.session_id && existing.workspace === store.workspacePath
+          && ['startup', 'resume', 'clear'].includes(existing.source) && Number.isFinite(Date.parse(existing.createdAt))) return;
+      } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; }
+    }
+    await atomicWriteJson(recordPath, { kind: 'session', sessionId: input.session_id, workspace: store.workspacePath, source, createdAt: new Date().toISOString() });
+  });
 }
 export async function resolveRecordedSessionStart(dataRoot, workspace, sessionId) {
   const store = await paths(dataRoot, workspace); const id = key('session', sessionId);
   try {
     const record = await readJsonFile(join(store.directory, `session-${id}.json`));
-    if (record.kind !== 'session' || record.sessionId !== sessionId || record.workspace !== store.workspacePath || !Number.isFinite(Date.parse(record.createdAt))) throw new Error('invalid session record');
-    return { startedAt: record.createdAt };
+    if (record.kind !== 'session' || record.sessionId !== sessionId || record.workspace !== store.workspacePath
+      || !['startup', 'resume', 'clear'].includes(record.source) || !Number.isFinite(Date.parse(record.createdAt))) throw new Error('invalid session record');
+    return { startedAt: record.createdAt, source: record.source };
   } catch (cause) {
     throw Object.assign(new Error('Setup could not prove the active Codex SessionStart record.'), {
       code: 'SETUP_SESSION_UNPROVEN', category: 'authorization', remedy: 'Restart Codex, then run $zcode:setup from one active session.', cause,

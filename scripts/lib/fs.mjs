@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { constants } from 'node:fs';
 import {
   chmod,
   lstat,
@@ -6,6 +7,7 @@ import {
   open,
   readFile,
   rename,
+  rmdir,
   unlink,
 } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -118,7 +120,7 @@ export async function readJsonFile(path) {
  * @template T
  * @param {string} lockPath
  * @param {() => Promise<T>} operation
- * @param {{ pollIntervalMs?: number, timeoutMs?: number }} [options]
+ * @param {{ pollIntervalMs?: number, timeoutMs?: number, beforeLockOpen?: () => Promise<void> }} [options]
  * @returns {Promise<T>}
  */
 export async function withFileLock(lockPath, operation, options = {}) {
@@ -134,17 +136,30 @@ export async function withFileLock(lockPath, operation, options = {}) {
     });
   }
   const startedAt = Date.now();
-  await rejectSymlink(lockPath, 'lock directory');
-  await ensurePrivateDirectory(lockPath);
-  const lockDirectoryStats = await lstat(lockPath);
-  if (lockDirectoryStats.isSymbolicLink() || !lockDirectoryStats.isDirectory()) throw unsafeLockPath(lockPath, 'lock directory');
+  await ensureLockLayout(lockPath);
   const lockFilePath = join(lockPath, 'advisory.lock');
-  await rejectSymlink(lockFilePath, 'advisory lock file');
+  const lockDirectoryStats = await safeLockStats(lockPath, 'lock directory', 'directory');
+  const lockFileStats = await safeLockStats(lockFilePath, 'advisory lock file', 'file');
   let handle;
+  let confirmationHandle;
   try {
-    handle = await open(lockFilePath, 'a+', 0o600);
-    await chmod(lockFilePath, 0o600);
+    handle = await open(lockFilePath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+    const openedStats = await handle.stat();
+    await options.beforeLockOpen?.();
+    confirmationHandle = await open(lockFilePath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+    const [confirmationStats, currentDirectoryStats, currentFileStats] = await Promise.all([
+      confirmationHandle.stat(),
+      safeLockStats(lockPath, 'lock directory', 'directory'),
+      safeLockStats(lockFilePath, 'advisory lock file', 'file'),
+    ]);
+    if (!sameIdentity(lockDirectoryStats, currentDirectoryStats)
+      || !sameIdentity(lockFileStats, currentFileStats)
+      || !sameIdentity(openedStats, confirmationStats)) throw unsafeLockPath(lockFilePath, 'advisory lock file');
+    await confirmationHandle.close();
+    confirmationHandle = undefined;
+    await handle.chmod(0o600);
   } catch (error) {
+    if (confirmationHandle) await confirmationHandle.close().catch(() => {});
     if (handle) await handle.close().catch(() => {});
     throw wrapError(error, 'LOCK_OPEN_FAILED', `Could not open lock file: ${lockFilePath}`, {
       category: 'storage',
@@ -211,10 +226,45 @@ export async function withFileLock(lockPath, operation, options = {}) {
   return /** @type {T} */ (result);
 }
 
-/** @param {string} path @param {string} kind */
-async function rejectSymlink(path, kind) {
-  try { if ((await lstat(path)).isSymbolicLink()) throw unsafeLockPath(path, kind); }
-  catch (error) { if (!isNodeError(error, 'ENOENT')) throw error; }
+/** @param {string} lockPath */
+async function ensureLockLayout(lockPath) {
+  await ensurePrivateDirectory(dirname(lockPath));
+  try {
+    await safeLockStats(lockPath, 'lock directory', 'directory');
+    await safeLockStats(join(lockPath, 'advisory.lock'), 'advisory lock file', 'file');
+    return;
+  } catch (error) {
+    if (!isNodeError(error, 'ENOENT')) throw error;
+  }
+  const temporaryPath = join(dirname(lockPath), `.${basename(lockPath)}.${process.pid}.${randomBytes(12).toString('hex')}.tmp`);
+  let handle;
+  try {
+    await mkdir(temporaryPath, { mode: 0o700 });
+    handle = await open(join(temporaryPath, 'advisory.lock'), 'wx', 0o600);
+    await handle.chmod(0o600);
+    await handle.close();
+    handle = undefined;
+    await rename(temporaryPath, lockPath);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    await unlink(join(temporaryPath, 'advisory.lock')).catch(() => {});
+    await rmdir(temporaryPath).catch(() => {});
+    if (!isNodeError(error, 'EEXIST') && !isNodeError(error, 'ENOTEMPTY')) throw error;
+  }
+  await safeLockStats(lockPath, 'lock directory', 'directory');
+  await safeLockStats(join(lockPath, 'advisory.lock'), 'advisory lock file', 'file');
+}
+
+/** @param {string} path @param {string} kind @param {'directory'|'file'} type */
+async function safeLockStats(path, kind, type) {
+  const stats = await lstat(path);
+  if (stats.isSymbolicLink() || (type === 'directory' ? !stats.isDirectory() : !stats.isFile())) throw unsafeLockPath(path, kind);
+  return stats;
+}
+
+/** @param {{dev:number|bigint,ino:number|bigint}} left @param {{dev:number|bigint,ino:number|bigint}} right */
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 /** @param {string} path @param {string} kind */

@@ -13,7 +13,7 @@ import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { MANAGED_ROLE_DESCRIPTION, managedRolePaths } from '../scripts/lib/managed-agent-role.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
-import { recordSession } from '../hooks/lib/hook-state.mjs';
+import { recordSession, resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
@@ -46,6 +46,16 @@ async function recordSetupSession(ctx, sessionId, prompt) {
     sessionId, turnId: `${sessionId}-turn`, workspace: ctx.cwd, permissionMode: 'workspace-write', prompt,
   });
 }
+
+test('compact SessionStart preserves the original trusted session freshness and source', async () => {
+  const ctx = await context();
+  await recordSession(ctx.dataRoot, { session_id: 'compact-session', cwd: ctx.cwd, source: 'startup' });
+  const initial = await resolveRecordedSessionStart(ctx.dataRoot, ctx.cwd, 'compact-session');
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+  await recordSession(ctx.dataRoot, { session_id: 'compact-session', cwd: ctx.cwd, source: 'compact' });
+  assert.deepEqual(await resolveRecordedSessionStart(ctx.dataRoot, ctx.cwd, 'compact-session'), initial);
+  assert.equal(initial.source, 'startup');
+});
 
 test('setup uses current config/read, hooks/list and one atomic exact trust/features batch write', async () => {
   const ctx = await context(); const report = await runSetup({ ...ctx.options, reviewGate: true });

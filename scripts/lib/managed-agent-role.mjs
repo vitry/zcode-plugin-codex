@@ -68,15 +68,12 @@ export async function reconcileManagedRescueRole(input) {
     const previousRegistration = targetRegistration(input.config, input.configTarget.filePath);
     const previousMetadata = targetMetadata(input.config, input.configTarget.filePath);
     const previousAdditional = (input.additionalEdits ?? []).map((/** @type {any} */ edit) => ({ keyPath: edit.keyPath, ...targetLeaf(input.config, input.configTarget.filePath, edit.keyPath) }));
-    const intendedReceipt = makeReceipt(prepared, input, previousMetadata);
-    const intendedReceiptBytes = Buffer.from(`${JSON.stringify(intendedReceipt, null, 2)}\n`);
     /** @type {AnyRecord} */
     const journal = {
       schemaVersion: 1,
       phase: 'prepared',
       rolePath: prepared.paths.rolePath,
       intendedSha256: prepared.digest,
-      intendedReceiptSha256: sha256(intendedReceiptBytes),
       roleExisted: previousRole !== null,
       ...(previousRole === null ? {} : { previousRoleBase64: (previousRole ?? Buffer.alloc(0)).toString('base64') }),
       receiptExisted: previousReceipt !== null,
@@ -112,6 +109,13 @@ export async function reconcileManagedRescueRole(input) {
       const current = await input.readConfig();
       const verification = verifyEffectiveConfig(current, prepared.paths.rolePath, input.configTarget.filePath);
       if (verification !== null) throw roleError('MANAGED_ROLE_POST_WRITE_INVALID', verification);
+      const intendedReceipt = makeReceipt(prepared, input, previousMetadata);
+      const intendedReceiptBytes = Buffer.from(`${JSON.stringify(intendedReceipt, null, 2)}\n`);
+      journal.phase = 'receipt-prepared';
+      journal.intendedReceiptSha256 = sha256(intendedReceiptBytes);
+      journal.intendedReceiptBase64 = intendedReceiptBytes.toString('base64');
+      await atomicWriteJson(prepared.paths.transactionPath, journal);
+      await input.beforeReceiptCommit?.(intendedReceiptBytes);
       await atomicWritePrivateFile(prepared.paths.receiptPath, intendedReceiptBytes);
       await unlink(prepared.paths.transactionPath);
       return { status: 'restart-required', changed: true, rolePath: prepared.paths.rolePath };
@@ -209,13 +213,13 @@ async function recoverInterruptedTransaction(prepared, input) {
   const journal = await optionalJson(prepared.paths.transactionPath);
   if (journal === null) return;
   if (journal.schemaVersion !== 1 || journal.rolePath !== prepared.paths.rolePath || typeof journal.intendedSha256 !== 'string') {
-    throw roleError('MANAGED_ROLE_JOURNAL_INVALID', 'The managed Role transaction journal is invalid.', { transactionPath: prepared.paths.transactionPath });
+    throw rollbackError(prepared, input, [prepared.paths.transactionPath], 'The managed Role transaction journal is invalid and cannot prove rollback ownership.');
   }
   const currentRole = await optionalBytes(prepared.paths.rolePath);
   if (!roleBytesProven(currentRole, journal)) {
     throw rollbackError(prepared, input, [prepared.paths.rolePath, prepared.paths.transactionPath], 'The interrupted Role bytes are not proven to be owned.');
   }
-  let configMutated = journal.phase === 'config-written';
+  let configMutated = ['config-written', 'receipt-prepared'].includes(journal.phase);
   if (!configMutated && journal.phase === 'role-written') {
     const currentConfig = await input.readConfig();
     configMutated = configLeavesOwned(currentConfig, input.configTarget.filePath, prepared.paths.rolePath, journal.desiredAdditional ?? []);
@@ -278,7 +282,7 @@ function makeReceipt(prepared, input, previousMetadata) {
     plugin: { identity: input.pluginIdentity, version: input.pluginVersion, root: prepared.pluginRoot },
     configTarget: { filePath: input.configTarget.filePath },
     role: { path: prepared.paths.rolePath, schemaVersion: MANAGED_ROLE_SCHEMA_VERSION, sha256: prepared.digest },
-    mutatedAt: new Date(input.now ?? Date.now()).toISOString(),
+    mutatedAt: new Date(typeof input.now === 'function' ? input.now() : input.now ?? Date.now()).toISOString(),
     ...(previousMetadata.present ? { priorSpawnMetadataValue: previousMetadata.value } : {}),
   };
 }
