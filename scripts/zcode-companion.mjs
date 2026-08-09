@@ -8,7 +8,7 @@ import { join, resolve, sep } from 'node:path';
 
 import { parseArgs, resolveModel } from './lib/args.mjs';
 import { readCodexThread } from './lib/codex-app-server.mjs';
-import { runSetup } from './lib/codex-config.mjs';
+import { inspectRescueRoleStatus, runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
@@ -31,6 +31,7 @@ import { resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
 
 const backgroundBindings = new WeakMap();
 const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
+const MANAGED_ROLE_STATUSES = new Set(['ready', 'restart-required', 'install-required', 'upgrade-required', 'drift', 'foreign-conflict', 'project-shadowed', 'higher-precedence-conflict', 'unsupported']);
 
 /** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
@@ -40,6 +41,20 @@ export async function runCompanion(argv, runtime = {}) {
     const activeTurn = await createIdentityStore({ dataRoot }).resolveOnlyActiveTurn({ workspace: cwd });
     const session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId);
     return runSetup({ pluginRoot: activePluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
+  }
+  if (parsed.command === 'role-status') {
+    let inspection;
+    try {
+      if (runtime.dependencies?.inspectRescueRoleStatus) inspection = await runtime.dependencies.inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, env });
+      else {
+        if (typeof env.CODEX_THREAD_ID !== 'string' || !env.CODEX_THREAD_ID) throw new Error('ambient Codex thread unavailable');
+        const activeTurn = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: env.CODEX_THREAD_ID, workspace: cwd });
+        const session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId);
+        inspection = await inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd) });
+      }
+    } catch { inspection = { status: 'unsupported' }; }
+    const status = MANAGED_ROLE_STATUSES.has(inspection?.status) ? inspection.status : 'unsupported';
+    return { type: 'role-status', role: 'zcode-rescue', status, ...(status === 'ready' ? {} : { remedy: '$zcode:setup' }) };
   }
   const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies, signal: runtime.signal });
@@ -393,17 +408,17 @@ async function failQueuedJob(store, workspace, jobId, error) {
 }
 
 async function main() {
-  let output; const entry = process.argv[2]; const setup = entry === 'setup'; const direct = entry === 'invoke' || entry === 'invoke-choice'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
+  let output; const entry = process.argv[2]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = entry === 'invoke' || entry === 'invoke-choice'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
   const signalController = !setup && !worker ? createForegroundSignalController({ process }) : null;
   try {
-    const authorization = setup || direct ? undefined : await readInternalEnvelope(3, { signal: signalController?.signal });
+    const authorization = setup || roleStatus || direct ? undefined : await readInternalEnvelope(3, { signal: signalController?.signal });
     const foregroundProgress = worker ? {} : {
       progressWriter: (/** @type {string} */ line) => process.stderr.write(line),
       progressDependencies: { now: () => new Date().toISOString(), setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval },
       ...(signalController ? { signal: signalController.signal } : {}),
     };
     output = direct ? await runDirectInvocation(process.argv.slice(2), foregroundProgress) : await runCompanion(process.argv.slice(2), { authorization, ...foregroundProgress, ...(worker ? { startupAck: acknowledgeBackgroundStartup } : {}) });
-    if (!setup && !direct && !worker) await writeInternalResponse(output); if (!worker) process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
+    if (!setup && !roleStatus && !direct && !worker) await writeInternalResponse(output); if (!worker) process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
   }
   catch (error) {
     if (error instanceof PluginError && error.code === 'JOB_INTERRUPTED') {
@@ -412,7 +427,7 @@ async function main() {
       if (typeof error.details.exitCode === 'number') process.exitCode = error.details.exitCode;
       return;
     }
-    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = entry !== 'setup' && entry !== 'invoke' && entry !== 'invoke-choice' && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
+    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = entry !== 'setup' && entry !== 'role-status' && entry !== 'invoke' && entry !== 'invoke-choice' && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
   }
   finally { signalController?.cleanup(); }
 }

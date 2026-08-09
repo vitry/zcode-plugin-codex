@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -86,6 +86,41 @@ async function reserveOrphan(context, options = {}) {
 
 /** @param {string} sessionId @param {string} [turnId] */
 function caller(sessionId, turnId = `${sessionId}-turn`) { return { sessionId, turnId, permissionMode: 'workspace-write' }; }
+
+test('role-status rescue is bounded and returns before caller consumption, reconciliation, discovery, or reservation', async () => {
+  const context = await fixture();
+  const forbidden = () => { throw new Error('role-status crossed the read-only preflight boundary'); };
+  const output = await runCompanion(['role-status', 'rescue'], {
+    cwd: context.workspace,
+    env: context.env,
+    authorization: { callerContext: 'must-not-be-consumed' },
+    dependencies: {
+      inspectRescueRoleStatus: async (/** @type {any} */ input) => {
+        assert.equal(input.cwd, context.workspace);
+        assert.equal(input.pluginRoot, await realpath(root));
+        return { status: 'ready', rolePath: '/private/path/must-not-render' };
+      },
+      reconcileOwnedJobs: forbidden,
+      discoverLaunch: forbidden,
+      reserveJob: forbidden,
+    },
+  });
+  assert.deepEqual(output, { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.equal(renderOutput(output), '{"type":"role-status","role":"zcode-rescue","status":"ready"}\n');
+});
+
+test('role-status rescue maps every non-ready managed state to the exact setup remedy', async () => {
+  const context = await fixture();
+  for (const status of ['restart-required', 'install-required', 'upgrade-required', 'drift', 'foreign-conflict', 'project-shadowed', 'higher-precedence-conflict', 'unsupported']) {
+    const output = await runCompanion(['role-status', 'rescue'], { cwd: context.workspace, env: context.env, dependencies: { inspectRescueRoleStatus: async () => ({ status }) } });
+    assert.deepEqual(output, { type: 'role-status', role: 'zcode-rescue', status, remedy: '$zcode:setup' });
+    assert.ok(Buffer.byteLength(renderOutput(output)) < 256);
+  }
+  const invalid = await runCompanion(['role-status', 'rescue'], { cwd: context.workspace, env: context.env, dependencies: { inspectRescueRoleStatus: async () => ({ status: 'secret'.repeat(10_000) }) } });
+  assert.deepEqual(invalid, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+  const failed = await runCompanion(['role-status', 'rescue'], { cwd: context.workspace, env: context.env, dependencies: { inspectRescueRoleStatus: async () => { throw new Error('private config parser detail'); } } });
+  assert.deepEqual(failed, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+});
 
 /** @param {any[]} [calls] */
 function missingRemoteDependencies(calls = []) {

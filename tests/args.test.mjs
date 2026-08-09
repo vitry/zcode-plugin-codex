@@ -35,6 +35,13 @@ test('rescue defaults to foreground and enforces task, mode, model and effort co
   assert.equal(parseArgs(['rescue', '--effort', 'HIGH', 'task']).options.effort, 'high');
 });
 
+test('role-status accepts only the constant Rescue readiness query', () => {
+  assert.deepEqual(parseArgs(['role-status', 'rescue']), {
+    command: 'role-status', options: {}, positionals: ['rescue'],
+  });
+  for (const argv of [['role-status'], ['role-status', 'review'], ['role-status', 'rescue', 'extra'], ['role-status', '--json', 'rescue']]) rejects(argv);
+});
+
 test('status timeout and ownership selection flags fail closed', () => {
   assert.deepEqual(parseArgs(['status', 'a'.repeat(64), '--wait']), {
     command: 'status', options: { wait: true, timeoutMs: 240000, all: false }, positionals: ['a'.repeat(64)],

@@ -195,6 +195,37 @@ test('installed-style invoke uses ordinary stdio, ambient thread identity, and l
   assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /ACTIVE_TURN_NOT_FOUND/);
 });
 
+test('role-status default app-server path is read-only and leaves caller context and jobs untouched', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'role-status-owner'; const turnId = 'role-status-turn';
+  const callerContext = await identity.beginCallerTurn({ sessionId, turnId, workspace: ctx.workspace, permissionMode: 'acceptEdits', prompt: '$zcode:rescue --fresh repair' });
+  await identity.beginCallerTurn({ sessionId: 'role-status-sibling', turnId: 'sibling-turn', workspace: ctx.workspace, permissionMode: 'read-only', prompt: 'unrelated sibling' });
+  const lifecycle = await runChild(process.execPath, [join(root, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: sessionId, cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+  });
+  assert.equal(lifecycle.code, 0, lifecycle.stderr || lifecycle.stdout);
+  const configRecord = join(ctx.workspace, 'role-status-codex.jsonl');
+  const zcodeRecord = join(ctx.workspace, 'role-status-zcode.jsonl');
+  await writeFile(configRecord, ''); await writeFile(zcodeRecord, '');
+  const configFile = join(ctx.dataRoot, 'config.toml');
+  const config = { config: { features: { multi_agent_v2: { hide_spawn_agent_metadata: false } } }, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: {} }] };
+  const result = await runChild(process.execPath, [cli, 'role-status', 'rescue'], {
+    cwd: ctx.workspace,
+    env: { ...ctx.env, CODEX_THREAD_ID: sessionId, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]), FAKE_CODEX_CONFIG_RESULT: JSON.stringify(config), FAKE_CODEX_RECORD: configRecord, FAKE_ZCODE_RECORD: zcodeRecord },
+  });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'install-required', remedy: '$zcode:setup' });
+  assert.equal(result.internal, '');
+  const configCalls = (await readFile(configRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.deepEqual(configCalls.filter((frame) => frame.method).map((frame) => frame.method), ['initialize', 'initialized', 'config/read']);
+  assert.equal(await readFile(zcodeRecord, 'utf8'), '');
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
+  const consumed = await identity.consumeCallerContext(callerContext, { workspace: ctx.workspace });
+  assert.equal(consumed.sessionId, sessionId);
+  assert.equal(consumed.turnId, turnId);
+});
+
 test('invoke-choice consumes only the same session pending rescue once', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'seed', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait first repair' });

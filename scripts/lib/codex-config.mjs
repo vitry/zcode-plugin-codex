@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { PluginError } from './errors.mjs';
 import { atomicWriteJson } from './fs.mjs';
-import { reconcileManagedRescueRole } from './managed-agent-role.mjs';
+import { inspectManagedRescueRole, reconcileManagedRescueRole } from './managed-agent-role.mjs';
 import { discoverZCode } from './zcode-discovery.mjs';
 import { createZCodeClient } from './zcode-client.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -54,6 +54,20 @@ export async function runSetup(input) {
     if (role.status === 'restart-required') return reportAndPersist(input, discovery, auth, 'restart-required', 'managed-role-changed', false);
     let status = 'ready'; if (edits.length) { await client.request('config/batchWrite', { edits, ...writeTarget, reloadUserConfig: true }); status = 'restart-required'; }
     return reportAndPersist(input, discovery, auth, status, null, true);
+  } finally { await client?.close().catch(() => {}); }
+}
+
+/** Read-only managed Role inspection used by the constant Rescue preflight. @param {any} input */
+export async function inspectRescueRoleStatus(input) {
+  const pluginRoot = await trustedRoot(input.pluginRoot); const cwd = await realpath(input.cwd);
+  let client;
+  try {
+    client = await startClient({ ...input.codex, cwd, env: input.env });
+    const config = await client.request('config/read', { cwd, includeLayers: true });
+    const configTarget = userWriteTarget(selectWritableUserLayer(config?.layers));
+    const packageJson = JSON.parse(await readFile(join(pluginRoot, 'package.json'), 'utf8'));
+    const template = await readFile(join(pluginRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+    return inspectManagedRescueRole({ dataRoot: input.dataRoot, template, pluginRoot, pluginIdentity: 'zcode@vitry', pluginVersion: packageJson.version, config, configTarget, sessionStartedAt: input.sessionStartedAt });
   } finally { await client?.close().catch(() => {}); }
 }
 

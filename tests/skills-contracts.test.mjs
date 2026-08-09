@@ -71,7 +71,28 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   }
   const source = skill('rescue');
   assert.match(source, /defaults? to foreground/i);
-  assert.doesNotMatch(source, /built-in.*subagent|forwarding subagent/i);
+  assert.match(source, /role-status rescue/);
+  assert.match(source, /task_name:\s*['"]zcode_rescue['"]/);
+  assert.match(source, /fork_turns:\s*['"]none['"]/);
+  assert.match(source, /agent_type:\s*['"]zcode-rescue['"]/);
+  assert.match(source, /Run the installed ZCode Rescue forwarder now\. Return its public stdout verbatim\./);
+  assert.match(source, /schema (?:hides|does not expose) `agent_type`/i);
+  assert.match(source, /unsupported\/reserved/i);
+  assert.match(source, /unknown `?agent_type`?[\s\S]+\$zcode:setup/i);
+  assert.match(source, /wait[\s\S]+same child/i);
+  assert.doesNotMatch(source, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
+});
+
+test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task or authorization material', () => {
+  const source = skill('rescue');
+  assert.match(source, /Only after the preflight returned `ready`/);
+  assert.match(source, /Act only as the installed ZCode Rescue forwarder\./);
+  assert.match(source, /node "<canonical-plugin-root>\/scripts\/zcode-companion\.mjs" invoke rescue/);
+  assert.match(source, /Preserve stderr and return public stdout verbatim\./);
+  assert.match(source, /Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request\/print\/persist authorization material\./);
+  assert.match(source, /spawn exactly once/i);
+  assert.match(source, /spawn(?:ing)? fails[\s\S]+no queued job or authorization artifact/i);
+  assert.doesNotMatch(source, /spawn[^\n]*(?:task text|job ID|capability|permission snapshot)/i);
 });
 
 test('managed Rescue role is a fixed TOML forwarder without capability or task material', () => {
@@ -84,6 +105,9 @@ test('managed Rescue role is a fixed TOML forwarder without capability or task m
   assert.match(source, /invoke-choice rescue resume/);
   assert.match(source, /invoke-choice rescue fresh/);
   assert.doesNotMatch(source, /--prompt-file|--write|spark|--force|\{\{(?:TASK|ARGS|JOB|SESSION|PERMISSION|CAPABILITY)[^}]*\}\}/i);
+  assert.match(source, /return public stdout verbatim/i);
+  assert.match(source, /preserve stderr/i);
+  assert.match(source, /(?:Do not|Never) inspect or modify code independently/i);
 });
 
 test('agents metadata uses quoted strings and namespaced default prompts', () => {

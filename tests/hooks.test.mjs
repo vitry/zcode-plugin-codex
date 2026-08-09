@@ -156,12 +156,13 @@ test('changing only an untracked symlink target changes the fingerprint without 
   assert.equal((await jsonFiles(join(data, 'workspaces'))).filter(isGateRunPath).length, 1, 'same-path symlink target changes must reach the gate path');
 });
 
-test('SubagentStart marks forwarding suppression without changing parent permission snapshot', async () => {
+test('subagent hook marks forwarding suppression without changing parent permission snapshot', async () => {
   const { cwd, env } = await workspace();
   await runHook('session-lifecycle-hook.mjs', { session_id: 'parent', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'plan', source: 'startup' }, env);
   await runHook('user-prompt-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'plan', prompt: 'go' }, env);
   const sub = await runHook('subagent-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', agent_id: 'agent-1', agent_type: 'zcode-rescue' }, env);
   assert.equal(sub.code, 0); assert.match(sub.json.hookSpecificOutput.additionalContext, /forwarding subagent/i);
+  assert.doesNotMatch(JSON.stringify(sub.json), /callerContext|executionCapability|[a-f0-9]{64}/);
   const stop = await runHook('subagent-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', agent_id: 'agent-1', agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
   assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
 });

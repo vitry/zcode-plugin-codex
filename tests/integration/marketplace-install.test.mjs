@@ -121,6 +121,16 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.ok(JSON.parse(await readFile(join(installedRoot, 'hooks', 'hooks.json'), 'utf8')).hooks);
   assert.match(await readFile(join(installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8'), /^developer_instructions = """/);
   await assert.rejects(readFile(join(installedRoot, 'agents', 'zcode-rescue.md'), 'utf8'), { code: 'ENOENT' });
+  const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const preflightOffset = installedRescue.indexOf('role-status rescue');
+  const namedSpawnOffset = installedRescue.indexOf("task_name: 'zcode_rescue'");
+  const childCommandOffset = installedRescue.indexOf('scripts/zcode-companion.mjs" invoke rescue');
+  assert.ok(preflightOffset >= 0 && namedSpawnOffset > preflightOffset && childCommandOffset > namedSpawnOffset, 'installed routing must preflight, spawn, then send only the child command');
+  assert.match(installedRescue, /agent_type:\s*'zcode-rescue'/);
+  assert.match(installedRescue, /fork_turns:\s*'none'/);
+  assert.match(installedRescue, /Do not relay raw child progress, stderr, tool output, or intermediate messages into the parent/);
+  assert.match(installedRescue, /return only the child's public stdout verbatim without interpretation/);
+  assert.doesNotMatch(installedRescue, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
   const listedComponents = await listPluginComponents(temporary, env);
   const installedSkills = listedComponents.skills.data.flatMap((entry) => entry.skills)
     .filter((skill) => /^(?:zcode|zcode-plugin-codex):/.test(skill.name));
@@ -238,6 +248,19 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   });
   assert.equal(fresh.code, 0, fresh.stderr || fresh.stdout);
   assert.equal(JSON.parse(fresh.stdout).status, 'ready');
+  const roleStatus = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'role-status', 'rescue'], {
+    cwd: temporary,
+    env: {
+      ...env,
+      CODEX_THREAD_ID: freshSessionId,
+      CODEX_APP_SERVER_PATH: process.execPath,
+      CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
+      FAKE_CODEX_RECORD: setupRecord,
+    },
+  });
+  assert.equal(roleStatus.code, 0, roleStatus.stderr || roleStatus.stdout);
+  assert.deepEqual(JSON.parse(roleStatus.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.equal(roleStatus.internal, '');
   const workspaceEntries = await readdir(join(pluginData, 'workspaces'));
   assert.equal(workspaceEntries.length, 1);
   assert.equal(JSON.parse(await readFile(join(pluginData, 'workspaces', workspaceEntries[0], 'config', 'review-gate.json'), 'utf8')).setupReady, true);

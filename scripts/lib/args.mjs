@@ -1,6 +1,6 @@
 import { PluginError } from './errors.mjs';
 
-const PUBLIC_COMMANDS = new Set(['review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel', 'setup']);
+const PUBLIC_COMMANDS = new Set(['review', 'adversarial-review', 'rescue', 'transfer', 'status', 'result', 'cancel', 'setup', 'role-status']);
 const SCOPES = new Set(['auto', 'working-tree', 'branch']);
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const JOB_ID = /^[a-f0-9]{64}$/;
@@ -17,8 +17,15 @@ export function parseArgs(argv) {
       : command === 'rescue' ? parseRescue(tokens)
         : command === 'transfer' ? parseTransfer(tokens)
           : command === 'setup' ? parseSetup(tokens)
+            : command === 'role-status' ? parseRoleStatus(tokens)
       : command === 'status' ? parseStatus(tokens) : parseJobLookup(command, tokens);
   return { command, ...parsed };
+}
+
+/** @param {string[]} tokens */
+function parseRoleStatus(tokens) {
+  if (tokens.length !== 1 || tokens[0] !== 'rescue') throw argumentError('Role status accepts only the Rescue role.');
+  return { options: {}, positionals: ['rescue'] };
 }
 
 /** @param {string[]} tokens */
