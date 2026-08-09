@@ -4,6 +4,8 @@ const MAX_ROLLOUTS = 64;
 const MAX_EVENTS_PER_ROLLOUT = 8_192;
 const MAX_TEXT_BYTES = 1024 * 1024;
 const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
+const GENERIC_HIDDEN_SCHEMA_VERSIONS = new Set(['0.147.0']);
+const EXEC_ENVELOPE_KEYS = new Set(['cmd', 'workdir', 'yield_time_ms', 'max_output_tokens']);
 
 export class CodexRescueUnqualifiedError extends Error {
   constructor(code, message, evidence) { super(message); this.name = 'CodexRescueUnqualifiedError'; this.code = code; this.evidence = evidence; }
@@ -15,13 +17,13 @@ export class CodexRescueEvidenceMismatchError extends Error {
 
 export function parseCodexRolloutJsonl(value) {
   if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > MAX_ROLLOUT_BYTES) {
-    unqualified('rollout-file-oversize', 'A rollout file is absent or exceeds the qualification bound.');
+    mismatch('rollout-file-oversize', 'A rollout file is absent or exceeds the qualification bound.');
   }
   const lines = value.split('\n').filter((line) => line.length > 0);
-  if (lines.length > MAX_EVENTS_PER_ROLLOUT) unqualified('rollout-event-count', 'A rollout contains too many events.');
+  if (lines.length > MAX_EVENTS_PER_ROLLOUT) mismatch('rollout-event-count', 'A rollout contains too many events.');
   return lines.map((line) => {
-    if (Buffer.byteLength(line, 'utf8') > MAX_TEXT_BYTES) unqualified('rollout-line-oversize', 'A rollout record exceeds the qualification bound.');
-    try { return JSON.parse(line); } catch { unqualified('rollout-json-invalid', 'A rollout record is not valid JSON.'); }
+    if (Buffer.byteLength(line, 'utf8') > MAX_TEXT_BYTES) mismatch('rollout-line-oversize', 'A rollout record exceeds the qualification bound.');
+    try { return JSON.parse(line); } catch { mismatch('rollout-json-invalid', 'A rollout record is not valid JSON.'); }
   });
 }
 
@@ -34,7 +36,7 @@ export function qualifyCodexRescueEvidence(input, options) {
     .filter((frame) => frame?.type === 'thread.started')
     .map((frame) => boundedString(frame.thread_id))
     .filter(Boolean));
-  if (parentThreadIds.length === 0) unqualified('parent-thread-unavailable', 'Codex exec JSON did not expose a parent thread ID.');
+  if (parentThreadIds.length === 0) mismatch('parent-thread-unavailable', 'Codex exec JSON did not expose a parent thread ID.');
   if (parentThreadIds.length !== 1) mismatch('parent-thread-ambiguous', 'Codex exec JSON exposed conflicting parent thread IDs.');
   const parentThreadId = parentThreadIds[0];
 
@@ -42,7 +44,7 @@ export function qualifyCodexRescueEvidence(input, options) {
     const meta = sessionMeta(events);
     return meta?.id === parentThreadId;
   });
-  if (parentCandidates.length === 0) unqualified('parent-rollout-unavailable', 'No rollout contains the exec parent session metadata.');
+  if (parentCandidates.length === 0) mismatch('parent-rollout-unavailable', 'No rollout contains the exec parent session metadata.');
   if (parentCandidates.length !== 1) mismatch('parent-rollout-ambiguous', 'Multiple rollouts claim the exec parent thread ID.');
   const parent = parentCandidates[0];
   const parentMeta = sessionMeta(parent);
@@ -54,7 +56,7 @@ export function qualifyCodexRescueEvidence(input, options) {
   }
 
   const spawns = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === 'spawn_agent');
-  if (spawns.length === 0) unqualified('spawn-metadata-unavailable', 'The parent rollout did not expose spawn_agent metadata.');
+  if (spawns.length === 0) mismatch('spawn-metadata-unavailable', 'The parent rollout did not expose spawn_agent metadata.');
   if (spawns.length !== 1) mismatch('spawn-count', 'The parent rollout contains more than one spawn_agent call.');
   const spawn = spawns[0].payload;
   const spawnArgs = parseObject(spawn.arguments, 'spawn-arguments');
@@ -66,12 +68,12 @@ export function qualifyCodexRescueEvidence(input, options) {
   const starts = parent.filter((event) => event?.type === 'event_msg'
     && event.payload?.type === 'sub_agent_activity'
     && event.payload.kind === 'started');
-  if (starts.length === 0) unqualified('child-start-unavailable', 'The parent rollout did not expose a child start event.');
+  if (starts.length === 0) mismatch('child-start-unavailable', 'The parent rollout did not expose a child start event.');
   if (starts.length !== 1) mismatch('child-start-count', 'The parent rollout contains more than one child start event.');
   const start = starts[0].payload;
   const childThreadId = boundedString(start.agent_thread_id);
   const agentPath = boundedString(start.agent_path);
-  if (!childThreadId || !agentPath) unqualified('child-identity-unavailable', 'The child start event omits its thread ID or agent path.');
+  if (!childThreadId || !agentPath) mismatch('child-identity-unavailable', 'The child start event omits its thread ID or agent path.');
   if (start.event_id !== spawn.call_id) mismatch('spawn-start-link-mismatch', 'The child start event does not link to the spawn call.');
   if (agentPath !== options.expectedAgentPath) mismatch('agent-path-mismatch', 'The started child path does not match the fixed Rescue task name.');
 
@@ -83,13 +85,13 @@ export function qualifyCodexRescueEvidence(input, options) {
         && (meta.parent_thread_id === parentThreadId || meta.source?.subagent?.thread_spawn?.parent_thread_id === parentThreadId);
     });
     if (linkedChildren.length > 0) mismatch('child-rollout-id-mismatch', 'A child rollout links to the parent but not to the observed child start ID.');
-    unqualified('child-rollout-unavailable', 'No rollout contains the started child thread metadata.');
+    mismatch('child-rollout-unavailable', 'No rollout contains the started child thread metadata.');
   }
   if (childCandidates.length !== 1) mismatch('child-rollout-ambiguous', 'Multiple rollouts claim the started child thread ID.');
   const child = childCandidates[0];
   const childMeta = sessionMeta(child);
   const threadSpawn = childMeta.source?.subagent?.thread_spawn;
-  if (!threadSpawn || typeof threadSpawn !== 'object') unqualified('thread-spawn-unavailable', 'The child rollout omits thread_spawn metadata.');
+  if (!threadSpawn || typeof threadSpawn !== 'object') mismatch('thread-spawn-unavailable', 'The child rollout omits thread_spawn metadata.');
   if (childMeta.session_id !== parentThreadId
     || childMeta.parent_thread_id !== parentThreadId
     || childMeta.thread_source !== 'subagent'
@@ -101,17 +103,23 @@ export function qualifyCodexRescueEvidence(input, options) {
 
   let route;
   let agentType;
-  if (options.schemaMode === 'named') {
+  let expectedSpawnMessage;
+  if (Object.hasOwn(spawnArgs, 'agent_type')) {
+    assertExactKeys(spawnArgs, ['agent_type', 'fork_turns', 'message', 'task_name'], 'spawn-keys-mismatch');
     if (spawnArgs.agent_type !== options.expectedAgentType) mismatch('agent-type-mismatch', 'Named spawn metadata does not select the managed Rescue Role.');
     if (threadSpawn.agent_role !== options.expectedAgentType) mismatch('agent-role-mismatch', 'Child session metadata does not report the managed Rescue Role.');
-    route = 'named'; agentType = options.expectedAgentType;
-  } else if (options.schemaMode === 'generic-hidden') {
-    if (Object.hasOwn(spawnArgs, 'agent_type')) mismatch('generic-agent-type-present', 'A schema-hidden generic spawn must omit agent_type.');
-    if (threadSpawn.agent_role !== null) mismatch('generic-agent-role-mismatch', 'A schema-hidden generic child must report a null agent_role.');
-    route = 'generic-schema-hidden'; agentType = null;
+    route = 'named'; agentType = options.expectedAgentType; expectedSpawnMessage = options.expectedNamedSpawnMessage;
   } else {
-    unqualified('schema-mode-unavailable', 'The harness did not explicitly qualify named or schema-hidden routing.');
+    assertExactKeys(spawnArgs, ['fork_turns', 'message', 'task_name'], 'spawn-keys-mismatch');
+    if (!GENERIC_HIDDEN_SCHEMA_VERSIONS.has(parentMeta.cli_version)) mismatch('generic-schema-version-unqualified', 'The observed Codex version is not qualified for a schema-hidden generic route.');
+    if (threadSpawn.agent_role !== null) mismatch('generic-agent-role-mismatch', 'A schema-hidden generic child must report a null agent_role.');
+    route = 'generic-schema-hidden'; agentType = null; expectedSpawnMessage = options.expectedGenericSpawnMessage;
   }
+
+  const spawnIndex = parent.indexOf(spawns[0]);
+  const startIndex = parent.indexOf(starts[0]);
+  if (spawnIndex >= startIndex) mismatch('spawn-start-order', 'The linked child start must follow its spawn call.');
+  assertParentPreflight(parent, spawnIndex, startIndex, options);
 
   const childCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
   const childExecCalls = childCalls.filter((event) => event.payload.name === 'exec');
@@ -120,13 +128,26 @@ export function qualifyCodexRescueEvidence(input, options) {
       && event.payload?.type === 'function_call'
       && ['exec', 'exec_command'].includes(event.payload.name));
     if (unsupportedCalls.length > 0) mismatch('child-command-shape-mismatch', 'The child command used a tool-call shape not captured for Codex 0.147.');
-    unqualified('child-command-unavailable', 'The child rollout did not expose structured tool-call evidence.');
+    mismatch('child-command-unavailable', 'The child rollout did not expose structured tool-call evidence.');
   }
   if (childCalls.length !== 1 || childExecCalls.length !== 1) mismatch('child-command-count', 'The child must execute exactly one tool call and it must be exec.');
-  const commands = extractCommands(childExecCalls[0].payload.input);
-  if (commands.length !== 1 || commands[0] !== options.expectedCommand) mismatch('child-command-mismatch', 'The child exec command is absent, ambiguous, or not the constant Rescue command.');
+  const childEnvelope = parseCapturedExecEnvelope(childExecCalls[0].payload.input);
+  assertExecEnvelope(childEnvelope, options.expectedCommand, options.expectedWorkspace, 'child-exec-envelope-mismatch');
 
-  assertParentIsolation(parent, options.expectedCommand, options.forbiddenParentText ?? []);
+  const childOutputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
+  if (childOutputs.length === 0) mismatch('child-output-count', 'The child rollout has no structured exec output.');
+  if (childOutputs.length !== 1) mismatch('child-output-count', 'The child rollout must have exactly one structured exec output.');
+  if (childOutputs[0].payload.call_id !== childExecCalls[0].payload.call_id) mismatch('child-output-link', 'The child exec output does not link to its unique call.');
+  if (child.indexOf(childExecCalls[0]) >= child.indexOf(childOutputs[0])) mismatch('child-output-order', 'The linked child output must follow its exec call.');
+  assertTerminalSentinel(childOutputs[0].payload.output, options.expectedPublicOutput);
+  const childFinalIndex = child.findIndex((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
+  if (childFinalIndex <= child.indexOf(childOutputs[0])) mismatch('child-terminal-order', 'The child final message must follow its linked exec output.');
+
+  assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
+
+  const childReturnIndex = parent.findIndex((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath && event.payload.recipient === '/root');
+  const parentFinalIndex = parent.findIndex((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
+  if (childReturnIndex < startIndex || parentFinalIndex <= childReturnIndex) mismatch('parent-terminal-order', 'The linked child return and parent final message are out of order.');
 
   const childFinal = finalRolloutMessage(child, 'child-terminal-unavailable');
   const childReturn = childReturnPayload(parent, agentPath);
@@ -136,19 +157,20 @@ export function qualifyCodexRescueEvidence(input, options) {
     if (actual !== options.expectedPublicOutput) mismatch('public-output-mismatch', 'Child and parent terminal public output must equal the expected sentinel byte-for-byte.');
   }
   const evidence = { parentThreadId, childThreadId, agentPath, taskName: spawnArgs.task_name, agentType, route, publicOutput: execFinal };
-  if (!spawnMessage) unqualified('spawn-message-unavailable', 'The structured spawn metadata does not expose a bounded message field.');
+  if (!spawnMessage) mismatch('spawn-message-unavailable', 'The structured spawn metadata does not expose a bounded message field.');
   if (/^gAAAA[A-Za-z0-9_-]{40,}={0,2}$/u.test(spawnMessage)) {
     unqualified('spawn-message-encrypted', 'Codex 0.147 persisted the spawn message as ciphertext, so its exact runtime value cannot be qualified.', evidence);
   }
-  if (spawnMessage !== options.expectedSpawnMessage) mismatch('spawn-message-mismatch', 'The runtime spawn message differs from the fixed Rescue forwarder contract.');
+  if (spawnMessage !== expectedSpawnMessage) mismatch('spawn-message-mismatch', 'The runtime spawn message differs from the fixed Rescue forwarder contract.');
 
   return evidence;
 }
 
-function assertParentIsolation(parent, expectedCommand, forbiddenText) {
+function assertParentIsolation(parent, expectedPreflightCommand, forbiddenText) {
   for (const event of parent) {
     if (event?.type === 'response_item' && event.payload?.type === 'custom_tool_call' && event.payload.name === 'exec') {
-      if (extractCommands(event.payload.input).includes(expectedCommand)) mismatch('parent-inline-command', 'The parent executed the child Rescue command inline.');
+      const command = parseCapturedExecEnvelope(event.payload.input).get('cmd');
+      if (command !== expectedPreflightCommand && isCompanionCommand(command)) mismatch('parent-inline-command', 'The parent executed a Rescue companion command outside the exact preflight.');
     }
     let visible;
     if (event?.type === 'event_msg' && event.payload?.type === 'agent_message') visible = event.payload.message;
@@ -162,6 +184,78 @@ function assertParentIsolation(parent, expectedCommand, forbiddenText) {
   }
 }
 
+function assertParentPreflight(parent, spawnIndex, startIndex, options) {
+  const calls = parent
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call' && event.payload.name === 'exec')
+    .map(({ event, index }) => ({ event, index, envelope: parseCapturedExecEnvelope(event.payload.input) }));
+  const preflights = calls.filter(({ envelope }) => envelope.get('cmd') === options.expectedPreflightCommand);
+  if (preflights.length === 0) {
+    if (calls.some(({ envelope }) => isCompanionCommand(envelope.get('cmd')))) mismatch('preflight-command-mismatch', 'The parent companion preflight command is not exact.');
+    mismatch('preflight-count', 'The parent rollout must contain exactly one readiness preflight.');
+  }
+  if (preflights.length !== 1) mismatch('preflight-count', 'The parent rollout must contain exactly one readiness preflight.');
+  const preflight = preflights[0];
+  assertExecEnvelope(preflight.envelope, options.expectedPreflightCommand, options.expectedWorkspace, 'preflight-envelope-mismatch');
+  const outputs = parent
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
+  const linked = outputs.filter(({ event }) => event.payload.call_id === preflight.event.payload.call_id);
+  if (linked.length !== 1) mismatch('preflight-output-link', 'The readiness output does not link exactly once to the preflight call.');
+  if (!(preflight.index < linked[0].index && linked[0].index < spawnIndex && linked[0].index < startIndex)) {
+    mismatch('preflight-order', 'The readiness preflight and output must complete before the child spawn.');
+  }
+  const statusText = terminalOutputText(linked[0].event.payload.output, 'preflight-status-mismatch').trim();
+  let status;
+  try { status = JSON.parse(statusText); } catch { mismatch('preflight-status-mismatch', 'The readiness output is not exact bounded JSON.'); }
+  assertExactKeys(status, ['role', 'status', 'type'], 'preflight-status-mismatch');
+  if (status.type !== 'role-status' || status.role !== 'zcode-rescue' || status.status !== 'ready') {
+    mismatch('preflight-status-mismatch', 'The readiness output does not report the Rescue Role ready.');
+  }
+}
+
+function assertExecEnvelope(envelope, expectedCommand, expectedWorkspace, code) {
+  if (!envelope || typeof envelope.get !== 'function' || typeof envelope.keys !== 'function') mismatch(code, 'The exec envelope is absent.');
+  for (const key of envelope.keys()) if (!EXEC_ENVELOPE_KEYS.has(key)) mismatch(code, `The exec envelope contains forbidden key ${key}.`);
+  if (envelope.get('cmd') !== expectedCommand || envelope.get('workdir') !== expectedWorkspace) {
+    mismatch(code === 'child-exec-envelope-mismatch' && envelope.get('cmd') !== expectedCommand ? 'child-command-mismatch' : code, 'The exec command or canonical workspace differs from the contract.');
+  }
+  if (envelope.has('yield_time_ms') && (!Number.isInteger(envelope.get('yield_time_ms')) || envelope.get('yield_time_ms') < 250 || envelope.get('yield_time_ms') > 30_000)) mismatch(code, 'yield_time_ms is outside the captured safe bound.');
+  if (envelope.has('max_output_tokens') && (!Number.isInteger(envelope.get('max_output_tokens')) || envelope.get('max_output_tokens') < 1 || envelope.get('max_output_tokens') > 100_000)) mismatch(code, 'max_output_tokens is outside the captured safe bound.');
+}
+
+function assertTerminalSentinel(output, sentinel) {
+  const text = terminalOutputText(output, 'child-output-mismatch');
+  const lines = text.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  const occurrences = output.flatMap((item) => item.text.split('\n')).filter((line) => line === sentinel).length;
+  if (lines.at(-1) !== sentinel || occurrences !== 1) {
+    mismatch('child-output-mismatch', 'The unique public sentinel is not the terminal child stdout line.');
+  }
+}
+
+function terminalOutputText(output, code) {
+  if (!Array.isArray(output) || output.length === 0 || output.length > 8) mismatch(code, 'Structured tool output is absent or exceeds its bound.');
+  let total = 0;
+  for (const item of output) {
+    if (item?.type !== 'input_text' || typeof item.text !== 'string') mismatch(code, 'Structured tool output is not captured input_text.');
+    total += Buffer.byteLength(item.text, 'utf8');
+  }
+  if (total > MAX_TEXT_BYTES) mismatch(code, 'Structured tool output exceeds its bound.');
+  return output.at(-1).text;
+}
+
+function assertExactKeys(object, expected, code) {
+  if (!object || typeof object !== 'object' || Array.isArray(object)) mismatch(code, 'Structured object is absent.');
+  const actual = Object.keys(object).sort();
+  const wanted = [...expected].sort();
+  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) mismatch(code, 'Structured object keys differ from the captured contract.');
+}
+
+function isCompanionCommand(command) {
+  return typeof command === 'string' && (command.includes('zcode-companion.mjs') || /(?:^|\s)invoke(?:-choice)?\s+rescue(?:\s|$)/u.test(command));
+}
+
 function sessionMeta(events) {
   const metas = events.filter((event) => event?.type === 'session_meta').map((event) => event.payload);
   if (metas.length > 1) mismatch('session-meta-count', 'A rollout contains multiple session_meta records.');
@@ -172,7 +266,7 @@ function finalRolloutMessage(events, code) {
   const messages = events
     .filter((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer')
     .map((event) => boundedString(event.payload.message));
-  if (messages.length === 0 || !messages[0]) unqualified(code, 'A rollout did not expose its final public agent message.');
+  if (messages.length === 0 || !messages[0]) mismatch(code, 'A rollout did not expose its final public agent message.');
   if (messages.length !== 1) mismatch('terminal-message-count', 'A rollout contains more than one final public agent message.');
   return messages[0];
 }
@@ -182,10 +276,10 @@ function childReturnPayload(parent, agentPath) {
     && event.payload?.type === 'agent_message'
     && event.payload.author === agentPath
     && event.payload.recipient === '/root');
-  if (returns.length === 0) unqualified('child-return-unavailable', 'The parent rollout did not expose the child terminal return.');
+  if (returns.length === 0) mismatch('child-return-unavailable', 'The parent rollout did not expose the child terminal return.');
   if (returns.length !== 1) mismatch('child-return-count', 'The parent rollout contains more than one child terminal return.');
   const content = returns[0].payload.content;
-  if (!Array.isArray(content) || content.length !== 1 || content[0]?.type !== 'input_text') unqualified('child-return-content-unavailable', 'The child terminal return is not available as one structured input_text item.');
+  if (!Array.isArray(content) || content.length !== 1 || content[0]?.type !== 'input_text') mismatch('child-return-content-unavailable', 'The child terminal return is not available as one structured input_text item.');
   const text = boundedString(content[0].text);
   const prefix = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n`;
   if (!text?.startsWith(prefix)) mismatch('child-return-envelope-mismatch', 'The child terminal return envelope does not match the linked agent.');
@@ -196,11 +290,12 @@ function finalExecMessage(frames) {
   const messages = frames
     .filter((frame) => frame?.type === 'item.completed' && frame.item?.type === 'agent_message')
     .map((frame) => boundedString(frame.item.text));
-  if (messages.length === 0 || !messages.at(-1)) unqualified('exec-terminal-unavailable', 'Codex exec JSON did not expose a terminal public message.');
+  if (messages.length === 0 || !messages.at(-1)) mismatch('exec-terminal-unavailable', 'Codex exec JSON did not expose a terminal public message.');
+  if (messages.length !== 1) mismatch('exec-terminal-count', 'Codex exec JSON exposed more than one terminal public message.');
   return messages.at(-1);
 }
 
-function extractCommands(input) {
+function parseCapturedExecEnvelope(input) {
   const source = boundedString(input);
   if (!source) return [];
   const prefix = 'const r = await tools.exec_command(';
@@ -215,7 +310,7 @@ function extractCommands(input) {
   }
   const objectSource = source.slice(prefix.length, -suffix.length);
   const values = parseTopLevelExecObject(objectSource);
-  return typeof values.get('cmd') === 'string' ? [values.get('cmd')] : [];
+  return values;
 }
 
 function parseTopLevelExecObject(source) {
@@ -320,7 +415,7 @@ function parseObject(value, code) {
 }
 
 function boundedArray(value, max, code) {
-  if (!Array.isArray(value) || value.length > max) unqualified(code, `Evidence ${code} is absent or exceeds its bound.`);
+  if (!Array.isArray(value) || value.length > max) mismatch(code, `Evidence ${code} is absent or exceeds its bound.`);
   return value;
 }
 
@@ -330,7 +425,7 @@ function boundedString(value) {
 
 function boundedJson(value) {
   const text = JSON.stringify(value);
-  if (Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES) unqualified('parent-event-oversize', 'A parent-visible event exceeds the qualification bound.');
+  if (Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES) mismatch('parent-event-oversize', 'A parent-visible event exceeds the qualification bound.');
   return text;
 }
 

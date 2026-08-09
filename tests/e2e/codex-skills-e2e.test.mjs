@@ -10,6 +10,7 @@ import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapsh
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import {
+  CodexRescueEvidenceMismatchError,
   CodexRescueUnqualifiedError,
   parseCodexRolloutJsonl,
   qualifyCodexRescueEvidence,
@@ -18,7 +19,7 @@ import {
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
 const optInSkip = process.env.ZCODE_CODEX_SKILLS_E2E === '1' ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_SKILLS_E2E=1 to spend authenticated Codex credits.');
-const rescueOptInSkip = process.env.ZCODE_CODEX_RESCUE_E2E === '1' ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_RESCUE_E2E=1 to qualify the Codex 0.147 schema-hidden route; set ZCODE_CODEX_RESCUE_SCHEMA_MODE=named only on a host whose spawn schema exposes agent_type.');
+const rescueOptInSkip = process.env.ZCODE_CODEX_RESCUE_E2E === '1' ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_RESCUE_E2E=1 to qualify the runtime-observed native Rescue route.');
 
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-skills-e2e-')); t.after(() => rm(temporary, { recursive: true, force: true }));
@@ -64,31 +65,31 @@ test('installed Rescue uses one isolated native child and returns its public std
     assert.equal(setup.code, 0, `codex setup failed\n${setup.stdout}\n${setup.stderr}`);
     setupReady = /status\\?"?\s*:\s*\\?"ready\\?"/.test(setup.stdout);
   }
-  if (!setupReady) { t.skip(unqualified('setup-observation-unavailable', 'The real Codex transcript did not prove a fresh-session ready Role within four setup turns.')); return; }
+  assert.equal(setupReady, true, 'four successful setup turns did not establish a fresh-session ready Rescue Role');
   await writeFile(zcodeRecord, '');
   const rescue = await codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait repair the fixture skill exactly once now. Return only its final public result.'], workspace, env, 240_000);
   if (skipExternalFailure(t, rescue)) return;
   assert.equal(rescue.code, 0, `codex Rescue failed\n${rescue.stdout}\n${rescue.stderr}`);
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  const schemaMode = process.env.ZCODE_CODEX_RESCUE_SCHEMA_MODE ?? 'generic-hidden';
-  assert.ok(['named', 'generic-hidden'].includes(schemaMode), 'ZCODE_CODEX_RESCUE_SCHEMA_MODE must be named or generic-hidden');
   const expectedCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke rescue`;
-  const expectedSpawnMessage = schemaMode === 'named'
-    ? 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.'
-    : `Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:\n${expectedCommand}\nPreserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request/print/persist authorization material.`;
-  const expectedRoute = schemaMode === 'named' ? 'named' : 'generic-schema-hidden';
+  const expectedPreflightCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" role-status rescue`;
+  const expectedNamedSpawnMessage = 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.';
+  const expectedGenericSpawnMessage = `Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:\n${expectedCommand}\nPreserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request/print/persist authorization material.`;
+  const canonicalWorkspace = await realpath(workspace);
   const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(zcodeCalls.filter((call) => call.method === 'session/send').length, 1, 'one ZCode send after one native child spawn');
   try {
     const evidence = qualifyCodexRescueEvidence(
       { execFrames: frames, rollouts: await loadCodexRollouts(codexHome) },
       {
-        schemaMode,
         expectedTaskName: 'zcode_rescue',
         expectedAgentPath: '/root/zcode_rescue',
         expectedAgentType: 'zcode-rescue',
+        expectedWorkspace: canonicalWorkspace,
         expectedCommand,
-        expectedSpawnMessage,
+        expectedPreflightCommand,
+        expectedNamedSpawnMessage,
+        expectedGenericSpawnMessage,
         expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
         forbiddenParentText: [
           'Running command: npm test.',
@@ -100,11 +101,12 @@ test('installed Rescue uses one isolated native child and returns its public std
         ],
       },
     );
-    assert.equal(evidence.route, expectedRoute, 'qualification must record the selected native route');
+    assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route), 'qualification must record an automatically observed native route');
+    t.diagnostic(`qualified native Rescue route: ${evidence.route}`);
   } catch (error) {
-    if (error instanceof CodexRescueUnqualifiedError) {
-      if (error.evidence) assert.equal(error.evidence.route, expectedRoute, 'partial qualification evidence must record the selected native route');
-      const detail = error.evidence ? `Observed route ${error.evidence.route}. ${error.message}` : error.message;
+    if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
+      assert.ok(['named', 'generic-schema-hidden'].includes(error.evidence?.route), 'encrypted-message evidence must record the automatically observed native route');
+      const detail = `Observed route ${error.evidence.route}. ${error.message}`;
       t.skip(unqualified(error.code, detail)); return;
     }
     throw error;
@@ -141,18 +143,18 @@ async function loadCodexRollouts(codexHome) {
     const current = pending.pop();
     let entries;
     try { entries = await readdir(current.path, { withFileTypes: true }); }
-    catch (error) { throw new CodexRescueUnqualifiedError('rollouts-unavailable', `Codex session rollouts are unavailable: ${error.code ?? 'read-failed'}.`); }
+    catch (error) { throw new CodexRescueEvidenceMismatchError('rollouts-unavailable', `Codex session rollouts are unavailable: ${error.code ?? 'read-failed'}.`); }
     for (const entry of entries) {
       const path = join(current.path, entry.name);
       if (entry.isDirectory() && current.depth < 6) pending.push({ path, depth: current.depth + 1 });
       else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(path);
-      if (files.length > 64 || pending.length > 256) throw new CodexRescueUnqualifiedError('rollouts-overflow', 'Codex rollout discovery exceeded its qualification bound.');
+      if (files.length > 64 || pending.length > 256) throw new CodexRescueEvidenceMismatchError('rollouts-overflow', 'Codex rollout discovery exceeded its qualification bound.');
     }
   }
-  if (files.length === 0) throw new CodexRescueUnqualifiedError('rollouts-unavailable', 'Codex produced no persisted rollout files.');
+  if (files.length === 0) throw new CodexRescueEvidenceMismatchError('rollouts-unavailable', 'Codex produced no persisted rollout files.');
   return Promise.all(files.map(async (path) => {
     const metadata = await stat(path);
-    if (metadata.size > 16 * 1024 * 1024) throw new CodexRescueUnqualifiedError('rollout-file-oversize', 'A Codex rollout exceeds the qualification bound.');
+    if (metadata.size > 16 * 1024 * 1024) throw new CodexRescueEvidenceMismatchError('rollout-file-oversize', 'A Codex rollout exceeds the qualification bound.');
     return parseCodexRolloutJsonl(await readFile(path, 'utf8'));
   }));
 }
