@@ -12,6 +12,9 @@ export const MANAGED_ROLE_DESCRIPTION = 'Runs the fixed ZCode Rescue forwarder i
 const PLACEHOLDER = '{{PLUGIN_ROOT}}';
 
 /** @typedef {Record<string, any>} AnyRecord */
+/** @typedef {'prepared'|'role-written'|'config-written'|'receipt-prepared'} ManagedRoleJournalPhase */
+/** @typedef {{schemaVersion:1,roleName:string,plugin:{identity:string,version:string,root:string},configTarget:{filePath:string},role:{path:string,schemaVersion:number,sha256:string},mutatedAt:string,priorSpawnMetadataValue?:boolean}} ManagedRoleReceipt */
+/** @typedef {{schemaVersion:1,phase:ManagedRoleJournalPhase,rolePath:string,intendedSha256:string,roleExisted:boolean,previousRoleBase64?:string,receiptExisted:boolean,previousReceiptBase64?:string,previousRegistration:AnyRecord,previousMetadata:AnyRecord,previousAdditional?:AnyRecord[],desiredAdditional?:AnyRecord[],configVersion?:string,intendedReceiptSha256?:string,intendedReceiptBase64?:string}} ManagedRoleJournal */
 
 /** @param {string} dataRoot */
 export function managedRolePaths(dataRoot) {
@@ -57,9 +60,13 @@ export async function reconcileManagedRescueRole(input) {
     if (inspection.status === 'ready') return { status: 'ready', changed: false, rolePath: prepared.paths.rolePath };
     if (inspection.status === 'restart-required') return { status: 'restart-required', changed: false, rolePath: prepared.paths.rolePath };
     if (!['install-required', 'upgrade-required'].includes(inspection.status)) {
-      throw roleError('MANAGED_ROLE_CONFLICT', `Managed Rescue Role reconciliation refused status: ${inspection.status}.`, {
-        status: inspection.status,
-        rolePath: prepared.paths.rolePath,
+      const conflicts = inspection.conflicts ?? [];
+      throw new PluginError('MANAGED_ROLE_CONFLICT', `Managed Rescue Role reconciliation refused status: ${inspection.status}.`, {
+        category: 'configuration',
+        remedy: conflicts.length
+          ? `Remove or rename the ${MANAGED_ROLE_NAME} definition in ${conflicts.map((conflict) => `${conflict.layerType} layer ${conflict.filePath}`).join(', ')}, then rerun $zcode:setup.`
+          : 'Resolve the managed Agent Role conflict and rerun $zcode:setup.',
+        details: { status: inspection.status, rolePath: prepared.paths.rolePath, ...(conflicts.length ? { conflicts } : {}) },
       });
     }
 
@@ -68,12 +75,12 @@ export async function reconcileManagedRescueRole(input) {
     const previousRegistration = targetRegistration(input.config, input.configTarget.filePath);
     const previousMetadata = targetMetadata(input.config, input.configTarget.filePath);
     const previousAdditional = (input.additionalEdits ?? []).map((/** @type {any} */ edit) => ({ keyPath: edit.keyPath, ...targetLeaf(input.config, input.configTarget.filePath, edit.keyPath) }));
-    /** @type {AnyRecord} */
+    /** @type {ManagedRoleJournal} */
     const journal = {
       schemaVersion: 1,
       phase: 'prepared',
       rolePath: prepared.paths.rolePath,
-      intendedSha256: prepared.digest,
+      intendedSha256: /** @type {string} */ (prepared.digest),
       roleExisted: previousRole !== null,
       ...(previousRole === null ? {} : { previousRoleBase64: (previousRole ?? Buffer.alloc(0)).toString('base64') }),
       receiptExisted: previousReceipt !== null,
@@ -120,6 +127,12 @@ export async function reconcileManagedRescueRole(input) {
       await unlink(prepared.paths.transactionPath);
       return { status: 'restart-required', changed: true, rolePath: prepared.paths.rolePath };
     } catch (cause) {
+      if (!configMutated && journal.phase === 'role-written') {
+        const detected = await detectAppliedConfig(input, prepared, journal);
+        configMutated = detected.mutated;
+        if (detected.expectedVersion !== null) writeVersion = detected.expectedVersion;
+        else if (configMutated) writeVersion = null;
+      }
       const recovery = await rollback({ prepared, input, journal, configMutated, expectedVersion: writeVersion });
       if (!recovery.complete) {
         throw rollbackError(prepared, input, [...recovery.remaining, prepared.paths.transactionPath], 'Managed Rescue Role reconciliation failed and rollback was incomplete.');
@@ -136,7 +149,8 @@ async function inspectPrepared(prepared, config) {
   if (!validConfigRead(config)) return result('unsupported', prepared.paths.rolePath, 'Codex configuration layers are unavailable or contain Role load errors.');
   if (await exists(prepared.paths.transactionPath)) return result('restart-required', prepared.paths.rolePath, 'An interrupted managed Role transaction requires recovery.');
   const definitions = roleDefinitions(config);
-  if (definitions.some((item) => item.type === 'project')) return result('project-shadowed', prepared.paths.rolePath);
+  const projectDefinitions = definitions.filter((item) => item.type === 'project');
+  if (projectDefinitions.length) return result('project-shadowed', prepared.paths.rolePath, undefined, conflictSources(config, projectDefinitions, prepared.configTarget.filePath));
 
   const effective = config?.config?.agents?.[MANAGED_ROLE_NAME];
   const receipt = await optionalJson(prepared.paths.receiptPath);
@@ -144,7 +158,7 @@ async function inspectPrepared(prepared, config) {
   if (effective === undefined && receipt === null && roleBytes === null) return result('install-required', prepared.paths.rolePath);
   if (receipt !== null && receipt.configTarget?.filePath !== prepared.configTarget.filePath) return result('drift', prepared.paths.rolePath);
   const collision = nonTargetCollision(config, definitions, prepared.configTarget.filePath);
-  if (collision !== null) return result(collision, prepared.paths.rolePath);
+  if (collision !== null) return result(collision.status, prepared.paths.rolePath, undefined, collision.conflicts);
   if (receipt === null) {
     if (sameRegistration(effective, prepared.paths.rolePath) || roleBytes !== null) return result('drift', prepared.paths.rolePath);
     return result('foreign-conflict', prepared.paths.rolePath);
@@ -212,7 +226,7 @@ async function pathSafety(dataRoot, paths) {
 async function recoverInterruptedTransaction(prepared, input) {
   const journal = await optionalJson(prepared.paths.transactionPath);
   if (journal === null) return;
-  if (journal.schemaVersion !== 1 || journal.rolePath !== prepared.paths.rolePath || typeof journal.intendedSha256 !== 'string') {
+  if (!isManagedRoleJournal(journal, prepared.paths.rolePath)) {
     throw rollbackError(prepared, input, [prepared.paths.transactionPath], 'The managed Role transaction journal is invalid and cannot prove rollback ownership.');
   }
   const currentRole = await optionalBytes(prepared.paths.rolePath);
@@ -220,11 +234,13 @@ async function recoverInterruptedTransaction(prepared, input) {
     throw rollbackError(prepared, input, [prepared.paths.rolePath, prepared.paths.transactionPath], 'The interrupted Role bytes are not proven to be owned.');
   }
   let configMutated = ['config-written', 'receipt-prepared'].includes(journal.phase);
+  let recoveryVersion = journal.configVersion ?? input.configTarget.expectedVersion;
   if (!configMutated && journal.phase === 'role-written') {
-    const currentConfig = await input.readConfig();
-    configMutated = configLeavesOwned(currentConfig, input.configTarget.filePath, prepared.paths.rolePath, journal.desiredAdditional ?? []);
+    const detected = await detectAppliedConfig(input, prepared, journal);
+    configMutated = detected.mutated;
+    recoveryVersion = detected.expectedVersion;
   }
-  const recovery = await rollback({ prepared, input, journal, configMutated, expectedVersion: journal.configVersion ?? input.configTarget.expectedVersion });
+  const recovery = await rollback({ prepared, input, journal, configMutated, expectedVersion: recoveryVersion });
   if (!recovery.complete) throw rollbackError(prepared, input, [...recovery.remaining, prepared.paths.transactionPath], 'Could not recover the interrupted managed Role transaction.');
 }
 
@@ -233,6 +249,7 @@ async function rollback({ prepared, input, journal, configMutated, expectedVersi
   const remaining = [];
   if (configMutated) {
     try {
+      if (typeof expectedVersion !== 'string' || !expectedVersion) throw new Error('current config version is unavailable');
       const currentConfig = await input.readConfig();
       if (!configLeavesOwned(currentConfig, input.configTarget.filePath, prepared.paths.rolePath, journal.desiredAdditional ?? [])) throw new Error('config leaves are not owned');
       await input.batchWrite({
@@ -263,6 +280,20 @@ async function rollback({ prepared, input, journal, configMutated, expectedVersi
   return { complete: remaining.length === 0, remaining };
 }
 
+/** @param {AnyRecord} input @param {AnyRecord} prepared @param {ManagedRoleJournal} journal */
+async function detectAppliedConfig(input, prepared, journal) {
+  let currentConfig;
+  try { currentConfig = await input.readConfig(); } catch { return { mutated: true, expectedVersion: null }; }
+  if (!configLeavesOwned(currentConfig, input.configTarget.filePath, prepared.paths.rolePath, journal.desiredAdditional ?? [])) return { mutated: false, expectedVersion: null };
+  return { mutated: true, expectedVersion: selectedTargetVersion(currentConfig, input.configTarget.filePath) };
+}
+
+/** @param {AnyRecord} config @param {string} filePath */
+function selectedTargetVersion(config, filePath) {
+  const version = (config.layers ?? []).find((/** @type {any} */ layer) => layer?.name?.file === filePath)?.version;
+  return typeof version === 'string' && version ? version : null;
+}
+
 /** @param {AnyRecord} config @param {string} rolePath @param {string} targetFile */
 function verifyEffectiveConfig(config, rolePath, targetFile) {
   if (!validConfigRead(config)) return 'Codex returned Role configuration errors after installation.';
@@ -274,7 +305,7 @@ function verifyEffectiveConfig(config, rolePath, targetFile) {
   return null;
 }
 
-/** @param {AnyRecord} prepared @param {AnyRecord} input @param {AnyRecord} previousMetadata */
+/** @param {AnyRecord} prepared @param {AnyRecord} input @param {AnyRecord} previousMetadata @returns {ManagedRoleReceipt} */
 function makeReceipt(prepared, input, previousMetadata) {
   return {
     schemaVersion: 1,
@@ -303,10 +334,24 @@ function nonTargetCollision(config, definitions, targetFile) {
   const foreign = definitions.filter((item) => item.file !== targetFile);
   if (!foreign.length) return null;
   const targetIndex = (config.layers ?? []).findIndex((/** @type {any} */ layer) => layer?.name?.file === targetFile);
-  return targetIndex >= 0 && foreign.some((item) => item.index > targetIndex)
-    ? 'higher-precedence-conflict'
-    : 'foreign-conflict';
+  return {
+    status: targetIndex >= 0 && foreign.some((item) => item.index > targetIndex) ? 'higher-precedence-conflict' : 'foreign-conflict',
+    conflicts: conflictSources(config, foreign, targetFile),
+  };
 }
+
+/** @param {AnyRecord} config @param {AnyRecord[]} definitions @param {string} targetFile */
+function conflictSources(config, definitions, targetFile) {
+  const targetIndex = (config.layers ?? []).findIndex((/** @type {any} */ layer) => layer?.name?.file === targetFile);
+  return definitions.slice(0, 16).map((definition) => ({
+    layerType: boundedLabel(definition.type, 'unknown'),
+    filePath: boundedLabel(definition.file, 'unknown'),
+    precedence: targetIndex >= 0 && definition.index < targetIndex ? 'lower' : 'higher',
+  }));
+}
+
+/** @param {unknown} value @param {string} fallback */
+function boundedLabel(value, fallback) { return typeof value === 'string' && value ? value.slice(0, 4096) : fallback; }
 
 /** @param {AnyRecord} config @param {string} filePath */
 function targetRegistration(config, filePath) {
@@ -360,6 +405,27 @@ function receiptBytesProven(current, journal) {
   return current.equals(Buffer.from(journal.previousReceiptBase64, 'base64'));
 }
 
+/** @param {unknown} value @param {string} rolePath @returns {value is ManagedRoleJournal} */
+function isManagedRoleJournal(value, rolePath) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const journal = /** @type {AnyRecord} */ (value);
+  if (journal.schemaVersion !== 1 || !['prepared', 'role-written', 'config-written', 'receipt-prepared'].includes(journal.phase)
+    || journal.rolePath !== rolePath || !isSha256(journal.intendedSha256)
+    || typeof journal.roleExisted !== 'boolean' || typeof journal.receiptExisted !== 'boolean'
+    || journal.roleExisted && typeof journal.previousRoleBase64 !== 'string'
+    || journal.receiptExisted && typeof journal.previousReceiptBase64 !== 'string'
+    || !journal.previousRegistration || typeof journal.previousRegistration !== 'object'
+    || !journal.previousMetadata || typeof journal.previousMetadata !== 'object'
+    || journal.previousAdditional !== undefined && !Array.isArray(journal.previousAdditional)
+    || journal.desiredAdditional !== undefined && !Array.isArray(journal.desiredAdditional)) return false;
+  if (['config-written', 'receipt-prepared'].includes(journal.phase) && (typeof journal.configVersion !== 'string' || !journal.configVersion)) return false;
+  if (journal.phase === 'receipt-prepared') {
+    if (!isSha256(journal.intendedReceiptSha256) || typeof journal.intendedReceiptBase64 !== 'string') return false;
+    try { if (sha256(Buffer.from(journal.intendedReceiptBase64, 'base64')) !== journal.intendedReceiptSha256) return false; } catch { return false; }
+  }
+  return true;
+}
+
 /** @param {AnyRecord} config */
 function validConfigRead(config) {
   return config && typeof config === 'object' && !Array.isArray(config)
@@ -383,10 +449,12 @@ function validReceiptBase(receipt, rolePath, identity) {
 function expectedRegistration(rolePath) { return { description: MANAGED_ROLE_DESCRIPTION, config_file: rolePath }; }
 /** @param {any} value @param {string} rolePath */
 function sameRegistration(value, rolePath) { return value?.description === MANAGED_ROLE_DESCRIPTION && value?.config_file === rolePath && Object.keys(value).length === 2; }
-/** @param {string} status @param {string} rolePath @param {string} [reason] */
-function result(status, rolePath, reason) { return { status, rolePath, ...(reason ? { reason } : {}) }; }
+/** @param {string} status @param {string} rolePath @param {string} [reason] @param {AnyRecord[]} [conflicts] */
+function result(status, rolePath, reason, conflicts) { return { status, rolePath, ...(reason ? { reason } : {}), ...(conflicts?.length ? { conflicts } : {}) }; }
 /** @param {string|Buffer} bytes */
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
+/** @param {unknown} value */
+function isSha256(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value); }
 /** @param {string} path */
 async function exists(path) { try { await lstat(path); return true; } catch (error) { if (isCode(error, 'ENOENT')) return false; throw error; } }
 /** @param {string} path @returns {Promise<Buffer|null>} */

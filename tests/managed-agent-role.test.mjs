@@ -28,7 +28,7 @@ function roleConfig(path) {
   return { description: MANAGED_ROLE_DESCRIPTION, config_file: path };
 }
 
-function configState({ path, role, metadata = false, layers, errors = [] }) {
+function configState({ path, role, metadata = false, layers, errors = [], version = 'v1' }) {
   const config = {
     agents: role === undefined ? {} : { [MANAGED_ROLE_NAME]: role },
     features: { hooks: true, multi_agent_v2: { hide_spawn_agent_metadata: metadata } },
@@ -36,7 +36,7 @@ function configState({ path, role, metadata = false, layers, errors = [] }) {
   return {
     config,
     errors,
-    layers: layers ?? [{ name: { type: 'user', file: '/config.toml' }, version: 'v1', config }],
+    layers: layers ?? [{ name: { type: 'user', file: '/config.toml' }, version, config }],
     origins: path ? { [`agents.${MANAGED_ROLE_NAME}`]: '/config.toml' } : {},
   };
 }
@@ -125,6 +125,44 @@ test('managed Rescue role classifies a lower-precedence same-name definition as 
     { name: { type: 'user', file: '/config.toml' }, version: 'v1', config: {} },
   ] });
   assert.equal((await inspectManagedRescueRole(common(ctx, layered))).status, 'foreign-conflict');
+});
+
+test('managed Rescue role conflict errors identify bounded project, higher, and lower layer sources without values', async (t) => {
+  const ctx = await fixture();
+  const cases = [
+    {
+      name: 'project', status: 'project-shadowed', expected: { layerType: 'project', filePath: '/repo/.codex/config.toml', precedence: 'higher' },
+      config: configState({ role: roleConfig('/project.toml'), layers: [
+        { name: { type: 'user', file: '/config.toml' }, version: 'v1', config: {} },
+        { name: { type: 'project', file: '/repo/.codex/config.toml' }, version: 'p1', config: { agents: { [MANAGED_ROLE_NAME]: roleConfig('/project.toml') } } },
+      ] }),
+    },
+    {
+      name: 'higher', status: 'higher-precedence-conflict', expected: { layerType: 'managed', filePath: '/etc/codex.toml', precedence: 'higher' },
+      config: configState({ role: roleConfig('/managed.toml'), layers: [
+        { name: { type: 'user', file: '/config.toml' }, version: 'v1', config: {} },
+        { name: { type: 'managed', file: '/etc/codex.toml' }, version: 'm1', config: { agents: { [MANAGED_ROLE_NAME]: roleConfig('/managed.toml') } } },
+      ] }),
+    },
+    {
+      name: 'lower', status: 'foreign-conflict', expected: { layerType: 'managed', filePath: '/etc/lower-codex.toml', precedence: 'lower' },
+      config: configState({ role: roleConfig(ctx.paths.rolePath), layers: [
+        { name: { type: 'managed', file: '/etc/lower-codex.toml' }, version: 'm1', config: { agents: { [MANAGED_ROLE_NAME]: roleConfig('/foreign.toml') } } },
+        { name: { type: 'user', file: '/config.toml' }, version: 'v1', config: { agents: { [MANAGED_ROLE_NAME]: roleConfig(ctx.paths.rolePath) } } },
+      ] }),
+    },
+  ];
+  for (const entry of cases) await t.test(entry.name, async () => {
+    let error;
+    await assert.rejects(reconcileManagedRescueRole({
+      ...common(ctx, entry.config), batchWrite: async () => ({}), readConfig: async () => entry.config,
+    }), (candidate) => { error = candidate; return candidate?.code === 'MANAGED_ROLE_CONFLICT'; });
+    assert.equal(error.details.status, entry.status);
+    assert.deepEqual(error.details.conflicts, [entry.expected]);
+    assert.match(error.remedy, new RegExp(entry.expected.filePath.replaceAll('.', '\\.')));
+    assert.match(error.remedy, /remove or rename.*\$zcode:setup/is);
+    assert.doesNotMatch(JSON.stringify(error.details), /description|config_file|foreign\.toml/);
+  });
 });
 
 test('managed Rescue role installs transactionally and becomes ready only on an exact rerun', async () => {
@@ -426,12 +464,57 @@ test('managed Rescue role rolls back owned file state on version races and leave
   await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
 });
 
+test('managed Rescue role rolls back an applied config write with the current selected-layer CAS version after transport failure', async () => {
+  const ctx = await fixture();
+  let current = configState({});
+  const writes = [];
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, current),
+    batchWrite: async (params) => {
+      writes.push(params);
+      if (writes.length === 1) {
+        current = configState({ role: roleConfig(ctx.paths.rolePath), version: 'v2' });
+        throw Object.assign(new Error('response lost after commit'), { code: 'CODEX_CONFIG_REQUEST_FAILED' });
+      }
+      current = configState({ version: 'v3' });
+      return { version: 'v3' };
+    },
+    readConfig: async () => current,
+  }), { code: 'MANAGED_ROLE_RECONCILE_FAILED' });
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].expectedVersion, 'v2');
+  assert.deepEqual(writes[1].edits.slice(-2), [
+    { keyPath: `agents.${MANAGED_ROLE_NAME}`, value: null, mergeStrategy: 'upsert' },
+    { keyPath: 'features.multi_agent_v2.hide_spawn_agent_metadata', value: false, mergeStrategy: 'upsert' },
+  ]);
+  await assert.rejects(readFile(ctx.paths.rolePath), { code: 'ENOENT' });
+  await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
+});
+
+test('managed Rescue role never rolls back foreign config after an ambiguous applied-write failure', async () => {
+  const ctx = await fixture();
+  let current = configState({});
+  let writes = 0;
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, current),
+    batchWrite: async () => {
+      writes += 1;
+      current = configState({ role: { description: 'foreign concurrent role', config_file: '/foreign.toml' }, version: 'v2' });
+      throw Object.assign(new Error('response lost after foreign write won'), { code: 'CODEX_CONFIG_REQUEST_FAILED' });
+    },
+    readConfig: async () => current,
+  }), { code: 'MANAGED_ROLE_RECONCILE_FAILED' });
+  assert.equal(writes, 1);
+  assert.equal(current.config.agents[MANAGED_ROLE_NAME].description, 'foreign concurrent role');
+});
+
 test('managed Rescue role recovers an interrupted owned transaction before retrying', async () => {
   const ctx = await fixture();
   await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
   await writeFile(ctx.paths.rolePath, 'partial');
   await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
     schemaVersion: 1,
+    phase: 'prepared',
     rolePath: ctx.paths.rolePath,
     roleExisted: false,
     receiptExisted: false,
@@ -446,6 +529,52 @@ test('managed Rescue role recovers an interrupted owned transaction before retry
   assert.equal(result.status, 'restart-required');
   assert.notEqual(await readFile(ctx.paths.rolePath, 'utf8'), 'partial');
   await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
+});
+
+test('managed Rescue role recovers a role-written crash using the current selected-layer version', async () => {
+  const ctx = await fixture();
+  const roleBytes = Buffer.from(renderManagedRescueRole({ template, pluginRoot: ctx.pluginRoot }));
+  await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
+  await writeFile(ctx.paths.rolePath, roleBytes);
+  await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
+    schemaVersion: 1, phase: 'role-written', rolePath: ctx.paths.rolePath,
+    roleExisted: false, receiptExisted: false,
+    intendedSha256: createHash('sha256').update(roleBytes).digest('hex'),
+    previousRegistration: { present: false }, previousMetadata: { present: false },
+    previousAdditional: [], desiredAdditional: [],
+  })}\n`);
+  const current = configState({ role: roleConfig(ctx.paths.rolePath), version: 'v2' });
+  let rollback;
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, current),
+    batchWrite: async (params) => { rollback = params; return { version: 'v3' }; },
+    readConfig: async () => current,
+  }), { code: 'MANAGED_ROLE_CONFLICT' });
+  assert.equal(rollback.expectedVersion, 'v2');
+  await assert.rejects(readFile(ctx.paths.rolePath), { code: 'ENOENT' });
+  await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
+});
+
+test('managed Rescue role keeps recovery incomplete when an applied config has no current CAS version', async () => {
+  const ctx = await fixture();
+  const roleBytes = Buffer.from(renderManagedRescueRole({ template, pluginRoot: ctx.pluginRoot }));
+  await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
+  await writeFile(ctx.paths.rolePath, roleBytes);
+  await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
+    schemaVersion: 1, phase: 'role-written', rolePath: ctx.paths.rolePath,
+    roleExisted: false, receiptExisted: false, intendedSha256: createHash('sha256').update(roleBytes).digest('hex'),
+    previousRegistration: { present: false }, previousMetadata: { present: false }, previousAdditional: [], desiredAdditional: [],
+  })}\n`);
+  const current = configState({ role: roleConfig(ctx.paths.rolePath) });
+  delete current.layers[0].version;
+  let writes = 0;
+  let error;
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, current), batchWrite: async () => { writes += 1; return {}; }, readConfig: async () => current,
+  }), (candidate) => { error = candidate; return candidate?.code === 'MANAGED_ROLE_ROLLBACK_INCOMPLETE'; });
+  assert.equal(writes, 0);
+  assert.ok(error.details.remaining.includes(ctx.configTarget.filePath));
+  assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
 });
 
 test('managed Rescue role recovers an upgrade interrupted before new bytes were written', async () => {
@@ -483,6 +612,7 @@ test('managed Rescue role rolls back config after a crash with a journaled recei
   const roleBytes = Buffer.from(renderManagedRescueRole({ template, pluginRoot: ctx.pluginRoot }));
   await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
   await writeFile(ctx.paths.rolePath, roleBytes);
+  const intendedReceiptBytes = Buffer.from('not-yet-written');
   await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
     schemaVersion: 1,
     phase: 'receipt-prepared',
@@ -490,8 +620,8 @@ test('managed Rescue role rolls back config after a crash with a journaled recei
     roleExisted: false,
     receiptExisted: false,
     intendedSha256: createHash('sha256').update(roleBytes).digest('hex'),
-    intendedReceiptSha256: '1'.repeat(64),
-    intendedReceiptBase64: Buffer.from('not-yet-written').toString('base64'),
+    intendedReceiptSha256: createHash('sha256').update(intendedReceiptBytes).digest('hex'),
+    intendedReceiptBase64: intendedReceiptBytes.toString('base64'),
     previousRegistration: { present: false },
     previousMetadata: { present: false },
     previousAdditional: [],
