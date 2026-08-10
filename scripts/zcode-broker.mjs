@@ -28,6 +28,7 @@ const MAX_PENDING_CONVERSATION_FRAMES = 16;
 const MAX_PENDING_CONVERSATION_BYTES = 1024 * 1024;
 const MAX_CONVERSATION_FRAME_BYTES = 64 * 1024;
 const MAX_OWNER_OPERATION_LEASES = 256;
+const LOCAL_BROKER_METHODS = new Set(['session/create', 'session/send', 'session/read', 'session/resume', 'session/list', 'session/stop', 'session/setModel', 'session/setThoughtLevel', 'v4/conversation/subscribe', 'v4/conversation/unsubscribe', 'broker/health', 'broker/releaseOwner']);
 const OWNER_SCOPED_SESSION_METHODS = new Set(['session/read', 'session/resume', 'session/setModel', 'session/setThoughtLevel']);
 const EXCLUSIVE_SESSION_METHODS = new Set(['session/create', 'session/send', 'session/stop', 'v4/conversation/subscribe', 'v4/conversation/unsubscribe', 'broker/releaseSession']);
 
@@ -116,7 +117,7 @@ export async function prioritizeBrokerOwnership(options) {
 export function brokerEndpointFor(options) {
   if (!options || typeof options.dataRoot !== 'string' || !options.dataRoot || typeof options.workspace !== 'string' || !options.workspace) throw brokerInputError();
   const platform = options.platform ?? process.platform;
-  const digest = createHash('sha256').update(JSON.stringify([options.dataRoot, options.workspace, options.identity ?? 'shared'])).digest('hex').slice(0, 32);
+  const digest = createHash('sha256').update(JSON.stringify([canonicalEndpointPath(options.dataRoot), canonicalEndpointPath(options.workspace), options.identity ?? 'shared'])).digest('hex').slice(0, 32);
   if (platform === 'win32') return `\\\\.\\pipe\\zcode-${digest}`;
   if (platform !== 'darwin' && platform !== 'linux') throw brokerInputError();
   return join('/tmp', `zcode-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`, `${digest}.sock`);
@@ -146,14 +147,19 @@ export async function writeBrokerIdentity(path, input) {
 
 /** @param {string} path @param {{isProcessAlive?:(pid:number)=>boolean,healthProbe?:(record:any)=>Promise<boolean>}} [options] */
 export async function readHealthyBrokerIdentity(path, options = {}) {
+  const inspected = await inspectBrokerIdentity(path, options);
+  return inspected.status === 'healthy' ? inspected.record : null;
+}
+
+async function inspectBrokerIdentity(path, options = {}) {
   let value;
-  try { value = JSON.parse(await readFile(path, 'utf8')); } catch { return null; }
-  if (!value || value.version !== 1 || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.instanceId !== 'string' || value.instanceId.length < 32 || typeof value.brokerToken !== 'string' || value.brokerToken.length < 32 || typeof value.endpoint !== 'string') return null;
+  try { value = JSON.parse(await readFile(path, 'utf8')); } catch (error) { return { status: error?.code === 'ENOENT' ? 'missing' : 'invalid', record: null }; }
+  if (!value || value.version !== 1 || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.instanceId !== 'string' || value.instanceId.length < 32 || typeof value.brokerToken !== 'string' || value.brokerToken.length < 32 || typeof value.endpoint !== 'string' || options.expectedEndpoint !== undefined && value.endpoint !== options.expectedEndpoint) return { status: 'invalid', record: null };
   const alive = options.isProcessAlive ?? isProcessAlive;
-  if (!alive(value.pid)) return null;
+  if (!alive(value.pid)) return { status: 'dead', record: value };
   const healthProbe = options.healthProbe ?? probeBrokerHealth;
-  if (!await healthProbe(value)) return null;
-  return value;
+  if (!await healthProbe(value)) return { status: 'unhealthy', record: value };
+  return { status: 'healthy', record: value };
 }
 
 /** @param {{endpoint:string,brokerToken:string,pid:number,instanceId:string}} record @param {number} [requestTimeoutMs] */
@@ -175,14 +181,18 @@ export async function ensureZCodeBroker(options) {
   const identityName = brokerIdentityNameForWireOptions(options);
   const profile = identityName === 'identity.json' ? null : identityName.slice('identity-'.length, -'.json'.length);
   const identityPath = join(brokerDirectory, identityName);
+  const endpoint = brokerEndpointFor({ platform: options.platform, dataRoot: options.dataRoot, workspace: storage.workspacePath, ...(profile ? { identity: profile } : {}) });
   await ensurePrivateDirectory(brokerDirectory);
   return withFileLock(join(brokerDirectory, '.lock'), async () => {
-    const existing = await readHealthyBrokerIdentity(identityPath);
-    if (existing) return existing;
+    const existing = await inspectBrokerIdentity(identityPath, { expectedEndpoint: endpoint });
+    if (existing.status === 'healthy') return existing.record;
+    if (existing.status === 'unhealthy' || existing.status === 'invalid') throw brokerUnhealthyError();
+    if (existing.status === 'dead') {
+      if (isProcessAlive(existing.record.pid)) throw brokerUnhealthyError();
+      if ((options.platform ?? process.platform) !== 'win32') await unlink(endpoint).catch((error) => { if (error?.code !== 'ENOENT') throw error; });
+    }
     const instanceId = randomBytes(24).toString('hex');
     const brokerToken = randomBytes(32).toString('hex');
-    const endpoint = brokerEndpointFor({ platform: options.platform, dataRoot: options.dataRoot, workspace: storage.workspacePath, ...(profile ? { identity: profile } : {}) });
-    if ((options.platform ?? process.platform) !== 'win32') await unlink(endpoint).catch(() => {});
     const configPath = join(brokerDirectory, `config-${instanceId}.json`);
     await atomicWriteJson(configPath, { endpoint, instanceId, brokerToken, launch: options.launch, workspace: storage.workspacePath, launchCwd: (options.platform ?? process.platform) === 'win32' ? tmpdir() : storage.workspacePath, idleTimeoutMs: options.idleTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs, ownershipPath: join(brokerDirectory, profile ? `session-owners-${profile}.json` : 'session-owners.json'), identityPath });
     // Keep the daemon's process cwd outside the workspace. Windows holds the
@@ -203,7 +213,7 @@ export async function ensureZCodeBroker(options) {
 
 export class ZCodeBroker {
   /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string}} options */
-  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); let workspace; try { workspace = realpathSync(resolve(options.workspace)); } catch { throw brokerInputError(); } this.options = { ...options, workspace }; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.ownershipRevision = 0; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.releaseTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
+  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); let workspace; try { workspace = realpathSync(resolve(options.workspace)); } catch { throw brokerInputError(); } this.options = { ...options, workspace }; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.ownershipRevision = 0; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.conversationSubscriptionGeneration = null; this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.releaseTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
     if (this.server) return this;
@@ -263,6 +273,7 @@ export class ZCodeBroker {
       return;
     }
     if (!frame || !Number.isSafeInteger(frame.id) || typeof frame.method !== 'string' || !frame.params || typeof frame.params !== 'object') { socket.destroy(); return; }
+    if (!LOCAL_BROKER_METHODS.has(frame.method)) { writeRequestError(socket, frame.id, brokerInputError()); return; }
     if (frame.method === 'broker/health') { writeLocal(socket, { id: frame.id, result: { ok: true, pid: process.pid, instanceId: this.options.instanceId, capabilities: { releaseOwnerExclusions: true } } }); return; }
     if (frame.method === 'session/create' && !validCreateWorkspace(frame.params.workspace, this.options.workspace)) { writeRequestError(socket, frame.id, brokerInputError()); return; }
     const releaseDeadline = frame.method === 'broker/releaseOwner' ? Date.now() + OWNER_RELEASE_BUDGET_MS : undefined; let releaseExcluded;
@@ -307,8 +318,9 @@ export class ZCodeBroker {
           if (frame.method === 'v4/conversation/subscribe') {
             await this.retryOrphanedSubscriptions(protocol, OWNER_RELEASE_REQUEST_MS, frame.params.topic);
             if (this.protocol !== protocol || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError();
-            if (this.pendingConversationTopics.size >= MAX_PENDING_CONVERSATION_TOPICS || this.conversationSubscriptions.size + this.orphanedConversationSubscriptions.size + this.pendingConversationTopics.size >= MAX_CONVERSATION_SUBSCRIPTIONS || this.pendingConversationTopics.has(frame.params.topic) || [...this.conversationSubscriptions.values(), ...this.orphanedConversationSubscriptions.values()].some((subscription) => subscription.topic === frame.params.topic)) throw brokerInputError();
-            subscriptionToken = sessionAdmission.token; this.pendingConversationTopics.set(frame.params.topic, { socket, token: subscriptionToken, frames: [], bytes: 0 });
+            const generation = this.conversationGeneration(protocol); const retiredCount = generation?.retiredIds.size ?? 0;
+            if (!generation || this.pendingConversationTopics.size >= MAX_PENDING_CONVERSATION_TOPICS || this.conversationSubscriptions.size + this.orphanedConversationSubscriptions.size + this.pendingConversationTopics.size + retiredCount >= MAX_CONVERSATION_SUBSCRIPTIONS || this.pendingConversationTopics.has(frame.params.topic) || [...this.conversationSubscriptions.values(), ...this.orphanedConversationSubscriptions.values()].some((subscription) => subscription.topic === frame.params.topic)) throw brokerInputError();
+            subscriptionToken = sessionAdmission.token; this.pendingConversationTopics.set(frame.params.topic, { socket, token: subscriptionToken, protocol, sessionId: requestedSessionId, ownerId, earlySubscriptionId: null, ambiguous: false, frames: [], bytes: 0 });
           }
           if (frame.method === 'v4/conversation/unsubscribe') {
             const key = conversationKey(frame.params.topic, frame.params.subscriptionId); const subscription = this.conversationSubscriptions.get(key);
@@ -338,9 +350,10 @@ export class ZCodeBroker {
             this.sessionOwners.set(createdSessionId, { ownerId, socket });
           }
           if (frame.method === 'v4/conversation/subscribe') {
-            const pending = this.pendingConversationTopics.get(frame.params.topic); const subscriptionId = result?.ack?.subscriptionId; const addressable = isBoundedPublicIdentifier(subscriptionId); const duplicate = addressable && [...this.conversationSubscriptions.values(), ...this.orphanedConversationSubscriptions.values()].some((subscription) => subscription.subscriptionId === subscriptionId);
-            if (!pending || pending.token !== subscriptionToken || !validConversationSubscribeResult(result) || duplicate) {
-              if (addressable) await this.unsubscribeConversationRecords(protocol, [{ key: conversationKey(frame.params.topic, subscriptionId), socket, topic: frame.params.topic, subscriptionId, connectionId: frame.params.connectionId, sessionId: requestedSessionId, ownerId }], OWNER_RELEASE_REQUEST_MS);
+            const pending = this.pendingConversationTopics.get(frame.params.topic); const subscriptionId = result?.ack?.subscriptionId; const addressable = isBoundedPublicIdentifier(subscriptionId); const generation = this.conversationGeneration(protocol); const retiredReuse = addressable && generation?.retiredIds.has(subscriptionId); const earlyAmbiguity = Boolean(pending && (pending.ambiguous || pending.earlySubscriptionId !== null && pending.earlySubscriptionId !== subscriptionId)); const stalePending = !pending || pending.token !== subscriptionToken || pending.protocol !== protocol || pending.sessionId !== requestedSessionId || pending.ownerId !== ownerId || this.sessionOwners.get(requestedSessionId)?.ownerId !== ownerId; const duplicate = addressable && [...this.conversationSubscriptions.values(), ...this.orphanedConversationSubscriptions.values()].some((subscription) => subscription.subscriptionId === subscriptionId);
+            if (stalePending || !validConversationSubscribeResult(result) || duplicate || retiredReuse || earlyAmbiguity) {
+              if (retiredReuse || earlyAmbiguity) this.clearProtocolGeneration(protocol);
+              else if (addressable) await this.unsubscribeConversationRecords(protocol, [{ key: conversationKey(frame.params.topic, subscriptionId), socket, topic: frame.params.topic, subscriptionId, connectionId: frame.params.connectionId, sessionId: requestedSessionId, ownerId }], OWNER_RELEASE_REQUEST_MS);
               else this.clearProtocolGeneration(protocol);
               throw brokerInputError();
             }
@@ -349,7 +362,7 @@ export class ZCodeBroker {
             this.conversationSubscriptions.set(key, { socket, topic: frame.params.topic, subscriptionId, connectionId: frame.params.connectionId, sessionId: requestedSessionId, ownerId });
             for (const message of pending.frames) if (conversationKey(message.params.topic, message.params.subscriptionId) === key) writeLocal(socket, message);
           }
-          if (frame.method === 'v4/conversation/unsubscribe') this.conversationSubscriptions.delete(unsubscribeRecord.key);
+          if (frame.method === 'v4/conversation/unsubscribe') { this.conversationSubscriptions.delete(unsubscribeRecord.key); if (!this.retireConversationSubscription(protocol, unsubscribeRecord)) throw brokerInputError(); }
           if (frame.method === 'session/stop' && frame.params.sessionId) { if (this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken) throw brokerInputError(); protocol.cancelTurn(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); await this.cleanupSessionSubscriptions(protocol, frame.params.sessionId); if (this.protocol !== protocol || this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); this.settleStoppedSession(frame.params.sessionId, stoppedGeneration); this.stoppingSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); }
           if (frame.method === 'session/list' && Array.isArray(result?.sessions)) result = { ...result, sessions: result.sessions.filter((session) => this.sessionOwners.get(session.sessionId)?.ownerId === ownerId) };
           if (ownerCommitToken) this.ownerCommitTokens.delete(ownerCommitToken); writeLocal(socket, { id: frame.id, result });
@@ -471,10 +484,10 @@ export class ZCodeBroker {
     try {
       if (this.closing) throw new PluginError('ZCODE_BROKER_CLOSING', 'The ZCode broker is closing.', { category: 'state', remedy: 'Reconnect to a healthy broker.' });
       if (this.retiredProtocolGeneration) throw protocolRetiring();
-      this.protocol = protocol;
+      this.protocol = protocol; this.conversationSubscriptionGeneration = { protocol, retiredIds: new Map() };
       protocol.subscribe((message) => {
       if (message.method === 'broker/sessionStopped') return;
-      if (message.method === 'v4/conversation/frame') { this.routeConversationFrame(message); return; }
+      if (message.method === 'v4/conversation/frame') { this.routeConversationFrame(protocol, message); return; }
       if (isTerminalStateNotification(message)) return;
       const active = message.params?.sessionId ? this.activeSessionSockets.get(message.params.sessionId) : null;
       const sessionOwner = message.params?.sessionId ? active?.socket ?? this.sessionOwners.get(message.params.sessionId)?.socket : null;
@@ -516,6 +529,7 @@ export class ZCodeBroker {
   settleRetiredProtocolGeneration(retired, error) {
     if (this.retiredProtocolGeneration !== retired) return retired;
     retired.error = error; retired.status = error ? 'failed' : 'closed';
+    if (this.conversationSubscriptionGeneration?.protocol === retired.protocol) this.conversationSubscriptionGeneration = null;
     if (!error) {
       for (const [key, subscription] of this.orphanedConversationSubscriptions) if (subscription.protocol === retired.protocol) this.orphanedConversationSubscriptions.delete(key);
       retired.tombstones.clear(); this.retiredProtocolGeneration = null;
@@ -547,13 +561,32 @@ export class ZCodeBroker {
     while (this.retiredPermissionResponses.size > 256) this.retiredPermissionResponses.delete(this.retiredPermissionResponses.keys().next().value);
   }
 
-  routeConversationFrame(message) {
+  conversationGeneration(protocol) {
+    if (!protocol || this.protocol !== protocol) return null;
+    if (this.conversationSubscriptionGeneration?.protocol !== protocol) this.conversationSubscriptionGeneration = { protocol, retiredIds: new Map() };
+    return this.conversationSubscriptionGeneration;
+  }
+
+  retireConversationSubscription(protocol, subscription) {
+    const generation = this.conversationGeneration(protocol); if (!generation) return false;
+    if (!generation.retiredIds.has(subscription.subscriptionId)) generation.retiredIds.set(subscription.subscriptionId, { topic: subscription.topic, subscriptionId: subscription.subscriptionId, connectionId: subscription.connectionId, sessionId: subscription.sessionId, ownerId: subscription.ownerId });
+    if (generation.retiredIds.size < MAX_CONVERSATION_SUBSCRIPTIONS) return true;
+    this.clearProtocolGeneration(protocol); return false;
+  }
+
+  routeConversationFrame(protocol, message) {
+    if (message === undefined) { message = protocol; protocol = this.protocol; }
+    if (!protocol || this.protocol !== protocol) return;
     const topic = message.params?.topic; const subscriptionId = message.params?.subscriptionId;
     if (typeof topic !== 'string' || !isBoundedPublicIdentifier(subscriptionId)) return;
+    const generation = this.conversationGeneration(protocol); const pending = this.pendingConversationTopics.get(topic);
+    if (generation?.retiredIds.has(subscriptionId)) { if (pending?.protocol === protocol) { pending.ambiguous = true; pending.frames = []; pending.bytes = 0; } return; }
     const subscription = this.conversationSubscriptions.get(conversationKey(topic, subscriptionId));
     const currentOwner = subscription ? this.sessionOwners.get(subscription.sessionId) : null;
     if (subscription && currentOwner?.ownerId === subscription.ownerId && subscription.socket?.writable) { writeLocal(subscription.socket, message); return; }
-    const pending = this.pendingConversationTopics.get(topic); const frameBytes = conversationFrameBytes(message);
+    if (!pending || pending.protocol !== protocol || this.sessionOwners.get(pending.sessionId)?.ownerId !== pending.ownerId) return;
+    if (pending.earlySubscriptionId !== null && pending.earlySubscriptionId !== subscriptionId) { pending.ambiguous = true; pending.frames = []; pending.bytes = 0; return; }
+    pending.earlySubscriptionId = subscriptionId; const frameBytes = conversationFrameBytes(message);
     const totalBytes = [...this.pendingConversationTopics.values()].reduce((sum, entry) => sum + entry.bytes, 0);
     if (pending && frameBytes <= MAX_CONVERSATION_FRAME_BYTES && pending.frames.length < MAX_PENDING_CONVERSATION_FRAMES && totalBytes + frameBytes <= MAX_PENDING_CONVERSATION_BYTES) { pending.frames.push(message); pending.bytes += frameBytes; }
   }
@@ -598,7 +631,7 @@ export class ZCodeBroker {
     let malformedCurrentGeneration = false;
     for (let index = 0; index < entries.length; index += 1) {
       const subscription = entries[index]; if (this.orphanedConversationSubscriptions.get(subscription.key)?.entryToken !== subscription.entryToken) continue;
-      if (outcomes[index].status === 'fulfilled' && validConversationUnsubscribeResult(outcomes[index].value) && this.protocol === protocol && subscription.protocol === protocol) this.orphanedConversationSubscriptions.delete(subscription.key);
+      if (outcomes[index].status === 'fulfilled' && validConversationUnsubscribeResult(outcomes[index].value) && this.protocol === protocol && subscription.protocol === protocol) { this.orphanedConversationSubscriptions.delete(subscription.key); if (!this.retireConversationSubscription(protocol, subscription)) malformedCurrentGeneration = true; }
       else { subscription.retryAfter = Date.now() + 50; if (outcomes[index].status === 'fulfilled' && !validConversationUnsubscribeResult(outcomes[index].value) && this.protocol === protocol) malformedCurrentGeneration = true; }
     }
     if (malformedCurrentGeneration) this.clearProtocolGeneration(protocol);
@@ -728,6 +761,7 @@ async function settleOwnerReleaseCaller(operation, deadline) { const remainingMs
 function turnActiveError(message) { return new PluginError('ZCODE_TURN_ACTIVE', message, { category: 'state', remedy: 'Wait for the active session operation to finish.' }); }
 function validWireOption(value, maximum) { return value === undefined || Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
 function validDrainOption(value) { return value === undefined || Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAIN_TIMEOUT_MS; }
+function canonicalEndpointPath(path) { try { return realpathSync(resolve(path)); } catch { return path; } }
 function isWindowsNamedPipe(endpoint) { return typeof endpoint === 'string' && endpoint.toLowerCase().startsWith('\\\\.\\pipe\\'); }
 function isProcessAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 function safeTokenEqual(left, right) { const a = Buffer.from(left); const b = Buffer.from(right); return a.length === b.length && timingSafeEqual(a, b); }
@@ -755,6 +789,7 @@ function ownerStoreInvalid(cause) { return new PluginError('ZCODE_OWNER_STORE_IN
 function ownerConflict() { return new PluginError('ZCODE_SESSION_OWNER_CONFLICT', 'The session already belongs to another broker owner.', { category: 'authorization', remedy: 'Use the original stable owner credential.' }); }
 function existingProtocolUnavailable() { return new PluginError('ZCODE_BROKER_PROTOCOL_UNAVAILABLE', 'The existing ZCode protocol is unavailable.', { category: 'state', remedy: 'Retry after an active ZCode broker protocol is available.' }); }
 function protocolRetiring() { return new PluginError('ZCODE_PROTOCOL_RETIRING', 'The previous ZCode protocol generation has not closed safely.', { category: 'state', remedy: 'Retry after the retired protocol generation closes.' }); }
+function brokerUnhealthyError() { return new PluginError('ZCODE_BROKER_UNHEALTHY', 'The recorded ZCode broker identity cannot be safely replaced after its health check failed.', { category: 'state', remedy: 'Stop or repair the recorded broker process before retrying.' }); }
 function brokerInputError() { return new PluginError('ZCODE_BROKER_INPUT_INVALID', 'ZCode broker input is invalid.', { category: 'validation', remedy: 'Provide a data root, workspace, endpoint, and launch target.' }); }
 function ownerReleaseTimeout() { return new PluginError('ZCODE_OWNER_RELEASE_TIMEOUT', 'The ZCode owner release exceeded its bounded storage budget.', { category: 'timeout', remedy: 'Retry after the active owner-store operation completes.' }); }
 function identityCleanupError(path, cause) { return new PluginError('ZCODE_BROKER_IDENTITY_CLEANUP_FAILED', 'The ZCode broker identity could not be safely removed.', { category: 'storage', remedy: 'Inspect the broker identity path and retry cleanup.', ...(cause === undefined ? {} : { cause }), details: { path } }); }

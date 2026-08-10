@@ -23,6 +23,7 @@ let pendingConcurrentSubscribeResponse;
 let pendingConcurrentStopResponse;
 const pendingCompletionTimers = new Map();
 const conversationSubscriptions = new Map();
+const conversationSubscriptionCounts = new Map();
 
 const defaultModel = { providerId: 'fake', modelId: 'model' };
 function settings(model = defaultModel) { return { appliedProviderRevision: 'provider-revision-1', model: { current: model, available: [{ ref: model, label: 'Fixture model', reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, label: 'Other model', reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' }, permission: { mode: 'build', rulesRevision: 1 } }; }
@@ -261,7 +262,7 @@ input.on('line', async (line) => {
         try { await readFile(badAckMarker); badAcknowledgement = false; }
         catch { await writeFile(badAckMarker, 'observed'); }
       }
-      const subscriptionId = badAcknowledgement ? '' : `subscription-${sessionId}`; conversationSubscriptions.set(sessionId, subscriptionId);
+      const subscriptionCount = (conversationSubscriptionCounts.get(sessionId) ?? 0) + 1; conversationSubscriptionCounts.set(sessionId, subscriptionCount); const subscriptionId = badAcknowledgement ? '' : `subscription-${sessionId}${subscriptionCount === 1 ? '' : `-${subscriptionCount}`}`; conversationSubscriptions.set(sessionId, subscriptionId);
       if (process.env.FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'online', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 39, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 39, kind: 'toolCall', toolCallId: 'prebind', toolName: 'Bash', status: 'running', inputText: '{"command":"echo prebind"}', input: { command: 'echo prebind' }, startedAt: 1_786_233_600_000 } }] }));
       const response = { id: message.id, result: { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1' } } };
       if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1' || process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_REVERSE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentCreateSubscribe(); }

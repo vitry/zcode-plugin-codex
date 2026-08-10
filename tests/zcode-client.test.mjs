@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
@@ -539,6 +539,23 @@ test('existing managed client bounds an unhealthy broker probe', async () => {
   } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test('a live unhealthy broker identity prevents concurrent replacement startup', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-ensure-live-unhealthy-')); let closeServer; let outcomes = [];
+  try {
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const identityName = brokerIdentityNameForWireOptions(); const brokerDirectory = join(storage.directory, 'broker'); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const brokerToken = '9'.repeat(64); const instanceId = 'f'.repeat(48);
+    closeServer = await createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangHealth: true }); await writeBrokerIdentity(join(brokerDirectory, identityName), { endpoint, pid: process.pid, instanceId, brokerToken }); const options = { dataRoot: directory, workspace: directory, launch: { command: join(directory, 'must-not-spawn'), args: [] } };
+    outcomes = await Promise.allSettled([ensureZCodeBroker(options), ensureZCodeBroker(options)]); assert.deepEqual(outcomes.map((outcome) => outcome.status), ['rejected', 'rejected']); for (const outcome of outcomes) assert.equal(outcome.reason?.code, 'ZCODE_BROKER_UNHEALTHY'); assert.equal((await stat(endpoint)).isSocket(), true); assert.equal((await readdir(brokerDirectory)).some((name) => name.startsWith('config-')), false);
+  } finally { for (const outcome of outcomes) if (outcome.status === 'fulfilled' && processAlive(outcome.value.pid)) try { process.kill(outcome.value.pid, 'SIGTERM'); } catch { /* already exited */ } await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('a confirmed dead exact broker identity can be replaced safely', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-ensure-dead-recovery-')); let brokerPid;
+  try {
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const identityName = brokerIdentityNameForWireOptions(); const brokerDirectory = join(storage.directory, 'broker'); const identityPath = join(brokerDirectory, identityName); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const deadPid = 2_147_483_647; assert.equal(processAlive(deadPid), false); await mkdir(brokerDirectory, { recursive: true }); await writeFile(endpoint, 'confirmed stale endpoint'); const options = { dataRoot: directory, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, idleTimeoutMs: 100 }; await writeBrokerIdentity(identityPath, { endpoint: join(directory, 'wrong-endpoint.sock'), pid: deadPid, instanceId: 'a'.repeat(48), brokerToken: 'b'.repeat(64) }); await assert.rejects(ensureZCodeBroker(options), { code: 'ZCODE_BROKER_UNHEALTHY' }); assert.equal(await readFile(endpoint, 'utf8'), 'confirmed stale endpoint'); assert.equal((await readdir(brokerDirectory)).some((name) => name.startsWith('config-')), false); await writeBrokerIdentity(identityPath, { endpoint, pid: deadPid, instanceId: 'a'.repeat(48), brokerToken: 'b'.repeat(64) });
+    const record = await ensureZCodeBroker(options); brokerPid = record.pid; assert.notEqual(record.pid, deadPid); assert.equal(processAlive(record.pid), true); assert.equal((await stat(endpoint)).isSocket(), true);
+  } finally { if (brokerPid && processAlive(brokerPid)) try { process.kill(brokerPid, 'SIGTERM'); } catch { /* idle shutdown won */ } if (brokerPid) await waitForProcessExit(brokerPid); await rm(directory, { recursive: true, force: true }); }
+});
+
 test('existing managed client returns null when the broker dies between health and connect', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-race-')); let closeServer;
   try {
@@ -659,6 +676,11 @@ test('broker cold start initializes one protocol generation once for concurrent 
   });
 });
 
+test('broker rejects every unknown local method before admission reload or upstream forwarding', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-method-allowlist-')); const endpoint = join(directory, 'broker.sock'); const ownerId = 'method-allowlist-owner'; const sessionId = 'method-allowlist-session'; const writes = []; const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const broker = newTestBroker({ endpoint, brokerToken: 'e'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.sessionOwners.set(sessionId, { ownerId, socket }); await writeFile(`${endpoint}.owners.json`, JSON.stringify({ version: 1, sessions: { [sessionId]: ownerId } })); broker.ownershipStoreEstablished = true; let resolveStop; let stopCalls = 0; const forwarded = []; broker.protocol = { request: (method) => { if (method === 'session/stop') { stopCalls += 1; return new Promise((resolvePromise) => { resolveStop = resolvePromise; }); } forwarded.push(method); return Promise.resolve({ forwarded: true }); }, cancelTurn() {} };
+  const releasing = broker.releaseOwner(socket, ownerId, []); while (!stopCalls) await new Promise((resolvePromise) => setImmediate(resolvePromise)); for (const [id, method, params] of [[71, 'session/futureMutation', { sessionId }], [72, 'future/mutation', {}], [73, 'broker/releaseSession', { sessionId }]]) await broker.handleLocal(socket, JSON.stringify({ id, method, params })); assert.deepEqual(forwarded, []); for (const id of [71, 72, 73]) assert.equal(writes.find((frame) => frame.id === id)?.error?.data?.pluginError?.code, 'ZCODE_BROKER_INPUT_INVALID'); resolveStop({}); const released = await releasing; assert.deepEqual(released.releasedSessionIds, [sessionId]); assert.equal(broker.admission.activeCount, 0); await rm(directory, { recursive: true, force: true });
+});
+
 test('broker drops owner-neutral notifications and routes attributed notifications only to their owner', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-notification-owner-routing-')); const endpoint = join(directory, 'broker.sock'); const brokerToken = '8'.repeat(64); const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_LIST_ROUTING_NOTIFICATIONS: '1' } }).start(); const ownerA = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'notification-routing-owner-a' }); const ownerB = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'notification-routing-owner-b' }); const sessionId = (await ownerA.createSession({ workspace: directory })).session.sessionId; const notificationsA = []; const notificationsB = []; const unsubscribeA = ownerA.protocol.subscribe((message) => notificationsA.push(message)); const unsubscribeB = ownerB.protocol.subscribe((message) => notificationsB.push(message));
   try { await ownerA.listSessions(); assert.deepEqual(notificationsA, [{ method: 'fixture/sessionNotification', params: { sessionId, occurrence: 1 } }]); assert.deepEqual(notificationsB, []); }
@@ -692,6 +714,10 @@ test('broker endpoints are bounded and platform-safe', () => {
   const windows = brokerEndpointFor({ platform: 'win32', dataRoot: 'C:\\data', workspace: 'C:\\repo' });
   assert.ok(Buffer.byteLength(unix) < 104);
   assert.match(windows, /^\\\\\.\\pipe\\zcode-[a-f0-9]+$/);
+});
+
+test('broker endpoint identity canonicalizes existing data-root and workspace aliases', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-endpoint-canonical-')); try { const canonical = realpathSync(directory); assert.equal(brokerEndpointFor({ dataRoot: directory, workspace: directory }), brokerEndpointFor({ dataRoot: canonical, workspace: canonical })); } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('typed client uses a local broker whose single CLI owner handles permissions', async () => {
@@ -828,14 +854,26 @@ test('a stale malformed direct unsubscribe acknowledgement cannot add old-genera
   assert.equal(broker.protocol, replacementProtocol); assert.equal(broker.orphanedConversationSubscriptions.size, 1); assert.equal(broker.orphanedConversationSubscriptions.get(replacementTombstone.key), replacementTombstone); assert.equal(oldCloseCalls, 1); assert.equal(writes.find((frame) => frame.id === 81)?.result, undefined); assert.equal(broker.admission.activeCount, 0); await rm(directory, { recursive: true, force: true });
 });
 
+test('a retired subscription id and its early frame cannot be reassigned to a new owner', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-retired-subscription-reuse-')); const endpoint = join(directory, 'broker.sock'); const sessionId = 'retired-reuse-session'; const topic = `conversation/${sessionId}`; const subscriptionId = 'retired-reuse-subscription'; const oldOwner = 'retired-reuse-old-owner'; const newOwner = 'retired-reuse-new-owner'; const oldWrites = []; const newWrites = []; const oldSocket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => oldWrites.push(JSON.parse(line)) }, destroy() {} }; const newSocket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => newWrites.push(JSON.parse(line)) }, destroy() {} }; const broker = newTestBroker({ endpoint, brokerToken: 'f'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); for (const [socket, ownerId] of [[oldSocket, oldOwner], [newSocket, newOwner]]) { broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); } broker.sessionOwners.set(sessionId, { ownerId: oldOwner, socket: oldSocket }); broker.reloadOwnership = async () => {};
+  let subscribeCalls = 0; let resolveReusedAck; let closeCalls = 0; const protocol = { request: async (method) => { if (method === 'v4/conversation/subscribe') { subscribeCalls += 1; if (subscribeCalls === 1) return { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'retired-reuse-old-epoch' } }; return new Promise((resolvePromise) => { resolveReusedAck = resolvePromise; }); } if (method === 'v4/conversation/unsubscribe') return {}; throw new Error(`unexpected ${method}`); }, close: async () => { closeCalls += 1; } }; broker.protocol = protocol;
+  await broker.handleLocal(oldSocket, JSON.stringify({ id: 41, method: 'v4/conversation/subscribe', params: { topic, connectionId: 'retired-reuse-old-connection', clientMode: 'desktop-continuous' } })); await broker.handleLocal(oldSocket, JSON.stringify({ id: 42, method: 'v4/conversation/unsubscribe', params: { topic, subscriptionId, connectionId: 'retired-reuse-old-connection' } })); broker.sessionOwners.set(sessionId, { ownerId: newOwner, socket: newSocket }); const subscribing = broker.handleLocal(newSocket, JSON.stringify({ id: 43, method: 'v4/conversation/subscribe', params: { topic, connectionId: 'retired-reuse-new-connection', clientMode: 'desktop-continuous' } })); while (!resolveReusedAck) await new Promise((resolvePromise) => setImmediate(resolvePromise)); broker.routeConversationFrame({ method: 'v4/conversation/frame', params: { topic, subscriptionId, frame: { payload: 'old-owner-frame' } } }); resolveReusedAck({ ack: { subscriptionId, mode: 'resume', logEpoch: 'retired-reuse-new-epoch' } }); await subscribing;
+  assert.equal(newWrites.some((frame) => frame.method === 'v4/conversation/frame'), false); assert.equal(newWrites.find((frame) => frame.id === 43)?.error?.data?.pluginError?.code, 'ZCODE_BROKER_INPUT_INVALID'); assert.equal(broker.conversationSubscriptions.size, 0); assert.equal(broker.pendingConversationTopics.size, 0); assert.equal(broker.protocol, null); assert.equal(closeCalls, 1); await rm(directory, { recursive: true, force: true });
+});
+
+test('the 256th retired subscription resets its exact protocol generation instead of evicting evidence', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-retired-subscription-cap-')); const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '1'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); let closeCalls = 0; const protocol = { request: async () => ({}), close: async () => { closeCalls += 1; } }; broker.protocol = protocol; const records = Array.from({ length: 256 }, (_, index) => ({ key: `retired-cap-${index}`, topic: `conversation/retired-cap-session-${index}`, subscriptionId: `retired-cap-subscription-${index}`, connectionId: `retired-cap-connection-${index}`, sessionId: `retired-cap-session-${index}`, ownerId: 'retired-cap-owner' })); await broker.unsubscribeConversationRecords(protocol, records, 250); await broker.retiredProtocolGeneration?.closePromise;
+  assert.equal(closeCalls, 1); assert.equal(broker.protocol, null); assert.equal(broker.orphanedConversationSubscriptions.size, 0); assert.equal(broker.pendingConversationTopics.size, 0); await rm(directory, { recursive: true, force: true });
+});
+
 test('conversation routing revalidates current ownership and enforces pending frame bounds', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-conversation-bounds-')); const writes = [];
   const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'f'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
-  const socket = { writable: true, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const sessionId = 'bounded-conversation-session'; const topic = `conversation/${sessionId}`; const subscriptionId = 'bounded-subscription'; const message = { method: 'v4/conversation/frame', params: { topic, subscriptionId, frame: { payload: 'safe' } } };
+  const socket = { writable: true, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const sessionId = 'bounded-conversation-session'; const topic = `conversation/${sessionId}`; const subscriptionId = 'bounded-subscription'; const message = { method: 'v4/conversation/frame', params: { topic, subscriptionId, frame: { payload: 'safe' } } }; const protocol = {}; broker.protocol = protocol;
   broker.sessionOwners.set(sessionId, { ownerId: 'original-owner-stable', socket, claimToken: null }); broker.conversationSubscriptions.set(JSON.stringify([topic, subscriptionId]), { socket, topic, subscriptionId, connectionId: 'connection-1', sessionId, ownerId: 'original-owner-stable' });
   broker.routeConversationFrame(message); assert.equal(writes.length, 1);
   broker.sessionOwners.set(sessionId, { ownerId: 'replacement-owner-stable', socket: null, claimToken: null }); broker.routeConversationFrame(message); assert.equal(writes.length, 1);
-  broker.conversationSubscriptions.clear(); broker.pendingConversationTopics.set(topic, { socket, token: 'pending-token', frames: [], bytes: 0 }); broker.routeConversationFrame({ ...message, params: { ...message.params, frame: { payload: 'x'.repeat(70 * 1024) } } }); assert.equal(broker.pendingConversationTopics.get(topic).frames.length, 0);
+  broker.conversationSubscriptions.clear(); broker.pendingConversationTopics.set(topic, { socket, token: 'pending-token', protocol, sessionId, ownerId: 'replacement-owner-stable', earlySubscriptionId: null, ambiguous: false, frames: [], bytes: 0 }); broker.routeConversationFrame({ ...message, params: { ...message.params, frame: { payload: 'x'.repeat(70 * 1024) } } }); assert.equal(broker.pendingConversationTopics.get(topic).frames.length, 0);
   for (let index = 0; index < 16; index += 1) broker.routeConversationFrame({ ...message, params: { ...message.params, frame: { payload: String(index) } } }); broker.routeConversationFrame(message); assert.equal(broker.pendingConversationTopics.get(topic).frames.length, 16);
   await rm(directory, { recursive: true, force: true });
 });
