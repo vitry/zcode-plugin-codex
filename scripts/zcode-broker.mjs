@@ -290,39 +290,43 @@ export class ZCodeBroker {
   async releaseOwner(socket, ownerId, excludeSessionIds = [], deadline = Date.now() + OWNER_RELEASE_BUDGET_MS) {
     const excluded = new Set(excludeSessionIds); const allOwnerEntries = [...this.sessionOwners].filter(([, owner]) => owner.ownerId === ownerId); const stableOwned = allOwnerEntries.filter(([, owner]) => !owner.claimToken).map(([sessionId]) => sessionId); const eligible = stableOwned.filter((sessionId) => !excluded.has(sessionId)); const inFlightClaims = allOwnerEntries.length - stableOwned.length; const owned = eligible.slice(0, OWNER_RELEASE_MAX_SESSIONS);
     if (!owned.length) return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: inFlightClaims };
-    const released = []; const failed = []; const stoppedFences = [];
+    const released = []; const failed = []; const stoppedFences = new Map(); let releaseProtocol = null;
     try {
       if (!this.protocol) {
         if (this.protocolPromise) failed.push(...owned);
         else for (const sessionId of owned) {
           if (this.stoppingSessions.has(sessionId) || this.admittingSessions.has(sessionId)) { failed.push(sessionId); continue; }
-          const stopToken = randomBytes(16).toString('hex'); this.stoppingSessions.set(sessionId, { token: stopToken, activeToken: null, ownerRelease: true }); stoppedFences.push([sessionId, stopToken]); released.push(sessionId);
+          const stopToken = randomBytes(16).toString('hex'); this.stoppingSessions.set(sessionId, { token: stopToken, activeToken: null, ownerRelease: true }); stoppedFences.set(sessionId, stopToken); released.push(sessionId);
         }
       } else {
-        const protocol = this.protocol;
+        const protocol = this.protocol; releaseProtocol = protocol;
         for (let offset = 0; offset < owned.length; offset += OWNER_RELEASE_CONCURRENCY) {
           const batch = owned.slice(offset, offset + OWNER_RELEASE_CONCURRENCY); const remainingMs = deadline - Date.now();
           if (socket.destroyed || remainingMs <= 0 || this.protocol !== protocol) { failed.push(...owned.slice(offset)); break; }
           const outcomes = await Promise.allSettled(batch.map(async (sessionId) => {
             if (this.stoppingSessions.has(sessionId) || this.admittingSessions.has(sessionId)) throw new PluginError('ZCODE_TURN_ACTIVE', 'The session is already stopping or admitting a turn.', { category: 'state', remedy: 'Wait for the active request.' });
             const activeSession = this.activeSessionSockets.get(sessionId); const stopToken = randomBytes(16).toString('hex'); this.stoppingSessions.set(sessionId, { token: stopToken, activeToken: activeSession?.token ?? null, ownerRelease: true });
-            try { const result = await protocol.request('session/stop', { sessionId }, Math.max(1, Math.min(OWNER_RELEASE_REQUEST_MS, remainingMs))); return { activeSession, result, stopToken }; }
+            try { const result = await protocol.request('session/stop', { sessionId }, Math.max(1, Math.min(OWNER_RELEASE_REQUEST_MS, remainingMs))); if (this.protocol !== protocol || this.stoppingSessions.get(sessionId)?.token !== stopToken) throw brokerInputError(); return { activeSession, result, stopToken }; }
             catch (error) { if (this.stoppingSessions.get(sessionId)?.token === stopToken) this.stoppingSessions.delete(sessionId); throw error; }
           }));
-          for (let index = 0; index < batch.length; index += 1) if (outcomes[index].status === 'fulfilled') stoppedFences.push([batch[index], outcomes[index].value.stopToken]);
+          for (let index = 0; index < batch.length; index += 1) if (outcomes[index].status === 'fulfilled') stoppedFences.set(batch[index], outcomes[index].value.stopToken);
           const detachedSubscriptions = [];
           for (let index = 0; index < batch.length; index += 1) {
-            const sessionId = batch[index]; if (outcomes[index].status === 'fulfilled') { const stopped = outcomes[index].value; protocol.cancelTurn(sessionId); this.activeSessions.delete(sessionId); detachedSubscriptions.push(...this.detachSessionSubscriptions(sessionId)); this.settleStoppedSession(sessionId, stopped.activeSession); released.push(sessionId); } else failed.push(sessionId);
+            const sessionId = batch[index]; if (outcomes[index].status === 'fulfilled' && this.protocol === protocol && this.stoppingSessions.get(sessionId)?.token === outcomes[index].value.stopToken) { const stopped = outcomes[index].value; protocol.cancelTurn(sessionId); this.activeSessions.delete(sessionId); detachedSubscriptions.push(...this.detachSessionSubscriptions(sessionId)); this.settleStoppedSession(sessionId, stopped.activeSession); released.push(sessionId); } else failed.push(sessionId);
           }
           await this.unsubscribeConversationRecords(protocol, detachedSubscriptions, Math.max(0, deadline - Date.now()));
+          if (this.protocol !== protocol) { for (const sessionId of released.splice(0)) if (!failed.includes(sessionId)) failed.push(sessionId); }
         }
       }
+      if (releaseProtocol && (this.protocol !== releaseProtocol || released.some((sessionId) => this.stoppingSessions.get(sessionId)?.token !== stoppedFences.get(sessionId)))) for (const sessionId of released.splice(0)) if (!failed.includes(sessionId)) failed.push(sessionId);
       if (released.length) {
         try {
-          await withinOwnerReleaseDeadline(deadline, async (signal) => mutateOwnerStore(this.ownershipPath, false, async (sessions) => {
+          let committed = false; await withinOwnerReleaseDeadline(deadline, async (signal) => mutateOwnerStore(this.ownershipPath, false, async (sessions) => {
+            if (releaseProtocol && (this.protocol !== releaseProtocol || released.some((sessionId) => this.stoppingSessions.get(sessionId)?.token !== stoppedFences.get(sessionId)))) return;
             for (const sessionId of released) if (sessions[sessionId] === ownerId) delete sessions[sessionId];
-            await this.writeOwnerStore(sessions, { signal }); this.applyOwnership(sessions);
+            await this.writeOwnerStore(sessions, { signal }); this.applyOwnership(sessions); committed = true;
           }, { timeoutMs: Math.max(0, deadline - Date.now()), signal }));
+          if (!committed) for (const sessionId of released.splice(0)) if (!failed.includes(sessionId)) failed.push(sessionId);
         } catch (error) {
           let winner;
           try { winner = await withinOwnerReleaseDeadline(deadline, (signal) => this.readOwnerStore(false, { timeoutMs: Math.max(0, deadline - Date.now()), signal })); }
@@ -348,10 +352,17 @@ export class ZCodeBroker {
 
   async getProtocol() {
     if (this.protocol) return this.protocol;
-    if (!this.protocolPromise) this.protocolPromise = spawnZCodeProtocol(this.options.launch, { cwd: this.options.launchCwd ?? this.options.workspace, env: this.options.env, maxFrameBytes: this.options.maxFrameBytes, maxOutboundBytes: this.options.maxOutboundBytes, drainTimeoutMs: this.options.drainTimeoutMs });
+    if (!this.protocolPromise) this.protocolPromise = this.initializeProtocolGeneration();
     const attempt = this.protocolPromise;
-    try { const protocol = await attempt; if (this.closing) { await protocol.close(); throw new PluginError('ZCODE_BROKER_CLOSING', 'The ZCode broker is closing.', { category: 'state', remedy: 'Reconnect to a healthy broker.' }); } this.protocol = protocol; } catch (error) { if (this.protocolPromise === attempt) this.protocolPromise = null; this.protocol = null; this.scheduleIdleShutdown(); throw error; }
-    this.protocol.subscribe((message) => {
+    try { return await attempt; } catch (error) { if (this.protocolPromise === attempt) this.protocolPromise = null; this.scheduleIdleShutdown(); throw error; }
+  }
+
+  async initializeProtocolGeneration() {
+    const protocol = await spawnZCodeProtocol(this.options.launch, { cwd: this.options.launchCwd ?? this.options.workspace, env: this.options.env, maxFrameBytes: this.options.maxFrameBytes, maxOutboundBytes: this.options.maxOutboundBytes, drainTimeoutMs: this.options.drainTimeoutMs });
+    try {
+      if (this.closing) throw new PluginError('ZCODE_BROKER_CLOSING', 'The ZCode broker is closing.', { category: 'state', remedy: 'Reconnect to a healthy broker.' });
+      this.protocol = protocol;
+      protocol.subscribe((message) => {
       if (message.method === 'broker/sessionStopped') return;
       if (message.method === 'v4/conversation/frame') { this.routeConversationFrame(message); return; }
       if (isTerminalStateNotification(message)) return;
@@ -359,12 +370,12 @@ export class ZCodeBroker {
       const sessionOwner = message.params?.sessionId ? active?.socket ?? this.sessionOwners.get(message.params.sessionId)?.socket : null;
       if (message.params?.sessionId) { if (sessionOwner) writeLocal(sessionOwner, message); }
       else for (const socket of this.sockets) if (this.authenticated.has(socket)) writeLocal(socket, message);
-    });
-    this.protocol.setPermissionHandler((request) => this.requestPermission(request));
-    this.protocol.consumeTerminalsWith((params, turn) => { const active = this.activeSessionSockets.get(params.sessionId); if (active?.baseline === turn.baseline && active.inputId === turn.inputId) { if (active.socket?.writable) writeLocal(active.socket, { method: 'state.updated', params }); this.activeSessionSockets.delete(params.sessionId); this.activeSessions.delete(params.sessionId); this.scheduleIdleShutdown(); } });
-    const protocol = this.protocol;
-    protocol.setCloseHandler(() => this.clearProtocolGeneration(protocol));
-    return this.protocol;
+      });
+      protocol.setPermissionHandler((request) => this.requestPermission(request));
+      protocol.consumeTerminalsWith((params, turn) => { const active = this.activeSessionSockets.get(params.sessionId); if (active?.baseline === turn.baseline && active.inputId === turn.inputId) { if (active.socket?.writable) writeLocal(active.socket, { method: 'state.updated', params }); this.activeSessionSockets.delete(params.sessionId); this.activeSessions.delete(params.sessionId); this.scheduleIdleShutdown(); } });
+      protocol.setCloseHandler(() => this.clearProtocolGeneration(protocol));
+      return protocol;
+    } catch (error) { if (this.protocol === protocol) this.protocol = null; await protocol.close().catch(() => {}); throw error; }
   }
 
   clearProtocolGeneration(protocol) {

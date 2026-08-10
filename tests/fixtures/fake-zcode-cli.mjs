@@ -16,9 +16,11 @@ let permissionId = 9000;
 let sendCount = 0;
 let conversationSubscribeCount = 0;
 let resumeCount = 0;
+let listCount = 0;
 let pendingRuntimePreferencesCreate;
 let pendingConcurrentCreateResponse;
 let pendingConcurrentSubscribeResponse;
+let pendingConcurrentStopResponse;
 const pendingCompletionTimers = new Map();
 const conversationSubscriptions = new Map();
 
@@ -79,6 +81,11 @@ function flushConcurrentCreateSubscribe() {
   if (!pendingConcurrentCreateResponse || !pendingConcurrentSubscribeResponse) return;
   sendBatch([pendingConcurrentSubscribeResponse, pendingConcurrentCreateResponse]);
   pendingConcurrentCreateResponse = undefined; pendingConcurrentSubscribeResponse = undefined;
+}
+function flushConcurrentStopSubscribe() {
+  if (!pendingConcurrentStopResponse || !pendingConcurrentSubscribeResponse) return;
+  sendBatch([pendingConcurrentSubscribeResponse, pendingConcurrentStopResponse]);
+  pendingConcurrentStopResponse = undefined; pendingConcurrentSubscribeResponse = undefined;
 }
 function conversationNotification({ sessionId, subscriptionId, deliveryKind, ordinal, deltas, topic = `conversation/${sessionId}` }) {
   return { method: 'v4/conversation/frame', params: { wireVersion: 3, kind: 'complete', deliveryKind, logicalFrameId: `frame-${ordinal}`, logicalFrameOrdinal: ordinal, topic, subscriptionId, frame: { topic, subscriptionId, fromSeq: ordinal, toSeq: ordinal, sentAt: 1_786_233_600_000, payload: { kind: 'deltas', deltas } } } };
@@ -237,6 +244,7 @@ input.on('line', async (line) => {
       if (process.env.FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'online', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 39, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 39, kind: 'toolCall', toolCallId: 'prebind', toolName: 'Bash', status: 'running', inputText: '{"command":"echo prebind"}', input: { command: 'echo prebind' }, startedAt: 1_786_233_600_000 } }] }));
       const response = { id: message.id, result: { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1' } } };
       if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentCreateSubscribe(); }
+      else if (process.env.FAKE_ZCODE_CONCURRENT_STOP_SUBSCRIBE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentStopSubscribe(); }
       else send(response);
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 40, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: 1_786_233_600_000 } }] }));
       break;
@@ -257,6 +265,7 @@ input.on('line', async (line) => {
       send({ id: message.id, result: snapshot(p.sessionId) });
       break;
     case 'session/list': {
+      listCount += 1; if (process.env.FAKE_ZCODE_LIST_NOTIFICATION_ONCE === '1' && listCount === 1) send({ method: 'fixture/notification', params: { occurrence: 1 } });
       const mode = await recoveryMode(); const listed = mode === 'missing' ? [] : [...sessions.values()];
       for (const session of listed) applyRecoveryMode(session, mode);
       send({ id: message.id, result: { sessions: process.env.FAKE_ZCODE_BAD_LIST === 'session-id-only' ? listed.map(({ sessionId }) => ({ sessionId })) : listed.map(({ sessionId, workspacePath, projectionStatus }) => sessionInfo(sessionId, workspacePath, projectionStatus)) } });
@@ -267,7 +276,9 @@ input.on('line', async (line) => {
       while (process.env.FAKE_ZCODE_STOP_GATE && (await readFile(process.env.FAKE_ZCODE_STOP_GATE, 'utf8').catch(() => '')).trim() !== 'release') await new Promise((resolve) => setTimeout(resolve, 5));
       if (process.env.FAKE_ZCODE_STOP_ERROR_PREFIX && p.sessionId.startsWith(process.env.FAKE_ZCODE_STOP_ERROR_PREFIX)) { send({ id: message.id, error: { code: -32099, message: 'fixture stop failed' } }); break; }
       const timer = pendingCompletionTimers.get(p.sessionId); if (timer) { clearTimeout(timer); pendingCompletionTimers.delete(p.sessionId); }
-      send({ id: message.id, result: process.env.FAKE_ZCODE_BAD_STOP_EXTRA === '1' ? { stopped: true } : {} });
+      const response = { id: message.id, result: process.env.FAKE_ZCODE_BAD_STOP_EXTRA === '1' ? { stopped: true } : {} };
+      if (process.env.FAKE_ZCODE_CONCURRENT_STOP_SUBSCRIBE_BATCH === '1') { pendingConcurrentStopResponse = response; flushConcurrentStopSubscribe(); }
+      else send(response);
       break;
     }
     case 'session/setModel':
