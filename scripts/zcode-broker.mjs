@@ -298,10 +298,14 @@ export class ZCodeBroker {
           } catch (error) { if (frame.method === 'session/send') { protocol.abortTurn(frame.params.sessionId); if (this.activeSessionSockets.get(frame.params.sessionId)?.token === sendToken) this.activeSessionSockets.delete(frame.params.sessionId); if (this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); } if (subscriptionToken && this.pendingConversationTopics.get(frame.params.topic)?.token === subscriptionToken) this.pendingConversationTopics.delete(frame.params.topic); throw error; }
           if (frame.method === 'session/create') {
             const createdSessionId = result?.session?.sessionId; if (!isSafeIdentifier(createdSessionId) || typeof requestedSessionId === 'string' && createdSessionId !== requestedSessionId) throw invalidSessionCreateResult();
+            const anonymousCreate = typeof requestedSessionId !== 'string';
+            if (anonymousCreate && this.sessionOwners.has(createdSessionId)) { this.clearProtocolGeneration(protocol); throw invalidSessionCreateResult(); }
             if (!this.admission.ownerRequestCurrent(ownerAdmission)) throw brokerInputError();
             if (!sessionAdmission) { sessionAdmission = this.admission.beginSessionRequest('session/create', createdSessionId, ownerId, socket); this.admission.claimSession(sessionAdmission); this.admission.bindSessionProtocol(sessionAdmission, protocol); }
             const commitCurrent = () => this.protocol === protocol && this.ownerCommitTokens.get(ownerCommitToken) === protocol && this.admission.ownerRequestCurrent(ownerAdmission) && this.admission.sessionRequestCurrent(sessionAdmission, protocol);
-            const committed = await this.persistOwnership(createdSessionId, ownerId, commitCurrent);
+            let committed;
+            try { committed = await this.persistOwnership(createdSessionId, ownerId, socket, commitCurrent, anonymousCreate); }
+            catch (error) { if (anonymousCreate && error?.code === 'ZCODE_OUTPUT_INVALID') this.clearProtocolGeneration(protocol); throw error; }
             if (!committed.committed || !commitCurrent()) { if (committed.committed) await this.compensateOwnerCommit(committed, [createdSessionId]); throw brokerInputError(); }
             this.sessionOwners.set(createdSessionId, { ownerId, socket });
           }
@@ -584,7 +588,7 @@ export class ZCodeBroker {
     const loaded = await readOwnerStore(this.ownershipPath, true); if (!loaded.exists) return; this.applyOwnership(loaded.sessions); this.ownershipStoreEstablished = true;
   }
 
-  async commitOwnerMutation(allowMissing, isCurrent, update, lockOptions = {}) {
+  async commitOwnerMutation(allowMissing, isCurrent, update, lockOptions = {}, recoverWriteError = null) {
     return mutateOwnerStore(this.ownershipPath, allowMissing, async (sessions) => {
       const before = cloneOwnerSessions(sessions); const after = cloneOwnerSessions(sessions); update(after); const commit = { committed: false, before, after };
       if (!isCurrent()) return commit;
@@ -595,7 +599,7 @@ export class ZCodeBroker {
         catch (restoreError) { const winner = await this.readOwnerStoreUnlocked(false, { signal: lockOptions.signal }); if (!sameOwnerSessions(winner.sessions, before)) throw restoreError; }
         this.applyOwnership(before); return commit;
       }
-      if (writeError) throw writeError;
+      if (writeError) { if (recoverWriteError) return recoverWriteError({ error: writeError, commit }); throw writeError; }
       commit.committed = true; return commit;
     }, lockOptions);
   }
@@ -626,8 +630,17 @@ export class ZCodeBroker {
     }, lockOptions);
   }
 
-  async persistOwnership(sessionId, ownerId, isCurrent) {
-    const commit = await this.commitOwnerMutation(!this.ownershipStoreEstablished, isCurrent, (sessions) => { if (Object.hasOwn(sessions, sessionId) && sessions[sessionId] !== ownerId) throw ownerConflict(); sessions[sessionId] = ownerId; }); if (commit.committed) this.ownershipStoreEstablished = true; return commit;
+  async persistOwnership(sessionId, ownerId, socket, isCurrent, requireNew) {
+    const recoverWriteError = async ({ error, commit }) => {
+      let winner;
+      try { winner = await this.readOwnerStoreUnlocked(false); }
+      catch { this.sessionOwners.set(sessionId, { ownerId, socket, uncertain: true }); throw error; }
+      this.ownershipStoreEstablished = true; this.applyOwnership(winner.sessions);
+      if (isCurrent() && winner.sessions[sessionId] === ownerId) { commit.committed = true; commit.after = cloneOwnerSessions(winner.sessions); commit.recovered = true; return commit; }
+      if (!Object.hasOwn(winner.sessions, sessionId)) this.sessionOwners.set(sessionId, { ownerId, socket, uncertain: true });
+      throw error;
+    };
+    const commit = await this.commitOwnerMutation(!this.ownershipStoreEstablished, isCurrent, (sessions) => { if (Object.hasOwn(sessions, sessionId)) { if (requireNew) throw invalidSessionCreateResult(); if (sessions[sessionId] !== ownerId) throw ownerConflict(); } sessions[sessionId] = ownerId; }, {}, recoverWriteError); if (commit.committed) this.ownershipStoreEstablished = true; return commit;
   }
 
   async reloadOwnership(deadline) { const read = (signal) => this.readOwnerStore(!this.ownershipStoreEstablished, { ...(deadline === undefined ? {} : { timeoutMs: Math.max(0, deadline - Date.now()) }), ...(signal ? { signal } : {}) }); const loaded = deadline === undefined ? await read() : await withinOwnerReleaseDeadline(deadline, read); if (!loaded.exists) return; for (const [sessionId, current] of this.sessionOwners) if ((!Object.hasOwn(loaded.sessions, sessionId) || loaded.sessions[sessionId] !== current.ownerId) && this.uncertainOwnerReleases.get(sessionId) !== current.ownerId) throw ownerStoreInvalid(); this.applyOwnership(loaded.sessions); this.uncertainOwnerReleases.clear(); this.ownershipStoreEstablished = true; }
