@@ -44,11 +44,13 @@ function snapshot(sessionId, value = sessions.get(sessionId)) { const valueSetti
 function corruptSnapshot(result, variant) {
   if (variant === 'missing-workspace') delete result.session.workspace;
   if (variant === 'wrong-workspace') result.session.workspace.workspacePath = '/wrong-workspace';
+  if (variant === 'wrong-workspace-key') result.session.workspace.workspaceKey = '/wrong-workspace-key';
   if (variant === 'wrong-projection-session') result.projection.sessionId = 'wrong-projection-session';
   if (variant === 'wrong-session-target') result.session.target = { sessionId: 'wrong-session-target', targetId: 'target-1', objective: 'Verify snapshot identity', summaryTitle: null, status: 'active', tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 };
   if (variant === 'wrong-projection-target') result.projection.target = { sessionId: 'wrong-projection-target', targetId: 'target-2', objective: 'Verify projection identity', summaryTitle: null, status: 'active', tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 };
   if (variant === 'wrong-message-session') result.messages[0].info.sessionId = 'wrong-message-session';
   if (variant === 'wrong-part-session') result.messages[0].parts[0].sessionId = 'wrong-part-session';
+  if (variant === 'wrong-part-message') result.messages[0].parts[0].messageId = 'wrong-part-message';
   if (variant === 'empty-message') result.messages = [{}];
   if (variant === 'invented-session-kind') result.session.sessionKind = 'main';
   if (variant === 'invented-subagent-kind') result.session.sessionKind = 'subagent';

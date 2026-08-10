@@ -141,12 +141,12 @@ function validSlashCommand(/** @type {any} */ value) { return exact(value, ['nam
 
 /** @param {any} value @param {string} sessionId @param {string} workspacePath */
 function validSnapshotRelations(value, sessionId, workspacePath) {
-  return text(workspacePath) && value.session.workspace.workspacePath === workspacePath
+  return text(workspacePath) && value.session.workspace.workspacePath === workspacePath && value.session.workspace.workspaceKey === workspacePath
     && value.session.sessionId === sessionId
     && (value.session.target === undefined || value.session.target === null || value.session.target.sessionId === sessionId)
     && value.projection.sessionId === sessionId
     && (value.projection.target === undefined || value.projection.target === null || value.projection.target.sessionId === sessionId)
-    && value.messages.every((/** @type {any} */ message) => message.info.sessionId === sessionId && message.parts.every((/** @type {any} */ part) => part.sessionId === sessionId));
+    && value.messages.every((/** @type {any} */ message) => message.info.sessionId === sessionId && message.parts.every((/** @type {any} */ part) => part.sessionId === sessionId && part.messageId === message.info.messageId));
 }
 
 /** Kne */
