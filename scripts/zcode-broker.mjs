@@ -636,7 +636,7 @@ export class ZCodeBroker {
       try { winner = await this.readOwnerStoreUnlocked(false); }
       catch { this.sessionOwners.set(sessionId, { ownerId, socket, uncertain: true }); throw error; }
       this.ownershipStoreEstablished = true; this.applyOwnership(winner.sessions);
-      if (isCurrent() && winner.sessions[sessionId] === ownerId) { commit.committed = true; commit.after = cloneOwnerSessions(winner.sessions); commit.recovered = true; return commit; }
+      if (sameOwnerSessions(winner.sessions, commit.after)) { commit.committed = true; commit.recovered = true; return commit; }
       if (!Object.hasOwn(winner.sessions, sessionId)) this.sessionOwners.set(sessionId, { ownerId, socket, uncertain: true });
       throw error;
     };
