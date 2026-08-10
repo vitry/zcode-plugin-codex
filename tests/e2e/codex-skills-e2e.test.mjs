@@ -13,6 +13,7 @@ import {
   CodexRescueEvidenceMismatchError,
   CodexRescueUnqualifiedError,
   parseCodexRolloutJsonl,
+  qualifyCodexRescueChoiceEvidence,
   qualifyCodexRescueEvidence,
 } from '../helpers/codex-rescue-qualification.mjs';
 
@@ -44,7 +45,7 @@ test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode
   assert.ok(zcodeCalls.some((call) => call.method === 'session/send'), 'installed hook plus direct companion must reach ZCode');
 });
 
-test('installed Rescue uses one isolated native child and returns its public stdout', { skip: rescueOptInSkip, timeout: 600_000 }, async (t) => {
+test('installed Rescue uses one isolated native child for initial and choice continuations', { skip: rescueOptInSkip, timeout: 1_200_000 }, async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-rescue-e2e-')); t.after(() => rm(temporary, { recursive: true, force: true }));
   const codexHome = join(temporary, 'codex-home'); const home = join(temporary, 'home'); const marketplace = join(temporary, 'marketplace'); const workspace = join(temporary, 'workspace'); const zcodeRecord = join(temporary, 'zcode.jsonl');
   await Promise.all([mkdir(codexHome, { recursive: true, mode: 0o700 }), mkdir(home, { recursive: true, mode: 0o700 }), mkdir(workspace, { recursive: true }), writeFile(zcodeRecord, '')]);
@@ -110,6 +111,58 @@ test('installed Rescue uses one isolated native child and returns its public std
       t.skip(unqualified(error.code, detail)); return;
     }
     throw error;
+  }
+
+  for (const choice of ['resume', 'fresh']) {
+    await writeFile(zcodeRecord, '');
+    const pending = await codex([...commonArgs, 'Use the installed $zcode:rescue --wait continue repairing the fixture skill exactly once now. If its child returns needs-choice, follow the installed skill, ask once, and stop without choosing.'], workspace, env, 240_000);
+    if (skipExternalFailure(t, pending)) return;
+    assert.equal(pending.code, 0, `codex pending Rescue failed\n${pending.stdout}\n${pending.stderr}`);
+    const pendingFrames = pending.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const parentIds = [...new Set(pendingFrames.filter((frame) => frame?.type === 'thread.started').map((frame) => frame.thread_id))];
+    assert.equal(parentIds.length, 1, 'pending Rescue must expose exactly one resumable parent thread ID');
+    const answer = await codex([
+      'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+      '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all',
+      parentIds[0], choice,
+    ], workspace, env, 240_000);
+    if (skipExternalFailure(t, answer)) return;
+    assert.equal(answer.code, 0, `codex ${choice} continuation failed\n${answer.stdout}\n${answer.stderr}`);
+    const choiceCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`;
+    const followupMessage = `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`;
+    try {
+      const evidence = qualifyCodexRescueChoiceEvidence(
+        { rollouts: await loadCodexRollouts(codexHome) },
+        {
+          expectedChoice: choice,
+          expectedParentThreadId: parentIds[0],
+          expectedAgentPath: '/root/zcode_rescue',
+          expectedAgentType: 'zcode-rescue',
+          expectedWorkspace: canonicalWorkspace,
+          expectedInitialCommand: expectedCommand,
+          expectedNamedSpawnMessage,
+          expectedGenericSpawnMessage,
+          expectedTaskName: 'zcode_rescue',
+          expectedChoiceCommand: choiceCommand,
+          expectedFollowupMessage: followupMessage,
+          expectedPreflightCommand,
+          expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
+          forbiddenParentText: [
+            'Running command: npm test.', 'Command completed: npm test (25ms).', 'raw output must stay private',
+            'reasoning must stay private', 'capability must stay private', 'v4/conversation/frame',
+          ],
+        },
+      );
+      assert.equal(evidence.choice, choice);
+      t.diagnostic(`qualified same-child Rescue ${choice}: ${evidence.childThreadId}`);
+    } catch (error) {
+      if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {
+        t.skip(unqualified(error.code, error.message)); return;
+      }
+      throw error;
+    }
+    const choiceCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    assert.equal(choiceCalls.filter((call) => call.method === 'session/send').length, 1, `${choice} choice must execute exactly one ZCode turn`);
   }
 });
 

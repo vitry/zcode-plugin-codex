@@ -41,4 +41,29 @@ node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke rescue
 Preserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request/print/persist authorization material.
 ```
 
-Keep the returned child ID. Wait for that same child to reach a terminal state; if a wait yields, is interrupted, or returns while it is active, wait or rejoin the same child and never spawn another one. Do not relay raw child progress, stderr, tool output, or intermediate messages into the parent. On terminal completion, return only the child's public stdout verbatim without interpretation. If it returns `needs-choice`, preserve that public response verbatim; continuation is handled by the documented same-child choice flow.
+Keep the returned child ID as `rescueChildId`. Do not call `spawn_agent` again after `rescueChildId` exists. Wait for that same child to reach a terminal or idle state. A wait timeout, early return, or ordinary user steering does not authorize a new child or a second execution; continue only with the same `rescueChildId`. Call `wait_agent` again as appropriate, use `list_agents` to inspect only that child, or rejoin it.
+
+Never relay ordinary steering, task text, arguments, job/session/workspace identity, permissions, credentials, or authorization material to the child.
+
+Use this wait shape, then select only the result or status belonging to `rescueChildId`:
+
+```text
+wait_agent({ timeout_ms: 30000 })
+```
+
+Do not relay raw child progress, stderr, tool output, or intermediate messages into the parent. On terminal completion, return only the child's public stdout verbatim without interpretation.
+
+If the same child returns a public `needs-choice` response, preserve that response verbatim and ask the user exactly once; do not choose for the user. Immediately after the verbatim stdout, append exactly `Choose resume or fresh.` and no other text. Retain the original `rescueChildId` across that user turn. A non-choice reply or ordinary steering must not be forwarded to the child and must not cause another question, spawn, or execution. After the user supplies one unambiguous choice, set `continuationMessage` to exactly one of these strings, with no prefix, suffix, interpolation, or additional field:
+
+```text
+Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.
+Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.
+```
+
+Send exactly one continuation to the existing child:
+
+```text
+followup_task({ target: rescueChildId, message: continuationMessage })
+```
+
+Then wait again and inspect only that same `rescueChildId`; never spawn, retry, or execute a companion command in the parent. The child response is authoritative. Present success stdout verbatim. Present expired, consumed/replayed, sibling-session, wrong-workspace, or otherwise mismatched pending-choice failures verbatim with their existing recovery remedy; never recover by spawning or executing again.

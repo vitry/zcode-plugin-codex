@@ -115,6 +115,30 @@ test('managed Rescue role is a fixed TOML forwarder without capability or task m
   assert.match(source, /(?:Do not|Never) inspect or modify code independently/i);
 });
 
+test('Rescue choice continuation reuses one child with exact fixed messages and commands', () => {
+  const source = skill('rescue');
+  const role = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
+  const resume = 'Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.';
+  const fresh = 'Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.';
+  for (const message of [resume, fresh]) {
+    assert.equal(source.split(message).length - 1, 1, `parent must contain the exact continuation once: ${message}`);
+    assert.equal(role.split(message).length - 1, 1, `Role must accept the exact continuation once: ${message}`);
+  }
+  assert.match(source, /ask the user exactly once/i);
+  assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
+  assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
+  assert.match(source, /select only the result or status belonging to `rescueChildId`/);
+  assert.match(source, /timeout[\s\S]+early return[\s\S]+steering[\s\S]+same `rescueChildId`/i);
+  assert.doesNotMatch(source, /followup_task\([\s\S]{0,160}(?:spawn_agent|invoke rescue)/);
+  assert.match(role, new RegExp(`${escapeRegExp(resume)}[\\s\\S]+invoke-choice rescue resume`));
+  assert.match(role, new RegExp(`${escapeRegExp(fresh)}[\\s\\S]+invoke-choice rescue fresh`));
+  assert.match(role, /return a `needs-choice` response byte-for-byte and stop without selecting/i);
+});
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 test('agents metadata uses quoted strings and namespaced default prompts', () => {
   for (const name of expected) {
     const yaml = readFileSync(new URL(`skills/${name}/agents/openai.yaml`, root), 'utf8');

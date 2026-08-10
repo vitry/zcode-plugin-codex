@@ -167,6 +167,139 @@ export function qualifyCodexRescueEvidence(input, options) {
   return evidence;
 }
 
+export function qualifyCodexRescueChoiceEvidence(input, options) {
+  const rollouts = boundedArray(input?.rollouts, MAX_ROLLOUTS, 'choice-rollouts');
+  for (const rollout of rollouts) boundedArray(rollout, MAX_EVENTS_PER_ROLLOUT, 'choice-rollout-events');
+  if (!['resume', 'fresh'].includes(options?.expectedChoice)) mismatch('choice-invalid', 'The expected Rescue choice is invalid.');
+
+  const parentCandidates = rollouts.filter((events) => sessionMeta(events)?.id === options.expectedParentThreadId);
+  if (parentCandidates.length !== 1) mismatch('choice-parent-count', 'Choice evidence must contain exactly one parent rollout.');
+  const parent = parentCandidates[0];
+  const spawns = namedCalls(parent, 'spawn_agent');
+  if (spawns.length !== 1) mismatch('choice-spawn-count', 'Choice continuation must retain exactly one initial spawn.');
+  const encodedSpawn = boundedString(spawns[0].payload.arguments);
+  if (encrypted(encodedSpawn)) unqualified('choice-spawn-encrypted', 'The host encrypted spawn arguments, so the exact choice-flow spawn cannot be qualified.');
+  const spawnArgs = parseObject(encodedSpawn, 'choice-spawn-arguments');
+  let expectedSpawnMessage;
+  if (Object.hasOwn(spawnArgs, 'agent_type')) {
+    assertExactKeys(spawnArgs, ['agent_type', 'fork_turns', 'message', 'task_name'], 'choice-spawn-keys');
+    if (spawnArgs.agent_type !== options.expectedAgentType) mismatch('choice-agent-type', 'The choice-flow spawn does not select the managed Rescue Role.');
+    expectedSpawnMessage = options.expectedNamedSpawnMessage;
+  } else {
+    assertExactKeys(spawnArgs, ['fork_turns', 'message', 'task_name'], 'choice-spawn-keys');
+    if (!GENERIC_HIDDEN_SCHEMA_VERSIONS.has(sessionMeta(parent)?.cli_version)) mismatch('choice-generic-version', 'The choice-flow generic spawn is not qualified for this Codex version.');
+    expectedSpawnMessage = options.expectedGenericSpawnMessage;
+  }
+  if (spawnArgs.task_name !== options.expectedTaskName || spawnArgs.fork_turns !== 'none') mismatch('choice-spawn-contract', 'The choice-flow spawn task or context mode differs from the Rescue contract.');
+  if (spawnArgs.message !== expectedSpawnMessage) mismatch('choice-spawn-message', 'The choice-flow spawn message differs from its fixed contract.');
+  const spawnIndex = parent.indexOf(spawns[0]);
+  const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
+  if (starts.length !== 1) mismatch('choice-start-count', 'Choice continuation must expose exactly one child start.');
+  const start = starts[0];
+  const childThreadId = boundedString(start.payload.agent_thread_id);
+  const agentPath = boundedString(start.payload.agent_path);
+  if (!childThreadId || agentPath !== options.expectedAgentPath || start.payload.event_id !== spawns[0].payload.call_id) {
+    mismatch('choice-child-identity', 'The choice flow does not link one exact child ID to the initial spawn.');
+  }
+  const startIndex = parent.indexOf(start);
+  if (spawnIndex >= startIndex) mismatch('choice-start-order', 'The child start must follow its unique spawn.');
+  assertParentPreflight(parent, spawnIndex, startIndex, {
+    expectedPreflightCommand: options.expectedPreflightCommand,
+    expectedWorkspace: options.expectedWorkspace,
+  });
+
+  const childCandidates = rollouts.filter((events) => sessionMeta(events)?.id === childThreadId);
+  if (childCandidates.length !== 1) mismatch('choice-child-count', 'Choice evidence must contain exactly one rollout for the retained child ID.');
+  const child = childCandidates[0];
+  const meta = sessionMeta(child);
+  const spawnMeta = meta?.source?.subagent?.thread_spawn;
+  if (meta?.parent_thread_id !== options.expectedParentThreadId || spawnMeta?.parent_thread_id !== options.expectedParentThreadId || spawnMeta?.agent_path !== agentPath) {
+    mismatch('choice-child-link', 'The retained child rollout is not linked to the exact parent and agent path.');
+  }
+  if (Object.hasOwn(spawnArgs, 'agent_type') ? spawnMeta.agent_role !== options.expectedAgentType : spawnMeta.agent_role !== null) {
+    mismatch('choice-agent-role', 'The retained child Role metadata differs from the selected route.');
+  }
+
+  const followups = namedCalls(parent, 'followup_task');
+  if (followups.length !== 1) mismatch('choice-followup-count', 'Choice continuation must contain exactly one followup_task.');
+  const encodedFollowup = boundedString(followups[0].payload.arguments);
+  if (encrypted(encodedFollowup)) unqualified('choice-followup-encrypted', 'The host encrypted continuation arguments, so the exact same-child follow-up cannot be qualified.');
+  const followup = parseObject(encodedFollowup, 'choice-followup-arguments');
+  assertExactKeys(followup, ['message', 'target'], 'choice-followup-keys');
+  if (followup.target !== childThreadId) mismatch('choice-followup-target', 'The continuation target differs from the original child ID.');
+  if (followup.message !== options.expectedFollowupMessage) mismatch('choice-followup-message', 'The continuation message differs from the fixed choice contract.');
+
+  const waits = namedCalls(parent, 'wait_agent');
+  if (waits.length < 2) mismatch('choice-wait-count', 'The choice flow must expose waits before and after the same-child follow-up.');
+  for (const wait of waits) {
+    const args = parseObject(wait.payload.arguments, 'choice-wait-arguments');
+    assertExactKeys(args, ['timeout_ms'], 'choice-wait-keys');
+    if (!Number.isSafeInteger(args.timeout_ms) || args.timeout_ms < 10_000 || args.timeout_ms > 3_600_000) mismatch('choice-wait-bound', 'A choice wait timeout is outside the supported bound.');
+  }
+
+  const childCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
+  const childExecs = childCalls.filter((event) => event.payload.name === 'exec');
+  if (childCalls.length !== 2 || childExecs.length !== 2) mismatch('choice-command-count', 'The retained child must run exactly the initial and selected continuation commands.');
+  assertExecEnvelope(parseCapturedExecEnvelope(childExecs[0].payload.input), options.expectedInitialCommand, options.expectedWorkspace, 'choice-initial-envelope');
+  const choiceEnvelope = parseCapturedExecEnvelope(childExecs[1].payload.input);
+  if (choiceEnvelope.get('cmd') !== options.expectedChoiceCommand) mismatch('choice-command-mismatch', 'The child continuation command differs from the selected constant command.');
+  assertExecEnvelope(choiceEnvelope, options.expectedChoiceCommand, options.expectedWorkspace, 'choice-command-envelope');
+  if (child.indexOf(childExecs[0]) >= child.indexOf(childExecs[1])) mismatch('choice-command-order', 'The continuation command must follow the initial command in the same child.');
+
+  const outputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
+  if (outputs.length !== 2) mismatch('choice-output-count', 'The same-child flow must expose exactly two linked command outputs.');
+  for (let index = 0; index < 2; index += 1) {
+    if (outputs[index].payload.call_id !== childExecs[index].payload.call_id || child.indexOf(childExecs[index]) >= child.indexOf(outputs[index])) {
+      mismatch('choice-output-link', 'A choice output is not linked after its command.');
+    }
+  }
+  const needsChoiceText = terminalOutputText(outputs[0].payload.output, 'choice-needs-choice-output');
+  let needsChoice;
+  try { needsChoice = JSON.parse(needsChoiceText); } catch { mismatch('choice-needs-choice-output', 'The first child output is not exact needs-choice JSON.'); }
+  assertExactKeys(needsChoice, ['candidate', 'choices', 'type'], 'choice-needs-choice-output');
+  if (needsChoice.type !== 'needs-choice' || JSON.stringify(needsChoice.choices) !== JSON.stringify(['--resume', '--fresh'])) {
+    mismatch('choice-needs-choice-output', 'The first child output is not the fixed needs-choice response.');
+  }
+  boundedJson(needsChoice.candidate);
+  assertTerminalSentinel(outputs[1].payload.output, options.expectedPublicOutput);
+
+  const returns = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath && event.payload.recipient === '/root');
+  if (returns.length !== 2) mismatch('choice-child-return-count', 'The parent must receive needs-choice and terminal results from the same child.');
+  const returnPayloads = returns.map((event) => childReturnText(event, agentPath));
+  if (returnPayloads[0] !== needsChoiceText || returnPayloads[1] !== options.expectedPublicOutput) mismatch('choice-child-return-output', 'Same-child return payloads are not exact public stdout.');
+  const parentFinals = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
+  if (parentFinals.length !== 2
+    || parentFinals[0].payload.message !== `${needsChoiceText}Choose resume or fresh.`
+    || parentFinals[1].payload.message !== options.expectedPublicOutput) {
+    mismatch('choice-parent-output', 'The parent must ask once after verbatim needs-choice stdout, then return exact terminal stdout.');
+  }
+  const followupIndex = parent.indexOf(followups[0]);
+  if (!(parent.indexOf(returns[0]) < followupIndex && followupIndex < parent.indexOf(returns[1]))) mismatch('choice-followup-order', 'The follow-up must occur between the two returns from the same child.');
+  const waitIndexes = waits.map((event) => parent.indexOf(event));
+  if (!waitIndexes.some((index) => startIndex < index && index < parent.indexOf(returns[0]))
+    || !waitIndexes.some((index) => followupIndex < index && index < parent.indexOf(returns[1]))) {
+    mismatch('choice-wait-order', 'Wait evidence does not bracket the two same-child turns.');
+  }
+
+  assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
+  return { parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, choice: options.expectedChoice };
+}
+
+function namedCalls(events, name) {
+  return events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === name);
+}
+
+function childReturnText(event, agentPath) {
+  const content = event.payload.content;
+  if (!Array.isArray(content) || content.length !== 1 || content[0]?.type !== 'input_text') mismatch('choice-child-return-shape', 'A child return is not one structured input_text item.');
+  const text = boundedString(content[0].text);
+  const prefix = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n`;
+  if (!text?.startsWith(prefix)) mismatch('choice-child-return-shape', 'A child return envelope does not match the retained child.');
+  return text.slice(prefix.length);
+}
+
+function encrypted(value) { return typeof value === 'string' && /^gAAAA[A-Za-z0-9_-]{40,}={0,2}$/u.test(value); }
+
 function assertParentIsolation(parent, expectedPreflightCommand, forbiddenText) {
   for (const event of parent) {
     if (event?.type === 'response_item' && event.payload?.type === 'custom_tool_call' && event.payload.name === 'exec') {

@@ -243,6 +243,24 @@ test('invoke-choice consumes only the same session pending rescue once', async (
   assert.notEqual(replay.code, 0); assert.match(replay.stdout, /PENDING_INVOCATION_NOT_FOUND/);
 });
 
+test('installed Rescue instructions keep needs-choice and every wait continuation on one child', async () => {
+  const source = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const role = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+  const resume = 'Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.';
+  const fresh = 'Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.';
+  assert.match(source, /Keep the returned child ID as `rescueChildId`/);
+  assert.match(source, /Do not call `spawn_agent` again after `rescueChildId` exists/);
+  assert.match(source, /ask the user exactly once/i);
+  assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
+  assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
+  assert.match(source, /select only the result or status belonging to `rescueChildId`/);
+  assert.equal(source.split(resume).length - 1, 1);
+  assert.equal(source.split(fresh).length - 1, 1);
+  assert.match(role, /return a `needs-choice` response byte-for-byte and stop without selecting/i);
+  assert.match(role, /For the exact resume continuation above, run only:[\s\S]+invoke-choice rescue resume/);
+  assert.match(role, /For the exact fresh continuation above, run only:[\s\S]+invoke-choice rescue fresh/);
+});
+
 test('invoke-choice executes with the originating permission snapshot in both directions', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA }); const record = join(ctx.workspace, 'permission-record.jsonl');
   const env = { ...ctx.env, FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_PERMISSION_RISK: 'high', FAKE_ZCODE_RECORD: record };

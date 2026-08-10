@@ -6,6 +6,7 @@ import {
   CodexRescueEvidenceMismatchError,
   CodexRescueUnqualifiedError,
   parseCodexRolloutJsonl,
+  qualifyCodexRescueChoiceEvidence,
   qualifyCodexRescueEvidence,
 } from './helpers/codex-rescue-qualification.mjs';
 
@@ -28,6 +29,65 @@ test('qualifies named Rescue from linked parent and child rollout metadata', () 
     route: 'named',
     publicOutput: expectedPublicOutput,
   });
+});
+
+test('qualifies exact resume and fresh follow-ups against one existing child ID', () => {
+  for (const choice of ['resume', 'fresh']) {
+    const input = choiceFixture(choice);
+    assert.deepEqual(qualifyCodexRescueChoiceEvidence(input, choiceOptions(choice)), {
+      parentThreadId: parentId,
+      childThreadId: childId,
+      agentPath,
+      choice,
+    });
+  }
+});
+
+test('wait timeout, early return, and ordinary steering retain one spawn and one child', () => {
+  const input = choiceFixture('resume');
+  const firstReturn = input.rollouts[0].findIndex((event) => event?.payload?.author === agentPath);
+  input.rollouts[0].splice(firstReturn, 0,
+    structuredWait('wait-timeout'),
+    { type: 'event_msg', payload: { type: 'user_message', message: 'status?' } },
+    structuredWait('wait-after-steering'));
+  const evidence = qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume'));
+  assert.equal(evidence.childThreadId, childId);
+  assert.equal(input.rollouts[0].filter((event) => event?.payload?.name === 'spawn_agent').length, 1);
+});
+
+test('choice qualification fails closed on duplicate execution, identity drift, replay, and weak wait evidence', () => {
+  const cases = [
+    { code: 'choice-spawn-count', mutate: (input) => input.rollouts[0].splice(4, 0, structuredSpawn('spawn-2')) },
+    { code: 'choice-spawn-keys', mutate: (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.task = 'leak'; spawnEvent(input).payload.arguments = JSON.stringify(args); } },
+    { code: 'choice-agent-role', mutate: (input) => { childMeta(input).payload.source.subagent.thread_spawn.agent_role = null; } },
+    { code: 'choice-followup-count', mutate: (input) => input.rollouts[0].splice(-1, 0, structuredFollowup('followup-2', 'resume')) },
+    { code: 'choice-followup-target', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: 'sibling-child', message: choiceOptions('resume').expectedFollowupMessage }); } },
+    { code: 'choice-followup-message', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: childId, message: `${choiceOptions('resume').expectedFollowupMessage} task text` }); } },
+    { code: 'choice-wait-count', mutate: (input) => { input.rollouts[0] = input.rollouts[0].filter((event) => event?.payload?.name !== 'wait_agent'); } },
+    { code: 'choice-command-count', mutate: (input) => input.rollouts[1].splice(-1, 0, structuredExec(expectedCommand, 'exec-3')) },
+    { code: 'choice-command-mismatch', mutate: (input) => { choiceExec(input).payload.input = structuredExec('node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue fresh', 'exec-2').payload.input; } },
+  ];
+  for (const { code, mutate } of cases) {
+    const input = choiceFixture('resume'); mutate(input);
+    assert.throws(
+      () => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
+    );
+  }
+});
+
+test('choice qualification marks only explicitly encrypted continuation arguments unqualified', () => {
+  const encrypted = choiceFixture('resume');
+  choiceFollowup(encrypted).payload.arguments = `gAAAA${'A'.repeat(80)}=`;
+  assert.throws(
+    () => qualifyCodexRescueChoiceEvidence(encrypted, choiceOptions('resume')),
+    (error) => error instanceof CodexRescueUnqualifiedError && error.code === 'choice-followup-encrypted',
+  );
+  const missing = choiceFixture('resume'); missing.rollouts[0] = missing.rollouts[0].filter((event) => event !== choiceFollowup(missing));
+  assert.throws(
+    () => qualifyCodexRescueChoiceEvidence(missing, choiceOptions('resume')),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-followup-count',
+  );
 });
 
 test('automatically qualifies generic Rescue only for the verified 0.147 hidden schema', () => {
@@ -378,6 +438,66 @@ function fixture() {
   return { execFrames, rollouts: [parent, child] };
 }
 
+function choiceOptions(choice) {
+  return {
+    expectedChoice: choice,
+    expectedParentThreadId: parentId,
+    expectedAgentPath: agentPath,
+    expectedAgentType: 'zcode-rescue',
+    expectedWorkspace,
+    expectedInitialCommand: expectedCommand,
+    expectedNamedSpawnMessage: 'fixed named forwarder',
+    expectedGenericSpawnMessage: 'fixed generic forwarder',
+    expectedTaskName: 'zcode_rescue',
+    expectedPreflightCommand,
+    expectedChoiceCommand: `node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`,
+    expectedFollowupMessage: `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`,
+    expectedPublicOutput,
+  };
+}
+
+function choiceFixture(choice) {
+  const needsChoice = `${JSON.stringify({ type: 'needs-choice', candidate: { sessionId: 'resumable-session' }, choices: ['--resume', '--fresh'] })}\n`;
+  const firstEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${needsChoice}`;
+  const secondEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${expectedPublicOutput}`;
+  const parent = [
+    { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
+    structuredExec(expectedPreflightCommand, 'preflight-1'),
+    toolOutput('preflight-1', `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+    structuredSpawn('spawn-1'),
+    { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
+    structuredWait('wait-1'),
+    { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: firstEnvelope }] } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: `${needsChoice}Choose resume or fresh.`, phase: 'final_answer' } },
+    structuredFollowup('followup-1', choice),
+    structuredWait('wait-2'),
+    { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: secondEnvelope }] } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: expectedPublicOutput, phase: 'final_answer' } },
+  ];
+  const child = [
+    { type: 'session_meta', payload: { session_id: parentId, id: childId, parent_thread_id: parentId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_path: agentPath, agent_nickname: 'Ada', agent_role: 'zcode-rescue' } } } } },
+    structuredExec(expectedCommand, 'exec-1'),
+    toolOutput('exec-1', needsChoice),
+    { type: 'event_msg', payload: { type: 'agent_message', message: needsChoice, phase: 'final_answer' } },
+    structuredExec(choiceOptions(choice).expectedChoiceCommand, 'exec-2'),
+    toolOutput('exec-2', `${expectedPublicOutput}\n`),
+    { type: 'event_msg', payload: { type: 'agent_message', message: expectedPublicOutput, phase: 'final_answer' } },
+  ];
+  return { rollouts: [parent, child] };
+}
+
+function structuredSpawn(callId) {
+  return { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: callId, arguments: JSON.stringify({ agent_type: 'zcode-rescue', fork_turns: 'none', message: 'fixed named forwarder', task_name: 'zcode_rescue' }) } };
+}
+
+function structuredFollowup(callId, choice) {
+  return { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: callId, arguments: JSON.stringify({ target: childId, message: choiceOptions(choice).expectedFollowupMessage }) } };
+}
+
+function structuredWait(callId) {
+  return { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: callId, arguments: JSON.stringify({ timeout_ms: 30000 }) } };
+}
+
 function structuredExec(command, callId = 'exec-1', fields = {}) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace, ...fields })});\ntext(r.output);\n` } };
 }
@@ -403,5 +523,7 @@ function preflightEvent(input) { return input.rollouts[0].find((event) => event.
 function preflightOutput(input) { return input.rollouts[0].find((event) => event.payload?.type === 'custom_tool_call_output' && event.payload.call_id === 'preflight-1'); }
 function childExec(input) { return input.rollouts[1].find((event) => event.payload?.type === 'custom_tool_call'); }
 function childOutput(input) { return input.rollouts[1].find((event) => event.payload?.type === 'custom_tool_call_output'); }
+function choiceFollowup(input) { return input.rollouts[0].find((event) => event.payload?.name === 'followup_task'); }
+function choiceExec(input) { return input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call')[1]; }
 function execAgentMessage(text, id = 'item-1') { return { type: 'item.completed', item: { id, type: 'agent_message', text } }; }
 function finalExecAgentMessage(input) { return input.execFrames.findLast((frame) => frame.type === 'item.completed' && frame.item?.type === 'agent_message'); }
