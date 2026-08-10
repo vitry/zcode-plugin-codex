@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { readdir } from 'node:fs/promises';
+import { readdir, realpath } from 'node:fs/promises';
 
 import { PluginError } from './errors.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './identifier.mjs';
@@ -17,8 +17,8 @@ const OWNER_CLEANUP_LEGACY_BATCH_SIZE = 8;
 export const IMPORTED_HISTORY_SOURCE = 'claudeCode';
 
 export class ZCodeClient {
-  /** @param {import('./zcode-protocol.mjs').ZCodeProtocolClient} protocol */
-  constructor(protocol) { this.protocol = protocol; this.sessionCatalogs = new Map(); }
+  /** @param {import('./zcode-protocol.mjs').ZCodeProtocolClient} protocol @param {string} [workspace] @param {boolean} [workspaceBound] */
+  constructor(protocol, workspace, workspaceBound = false) { this.protocol = protocol; this.defaultWorkspace = workspace === undefined ? null : resolve(workspace); this.workspaceBound = workspaceBound; this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); }
 
   /** @param {{workspace:string,sessionId?:string,model?:{providerId:string,modelId:string,variant?:string},importedHistory?:{title?:string,createdAt?:number,updatedAt?:number,messages:Array<{role:'user'|'assistant',content:string,timestamp?:number}>}}} input */
   async createSession(input) {
@@ -26,7 +26,12 @@ export class ZCodeClient {
     requireString(input.workspace);
     if (input.sessionId !== undefined) requireSessionId(input.sessionId);
     if (input.model !== undefined) validateModel(input.model);
-    const workspacePath = resolve(input.workspace);
+    const suppliedWorkspace = resolve(input.workspace);
+    let workspacePath = suppliedWorkspace;
+    if (this.workspaceBound) {
+      try { workspacePath = await realpath(suppliedWorkspace); } catch { throw inputError(); }
+      if (workspacePath !== this.defaultWorkspace) throw inputError();
+    }
     /** @type {any} */
     const params = { workspace: { workspacePath, workspaceKey: workspacePath } };
     if (input.sessionId !== undefined) params.sessionId = input.sessionId;
@@ -34,7 +39,8 @@ export class ZCodeClient {
     if (input.importedHistory !== undefined) params.importedHistory = normalizeImportedHistory(input.importedHistory);
     const result = await this.protocol.request('session/create', params);
     if (!plainObject(result) || !plainObject(result.session) || !isSafeIdentifier(result.session.sessionId) || input.sessionId && result.session.sessionId !== input.sessionId) throw outputError('session/create');
-    validateSnapshot(result, result.session.sessionId, 'session/create');
+    validateSnapshot(result, result.session.sessionId, workspacePath, 'session/create');
+    this.sessionWorkspaces.set(result.session.sessionId, workspacePath);
     if (plainObject(result.settings?.model) && Array.isArray(result.settings.model.available)) this.sessionCatalogs.set(result.session.sessionId, result.settings.model);
     return result;
   }
@@ -51,8 +57,8 @@ export class ZCodeClient {
     return { ...result, inputId };
   }
 
-  /** @param {string} sessionId */ async readSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
-  /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
+  /** @param {string} sessionId */ async readSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
+  /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); this.sessionWorkspaces.set(sessionId, result.session.workspace.workspacePath); return result; }
   /** @param {number} [timeoutMs] */ async listSessions(timeoutMs) { const result = requireObjectResult(await this.protocol.request('session/list', {}, timeoutMs), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
   /** @param {string} sessionId @param {number} [timeoutMs] */ async stopSession(sessionId, timeoutMs) { requireSessionId(sessionId); const result = await this.protocol.request('session/stop', { sessionId }, timeoutMs); if (!plainObject(result)) throw outputError('session/stop'); this.protocol.cancelTurn(sessionId); return result; }
   /** @param {number} [timeoutMs] */ async brokerCapabilities(timeoutMs) { const result = await this.protocol.request('broker/health', {}, timeoutMs); if (!plainObject(result) || result.ok !== true) throw outputError('broker/health'); return { releaseOwnerExclusions: result.capabilities?.releaseOwnerExclusions === true }; }
@@ -63,7 +69,7 @@ export class ZCodeClient {
   async setModel(sessionId, model) {
     requireSessionId(sessionId); validateModel(model);
     const result = await this.protocol.request('session/setModel', { sessionId, model: copyModel(model), persistAsWorkspaceLastUsed: false });
-    validateSnapshot(result, sessionId, 'session/setModel');
+    validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/setModel');
     if (!exactModel(result.settings.model.current) || !sameModel(result.settings.model.current, model)) throw new PluginError('ZCODE_MODEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested model.', { category: 'protocol', remedy: 'Retry with a model tuple advertised by ZCode.' });
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
@@ -80,7 +86,7 @@ export class ZCodeClient {
     const actual = advertised.find((value) => value.toLowerCase() === normalized);
     if (!actual) throw new PluginError('ZCODE_THOUGHT_LEVEL_UNSUPPORTED', 'The selected model does not advertise this thought level.', { category: 'configuration', remedy: 'Choose a thought level advertised by the selected model.', details: { thoughtLevel: normalized } });
     const result = await this.protocol.request('session/setThoughtLevel', { sessionId, thoughtLevel: actual, persistAsWorkspaceLastUsed: false });
-    validateSnapshot(result, sessionId, 'session/setThoughtLevel');
+    validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/setThoughtLevel');
     if (typeof result.settings.thoughtLevel.current !== 'string' || result.settings.thoughtLevel.current.toLowerCase() !== actual.toLowerCase()) throw new PluginError('ZCODE_THOUGHT_LEVEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested thought level.', { category: 'protocol', remedy: 'Retry with a thought level advertised by the selected model.' });
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
@@ -113,6 +119,7 @@ export class ZCodeClient {
   }
   /** @param {(message:any)=>void} handler */ subscribe(handler) { return this.protocol.subscribe(handler); }
   /** @param {(request:any,signal:AbortSignal)=>Promise<any>|any} handler */ setPermissionHandler(handler) { this.protocol.setPermissionHandler(handler); }
+  /** @param {string} sessionId */ expectedWorkspace(sessionId) { const workspace = this.sessionWorkspaces.get(sessionId) ?? this.defaultWorkspace; if (workspace === null) throw inputError(); return workspace; }
   close() { return this.protocol.close(); }
 }
 
@@ -123,22 +130,25 @@ export async function createZCodeClient(options) {
     || options.brokerEndpoint !== undefined && (!nonEmpty(options.brokerEndpoint) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32 || !nonEmpty(options.ownerId) || options.ownerId.length < 16)
     || options.existingProtocolOnly !== undefined && (options.brokerEndpoint === undefined || typeof options.existingProtocolOnly !== 'boolean')
     || options.launch !== undefined && !plainObject(options.launch)) throw inputError();
+  let workspacePath = resolve(options.workspace);
+  if (options.brokerEndpoint !== undefined) { try { workspacePath = await realpath(workspacePath); } catch { throw inputError(); } }
   const protocolOptions = {
-    cwd: options.workspace, env: options.env, requestTimeoutMs: options.requestTimeoutMs,
+    cwd: workspacePath, env: options.env, requestTimeoutMs: options.requestTimeoutMs,
     completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs,
   };
   const protocol = options.brokerEndpoint
     ? await connectZCodeBroker(options.brokerEndpoint, { ...protocolOptions, brokerToken: /** @type {string} */ (options.brokerToken), ownerId: /** @type {string} */ (options.ownerId), ...(options.existingProtocolOnly === undefined ? {} : { existingProtocolOnly: options.existingProtocolOnly }) })
     : await spawnZCodeProtocol(/** @type {{command:string,args:string[],target?:string}} */ (options.launch), protocolOptions);
-  return new ZCodeClient(protocol);
+  return new ZCodeClient(protocol, workspacePath, options.brokerEndpoint !== undefined);
 }
 
 /** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},ownerId:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
 export async function createManagedZCodeClient(options) {
   if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !plainObject(options.launch) || !nonEmpty(options.ownerId) || options.ownerId.length < 16
     || !boundedWireOption(options.maxFrameBytes, 16 * 1024 * 1024) || !boundedWireOption(options.maxOutboundBytes, 64 * 1024 * 1024) || !boundedDrainOption(options.drainTimeoutMs)) throw inputError();
-  const identity = await ensureZCodeBroker(options);
-  return createZCodeClient({ workspace: options.workspace, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs });
+  const storage = await resolveWorkspaceStorage(options);
+  const identity = await ensureZCodeBroker({ ...options, workspace: storage.workspacePath });
+  return createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs });
 }
 
 /** @param {{dataRoot:string,workspace:string,ownerId:string,requestTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
@@ -253,7 +263,7 @@ function exactObjectKeys(value, keys) { const actual = Object.keys(value); retur
 function inputError() { return new PluginError('ZCODE_INPUT_INVALID', 'ZCode client input is invalid.', { category: 'validation', remedy: 'Provide only documented fields with valid runtime types.' }); }
 /** @param {unknown} value @param {string} method */
 function requireObjectResult(value, method) { if (!plainObject(value)) throw outputError(method); return value; }
-/** @param {any} value @param {string} sessionId @param {string} method */
-function validateSnapshot(value, sessionId, method) { if (!snapshotValid(value, sessionId)) throw outputError(method); }
+/** @param {any} value @param {string} sessionId @param {string} workspace @param {string} method */
+function validateSnapshot(value, sessionId, workspace, method) { if (!snapshotValid(value, sessionId, workspace)) throw outputError(method); }
 /** @param {string} method */
 function outputError(method) { return new PluginError('ZCODE_OUTPUT_INVALID', `ZCode returned an invalid ${method} result.`, { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.', details: { method } }); }

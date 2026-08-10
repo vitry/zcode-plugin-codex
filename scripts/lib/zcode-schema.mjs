@@ -139,10 +139,21 @@ function validTodo(/** @type {any} */ value) { return exact(value, ['content', '
 function validTodoGroup(/** @type {any} */ value) { return exact(value, ['id', 'source', 'todos'], ['goalIteration', 'targetId', 'startedAt', 'updatedAt']) && text(value.id) && ['goal_iteration', 'session'].includes(value.source) && optional(value.goalIteration, positiveInt) && optional(value.targetId, text) && optional(value.startedAt, uint) && optional(value.updatedAt, uint) && arrayOf(value.todos, validTodo); }
 function validSlashCommand(/** @type {any} */ value) { return exact(value, ['name', 'description'], ['inputHint', 'source']) && text(value.name) && string(value.description) && optional(value.inputHint, string) && optional(value.source, (item) => ['builtin', 'custom'].includes(item)); }
 
+/** @param {any} value @param {string} sessionId @param {string} workspacePath */
+function validSnapshotRelations(value, sessionId, workspacePath) {
+  return text(workspacePath) && value.session.workspace.workspacePath === workspacePath
+    && value.session.sessionId === sessionId
+    && (value.session.target === undefined || value.session.target === null || value.session.target.sessionId === sessionId)
+    && value.projection.sessionId === sessionId
+    && (value.projection.target === undefined || value.projection.target === null || value.projection.target.sessionId === sessionId)
+    && value.messages.every((/** @type {any} */ message) => message.info.sessionId === sessionId && message.parts.every((/** @type {any} */ part) => part.sessionId === sessionId));
+}
+
 /** Kne */
-export function validSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId) {
+export function validSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId, /** @type {string} */ workspacePath) {
   return exact(value, ['protocol', 'session', 'settings', 'projection', 'runtime', 'messages'], ['goalStats', 'todos', 'todoGroups', 'slashCommands'])
     && exact(value.protocol, ['name', 'version']) && value.protocol.name === 'ZCode Protocol' && value.protocol.version === 1
-    && validSessionInfo(value.session) && value.session.sessionId === sessionId && validSettings(value.settings) && validProjection(value.projection) && validRuntime(value.runtime) && arrayOf(value.messages, validMessage)
+    && validSessionInfo(value.session) && validSettings(value.settings) && validProjection(value.projection) && validRuntime(value.runtime) && arrayOf(value.messages, validMessage)
+    && validSnapshotRelations(value, sessionId, workspacePath)
     && optional(value.goalStats, validGoalStats) && optional(value.todos, (items) => arrayOf(items, validTodo)) && optional(value.todoGroups, (items) => arrayOf(items, validTodoGroup)) && optional(value.slashCommands, (items) => arrayOf(items, validSlashCommand));
 }

@@ -39,7 +39,35 @@ function resultMessages(sessionId, model, review, suffix = 'current', selectedMo
       : [{ ...base, type: 'text', text: gateText === '__EMPTY__' ? '' : gateText ?? (review ? JSON.stringify({ findings: [] }) : resultText ?? 'done') }];
   return [{ info: { messageId: userId, sessionId, role: 'user', time: { created: 1, completed: 2 }, agent: 'build', model, synthetic: false, visibility: 'user-visible' }, parts: [{ partId: `part-user-${suffix}`, sessionId, messageId: userId, type: 'text', text: 'hello' }] }, { info: { messageId: assistantId, sessionId, role: 'assistant', time: { created: 2, completed: 3 }, parentMessageId: userId, agent: 'build', model, path: { cwd: '/repo', root: '/repo' }, cost: 0, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, finish: 'stop', ...(structured === undefined ? {} : { structured }) }, parts }];
 }
-function snapshot(sessionId, value = sessions.get(sessionId)) { const valueSettings = value?.settings ?? settings(); const status = value?.projectionStatus ?? 'idle'; return { protocol: { name: 'ZCode Protocol', version: 1 }, session: { ...sessionInfo(sessionId, value?.workspacePath, status), model: valueSettings.model.current }, settings: valueSettings, projection: { sessionId, status, mode: 'build', turnCount: 0, totalTokenCount: 0, contextUsed: 0, contextWindow: 128000, pendingPermissions: [], activeToolCalls: [], backgroundJobs: [] }, runtime: { eventSeq: 0, stateRevision: value?.stateRevision ?? 0, pendingRequestIds: [] }, messages: value?.messages?.length ? value.messages : value?.pendingResult ? [] : messages(sessionId, valueSettings.model.current), goalStats: { timeUsedSeconds: 0, tokensUsed: 0, tokenBudget: null, contextUsed: 0, contextWindow: 128000, toolCallCount: 0, iterationCount: 0 }, todos: [{ content: 'Verify', status: 'pending', priority: 'high' }], todoGroups: [{ id: 'todo-group-1', source: 'session', todos: [] }], slashCommands: [{ name: 'review', description: 'Review code', source: 'builtin' }] }; }
+function snapshot(sessionId, value = sessions.get(sessionId)) { const valueSettings = value?.settings ?? settings(); const status = value?.projectionStatus ?? 'idle'; return { protocol: { name: 'ZCode Protocol', version: 1 }, session: { ...sessionInfo(sessionId, value?.workspacePath ?? process.env.FAKE_ZCODE_WORKSPACE ?? process.cwd(), status), model: valueSettings.model.current }, settings: valueSettings, projection: { sessionId, status, mode: 'build', turnCount: 0, totalTokenCount: 0, contextUsed: 0, contextWindow: 128000, pendingPermissions: [], activeToolCalls: [], backgroundJobs: [] }, runtime: { eventSeq: 0, stateRevision: value?.stateRevision ?? 0, pendingRequestIds: [] }, messages: value?.messages?.length ? value.messages : value?.pendingResult ? [] : messages(sessionId, valueSettings.model.current), goalStats: { timeUsedSeconds: 0, tokensUsed: 0, tokenBudget: null, contextUsed: 0, contextWindow: 128000, toolCallCount: 0, iterationCount: 0 }, todos: [{ content: 'Verify', status: 'pending', priority: 'high' }], todoGroups: [{ id: 'todo-group-1', source: 'session', todos: [] }], slashCommands: [{ name: 'review', description: 'Review code', source: 'builtin' }] }; }
+
+function corruptSnapshot(result, variant) {
+  if (variant === 'missing-workspace') delete result.session.workspace;
+  if (variant === 'wrong-workspace') result.session.workspace.workspacePath = '/wrong-workspace';
+  if (variant === 'wrong-projection-session') result.projection.sessionId = 'wrong-projection-session';
+  if (variant === 'wrong-session-target') result.session.target = { sessionId: 'wrong-session-target', targetId: 'target-1', objective: 'Verify snapshot identity', summaryTitle: null, status: 'active', tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 };
+  if (variant === 'wrong-projection-target') result.projection.target = { sessionId: 'wrong-projection-target', targetId: 'target-2', objective: 'Verify projection identity', summaryTitle: null, status: 'active', tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 };
+  if (variant === 'wrong-message-session') result.messages[0].info.sessionId = 'wrong-message-session';
+  if (variant === 'wrong-part-session') result.messages[0].parts[0].sessionId = 'wrong-part-session';
+  if (variant === 'empty-message') result.messages = [{}];
+  if (variant === 'invented-session-kind') result.session.sessionKind = 'main';
+  if (variant === 'invented-subagent-kind') result.session.sessionKind = 'subagent';
+  if (variant === 'bad-protocol') result.protocol = { name: 'zcode', version: '0.16.1' };
+  if (variant === 'missing-model-label') delete result.settings.model.available[0].label;
+  if (variant === 'string-message-model') result.messages[0].info.model = 'fake/model';
+  if (variant === 'bad-goal-stats') result.goalStats.tokensUsed = -1;
+  if (variant === 'bad-permission-origin') result.projection.pendingPermissions = [{ requestId: 'request-1', toolCallId: 'tool-1', toolName: 'write', reason: 'test', riskLevel: 'low', origin: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }], requestedAt: 1 }];
+  if (variant === 'bad-runtime-cache') result.runtime.contextUsage = { used: 0, size: 1, cache: { inputTokens: -1 } };
+  if (variant === 'bad-timeline-trigger') result.messages[0].parts = [{ partId: 'part-timeline-1', sessionId: result.session.sessionId, messageId: 'message-user-1', type: 'timeline', timelineType: 'context_compaction', display: 'separator', trigger: 'invented' }];
+  if (variant === 'bad-provider-options') result.settings.model.available[0].reasoning.providerOptionsByLevel = { low: 3 };
+  return result;
+}
+
+function snapshotForMethod(method, sessionId, value = sessions.get(sessionId)) {
+  const result = snapshot(sessionId, value);
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT_METHOD === method) corruptSnapshot(result, process.env.FAKE_ZCODE_BAD_SNAPSHOT);
+  return result;
+}
 
 async function recoveryMode() { if (!process.env.FAKE_ZCODE_RECOVERY_CONTROL) return null; try { const value = JSON.parse(await readFile(process.env.FAKE_ZCODE_RECOVERY_CONTROL, 'utf8')); return ['active', 'completed', 'stopped', 'missing'].includes(value.mode) ? value.mode : 'active'; } catch { return 'active'; } }
 function applyRecoveryMode(session, mode) {
@@ -109,21 +137,10 @@ function completeCreate(message, respond = send) {
   const p = message.params ?? {};
   const sessionId = process.env.FAKE_ZCODE_SESSION_ID ?? p.sessionId ?? `session-${sessions.size + 1}`;
   sessions.set(sessionId, { sessionId, workspacePath: p.workspace?.workspacePath ?? '/repo', settings: settings(p.model ?? defaultModel), messages: [] });
-  const result = snapshot(sessionId);
+  const result = snapshotForMethod('session/create', sessionId);
   if (process.env.FAKE_ZCODE_FUTURE_FIELDS === '1') { result.futureEnvelope = { ignored: true }; result.protocol.futureProtocolField = 'ignored'; result.projection.futureProjectionField = 'new'; result.settings.model.available[0].futureCatalogField = 42; }
   if (process.env.FAKE_ZCODE_PROTOCOL_VERSION) result.protocol.version = Number(process.env.FAKE_ZCODE_PROTOCOL_VERSION);
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-workspace') delete result.session.workspace;
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'empty-message') result.messages = [{}];
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-session-kind') result.session.sessionKind = 'main';
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'invented-subagent-kind') result.session.sessionKind = 'subagent';
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-protocol') result.protocol = { name: 'zcode', version: '0.16.1' };
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'missing-model-label') delete result.settings.model.available[0].label;
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'string-message-model') result.messages[0].info.model = 'fake/model';
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-goal-stats') result.goalStats.tokensUsed = -1;
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-permission-origin') result.projection.pendingPermissions = [{ requestId: 'request-1', toolCallId: 'tool-1', toolName: 'write', reason: 'test', riskLevel: 'low', origin: {}, options: [{ optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } }], requestedAt: 1 }];
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-runtime-cache') result.runtime.contextUsage = { used: 0, size: 1, cache: { inputTokens: -1 } };
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-timeline-trigger') result.messages[0].parts = [{ partId: 'part-timeline-1', sessionId, messageId: 'message-user-1', type: 'timeline', timelineType: 'context_compaction', display: 'separator', trigger: 'invented' }];
-  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-provider-options') result.settings.model.available[0].reasoning.providerOptionsByLevel = { low: 3 };
+  if (process.env.FAKE_ZCODE_BAD_SNAPSHOT_METHOD === undefined) corruptSnapshot(result, process.env.FAKE_ZCODE_BAD_SNAPSHOT);
   const response = { id: message.id, result }; respond(response); return response;
 }
 
@@ -257,14 +274,14 @@ input.on('line', async (line) => {
       break;
     case 'session/read': {
       const session = sessions.get(p.sessionId); applyRecoveryMode(session, await recoveryMode());
-      send({ id: message.id, result: snapshot(p.sessionId, session) });
+      send({ id: message.id, result: snapshotForMethod('session/read', p.sessionId, session) });
       break;
     }
     case 'session/resume':
       resumeCount += 1;
       if (process.env.FAKE_ZCODE_RESUME_ABA === '1' && resumeCount === 1) { await new Promise((resolve) => setTimeout(resolve, 40)); send({ id: message.id, error: { code: -32099, message: 'late resume failure' } }); break; }
-      if (!sessions.has(p.sessionId)) sessions.set(p.sessionId, { sessionId: p.sessionId, workspacePath: '/repo', settings: settings(), messages: [] });
-      send({ id: message.id, result: snapshot(p.sessionId) });
+      if (!sessions.has(p.sessionId)) sessions.set(p.sessionId, { sessionId: p.sessionId, workspacePath: process.env.FAKE_ZCODE_WORKSPACE ?? process.cwd(), settings: settings(), messages: [] });
+      send({ id: message.id, result: snapshotForMethod('session/resume', p.sessionId) });
       break;
     case 'session/list': {
       listCount += 1;
@@ -287,11 +304,11 @@ input.on('line', async (line) => {
     }
     case 'session/setModel':
       sessions.get(p.sessionId).settings.model.current = process.env.FAKE_ZCODE_SET_MODEL_CURRENT ? JSON.parse(process.env.FAKE_ZCODE_SET_MODEL_CURRENT) : p.model;
-      send({ id: message.id, result: snapshot(p.sessionId) });
+      send({ id: message.id, result: snapshotForMethod('session/setModel', p.sessionId) });
       break;
     case 'session/setThoughtLevel':
       sessions.get(p.sessionId).settings.thoughtLevel.current = process.env.FAKE_ZCODE_SET_THOUGHT_CURRENT ?? p.thoughtLevel;
-      send({ id: message.id, result: snapshot(p.sessionId) });
+      send({ id: message.id, result: snapshotForMethod('session/setThoughtLevel', p.sessionId) });
       break;
     default:
       send({ id: message.id, error: { code: -32601, message: `unknown ${message.method}` } });
