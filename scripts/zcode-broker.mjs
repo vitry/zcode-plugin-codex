@@ -508,7 +508,7 @@ export class ZCodeBroker {
       try { await this.writeOwnerStore(after, { signal: lockOptions.signal }); } catch (error) { writeError = error; }
       if (!isCurrent()) {
         try { await this.writeOwnerStore(before, { signal: lockOptions.signal }); }
-        catch (restoreError) { const winner = await readOwnerStoreUnlocked(this.ownershipPath, false); if (!sameOwnerSessions(winner.sessions, before)) throw restoreError; }
+        catch (restoreError) { const winner = await this.readOwnerStoreUnlocked(false, { signal: lockOptions.signal }); if (!sameOwnerSessions(winner.sessions, before)) throw restoreError; }
         this.applyOwnership(before); return commit;
       }
       if (writeError) throw writeError;
@@ -549,6 +549,7 @@ export class ZCodeBroker {
   async reloadOwnership(deadline) { const read = (signal) => this.readOwnerStore(!this.ownershipStoreEstablished, { ...(deadline === undefined ? {} : { timeoutMs: Math.max(0, deadline - Date.now()) }), ...(signal ? { signal } : {}) }); const loaded = deadline === undefined ? await read() : await withinOwnerReleaseDeadline(deadline, read); if (!loaded.exists) return; for (const [sessionId, current] of this.sessionOwners) if (!current.claimToken && (!Object.hasOwn(loaded.sessions, sessionId) || loaded.sessions[sessionId] !== current.ownerId) && this.uncertainOwnerReleases.get(sessionId) !== current.ownerId) throw ownerStoreInvalid(); this.applyOwnership(loaded.sessions); this.uncertainOwnerReleases.clear(); this.ownershipStoreEstablished = true; }
 
   async readOwnerStore(allowMissing, options = {}) { return readOwnerStore(this.ownershipPath, allowMissing, options); }
+  async readOwnerStoreUnlocked(allowMissing, options = {}) { return readOwnerStoreUnlocked(this.ownershipPath, allowMissing, options.signal); }
   async writeOwnerStore(sessions, options = {}) { return atomicWriteJson(this.ownershipPath, { version: 1, sessions }, options); }
 
   applyOwnership(sessions) { const next = new Map(); for (const [sessionId, ownerId] of Object.entries(sessions)) { const current = this.sessionOwners.get(sessionId); next.set(sessionId, { ownerId, socket: current?.ownerId === ownerId ? current.socket : null, claimToken: null }); } for (const [sessionId, current] of this.sessionOwners) if (current.claimToken && !next.has(sessionId)) next.set(sessionId, current); this.sessionOwners = next; }
