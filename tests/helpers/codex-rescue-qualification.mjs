@@ -4,6 +4,7 @@ const MAX_ROLLOUTS = 64;
 const MAX_EVENTS_PER_ROLLOUT = 8_192;
 const MAX_TEXT_BYTES = 1024 * 1024;
 const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
+const MAX_EXEC_AGENT_MESSAGES = 256;
 const GENERIC_HIDDEN_SCHEMA_VERSIONS = new Set(['0.147.0']);
 const EXEC_ENVELOPE_KEYS = new Set(['cmd', 'workdir', 'yield_time_ms', 'max_output_tokens']);
 
@@ -152,7 +153,7 @@ export function qualifyCodexRescueEvidence(input, options) {
   const childFinal = finalRolloutMessage(child, 'child-terminal-unavailable');
   const childReturn = childReturnPayload(parent, agentPath);
   const parentFinal = finalRolloutMessage(parent, 'parent-terminal-unavailable');
-  const execFinal = finalExecMessage(execFrames);
+  const execFinal = finalExecMessage(execFrames, options.expectedPublicOutput, parentThreadId);
   for (const actual of [childFinal, childReturn, parentFinal, execFinal]) {
     if (actual !== options.expectedPublicOutput) mismatch('public-output-mismatch', 'Child and parent terminal public output must equal the expected sentinel byte-for-byte.');
   }
@@ -286,13 +287,45 @@ function childReturnPayload(parent, agentPath) {
   return text.slice(prefix.length);
 }
 
-function finalExecMessage(frames) {
+function finalExecMessage(frames, expectedPublicOutput, parentThreadId) {
+  const threadStarts = frames.map((frame, index) => ({ frame, index })).filter(({ frame }) => frame?.type === 'thread.started');
+  if (threadStarts.length !== 1) mismatch('exec-thread-start-count', 'Codex exec JSON must expose exactly one thread.started event.');
+  assertExactKeys(threadStarts[0].frame, ['thread_id', 'type'], 'exec-thread-start-shape-mismatch');
+  if (threadStarts[0].frame.thread_id !== parentThreadId) mismatch('exec-thread-start-shape-mismatch', 'The exec terminal sequence does not belong to the observed parent thread.');
+
+  const turnStarts = frames.map((frame, index) => ({ frame, index })).filter(({ frame }) => frame?.type === 'turn.started');
+  if (turnStarts.length !== 1) mismatch('exec-turn-start-count', 'Codex exec JSON must expose exactly one turn.started event.');
+  assertExactKeys(turnStarts[0].frame, ['type'], 'exec-turn-start-shape-mismatch');
+  if (threadStarts[0].index >= turnStarts[0].index) mismatch('exec-turn-order', 'The observed turn must start after its parent thread.');
+
+  const terminals = frames.map((frame, index) => ({ frame, index })).filter(({ frame }) => ['turn.completed', 'turn.failed'].includes(frame?.type));
+  if (terminals.length === 0) mismatch('exec-terminal-unavailable', 'Codex exec JSON did not expose a turn terminal event.');
+  if (terminals.length !== 1) mismatch('exec-terminal-count', 'Codex exec JSON exposed more than one turn terminal event.');
+  const terminal = terminals[0];
+  if (terminal.index !== frames.length - 1) mismatch('exec-terminal-order', 'The turn terminal event must be the final Codex exec JSON frame.');
+  if (terminal.frame.type === 'turn.failed') mismatch('exec-turn-failed', 'Codex exec reported a failed turn instead of a successful public result.');
+  assertExactKeys(terminal.frame, ['type', 'usage'], 'exec-terminal-shape-mismatch');
+  assertExecUsage(terminal.frame.usage);
+
   const messages = frames
-    .filter((frame) => frame?.type === 'item.completed' && frame.item?.type === 'agent_message')
-    .map((frame) => boundedString(frame.item.text));
-  if (messages.length === 0 || !messages.at(-1)) mismatch('exec-terminal-unavailable', 'Codex exec JSON did not expose a terminal public message.');
-  if (messages.length !== 1) mismatch('exec-terminal-count', 'Codex exec JSON exposed more than one terminal public message.');
-  return messages.at(-1);
+    .map((frame, index) => ({ frame, index }))
+    .filter(({ frame }) => frame?.type === 'item.completed' && frame.item?.type === 'agent_message')
+    .map(({ frame, index }) => ({ index, text: boundedString(frame.item.text) }));
+  if (messages.length === 0) mismatch('exec-public-output-unavailable', 'Codex exec JSON did not expose an agent message.');
+  if (messages.length > MAX_EXEC_AGENT_MESSAGES || messages.some(({ text }) => text === undefined)) mismatch('exec-agent-messages-invalid', 'Codex exec agent messages exceed their count or text bound.');
+  const finalMessage = messages.at(-1);
+  if (turnStarts[0].index >= finalMessage.index || finalMessage.index >= terminal.index) mismatch('exec-terminal-order', 'The final agent message must occur inside the observed successful turn.');
+  if (finalMessage.text !== expectedPublicOutput) mismatch('exec-public-output-mismatch', 'The last Codex exec agent message is not the exact public sentinel.');
+  if (messages.filter(({ text }) => text === expectedPublicOutput).length !== 1) mismatch('exec-public-output-count', 'The public sentinel must occur in exactly one Codex exec agent message.');
+  return finalMessage.text;
+}
+
+function assertExecUsage(usage) {
+  const keys = ['cache_write_input_tokens', 'cached_input_tokens', 'input_tokens', 'output_tokens', 'reasoning_output_tokens'];
+  assertExactKeys(usage, keys, 'exec-terminal-shape-mismatch');
+  for (const key of keys) {
+    if (!Number.isSafeInteger(usage[key]) || usage[key] < 0) mismatch('exec-terminal-shape-mismatch', 'Codex exec turn usage is not a bounded non-negative integer.');
+  }
 }
 
 function parseCapturedExecEnvelope(input) {

@@ -161,12 +161,12 @@ test('reports encrypted spawn message unqualified only after observable mismatch
   const args = JSON.parse(spawnEvent(input).payload.arguments);
   args.message = `gAAAA${'A'.repeat(80)}=`;
   spawnEvent(input).payload.arguments = JSON.stringify(args);
-  input.execFrames.at(-1).item.text = 'wrong final';
+  finalExecAgentMessage(input).item.text = 'wrong final';
   assert.throws(
     () => qualifyCodexRescueEvidence(input, options()),
-    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'public-output-mismatch',
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'exec-public-output-mismatch',
   );
-  input.execFrames.at(-1).item.text = expectedPublicOutput;
+  finalExecAgentMessage(input).item.text = expectedPublicOutput;
   assert.throws(
     () => qualifyCodexRescueEvidence(input, options()),
     (error) => error instanceof CodexRescueUnqualifiedError
@@ -280,11 +280,38 @@ test('fails when the parent executes the constant Rescue command inline', () => 
 
 test('requires exact child, parent rollout, and exec terminal public output', () => {
   const input = fixture();
-  input.execFrames.at(-1).item.text = 'prefix done suffix';
+  finalExecAgentMessage(input).item.text = 'prefix done suffix';
   assert.throws(
     () => qualifyCodexRescueEvidence(input, options()),
-    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'public-output-mismatch',
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'exec-public-output-mismatch',
   );
+});
+
+test('accepts bounded commentary agent messages before one exact final sentinel and terminal turn', () => {
+  const input = fixture();
+  input.execFrames.splice(-2, 0,
+    execAgentMessage('working through the evidence', 'commentary-1'),
+    execAgentMessage('still checking structure', 'commentary-2'));
+  assert.equal(qualifyCodexRescueEvidence(input, options()).publicOutput, expectedPublicOutput);
+});
+
+test('fails ambiguous or nonterminal exec agent-message evidence', () => {
+  const cases = [
+    { code: 'exec-public-output-mismatch', mutate: (input) => input.execFrames.splice(-1, 0, execAgentMessage('after sentinel', 'late-message')) },
+    { code: 'exec-public-output-count', mutate: (input) => input.execFrames.splice(-2, 0, execAgentMessage(expectedPublicOutput, 'duplicate-sentinel')) },
+    { code: 'exec-terminal-unavailable', mutate: (input) => input.execFrames.pop() },
+    { code: 'exec-turn-failed', mutate: (input) => { input.execFrames[input.execFrames.length - 1] = { type: 'turn.failed', error: { message: 'failed' } }; } },
+    { code: 'exec-terminal-order', mutate: (input) => input.execFrames.push(execAgentMessage('message after terminal', 'post-terminal')) },
+    { code: 'exec-turn-order', mutate: (input) => { [input.execFrames[0], input.execFrames[1]] = [input.execFrames[1], input.execFrames[0]]; } },
+    { code: 'exec-terminal-shape-mismatch', mutate: (input) => { input.execFrames.at(-1).usage.extra = 1; } },
+  ];
+  for (const { code, mutate } of cases) {
+    const input = fixture(); mutate(input);
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
+    );
+  }
 });
 
 test('rollout JSONL parser is bounded and fails closed on malformed records', () => {
@@ -320,7 +347,9 @@ function fixture() {
   const childEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${expectedPublicOutput}`;
   const execFrames = [
       { type: 'thread.started', thread_id: parentId },
-      { type: 'item.completed', item: { id: 'item-1', type: 'agent_message', text: expectedPublicOutput } },
+      { type: 'turn.started' },
+      execAgentMessage(expectedPublicOutput),
+      { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 10, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 5 } },
     ];
   const parent = [
       { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
@@ -365,3 +394,5 @@ function preflightEvent(input) { return input.rollouts[0].find((event) => event.
 function preflightOutput(input) { return input.rollouts[0].find((event) => event.payload?.type === 'custom_tool_call_output' && event.payload.call_id === 'preflight-1'); }
 function childExec(input) { return input.rollouts[1].find((event) => event.payload?.type === 'custom_tool_call'); }
 function childOutput(input) { return input.rollouts[1].find((event) => event.payload?.type === 'custom_tool_call_output'); }
+function execAgentMessage(text, id = 'item-1') { return { type: 'item.completed', item: { id, type: 'agent_message', text } }; }
+function finalExecAgentMessage(input) { return input.execFrames.findLast((frame) => frame.type === 'item.completed' && frame.item?.type === 'agent_message'); }
