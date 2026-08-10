@@ -428,7 +428,7 @@ export class ZCodeBroker {
   acquireOwnerOperationLease(method, sessionId, ownerId, socket) {
     if (!OWNER_SCOPED_SESSION_METHODS.has(method)) return null;
     if (!isSafeIdentifier(sessionId) || this.stoppingSessions.has(sessionId) || this.admittingSessions.has(sessionId) || this.ownerOperationLeaseCount >= MAX_OWNER_OPERATION_LEASES) throw turnActiveError('The session has a conflicting owner operation.');
-    const owner = this.sessionOwners.get(sessionId); if (owner?.ownerId !== ownerId) throw ownerConflict();
+    const owner = this.sessionOwners.get(sessionId); if (owner?.ownerId !== ownerId) throw ownerConflict(); if (owner.claimToken) throw turnActiveError('The session ownership claim is not committed.');
     const lease = { token: randomBytes(16).toString('hex'), sessionId, ownerId, socket, method, protocol: null }; let leases = this.ownerOperationLeases.get(sessionId); if (!leases) { leases = new Map(); this.ownerOperationLeases.set(sessionId, leases); } leases.set(lease.token, lease); this.ownerOperationLeaseCount += 1; return lease;
   }
 
