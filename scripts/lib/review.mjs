@@ -136,6 +136,7 @@ export async function executeJob(input) {
         try { output = { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: error.resultArtifact }) }; primaryError = undefined; }
         catch (artifactError) { primaryError = artifactError; }
       }
+      else if (current && ['failed', 'cancelled', 'succeeded'].includes(current.status) && current.resultArtifact !== error.resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: error.resultArtifact }).catch(() => {});
       /* Otherwise recovery owns the durable running job and retained result artifact. */
     }
     else if (isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {

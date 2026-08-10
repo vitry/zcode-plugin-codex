@@ -17,6 +17,8 @@ let sendCount = 0;
 let conversationSubscribeCount = 0;
 let resumeCount = 0;
 let pendingRuntimePreferencesCreate;
+let pendingConcurrentCreateResponse;
+let pendingConcurrentSubscribeResponse;
 const pendingCompletionTimers = new Map();
 const conversationSubscriptions = new Map();
 
@@ -73,6 +75,11 @@ async function scheduleCompletion(sessionId, completion) {
   timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer);
 }
 function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
+function flushConcurrentCreateSubscribe() {
+  if (!pendingConcurrentCreateResponse || !pendingConcurrentSubscribeResponse) return;
+  sendBatch([pendingConcurrentSubscribeResponse, pendingConcurrentCreateResponse]);
+  pendingConcurrentCreateResponse = undefined; pendingConcurrentSubscribeResponse = undefined;
+}
 function conversationNotification({ sessionId, subscriptionId, deliveryKind, ordinal, deltas, topic = `conversation/${sessionId}` }) {
   return { method: 'v4/conversation/frame', params: { wireVersion: 3, kind: 'complete', deliveryKind, logicalFrameId: `frame-${ordinal}`, logicalFrameOrdinal: ordinal, topic, subscriptionId, frame: { topic, subscriptionId, fromSeq: ordinal, toSeq: ordinal, sentAt: 1_786_233_600_000, payload: { kind: 'deltas', deltas } } } };
 }
@@ -89,7 +96,7 @@ function isUnsupportedRuntimePreferencesResponse(message, pending) {
     && typeof message.error.message === 'string';
 }
 
-function completeCreate(message) {
+function completeCreate(message, respond = send) {
   const p = message.params ?? {};
   const sessionId = process.env.FAKE_ZCODE_SESSION_ID ?? p.sessionId ?? `session-${sessions.size + 1}`;
   sessions.set(sessionId, { sessionId, workspacePath: p.workspace?.workspacePath ?? '/repo', settings: settings(p.model ?? defaultModel), messages: [] });
@@ -108,7 +115,7 @@ function completeCreate(message) {
   if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-runtime-cache') result.runtime.contextUsage = { used: 0, size: 1, cache: { inputTokens: -1 } };
   if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-timeline-trigger') result.messages[0].parts = [{ partId: 'part-timeline-1', sessionId, messageId: 'message-user-1', type: 'timeline', timelineType: 'context_compaction', display: 'separator', trigger: 'invented' }];
   if (process.env.FAKE_ZCODE_BAD_SNAPSHOT === 'bad-provider-options') result.settings.model.available[0].reasoning.providerOptionsByLevel = { low: 3 };
-  send({ id: message.id, result });
+  const response = { id: message.id, result }; respond(response); return response;
 }
 
 input.on('line', async (line) => {
@@ -161,7 +168,8 @@ input.on('line', async (line) => {
         send({ id: runtimePreferencesId, method: 'session/requestRuntimePreferences', params: { sessionId: 'session-1', scope: 'runtime-materialization' } });
         break;
       }
-      completeCreate(message);
+      if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1') { pendingConcurrentCreateResponse = completeCreate(message, () => {}); flushConcurrentCreateSubscribe(); }
+      else completeCreate(message);
       break;
     }
     case 'session/send': {
@@ -227,7 +235,9 @@ input.on('line', async (line) => {
       }
       const subscriptionId = badAcknowledgement ? '' : `subscription-${sessionId}`; conversationSubscriptions.set(sessionId, subscriptionId);
       if (process.env.FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'online', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 39, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 39, kind: 'toolCall', toolCallId: 'prebind', toolName: 'Bash', status: 'running', inputText: '{"command":"echo prebind"}', input: { command: 'echo prebind' }, startedAt: 1_786_233_600_000 } }] }));
-      send({ id: message.id, result: { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1' } } });
+      const response = { id: message.id, result: { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1' } } };
+      if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentCreateSubscribe(); }
+      else send(response);
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 40, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: 1_786_233_600_000 } }] }));
       break;
     }

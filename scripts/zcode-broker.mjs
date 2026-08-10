@@ -253,7 +253,7 @@ export class ZCodeBroker {
       let result;
       try {
         result = await protocol.request(frame.method, frame.params);
-        if (frame.method === 'v4/conversation/subscribe' && this.protocol !== protocol) throw brokerInputError();
+        if (this.protocol !== protocol) throw brokerInputError();
         if (frame.method === 'session/send') { validateSendResult(result, frame.params.sessionId); const active = this.activeSessionSockets.get(frame.params.sessionId); if (active?.token !== sendToken) throw brokerInputError(); active.baseline = result.stateRevision; active.inputId = frame.params.inputId; this.activeSessions.add(frame.params.sessionId); protocol.armTurn(frame.params.sessionId, result.stateRevision, frame.params.inputId); this.admittingSessions.delete(frame.params.sessionId); }
       } catch (error) { if (frame.method === 'session/send') { protocol.abortTurn(frame.params.sessionId); if (this.activeSessionSockets.get(frame.params.sessionId)?.token === sendToken) this.activeSessionSockets.delete(frame.params.sessionId); if (this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); } if (subscriptionToken && this.pendingConversationTopics.get(frame.params.topic)?.token === subscriptionToken) this.pendingConversationTopics.delete(frame.params.topic); throw error; }
       if (frame.method === 'session/create' && result?.session?.sessionId) { await this.persistOwnership(result.session.sessionId, ownerId); this.sessionOwners.set(result.session.sessionId, { ownerId, socket, claimToken: null }); }
