@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { PassThrough } from 'node:stream';
 
+import { startBackgroundWorker } from '../../scripts/lib/background-worker.mjs';
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
@@ -368,6 +371,37 @@ test('background reservation exposes one private invocation, which is single-use
   assert.equal(first.code, 0, first.stderr); assert.equal(first.json.job.status, 'succeeded');
   const replay = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.notEqual(replay.code, 0); assert.equal(replay.json.error.code, 'EXECUTION_CAPABILITY_CONSUMED');
+});
+
+test('one production background admission mints and transports its exact capability only through fd3', async (t) => {
+  const context = await fixture(); t.after(() => rm(context.directory, { force: true, recursive: true }));
+  const authorization = new PassThrough(); const acknowledgements = new PassThrough(); const child = /** @type {any} */ (new EventEmitter());
+  let envelope = ''; const captures = /** @type {{invocation?:any,workerInput?:any}} */ ({}); let unrefCount = 0;
+  authorization.setEncoding('utf8'); authorization.on('data', (chunk) => { envelope += chunk; });
+  child.pid = 42_424; child.stdio = [null, null, null, authorization, acknowledgements]; child.unref = () => { unrefCount += 1; };
+  const progressLines = /** @type {string[]} */ ([]);
+  const output = await runCompanion(['rescue', '--background', '--fresh', 'production chain'], {
+    cwd: context.workspace, env: { ...context.env, CHAIN_PUBLIC_SETTING: 'visible' }, caller: caller('production-chain'), autoLaunchBackground: true,
+    progressWriter: (line) => { progressLines.push(line); },
+    dependencies: {
+      startBackgroundWorker: async (/** @type {any} */ input) => {
+        captures.workerInput = input;
+        return startBackgroundWorker({ ...input, dependencies: { spawn: (command, args, options) => { captures.invocation = { command, args, options }; queueMicrotask(() => acknowledgements.end('ready\n')); return child; } } });
+      },
+    },
+  });
+  assert.ok(captures.workerInput); assert.ok(captures.invocation);
+  const capturedWorkerInput = captures.workerInput; const capturedInvocation = captures.invocation;
+  const protectedEnvelope = JSON.parse(envelope);
+  const capability = protectedEnvelope.executionCapability;
+  assert.ok(typeof capability === 'string' && capability.length >= 32); assert.equal(protectedEnvelope.jobId, output.job.id); assert.equal(capturedWorkerInput.executionCapability, capability);
+  assert.equal(envelope, `${JSON.stringify({ executionCapability: capability, jobId: output.job.id })}\n`); assert.deepEqual(Object.keys(protectedEnvelope).sort(), ['executionCapability', 'jobId']);
+  assert.deepEqual(capturedInvocation.args, [cli, 'run-reserved-job', output.job.id]); assert.deepEqual(capturedInvocation.options.stdio, ['ignore', 'ignore', 'ignore', 'pipe', 'pipe']);
+  assert.equal(capturedInvocation.options.env.ZCODE_BACKGROUND_WORKER, '1'); assert.equal(capturedInvocation.options.env.CHAIN_PUBLIC_SETTING, 'visible'); assert.equal(unrefCount, 1);
+  assert.doesNotMatch(JSON.stringify(capturedInvocation), new RegExp(capability)); assert.doesNotMatch(JSON.stringify(capturedWorkerInput.env), new RegExp(capability));
+  const role = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8'); const rescueSkill = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const publicOutput = renderOutput(output); const modelVisibleEvidence = JSON.stringify({ output, publicOutput, stderr: '', progressLines, role, rescueSkill });
+  assert.equal(publicOutput, `Reserved background job ${output.job.id}.\n`); assert.doesNotMatch(modelVisibleEvidence, new RegExp(capability));
 });
 
 test('a non-worker reserved-job invocation receives the foreground abort signal', async () => {

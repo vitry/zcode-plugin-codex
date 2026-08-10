@@ -7,7 +7,6 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { startBackgroundWorker } from '../scripts/lib/background-worker.mjs';
-import { createIdentityStore } from '../scripts/lib/identity.mjs';
 
 test('background startup timeout terminates and reaps the unacknowledged worker', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-background-worker-'));
@@ -34,11 +33,8 @@ test('background startup schedules the production acknowledgement deadline at 30
   assert.equal(scheduled, 30_000); assert.ok(typeof result.pid === 'number' && result.pid > 0);
 });
 
-test('background production launch confines capability transport to fd3 and acknowledgement to fd4', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-background-descriptor-')); t.after(() => rm(directory, { force: true, recursive: true }));
-  const jobId = 'd'.repeat(64); const executionCapability = await createIdentityStore({ dataRoot: join(directory, 'data') }).createExecutionCapability({
-    jobId, ownerSessionId: 'descriptor-owner', workspace: directory, operation: 'run-reserved-job', specDigest: 'e'.repeat(64), permissionSnapshot: { permissionMode: 'workspace-write' },
-  });
+test('background production launch confines capability transport to fd3 and acknowledgement to fd4', async () => {
+  const executionCapability = 'capability-sentinel-only-fd3'; const jobId = 'd'.repeat(64);
   const authorization = new PassThrough(); const acknowledgements = new PassThrough(); const child = /** @type {any} */ (new EventEmitter());
   let invocation; let envelope = ''; let unrefCount = 0;
   authorization.setEncoding('utf8'); authorization.on('data', (chunk) => { envelope += chunk; });
@@ -57,10 +53,6 @@ test('background production launch confines capability transport to fd3 and ackn
   });
   assert.equal(envelope, `${JSON.stringify({ executionCapability, jobId })}\n`);
   assert.doesNotMatch(JSON.stringify(invocation), new RegExp(executionCapability));
-  const role = await readFile(new URL('../agents/zcode-rescue.toml.template', import.meta.url), 'utf8');
-  const rescueSkill = await readFile(new URL('../skills/rescue/SKILL.md', import.meta.url), 'utf8');
-  const modelVisibleEvidence = JSON.stringify({ role, rescueSkill, spawnPrompt: 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.', publicOutput: `Reserved background job ${jobId}.\n`, log: 'worker acknowledged and detached' });
-  assert.doesNotMatch(modelVisibleEvidence, new RegExp(executionCapability));
   assert.equal(unrefCount, 1, 'the acknowledged worker must detach from the short-lived native child');
 });
 

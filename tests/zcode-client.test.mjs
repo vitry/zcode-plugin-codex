@@ -622,6 +622,29 @@ test('broker consumes validated completion and permits repeated turns without re
   finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test('same-owner broker stop disconnects the exact active client completion waiter', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-stop-active-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '1'.repeat(64); const ownerId = 'stop-active-owner-stable';
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' } }).start();
+  const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 2_000 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  try { const { session: { sessionId } } = await worker.createSession({ workspace: directory }); await worker.send(sessionId, 'hold'); const completion = worker.waitForCompletion(sessionId); assert.deepEqual(await controller.stopSession(sessionId), {}); await assert.rejects(completion, { code: 'ZCODE_DISCONNECTED' }); }
+  finally { await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('failed same-owner broker stop preserves the active client and its later completion', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-stop-failed-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '2'.repeat(64); const ownerId = 'stop-failed-owner-stable'; const gate = join(directory, 'completion.gate'); await writeFile(gate, 'hold');
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: gate, FAKE_ZCODE_STOP_ERROR_PREFIX: 'session-' } }).start();
+  const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 2_000 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  try { const { session: { sessionId } } = await worker.createSession({ workspace: directory }); await worker.send(sessionId, 'hold'); const completion = worker.waitForCompletion(sessionId); await assert.rejects(controller.stopSession(sessionId), { code: 'ZCODE_REQUEST_FAILED' }); await writeFile(gate, 'release'); await completion; }
+  finally { await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('active broker client can stop its own turn without disconnecting itself', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-stop-self-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '3'.repeat(64);
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'stop-self-owner-stable' });
+  try { const { session: { sessionId } } = await client.createSession({ workspace: directory }); await client.send(sessionId, 'hold'); const completion = client.waitForCompletion(sessionId); assert.deepEqual(await client.stopSession(sessionId), {}); await assert.rejects(completion, { code: 'ZCODE_SESSION_STOPPED' }); assert.equal((await client.listSessions()).sessions[0].sessionId, sessionId); }
+  finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test('completed broker becomes truly idle after its final owner disconnects', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-idle-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '7'.repeat(64);
   const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, idleTimeoutMs: 20 }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'idle-owner-stable' });

@@ -52,6 +52,17 @@ async function ensureWorkerStopped(pid) {
   assert.equal(processAlive(pid), false, `background worker ${pid} did not terminate`);
 }
 
+async function waitUntil(predicate, timeoutMs, message) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) { if (await predicate()) return; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); }
+  assert.fail(message);
+}
+
+async function findNewJobs(store, workspace, baselineIds) {
+  const jobs = await store.listJobs(workspace);
+  return jobs.filter((job) => !baselineIds.has(job.id));
+}
+
 async function run(command, args, cwd) {
   const result = await runChild(command, args, { cwd });
   if (result.code !== 0) throw new Error(`${command} exited ${result.code}`);
@@ -388,19 +399,20 @@ test('direct background invocation keeps capabilities private and production own
 
 test('named and generic Rescue children receive only queued background output while production workers remain controllable', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA }); const store = createStateStore({ dataRoot: ctx.env.PLUGIN_DATA });
-  const gate = join(ctx.directory, 'background-completion.gate'); const gateReached = join(ctx.directory, 'background-completion.reached');
+  const gate = join(ctx.directory, 'background-completion.gate'); const gateReached = join(ctx.directory, 'background-completion.reached'); const record = join(ctx.directory, 'background-zcode.jsonl');
   for (const [route, agentType, control] of [['named', 'zcode-rescue', 'result'], ['generic', 'default', 'cancel']]) {
     const parentId = `background-${route}-parent`; const childId = `background-${route}-child`; const turnId = `background-${route}-turn`;
-    let workerPid; await writeFile(gate, 'hold'); await writeFile(gateReached, '');
+    const baselineJobIds = new Set((await store.listJobs(ctx.workspace)).map((job) => job.id));
+    let workerPid; await writeFile(gate, 'hold'); await writeFile(gateReached, ''); await writeFile(record, '');
     const callerContext = await identity.beginCallerTurn({ sessionId: parentId, turnId, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --background ${route} native child` });
     await startRescueChild(ctx, parentId, childId, `${turnId}-child`, agentType);
     try {
-      const launched = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_COMPLETION_GATE: gate, FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReached } });
+      const launched = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: gate, FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' } });
       assert.equal(launched.code, 0, launched.stderr || launched.stdout);
       const jobId = /^Reserved background job ([a-f0-9]{64})\.\n$/.exec(launched.stdout)?.[1];
       assert.ok(jobId, `native ${route} child must receive only the public queued envelope: ${launched.stdout}`);
       let job = await store.readJob(ctx.workspace, jobId); workerPid = job.childPid; ctx.trackWorker(workerPid);
-      assert.equal(await readFile(gateReached, 'utf8'), 'blocked', 'the fake peer must be explicitly blocked after the accepted send');
+      await waitUntil(async () => await readFile(gateReached, 'utf8').catch(() => '') === 'blocked', 5_000, 'the fake peer did not reach its exact post-ack completion gate');
       assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke', 'rescue']);
       assert.equal(launched.internal, ''); assert.equal(launched.stderr, '');
       assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
@@ -414,6 +426,9 @@ test('named and generic Rescue children receive only queued background output wh
       if (control === 'cancel') {
         const cancelled = await publicInvoke(ctx, ['cancel', jobId], callerContext);
         assert.equal(cancelled.code, 0, cancelled.stderr); assert.equal(cancelled.json.job.status, 'cancelled');
+        await waitUntil(() => !processAlive(workerPid), 5_000, `the ${route} worker did not exit after acknowledged cancellation`);
+        const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+        assert.equal(calls.filter((call) => call.method === 'session/send').length, 1); assert.equal(calls.filter((call) => call.method === 'session/stop').length, 1); assert.equal(cancelled.json.job.resultArtifact, undefined);
       } else {
         await writeFile(gate, 'release');
         const waited = await publicInvoke(ctx, ['status', jobId, '--wait', '--timeout-ms', '5000'], callerContext);
@@ -423,7 +438,11 @@ test('named and generic Rescue children receive only queued background output wh
         assert.doesNotMatch(`${result.stdout}${result.stderr}${result.internal}`, /executionCapability|callerContext|privateInvocation/);
       }
     } finally {
-      await writeFile(gate, 'release').catch(() => {}); await ensureWorkerStopped(workerPid);
+      await writeFile(gate, 'release').catch(() => {});
+      const jobs = new Map();
+      for (let attempt = 0; attempt < 20; attempt += 1) { for (const job of await findNewJobs(store, ctx.workspace, baselineJobIds)) jobs.set(job.id, job); await new Promise((resolvePromise) => setTimeout(resolvePromise, 50)); }
+      for (const job of jobs.values()) { ctx.trackWorker(job.childPid); await ensureWorkerStopped(job.childPid); }
+      await ensureWorkerStopped(workerPid);
     }
   }
 });

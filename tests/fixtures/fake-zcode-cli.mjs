@@ -57,6 +57,8 @@ function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 async function scheduleCompletion(sessionId, completion) {
+  const reachedDelayMs = Number(process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS ?? 0);
+  if (Number.isSafeInteger(reachedDelayMs) && reachedDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, reachedDelayMs));
   if (process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED) await writeFile(process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED, 'blocked');
   /** @type {NodeJS.Timeout} */ let timer;
   const deliver = async () => {

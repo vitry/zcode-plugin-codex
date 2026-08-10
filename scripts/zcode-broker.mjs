@@ -198,12 +198,13 @@ export class ZCodeBroker {
     }
     const requestedSessionId = frame.params.sessionId;
     const ownerId = this.socketOwnerIds.get(socket); const existingOwner = typeof requestedSessionId === 'string' ? this.sessionOwners.get(requestedSessionId) : null;
+    const existingSessionSocket = existingOwner?.socket;
     const claimMethod = frame.method === 'session/create';
     if (existingOwner && existingOwner.ownerId !== ownerId || typeof requestedSessionId === 'string' && !existingOwner && !claimMethod) {
       writeLocal(socket, { id: frame.id, error: { code: -32041, message: 'Session is not owned by this broker client.' } }); return;
     }
     let claimToken = null; const previousOwner = existingOwner ? { ...existingOwner } : null;
-    if (typeof requestedSessionId === 'string' && claimMethod) { claimToken = randomBytes(16).toString('hex'); this.sessionOwners.set(requestedSessionId, { ownerId, socket, claimToken }); } else if (existingOwner?.ownerId === ownerId) existingOwner.socket = socket;
+    if (typeof requestedSessionId === 'string' && claimMethod) { claimToken = randomBytes(16).toString('hex'); this.sessionOwners.set(requestedSessionId, { ownerId, socket, claimToken }); } else if (existingOwner?.ownerId === ownerId && frame.method !== 'session/stop') existingOwner.socket = socket;
     try {
       let protocol;
       if (this.existingProtocolOnlySockets.has(socket)) { if (!this.protocol) throw existingProtocolUnavailable(); protocol = this.protocol; }
@@ -216,7 +217,7 @@ export class ZCodeBroker {
       } catch (error) { if (frame.method === 'session/send') { protocol.abortTurn(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); } throw error; }
       if (frame.method === 'session/create' && result?.session?.sessionId) { await this.persistOwnership(result.session.sessionId, ownerId); this.sessionOwners.set(result.session.sessionId, { ownerId, socket, claimToken: null }); }
       else if (claimToken && this.sessionOwners.get(requestedSessionId)?.claimToken === claimToken) this.sessionOwners.get(requestedSessionId).claimToken = null;
-      if (frame.method === 'session/stop' && frame.params.sessionId) { protocol.cancelTurn(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); }
+      if (frame.method === 'session/stop' && frame.params.sessionId) { protocol.cancelTurn(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); if (existingSessionSocket && existingSessionSocket !== socket) existingSessionSocket.destroy(); this.scheduleIdleShutdown(); }
       if (frame.method === 'session/list' && Array.isArray(result?.sessions)) result = { ...result, sessions: result.sessions.filter((session) => this.sessionOwners.get(session.sessionId)?.ownerId === ownerId) };
       writeLocal(socket, { id: frame.id, result });
     } catch (error) {

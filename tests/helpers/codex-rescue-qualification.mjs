@@ -177,6 +177,7 @@ export function qualifyCodexRescueBackgroundEvidence(input, options) {
   const evidence = qualifyCodexRescueEvidenceCore(input, { ...options, expectedPublicOutput: publicOutput }, true);
   const child = input.rollouts.find((events) => sessionMeta(events)?.id === evidence.childThreadId);
   const outputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
+  if (!Array.isArray(outputs[0]?.payload?.output) || outputs[0].payload.output.length !== 1) mismatch('background-child-stdout', 'The linked child command must expose one exact structured queued stdout item.');
   const exactStdout = terminalOutputText(outputs[0]?.payload?.output, 'background-child-stdout');
   if (exactStdout !== publicOutput && exactStdout !== `${publicOutput}\n`) mismatch('background-child-stdout', 'The linked child command output is not only the exact queued stdout.');
   const result = { ...evidence, jobId, capabilityChecked: capability !== undefined };

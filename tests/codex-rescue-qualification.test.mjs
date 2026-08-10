@@ -55,6 +55,8 @@ test('background qualification fails closed on inline, self-printed, wrong-child
     { code: 'parent-inline-command', mutate: (input) => input.rollouts[0].splice(3, 0, structuredExec(expectedCommand, 'parent-inline')) },
     { code: 'parent-terminal-order', mutate: (input) => { input.rollouts[0] = input.rollouts[0].filter((event) => event !== childReturnEvent(input)); } },
     { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', `self-printed\n${backgroundPublicOutput}\n`).payload.output; } },
+    { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output.unshift({ type: 'input_text', text: 'private prelude\n' }); } },
+    { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output.unshift({ type: 'input_text', text: 'noisy progress\n' }); } },
     { code: 'child-rollout-id-mismatch', mutate: (input) => { startEvent(input).payload.agent_thread_id = 'wrong-child'; } },
     { code: 'spawn-count', mutate: (input) => input.rollouts[0].splice(4, 0, structuredSpawn('spawn-2')) },
     { code: 'child-output-link', mutate: (input) => { childOutput(input).payload.call_id = 'unlinked-output'; } },
@@ -562,7 +564,7 @@ function fixture(publicOutput = expectedPublicOutput) {
   return { execFrames, rollouts: [parent, child] };
 }
 
-function backgroundFixture() { const input = fixture(backgroundPublicOutput); childOutput(input).payload.output = toolOutput('exec-1', `${backgroundPublicOutput}\n`).payload.output; return input; }
+function backgroundFixture() { const input = fixture(backgroundPublicOutput); childOutput(input).payload.output = [{ type: 'input_text', text: `${backgroundPublicOutput}\n` }]; return input; }
 
 function choiceOptions(choice) {
   return {
