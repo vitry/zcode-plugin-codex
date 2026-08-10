@@ -42,10 +42,10 @@ class BrokerAdmission {
       const lease = { kind: 'create', ownerId, token: randomBytes(16).toString('hex'), epoch: state.epoch }; state.creates.set(lease.token, lease); this.onChange(); return lease;
     }
     if (state.release) throw turnActiveError('The broker owner is already being released.');
-    state.epoch += 1; const lease = { kind: 'release', ownerId, token: randomBytes(16).toString('hex'), epoch: state.epoch, deferredCreates: state.creates.size }; state.release = lease; this.onChange(); return lease;
+    const lease = { kind: 'release', ownerId, token: randomBytes(16).toString('hex'), epoch: state.epoch, deferredCreates: state.creates.size }; state.release = lease; this.onChange(); return lease;
   }
 
-  ownerRequestCurrent(lease) { const state = this.ownerStates.get(lease?.ownerId); return lease?.kind === 'create' ? state?.creates.get(lease.token) === lease && state.epoch === lease.epoch && !state.release : lease?.kind === 'release' && state?.release === lease; }
+  ownerRequestCurrent(lease) { const state = this.ownerStates.get(lease?.ownerId); return lease?.kind === 'create' ? state?.creates.get(lease.token) === lease && state.epoch === lease.epoch : lease?.kind === 'release' && state?.release === lease; }
   finishOwnerRequest(lease) { if (!lease) return; const state = this.ownerStates.get(lease.ownerId); if (!state) return; if (lease.kind === 'create' && state.creates.get(lease.token) === lease) state.creates.delete(lease.token); else if (lease.kind === 'release' && state.release === lease) state.release = null; else return; if (!state.release && !state.creates.size) this.ownerStates.delete(lease.ownerId); this.onChange(); }
 
   beginSessionRequest(method, sessionId, ownerId, socket) {
@@ -184,7 +184,7 @@ export async function ensureZCodeBroker(options) {
 
 export class ZCodeBroker {
   /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string}} options */
-  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.protocolCloseStarted = new WeakSet(); this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
+  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
     if (this.server) return this;
@@ -293,7 +293,7 @@ export class ZCodeBroker {
             if (sessionAdmission && !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError();
             if (this.protocol !== protocol) throw brokerInputError();
             if (frame.method === 'session/stop') validateStopResult(result);
-            if (frame.method === 'v4/conversation/unsubscribe' && !validConversationUnsubscribeResult(result)) { this.conversationSubscriptions.delete(unsubscribeRecord.key); this.retainOrphanedSubscription(protocol, unsubscribeRecord); this.clearProtocolGeneration(protocol); this.closeProtocolInBackground(protocol); throw invalidUnsubscribeResult(); }
+            if (frame.method === 'v4/conversation/unsubscribe' && !validConversationUnsubscribeResult(result)) { this.conversationSubscriptions.delete(unsubscribeRecord.key); this.retainOrphanedSubscription(protocol, unsubscribeRecord); this.clearProtocolGeneration(protocol); throw invalidUnsubscribeResult(); }
             if (frame.method === 'session/send') { validateSendResult(result, frame.params.sessionId); const active = this.activeSessionSockets.get(frame.params.sessionId); if (active?.token !== sendToken) throw brokerInputError(); active.baseline = result.stateRevision; active.inputId = frame.params.inputId; this.activeSessions.add(frame.params.sessionId); protocol.armTurn(frame.params.sessionId, result.stateRevision, frame.params.inputId); this.admittingSessions.delete(frame.params.sessionId); }
           } catch (error) { if (frame.method === 'session/send') { protocol.abortTurn(frame.params.sessionId); if (this.activeSessionSockets.get(frame.params.sessionId)?.token === sendToken) this.activeSessionSockets.delete(frame.params.sessionId); if (this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); } if (subscriptionToken && this.pendingConversationTopics.get(frame.params.topic)?.token === subscriptionToken) this.pendingConversationTopics.delete(frame.params.topic); throw error; }
           if (frame.method === 'session/create') {
@@ -309,7 +309,7 @@ export class ZCodeBroker {
             const pending = this.pendingConversationTopics.get(frame.params.topic); const subscriptionId = result?.ack?.subscriptionId; const addressable = isBoundedPublicIdentifier(subscriptionId); const duplicate = addressable && [...this.conversationSubscriptions.values(), ...this.orphanedConversationSubscriptions.values()].some((subscription) => subscription.subscriptionId === subscriptionId);
             if (!pending || pending.token !== subscriptionToken || !validConversationSubscribeResult(result) || duplicate) {
               if (addressable) await this.unsubscribeConversationRecords(protocol, [{ key: conversationKey(frame.params.topic, subscriptionId), socket, topic: frame.params.topic, subscriptionId, connectionId: frame.params.connectionId, sessionId: requestedSessionId, ownerId }], OWNER_RELEASE_REQUEST_MS);
-              else { this.clearProtocolGeneration(protocol); this.closeProtocolInBackground(protocol); }
+              else this.clearProtocolGeneration(protocol);
               throw brokerInputError();
             }
             this.pendingConversationTopics.delete(frame.params.topic); const key = conversationKey(frame.params.topic, subscriptionId);
@@ -333,7 +333,7 @@ export class ZCodeBroker {
   }
 
   cancelIdleShutdown() { clearTimeout(this.idleTimer); this.idleTimer = null; }
-  scheduleIdleShutdown() { this.cancelIdleShutdown(); if (this.closing || this.owners || this.activeSessions.size || this.permissionPending.size || this.localTasks.size || this.admission.activeCount || this.protocolPromise && !this.protocol) return; this.idleTimer = setTimeout(() => { this.idleTimer = null; if (!this.owners && !this.activeSessions.size && !this.permissionPending.size && !this.localTasks.size && !this.admission.activeCount && !(this.protocolPromise && !this.protocol)) void this.close().catch(() => {}); }, this.fastIdleRequested ? 0 : this.options.idleTimeoutMs ?? 30_000); this.idleTimer.unref?.(); }
+  scheduleIdleShutdown() { this.cancelIdleShutdown(); if (this.closing || this.owners || this.activeSessions.size || this.permissionPending.size || this.localTasks.size || this.admission.activeCount || this.retiredProtocolGeneration || this.protocolPromise && !this.protocol) return; this.idleTimer = setTimeout(() => { this.idleTimer = null; if (!this.owners && !this.activeSessions.size && !this.permissionPending.size && !this.localTasks.size && !this.admission.activeCount && !this.retiredProtocolGeneration && !(this.protocolPromise && !this.protocol)) void this.close().catch(() => {}); }, this.fastIdleRequested ? 0 : this.options.idleTimeoutMs ?? 30_000); this.idleTimer.unref?.(); }
 
   async releaseOwner(socket, ownerId, excludeSessionIds = [], deadline = Date.now() + OWNER_RELEASE_BUDGET_MS, ownerAdmission = null) {
     const ownsAdmission = !ownerAdmission; const admission = ownerAdmission ?? this.admission.beginOwnerRequest('broker/releaseOwner', ownerId);
@@ -418,6 +418,7 @@ export class ZCodeBroker {
 
   async getProtocol() {
     if (this.protocol) return this.protocol;
+    if (this.retiredProtocolGeneration) throw protocolRetiring();
     if (!this.protocolPromise) this.protocolPromise = this.initializeProtocolGeneration();
     const attempt = this.protocolPromise;
     try { return await attempt; } catch (error) { if (this.protocolPromise === attempt) this.protocolPromise = null; this.scheduleIdleShutdown(); throw error; }
@@ -427,6 +428,7 @@ export class ZCodeBroker {
     const protocol = await spawnZCodeProtocol(this.options.launch, { cwd: this.options.launchCwd ?? this.options.workspace, env: this.options.env, maxFrameBytes: this.options.maxFrameBytes, maxOutboundBytes: this.options.maxOutboundBytes, drainTimeoutMs: this.options.drainTimeoutMs });
     try {
       if (this.closing) throw new PluginError('ZCODE_BROKER_CLOSING', 'The ZCode broker is closing.', { category: 'state', remedy: 'Reconnect to a healthy broker.' });
+      if (this.retiredProtocolGeneration) throw protocolRetiring();
       this.protocol = protocol;
       protocol.subscribe((message) => {
       if (message.method === 'broker/sessionStopped') return;
@@ -444,20 +446,39 @@ export class ZCodeBroker {
   }
 
   clearProtocolGeneration(protocol) {
-    if (this.protocol !== protocol) return;
+    if (this.retiredProtocolGeneration?.protocol === protocol) return this.retiredProtocolGeneration;
+    if (this.protocol !== protocol) return null;
+    // A replacement generation is never admitted while this exact record is
+    // pending or failed, so one record is enough to bound all retired state.
+    if (this.retiredProtocolGeneration) return this.retiredProtocolGeneration;
+    const retired = { protocol, closePromise: null, status: 'pending', error: null, tombstones: new Set() };
+    for (const [key, subscription] of this.orphanedConversationSubscriptions) if (subscription.protocol === protocol) retired.tombstones.add(key);
+    this.retiredProtocolGeneration = retired;
     for (const [sessionId, active] of this.activeSessionSockets) if (active.socket?.writable) writeLocal(active.socket, { method: 'broker/sessionStopped', params: { sessionId } });
     this.activeSessions.clear(); this.activeSessionSockets.clear(); this.admittingSessions.clear(); for (const [sessionId, stopping] of this.stoppingSessions) if (!stopping.ownerRelease) this.stoppingSessions.delete(sessionId); this.conversationSubscriptions.clear(); this.orphanRetryPromise = null; this.pendingConversationTopics.clear();
     for (const [id, pending] of this.permissionPending) { clearTimeout(pending.timer); this.retirePermissionResponse(id, pending.socket); pending.resolve(offeredDeny(pending.request)); }
     this.permissionPending.clear(); this.protocol = null; this.protocolPromise = null; this.scheduleIdleShutdown();
     for (const [token, capturedProtocol] of this.ownerCommitTokens) if (capturedProtocol === protocol) this.ownerCommitTokens.delete(token);
+    let resolveClose;
+    retired.closePromise = new Promise((resolvePromise) => { resolveClose = resolvePromise; });
+    let closing;
+    try { closing = typeof protocol.close === 'function' ? protocol.close() : undefined; }
+    catch (error) { closing = Promise.reject(error); }
+    void Promise.resolve(closing).then(
+      () => resolveClose(this.settleRetiredProtocolGeneration(retired, null)),
+      (error) => resolveClose(this.settleRetiredProtocolGeneration(retired, error)),
+    );
+    return retired;
   }
 
-  // Generation invalidation is synchronous. Teardown is observational and
-  // coalesced so an untrusted close cannot hold a request or release budget.
-  closeProtocolInBackground(protocol) {
-    if (this.protocolCloseStarted.has(protocol)) return;
-    this.protocolCloseStarted.add(protocol);
-    try { void Promise.resolve(protocol.close()).catch(() => {}); } catch { /* close failure is observational after generation invalidation */ }
+  settleRetiredProtocolGeneration(retired, error) {
+    if (this.retiredProtocolGeneration !== retired) return retired;
+    retired.error = error; retired.status = error ? 'failed' : 'closed';
+    if (!error) {
+      for (const [key, subscription] of this.orphanedConversationSubscriptions) if (subscription.protocol === retired.protocol) this.orphanedConversationSubscriptions.delete(key);
+      retired.tombstones.clear(); this.retiredProtocolGeneration = null;
+    }
+    this.scheduleIdleShutdown(); return retired;
   }
 
   async requestPermission(request) {
@@ -522,9 +543,9 @@ export class ZCodeBroker {
   }
 
   retainOrphanedSubscription(protocol, subscription) {
-    const existing = this.orphanedConversationSubscriptions.get(subscription.key); if (existing) return existing;
+    const existing = this.orphanedConversationSubscriptions.get(subscription.key); if (existing) { if (this.retiredProtocolGeneration?.protocol === protocol) this.retiredProtocolGeneration.tombstones.add(existing.key); return existing; }
     if (this.orphanedConversationSubscriptions.size >= MAX_CONVERSATION_SUBSCRIPTIONS) throw brokerInputError();
-    const entry = { ...subscription, protocol, entryToken: randomBytes(16).toString('hex'), retryAfter: 0 }; this.orphanedConversationSubscriptions.set(entry.key, entry); return entry;
+    const entry = { ...subscription, protocol, entryToken: randomBytes(16).toString('hex'), retryAfter: 0 }; this.orphanedConversationSubscriptions.set(entry.key, entry); if (this.retiredProtocolGeneration?.protocol === protocol) this.retiredProtocolGeneration.tombstones.add(entry.key); return entry;
   }
 
   async unsubscribeConversationRecords(protocol, subscriptions, timeoutMs) {
@@ -538,7 +559,7 @@ export class ZCodeBroker {
       if (outcomes[index].status === 'fulfilled' && validConversationUnsubscribeResult(outcomes[index].value) && this.protocol === protocol && subscription.protocol === protocol) this.orphanedConversationSubscriptions.delete(subscription.key);
       else { subscription.retryAfter = Date.now() + 50; if (outcomes[index].status === 'fulfilled' && !validConversationUnsubscribeResult(outcomes[index].value) && this.protocol === protocol) malformedCurrentGeneration = true; }
     }
-    if (malformedCurrentGeneration) { this.clearProtocolGeneration(protocol); this.closeProtocolInBackground(protocol); }
+    if (malformedCurrentGeneration) this.clearProtocolGeneration(protocol);
   }
 
   close() {
@@ -548,11 +569,15 @@ export class ZCodeBroker {
 
   async closeOnce() {
     this.cancelIdleShutdown(); for (const pending of this.permissionPending.values()) { clearTimeout(pending.timer); pending.resolve(offeredDeny(pending.request)); } this.permissionPending.clear(); this.retiredPermissionResponses.clear(); for (const socket of this.sockets) socket.destroy(); this.sockets.clear();
-    const startingProtocol = this.protocolPromise; await this.protocol?.close().catch(() => {}); if (!this.protocol && startingProtocol) { const spawned = await startingProtocol.catch(() => null); await spawned?.close().catch(() => {}); } this.protocol = null; this.protocolPromise = null;
+    const startingProtocol = this.protocolPromise; let retired = this.protocol ? this.clearProtocolGeneration(this.protocol) : this.retiredProtocolGeneration;
+    if (!retired && startingProtocol) { const spawned = await startingProtocol.catch(() => null); if (spawned && this.protocol === spawned) retired = this.clearProtocolGeneration(spawned); else retired = this.retiredProtocolGeneration; }
+    if (retired) await retired.closePromise;
+    const closeError = retired?.error; this.protocol = null; this.protocolPromise = null;
     await Promise.allSettled([...this.localTasks]);
     if (this.server) await new Promise((resolve) => this.server.close(() => resolve()));
     this.server = null;
     await this.removeIdentityIfOwned();
+    if (closeError) throw closeError;
   }
 
   async loadOwnership() {
@@ -668,6 +693,7 @@ function writeRequestError(socket, id, error) { const pluginError = error instan
 function ownerStoreInvalid(cause) { return new PluginError('ZCODE_OWNER_STORE_INVALID', 'The ZCode session owner store is missing or corrupt.', { category: 'storage', remedy: 'Reconcile ownership from validated durable job records before resuming sessions.', ...(cause === undefined ? {} : { cause }) }); }
 function ownerConflict() { return new PluginError('ZCODE_SESSION_OWNER_CONFLICT', 'The session already belongs to another broker owner.', { category: 'authorization', remedy: 'Use the original stable owner credential.' }); }
 function existingProtocolUnavailable() { return new PluginError('ZCODE_BROKER_PROTOCOL_UNAVAILABLE', 'The existing ZCode protocol is unavailable.', { category: 'state', remedy: 'Retry after an active ZCode broker protocol is available.' }); }
+function protocolRetiring() { return new PluginError('ZCODE_PROTOCOL_RETIRING', 'The previous ZCode protocol generation has not closed safely.', { category: 'state', remedy: 'Retry after the retired protocol generation closes.' }); }
 function brokerInputError() { return new PluginError('ZCODE_BROKER_INPUT_INVALID', 'ZCode broker input is invalid.', { category: 'validation', remedy: 'Provide a data root, workspace, endpoint, and launch target.' }); }
 function ownerReleaseTimeout() { return new PluginError('ZCODE_OWNER_RELEASE_TIMEOUT', 'The ZCode owner release exceeded its bounded storage budget.', { category: 'timeout', remedy: 'Retry after the active owner-store operation completes.' }); }
 function identityCleanupError(path, cause) { return new PluginError('ZCODE_BROKER_IDENTITY_CLEANUP_FAILED', 'The ZCode broker identity could not be safely removed.', { category: 'storage', remedy: 'Inspect the broker identity path and retry cleanup.', ...(cause === undefined ? {} : { cause }), details: { path } }); }
