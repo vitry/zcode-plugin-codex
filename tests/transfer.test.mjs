@@ -87,6 +87,14 @@ test('creates imported history, writes a durable result, and succeeds the tracke
   assert.equal(await readFile(join(storage.directory, output.job.resultArtifact), 'utf8'), output.result);
 });
 
+test('Transfer success finalization failure keeps its recoverable result and never rewrites failed', async () => {
+  const context = await executionFixture(); const storageError = new PluginError('JSON_WRITE_FAILED', 'transfer success write failed once', { category: 'storage', remedy: 'retry recovery' }); let failedWrites = 0; let successWrites = 0;
+  const store = { ...context.store, finishJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => { if (next === 'succeeded') { successWrites += 1; throw storageError; } failedWrites += 1; return context.store.finishJob(workspace, jobId, expected, next, patch); } };
+  await assert.rejects(executeTransfer({ ...context, store, sourceThreadId: source, launch: { command: 'zcode', args: [] }, createClient: async () => context.client }), (error) => error === storageError || /** @type {any} */ (error)?.cause === storageError);
+  assert.equal(successWrites, 1); assert.equal(failedWrites, 0); assert.equal((await context.store.readJob(context.workspace, context.job.id)).status, 'running');
+  const storage = await resolveWorkspaceStorage(context); assert.match(await readFile(join(storage.directory, 'results', `${context.job.id}.md`), 'utf8'), /ZCode session ID: zcode-session-1/);
+});
+
 test('Transfer persists and holds its exact worker lease before reading Codex history', async () => {
   const context = await executionFixture(); /** @type {any} */ let observed;
   await assert.rejects(executeTransfer({ ...context, sourceThreadId: source, launch: { command: 'zcode', args: [] }, readThread: async () => {

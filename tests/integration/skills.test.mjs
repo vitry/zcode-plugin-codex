@@ -382,7 +382,7 @@ test('invoke-choice executes with the originating permission snapshot in both di
 test('direct background invocation keeps capabilities private and production owns the worker', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
   const callerContext = await identity.beginCallerTurn({ sessionId: 'background-owner', turnId: 'background-turn', workspace: ctx.workspace, permissionMode: 'read-only', prompt: '$zcode:review --background' });
-  const launched = await runChild(process.execPath, [cli, 'invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'background-owner' } });
+  ctx.preserveEvidence = true; const launched = await runChild(process.execPath, [cli, 'invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'background-owner' } });
   assert.equal(launched.code, 0, launched.stderr || launched.stdout);
   const jobId = /Reserved background job ([a-f0-9]{64})\./.exec(launched.stdout)?.[1];
   assert.ok(jobId, launched.stdout); assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation/);
@@ -394,6 +394,7 @@ test('direct background invocation keeps capabilities private and production own
   do { job = await store.readJob(ctx.workspace, jobId); if (['succeeded', 'failed', 'cancelled'].includes(job.status)) break; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); } while (Date.now() < deadline);
   job = await waitForExactJobCleanup(ctx, store, jobId, process.platform === 'win32' ? 30_000 : 5_000, () => publicInvoke(ctx, ['cancel', jobId], callerContext));
   assert.equal(job.status, 'succeeded', JSON.stringify(job.error));
+  ctx.preserveEvidence = false;
 });
 
 test('named and generic Rescue children receive only queued background output while production workers remain controllable', async (t) => {
@@ -402,6 +403,7 @@ test('named and generic Rescue children receive only queued background output wh
   for (const [route, agentType, control] of [['named', 'zcode-rescue', 'result'], ['generic', 'default', 'cancel']]) {
     const parentId = `background-${route}-parent`; const childId = `background-${route}-child`; const turnId = `background-${route}-turn`;
     const baselineJobIds = new Set((await store.listJobs(ctx.workspace)).map((job) => job.id));
+    ctx.preserveEvidence = true;
     await writeFile(gate, 'hold'); await writeFile(gateReached, ''); await writeFile(record, '');
     const callerContext = await identity.beginCallerTurn({ sessionId: parentId, turnId, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --background ${route} native child` });
     await startRescueChild(ctx, parentId, childId, `${turnId}-child`, agentType);
@@ -445,6 +447,7 @@ test('named and generic Rescue children receive only queued background output wh
       for (let attempt = 0; attempt < 20; attempt += 1) { for (const job of await findNewJobs(store, ctx.workspace, baselineJobIds)) jobs.set(job.id, job); await new Promise((resolvePromise) => setTimeout(resolvePromise, 50)); }
       for (const job of jobs.values()) await waitForExactJobCleanup(ctx, store, job.id, undefined, () => publicInvoke(ctx, ['cancel', job.id], callerContext));
       assert.equal(jobs.size, 1, `expected exactly one new ${route} background job during cleanup`);
+      ctx.preserveEvidence = false;
     }
   }
 });

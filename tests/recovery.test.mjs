@@ -283,6 +283,17 @@ test('workspace scavenging stops an active orphan and rereads completion before 
   assert.equal(await readFile(join(storage.directory, recovered.resultArtifact), 'utf8'), 'completion won the stop race');
 });
 
+test('recovery success finalization failure preserves the result for a later retry', async () => {
+  const fixture = await context(); const { job, store } = await orphanJob(fixture); const storageError = new PluginError('JSON_WRITE_FAILED', 'recovery success write failed once', { category: 'storage', remedy: 'retry recovery' }); let failedWrites = 0; let successWrites = 0; let failSuccess = true;
+  const wrapped = { ...store, finishJob: async (workspace, jobId, expected, next, patch) => { if (next === 'succeeded') { successWrites += 1; if (failSuccess) { failSuccess = false; throw storageError; } } else failedWrites += 1; return store.finishJob(workspace, jobId, expected, next, patch); } };
+  const completed = { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'answer-retry', parentMessageId: 'accepted-input' }, parts: [{ type: 'text', text: 'recover this result later' }] }] };
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  await assert.rejects(scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: completed }) }), (error) => error === storageError || error?.cause === storageError);
+  assert.equal(successWrites, 1); assert.equal(failedWrites, 0); assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
+  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace }); assert.equal(await readFile(join(storage.directory, 'results', `${job.id}.md`), 'utf8'), 'recover this result later');
+  await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: completed }) }); const recovered = await store.readJob(fixture.workspace, job.id); assert.equal(recovered.status, 'succeeded'); assert.equal(successWrites, 2); assert.equal(failedWrites, 0); assert.equal(await readFile(join(storage.directory, recovered.resultArtifact), 'utf8'), 'recover this result later');
+});
+
 test('acknowledged stop cancels a cancelling orphan when post-stop completion has no valid result', async () => {
   const fixture = await context(); const { job, store } = await orphanJob(fixture, { status: 'cancelling' }); let reads = 0; let stops = 0;
   const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');

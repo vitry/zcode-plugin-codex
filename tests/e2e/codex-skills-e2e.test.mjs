@@ -52,7 +52,7 @@ test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode
 
 test('installed Rescue uses one isolated native child for initial and choice continuations', { skip: rescueOptInSkip, timeout: 1_200_000 }, async (t) => {
   if (process.env.ZCODE_CODEX_RESCUE_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_RESCUE_E2E=1.'));
-  const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-rescue-e2e-')); t.after(() => rm(temporary, { recursive: true, force: true }));
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-rescue-e2e-')); let preserveTemporary = false; t.after(() => preserveTemporary ? t.diagnostic(`preserved active background evidence at ${temporary}`) : rm(temporary, { recursive: true, force: true }));
   const codexHome = join(temporary, 'codex-home'); const home = join(temporary, 'home'); const marketplace = join(temporary, 'marketplace'); const workspace = join(temporary, 'workspace'); const zcodeRecord = join(temporary, 'zcode.jsonl');
   await Promise.all([mkdir(codexHome, { recursive: true, mode: 0o700 }), mkdir(home, { recursive: true, mode: 0o700 }), mkdir(workspace, { recursive: true }), writeFile(zcodeRecord, '')]);
   const sourceCodexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
@@ -176,6 +176,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const backgroundDataRoot = join(codexHome, 'plugins', 'data', 'zcode-vitry'); const backgroundStorage = await resolveWorkspaceStorage({ dataRoot: backgroundDataRoot, workspace: canonicalWorkspace });
   const backgroundJobsDirectory = join(backgroundStorage.directory, 'jobs'); const baselineJobIds = await canonicalJobIds(backgroundJobsDirectory);
   await writeFile(backgroundGate, 'hold'); let backgroundIdentity; let backgroundJobId; let backgroundJobPath;
+  preserveTemporary = true;
   try {
     const background = await codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --background repair the fixture in background skill exactly once now. Return only its public queued result.'], workspace, { ...env, FAKE_ZCODE_COMPLETION_GATE: backgroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: backgroundGateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' }, 240_000);
     backgroundJobId = /Reserved background job ([a-f0-9]{64})\./.exec(background.stdout)?.[1];
@@ -221,6 +222,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
     for (const jobId of discovered) await cleanupExactJobNaturally(backgroundDataRoot, canonicalWorkspace, join(backgroundJobsDirectory, `${jobId}.json`), jobId, jobId === backgroundJobId ? backgroundIdentity : undefined);
     assert.ok(discovered.length <= 1, `background invocation created ${discovered.length} jobs instead of at most one`);
     if (backgroundJobId) assert.deepEqual(discovered, [backgroundJobId], 'public background job ID must match the exact newly created durable job');
+    if (backgroundJobId && discovered.length === 1) preserveTemporary = false;
   }
 });
 

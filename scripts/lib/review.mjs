@@ -129,9 +129,10 @@ export async function executeJob(input) {
     const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
     output = await publishSuccessfulResult({ input, job, workspace, dataRoot, result });
   } catch (error) {
-    primaryError = error;
+    primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
     const current = await input.store.readJob(workspace, job.id).catch(() => running);
-    if (isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
+    if (error instanceof SuccessfulResultFinalizationError) { /* recovery owns the durable running job and retained result artifact */ }
+    else if (isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
       if (current.status === 'queued' && sessionId) {
         let stopped = false;
         try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
@@ -181,10 +182,18 @@ async function publishSuccessfulResult({ input, job, workspace, dataRoot, result
       return { job: succeeded, result };
     } catch (error) {
       const winner = await input.store.readJob(workspace, job.id).catch(() => null);
-      if (winner?.resultArtifact !== resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
+      if (winner?.status === 'succeeded' && winner.resultArtifact === resultArtifact) return { job: winner, result: await readResultArtifact({ dataRoot, workspace, artifact: resultArtifact }) };
+      if (winner?.status === 'running') throw new SuccessfulResultFinalizationError(error, resultArtifact);
+      if (!winner) throw new SuccessfulResultFinalizationError(error, resultArtifact);
+      if (winner.resultArtifact !== resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
       throw error;
     }
   });
+}
+
+export class SuccessfulResultFinalizationError extends Error {
+  /** @param {unknown} cause @param {string} resultArtifact */
+  constructor(cause, resultArtifact) { super('Successful result could not be finalized.', { cause }); this.name = 'SuccessfulResultFinalizationError'; this.resultArtifact = resultArtifact; }
 }
 
 /** @param {string} jobId @param {string} status */

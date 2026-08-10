@@ -144,7 +144,7 @@ export async function ensureZCodeBroker(options) {
 
 export class ZCodeBroker {
   /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string}} options */
-  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.server = null; this.protocol = null; this.protocolPromise = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
+  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.server = null; this.protocol = null; this.protocolPromise = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
     if (this.server) return this;
@@ -237,7 +237,8 @@ export class ZCodeBroker {
       else protocol = await this.getProtocol();
       if (frame.method === 'session/send') { if (this.admittingSessions.get(frame.params.sessionId) !== sendToken) throw brokerInputError(); protocol.beginTurn(frame.params.sessionId); this.activeSessionSockets.set(frame.params.sessionId, { socket, token: sendToken }); }
       if (frame.method === 'v4/conversation/subscribe') {
-        if (this.pendingConversationTopics.size >= MAX_PENDING_CONVERSATION_TOPICS || this.conversationSubscriptions.size >= MAX_CONVERSATION_SUBSCRIPTIONS || this.pendingConversationTopics.has(frame.params.topic) || [...this.conversationSubscriptions.values()].some((subscription) => subscription.topic === frame.params.topic)) throw brokerInputError();
+        await this.retryOrphanedSubscriptions(protocol, OWNER_RELEASE_REQUEST_MS, frame.params.topic);
+        if (this.pendingConversationTopics.size >= MAX_PENDING_CONVERSATION_TOPICS || this.conversationSubscriptions.size + this.orphanedConversationSubscriptions.size + this.pendingConversationTopics.size >= MAX_CONVERSATION_SUBSCRIPTIONS || this.pendingConversationTopics.has(frame.params.topic) || [...this.conversationSubscriptions.values(), ...this.orphanedConversationSubscriptions.values()].some((subscription) => subscription.topic === frame.params.topic)) throw brokerInputError();
         subscriptionToken = randomBytes(16).toString('hex'); this.pendingConversationTopics.set(frame.params.topic, { socket, token: subscriptionToken, frames: [], bytes: 0 });
       }
       if (frame.method === 'v4/conversation/unsubscribe') {
@@ -255,7 +256,7 @@ export class ZCodeBroker {
         const pending = this.pendingConversationTopics.get(frame.params.topic);
         const subscriptionId = result?.ack?.subscriptionId;
         if (!pending || pending.token !== subscriptionToken || !isSafeIdentifier(subscriptionId)) {
-          if (isSafeIdentifier(subscriptionId)) await protocol.request('v4/conversation/unsubscribe', { topic: frame.params.topic, subscriptionId, connectionId: frame.params.connectionId }, OWNER_RELEASE_REQUEST_MS).catch(() => {});
+          if (isSafeIdentifier(subscriptionId)) await this.unsubscribeConversationRecords(protocol, [{ key: conversationKey(frame.params.topic, subscriptionId), socket, topic: frame.params.topic, subscriptionId, connectionId: frame.params.connectionId, sessionId: requestedSessionId, ownerId }], OWNER_RELEASE_REQUEST_MS);
           throw brokerInputError();
         }
         this.pendingConversationTopics.delete(frame.params.topic); const key = conversationKey(frame.params.topic, subscriptionId);
@@ -297,9 +298,14 @@ export class ZCodeBroker {
           try { const result = await protocol.request('session/stop', { sessionId }, Math.max(1, Math.min(OWNER_RELEASE_REQUEST_MS, remainingMs))); return { activeSession, result, stopToken }; }
           catch (error) { if (this.stoppingSessions.get(sessionId)?.token === stopToken) this.stoppingSessions.delete(sessionId); throw error; }
         }));
-        for (let index = 0; index < batch.length; index += 1) {
-          const sessionId = batch[index]; if (outcomes[index].status === 'fulfilled') { const stopped = outcomes[index].value; try { protocol.cancelTurn(sessionId); this.activeSessions.delete(sessionId); await this.cleanupSessionSubscriptions(protocol, sessionId); this.settleStoppedSession(sessionId, stopped.activeSession); released.push(sessionId); } finally { if (this.stoppingSessions.get(sessionId)?.token === stopped.stopToken) this.stoppingSessions.delete(sessionId); } } else failed.push(sessionId);
+        const stoppedBatch = outcomes.flatMap((outcome, index) => outcome.status === 'fulfilled' ? [[batch[index], outcome.value]] : []); const detachedSubscriptions = [];
+        try {
+          for (let index = 0; index < batch.length; index += 1) {
+            const sessionId = batch[index]; if (outcomes[index].status === 'fulfilled') { const stopped = outcomes[index].value; protocol.cancelTurn(sessionId); this.activeSessions.delete(sessionId); detachedSubscriptions.push(...this.detachSessionSubscriptions(sessionId)); this.settleStoppedSession(sessionId, stopped.activeSession); released.push(sessionId); } else failed.push(sessionId);
+          }
+          await this.unsubscribeConversationRecords(protocol, detachedSubscriptions, Math.max(0, deadline - Date.now()));
         }
+        finally { for (const [sessionId, stopped] of stoppedBatch) if (this.stoppingSessions.get(sessionId)?.token === stopped.stopToken) this.stoppingSessions.delete(sessionId); }
       }
     }
     if (released.length) {
@@ -329,7 +335,7 @@ export class ZCodeBroker {
     });
     this.protocol.setPermissionHandler((request) => this.requestPermission(request));
     this.protocol.consumeTerminalsWith((params, turn) => { const active = this.activeSessionSockets.get(params.sessionId); if (active?.baseline === turn.baseline && active.inputId === turn.inputId) { if (active.socket?.writable) writeLocal(active.socket, { method: 'state.updated', params }); this.activeSessionSockets.delete(params.sessionId); this.activeSessions.delete(params.sessionId); this.scheduleIdleShutdown(); } });
-    this.protocol.setCloseHandler(() => { this.activeSessions.clear(); this.activeSessionSockets.clear(); this.admittingSessions.clear(); this.stoppingSessions.clear(); this.conversationSubscriptions.clear(); this.pendingConversationTopics.clear(); for (const pending of this.permissionPending.values()) { clearTimeout(pending.timer); pending.resolve(offeredDeny(pending.request)); } this.permissionPending.clear(); this.retiredPermissionResponses.clear(); this.protocol = null; this.protocolPromise = null; this.scheduleIdleShutdown(); });
+    this.protocol.setCloseHandler(() => { this.activeSessions.clear(); this.activeSessionSockets.clear(); this.admittingSessions.clear(); this.stoppingSessions.clear(); this.conversationSubscriptions.clear(); this.orphanedConversationSubscriptions.clear(); this.orphanRetryPromise = null; this.pendingConversationTopics.clear(); for (const pending of this.permissionPending.values()) { clearTimeout(pending.timer); pending.resolve(offeredDeny(pending.request)); } this.permissionPending.clear(); this.retiredPermissionResponses.clear(); this.protocol = null; this.protocolPromise = null; this.scheduleIdleShutdown(); });
     return this.protocol;
   }
 
@@ -369,18 +375,46 @@ export class ZCodeBroker {
   }
 
   async cleanupSessionSubscriptions(protocol, sessionId) {
-    const topic = `conversation/${sessionId}`;
-    this.pendingConversationTopics.delete(topic);
-    const subscriptions = [...this.conversationSubscriptions].filter(([, subscription]) => subscription.sessionId === sessionId);
-    for (const [key] of subscriptions) this.conversationSubscriptions.delete(key);
-    await Promise.allSettled(subscriptions.map(([, subscription]) => protocol.request('v4/conversation/unsubscribe', { topic: subscription.topic, subscriptionId: subscription.subscriptionId, connectionId: subscription.connectionId }, OWNER_RELEASE_REQUEST_MS)));
+    await this.unsubscribeConversationRecords(protocol, this.detachSessionSubscriptions(sessionId), OWNER_RELEASE_REQUEST_MS);
   }
 
   async cleanupSocketSubscriptions(socket) {
     const subscriptions = [...this.conversationSubscriptions].filter(([, subscription]) => subscription.socket === socket);
     for (const [key] of subscriptions) this.conversationSubscriptions.delete(key);
     const protocol = this.protocol;
-    if (protocol) await Promise.allSettled(subscriptions.map(([, subscription]) => protocol.request('v4/conversation/unsubscribe', { topic: subscription.topic, subscriptionId: subscription.subscriptionId, connectionId: subscription.connectionId }, OWNER_RELEASE_REQUEST_MS)));
+    await this.unsubscribeConversationRecords(protocol, subscriptions.map(([key, subscription]) => ({ key, ...subscription })), protocol ? OWNER_RELEASE_REQUEST_MS : 0);
+  }
+
+  detachSessionSubscriptions(sessionId) {
+    this.pendingConversationTopics.delete(`conversation/${sessionId}`);
+    const subscriptions = [...this.conversationSubscriptions].filter(([, subscription]) => subscription.sessionId === sessionId);
+    for (const [key] of subscriptions) this.conversationSubscriptions.delete(key);
+    return subscriptions.map(([key, subscription]) => ({ key, ...subscription }));
+  }
+
+  async retryOrphanedSubscriptions(protocol, timeoutMs, topic) {
+    if (this.orphanRetryPromise) return this.orphanRetryPromise;
+    const now = Date.now(); const candidates = [...this.orphanedConversationSubscriptions.values()].filter((subscription) => subscription.protocol === protocol && subscription.retryAfter <= now).sort((left, right) => Number(right.topic === topic) - Number(left.topic === topic)).slice(0, 8);
+    if (!candidates.length) return;
+    const retry = this.unsubscribeConversationRecords(protocol, candidates, timeoutMs); this.orphanRetryPromise = retry;
+    try { await retry; } finally { if (this.orphanRetryPromise === retry) this.orphanRetryPromise = null; }
+  }
+
+  async unsubscribeConversationRecords(protocol, subscriptions, timeoutMs) {
+    if (!subscriptions.length) return;
+    const entries = subscriptions.map((subscription) => {
+      const existing = this.orphanedConversationSubscriptions.get(subscription.key);
+      if (existing) return existing;
+      const entry = { ...subscription, protocol, entryToken: randomBytes(16).toString('hex'), retryAfter: 0 };
+      this.orphanedConversationSubscriptions.set(entry.key, entry); return entry;
+    });
+    if (!protocol || timeoutMs <= 0) return;
+    const outcomes = await Promise.allSettled(entries.map((subscription) => Promise.resolve().then(() => protocol.request('v4/conversation/unsubscribe', { topic: subscription.topic, subscriptionId: subscription.subscriptionId, connectionId: subscription.connectionId }, timeoutMs))));
+    for (let index = 0; index < entries.length; index += 1) {
+      const subscription = entries[index]; if (this.orphanedConversationSubscriptions.get(subscription.key)?.entryToken !== subscription.entryToken) continue;
+      if (outcomes[index].status === 'fulfilled') this.orphanedConversationSubscriptions.delete(subscription.key);
+      else subscription.retryAfter = Date.now() + 50;
+    }
   }
 
   close() {

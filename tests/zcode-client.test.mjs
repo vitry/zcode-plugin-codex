@@ -696,6 +696,50 @@ test('conversation subscription admission and disconnect cleanup are globally bo
   await rm(directory, { recursive: true, force: true });
 });
 
+test('failed upstream unsubscribe becomes a bounded non-routing orphan and retries later', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-conversation-orphan-')); const writes = []; let failUnsubscribe = true; const calls = [];
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '9'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); const socket = { writable: true, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const ownerId = 'orphan-owner-stable'; const sessionId = 'orphan-session'; const topic = `conversation/${sessionId}`; const subscriptionId = 'orphan-subscription';
+  const protocol = { request: async (...args) => { calls.push(args); if (args[0] === 'v4/conversation/unsubscribe' && failUnsubscribe) throw new Error('upstream unavailable'); return {}; } }; broker.protocol = protocol;
+  broker.conversationSubscriptions.set(JSON.stringify([topic, subscriptionId]), { socket, topic, subscriptionId, connectionId: 'orphan-connection', sessionId, ownerId }); await broker.cleanupSocketSubscriptions(socket);
+  assert.equal(broker.conversationSubscriptions.size, 0); assert.equal(broker.orphanedConversationSubscriptions.size, 1);
+  broker.routeConversationFrame({ method: 'v4/conversation/frame', params: { topic, subscriptionId, frame: { payload: 'must not route' } } }); assert.equal(writes.length, 0);
+  for (let index = 0; index < 255; index += 1) broker.conversationSubscriptions.set(`active-${index}`, { socket: {}, topic: `conversation/active-${index}`, subscriptionId: `active-${index}`, connectionId: `active-${index}`, sessionId: `active-${index}`, ownerId });
+  broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.reloadOwnership = async () => {};
+  await broker.handleLocal(socket, JSON.stringify({ id: 1, method: 'v4/conversation/subscribe', params: { topic, connectionId: 'replacement-connection', clientMode: 'desktop-continuous' } })); assert.equal(writes.at(-1).error.data.pluginError.code, 'ZCODE_BROKER_INPUT_INVALID'); assert.equal(broker.orphanedConversationSubscriptions.size, 1);
+  failUnsubscribe = false; await new Promise((resolvePromise) => setTimeout(resolvePromise, 60)); await broker.retryOrphanedSubscriptions(protocol, 250); assert.equal(broker.orphanedConversationSubscriptions.size, 0); assert.ok(calls.length >= 2);
+  await rm(directory, { recursive: true, force: true });
+});
+
+test('conversation orphan retries are coalesced bounded and cannot resurrect after a newer ack', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-conversation-orphan-race-')); const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '8'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); const protocol = { request: async () => ({}) };
+  for (let index = 0; index < 9; index += 1) await broker.unsubscribeConversationRecords(protocol, [{ key: `orphan-${index}`, topic: `conversation/orphan-${index}`, subscriptionId: `subscription-${index}`, connectionId: `connection-${index}`, sessionId: `orphan-${index}`, ownerId: 'orphan-race-owner' }], 0);
+  let retryCalls = 0; protocol.request = async () => { retryCalls += 1; await new Promise((resolvePromise) => setTimeout(resolvePromise, 10)); return {}; };
+  await Promise.all([broker.retryOrphanedSubscriptions(protocol, 250), broker.retryOrphanedSubscriptions(protocol, 250)]); assert.equal(retryCalls, 8); assert.equal(broker.orphanedConversationSubscriptions.size, 1);
+  const record = { key: 'raced-orphan', topic: 'conversation/raced', subscriptionId: 'raced-subscription', connectionId: 'raced-connection', sessionId: 'raced', ownerId: 'orphan-race-owner' }; let resolveFirst; let rejectFirst; let resolveSecond; let call = 0;
+  protocol.request = () => { call += 1; return new Promise((resolvePromise, rejectPromise) => { if (call === 1) { resolveFirst = resolvePromise; rejectFirst = rejectPromise; } else resolveSecond = resolvePromise; }); };
+  const first = broker.unsubscribeConversationRecords(protocol, [record], 250); const second = broker.unsubscribeConversationRecords(protocol, [record], 250); await new Promise((resolvePromise) => setImmediate(resolvePromise)); resolveSecond({}); await second; rejectFirst(new Error('late failure')); await first; assert.equal(broker.orphanedConversationSubscriptions.has(record.key), false); void resolveFirst;
+  const nullProtocolSocket = {}; broker.conversationSubscriptions.set('null-protocol', { socket: nullProtocolSocket, topic: 'conversation/null-protocol', subscriptionId: 'null-subscription', connectionId: 'null-connection', sessionId: 'null-protocol', ownerId: 'orphan-race-owner' }); broker.protocol = null; await broker.cleanupSocketSubscriptions(nullProtocolSocket); assert.equal(broker.orphanedConversationSubscriptions.has('null-protocol'), true);
+  await rm(directory, { recursive: true, force: true });
+});
+
+test('malformed subscribe cleanup failure retains a non-routing orphan tombstone', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-conversation-malformed-cleanup-')); const writes = []; const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '7'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); const socket = { writable: true, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const ownerId = 'malformed-cleanup-owner'; const sessionId = 'malformed-cleanup-session'; const topic = `conversation/${sessionId}`;
+  broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.reloadOwnership = async () => {};
+  const protocol = { request: async (method) => { if (method === 'v4/conversation/subscribe') { broker.pendingConversationTopics.delete(topic); return { ack: { subscriptionId: 'safe-subscription' } }; } throw new Error('unsubscribe failed'); } }; broker.protocol = protocol;
+  await broker.handleLocal(socket, JSON.stringify({ id: 1, method: 'v4/conversation/subscribe', params: { topic, connectionId: 'malformed-connection', clientMode: 'desktop-continuous' } })); assert.equal(writes.at(-1).error.data.pluginError.code, 'ZCODE_BROKER_INPUT_INVALID'); assert.equal(broker.orphanedConversationSubscriptions.size, 1); broker.routeConversationFrame({ method: 'v4/conversation/frame', params: { topic, subscriptionId: 'safe-subscription' } }); assert.equal(writes.length, 1);
+  await rm(directory, { recursive: true, force: true });
+});
+
+test('owner release cleans sixteen slow subscriptions within one shared budget', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-cleanup-budget-')); const endpoint = join(directory, 'broker.sock'); const ownerId = 'release-budget-owner'; const socket = { writable: true, destroyed: false, zcodeWriter: { write() {} }, destroy() {} }; const broker = newTestBroker({ endpoint, brokerToken: 'a'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); const sessions = {};
+  for (let index = 0; index < 16; index += 1) { const sessionId = `budget-session-${index}`; sessions[sessionId] = ownerId; broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.conversationSubscriptions.set(`budget-${index}`, { socket, topic: `conversation/${sessionId}`, subscriptionId: `budget-sub-${index}`, connectionId: `budget-connection-${index}`, sessionId, ownerId }); }
+  await writeFile(`${endpoint}.owners.json`, JSON.stringify({ version: 1, sessions })); broker.ownershipStoreEstablished = true; let unsubscribeCalls = 0;
+  broker.protocol = { request: async (method) => { if (method === 'session/stop') return {}; unsubscribeCalls += 1; await new Promise((resolvePromise) => setTimeout(resolvePromise, 80)); throw new Error('slow unsubscribe failure'); }, cancelTurn() {} };
+  const started = Date.now(); const released = await broker.releaseOwner(socket, ownerId, []); const elapsed = Date.now() - started;
+  assert.equal(released.releasedSessionIds.length, 16); assert.equal(released.failedSessionIds.length, 0); assert.equal(unsubscribeCalls, 16); assert.ok(elapsed < 750, `release cleanup exceeded its shared budget: ${elapsed}ms`); assert.equal(broker.orphanedConversationSubscriptions.size, 16);
+  await rm(directory, { recursive: true, force: true });
+});
+
 test('session stop settles only its permission and ignores the exact late response without harming multiplexed work', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-permission-stop-')); const writes = []; let destroyed = 0;
   const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '7'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });

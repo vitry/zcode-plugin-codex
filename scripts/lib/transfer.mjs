@@ -123,6 +123,8 @@ async function executeClaimedTransfer(input) {
   } catch (caught) {
     const error = input.signal?.aborted ? input.signal.reason : caught;
     const current = await store?.readJob(workspace, job?.id).catch(() => running);
+    if (!isInterruption(error) && current?.status === 'succeeded' && sessionId && resultArtifact && result && resumeCommand) return { type: 'transfer', job: current, result, zcodeSessionId: sessionId, resumeCommand };
+    if (!isInterruption(error) && current?.status === 'running' && resultArtifact && result && resumeCommand) throw error;
     if (isInterruption(error)) {
       if (current?.status === 'succeeded' && sessionId && resultArtifact && result && resumeCommand) return { type: 'transfer', job: current, result, zcodeSessionId: sessionId, resumeCommand };
       if (resultArtifact) await (input.removeResult ?? removeResultArtifact)({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});

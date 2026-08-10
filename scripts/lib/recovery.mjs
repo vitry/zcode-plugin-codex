@@ -1,6 +1,6 @@
 import { PluginError } from './errors.mjs';
 import { boundedCancelMessage, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
-import { extractFinalResult, writeResultArtifact } from './review.mjs';
+import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
 import { withFileLock } from './fs.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
@@ -23,7 +23,7 @@ export async function reconcileOwnedJobs(input) {
   const outcomes = [];
   for (const job of jobs) {
     try { outcomes.push(await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'owner-recovery' })); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); outcomes.push(job); }
+    catch (error) { throwIfRecoveryInterrupted(input, error); if (error instanceof SuccessfulResultFinalizationError) throw error; outcomes.push(job); }
   }
   return outcomes;
 }
@@ -35,7 +35,7 @@ export async function scavengeWritableJobs(input) {
   const outcomes = [];
   for (const job of jobs) {
     try { outcomes.push(await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'scavenge' })); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); outcomes.push(job); }
+    catch (error) { throwIfRecoveryInterrupted(input, error); if (error instanceof SuccessfulResultFinalizationError) throw error; outcomes.push(job); }
   }
   return outcomes;
 }
@@ -163,6 +163,7 @@ async function reconcileOrphan(input, job) {
     return completeJob(input, job, snapshot);
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);
+    if (error instanceof SuccessfulResultFinalizationError) throw error;
     const current = await input.store.readJob(input.workspace, job.id);
     if (TERMINAL.has(current.status)) return current;
     return input.intent === 'scavenge' && controlChannelUnavailable(error)
@@ -224,6 +225,7 @@ async function settleEndedRemoteJob(input, job) {
     return await completeEndedJob(input, job, snapshot) ?? cancelJob(input, job);
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);
+    if (error instanceof SuccessfulResultFinalizationError) throw error;
     return controlChannelUnavailable(error)
       ? failEndedUnavailableJob(input, job, establishedUnavailableOrphanError(error))
       : retainAfterStopFailure(input, job, error);
@@ -234,24 +236,33 @@ async function settleEndedRemoteJob(input, job) {
 async function completeEndedJob(input, job, snapshot) {
   if (!hasBoundary(job) || !Number.isSafeInteger(snapshot?.runtime?.stateRevision)
     || snapshot.runtime.stateRevision < job.startRevision || !['completed', 'idle'].includes(snapshot?.projection?.status)) return null;
+  let resultArtifact;
   try {
     const result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
-    const resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
-    return await input.store.finishJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, exitCode: 0 });
-  } catch (error) {
-    if (isTransitionConflict(error)) return input.store.readJob(input.workspace, job.id);
-    return null;
-  }
+    resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
+  } catch { return null; }
+  return finishRecoveredResult(input, job, resultArtifact);
 }
 /** @param {any} input @param {any} job @param {any} snapshot @param {'fail'|'cancel'} [invalidResult] */
 async function completeJob(input, job, snapshot, invalidResult = 'fail') {
+  let resultArtifact;
   try {
     const result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
-    const resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
-    return await input.store.finishJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, exitCode: 0 });
+    resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
   } catch (error) {
-    if (isTransitionConflict(error)) return input.store.readJob(input.workspace, job.id);
     return invalidResult === 'cancel' ? cancelJob(input, job) : failJob(input, job, error);
+  }
+  return finishRecoveredResult(input, job, resultArtifact);
+}
+
+/** @param {any} input @param {any} job @param {string} resultArtifact */
+async function finishRecoveredResult(input, job, resultArtifact) {
+  try { return await input.store.finishJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, exitCode: 0 }); }
+  catch (error) {
+    const winner = await input.store.readJob(input.workspace, job.id).catch(() => null);
+    if (winner?.status === 'succeeded' && winner.resultArtifact === resultArtifact) return winner;
+    if (isTransitionConflict(error) && winner) return winner;
+    throw new SuccessfulResultFinalizationError(error, resultArtifact);
   }
 }
 /** @param {any} input @param {any} job @param {any} client @param {unknown} error */
