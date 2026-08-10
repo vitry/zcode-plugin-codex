@@ -347,7 +347,7 @@ export class ZCodeBroker {
     const released = []; const failed = []; const stoppedFences = new Map(); const releaseSessionAdmissions = new Map(); let releaseProtocol = null;
     try {
       if (!this.protocol) {
-        if (this.protocolPromise) failed.push(...owned);
+        if (this.protocolPromise || this.retiredProtocolGeneration) failed.push(...owned);
         else for (const sessionId of owned) {
           let sessionAdmission; try { sessionAdmission = this.admission.beginSessionRequest('broker/releaseSession', sessionId, ownerId, socket); }
           catch { failed.push(sessionId); continue; }
