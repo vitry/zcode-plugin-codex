@@ -167,10 +167,24 @@ test('installed Rescue uses one isolated native child for initial and choice con
     const choiceCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
     assert.equal(choiceCalls.filter((call) => call.method === 'session/send').length, 1, `${choice} choice must execute exactly one ZCode turn`);
   }
+
+  await writeFile(zcodeRecord, '');
+  const background = await codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --background repair the fixture in background skill exactly once now. Return only its public queued result.'], workspace, { ...env, FAKE_ZCODE_DELAY_MS: '150' }, 240_000);
+  if (skipExternalFailure(t, background)) return;
+  assert.equal(background.code, 0, `codex background Rescue failed\n${background.stdout}\n${background.stderr}`);
+  assert.match(background.stdout, /Reserved background job [a-f0-9]{64}\./, 'native Rescue child must return the public queued result');
+  assert.doesNotMatch(`${background.stdout}\n${background.stderr}`, /executionCapability|callerContext|privateInvocation|run-reserved-job/);
+  await waitUntil(async () => {
+    const calls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    return calls.some((call) => call.method === 'session/read');
+  }, 30_000, 'production background worker did not continue after the native child returned');
+  const backgroundCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.equal(backgroundCalls.filter((call) => call.method === 'session/send').length, 1, 'background Rescue must execute exactly one ZCode turn');
 });
 
 async function codex(args, cwd, env, timeoutMs = 60_000) { return runProcess(codexLaunch(args, { root, env }), { cwd, env, timeoutMs, maxOutputBytes: 16 * 1024 * 1024 }); }
 async function git(args, cwd) { const result = await runProcess({ command: 'git', args, options: { shell: false } }, { cwd, timeoutMs: 30_000 }); assert.equal(result.code, 0, result.stderr); }
+async function waitUntil(predicate, timeoutMs, message) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { if (await predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } assert.fail(message); }
 function unqualified(code, detail) { return `codex-skills-unqualified ${JSON.stringify({ qualified: false, code, detail })}`; }
 function markUnqualified(t, message) { if (qualificationRequired) assert.fail(message); t.skip(message); }
 function skipExternalFailure(t, result) {

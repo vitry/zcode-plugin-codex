@@ -384,6 +384,22 @@ test('a non-worker reserved-job invocation receives the foreground abort signal'
   assert.equal((await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, reserved.json.job.id)).status, 'cancelled');
 });
 
+test('production background launch failure revokes its capability and fails the queued job', async () => {
+  const context = await fixture(); const failure = new Error('simulated descriptor launch failure');
+  await assert.rejects(runCompanion(['rescue', '--background', '--fresh', 'repair'], {
+    cwd: context.workspace, env: context.env, caller: caller('background-owner'), autoLaunchBackground: true,
+    dependencies: { startBackgroundWorker: async () => { throw failure; } },
+  }), (error) => error === failure);
+
+  const store = createStateStore({ dataRoot: context.dataRoot }); const [job] = await store.listJobs(context.workspace);
+  assert.equal(job.status, 'failed'); assert.equal(job.error.message, failure.message);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+  const capabilityFiles = await readdir(join(storage.directory, 'identity', 'capabilities'));
+  assert.equal(capabilityFiles.length, 1);
+  const record = JSON.parse(await readFile(join(storage.directory, 'identity', 'capabilities', capabilityFiles[0]), 'utf8'));
+  assert.equal(record.operation, 'run-reserved-job'); assert.equal(record.jobId, job.id); assert.equal(record.consumedAt, null); assert.ok(Date.parse(record.revokedAt));
+});
+
 test('status/list/result and queued cancellation enforce owned job semantics', async () => {
   const context = await fixture();
   const reserved = await companion(context, ['rescue', '--background', '--fresh', 'task']);

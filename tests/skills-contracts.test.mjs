@@ -115,6 +115,18 @@ test('managed Rescue role is a fixed TOML forwarder without capability or task m
   assert.match(source, /(?:Do not|Never) inspect or modify code independently/i);
 });
 
+test('native Rescue forwarders request explicit background through the same capability-free constant invocation', () => {
+  const source = skill('rescue'); const role = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
+  const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source)?.[1];
+  assert.ok(generic, 'generic forwarder fixture must be present');
+  for (const forwarder of [role, generic]) {
+    assert.equal(forwarder.match(/invoke rescue/g)?.length, 1);
+    assert.doesNotMatch(forwarder, /run-reserved-job|executionCapability|callerContext|privateInvocation|FD3|FD4|--background/);
+  }
+  assert.match(source, /native prompt hook has already recorded the exact arguments and task text/i);
+  assert.match(source, /Never place user text, command arguments, job or session identity, permissions, credentials, or authorization material in a process command or agent message\./);
+});
+
 test('Rescue choice continuation reuses one child with exact fixed messages and commands', () => {
   const source = skill('rescue');
   const role = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');

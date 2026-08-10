@@ -236,12 +236,12 @@ test('execution capability is exact-match and atomically single-use', async () =
     jobId: 'job-a',
     ownerSessionId: 'session-a',
     workspace: workspaceA,
-    operation: 'continue',
+    operation: 'run-reserved-job',
     specDigest: 'a'.repeat(64),
   };
   const token = await identity.createExecutionCapability({
     ...expected,
-    permissionSnapshot: { mode: 'workspace-write' },
+    permissionSnapshot: { permissionMode: 'workspace-write' },
   });
 
   await assert.rejects(
@@ -266,6 +266,8 @@ test('execution capability is exact-match and atomically single-use', async () =
   const success = attempts.find(({ status }) => status === 'fulfilled');
   assert.ok(success && success.status === 'fulfilled');
   assert.equal(success.value.jobId, 'job-a');
+  assert.deepEqual(success.value.permissionSnapshot, { permissionMode: 'workspace-write' });
+  assert.equal(JSON.stringify(success.value).includes(token), false);
 });
 
 test('revocation preserves consumed outcomes for legacy and spec-bound capabilities', async () => {
