@@ -172,7 +172,8 @@ test('a new active attempt is durable before the first job transition', async ()
     const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); if (initialStatus === 'running') await store.transitionJob(workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'zs' }); const attemptFile = await attemptFixture(root, workspace, job.id);
     /** @type {any} */
     let observed;
-    const wrapped = { ...store, transitionJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patchArg = {}) => { observed ??= await attemptFile.read(); return store.transitionJob(workspaceArg, jobIdArg, expected, next, patchArg); } };
+    const observe = async () => { observed ??= await attemptFile.read(); };
+    const wrapped = { ...store, transitionJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patchArg = {}) => { await observe(); return store.transitionJob(workspaceArg, jobIdArg, expected, next, patchArg); }, finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patchArg = {}) => { await observe(); return store.finishJob(workspaceArg, jobIdArg, expected, next, patchArg); } };
     assert.equal((await createJobController({ store: wrapped, stopSession: async () => {} }).cancel(workspace, job.id, 'session-a')).status, 'cancelled'); assert.ok(observed); assert.equal(observed.status, 'active'); assert.match(observed.attemptId, /^[a-f0-9]{64}$/);
   }
 });
@@ -270,10 +271,29 @@ test('operation LOCK_TIMEOUT errors are not mistaken for cancel-lock contention'
 test('finalize failure after stop acknowledgement preserves cancelling for reconciliation', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); await store.transitionJob(workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'zs' }); const attemptFile = await attemptFixture(root, workspace, job.id);
   let failFinalize = true; let stops = 0;
-  const wrapped = { ...store, transitionJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => { if (next === 'cancelled' && failFinalize) { failFinalize = false; throw new PluginError('JSON_WRITE_FAILED', 'disk failed', { category: 'storage', remedy: 'retry' }); } return store.transitionJob(workspaceArg, jobIdArg, expected, next, patch); } };
+  const wrapped = { ...store, finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => { if (failFinalize) { failFinalize = false; throw new PluginError('JSON_WRITE_FAILED', 'disk failed', { category: 'storage', remedy: 'retry' }); } return store.finishJob(workspaceArg, jobIdArg, expected, next, patch); } };
   const controller = createJobController({ store: wrapped, stopSession: async () => { stops += 1; } });
   await assert.rejects(controller.cancel(workspace, job.id, 'session-a'), { code: 'JOB_CANCEL_FINALIZE_FAILED' }); assert.equal(stops, 1); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelling'); const pending = await attemptFile.read(); assert.equal(pending.status, 'finalize-pending');
   assert.equal((await controller.cancel(workspace, job.id, 'session-a')).status, 'cancelled'); const succeeded = await attemptFile.read(); assert.equal(stops, 1); assert.equal(succeeded.attemptId, pending.attemptId); assert.equal(succeeded.status, 'succeeded');
+});
+
+test('cancel finalization timestamps after progress persisted concurrently with stop acknowledgement', async () => {
+  const { workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  await store.transitionJob(workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'zs' });
+  let raced = false;
+  const wrapped = {
+    ...store,
+    finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => {
+      if (!raced) {
+        raced = true;
+        await store.updateJobProgress(workspaceArg, jobId, { phase: 'waiting', message: 'Worker completed cancellation cleanup.', observedAt: new Date().toISOString() });
+      }
+      return store.finishJob(workspaceArg, jobId, expected, next, patch);
+    },
+  };
+  const cancelled = await createJobController({ store: wrapped, stopSession: async () => {} }).cancel(workspace, job.id, 'session-a');
+  assert.equal(raced, true); assert.equal(cancelled.status, 'cancelled');
+  assert.ok(Date.parse(cancelled.finishedAt) >= Date.parse(cancelled.lastActivityAt));
 });
 
 test('resume candidates are only latest owned rescue sessions', async () => {

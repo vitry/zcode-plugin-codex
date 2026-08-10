@@ -1,6 +1,5 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -9,6 +8,7 @@ import test from 'node:test';
 
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
+import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import {
@@ -173,7 +173,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
 
   await writeFile(zcodeRecord, '');
   const backgroundGate = join(temporary, 'background-completion.gate'); const backgroundGateReached = join(temporary, 'background-completion.reached');
-  const backgroundStorage = await resolveWorkspaceStorage({ dataRoot: join(codexHome, 'plugins', 'data', 'zcode-vitry'), workspace: canonicalWorkspace });
+  const backgroundDataRoot = join(codexHome, 'plugins', 'data', 'zcode-vitry'); const backgroundStorage = await resolveWorkspaceStorage({ dataRoot: backgroundDataRoot, workspace: canonicalWorkspace });
   const backgroundJobsDirectory = join(backgroundStorage.directory, 'jobs'); const baselineJobIds = await canonicalJobIds(backgroundJobsDirectory);
   await writeFile(backgroundGate, 'hold'); let backgroundIdentity; let backgroundJobId; let backgroundJobPath;
   try {
@@ -190,7 +190,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
     let job = await waitForValue(() => readExactJob(jobPath, jobId), 30_000, 'exact installed background job record was not found');
     backgroundIdentity = exactWorkerIdentity(job);
     await waitUntil(async () => await readFile(backgroundGateReached, 'utf8').catch(() => '') === 'blocked', 5_000, 'background worker did not reach the explicit post-ack completion gate');
-    assert.equal(job.status, 'running'); assert.equal(isProcessAlive(backgroundIdentity.pid), true);
+    assert.equal(job.status, 'running'); assert.equal(await exactWorkerLeaseAvailable(backgroundDataRoot, canonicalWorkspace, jobId, backgroundIdentity.workerLeaseId), false);
     const backgroundFrames = background.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
     try {
       const evidence = qualifyCodexRescueBackgroundEvidence(
@@ -209,7 +209,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
       throw error;
     }
     await writeFile(backgroundGate, 'release');
-    await waitUntil(async () => { job = await readExactJob(jobPath, jobId); return job?.status === 'succeeded' && !isProcessAlive(backgroundIdentity.pid); }, 30_000, 'exact background job or detached worker did not reach terminal cleanup');
+    await waitUntil(async () => { job = await readExactJob(jobPath, jobId); return job?.status === 'succeeded' && await exactWorkerLeaseAvailable(backgroundDataRoot, canonicalWorkspace, jobId, backgroundIdentity.workerLeaseId); }, 30_000, 'exact background job or detached worker did not reach terminal cleanup');
     assert.ok(typeof job.resultArtifact === 'string' && job.resultArtifact.length > 0, 'terminal background job must retain its result artifact');
     const result = await readFile(join(dirname(dirname(jobPath)), job.resultArtifact), 'utf8');
     assert.equal(result, 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C'); assert.doesNotMatch(result, new RegExp(`${escapeRegExp(backgroundGate)}|${escapeRegExp(backgroundGateReached)}`));
@@ -217,7 +217,10 @@ test('installed Rescue uses one isolated native child for initial and choice con
     assert.equal(backgroundCalls.filter((call) => call.method === 'session/send').length, 1, 'background Rescue must execute exactly one ZCode turn');
   } finally {
     await writeFile(backgroundGate, 'release').catch(() => {});
-    if (backgroundJobId && backgroundJobPath) await cleanupExactJobWorker(backgroundJobPath, backgroundJobId, backgroundIdentity);
+    const discovered = await discoverNewJobIds(backgroundJobsDirectory, baselineJobIds, 2_000);
+    for (const jobId of discovered) await cleanupExactJobNaturally(backgroundDataRoot, canonicalWorkspace, join(backgroundJobsDirectory, `${jobId}.json`), jobId, jobId === backgroundJobId ? backgroundIdentity : undefined);
+    assert.ok(discovered.length <= 1, `background invocation created ${discovered.length} jobs instead of at most one`);
+    if (backgroundJobId) assert.deepEqual(discovered, [backgroundJobId], 'public background job ID must match the exact newly created durable job');
   }
 });
 
@@ -226,11 +229,11 @@ async function git(args, cwd) { const result = await runProcess({ command: 'git'
 async function waitUntil(predicate, timeoutMs, message) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { if (await predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } assert.fail(message); }
 async function waitForValue(read, timeoutMs, message) { let value; await waitUntil(async () => { value = await read(); return value !== undefined; }, timeoutMs, message); return value; }
 async function canonicalJobIds(jobsDirectory) { try { return new Set((await readdir(jobsDirectory, { withFileTypes: true })).filter((entry) => entry.isFile() && /^[a-f0-9]{64}\.json$/u.test(entry.name)).map((entry) => entry.name.slice(0, -5))); } catch (error) { if (error?.code === 'ENOENT') return new Set(); throw error; } }
+async function discoverNewJobIds(jobsDirectory, baselineJobIds, timeoutMs) { const deadline = Date.now() + timeoutMs; let discovered = []; do { discovered = [...await canonicalJobIds(jobsDirectory)].filter((jobId) => !baselineJobIds.has(jobId)); if (discovered.length > 0) break; await new Promise((resolve) => setTimeout(resolve, 50)); } while (Date.now() < deadline); return discovered.sort(); }
 async function readExactJob(jobPath, jobId) { try { const job = JSON.parse(await readFile(jobPath, 'utf8')); return job?.id === jobId ? job : undefined; } catch { return undefined; } }
 function exactWorkerIdentity(job) { assert.ok(Number.isSafeInteger(job?.childPid) && job.childPid > 0); assert.ok(typeof job.workerLeaseId === 'string' && /^[a-f0-9]{64}$/u.test(job.workerLeaseId)); return { pid: job.childPid, workerLeaseId: job.workerLeaseId }; }
-function isProcessAlive(pid) { if (!Number.isSafeInteger(pid)) return false; try { process.kill(pid, 0); return true; } catch { return false; } }
-async function cleanupExactJobWorker(jobPath, jobId, identity) { let job = await waitForValue(() => readExactJob(jobPath, jobId), 2_000, 'exact background job was not persisted before teardown'); const exact = identity ?? exactWorkerIdentity(job); const naturallyStopped = await waitForBoolean(async () => { job = await readExactJob(jobPath, jobId); return job && ['succeeded', 'failed', 'cancelled'].includes(job.status) && !isProcessAlive(exact.pid); }, 5_000); if (naturallyStopped) return; job = await readExactJob(jobPath, jobId); assert.equal(job?.childPid, exact.pid); assert.equal(job?.workerLeaseId, exact.workerLeaseId); if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(exact.pid), '/T', '/F'], { windowsHide: true, shell: false, stdio: 'ignore' }); else try { process.kill(-exact.pid, 'SIGTERM'); } catch { try { process.kill(exact.pid, 'SIGTERM'); } catch { /* already exited */ } } await waitUntil(() => !isProcessAlive(exact.pid), 2_000, `exact background worker ${exact.pid} survived E2E teardown`); }
-async function waitForBoolean(predicate, timeoutMs) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { if (await predicate()) return true; await new Promise((resolve) => setTimeout(resolve, 50)); } return false; }
+async function exactWorkerLeaseAvailable(dataRoot, workspace, jobId, workerLeaseId) { try { await withWorkerLease({ dataRoot, workspace, jobId, workerLeaseId, timeoutMs: 0 }, async () => {}); return true; } catch (error) { if (error?.code === 'LOCK_TIMEOUT') return false; throw error; } }
+async function cleanupExactJobNaturally(dataRoot, workspace, jobPath, jobId, identity) { let job = await waitForValue(() => readExactJob(jobPath, jobId), 2_000, 'exact background job was not persisted before teardown'); const exact = identity ?? (job.workerLeaseId ? exactWorkerIdentity(job) : null); await waitUntil(async () => { job = await readExactJob(jobPath, jobId); return job && ['succeeded', 'failed', 'cancelled'].includes(job.status) && (!exact || job.workerLeaseId === exact.workerLeaseId && await exactWorkerLeaseAvailable(dataRoot, workspace, jobId, exact.workerLeaseId)); }, 30_000, `exact background job ${jobId} did not naturally reach terminal state and release its worker lease`); }
 function escapeRegExp(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function unqualified(code, detail) { return `codex-skills-unqualified ${JSON.stringify({ qualified: false, code, detail })}`; }
 function markUnqualified(t, message) { if (qualificationRequired) assert.fail(message); t.skip(message); }

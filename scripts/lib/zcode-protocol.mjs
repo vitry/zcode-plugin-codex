@@ -10,7 +10,7 @@ export const MAX_DRAIN_TIMEOUT_MS = 30_000;
 export const COMPLETION_REASONS = Object.freeze(['prompt_completed', 'prompt_failed']);
 
 export class ZCodeProtocolClient {
-  /** @param {import('node:child_process').ChildProcess} child @param {{ requestTimeoutMs?:number, completionTimeoutMs?:number, maxFrameBytes?:number, maxOutboundBytes?:number, drainTimeoutMs?:number }} [options] */
+  /** @param {import('node:child_process').ChildProcess} child @param {{ requestTimeoutMs?:number, completionTimeoutMs?:number, maxFrameBytes?:number, maxOutboundBytes?:number, drainTimeoutMs?:number, acceptBrokerControl?:boolean }} [options] */
   constructor(child, options = {}) {
     this.child = child;
     this.requestTimeoutMs = boundedInteger(options.requestTimeoutMs, 30_000, 1, 3_600_000);
@@ -37,6 +37,7 @@ export class ZCodeProtocolClient {
     this.closeHandler = null;
     this.terminalHandler = null;
     this.consumeTerminal = false;
+    this.acceptBrokerControl = options.acceptBrokerControl === true;
     this.waiterSessions = new Set();
     this.permissionRequestIds = new Map();
     this.drainTimeoutMs = boundedInteger(options.drainTimeoutMs, DEFAULT_DRAIN_TIMEOUT_MS, 1, MAX_DRAIN_TIMEOUT_MS);
@@ -168,6 +169,10 @@ export class ZCodeProtocolClient {
     if (message.id !== undefined && message.method !== undefined) { const controller = new AbortController(); this.trackServerTask(this.handleServerRequest(message, controller.signal), controller, message.params?.sessionId); return; }
     if (message.id !== undefined) { this.handleResponse(message); return; }
     if (typeof message.method === 'string' && plainObject(message.params)) {
+      if (this.acceptBrokerControl && message.method === 'broker/sessionStopped') {
+        if (Object.keys(message.params).length !== 1 || !isSafeIdentifier(message.params.sessionId)) { this.fail(malformedFrame()); return; }
+        this.cancelTurn(message.params.sessionId); return;
+      }
       const turn = this.turns.get(message.params.sessionId);
       if (isTerminalNotification(message) && turn?.status === 'sending') { const early = this.earlyCompletions.get(message.params.sessionId) ?? []; if (early.length >= 16) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many early completion candidates.', { category: 'protocol', remedy: 'Restart the connection.' })); return; } early.push(message.params); this.earlyCompletions.set(message.params.sessionId, early); }
       else if (isCompletionFor(message, message.params.sessionId, turn)) this.queueCompletion(message.params.sessionId, message.params);
@@ -344,7 +349,7 @@ export async function connectZCodeBroker(endpoint, options) {
   /** @type {ZCodeProtocolClient|undefined} */
   let protocol;
   try {
-    protocol = new ZCodeProtocolClient(transport, options);
+    protocol = new ZCodeProtocolClient(transport, { ...options, acceptBrokerControl: true });
     const authenticated = await protocol.request('broker/auth', { token: options.brokerToken, ownerId: options.ownerId, ...(options.existingProtocolOnly === undefined ? {} : { existingProtocolOnly: options.existingProtocolOnly }) });
     if (!plainObject(authenticated) || authenticated.authenticated !== true
       || options.existingProtocolOnly === true && authenticated.existingProtocolOnly !== true) throw brokerCapabilityUnavailable();

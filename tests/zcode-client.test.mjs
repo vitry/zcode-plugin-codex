@@ -626,8 +626,98 @@ test('same-owner broker stop disconnects the exact active client completion wait
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-stop-active-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '1'.repeat(64); const ownerId = 'stop-active-owner-stable';
   const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' } }).start();
   const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 2_000 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
-  try { const { session: { sessionId } } = await worker.createSession({ workspace: directory }); await worker.send(sessionId, 'hold'); const completion = worker.waitForCompletion(sessionId); assert.deepEqual(await controller.stopSession(sessionId), {}); await assert.rejects(completion, { code: 'ZCODE_DISCONNECTED' }); }
+  try { const { session: { sessionId } } = await worker.createSession({ workspace: directory }); await worker.send(sessionId, 'hold'); const completion = assert.rejects(worker.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); assert.deepEqual(await controller.stopSession(sessionId), {}); await completion; }
   finally { await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('same-owner read control requests cannot steal the active completion route before stop', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-read-active-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '4'.repeat(64); const ownerId = 'read-active-owner-stable';
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' } }).start();
+  const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 500 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  try { const { session: { sessionId } } = await worker.createSession({ workspace: directory }); await worker.send(sessionId, 'hold'); const completion = assert.rejects(worker.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); await controller.readSession(sessionId); assert.deepEqual(await controller.stopSession(sessionId), {}); await completion; }
+  finally { await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('stopping one active session does not disconnect a sibling turn on the same client', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-stop-one-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '5'.repeat(64); const ownerId = 'stop-one-owner-stable'; const gate = join(directory, 'completion.gate'); await writeFile(gate, 'hold');
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_COMPLETION_GATE: gate } }).start();
+  const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 2_000 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  try {
+    const first = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.send(first, 'first'); const firstCompletion = assert.rejects(worker.waitForCompletion(first), { code: 'ZCODE_SESSION_STOPPED' });
+    const second = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.send(second, 'second'); const secondCompletion = worker.waitForCompletion(second);
+    assert.deepEqual(await controller.stopSession(first), {}); await firstCompletion;
+    await writeFile(gate, 'release'); await secondCompletion;
+  } finally { await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('conversation subscriptions are owner-authorized and frames route only to the exact subscriber', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-conversation-owner-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = '6'.repeat(64);
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_CONVERSATION_PROGRESS: '1' } }).start();
+  const owner = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'conversation-owner-stable' }); const sibling = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'conversation-sibling-stable' }); const ownerMessages = []; const siblingMessages = []; const unsubscribeOwner = owner.subscribe((message) => ownerMessages.push(message)); const unsubscribeSibling = sibling.subscribe((message) => siblingMessages.push(message));
+  try {
+    const sessionId = (await owner.createSession({ workspace: directory })).session.sessionId;
+    await assert.rejects(sibling.subscribeConversation(sessionId, { connectionId: 'sibling-connection', clientMode: 'desktop-continuous' }), { code: 'ZCODE_REQUEST_FAILED' });
+    const subscription = await owner.subscribeConversation(sessionId, { connectionId: 'owner-connection', clientMode: 'desktop-continuous' });
+    await assert.rejects(owner.subscribeConversation(sessionId, { connectionId: 'duplicate-connection', clientMode: 'desktop-continuous' }), { code: 'ZCODE_BROKER_INPUT_INVALID' });
+    await assert.rejects(owner.protocol.request('v4/conversation/unsubscribe', { topic: `conversation/${sessionId}`, subscriptionId: 'unknown-subscription', connectionId: 'owner-connection' }), { code: 'ZCODE_SESSION_OWNER_CONFLICT' });
+    await owner.send(sessionId, 'private progress'); await owner.waitForCompletion(sessionId); await subscription.unsubscribe();
+    assert.equal(siblingMessages.some((message) => message.method === 'v4/conversation/frame'), false);
+    assert.equal(ownerMessages.some((message) => message.method === 'v4/conversation/frame' && message.params?.subscriptionId === 'foreign-subscription'), false);
+  } finally { unsubscribeOwner(); unsubscribeSibling(); await owner.close(); await sibling.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('invalid conversation acknowledgement clears the provisional topic before retry', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-conversation-retry-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'c'.repeat(64); const ownerId = 'conversation-retry-owner';
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_BAD_CONVERSATION_ACK_ONCE: '1' } }).start(); const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  try { const sessionId = (await client.createSession({ workspace: directory })).session.sessionId; await assert.rejects(client.subscribeConversation(sessionId, { connectionId: 'first-connection', clientMode: 'desktop-continuous' }), { code: 'ZCODE_BROKER_INPUT_INVALID' }); const retried = await client.subscribeConversation(sessionId, { connectionId: 'second-connection', clientMode: 'desktop-continuous' }); assert.equal(retried.subscriptionId, `subscription-${sessionId}`); await retried.unsubscribe(); }
+  finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('session stop settles only its permission and ignores the exact late response without harming multiplexed work', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-permission-stop-')); const writes = []; let destroyed = 0;
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '7'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  const socket = { writable: true, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy: () => { destroyed += 1; } }; const wrongSocket = { ...socket, destroy: () => { destroyed += 1; } };
+  broker.authenticated.add(socket); broker.authenticated.add(wrongSocket); broker.socketOwnerIds.set(socket, 'permission-owner-stable'); broker.socketOwnerIds.set(wrongSocket, 'permission-owner-stable');
+  broker.activeSessionSockets.set('session-a', { socket, token: 'turn-a' }); broker.activeSessionSockets.set('session-b', { socket, token: 'turn-b' });
+  const request = (sessionId) => ({ requestId: `request-${sessionId}`, sessionId, options: [{ response: { decision: 'allow' } }, { response: { decision: 'deny' } }] });
+  const permissionA = broker.requestPermission(request('session-a')); const permissionB = broker.requestPermission(request('session-b')); const [idA, idB] = writes.map((frame) => frame.id);
+  broker.settleStoppedSession('session-a', broker.activeSessionSockets.get('session-a'));
+  assert.deepEqual(await permissionA, { decision: 'deny' }); let bSettled = false; permissionB.finally(() => { bSettled = true; }).catch(() => {}); await new Promise((resolve) => setImmediate(resolve)); assert.equal(bSettled, false);
+  await broker.handleLocal(socket, JSON.stringify({ id: idA, result: { decision: 'allow' } })); assert.equal(destroyed, 0);
+  await broker.handleLocal(wrongSocket, JSON.stringify({ id: idA, result: { decision: 'allow' } })); assert.equal(destroyed, 1);
+  await broker.handleLocal(socket, JSON.stringify({ id: idB, result: { decision: 'allow' } })); assert.deepEqual(await permissionB, { decision: 'allow' }); assert.equal(destroyed, 1);
+  await broker.handleLocal(socket, JSON.stringify({ id: idB + 999, result: { decision: 'allow' } })); assert.equal(destroyed, 2);
+  await rm(directory, { recursive: true, force: true });
+});
+
+test('a late stop acknowledgement cannot clear or deny a newer generation of the same session', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-stop-generation-')); const writes = [];
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '8'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  const oldSocket = { writable: true, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const newSocket = { ...oldSocket }; broker.authenticated.add(newSocket);
+  const request = { requestId: 'old-request', sessionId: 'shared-session', options: [{ response: { decision: 'allow' } }, { response: { decision: 'deny' } }] };
+  const oldTurn = { socket: oldSocket, token: 'old-turn' }; broker.activeSessionSockets.set(request.sessionId, oldTurn); const oldPermission = broker.requestPermission(request);
+  const newTurn = { socket: newSocket, token: 'new-turn' }; broker.activeSessionSockets.set(request.sessionId, newTurn); const newPermission = broker.requestPermission({ ...request, requestId: 'new-request' }); let newSettled = false; newPermission.finally(() => { newSettled = true; }).catch(() => {});
+  broker.settleStoppedSession(request.sessionId, oldTurn); assert.deepEqual(await oldPermission, { decision: 'deny' }); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(newSettled, false); assert.equal(broker.activeSessionSockets.get(request.sessionId), newTurn);
+  const newId = writes.find((frame) => frame.params?.requestId === 'new-request').id; await broker.handleLocal(newSocket, JSON.stringify({ id: newId, result: { decision: 'allow' } })); assert.deepEqual(await newPermission, { decision: 'allow' });
+  await rm(directory, { recursive: true, force: true });
+});
+
+test('owner release uses the same exact-session stop notification without disconnecting the client', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-active-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'a'.repeat(64); const ownerId = 'release-active-owner-stable';
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' } }).start();
+  const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  try { const sessionId = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.send(sessionId, 'hold'); const stopped = assert.rejects(worker.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); const released = await controller.releaseOwner([]); assert.deepEqual(released.releasedSessionIds, [sessionId]); await stopped; assert.deepEqual(await controller.brokerCapabilities(), { releaseOwnerExclusions: true }); }
+  finally { await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('a pending stop fences new sends until its exact acknowledgement', { timeout: 5_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-stop-fence-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'b'.repeat(64); const ownerId = 'stop-fence-owner-stable'; const gate = join(directory, 'stop.gate'); const reached = join(directory, 'stop.reached'); await writeFile(gate, 'hold');
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_STOP_GATE: gate, FAKE_ZCODE_STOP_GATE_REACHED: reached } }).start();
+  const creator = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); const sender = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
+  const bounded = async (promise, label) => { let timer; try { return await Promise.race([promise, new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out`)), 1_000); })]); } finally { clearTimeout(timer); } };
+  try { const sessionId = (await creator.createSession({ workspace: directory })).session.sessionId; const stopping = controller.stopSession(sessionId); const deadline = Date.now() + 1_000; while ((await readFile(reached, 'utf8').catch(() => '')) !== 'blocked' && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5)); assert.equal(await readFile(reached, 'utf8'), 'blocked'); await assert.rejects(bounded(sender.send(sessionId, 'must be fenced'), 'fenced send'), { code: 'ZCODE_TURN_ACTIVE' }); await writeFile(gate, 'release'); await bounded(stopping, 'stop acknowledgement'); assert.equal((await bounded(sender.send(sessionId, 'after stop'), 'post-stop send')).accepted, true); await bounded(sender.waitForCompletion(sessionId), 'post-stop completion'); }
+  finally { await writeFile(gate, 'release').catch(() => {}); await creator.close(); await controller.close(); await sender.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('failed same-owner broker stop preserves the active client and its later completion', async () => {

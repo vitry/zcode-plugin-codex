@@ -117,68 +117,23 @@ export function createStateStore(options) {
      */
     async transitionJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}) {
       validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus, patch);
-      const storage = await jobStorage(dataRoot, workspace);
-      return withFileLock(storage.lockPath, async () => {
-        const forbiddenFields = Object.keys(patch)
-          .filter((field) => !JOB_PATCH_FIELDS.has(field));
-        if (forbiddenFields.length > 0) {
-          throw new PluginError('JOB_PATCH_FORBIDDEN', 'Job patch contains protected or unsupported fields.', {
-            category: 'state',
-            remedy: 'Only patch mutable job execution fields.',
-            details: { forbiddenFields, jobId },
-          });
-        }
-        const path = jobPath(storage.jobsDirectory, jobId);
-        const job = await readJobRecord(path, jobId, storage.workspacePath);
-        validateJobPatch(job, nextStatus, patch, jobId);
-        if (TERMINAL_STATUSES.has(job.status)) {
-          throw new PluginError('JOB_TERMINAL', `Job ${jobId} is already terminal.`, {
-            category: 'state',
-            remedy: 'Create a new job instead of changing a terminal job.',
-            details: { jobId, status: job.status },
-          });
-        }
-        if (!expectedStatuses.includes(job.status)) {
-          throw new PluginError('JOB_STATUS_CONFLICT', `Job ${jobId} changed status unexpectedly.`, {
-            category: 'state',
-            remedy: 'Reload the job and retry from its current status.',
-            details: { actualStatus: job.status, expectedStatuses, jobId },
-          });
-        }
-        if (!JOB_STATUSES.includes(nextStatus) || !TRANSITIONS.get(job.status)?.has(nextStatus)) {
-          throw new PluginError('JOB_INVALID_TRANSITION', `Cannot transition job from ${job.status} to ${nextStatus}.`, {
-            category: 'state',
-            remedy: 'Use a transition allowed by the job state machine.',
-            details: { from: job.status, jobId, to: nextStatus },
-          });
-        }
-        if (job.status === 'cancelling' && nextStatus === 'running'
-          && !isCancellationError(patch.lastCancelError)) {
-          throw new PluginError('CANCEL_ERROR_REQUIRED', 'A failed cancellation must record lastCancelError.', {
-            category: 'state',
-            remedy: 'Include the stop failure message in lastCancelError.',
-            details: { jobId },
-          });
-        }
-        const updated = {
-          ...job,
-          ...patch,
-          id: job.id,
-          status: nextStatus,
-          updatedAt: new Date(Math.max(
-            Date.now(),
-            Date.parse(job.createdAt),
-            Date.parse(job.updatedAt),
-            typeof patch.startedAt === 'string' ? Date.parse(patch.startedAt) : Number.NEGATIVE_INFINITY,
-            typeof patch.finishedAt === 'string' ? Date.parse(patch.finishedAt) : Number.NEGATIVE_INFINITY,
-          )).toISOString(),
-          workspace: job.workspace,
-        };
-        if (patch.lastCancelError === null) delete updated.lastCancelError;
-        validateJobRecord(updated, jobId, storage.workspacePath);
-        await atomicWriteJson(path, updated);
-        return updated;
-      });
+      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, false);
+    },
+
+    /**
+     * Atomically chooses the terminal timestamp after reading the latest progress under the state lock.
+     * @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses
+     * @param {string} nextStatus @param {Record<string,unknown>} [patch]
+     */
+    async finishJob(workspace, jobId, expectedStatuses, nextStatus, patch = {}) {
+      validateTransitionInput(workspace, jobId, expectedStatuses, nextStatus, patch);
+      if (!TERMINAL_STATUSES.has(nextStatus) || Object.hasOwn(patch, 'finishedAt')) {
+        throw new PluginError('JOB_FINISH_INPUT_INVALID', 'Job finalization input is invalid.', {
+          category: 'state', remedy: 'Choose a terminal status and let the state store assign finishedAt under its lock.',
+          details: { jobId, nextStatus },
+        });
+      }
+      return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, true);
     },
 
     /**
@@ -240,6 +195,59 @@ export function createStateStore(options) {
       });
     },
   };
+}
+
+/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt */
+async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, assignFinishedAt) {
+  const storage = await jobStorage(dataRoot, workspace);
+  return withFileLock(storage.lockPath, async () => {
+    const forbiddenFields = Object.keys(patch).filter((field) => !JOB_PATCH_FIELDS.has(field));
+    if (forbiddenFields.length > 0) {
+      throw new PluginError('JOB_PATCH_FORBIDDEN', 'Job patch contains protected or unsupported fields.', {
+        category: 'state', remedy: 'Only patch mutable job execution fields.', details: { forbiddenFields, jobId },
+      });
+    }
+    const path = jobPath(storage.jobsDirectory, jobId);
+    const job = await readJobRecord(path, jobId, storage.workspacePath);
+    const effectivePatch = assignFinishedAt ? {
+      ...patch,
+      finishedAt: new Date(Math.max(Date.now(), Date.parse(job.lastActivityAt ?? job.startedAt ?? job.createdAt))).toISOString(),
+    } : patch;
+    validateJobPatch(job, nextStatus, effectivePatch, jobId);
+    if (TERMINAL_STATUSES.has(job.status)) {
+      throw new PluginError('JOB_TERMINAL', `Job ${jobId} is already terminal.`, {
+        category: 'state', remedy: 'Create a new job instead of changing a terminal job.', details: { jobId, status: job.status },
+      });
+    }
+    if (!expectedStatuses.includes(job.status)) {
+      throw new PluginError('JOB_STATUS_CONFLICT', `Job ${jobId} changed status unexpectedly.`, {
+        category: 'state', remedy: 'Reload the job and retry from its current status.', details: { actualStatus: job.status, expectedStatuses, jobId },
+      });
+    }
+    if (!JOB_STATUSES.includes(nextStatus) || !TRANSITIONS.get(job.status)?.has(nextStatus)) {
+      throw new PluginError('JOB_INVALID_TRANSITION', `Cannot transition job from ${job.status} to ${nextStatus}.`, {
+        category: 'state', remedy: 'Use a transition allowed by the job state machine.', details: { from: job.status, jobId, to: nextStatus },
+      });
+    }
+    if (job.status === 'cancelling' && nextStatus === 'running' && !isCancellationError(effectivePatch.lastCancelError)) {
+      throw new PluginError('CANCEL_ERROR_REQUIRED', 'A failed cancellation must record lastCancelError.', {
+        category: 'state', remedy: 'Include the stop failure message in lastCancelError.', details: { jobId },
+      });
+    }
+    const updated = {
+      ...job, ...effectivePatch, id: job.id, status: nextStatus,
+      updatedAt: new Date(Math.max(
+        Date.now(), Date.parse(job.createdAt), Date.parse(job.updatedAt),
+        typeof effectivePatch.startedAt === 'string' ? Date.parse(effectivePatch.startedAt) : Number.NEGATIVE_INFINITY,
+        typeof effectivePatch.finishedAt === 'string' ? Date.parse(effectivePatch.finishedAt) : Number.NEGATIVE_INFINITY,
+      )).toISOString(),
+      workspace: job.workspace,
+    };
+    if (effectivePatch.lastCancelError === null) delete updated.lastCancelError;
+    validateJobRecord(updated, jobId, storage.workspacePath);
+    await atomicWriteJson(path, updated);
+    return updated;
+  });
 }
 
 /** @param {string} dataRoot @param {string} workspace */

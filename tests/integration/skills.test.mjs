@@ -1,6 +1,5 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +8,9 @@ import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { createInvocationStore } from '../../scripts/lib/invocation.mjs';
+import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
+import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -33,29 +34,22 @@ async function cleanupFixture(directory) {
   throw lastError;
 }
 
-function processAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
-async function ensureWorkerStopped(pid) {
-  if (!Number.isSafeInteger(pid) || !processAlive(pid)) return;
-  const wait = async (milliseconds) => {
-    const deadline = Date.now() + milliseconds;
-    while (processAlive(pid) && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
-  };
-  await wait(process.platform === 'win32' ? 5_000 : 1_000);
-  if (processAlive(pid)) {
-    if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, shell: false, stdio: 'ignore' });
-    else try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { /* already exited */ } }
-    await wait(2_000);
-  }
-  assert.equal(processAlive(pid), false, `background worker ${pid} did not terminate`);
-}
-
 async function waitUntil(predicate, timeoutMs, message) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) { if (await predicate()) return; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); }
   assert.fail(message);
+}
+
+async function workerLeaseAvailable(ctx, job) {
+  if (!job?.workerLeaseId) return false;
+  try { await withWorkerLease({ dataRoot: ctx.dataRoot, workspace: ctx.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, async () => {}); return true; }
+  catch (error) { if (error?.code === 'LOCK_TIMEOUT') return false; throw error; }
+}
+
+async function waitForExactJobCleanup(ctx, store, jobId, timeoutMs = process.platform === 'win32' ? 30_000 : 5_000) {
+  let latest;
+  await waitUntil(async () => { latest = await store.readJob(ctx.workspace, jobId); return ['succeeded', 'failed', 'cancelled'].includes(latest.status) && (!latest.workerLeaseId || await workerLeaseAvailable(ctx, latest)); }, timeoutMs, `exact background job ${jobId} did not become terminal and release its worker lease`);
+  return latest;
 }
 
 async function findNewJobs(store, workspace, baselineIds) {
@@ -70,7 +64,6 @@ async function run(command, args, cwd) {
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-skills-'));
-  const workerPids = new Set();
   const workspace = await realpath(await mkdir(join(directory, 'workspace'), { recursive: true }).then(() => join(directory, 'workspace')));
   const dataRoot = join(directory, 'data');
   await writeFile(join(workspace, 'tracked.txt'), 'base\n');
@@ -82,8 +75,8 @@ async function fixture(t) {
   const callerA = await identity.createCallerContext({ sessionId: 'codex-a', turnId: 'turn-a', workspace, permissionMode: 'workspace-write' });
   const callerB = await identity.createCallerContext({ sessionId: 'codex-b', turnId: 'turn-b', workspace, permissionMode: 'read-only' });
   const env = { ...process.env, PLUGIN_DATA: dataRoot, PLUGIN_ROOT: root, ZCODE_PATH: fakeZCode };
-  t.after(async () => { for (const pid of workerPids) await ensureWorkerStopped(pid); await cleanupFixture(directory); });
-  return { directory, workspace, dataRoot, callerA, callerB, env, trackWorker: (pid) => { if (Number.isSafeInteger(pid)) workerPids.add(pid); } };
+  t.after(async () => { await cleanupFixture(directory); });
+  return { directory, workspace, dataRoot, callerA, callerB, env };
 }
 
 async function startRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
@@ -393,7 +386,7 @@ test('direct background invocation keeps capabilities private and production own
   // enough room for that startup/lock contention before declaring it stuck.
   const deadline = Date.now() + (process.platform === 'win32' ? 30_000 : 5_000);
   do { job = await store.readJob(ctx.workspace, jobId); if (['succeeded', 'failed', 'cancelled'].includes(job.status)) break; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); } while (Date.now() < deadline);
-  await ensureWorkerStopped(job.childPid);
+  job = await waitForExactJobCleanup(ctx, store, jobId, process.platform === 'win32' ? 30_000 : 5_000);
   assert.equal(job.status, 'succeeded', JSON.stringify(job.error));
 });
 
@@ -403,7 +396,7 @@ test('named and generic Rescue children receive only queued background output wh
   for (const [route, agentType, control] of [['named', 'zcode-rescue', 'result'], ['generic', 'default', 'cancel']]) {
     const parentId = `background-${route}-parent`; const childId = `background-${route}-child`; const turnId = `background-${route}-turn`;
     const baselineJobIds = new Set((await store.listJobs(ctx.workspace)).map((job) => job.id));
-    let workerPid; await writeFile(gate, 'hold'); await writeFile(gateReached, ''); await writeFile(record, '');
+    await writeFile(gate, 'hold'); await writeFile(gateReached, ''); await writeFile(record, '');
     const callerContext = await identity.beginCallerTurn({ sessionId: parentId, turnId, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --background ${route} native child` });
     await startRescueChild(ctx, parentId, childId, `${turnId}-child`, agentType);
     try {
@@ -411,22 +404,25 @@ test('named and generic Rescue children receive only queued background output wh
       assert.equal(launched.code, 0, launched.stderr || launched.stdout);
       const jobId = /^Reserved background job ([a-f0-9]{64})\.\n$/.exec(launched.stdout)?.[1];
       assert.ok(jobId, `native ${route} child must receive only the public queued envelope: ${launched.stdout}`);
-      let job = await store.readJob(ctx.workspace, jobId); workerPid = job.childPid; ctx.trackWorker(workerPid);
+      let job = await store.readJob(ctx.workspace, jobId);
       await waitUntil(async () => await readFile(gateReached, 'utf8').catch(() => '') === 'blocked', 5_000, 'the fake peer did not reach its exact post-ack completion gate');
       assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke', 'rescue']);
       assert.equal(launched.internal, ''); assert.equal(launched.stderr, '');
       assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
 
       assert.equal(job.status, 'running', `the ${route} child must be able to exit after fd4 acknowledgement while its detached worker continues`);
-      assert.equal(processAlive(workerPid), true);
+      assert.equal(await workerLeaseAvailable(ctx, job), false, `the ${route} worker must still hold its exact lease after fd4 acknowledgement`);
       const status = await publicInvoke(ctx, ['status', jobId], callerContext);
       assert.equal(status.code, 0, status.stderr); assert.equal(status.json.job.status, 'running');
       assert.doesNotMatch(`${status.stdout}${status.stderr}${status.internal}`, /executionCapability|callerContext|privateInvocation/);
 
       if (control === 'cancel') {
         const cancelled = await publicInvoke(ctx, ['cancel', jobId], callerContext);
-        assert.equal(cancelled.code, 0, cancelled.stderr); assert.equal(cancelled.json.job.status, 'cancelled');
-        await waitUntil(() => !processAlive(workerPid), 5_000, `the ${route} worker did not exit after acknowledged cancellation`);
+        const cancelJob = await store.readJob(ctx.workspace, jobId); const callsAtCancel = await readFile(record, 'utf8').catch((error) => `record-read:${error?.code}`); const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+        const brokerFiles = await readFile(join(storage.directory, 'broker', 'identity.json'), 'utf8').catch((error) => `identity-read:${error?.code}`);
+        const cancelEvidence = JSON.stringify({ code: cancelled.code, stdout: cancelled.stdout, stderr: cancelled.stderr, internal: cancelled.internal, json: cancelled.json, job: cancelJob, callsAtCancel, brokerFiles });
+        assert.equal(cancelled.code, 0, cancelEvidence); assert.equal(cancelled.json.job.status, 'cancelled');
+        await waitForExactJobCleanup(ctx, store, jobId);
         const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
         assert.equal(calls.filter((call) => call.method === 'session/send').length, 1); assert.equal(calls.filter((call) => call.method === 'session/stop').length, 1); assert.equal(cancelled.json.job.resultArtifact, undefined);
       } else {
@@ -441,8 +437,8 @@ test('named and generic Rescue children receive only queued background output wh
       await writeFile(gate, 'release').catch(() => {});
       const jobs = new Map();
       for (let attempt = 0; attempt < 20; attempt += 1) { for (const job of await findNewJobs(store, ctx.workspace, baselineJobIds)) jobs.set(job.id, job); await new Promise((resolvePromise) => setTimeout(resolvePromise, 50)); }
-      for (const job of jobs.values()) { ctx.trackWorker(job.childPid); await ensureWorkerStopped(job.childPid); }
-      await ensureWorkerStopped(workerPid);
+      for (const job of jobs.values()) await waitForExactJobCleanup(ctx, store, job.id);
+      assert.equal(jobs.size, 1, `expected exactly one new ${route} background job during cleanup`);
     }
   }
 });

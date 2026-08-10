@@ -113,14 +113,14 @@ async function performCancellation(input, attempts, election) {
   else attempt = await attempts.start(job.id, input.ownerSessionId);
   if (job.status === 'queued') {
     if (job.workerLeaseId) throw cancelError(job.id, 'The claimed worker is still starting; retry after it advances or recovery proves it orphaned.');
-    const cancelled = await input.options.store.transitionJob(input.workspace, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+    const cancelled = await finishJob(input.options.store, input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null });
     await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'succeeded'); return cancelled;
   }
   if (!['running', 'cancelling'].includes(job.status)) throw cancelError(job.id, 'Job is not cancellable.');
   if (job.status === 'cancelling' && attempt.status === 'finalize-pending') {
     let cancelled;
     try {
-      cancelled = await input.options.store.transitionJob(input.workspace, job.id, ['cancelling'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+      cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
     } catch (error) { throw finalizeError(job.id, error); }
     await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'succeeded'); return cancelled;
   }
@@ -136,7 +136,7 @@ async function performCancellation(input, attempts, election) {
     return { failedAttempt: attempt.attemptId, message, cause: error };
   }
   let cancelled;
-  try { cancelled = await input.options.store.transitionJob(input.workspace, job.id, ['cancelling'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null }); }
+  try { cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null }); }
   catch (error) {
     await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'finalize-pending'); throw finalizeError(job.id, error);
   }
@@ -189,6 +189,11 @@ function eligibleImplicit(job, eligibility) {
   if (eligibility === 'cancel') return ['queued', 'running', 'cancelling'].includes(job.status);
   if (eligibility === 'result') return job.status === 'succeeded' && typeof job.resultArtifact === 'string';
   return true;
+}
+/** @param {any} store @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch */
+function finishJob(store, workspace, jobId, expectedStatuses, nextStatus, patch) {
+  if (typeof store.finishJob === 'function') return store.finishJob(workspace, jobId, expectedStatuses, nextStatus, patch);
+  return store.transitionJob(workspace, jobId, expectedStatuses, nextStatus, { ...patch, finishedAt: new Date().toISOString() });
 }
 /** @param {string} jobId @param {unknown} cause */
 function finalizeError(jobId, cause) { return new PluginError('JOB_CANCEL_FINALIZE_FAILED', `ZCode stopped, but job ${jobId} could not be finalized as cancelled.`, { category: 'storage', remedy: 'Retry cancellation to reconcile and finalize the cancelling job.', cause }); }
