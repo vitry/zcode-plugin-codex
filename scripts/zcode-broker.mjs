@@ -145,7 +145,7 @@ export async function writeBrokerIdentity(path, input) {
   return record;
 }
 
-/** @param {string} path @param {{isProcessAlive?:(pid:number)=>boolean,healthProbe?:(record:any)=>Promise<boolean>}} [options] */
+/** @param {string} path @param {{expectedEndpoint?:string,isProcessAlive?:(pid:number)=>boolean,healthProbe?:(record:any)=>Promise<boolean>}} [options] */
 export async function readHealthyBrokerIdentity(path, options = {}) {
   const inspected = await inspectBrokerIdentity(path, options);
   return inspected.status === 'healthy' ? inspected.record : null;

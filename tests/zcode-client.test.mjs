@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import test from 'node:test';
 
-import { createExistingManagedZCodeClient, createManagedZCodeClient, createZCodeClient, ZCodeClient } from '../scripts/lib/zcode-client.mjs';
+import { createExistingManagedZCodeClient, createManagedZCodeClient, createZCodeClient, releaseManagedZCodeOwner, ZCodeClient } from '../scripts/lib/zcode-client.mjs';
 import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, reconcileBrokerOwnership, writeBrokerIdentity, ZCodeBroker as ZCodeBrokerClass } from '../scripts/zcode-broker.mjs';
 import { atomicWriteJson, withFileLock } from '../scripts/lib/fs.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
@@ -524,6 +524,24 @@ test('existing managed client does not fall back to a sibling wire profile', asy
     assert.equal(client, null);
     assert.equal(defaultBroker.owners, 0);
   } finally { await defaultBroker?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('existing managed client ignores a healthy identity redirected to another workspace broker', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-cross-workspace-')); const dataRoot = join(directory, 'data'); const workspaceA = join(directory, 'workspace-a'); const workspaceB = join(directory, 'workspace-b'); const wireOptions = { maxFrameBytes: 4096 }; let brokerB;
+  try {
+    await mkdir(workspaceA, { recursive: true }); await mkdir(workspaceB, { recursive: true }); brokerB = await createPersistedTestBroker({ dataRoot, workspace: workspaceB, tokenByte: '6', instanceByte: 'e', ...wireOptions }); const storageA = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const identityPathA = join(storageA.directory, 'broker', brokerIdentityNameForWireOptions(wireOptions));
+    await writeBrokerIdentity(identityPathA, { endpoint: brokerB.options.endpoint, pid: process.pid, instanceId: brokerB.options.instanceId, brokerToken: brokerB.options.brokerToken }); const identityBefore = await readFile(identityPathA, 'utf8');
+    assert.equal(await createExistingManagedZCodeClient({ dataRoot, workspace: workspaceA, ownerId: 'cross-workspace-existing-owner', requestTimeoutMs: 100, ...wireOptions }), null); assert.equal(brokerB.owners, 0); assert.equal((await stat(brokerB.options.endpoint)).isSocket(), true); assert.equal(await readFile(identityPathA, 'utf8'), identityBefore); assert.equal((await readdir(join(storageA.directory, 'broker'))).some((name) => name.startsWith('config-')), false);
+  } finally { await brokerB?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('managed owner release skips a healthy profile identity redirected to another workspace broker', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-release-cross-workspace-')); const dataRoot = join(directory, 'data'); const workspaceA = join(directory, 'workspace-a'); const workspaceB = join(directory, 'workspace-b'); const ownerId = 'cross-workspace-release-owner'; const sessionId = 'cross-workspace-release-session'; const record = join(directory, 'calls.jsonl'); const wireOptions = { maxFrameBytes: 4096 }; let brokerB; let ownerB;
+  try {
+    await mkdir(workspaceA, { recursive: true }); await mkdir(workspaceB, { recursive: true }); brokerB = await createPersistedTestBroker({ dataRoot, workspace: workspaceB, tokenByte: '7', instanceByte: 'f', record, ...wireOptions }); ownerB = await createZCodeClient({ workspace: workspaceB, brokerEndpoint: brokerB.options.endpoint, brokerToken: brokerB.options.brokerToken, ownerId }); await ownerB.createSession({ workspace: workspaceB, sessionId, importedHistory: { messages: [{ role: 'user', content: 'owned by workspace B' }] } }); await ownerB.close(); ownerB = null; const ownershipBefore = await readFile(brokerB.ownershipPath, 'utf8'); await writeFile(record, '');
+    const storageA = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const identityPathA = join(storageA.directory, 'broker', brokerIdentityNameForWireOptions(wireOptions)); await writeBrokerIdentity(identityPathA, { endpoint: brokerB.options.endpoint, pid: process.pid, instanceId: brokerB.options.instanceId, brokerToken: brokerB.options.brokerToken }); const identityBefore = await readFile(identityPathA, 'utf8');
+    assert.deepEqual(await releaseManagedZCodeOwner({ dataRoot, workspace: workspaceA, ownerId, requestTimeoutMs: 100 }), { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 }); assert.equal(brokerB.sessionOwners.get(sessionId)?.ownerId, ownerId); assert.equal(await readFile(brokerB.ownershipPath, 'utf8'), ownershipBefore); assert.equal((await readRecordedCalls(record)).some((call) => call.method === 'session/stop'), false); assert.equal(brokerB.owners, 0); assert.equal((await stat(brokerB.options.endpoint)).isSocket(), true); assert.equal(await readFile(identityPathA, 'utf8'), identityBefore);
+  } finally { await ownerB?.close().catch(() => {}); await brokerB?.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('existing managed client bounds an unhealthy broker probe', async () => {

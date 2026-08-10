@@ -6,7 +6,7 @@ import { PluginError } from './errors.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './identifier.mjs';
 import { connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
-import { brokerIdentityNameForWireOptions, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
+import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const THOUGHT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
@@ -159,6 +159,7 @@ export async function createExistingManagedZCodeClient(options) {
   const storage = await resolveWorkspaceStorage(options);
   const identityName = brokerIdentityNameForWireOptions(options);
   const identity = await readHealthyBrokerIdentity(resolve(storage.directory, 'broker', identityName), {
+    expectedEndpoint: expectedBrokerEndpoint(options.dataRoot, storage.workspacePath, identityName),
     healthProbe: (record) => probeBrokerHealth(record, options.requestTimeoutMs),
   });
   if (!identity) return null;
@@ -177,7 +178,7 @@ export async function releaseManagedZCodeOwner(options) {
   if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw inputError();
   const storage = await resolveWorkspaceStorage(options); const brokerDirectory = resolve(storage.directory, 'broker'); let names;
   try { names = await readdir(brokerDirectory); } catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code === 'ENOENT') return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 }; throw error; }
-  const profiles = (await Promise.all(names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).slice(0, 32).map(async (name) => ({ identity: await readHealthyBrokerIdentity(resolve(brokerDirectory, name)), identityName: name })))).filter((profile) => profile.identity);
+  const profiles = (await Promise.all(names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).slice(0, 32).map(async (name) => ({ identity: await readHealthyBrokerIdentity(resolve(brokerDirectory, name), { expectedEndpoint: expectedBrokerEndpoint(options.dataRoot, storage.workspacePath, name) }), identityName: name })))).filter((profile) => profile.identity);
   const outcomes = await Promise.all(profiles.map(async ({ identity, identityName }) => {
     /** @type {Set<string>} */ const released = new Set(); /** @type {Set<string>} */ const failed = new Set();
     /** @type {ZCodeClient|null} */ let client = null;
@@ -212,6 +213,8 @@ export async function releaseManagedZCodeOwner(options) {
 function boundedCleanupTimeout(deadline, requestTimeoutMs) { return Math.max(1, Math.min(requestTimeoutMs, deadline - Date.now())); }
 /** @param {number} deadline */
 function remainingCleanupTimeout(deadline) { return Math.max(0, deadline - Date.now()); }
+/** @param {string} dataRoot @param {string} workspace @param {string} identityName */
+function expectedBrokerEndpoint(dataRoot, workspace, identityName) { const profile = identityName === 'identity.json' ? null : identityName.slice('identity-'.length, -'.json'.length); return brokerEndpointFor({ dataRoot, workspace, ...(profile ? { identity: profile } : {}) }); }
 
 /** @param {any} history */
 function normalizeImportedHistory(history) {
