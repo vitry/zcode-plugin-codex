@@ -46,9 +46,14 @@ async function workerLeaseAvailable(ctx, job) {
   catch (error) { if (error?.code === 'LOCK_TIMEOUT') return false; throw error; }
 }
 
-async function waitForExactJobCleanup(ctx, store, jobId, timeoutMs = process.platform === 'win32' ? 30_000 : 5_000) {
+async function waitForExactJobCleanup(ctx, store, jobId, timeoutMs = process.platform === 'win32' ? 30_000 : 5_000, cancel) {
   let latest;
-  await waitUntil(async () => { latest = await store.readJob(ctx.workspace, jobId); return ['succeeded', 'failed', 'cancelled'].includes(latest.status) && (!latest.workerLeaseId || await workerLeaseAvailable(ctx, latest)); }, timeoutMs, `exact background job ${jobId} did not become terminal and release its worker lease`);
+  const settled = async () => { latest = await store.readJob(ctx.workspace, jobId); return ['succeeded', 'failed', 'cancelled'].includes(latest.status) && (!latest.workerLeaseId || await workerLeaseAvailable(ctx, latest)); };
+  try { await waitUntil(settled, timeoutMs, `exact background job ${jobId} did not become terminal and release its worker lease`); }
+  catch (error) {
+    if (cancel) { await cancel().catch(() => {}); try { await waitUntil(settled, timeoutMs, `exact background job ${jobId} did not settle after job-aware cancellation`); return latest; } catch { /* preserve the original bounded cleanup failure */ } }
+    ctx.preserveEvidence = true; throw error;
+  }
   return latest;
 }
 
@@ -75,8 +80,9 @@ async function fixture(t) {
   const callerA = await identity.createCallerContext({ sessionId: 'codex-a', turnId: 'turn-a', workspace, permissionMode: 'workspace-write' });
   const callerB = await identity.createCallerContext({ sessionId: 'codex-b', turnId: 'turn-b', workspace, permissionMode: 'read-only' });
   const env = { ...process.env, PLUGIN_DATA: dataRoot, PLUGIN_ROOT: root, ZCODE_PATH: fakeZCode };
-  t.after(async () => { await cleanupFixture(directory); });
-  return { directory, workspace, dataRoot, callerA, callerB, env };
+  const context = { directory, workspace, dataRoot, callerA, callerB, env, preserveEvidence: false };
+  t.after(async () => { if (!context.preserveEvidence) await cleanupFixture(directory); else t.diagnostic(`preserved background cleanup evidence at ${directory}`); });
+  return context;
 }
 
 async function startRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
@@ -375,7 +381,7 @@ test('invoke-choice executes with the originating permission snapshot in both di
 
 test('direct background invocation keeps capabilities private and production owns the worker', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
-  await identity.beginCallerTurn({ sessionId: 'background-owner', turnId: 'background-turn', workspace: ctx.workspace, permissionMode: 'read-only', prompt: '$zcode:review --background' });
+  const callerContext = await identity.beginCallerTurn({ sessionId: 'background-owner', turnId: 'background-turn', workspace: ctx.workspace, permissionMode: 'read-only', prompt: '$zcode:review --background' });
   const launched = await runChild(process.execPath, [cli, 'invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'background-owner' } });
   assert.equal(launched.code, 0, launched.stderr || launched.stdout);
   const jobId = /Reserved background job ([a-f0-9]{64})\./.exec(launched.stdout)?.[1];
@@ -386,7 +392,7 @@ test('direct background invocation keeps capabilities private and production own
   // enough room for that startup/lock contention before declaring it stuck.
   const deadline = Date.now() + (process.platform === 'win32' ? 30_000 : 5_000);
   do { job = await store.readJob(ctx.workspace, jobId); if (['succeeded', 'failed', 'cancelled'].includes(job.status)) break; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); } while (Date.now() < deadline);
-  job = await waitForExactJobCleanup(ctx, store, jobId, process.platform === 'win32' ? 30_000 : 5_000);
+  job = await waitForExactJobCleanup(ctx, store, jobId, process.platform === 'win32' ? 30_000 : 5_000, () => publicInvoke(ctx, ['cancel', jobId], callerContext));
   assert.equal(job.status, 'succeeded', JSON.stringify(job.error));
 });
 
@@ -422,7 +428,7 @@ test('named and generic Rescue children receive only queued background output wh
         const brokerFiles = await readFile(join(storage.directory, 'broker', 'identity.json'), 'utf8').catch((error) => `identity-read:${error?.code}`);
         const cancelEvidence = JSON.stringify({ code: cancelled.code, stdout: cancelled.stdout, stderr: cancelled.stderr, internal: cancelled.internal, json: cancelled.json, job: cancelJob, callsAtCancel, brokerFiles });
         assert.equal(cancelled.code, 0, cancelEvidence); assert.equal(cancelled.json.job.status, 'cancelled');
-        await waitForExactJobCleanup(ctx, store, jobId);
+        await waitForExactJobCleanup(ctx, store, jobId, undefined, () => publicInvoke(ctx, ['cancel', jobId], callerContext));
         const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
         assert.equal(calls.filter((call) => call.method === 'session/send').length, 1); assert.equal(calls.filter((call) => call.method === 'session/stop').length, 1); assert.equal(cancelled.json.job.resultArtifact, undefined);
       } else {
@@ -437,7 +443,7 @@ test('named and generic Rescue children receive only queued background output wh
       await writeFile(gate, 'release').catch(() => {});
       const jobs = new Map();
       for (let attempt = 0; attempt < 20; attempt += 1) { for (const job of await findNewJobs(store, ctx.workspace, baselineJobIds)) jobs.set(job.id, job); await new Promise((resolvePromise) => setTimeout(resolvePromise, 50)); }
-      for (const job of jobs.values()) await waitForExactJobCleanup(ctx, store, job.id);
+      for (const job of jobs.values()) await waitForExactJobCleanup(ctx, store, job.id, undefined, () => publicInvoke(ctx, ['cancel', job.id], callerContext));
       assert.equal(jobs.size, 1, `expected exactly one new ${route} background job during cleanup`);
     }
   }

@@ -495,6 +495,17 @@ test('executor persists the accepted turn boundary and worker identity before st
   const persisted = await store.readJob(workspace, job.id); assert.equal(persisted.status, 'failed'); assert.equal(persisted.inputId, 'input-boundary'); assert.equal(persisted.childPid, 4321); assert.equal(persisted.workerLeaseId, workerLeaseId);
 });
 
+test('executor surfaces terminal storage failure instead of silently leaving active state', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); const storageError = new PluginError('JSON_WRITE_FAILED', 'terminal write failed', { category: 'storage', remedy: 'retry recovery' });
+  const wrapped = { ...store, finishJob: async () => { throw storageError; } };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-finalize-failure' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-finalize-failure', stateRevision: 1 }), waitForCompletion: async () => { throw new Error('worker failed'); }, stopSession: async () => {}, close: async () => {},
+  };
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' }), (error) => error === storageError);
+  assert.equal((await store.readJob(workspace, job.id)).status, 'running');
+});
+
 test('executor reports only same-session progress and drains persistence before success', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   /** @type {string[]} */
@@ -512,11 +523,11 @@ test('executor reports only same-session progress and drains persistence before 
       return store.updateJobProgress(workspaceArg, jobId, event);
     },
     transitionJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => {
-      if (next === 'succeeded') {
-        order.push('transition:succeeded');
-        if (handler) handler(notification('zs-progress', 'api_retry', 5));
-      }
       return store.transitionJob(workspaceArg, jobId, expected, next, patch);
+    },
+    finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => {
+      if (next === 'succeeded') { order.push('transition:succeeded'); if (handler) handler(notification('zs-progress', 'api_retry', 5)); }
+      return store.finishJob(workspaceArg, jobId, expected, next, patch);
     },
   };
   const notification = (/** @type {string} */ sessionId, /** @type {string} */ reason, /** @type {number} */ revision) => ({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId, revision, reason, patch: {} } });

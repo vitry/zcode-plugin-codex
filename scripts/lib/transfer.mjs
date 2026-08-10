@@ -111,7 +111,7 @@ async function executeClaimedTransfer(input) {
       if (input.signal?.aborted) return { interrupted: true };
       if (current.status === 'cancelled') return { job: current };
       if (current.status !== 'running') throw new PluginError('TRANSFER_FINALIZE_CONFLICT', `Transfer job ${job.id} cannot finalize from ${current.status}.`, { category: 'state', remedy: 'Inspect the job status and retry with a new Transfer.' });
-      return { job: await store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 }) };
+      return { job: await store.finishJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 }) };
     });
     if (finalized.interrupted) throw input.signal?.reason;
     const succeeded = finalized.job;
@@ -130,8 +130,8 @@ async function executeClaimedTransfer(input) {
     } else {
       await withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
         const latest = await store?.readJob(workspace, job?.id).catch(() => running);
-        if (['queued', 'running'].includes(latest?.status)) await store.transitionJob(workspace, job.id, [latest.status], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Transfer failed' }, finishedAt: new Date().toISOString(), exitCode: 1 });
-      }).catch(() => {});
+        if (['queued', 'running'].includes(latest?.status)) await store.finishJob(workspace, job.id, [latest.status], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Transfer failed' }, exitCode: 1 });
+      });
     }
     throw error;
   } finally { await client?.close().catch(() => {}); }
@@ -155,9 +155,9 @@ async function cancelInterruptedTransfer(input) {
   return withJobCancellationLock({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: current.id }, async () => {
     let latest = await input.store.readJob(input.workspace, current.id);
     if (['succeeded', 'failed', 'cancelled'].includes(latest.status)) return latest;
-    if (latest.status === 'queued') return input.store.transitionJob(input.workspace, latest.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+    if (latest.status === 'queued') return input.store.finishJob(input.workspace, latest.id, ['queued'], 'cancelled', { exitCode: null });
     if (latest.status === 'running') latest = await input.store.transitionJob(input.workspace, latest.id, ['running'], 'cancelling', latest.lastCancelError ? { lastCancelError: null } : {});
-    if (latest.status === 'cancelling') return input.store.transitionJob(input.workspace, latest.id, ['cancelling'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+    if (latest.status === 'cancelling') return input.store.finishJob(input.workspace, latest.id, ['cancelling'], 'cancelled', { exitCode: null });
     return latest;
   });
 }

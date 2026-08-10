@@ -234,7 +234,7 @@ async function executeReserved(context) {
       if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});
       else await createJobController({ store, dataRoot }).cancel(cwd, job.id, job.ownerSessionId).catch(() => {});
     } else if (!isInterruption(error) && current?.status === 'queued') {
-      await store.transitionJob(cwd, job.id, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution failed' }, finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
+      await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution failed' }, exitCode: 1 });
     }
     throw error;
   }
@@ -266,7 +266,7 @@ async function cancelClaimedQueuedInterruption(context) {
   return withJobCancellationLock({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id }, async () => {
     const current = await context.store.readJob(context.cwd, context.job.id);
     if (current.status !== 'queued' || current.workerLeaseId !== context.workerLeaseId) return current;
-    return context.store.transitionJob(context.cwd, current.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+    return context.store.finishJob(context.cwd, current.id, ['queued'], 'cancelled', { exitCode: null });
   });
 }
 
@@ -407,7 +407,7 @@ export async function failBackgroundDelivery(output, error) {
 
 /** @param {any} store @param {string} workspace @param {string} jobId @param {unknown} error */
 async function failQueuedJob(store, workspace, jobId, error) {
-  await store.transitionJob(workspace, jobId, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Background preparation failed' }, finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
+  await store.finishJob(workspace, jobId, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Background preparation failed' }, exitCode: 1 });
 }
 
 async function main() {

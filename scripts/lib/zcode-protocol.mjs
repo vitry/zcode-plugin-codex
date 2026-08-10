@@ -75,7 +75,7 @@ export class ZCodeProtocolClient {
   }
   /** @param {(error:unknown)=>void} handler */
   setSubscriberErrorHandler(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.subscriberErrorHandler = handler; }
-  /** Broker-only terminal hook. Validated terminal notifications are consumed before this callback. @param {(params:any)=>void} handler */
+  /** Broker-only terminal hook. Validated terminal notifications are consumed before this callback. @param {(params:any,turn:{status:'armed',baseline:number,inputId:string})=>void} handler */
   consumeTerminalsWith(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.terminalHandler = handler; this.consumeTerminal = true; }
   /** @param {(error:PluginError)=>void} handler */ setCloseHandler(handler) { if (typeof handler !== 'function') throw protocolInputError(); this.closeHandler = handler; }
 
@@ -260,7 +260,7 @@ export class ZCodeProtocolClient {
   rejectCompletionWaiters(error) { for (const waiter of this.completionWaiters) { if (waiter.timer) clearTimeout(waiter.timer); waiter.unsubscribe(); this.waiterSessions.delete(waiter.sessionId); waiter.reject(error); } this.completionWaiters.clear(); }
 
   /** @param {string} sessionId @param {any} params */
-  queueCompletion(sessionId, params) { if (this.consumeTerminal) { this.abortTurn(sessionId); this.terminalHandler?.(params); return; } if (!this.completed.has(sessionId) && this.completed.size >= 1024) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many unconsumed completions were received.', { category: 'protocol', remedy: 'Restart the connection and consume completions promptly.' })); return; } const queue = this.completed.get(sessionId) ?? []; queue.splice(0, queue.length, params); this.completed.set(sessionId, queue); clearTimeout(this.completionExpiry.get(sessionId)); const expiry = setTimeout(() => this.abortTurn(sessionId), 10 * 60_000); expiry.unref?.(); this.completionExpiry.set(sessionId, expiry); }
+  queueCompletion(sessionId, params) { if (this.consumeTerminal) { const turn = this.turns.get(sessionId); this.abortTurn(sessionId); if (turn?.status === 'armed' && typeof turn.baseline === 'number' && typeof turn.inputId === 'string') this.terminalHandler?.(params, { status: 'armed', baseline: turn.baseline, inputId: turn.inputId }); return; } if (!this.completed.has(sessionId) && this.completed.size >= 1024) { this.fail(new PluginError('ZCODE_COMPLETION_OVERFLOW', 'Too many unconsumed completions were received.', { category: 'protocol', remedy: 'Restart the connection and consume completions promptly.' })); return; } const queue = this.completed.get(sessionId) ?? []; queue.splice(0, queue.length, params); this.completed.set(sessionId, queue); clearTimeout(this.completionExpiry.get(sessionId)); const expiry = setTimeout(() => this.abortTurn(sessionId), 10 * 60_000); expiry.unref?.(); this.completionExpiry.set(sessionId, expiry); }
 }
 
 export class BoundedWriter {

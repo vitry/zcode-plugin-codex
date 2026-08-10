@@ -325,12 +325,12 @@ test('workspace scavenging fails an orphan whose persisted remote session is mis
 
 test('terminal completion racing orphan settlement is never overwritten', async () => {
   const fixture = await context(); const { job, store } = await orphanJob(fixture); let raced = false;
-  const wrapped = { ...store, transitionJob: async (...args) => {
+  const wrapped = { ...store, finishJob: async (...args) => {
     if (!raced && args[3] === 'failed') {
       raced = true;
-      await store.transitionJob(fixture.workspace, job.id, ['running'], 'succeeded', { resultArtifact: `results/${job.id}.md`, finishedAt: new Date().toISOString(), exitCode: 0 });
+      await store.finishJob(fixture.workspace, job.id, ['running'], 'succeeded', { resultArtifact: `results/${job.id}.md`, exitCode: 0 });
     }
-    return store.transitionJob(...args);
+    return store.finishJob(...args);
   } };
   const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
   await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] } }) });

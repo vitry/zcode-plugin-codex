@@ -177,7 +177,7 @@ function hasBoundary(job) { return typeof job.inputId === 'string' && Number.isS
 async function failJob(input, job, error) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
-  try { return await input.store.transitionJob(input.workspace, job.id, [current.status], 'failed', { error: { message: recoveryMessage(error) }, finishedAt: new Date().toISOString(), exitCode: 1 }); }
+  try { return await input.store.finishJob(input.workspace, job.id, [current.status], 'failed', { error: { message: recoveryMessage(error) }, exitCode: 1 }); }
   catch (transitionError) { return conflictWinner(input, job, transitionError); }
 }
 /** @param {any} input @param {any} job */
@@ -186,14 +186,14 @@ async function cancelJob(input, job) {
   if (TERMINAL.has(current.status)) return current;
   try {
     if (current.status === 'running') await input.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling');
-    return await input.store.transitionJob(input.workspace, job.id, ['cancelling'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null });
+    return await input.store.finishJob(input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
   } catch (error) { return conflictWinner(input, job, error); }
 }
 /** @param {any} input @param {any} job */
 async function cancelQueuedJob(input, job) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
-  try { return await input.store.transitionJob(input.workspace, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null }); }
+  try { return await input.store.finishJob(input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
   catch (error) { return conflictWinner(input, job, error); }
 }
 
@@ -237,7 +237,7 @@ async function completeEndedJob(input, job, snapshot) {
   try {
     const result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
     const resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
-    return await input.store.transitionJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
+    return await input.store.finishJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, exitCode: 0 });
   } catch (error) {
     if (isTransitionConflict(error)) return input.store.readJob(input.workspace, job.id);
     return null;
@@ -248,7 +248,7 @@ async function completeJob(input, job, snapshot, invalidResult = 'fail') {
   try {
     const result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
     const resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
-    return await input.store.transitionJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
+    return await input.store.finishJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, exitCode: 0 });
   } catch (error) {
     if (isTransitionConflict(error)) return input.store.readJob(input.workspace, job.id);
     return invalidResult === 'cancel' ? cancelJob(input, job) : failJob(input, job, error);

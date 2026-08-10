@@ -20,6 +20,11 @@ import test from 'node:test';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
+
+test('production terminal callers delegate finishedAt selection to the locked state API', async () => {
+  const sources = ['job-control.mjs', 'review.mjs', 'recovery.mjs', 'transfer.mjs'].map((name) => fileURLToPath(new URL(`../scripts/lib/${name}`, import.meta.url))).concat(fileURLToPath(new URL('../scripts/zcode-companion.mjs', import.meta.url)));
+  for (const source of sources) assert.doesNotMatch(await readFile(source, 'utf8'), /finishedAt:\s*new Date\(\)\.toISOString\(\)/, source);
+});
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 async function fixture() {
@@ -731,11 +736,10 @@ test('progress winning the lock prevents an earlier completion but permits a lat
     }),
     { code: 'JOB_PATCH_INVALID' },
   );
-  const succeeded = await store.transitionJob(workspace, running.id, ['running'], 'succeeded', {
-    finishedAt: '2020-01-01T00:00:03.000Z',
-  });
+  const succeeded = await store.finishJob(workspace, running.id, ['running'], 'succeeded', {});
   assert.equal(succeeded.status, 'succeeded');
   assert.equal(succeeded.lastActivityAt, progressed.lastActivityAt);
+  assert.ok(Date.parse(succeeded.finishedAt) >= Date.parse(progressed.lastActivityAt));
 });
 
 test('progress rejects malformed, unsafe, and out-of-timeline events', async () => {

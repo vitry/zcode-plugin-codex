@@ -192,8 +192,7 @@ function eligibleImplicit(job, eligibility) {
 }
 /** @param {any} store @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch */
 function finishJob(store, workspace, jobId, expectedStatuses, nextStatus, patch) {
-  if (typeof store.finishJob === 'function') return store.finishJob(workspace, jobId, expectedStatuses, nextStatus, patch);
-  return store.transitionJob(workspace, jobId, expectedStatuses, nextStatus, { ...patch, finishedAt: new Date().toISOString() });
+  return store.finishJob(workspace, jobId, expectedStatuses, nextStatus, patch);
 }
 /** @param {string} jobId @param {unknown} cause */
 function finalizeError(jobId, cause) { return new PluginError('JOB_CANCEL_FINALIZE_FAILED', `ZCode stopped, but job ${jobId} could not be finalized as cancelled.`, { category: 'storage', remedy: 'Retry cancellation to reconcile and finalize the cancelling job.', cause }); }

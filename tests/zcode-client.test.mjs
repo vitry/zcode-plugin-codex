@@ -673,6 +673,29 @@ test('invalid conversation acknowledgement clears the provisional topic before r
   finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test('conversation routing revalidates current ownership and enforces pending frame bounds', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-conversation-bounds-')); const writes = [];
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'f'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+  const socket = { writable: true, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const sessionId = 'bounded-conversation-session'; const topic = `conversation/${sessionId}`; const subscriptionId = 'bounded-subscription'; const message = { method: 'v4/conversation/frame', params: { topic, subscriptionId, frame: { payload: 'safe' } } };
+  broker.sessionOwners.set(sessionId, { ownerId: 'original-owner-stable', socket, claimToken: null }); broker.conversationSubscriptions.set(JSON.stringify([topic, subscriptionId]), { socket, topic, subscriptionId, connectionId: 'connection-1', sessionId, ownerId: 'original-owner-stable' });
+  broker.routeConversationFrame(message); assert.equal(writes.length, 1);
+  broker.sessionOwners.set(sessionId, { ownerId: 'replacement-owner-stable', socket: null, claimToken: null }); broker.routeConversationFrame(message); assert.equal(writes.length, 1);
+  broker.conversationSubscriptions.clear(); broker.pendingConversationTopics.set(topic, { socket, token: 'pending-token', frames: [], bytes: 0 }); broker.routeConversationFrame({ ...message, params: { ...message.params, frame: { payload: 'x'.repeat(70 * 1024) } } }); assert.equal(broker.pendingConversationTopics.get(topic).frames.length, 0);
+  for (let index = 0; index < 16; index += 1) broker.routeConversationFrame({ ...message, params: { ...message.params, frame: { payload: String(index) } } }); broker.routeConversationFrame(message); assert.equal(broker.pendingConversationTopics.get(topic).frames.length, 16);
+  await rm(directory, { recursive: true, force: true });
+});
+
+test('conversation subscription admission and disconnect cleanup are globally bounded', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-conversation-global-bound-')); const writes = []; const calls = [];
+  const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '0'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); const socket = { writable: true, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; const ownerId = 'bounded-owner-stable'; const sessionId = 'bounded-session';
+  broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.reloadOwnership = async () => {};
+  for (let index = 0; index < 256; index += 1) broker.conversationSubscriptions.set(`seed-${index}`, { socket: {}, topic: `conversation/seed-${index}`, subscriptionId: `sub-${index}`, connectionId: `connection-${index}`, sessionId: `seed-${index}`, ownerId });
+  broker.getProtocol = async () => ({ request: async (...args) => { calls.push(args); return {}; } });
+  await broker.handleLocal(socket, JSON.stringify({ id: 1, method: 'v4/conversation/subscribe', params: { topic: `conversation/${sessionId}`, connectionId: 'bounded-connection', clientMode: 'desktop-continuous' } })); assert.equal(calls.length, 0); assert.equal(writes.at(-1).error.data.pluginError.code, 'ZCODE_BROKER_INPUT_INVALID');
+  broker.conversationSubscriptions.clear(); broker.conversationSubscriptions.set('exact', { socket, topic: `conversation/${sessionId}`, subscriptionId: 'exact-subscription', connectionId: 'exact-connection', sessionId, ownerId }); broker.protocol = { request: async (...args) => { calls.push(args); return {}; } }; await broker.cleanupSocketSubscriptions(socket); assert.deepEqual(calls.at(-1), ['v4/conversation/unsubscribe', { topic: `conversation/${sessionId}`, subscriptionId: 'exact-subscription', connectionId: 'exact-connection' }, 250]); assert.equal(broker.conversationSubscriptions.size, 0);
+  await rm(directory, { recursive: true, force: true });
+});
+
 test('session stop settles only its permission and ignores the exact late response without harming multiplexed work', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-permission-stop-')); const writes = []; let destroyed = 0;
   const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '7'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
@@ -707,8 +730,23 @@ test('owner release uses the same exact-session stop notification without discon
   const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-active-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'a'.repeat(64); const ownerId = 'release-active-owner-stable';
   const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' } }).start();
   const worker = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 }); const controller = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId });
-  try { const sessionId = (await worker.createSession({ workspace: directory })).session.sessionId; await worker.send(sessionId, 'hold'); const stopped = assert.rejects(worker.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); const released = await controller.releaseOwner([]); assert.deepEqual(released.releasedSessionIds, [sessionId]); await stopped; assert.deepEqual(await controller.brokerCapabilities(), { releaseOwnerExclusions: true }); }
+  try { const sessionId = (await worker.createSession({ workspace: directory })).session.sessionId; const subscription = await worker.subscribeConversation(sessionId, { connectionId: 'release-owner-connection', clientMode: 'desktop-continuous' }); await worker.send(sessionId, 'hold'); const stopped = assert.rejects(worker.waitForCompletion(sessionId), { code: 'ZCODE_SESSION_STOPPED' }); let fencedDuringApply = false; const settleStoppedSession = broker.settleStoppedSession.bind(broker); broker.settleStoppedSession = (...args) => { fencedDuringApply = broker.stoppingSessions.has(sessionId); return settleStoppedSession(...args); }; const released = await controller.releaseOwner([]); assert.deepEqual(released.releasedSessionIds, [sessionId]); await stopped; assert.equal(fencedDuringApply, true); assert.equal([...broker.conversationSubscriptions.values()].some((entry) => entry.sessionId === sessionId), false); await subscription.unsubscribe().catch(() => {}); assert.deepEqual(await controller.brokerCapabilities(), { releaseOwnerExclusions: true }); }
   finally { await worker.close(); await controller.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('direct stop establishes its generation fence before awaiting protocol acquisition', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-stop-admission-')); const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: 'd'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); const sessionId = 'stop-admission-session'; const ownerId = 'stop-admission-owner'; const writes = [];
+  const socket = { writable: true, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} }; broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId); broker.sessionOwners.set(sessionId, { ownerId, socket, claimToken: null }); broker.activeSessionSockets.set(sessionId, { socket, token: 'active-generation', baseline: 1, inputId: 'input-1' });
+  let entered; let release; const protocolRequested = new Promise((resolve) => { entered = resolve; }); const gate = new Promise((resolve) => { release = resolve; }); const protocol = { request: async () => ({}), cancelTurn() {} }; broker.getProtocol = async () => { entered(); await gate; return protocol; };
+  const stopping = broker.handleLocal(socket, JSON.stringify({ id: 1, method: 'session/stop', params: { sessionId } })); await protocolRequested;
+  assert.equal(broker.stoppingSessions.get(sessionId)?.activeToken, 'active-generation'); release(); await stopping; assert.deepEqual(writes.at(-1), { id: 1, result: {} }); await rm(directory, { recursive: true, force: true });
+});
+
+test('an invalid early terminal cannot clear the accepted generation route', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-terminal-generation-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); const brokerToken = 'e'.repeat(64); const ownerId = 'terminal-generation-owner';
+  const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_BARRIER: '1' } }).start(); const creator = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId }); const sender = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId, completionTimeoutMs: 1_000 });
+  try { const sessionId = (await creator.createSession({ workspace: directory })).session.sessionId; await sender.send(sessionId, 'barrier'); await sender.waitForCompletion(sessionId); }
+  finally { await creator.close(); await sender.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('a pending stop fences new sends until its exact acknowledgement', { timeout: 5_000 }, async () => {

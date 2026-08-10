@@ -135,7 +135,7 @@ export async function executeJob(input) {
       if (current.status === 'queued' && sessionId) {
         let stopped = false;
         try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
-        if (stopped) await input.store.transitionJob(workspace, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null }).catch(() => {});
+        if (stopped) try { await input.store.finishJob(workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); } catch (finalizeError) { primaryError = finalizeError; }
       } else {
         const cancellation = createJobController({ store: input.store, dataRoot, stopSession: (id) => client.stopSession(id) });
         await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => {});
@@ -149,7 +149,7 @@ export async function executeJob(input) {
           canFail = false;
         }
       }
-      if (canFail) await input.store.transitionJob(workspace, job.id, [current.status], 'failed', { error: safeError(error), finishedAt: new Date().toISOString(), exitCode: 1 }).catch(() => {});
+      if (canFail) try { await input.store.finishJob(workspace, job.id, [current.status], 'failed', { error: safeError(error), exitCode: 1 }); } catch (finalizeError) { primaryError = finalizeError; }
     }
   }
   // Cleanup order is part of the progress lifecycle contract.
@@ -177,7 +177,7 @@ async function publishSuccessfulResult({ input, job, workspace, dataRoot, result
     if (current.status !== 'running') throw statusPublicationError(job.id, current.status);
     const resultArtifact = await writeResultArtifact({ dataRoot, workspace, jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
     try {
-      const succeeded = await input.store.transitionJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, finishedAt: new Date().toISOString(), exitCode: 0 });
+      const succeeded = await input.store.finishJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
       return { job: succeeded, result };
     } catch (error) {
       const winner = await input.store.readJob(workspace, job.id).catch(() => null);
