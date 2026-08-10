@@ -1,11 +1,17 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+
+import { createIdentityStore } from '../scripts/lib/identity.mjs';
 
 import {
   CodexRescueEvidenceMismatchError,
   CodexRescueUnqualifiedError,
   parseCodexRolloutJsonl,
+  qualifyCodexRescueBackgroundEvidence,
   qualifyCodexRescueChoiceEvidence,
   qualifyCodexRescueEvidence,
 } from './helpers/codex-rescue-qualification.mjs';
@@ -17,6 +23,9 @@ const expectedWorkspace = '/repo';
 const expectedCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke rescue';
 const expectedPreflightCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" role-status rescue';
 const expectedPublicOutput = 'done';
+const backgroundJobId = 'b'.repeat(64);
+const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
+const executionCapability = 'qualification-capability-sentinel-private';
 
 test('qualifies named Rescue from linked parent and child rollout metadata', () => {
   const evidence = qualifyCodexRescueEvidence(fixture(), options());
@@ -29,6 +38,62 @@ test('qualifies named Rescue from linked parent and child rollout metadata', () 
     route: 'named',
     publicOutput: expectedPublicOutput,
   });
+});
+
+test('qualifies named and generic background Rescue with one linked queued output and no capability leak', () => {
+  const named = backgroundFixture();
+  assert.deepEqual(qualifyCodexRescueBackgroundEvidence(named, backgroundOptions()), {
+    parentThreadId: parentId, childThreadId: childId, agentPath, taskName: 'zcode_rescue', agentType: 'zcode-rescue', route: 'named',
+    publicOutput: backgroundPublicOutput, jobId: backgroundJobId, capabilityChecked: true,
+  });
+  const generic = backgroundFixture(); const args = JSON.parse(spawnEvent(generic).payload.arguments); delete args.agent_type; args.message = 'fixed generic forwarder'; spawnEvent(generic).payload.arguments = JSON.stringify(args); childMeta(generic).payload.source.subagent.thread_spawn.agent_role = null;
+  assert.equal(qualifyCodexRescueBackgroundEvidence(generic, backgroundOptions()).route, 'generic-schema-hidden');
+});
+
+test('background qualification fails closed on inline, self-printed, wrong-child, duplicate, unlinked, and token-leak evidence', () => {
+  const cases = [
+    { code: 'parent-inline-command', mutate: (input) => input.rollouts[0].splice(3, 0, structuredExec(expectedCommand, 'parent-inline')) },
+    { code: 'parent-terminal-order', mutate: (input) => { input.rollouts[0] = input.rollouts[0].filter((event) => event !== childReturnEvent(input)); } },
+    { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', `self-printed\n${backgroundPublicOutput}\n`).payload.output; } },
+    { code: 'child-rollout-id-mismatch', mutate: (input) => { startEvent(input).payload.agent_thread_id = 'wrong-child'; } },
+    { code: 'spawn-count', mutate: (input) => input.rollouts[0].splice(4, 0, structuredSpawn('spawn-2')) },
+    { code: 'child-output-link', mutate: (input) => { childOutput(input).payload.call_id = 'unlinked-output'; } },
+    { code: 'background-capability-leak', mutate: (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.message = `${args.message} ${executionCapability}`; spawnEvent(input).payload.arguments = JSON.stringify(args); } },
+    { code: 'background-capability-leak', mutate: (input) => { input.rollouts[0].splice(-1, 0, { type: 'event_msg', payload: { type: 'agent_message', message: executionCapability, phase: 'commentary' } }); } },
+    { code: 'background-capability-leak', mutate: (input) => { childOutput(input).payload.output[0].text += executionCapability; } },
+    { code: 'background-capability-leak', mutate: (input) => { input.execFrames.splice(2, 0, execAgentMessage(executionCapability, 'leak')); } },
+  ];
+  for (const { code, mutate } of cases) {
+    const input = backgroundFixture(); mutate(input);
+    assert.throws(() => qualifyCodexRescueBackgroundEvidence(input, backgroundOptions()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
+  }
+});
+
+test('background qualification checks all core evidence before treating only spawn ciphertext as unqualified', () => {
+  const encrypted = backgroundFixture(); const args = JSON.parse(spawnEvent(encrypted).payload.arguments); args.message = `gAAAA${'A'.repeat(64)}`; spawnEvent(encrypted).payload.arguments = JSON.stringify(args);
+  assert.throws(() => qualifyCodexRescueBackgroundEvidence(encrypted, backgroundOptions()), (error) => error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted');
+  startEvent(encrypted).payload.agent_thread_id = 'wrong-child';
+  assert.throws(() => qualifyCodexRescueBackgroundEvidence(encrypted, backgroundOptions()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-rollout-id-mismatch');
+  const badStdout = backgroundFixture(); const badArgs = JSON.parse(spawnEvent(badStdout).payload.arguments); badArgs.message = `gAAAA${'A'.repeat(64)}`; spawnEvent(badStdout).payload.arguments = JSON.stringify(badArgs); childOutput(badStdout).payload.output = toolOutput('exec-1', `self-printed\n${backgroundPublicOutput}\n`).payload.output;
+  assert.throws(() => qualifyCodexRescueBackgroundEvidence(badStdout, backgroundOptions()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'background-child-stdout');
+});
+
+test('background qualification rejects a production-minted capability across every visible evidence surface', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-background-qualification-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const token = await createIdentityStore({ dataRoot: join(directory, 'data') }).createExecutionCapability({
+    jobId: backgroundJobId, ownerSessionId: 'qualification-owner', workspace: directory, operation: 'run-reserved-job', specDigest: 'c'.repeat(64), permissionSnapshot: { permissionMode: 'workspace-write' },
+  });
+  assert.equal(qualifyCodexRescueBackgroundEvidence(backgroundFixture(), backgroundOptions({ privateExecutionCapability: token })).capabilityChecked, true);
+  const cases = [
+    { mutate: (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.message += token; spawnEvent(input).payload.arguments = JSON.stringify(args); }, options: {} },
+    { mutate: (input) => { childOutput(input).payload.output[0].text += token; }, options: {} },
+    { mutate: (input) => { input.execFrames.splice(2, 0, execAgentMessage(token, 'production-token-leak')); }, options: {} },
+    { mutate: () => {}, options: { publicLogs: [`public log ${token}`] } },
+  ];
+  for (const { mutate, options: overrides } of cases) {
+    const input = backgroundFixture(); mutate(input);
+    assert.throws(() => qualifyCodexRescueBackgroundEvidence(input, backgroundOptions({ privateExecutionCapability: token, ...overrides })), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'background-capability-leak');
+  }
 });
 
 test('qualifies exact resume and fresh follow-ups against one existing child ID', () => {
@@ -467,12 +532,16 @@ function options(overrides = {}) {
   return value;
 }
 
-function fixture() {
-  const childEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${expectedPublicOutput}`;
+function backgroundOptions(overrides = {}) {
+  return options({ expectedJobId: backgroundJobId, expectedPublicOutput: undefined, privateExecutionCapability: executionCapability, publicLogs: ['bounded public log without private material'], ...overrides });
+}
+
+function fixture(publicOutput = expectedPublicOutput) {
+  const childEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${publicOutput}`;
   const execFrames = [
       { type: 'thread.started', thread_id: parentId },
       { type: 'turn.started' },
-      execAgentMessage(expectedPublicOutput),
+      execAgentMessage(publicOutput),
       { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 10, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 5 } },
     ];
   const parent = [
@@ -482,16 +551,18 @@ function fixture() {
       { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ agent_type: 'zcode-rescue', fork_turns: 'none', message: 'fixed named forwarder', task_name: 'zcode_rescue' }) } },
       { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
       { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: childEnvelope }] } },
-      { type: 'event_msg', payload: { type: 'agent_message', message: expectedPublicOutput, phase: 'final_answer' } },
+      { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
     ];
   const child = [
       { type: 'session_meta', payload: { session_id: parentId, id: childId, parent_thread_id: parentId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_path: agentPath, agent_nickname: 'Ada', agent_role: 'zcode-rescue' } } } } },
       structuredExec(expectedCommand),
-      toolOutput('exec-1', `Running command: npm test.\n${expectedPublicOutput}\n`),
-      { type: 'event_msg', payload: { type: 'agent_message', message: expectedPublicOutput, phase: 'final_answer' } },
+      toolOutput('exec-1', `Running command: npm test.\n${publicOutput}\n`),
+      { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
     ];
   return { execFrames, rollouts: [parent, child] };
 }
+
+function backgroundFixture() { const input = fixture(backgroundPublicOutput); childOutput(input).payload.output = toolOutput('exec-1', `${backgroundPublicOutput}\n`).payload.output; return input; }
 
 function choiceOptions(choice) {
   return {

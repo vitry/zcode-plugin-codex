@@ -59,6 +59,7 @@ async function run(command, args, cwd) {
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-skills-'));
+  const workerPids = new Set();
   const workspace = await realpath(await mkdir(join(directory, 'workspace'), { recursive: true }).then(() => join(directory, 'workspace')));
   const dataRoot = join(directory, 'data');
   await writeFile(join(workspace, 'tracked.txt'), 'base\n');
@@ -70,8 +71,8 @@ async function fixture(t) {
   const callerA = await identity.createCallerContext({ sessionId: 'codex-a', turnId: 'turn-a', workspace, permissionMode: 'workspace-write' });
   const callerB = await identity.createCallerContext({ sessionId: 'codex-b', turnId: 'turn-b', workspace, permissionMode: 'read-only' });
   const env = { ...process.env, PLUGIN_DATA: dataRoot, PLUGIN_ROOT: root, ZCODE_PATH: fakeZCode };
-  t.after(() => cleanupFixture(directory));
-  return { workspace, dataRoot, callerA, callerB, env };
+  t.after(async () => { for (const pid of workerPids) await ensureWorkerStopped(pid); await cleanupFixture(directory); });
+  return { directory, workspace, dataRoot, callerA, callerB, env, trackWorker: (pid) => { if (Number.isSafeInteger(pid)) workerPids.add(pid); } };
 }
 
 async function startRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
@@ -387,37 +388,42 @@ test('direct background invocation keeps capabilities private and production own
 
 test('named and generic Rescue children receive only queued background output while production workers remain controllable', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA }); const store = createStateStore({ dataRoot: ctx.env.PLUGIN_DATA });
+  const gate = join(ctx.directory, 'background-completion.gate'); const gateReached = join(ctx.directory, 'background-completion.reached');
   for (const [route, agentType, control] of [['named', 'zcode-rescue', 'result'], ['generic', 'default', 'cancel']]) {
     const parentId = `background-${route}-parent`; const childId = `background-${route}-child`; const turnId = `background-${route}-turn`;
+    let workerPid; await writeFile(gate, 'hold'); await writeFile(gateReached, '');
     const callerContext = await identity.beginCallerTurn({ sessionId: parentId, turnId, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --background ${route} native child` });
     await startRescueChild(ctx, parentId, childId, `${turnId}-child`, agentType);
-    const launched = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_DELAY_MS: '150' } });
-    assert.equal(launched.code, 0, launched.stderr || launched.stdout);
-    const jobId = /^Reserved background job ([a-f0-9]{64})\.\n$/.exec(launched.stdout)?.[1];
-    assert.ok(jobId, `native ${route} child must receive only the public queued envelope: ${launched.stdout}`);
-    assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke', 'rescue']);
-    assert.equal(launched.internal, ''); assert.equal(launched.stderr, '');
-    assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
+    try {
+      const launched = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_COMPLETION_GATE: gate, FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReached } });
+      assert.equal(launched.code, 0, launched.stderr || launched.stdout);
+      const jobId = /^Reserved background job ([a-f0-9]{64})\.\n$/.exec(launched.stdout)?.[1];
+      assert.ok(jobId, `native ${route} child must receive only the public queued envelope: ${launched.stdout}`);
+      let job = await store.readJob(ctx.workspace, jobId); workerPid = job.childPid; ctx.trackWorker(workerPid);
+      assert.equal(await readFile(gateReached, 'utf8'), 'blocked', 'the fake peer must be explicitly blocked after the accepted send');
+      assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke', 'rescue']);
+      assert.equal(launched.internal, ''); assert.equal(launched.stderr, '');
+      assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
 
-    let job = await store.readJob(ctx.workspace, jobId);
-    assert.equal(job.status, 'running', `the ${route} child must be able to exit after fd4 acknowledgement while its detached worker continues`);
-    assert.equal(processAlive(job.childPid), true);
-    const status = await publicInvoke(ctx, ['status', jobId], callerContext);
-    assert.equal(status.code, 0, status.stderr); assert.equal(status.json.job.status, 'running');
-    assert.doesNotMatch(`${status.stdout}${status.stderr}${status.internal}`, /executionCapability|callerContext|privateInvocation/);
+      assert.equal(job.status, 'running', `the ${route} child must be able to exit after fd4 acknowledgement while its detached worker continues`);
+      assert.equal(processAlive(workerPid), true);
+      const status = await publicInvoke(ctx, ['status', jobId], callerContext);
+      assert.equal(status.code, 0, status.stderr); assert.equal(status.json.job.status, 'running');
+      assert.doesNotMatch(`${status.stdout}${status.stderr}${status.internal}`, /executionCapability|callerContext|privateInvocation/);
 
-    if (control === 'cancel') {
-      const cancelled = await publicInvoke(ctx, ['cancel', jobId], callerContext);
-      assert.equal(cancelled.code, 0, cancelled.stderr); assert.equal(cancelled.json.job.status, 'cancelled');
-      job = await store.readJob(ctx.workspace, jobId);
-    } else {
-      const waited = await publicInvoke(ctx, ['status', jobId, '--wait', '--timeout-ms', '5000'], callerContext);
-      assert.equal(waited.code, 0, waited.stderr); assert.equal(waited.json.job.status, 'succeeded');
-      const result = await publicInvoke(ctx, ['result', jobId], callerContext);
-      assert.equal(result.code, 0, result.stderr); assert.equal(result.json.result, 'done');
-      assert.doesNotMatch(`${result.stdout}${result.stderr}${result.internal}`, /executionCapability|callerContext|privateInvocation/);
-      job = await store.readJob(ctx.workspace, jobId);
+      if (control === 'cancel') {
+        const cancelled = await publicInvoke(ctx, ['cancel', jobId], callerContext);
+        assert.equal(cancelled.code, 0, cancelled.stderr); assert.equal(cancelled.json.job.status, 'cancelled');
+      } else {
+        await writeFile(gate, 'release');
+        const waited = await publicInvoke(ctx, ['status', jobId, '--wait', '--timeout-ms', '5000'], callerContext);
+        assert.equal(waited.code, 0, waited.stderr); assert.equal(waited.json.job.status, 'succeeded');
+        const result = await publicInvoke(ctx, ['result', jobId], callerContext);
+        assert.equal(result.code, 0, result.stderr); assert.equal(result.json.result, 'done');
+        assert.doesNotMatch(`${result.stdout}${result.stderr}${result.internal}`, /executionCapability|callerContext|privateInvocation/);
+      }
+    } finally {
+      await writeFile(gate, 'release').catch(() => {}); await ensureWorkerStopped(workerPid);
     }
-    await ensureWorkerStopped(job.childPid);
   }
 });

@@ -29,6 +29,10 @@ export function parseCodexRolloutJsonl(value) {
 }
 
 export function qualifyCodexRescueEvidence(input, options) {
+  return qualifyCodexRescueEvidenceCore(input, options, false);
+}
+
+function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqualified) {
   const execFrames = boundedArray(input?.execFrames, MAX_EXEC_FRAMES, 'exec-frames');
   const rollouts = boundedArray(input?.rollouts, MAX_ROLLOUTS, 'rollouts');
   for (const rollout of rollouts) boundedArray(rollout, MAX_EVENTS_PER_ROLLOUT, 'rollout-events');
@@ -153,9 +157,33 @@ export function qualifyCodexRescueEvidence(input, options) {
   if (!spawnMessage) mismatch('spawn-message-unavailable', 'The structured spawn metadata does not expose a bounded message field.');
   const spawnMessageEncrypted = encrypted(spawnMessage);
   if (!spawnMessageEncrypted && spawnMessage !== expectedSpawnMessage) mismatch('spawn-message-mismatch', 'The runtime spawn message differs from the fixed Rescue forwarder contract.');
-  if (spawnMessageEncrypted) unqualified('spawn-message-encrypted', 'Codex 0.147 persisted the spawn message field as ciphertext, so its exact runtime value cannot be qualified.', evidence);
+  if (spawnMessageEncrypted && !deferEncryptedSpawnUnqualified) unqualified('spawn-message-encrypted', 'Codex 0.147 persisted the spawn message field as ciphertext, so its exact runtime value cannot be qualified.', evidence);
 
   return evidence;
+}
+
+export function qualifyCodexRescueBackgroundEvidence(input, options) {
+  const jobId = boundedString(options?.expectedJobId);
+  if (!jobId || !/^[a-f0-9]{64}$/u.test(jobId)) mismatch('background-job-id', 'Background qualification requires one exact canonical queued job ID.');
+  const publicOutput = `Reserved background job ${jobId}.`;
+  const publicLogs = options?.publicLogs === undefined ? [] : boundedArray(options.publicLogs, 64, 'background-public-logs');
+  if (publicLogs.some((entry) => boundedString(entry) === undefined)) mismatch('background-public-logs', 'Background public logs exceed their count or text bound.');
+  const capability = options?.privateExecutionCapability === undefined ? undefined : boundedString(options.privateExecutionCapability);
+  if (options?.privateExecutionCapability !== undefined && !capability) mismatch('background-capability-evidence', 'The private execution capability evidence is absent or unbounded.');
+  if (capability) {
+    const visible = boundedJson({ execFrames: input?.execFrames, rollouts: input?.rollouts, publicLogs });
+    if (visible.includes(capability)) mismatch('background-capability-leak', 'The private execution capability entered model-visible or public evidence.');
+  }
+  const evidence = qualifyCodexRescueEvidenceCore(input, { ...options, expectedPublicOutput: publicOutput }, true);
+  const child = input.rollouts.find((events) => sessionMeta(events)?.id === evidence.childThreadId);
+  const outputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
+  const exactStdout = terminalOutputText(outputs[0]?.payload?.output, 'background-child-stdout');
+  if (exactStdout !== publicOutput && exactStdout !== `${publicOutput}\n`) mismatch('background-child-stdout', 'The linked child command output is not only the exact queued stdout.');
+  const result = { ...evidence, jobId, capabilityChecked: capability !== undefined };
+  const parent = input.rollouts.find((events) => sessionMeta(events)?.id === evidence.parentThreadId);
+  const spawn = parent.find((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === 'spawn_agent');
+  if (encrypted(parseObject(spawn.payload.arguments, 'background-spawn-arguments').message)) unqualified('spawn-message-encrypted', 'Codex 0.147 persisted the spawn message field as ciphertext, so its exact runtime value cannot be qualified.', result);
+  return result;
 }
 
 export function qualifyCodexRescueChoiceEvidence(input, options) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-nocheck
-import { appendFile, readFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import process from 'node:process';
 import readline from 'node:readline';
 
@@ -55,6 +55,19 @@ async function record(message) {
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+async function scheduleCompletion(sessionId, completion) {
+  if (process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED) await writeFile(process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED, 'blocked');
+  /** @type {NodeJS.Timeout} */ let timer;
+  const deliver = async () => {
+    if (pendingCompletionTimers.get(sessionId) !== timer) return;
+    if (process.env.FAKE_ZCODE_COMPLETION_GATE) {
+      const state = await readFile(process.env.FAKE_ZCODE_COMPLETION_GATE, 'utf8').catch(() => '');
+      if (state.trim() !== 'release') { timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return; }
+    }
+    pendingCompletionTimers.delete(sessionId); send(completion);
+  };
+  timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer);
 }
 function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
 function conversationNotification({ sessionId, subscriptionId, deliveryKind, ordinal, deltas, topic = `conversation/${sessionId}` }) {
@@ -195,8 +208,7 @@ input.on('line', async (line) => {
       else if (!(process.env.FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION === '1' && sendCount === 1)
         && Number(process.env.FAKE_ZCODE_SUPPRESS_COMPLETION_AT ?? 0) !== sendCount) {
         const existingTimer = pendingCompletionTimers.get(p.sessionId); if (existingTimer) clearTimeout(existingTimer);
-        const timer = setTimeout(() => { if (pendingCompletionTimers.get(p.sessionId) === timer) pendingCompletionTimers.delete(p.sessionId); send(completion); }, 5);
-        pendingCompletionTimers.set(p.sessionId, timer);
+        await scheduleCompletion(p.sessionId, completion);
       }
       break;
     }
