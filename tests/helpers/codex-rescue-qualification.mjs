@@ -313,8 +313,8 @@ function finalExecMessage(frames, expectedPublicOutput, parentThreadId) {
     .map(({ frame, index }) => ({ index, text: boundedString(frame.item.text) }));
   if (messages.length === 0) mismatch('exec-public-output-unavailable', 'Codex exec JSON did not expose an agent message.');
   if (messages.length > MAX_EXEC_AGENT_MESSAGES || messages.some(({ text }) => text === undefined)) mismatch('exec-agent-messages-invalid', 'Codex exec agent messages exceed their count or text bound.');
+  if (messages.some(({ index }) => index <= turnStarts[0].index || index >= terminal.index)) mismatch('exec-terminal-order', 'Every agent message must occur inside the observed successful turn.');
   const finalMessage = messages.at(-1);
-  if (turnStarts[0].index >= finalMessage.index || finalMessage.index >= terminal.index) mismatch('exec-terminal-order', 'The final agent message must occur inside the observed successful turn.');
   if (finalMessage.text !== expectedPublicOutput) mismatch('exec-public-output-mismatch', 'The last Codex exec agent message is not the exact public sentinel.');
   if (messages.filter(({ text }) => text === expectedPublicOutput).length !== 1) mismatch('exec-public-output-count', 'The public sentinel must occur in exactly one Codex exec agent message.');
   return finalMessage.text;

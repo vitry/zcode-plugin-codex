@@ -295,6 +295,15 @@ test('accepts bounded commentary agent messages before one exact final sentinel 
   assert.equal(qualifyCodexRescueEvidence(input, options()).publicOutput, expectedPublicOutput);
 });
 
+test('rejects commentary before turn.started even when the final sentinel is inside the turn', () => {
+  const input = fixture();
+  input.execFrames.splice(1, 0, execAgentMessage('commentary before the turn', 'pre-turn-commentary'));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'exec-terminal-order',
+  );
+});
+
 test('fails ambiguous or nonterminal exec agent-message evidence', () => {
   const cases = [
     { code: 'exec-public-output-mismatch', mutate: (input) => input.execFrames.splice(-1, 0, execAgentMessage('after sentinel', 'late-message')) },
