@@ -42,16 +42,18 @@ export async function ensurePrivateDirectory(path) {
 /**
  * @param {string} path
  * @param {unknown} value
+ * @param {{signal?:AbortSignal}} [options]
  */
-export async function atomicWriteJson(path, value) {
-  await atomicWritePrivateFile(path, `${JSON.stringify(value, null, 2)}\n`);
+export async function atomicWriteJson(path, value, options = {}) {
+  await atomicWritePrivateFile(path, `${JSON.stringify(value, null, 2)}\n`, options);
 }
 
 /**
  * @param {string} path
  * @param {string|Buffer} bytes
+ * @param {{signal?:AbortSignal}} [options]
  */
-export async function atomicWritePrivateFile(path, bytes) {
+export async function atomicWritePrivateFile(path, bytes, options = {}) {
   const directory = dirname(path);
   const temporaryPath = join(
     directory,
@@ -59,12 +61,18 @@ export async function atomicWritePrivateFile(path, bytes) {
   );
   let handle;
   try {
+    options.signal?.throwIfAborted();
     await ensurePrivateDirectory(directory);
+    options.signal?.throwIfAborted();
     handle = await open(temporaryPath, 'wx', 0o600);
-    await handle.writeFile(bytes);
+    options.signal?.throwIfAborted();
+    await handle.writeFile(bytes, { signal: options.signal });
+    options.signal?.throwIfAborted();
     await handle.sync();
+    options.signal?.throwIfAborted();
     await handle.close();
     handle = undefined;
+    options.signal?.throwIfAborted();
     try {
       await rename(temporaryPath, path);
     } catch (error) {
@@ -77,11 +85,15 @@ export async function atomicWritePrivateFile(path, bytes) {
       await swap(temporaryPath, path);
       await unlink(temporaryPath);
     }
+    options.signal?.throwIfAborted();
     await chmod(path, 0o600);
+    options.signal?.throwIfAborted();
     await syncDirectory(directory);
+    options.signal?.throwIfAborted();
   } catch (error) {
     if (handle) await handle.close().catch(() => {});
     await unlink(temporaryPath).catch(() => {});
+    if (options.signal?.aborted) throw options.signal.reason;
     throw wrapError(error, 'ATOMIC_WRITE_FAILED', `Could not atomically write file: ${path}`, {
       category: 'storage',
       remedy: 'Check available disk space and permissions, then retry.',
@@ -120,10 +132,11 @@ export async function readJsonFile(path) {
  * @template T
  * @param {string} lockPath
  * @param {() => Promise<T>} operation
- * @param {{ pollIntervalMs?: number, timeoutMs?: number, beforeLockOpen?: () => Promise<void> }} [options]
+ * @param {{ pollIntervalMs?: number, timeoutMs?: number, beforeLockOpen?: () => Promise<void>, signal?:AbortSignal }} [options]
  * @returns {Promise<T>}
  */
 export async function withFileLock(lockPath, operation, options = {}) {
+  options.signal?.throwIfAborted();
   const settings = { ...DEFAULT_LOCK_OPTIONS, ...options };
   if (
     !Number.isSafeInteger(settings.timeoutMs) || settings.timeoutMs < 0
@@ -137,6 +150,7 @@ export async function withFileLock(lockPath, operation, options = {}) {
   }
   const startedAt = Date.now();
   await ensureLockLayout(lockPath);
+  options.signal?.throwIfAborted();
   const lockFilePath = join(lockPath, 'advisory.lock');
   const lockDirectoryStats = await safeLockStats(lockPath, 'lock directory', 'directory');
   const lockFileStats = await safeLockStats(lockFilePath, 'advisory lock file', 'file');
@@ -144,8 +158,10 @@ export async function withFileLock(lockPath, operation, options = {}) {
   let confirmationHandle;
   try {
     handle = await open(lockFilePath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+    options.signal?.throwIfAborted();
     const openedStats = await handle.stat();
     await options.beforeLockOpen?.();
+    options.signal?.throwIfAborted();
     confirmationHandle = await open(lockFilePath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
     const [confirmationStats, currentDirectoryStats, currentFileStats] = await Promise.all([
       confirmationHandle.stat(),
@@ -158,9 +174,11 @@ export async function withFileLock(lockPath, operation, options = {}) {
     await confirmationHandle.close();
     confirmationHandle = undefined;
     await handle.chmod(0o600);
+    options.signal?.throwIfAborted();
   } catch (error) {
     if (confirmationHandle) await confirmationHandle.close().catch(() => {});
     if (handle) await handle.close().catch(() => {});
+    if (options.signal?.aborted) throw options.signal.reason;
     throw wrapError(error, 'LOCK_OPEN_FAILED', `Could not open lock file: ${lockFilePath}`, {
       category: 'storage',
       remedy: 'Check plugin data permissions and retry.',
@@ -171,6 +189,7 @@ export async function withFileLock(lockPath, operation, options = {}) {
   let acquired = false;
   try {
     while (!acquired) {
+      options.signal?.throwIfAborted();
       acquired = tryLock(handle.fd);
       if (acquired) break;
       if (Date.now() - startedAt >= settings.timeoutMs) {
@@ -180,10 +199,11 @@ export async function withFileLock(lockPath, operation, options = {}) {
           details: { lockPath, timeoutMs: settings.timeoutMs },
         });
       }
-      await delay(settings.pollIntervalMs);
+      await delay(settings.pollIntervalMs, options.signal);
     }
   } catch (error) {
     await handle.close().catch(() => {});
+    if (options.signal?.aborted) throw options.signal.reason;
     if (error instanceof PluginError) throw error;
     throw wrapError(error, 'LOCK_ACQUIRE_FAILED', `Could not acquire lock: ${lockPath}`, {
       category: 'storage',
@@ -197,7 +217,9 @@ export async function withFileLock(lockPath, operation, options = {}) {
   let operationError;
   let operationFailed = false;
   try {
+    options.signal?.throwIfAborted();
     result = await operation();
+    options.signal?.throwIfAborted();
   } catch (error) {
     operationError = error;
     operationFailed = true;
@@ -286,9 +308,15 @@ async function syncDirectory(directory) {
   }
 }
 
-/** @param {number} milliseconds */
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+/** @param {number} milliseconds @param {AbortSignal|undefined} signal */
+function delay(milliseconds, signal) {
+  if (!signal) return new Promise((resolve) => setTimeout(() => resolve(undefined), milliseconds));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(undefined); }, milliseconds);
+    const abort = () => { clearTimeout(timer); reject(signal.reason); };
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+  });
 }
 
 /** @param {unknown} error @param {string} code */
