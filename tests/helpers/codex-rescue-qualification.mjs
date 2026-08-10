@@ -106,7 +106,7 @@ export function qualifyCodexRescueEvidence(input, options) {
     assertExactKeys(spawnArgs, ['fork_turns', 'message', 'task_name'], 'spawn-keys-mismatch');
     if (!GENERIC_HIDDEN_SCHEMA_VERSIONS.has(parentMeta.cli_version)) mismatch('generic-schema-version-unqualified', 'The observed Codex version is not qualified for a schema-hidden generic route.');
     if (threadSpawn.agent_role !== null) mismatch('generic-agent-role-mismatch', 'A schema-hidden generic child must report a null agent_role.');
-    route = 'generic-schema-hidden'; agentType = null; expectedSpawnMessage = options.expectedGenericSpawnMessage;
+    route = 'generic-schema-hidden'; agentType = 'default'; expectedSpawnMessage = options.expectedGenericSpawnMessage;
   }
 
   const spawnIndex = parent.indexOf(spawns[0]);
@@ -153,7 +153,6 @@ export function qualifyCodexRescueEvidence(input, options) {
   if (!spawnMessage) mismatch('spawn-message-unavailable', 'The structured spawn metadata does not expose a bounded message field.');
   const spawnMessageEncrypted = encrypted(spawnMessage);
   if (!spawnMessageEncrypted && spawnMessage !== expectedSpawnMessage) mismatch('spawn-message-mismatch', 'The runtime spawn message differs from the fixed Rescue forwarder contract.');
-  if (route === 'generic-schema-hidden') unqualified('generic-executor-identity-unqualified', 'Codex 0.147 reports generic children as agent_type default, which cannot distinguish the approved forwarder from a general sibling.', evidence);
   if (spawnMessageEncrypted) unqualified('spawn-message-encrypted', 'Codex 0.147 persisted the spawn message field as ciphertext, so its exact runtime value cannot be qualified.', evidence);
 
   return evidence;
@@ -172,17 +171,15 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (spawns.length !== 1) mismatch('choice-spawn-count', 'Choice continuation must retain exactly one initial spawn.');
   const spawnArgs = parseObject(spawns[0].payload.arguments, 'choice-spawn-arguments');
   const spawnMessageEncrypted = encrypted(spawnArgs.message);
-  let expectedSpawnMessage; let namedRoute;
+  let expectedSpawnMessage;
   if (Object.hasOwn(spawnArgs, 'agent_type')) {
     assertExactKeys(spawnArgs, ['agent_type', 'fork_turns', 'message', 'task_name'], 'choice-spawn-keys');
     if (spawnArgs.agent_type !== options.expectedAgentType) mismatch('choice-agent-type', 'The choice-flow spawn does not select the managed Rescue Role.');
     expectedSpawnMessage = options.expectedNamedSpawnMessage;
-    namedRoute = true;
   } else {
     assertExactKeys(spawnArgs, ['fork_turns', 'message', 'task_name'], 'choice-spawn-keys');
     if (!GENERIC_HIDDEN_SCHEMA_VERSIONS.has(sessionMeta(parent)?.cli_version)) mismatch('choice-generic-version', 'The choice-flow generic spawn is not qualified for this Codex version.');
     expectedSpawnMessage = options.expectedGenericSpawnMessage;
-    namedRoute = false;
   }
   if (spawnArgs.task_name !== options.expectedTaskName || spawnArgs.fork_turns !== 'none') mismatch('choice-spawn-contract', 'The choice-flow spawn task or context mode differs from the Rescue contract.');
   if (!spawnMessageEncrypted && spawnArgs.message !== expectedSpawnMessage) mismatch('choice-spawn-message', 'The choice-flow spawn message differs from its fixed contract.');
@@ -315,7 +312,6 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
 
   assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
   const evidence = { parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, choice: options.expectedChoice };
-  if (!namedRoute) unqualified('choice-generic-executor-unqualified', 'A generic child reports agent_type default and cannot be trusted as the pending Rescue executor.', evidence);
   if (spawnMessageEncrypted) unqualified('choice-spawn-encrypted', 'Codex encrypted only the spawn message field, so its exact runtime value cannot be qualified.', evidence);
   if (followupMessageEncrypted) unqualified('choice-followup-encrypted', 'Codex encrypted only the continuation message field, so its exact runtime value cannot be qualified.', evidence);
   return evidence;

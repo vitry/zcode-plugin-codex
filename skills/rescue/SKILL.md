@@ -57,9 +57,7 @@ wait_agent({ timeout_ms: 30000 })
 
 Do not relay raw child progress, stderr, tool output, or intermediate messages into the parent. On terminal completion, return only the child's public stdout verbatim without interpretation.
 
-The generic fallback is a Codex 0.147 compatibility boundary: its trusted hook type is only `default`, so it is allowed one initial invocation bound to the exact active parent turn but is not qualified to consume a pending choice. If the generic child returns `needs-choice`, return that stdout verbatim, append exactly `Run a new $zcode:rescue request with --resume or --fresh.` and stop. Do not ask a choice question, call `followup_task`, spawn again, or execute again in the current request.
-
-If the named `zcode-rescue` child returns a public `needs-choice` response, preserve that response verbatim and ask the user exactly once; do not choose for the user. Immediately after the verbatim stdout, append exactly `Choose resume or fresh.` and no other text. Retain the original `rescueChildId` across that user turn. A non-choice reply or ordinary steering must not be forwarded to the child and must not cause another question, spawn, or execution. After the user supplies one unambiguous choice, set `continuationMessage` to exactly one of these strings, with no prefix, suffix, interpolation, or additional field:
+The named and generic routes use the same same-child choice continuation. If that child returns a public `needs-choice` response, preserve that response verbatim and ask the user exactly once; do not choose for the user. Immediately after the verbatim stdout, append exactly `Choose resume or fresh.` and no other text. Retain the original `rescueChildId` across that user turn. A non-choice reply or ordinary steering must not be forwarded to the child and must not cause another question, spawn, or execution. After the user supplies one unambiguous choice, set `continuationMessage` to exactly one of these strings, with no prefix, suffix, interpolation, or additional field:
 
 ```text
 Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.

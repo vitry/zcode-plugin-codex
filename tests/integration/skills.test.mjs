@@ -82,7 +82,7 @@ async function startRescueChild(ctx, parentSessionId, childId, turnId = `${child
   assert.equal(result.code, 0, result.stderr || result.stdout);
 }
 
-test('0.147 default compatibility child may invoke once but cannot persist or consume Rescue choice', async (t) => {
+test('0.147 default compatibility child persists and consumes one same-child Rescue choice', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   await identity.beginCallerTurn({ sessionId: 'generic-parent', turnId: 'generic-seed', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait seed' });
   await startRescueChild(ctx, 'generic-parent', 'generic-child', 'generic-seed-child', 'default');
@@ -95,8 +95,10 @@ test('0.147 default compatibility child may invoke once but cannot persist or co
   await stopRescueChild(ctx, 'generic-parent', 'generic-child', 'generic-origin-child', 'default');
   await identity.beginCallerTurn({ sessionId: 'generic-parent', turnId: 'generic-answer', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'resume' });
   const choice = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'generic-child' } });
-  assert.notEqual(choice.code, 0); assert.match(choice.stdout, /EXECUTOR_ROLE_UNAPPROVED/);
+  assert.equal(choice.code, 0, choice.stderr || choice.stdout); assert.equal(choice.stdout, 'done\n');
   await assert.rejects(createInvocationStore({ dataRoot: ctx.dataRoot }).consumePending({ sessionId: 'generic-parent', workspace: ctx.workspace, command: 'rescue', choice: 'resume', executorAgentId: 'generic-child' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+  const replay = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'generic-child' } });
+  assert.notEqual(replay.code, 0); assert.match(replay.stdout, /PENDING_INVOCATION_NOT_FOUND/);
 });
 test('initial Rescue invocation must match the parent turn captured by SubagentStart', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });

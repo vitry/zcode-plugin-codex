@@ -125,9 +125,7 @@ test('Rescue choice continuation reuses one child with exact fixed messages and 
     assert.equal(role.split(message).length - 1, 1, `Role must accept the exact continuation once: ${message}`);
   }
   assert.match(source, /ask the user exactly once/i);
-  assert.match(source, /generic fallback[\s\S]+not qualified to consume a pending choice/i);
-  assert.match(source, /Run a new \$zcode:rescue request with --resume or --fresh\./);
-  assert.match(source, /Do not ask a choice question, call `followup_task`, spawn again, or execute again/i);
+  assert.match(source, /named and generic[\s\S]+same-child choice continuation/i);
   assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
   assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
   assert.match(source, /select only the result or status belonging to `rescueChildId`/);

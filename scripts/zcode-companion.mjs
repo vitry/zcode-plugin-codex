@@ -110,7 +110,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     }
   }
   const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
-  if (output?.type === 'needs-choice' && (command !== 'rescue' || executor.agentType === 'zcode-rescue')) await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv }, ...(executorAgentId === undefined ? {} : { executorAgentId }) });
+  if (output?.type === 'needs-choice') await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv }, ...(executorAgentId === undefined ? {} : { executorAgentId }) });
   return output;
 }
 

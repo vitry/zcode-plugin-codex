@@ -230,7 +230,28 @@ test('executor records enforce exact schema, byte, time, TTL, and file-count bou
   await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child', { now: new Date(Date.parse(fresh.createdAt) + 30 * 60_000) }), { code: 'EXECUTOR_IDENTITY_EXPIRED' });
   await reset(); await writeFile(join(directory, 'executor-corrupt-sibling.json'), '{');
   await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
-  await unlink(join(directory, 'executor-corrupt-sibling.json'));
+  await cleanupSession(data, cwd, 'ended-unrelated-parent');
+  assert.equal((await resolveForwardingExecutor(data, cwd, 'bounded-child')).agentId, 'bounded-child', 'SessionEnd cleanup must remove corrupt executor state without deleting a valid sibling session');
+  const executorName = (await readdir(directory)).find((candidate) => candidate.startsWith('executor-') && candidate.endsWith('.json'));
+  await writeFile(join(directory, executorName), `{"kind":"subagent-executor","pad":"${'x'.repeat(17 * 1024)}"}`);
+  const boundedStop = await runHook('subagent-hook.mjs', { ...start, hook_event_name: 'SubagentStop', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
+  assert.notEqual(boundedStop.code, 0, 'SubagentStop must reject an oversized exact executor record through the bounded reader');
+  await cleanupSession(data, cwd, 'bounded-parent');
+  await reset();
+  const exactName = (await readdir(directory)).find((candidate) => candidate.startsWith('executor-') && candidate.endsWith('.json'));
+  const inexact = JSON.parse(await readFile(join(directory, exactName), 'utf8')); inexact.extra = true; await writeFile(join(directory, exactName), JSON.stringify(inexact));
+  const exactStop = await runHook('subagent-hook.mjs', { ...start, hook_event_name: 'SubagentStop', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
+  assert.notEqual(exactStop.code, 0, 'SubagentStop must fail closed on an inexact executor schema');
+  await cleanupSession(data, cwd, 'bounded-parent');
+  await reset();
+  const siblingStart = { ...start, turn_id: 'future-sibling-turn', agent_id: 'future-sibling' };
+  assert.equal((await runHook('subagent-hook.mjs', siblingStart, env)).code, 0);
+  for (const candidate of await readdir(directory)) {
+    if (!candidate.startsWith('executor-')) continue;
+    const path = join(directory, candidate); const record = JSON.parse(await readFile(path, 'utf8'));
+    if (record.agentId === 'future-sibling') { record.createdAt = new Date(Date.now() + 60_000).toISOString(); await writeFile(path, JSON.stringify(record)); }
+  }
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
   await reset(); await Promise.all(Array.from({ length: 1_024 }, (_, index) => writeFile(join(directory, `executor-unrelated-${index}.json`), '{}')));
   await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
 });

@@ -108,7 +108,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
     assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route), 'qualification must record an automatically observed native route');
     t.diagnostic(`qualified native Rescue route: ${evidence.route}`);
   } catch (error) {
-    if (error instanceof CodexRescueUnqualifiedError && ['spawn-message-encrypted', 'generic-executor-identity-unqualified'].includes(error.code)) {
+    if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
       assert.ok(['named', 'generic-schema-hidden'].includes(error.evidence?.route), 'encrypted-message evidence must record the automatically observed native route');
       const detail = `Observed route ${error.evidence.route}. ${error.message}`;
       markUnqualified(t, unqualified(error.code, detail)); return;
@@ -159,7 +159,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
       assert.equal(evidence.choice, choice);
       t.diagnostic(`qualified same-child Rescue ${choice}: ${evidence.childThreadId}`);
     } catch (error) {
-      if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted', 'choice-generic-executor-unqualified'].includes(error.code)) {
+      if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {
         markUnqualified(t, unqualified(error.code, error.message)); return;
       }
       throw error;

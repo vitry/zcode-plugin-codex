@@ -115,14 +115,13 @@ test('choice timeline preserves RFC3339 nanosecond ordering without Date precisi
   assert.throws(() => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-terminal-timeline');
 });
 
-test('generic default choice continuation is explicitly unqualified after observable evidence passes', () => {
+test('qualifies the complete 0.147 generic default same-child choice continuation', () => {
   const input = choiceFixture('resume');
   const args = JSON.parse(spawnEvent(input).payload.arguments); delete args.agent_type; args.message = choiceOptions('resume').expectedGenericSpawnMessage; spawnEvent(input).payload.arguments = JSON.stringify(args);
   childMeta(input).payload.source.subagent.thread_spawn.agent_role = null;
-  assert.throws(
-    () => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')),
-    (error) => error instanceof CodexRescueUnqualifiedError && error.code === 'choice-generic-executor-unqualified',
-  );
+  assert.deepEqual(qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')), {
+    parentThreadId: parentId, childThreadId: childId, agentPath, choice: 'resume',
+  });
 });
 
 test('choice qualification marks only explicitly encrypted continuation arguments unqualified', () => {
@@ -145,11 +144,14 @@ test('choice qualification marks only explicitly encrypted continuation argument
   );
 });
 
-test('records the verified 0.147 generic route then reports executor identity unqualified', () => {
+test('qualifies the verified 0.147 generic route from its complete fixed assignment and child chain', () => {
   const input = fixture();
   spawnEvent(input).payload.arguments = JSON.stringify({ fork_turns: 'none', message: 'fixed generic forwarder', task_name: 'zcode_rescue' });
   childMeta(input).payload.source.subagent.thread_spawn.agent_role = null;
-  assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => error instanceof CodexRescueUnqualifiedError && error.code === 'generic-executor-identity-unqualified' && error.evidence?.route === 'generic-schema-hidden');
+  assert.deepEqual(qualifyCodexRescueEvidence(input, options()), {
+    parentThreadId: parentId, childThreadId: childId, agentPath, taskName: 'zcode_rescue', agentType: 'default',
+    route: 'generic-schema-hidden', publicOutput: expectedPublicOutput,
+  });
 });
 
 test('does not self-report generic compatibility and lets named metadata work on another version', () => {
