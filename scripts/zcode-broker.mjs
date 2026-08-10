@@ -257,6 +257,7 @@ export class ZCodeBroker {
         const subscriptionId = result?.ack?.subscriptionId;
         if (!pending || pending.token !== subscriptionToken || !isSafeIdentifier(subscriptionId)) {
           if (isSafeIdentifier(subscriptionId)) await this.unsubscribeConversationRecords(protocol, [{ key: conversationKey(frame.params.topic, subscriptionId), socket, topic: frame.params.topic, subscriptionId, connectionId: frame.params.connectionId, sessionId: requestedSessionId, ownerId }], OWNER_RELEASE_REQUEST_MS);
+          else { this.clearProtocolGeneration(protocol); await protocol.close().catch(() => {}); }
           throw brokerInputError();
         }
         this.pendingConversationTopics.delete(frame.params.topic); const key = conversationKey(frame.params.topic, subscriptionId);
@@ -283,40 +284,43 @@ export class ZCodeBroker {
   async releaseOwner(socket, ownerId, excludeSessionIds = []) {
     const excluded = new Set(excludeSessionIds); const allOwnerEntries = [...this.sessionOwners].filter(([, owner]) => owner.ownerId === ownerId); const stableOwned = allOwnerEntries.filter(([, owner]) => !owner.claimToken).map(([sessionId]) => sessionId); const eligible = stableOwned.filter((sessionId) => !excluded.has(sessionId)); const inFlightClaims = allOwnerEntries.length - stableOwned.length; const owned = eligible.slice(0, OWNER_RELEASE_MAX_SESSIONS);
     if (!owned.length) return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: inFlightClaims };
-    const released = []; const failed = [];
-    if (!this.protocol) {
-      if (this.protocolPromise) failed.push(...owned);
-      else released.push(...owned);
-    } else {
-      const protocol = this.protocol; const deadline = Date.now() + OWNER_RELEASE_BUDGET_MS;
-      for (let offset = 0; offset < owned.length; offset += OWNER_RELEASE_CONCURRENCY) {
-        const batch = owned.slice(offset, offset + OWNER_RELEASE_CONCURRENCY); const remainingMs = deadline - Date.now();
-        if (socket.destroyed || remainingMs <= 0 || this.protocol !== protocol) { failed.push(...owned.slice(offset)); break; }
-        const outcomes = await Promise.allSettled(batch.map(async (sessionId) => {
-          if (this.stoppingSessions.has(sessionId) || this.admittingSessions.has(sessionId)) throw new PluginError('ZCODE_TURN_ACTIVE', 'The session is already stopping or admitting a turn.', { category: 'state', remedy: 'Wait for the active request.' });
-          const activeSession = this.activeSessionSockets.get(sessionId); const stopToken = randomBytes(16).toString('hex'); this.stoppingSessions.set(sessionId, { token: stopToken, activeToken: activeSession?.token ?? null });
-          try { const result = await protocol.request('session/stop', { sessionId }, Math.max(1, Math.min(OWNER_RELEASE_REQUEST_MS, remainingMs))); return { activeSession, result, stopToken }; }
-          catch (error) { if (this.stoppingSessions.get(sessionId)?.token === stopToken) this.stoppingSessions.delete(sessionId); throw error; }
-        }));
-        const stoppedBatch = outcomes.flatMap((outcome, index) => outcome.status === 'fulfilled' ? [[batch[index], outcome.value]] : []); const detachedSubscriptions = [];
-        try {
+    const released = []; const failed = []; const stoppedFences = []; const deadline = Date.now() + OWNER_RELEASE_BUDGET_MS;
+    try {
+      if (!this.protocol) {
+        if (this.protocolPromise) failed.push(...owned);
+        else for (const sessionId of owned) {
+          if (this.stoppingSessions.has(sessionId) || this.admittingSessions.has(sessionId)) { failed.push(sessionId); continue; }
+          const stopToken = randomBytes(16).toString('hex'); this.stoppingSessions.set(sessionId, { token: stopToken, activeToken: null, ownerRelease: true }); stoppedFences.push([sessionId, stopToken]); released.push(sessionId);
+        }
+      } else {
+        const protocol = this.protocol;
+        for (let offset = 0; offset < owned.length; offset += OWNER_RELEASE_CONCURRENCY) {
+          const batch = owned.slice(offset, offset + OWNER_RELEASE_CONCURRENCY); const remainingMs = deadline - Date.now();
+          if (socket.destroyed || remainingMs <= 0 || this.protocol !== protocol) { failed.push(...owned.slice(offset)); break; }
+          const outcomes = await Promise.allSettled(batch.map(async (sessionId) => {
+            if (this.stoppingSessions.has(sessionId) || this.admittingSessions.has(sessionId)) throw new PluginError('ZCODE_TURN_ACTIVE', 'The session is already stopping or admitting a turn.', { category: 'state', remedy: 'Wait for the active request.' });
+            const activeSession = this.activeSessionSockets.get(sessionId); const stopToken = randomBytes(16).toString('hex'); this.stoppingSessions.set(sessionId, { token: stopToken, activeToken: activeSession?.token ?? null, ownerRelease: true });
+            try { const result = await protocol.request('session/stop', { sessionId }, Math.max(1, Math.min(OWNER_RELEASE_REQUEST_MS, remainingMs))); return { activeSession, result, stopToken }; }
+            catch (error) { if (this.stoppingSessions.get(sessionId)?.token === stopToken) this.stoppingSessions.delete(sessionId); throw error; }
+          }));
+          const detachedSubscriptions = [];
           for (let index = 0; index < batch.length; index += 1) {
-            const sessionId = batch[index]; if (outcomes[index].status === 'fulfilled') { const stopped = outcomes[index].value; protocol.cancelTurn(sessionId); this.activeSessions.delete(sessionId); detachedSubscriptions.push(...this.detachSessionSubscriptions(sessionId)); this.settleStoppedSession(sessionId, stopped.activeSession); released.push(sessionId); } else failed.push(sessionId);
+            const sessionId = batch[index]; if (outcomes[index].status === 'fulfilled') { const stopped = outcomes[index].value; stoppedFences.push([sessionId, stopped.stopToken]); protocol.cancelTurn(sessionId); this.activeSessions.delete(sessionId); detachedSubscriptions.push(...this.detachSessionSubscriptions(sessionId)); this.settleStoppedSession(sessionId, stopped.activeSession); released.push(sessionId); } else failed.push(sessionId);
           }
           await this.unsubscribeConversationRecords(protocol, detachedSubscriptions, Math.max(0, deadline - Date.now()));
         }
-        finally { for (const [sessionId, stopped] of stoppedBatch) if (this.stoppingSessions.get(sessionId)?.token === stopped.stopToken) this.stoppingSessions.delete(sessionId); }
       }
+      if (released.length) {
+        await mutateOwnerStore(this.ownershipPath, false, async (sessions) => {
+          for (const sessionId of released) if (sessions[sessionId] === ownerId) delete sessions[sessionId];
+          await atomicWriteJson(this.ownershipPath, { version: 1, sessions }); this.applyOwnership(sessions);
+        }, { timeoutMs: Math.max(0, deadline - Date.now()) });
+      }
+      this.scheduleIdleShutdown();
+      return { releasedSessionIds: released, failedSessionIds: failed, deferredSessionCount: eligible.length - owned.length + inFlightClaims };
+    } finally {
+      for (const [sessionId, stopToken] of stoppedFences) if (this.stoppingSessions.get(sessionId)?.token === stopToken) this.stoppingSessions.delete(sessionId);
     }
-    if (released.length) {
-      const remaining = await mutateOwnerStore(this.ownershipPath, false, async (sessions) => {
-        for (const sessionId of released) if (sessions[sessionId] === ownerId) delete sessions[sessionId];
-        await atomicWriteJson(this.ownershipPath, { version: 1, sessions }); return sessions;
-      });
-      this.applyOwnership(remaining);
-    }
-    this.scheduleIdleShutdown();
-    return { releasedSessionIds: released, failedSessionIds: failed, deferredSessionCount: eligible.length - owned.length + inFlightClaims };
   }
 
   async getProtocol() {
@@ -335,8 +339,17 @@ export class ZCodeBroker {
     });
     this.protocol.setPermissionHandler((request) => this.requestPermission(request));
     this.protocol.consumeTerminalsWith((params, turn) => { const active = this.activeSessionSockets.get(params.sessionId); if (active?.baseline === turn.baseline && active.inputId === turn.inputId) { if (active.socket?.writable) writeLocal(active.socket, { method: 'state.updated', params }); this.activeSessionSockets.delete(params.sessionId); this.activeSessions.delete(params.sessionId); this.scheduleIdleShutdown(); } });
-    this.protocol.setCloseHandler(() => { this.activeSessions.clear(); this.activeSessionSockets.clear(); this.admittingSessions.clear(); this.stoppingSessions.clear(); this.conversationSubscriptions.clear(); this.orphanedConversationSubscriptions.clear(); this.orphanRetryPromise = null; this.pendingConversationTopics.clear(); for (const pending of this.permissionPending.values()) { clearTimeout(pending.timer); pending.resolve(offeredDeny(pending.request)); } this.permissionPending.clear(); this.retiredPermissionResponses.clear(); this.protocol = null; this.protocolPromise = null; this.scheduleIdleShutdown(); });
+    const protocol = this.protocol;
+    protocol.setCloseHandler(() => this.clearProtocolGeneration(protocol));
     return this.protocol;
+  }
+
+  clearProtocolGeneration(protocol) {
+    if (this.protocol !== protocol) return;
+    for (const [sessionId, active] of this.activeSessionSockets) if (active.socket?.writable) writeLocal(active.socket, { method: 'broker/sessionStopped', params: { sessionId } });
+    this.activeSessions.clear(); this.activeSessionSockets.clear(); this.admittingSessions.clear(); for (const [sessionId, stopping] of this.stoppingSessions) if (!stopping.ownerRelease) this.stoppingSessions.delete(sessionId); this.conversationSubscriptions.clear(); this.orphanedConversationSubscriptions.clear(); this.orphanRetryPromise = null; this.pendingConversationTopics.clear();
+    for (const pending of this.permissionPending.values()) { clearTimeout(pending.timer); pending.resolve(offeredDeny(pending.request)); }
+    this.permissionPending.clear(); this.retiredPermissionResponses.clear(); this.protocol = null; this.protocolPromise = null; this.scheduleIdleShutdown();
   }
 
   async requestPermission(request) {

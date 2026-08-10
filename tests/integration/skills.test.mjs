@@ -403,7 +403,7 @@ test('named and generic Rescue children receive only queued background output wh
   for (const [route, agentType, control] of [['named', 'zcode-rescue', 'result'], ['generic', 'default', 'cancel']]) {
     const parentId = `background-${route}-parent`; const childId = `background-${route}-child`; const turnId = `background-${route}-turn`;
     const baselineJobIds = new Set((await store.listJobs(ctx.workspace)).map((job) => job.id));
-    ctx.preserveEvidence = true;
+    ctx.preserveEvidence = true; let backgroundVerified = false;
     await writeFile(gate, 'hold'); await writeFile(gateReached, ''); await writeFile(record, '');
     const callerContext = await identity.beginCallerTurn({ sessionId: parentId, turnId, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --background ${route} native child` });
     await startRescueChild(ctx, parentId, childId, `${turnId}-child`, agentType);
@@ -441,13 +441,14 @@ test('named and generic Rescue children receive only queued background output wh
         assert.equal(result.code, 0, result.stderr); assert.equal(result.json.result, 'done');
         assert.doesNotMatch(`${result.stdout}${result.stderr}${result.internal}`, /executionCapability|callerContext|privateInvocation/);
       }
+      backgroundVerified = true;
     } finally {
       await writeFile(gate, 'release').catch(() => {});
       const jobs = new Map();
       for (let attempt = 0; attempt < 20; attempt += 1) { for (const job of await findNewJobs(store, ctx.workspace, baselineJobIds)) jobs.set(job.id, job); await new Promise((resolvePromise) => setTimeout(resolvePromise, 50)); }
       for (const job of jobs.values()) await waitForExactJobCleanup(ctx, store, job.id, undefined, () => publicInvoke(ctx, ['cancel', job.id], callerContext));
       assert.equal(jobs.size, 1, `expected exactly one new ${route} background job during cleanup`);
-      ctx.preserveEvidence = false;
+      if (backgroundVerified) ctx.preserveEvidence = false;
     }
   }
 });

@@ -175,7 +175,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const backgroundGate = join(temporary, 'background-completion.gate'); const backgroundGateReached = join(temporary, 'background-completion.reached');
   const backgroundDataRoot = join(codexHome, 'plugins', 'data', 'zcode-vitry'); const backgroundStorage = await resolveWorkspaceStorage({ dataRoot: backgroundDataRoot, workspace: canonicalWorkspace });
   const backgroundJobsDirectory = join(backgroundStorage.directory, 'jobs'); const baselineJobIds = await canonicalJobIds(backgroundJobsDirectory);
-  await writeFile(backgroundGate, 'hold'); let backgroundIdentity; let backgroundJobId; let backgroundJobPath;
+  await writeFile(backgroundGate, 'hold'); let backgroundIdentity; let backgroundJobId; let backgroundJobPath; let backgroundVerified = false;
   preserveTemporary = true;
   try {
     const background = await codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --background repair the fixture in background skill exactly once now. Return only its public queued result.'], workspace, { ...env, FAKE_ZCODE_COMPLETION_GATE: backgroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: backgroundGateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' }, 240_000);
@@ -216,13 +216,14 @@ test('installed Rescue uses one isolated native child for initial and choice con
     assert.equal(result, 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C'); assert.doesNotMatch(result, new RegExp(`${escapeRegExp(backgroundGate)}|${escapeRegExp(backgroundGateReached)}`));
     const backgroundCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
     assert.equal(backgroundCalls.filter((call) => call.method === 'session/send').length, 1, 'background Rescue must execute exactly one ZCode turn');
+    backgroundVerified = true;
   } finally {
     await writeFile(backgroundGate, 'release').catch(() => {});
     const discovered = await discoverNewJobIds(backgroundJobsDirectory, baselineJobIds, 2_000);
     for (const jobId of discovered) await cleanupExactJobNaturally(backgroundDataRoot, canonicalWorkspace, join(backgroundJobsDirectory, `${jobId}.json`), jobId, jobId === backgroundJobId ? backgroundIdentity : undefined);
     assert.ok(discovered.length <= 1, `background invocation created ${discovered.length} jobs instead of at most one`);
     if (backgroundJobId) assert.deepEqual(discovered, [backgroundJobId], 'public background job ID must match the exact newly created durable job');
-    if (backgroundJobId && discovered.length === 1) preserveTemporary = false;
+    if (backgroundVerified && backgroundJobId && discovered.length === 1) preserveTemporary = false;
   }
 });
 

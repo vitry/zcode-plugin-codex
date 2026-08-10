@@ -219,7 +219,13 @@ input.on('line', async (line) => {
       conversationSubscribeCount += 1;
       if (process.env.FAKE_ZCODE_CONVERSATION_SUBSCRIBE_FAIL === '1') { send({ id: message.id, error: { code: -32601, message: 'unsupported conversation subscription' } }); break; }
       const sessionId = typeof p.topic === 'string' && p.topic.startsWith('conversation/') ? p.topic.slice('conversation/'.length) : '';
-      const subscriptionId = process.env.FAKE_ZCODE_BAD_CONVERSATION_ACK_ONCE === '1' && conversationSubscribeCount === 1 ? '' : `subscription-${sessionId}`; conversationSubscriptions.set(sessionId, subscriptionId);
+      let badAcknowledgement = process.env.FAKE_ZCODE_BAD_CONVERSATION_ACK_ONCE === '1' && conversationSubscribeCount === 1;
+      const badAckMarker = process.env.FAKE_ZCODE_BAD_CONVERSATION_ACK_MARKER;
+      if (badAcknowledgement && badAckMarker) {
+        try { await readFile(badAckMarker); badAcknowledgement = false; }
+        catch { await writeFile(badAckMarker, 'observed'); }
+      }
+      const subscriptionId = badAcknowledgement ? '' : `subscription-${sessionId}`; conversationSubscriptions.set(sessionId, subscriptionId);
       if (process.env.FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'online', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 39, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 39, kind: 'toolCall', toolCallId: 'prebind', toolName: 'Bash', status: 'running', inputText: '{"command":"echo prebind"}', input: { command: 'echo prebind' }, startedAt: 1_786_233_600_000 } }] }));
       send({ id: message.id, result: { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1' } } });
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 40, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: 1_786_233_600_000 } }] }));

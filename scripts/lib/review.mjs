@@ -131,7 +131,13 @@ export async function executeJob(input) {
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
     const current = await input.store.readJob(workspace, job.id).catch(() => running);
-    if (error instanceof SuccessfulResultFinalizationError) { /* recovery owns the durable running job and retained result artifact */ }
+    if (error instanceof SuccessfulResultFinalizationError) {
+      if (current?.status === 'succeeded' && current.resultArtifact === error.resultArtifact) {
+        try { output = { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: error.resultArtifact }) }; primaryError = undefined; }
+        catch (artifactError) { primaryError = artifactError; }
+      }
+      /* Otherwise recovery owns the durable running job and retained result artifact. */
+    }
     else if (isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
       if (current.status === 'queued' && sessionId) {
         let stopped = false;
