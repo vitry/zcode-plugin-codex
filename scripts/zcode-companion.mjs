@@ -27,7 +27,7 @@ import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
 import { executeTransfer, resolveTransferSource, TRANSFER_WIRE_LIMITS } from './lib/transfer.mjs';
 import { reconcileBrokerOwnership } from './zcode-broker.mjs';
-import { resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
+import { resolveForwardingExecutor, resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
 
 const backgroundBindings = new WeakMap();
 const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
@@ -93,21 +93,23 @@ export async function runCompanion(argv, runtime = {}) {
 /** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,dependencies?:any,progressWriter?:(line:string)=>void,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runDirectInvocation(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
-  const sessionId = env.CODEX_THREAD_ID; if (typeof sessionId !== 'string' || !sessionId) throw new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' });
   const [entry, command, choice, ...extra] = argv; if (!['invoke', 'invoke-choice'].includes(entry) || typeof command !== 'string' || extra.length) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
+  const ambientThreadId = env.CODEX_THREAD_ID; if (typeof ambientThreadId !== 'string' || !ambientThreadId) throw new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' });
+  let sessionId = ambientThreadId; let executorAgentId;
+  if (command === 'rescue') { const executor = await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId); sessionId = executor.parentSessionId; executorAgentId = executor.agentId; }
   const identity = createIdentityStore({ dataRoot }); const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd }); const invocations = createInvocationStore({ dataRoot });
   /** @type {any} */ let invocation; let executionCaller = caller;
-  if (entry === 'invoke-choice') { invocation = await invocations.consumePending({ sessionId, workspace: cwd, command, choice }); executionCaller = invocation.caller; }
+  if (entry === 'invoke-choice') { invocation = await invocations.consumePending({ sessionId, workspace: cwd, command, choice, ...(executorAgentId === undefined ? {} : { executorAgentId }) }); executionCaller = invocation.caller; }
   else {
     if (choice !== undefined) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
     invocation = parseRecordedInvocation(command, caller.prompt);
     if (requiresExecutionChoice(command, invocation.argv)) {
-      await invocations.savePending({ sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode, command, spec: { argv: invocation.argv } });
+      await invocations.savePending({ sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode, command, spec: { argv: invocation.argv }, ...(executorAgentId === undefined ? {} : { executorAgentId }) });
       return { type: 'needs-choice', choices: ['wait', 'background'] };
     }
   }
   const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
-  if (output?.type === 'needs-choice') await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv } });
+  if (output?.type === 'needs-choice') await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv }, ...(executorAgentId === undefined ? {} : { executorAgentId }) });
   return output;
 }
 

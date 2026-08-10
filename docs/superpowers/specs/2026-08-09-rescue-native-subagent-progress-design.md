@@ -276,10 +276,15 @@ records exact private session, turn, workspace, permission, arguments, and task
 state. The child runs a constant command, and the companion resolves the private
 record from runtime-observed thread identity plus the canonical workspace.
 
-Observed Codex 0.147 children inherit a usable parent `CODEX_THREAD_ID`, but this
-is a version-pinned runtime dependency rather than a public stability guarantee.
-The supported Codex version matrix must be qualified by real installed-plugin
-E2E tests.
+Observed Codex 0.147 child shells receive the child thread ID as
+`CODEX_THREAD_ID`; the child rollout `session_meta.id` and trusted
+`SubagentStart.agent_id` expose the same value, while
+`SubagentStart.session_id` identifies the parent. The private hook store binds
+those fields with the child turn, Role, and canonical workspace, and the
+companion requires exactly one active match. This version-pinned runtime
+dependency must be qualified by real installed-plugin E2E tests. It operates
+inside the existing private `0700` same-UID boundary and is not cryptographic
+protection from a hostile same-UID process that can forge environment or files.
 
 The companion fails closed when identity is absent, malformed, expired,
 mismatched, belongs to a sibling, or cannot select exactly one active caller

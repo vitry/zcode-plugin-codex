@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, mkdir, readdir, symlink, unlink } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, readdir, rm, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -13,6 +13,7 @@ import { createManagedZCodeClient, createZCodeClient, releaseManagedZCodeOwner }
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
+import { cleanupSession, resolveForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
@@ -165,6 +166,32 @@ test('subagent hook marks forwarding suppression without changing parent permiss
   assert.doesNotMatch(JSON.stringify(sub.json), /callerContext|executionCapability|[a-f0-9]{64}/);
   const stop = await runHook('subagent-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', agent_id: 'agent-1', agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
   assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
+});
+
+test('trusted SubagentStart binds one active child executor and fails closed on sibling, parent, workspace, stale stop, and duplicate records', async () => {
+  const { cwd, data, env } = await workspace();
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd });
+  const input = (event, turnId) => ({ session_id: 'parent-thread', turn_id: turnId, cwd, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'rescue-child', agent_type: 'zcode-rescue', ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
+  assert.equal((await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-1'), env)).code, 0);
+  assert.deepEqual(await resolveForwardingExecutor(data, cwd, 'rescue-child'), {
+    kind: 'subagent-executor', agentId: 'rescue-child', agentType: 'zcode-rescue', parentSessionId: 'parent-thread', childTurnId: 'child-turn-1', workspace: storage.workspacePath, active: true, updatedAt: (await resolveForwardingExecutor(data, cwd, 'rescue-child')).updatedAt,
+  });
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'sibling-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'parent-thread'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  const other = await mkdtemp(join(tmpdir(), 'zcode-wrong-workspace-'));
+  await assert.rejects(resolveForwardingExecutor(data, other, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await rm(other, { recursive: true });
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-2'), env);
+  await runHook('subagent-hook.mjs', input('SubagentStop', 'child-turn-1'), env);
+  assert.equal((await resolveForwardingExecutor(data, cwd, 'rescue-child')).childTurnId, 'child-turn-2', 'a stale stop cannot deactivate a newer child turn');
+  await runHook('subagent-hook.mjs', input('SubagentStop', 'child-turn-2'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-3'), env);
+  await cleanupSession(data, cwd, 'parent-thread');
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-4'), env);
+  await writeFile(join(storage.directory, 'hook-state', 'executor-forged.json'), JSON.stringify({ ...(await resolveForwardingExecutor(data, cwd, 'rescue-child')), updatedAt: new Date().toISOString() }));
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
 });
 
 test('SessionEnd removes only its session contexts and leaves sibling jobs/session ownership', async () => {

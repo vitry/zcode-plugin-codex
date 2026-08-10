@@ -121,7 +121,7 @@ test('Rescue choice continuation reuses one child with exact fixed messages and 
   const resume = 'Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.';
   const fresh = 'Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.';
   for (const message of [resume, fresh]) {
-    assert.equal(source.split(message).length - 1, 1, `parent must contain the exact continuation once: ${message}`);
+    assert.equal(source.split(message).length - 1, 2, `parent and generic child fixture must contain only the exact continuation: ${message}`);
     assert.equal(role.split(message).length - 1, 1, `Role must accept the exact continuation once: ${message}`);
   }
   assert.match(source, /ask the user exactly once/i);
@@ -133,6 +133,12 @@ test('Rescue choice continuation reuses one child with exact fixed messages and 
   assert.match(role, new RegExp(`${escapeRegExp(resume)}[\\s\\S]+invoke-choice rescue resume`));
   assert.match(role, new RegExp(`${escapeRegExp(fresh)}[\\s\\S]+invoke-choice rescue fresh`));
   assert.match(role, /return a `needs-choice` response byte-for-byte and stop without selecting/i);
+  const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source)?.[1];
+  assert.ok(generic, 'generic forwarder fixture must be present');
+  for (const fixture of [role, generic]) {
+    assert.match(fixture, new RegExp(`${escapeRegExp(resume)}[\\s\\S]+invoke-choice rescue resume`));
+    assert.match(fixture, new RegExp(`${escapeRegExp(fresh)}[\\s\\S]+invoke-choice rescue fresh`));
+  }
 });
 
 function escapeRegExp(value) {

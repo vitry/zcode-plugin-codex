@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
+import { createInvocationStore } from '../../scripts/lib/invocation.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
@@ -71,6 +72,14 @@ async function fixture(t) {
   const env = { ...process.env, PLUGIN_DATA: dataRoot, PLUGIN_ROOT: root, ZCODE_PATH: fakeZCode };
   t.after(() => cleanupFixture(directory));
   return { workspace, dataRoot, callerA, callerB, env };
+}
+
+async function startRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`) {
+  const result = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: 'zcode-rescue' },
+  });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
 }
 
 function invoke(ctx, rawArgv, authorization, extraEnv = {}, ordinaryStdio = false) {
@@ -179,7 +188,8 @@ test('installed-style invoke uses ordinary stdio, ambient thread identity, and l
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
   const marker = join(ctx.workspace, 'escaped'); const record = join(ctx.workspace, 'direct-record.jsonl');
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'direct-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair $(touch escaped) literally' });
-  const result = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-a', FAKE_ZCODE_RECORD: record } });
+  await startRescueChild(ctx, 'codex-a', 'direct-child');
+  const result = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'direct-child', FAKE_ZCODE_RECORD: record } });
   assert.equal(result.code, 0, result.stderr || result.stdout);
   assert.equal(result.stdout, 'done\n');
   await assert.rejects(readFile(marker, 'utf8'), { code: 'ENOENT' });
@@ -228,19 +238,52 @@ test('role-status default app-server path is read-only and leaves caller context
 
 test('invoke-choice consumes only the same session pending rescue once', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
+  await startRescueChild(ctx, 'codex-a', 'choice-child-a');
+  await startRescueChild(ctx, 'codex-b', 'choice-child-b');
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'seed', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait first repair' });
-  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-a' } })).code, 0);
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } })).code, 0);
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'choice-origin', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait continue repair' });
-  const undecided = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-a' } });
+  const undecided = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } });
   assert.equal(undecided.code, 3); assert.match(undecided.stdout, /needs-choice/);
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'choice-answer', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'resume' });
   await identity.beginCallerTurn({ sessionId: 'codex-b', turnId: 'sibling-answer', workspace: ctx.workspace, permissionMode: 'read-only', prompt: 'resume' });
-  const sibling = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-b' } });
+  const sibling = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-b' } });
   assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /PENDING_INVOCATION_NOT_FOUND/);
-  const accepted = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-a' } });
+  const accepted = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } });
   assert.equal(accepted.code, 0, accepted.stderr || accepted.stdout);
-  const replay = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-a' } });
+  const replay = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } });
   assert.notEqual(replay.code, 0); assert.match(replay.stdout, /PENDING_INVOCATION_NOT_FOUND/);
+});
+
+test('same-parent sibling cannot consume a pending Rescue choice without trusted executor identity', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
+  const hook = join(root, 'hooks', 'subagent-hook.mjs');
+  const agentHook = (event, agentId, turnId) => runChild(process.execPath, [hook], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: 'shared-parent', turn_id: turnId, cwd: ctx.workspace, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: agentId, agent_type: 'zcode-rescue', ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) },
+  });
+  await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'seed', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait seed' });
+  assert.equal((await agentHook('SubagentStart', 'rescue-child', 'child-seed')).code, 0);
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'rescue-child' } })).code, 0);
+  assert.equal((await agentHook('SubagentStop', 'rescue-child', 'child-seed')).code, 0);
+  await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'origin', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait protected' });
+  assert.equal((await agentHook('SubagentStart', 'rescue-child', 'child-origin')).code, 0);
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'rescue-child' } })).code, 3);
+  assert.equal((await agentHook('SubagentStop', 'rescue-child', 'child-origin')).code, 0);
+  await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'later-answer', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: 'resume' });
+  assert.equal((await agentHook('SubagentStart', 'sibling-child', 'sibling-answer')).code, 0);
+  const sibling = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'sibling-child' } });
+  assert.notEqual(sibling.code, 0);
+  assert.match(sibling.stdout, /PENDING_INVOCATION_NOT_FOUND/);
+  const parent = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'shared-parent' } });
+  assert.notEqual(parent.code, 0); assert.match(parent.stdout, /EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)/);
+  assert.equal((await agentHook('SubagentStart', 'rescue-child', 'child-answer')).code, 0);
+  const accepted = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'rescue-child' } });
+  assert.equal(accepted.code, 0, accepted.stderr || accepted.stdout);
+  await assert.rejects(
+    createInvocationStore({ dataRoot: ctx.dataRoot }).consumePending({ sessionId: 'shared-parent', workspace: ctx.workspace, command: 'rescue', choice: 'fresh', executorAgentId: 'rescue-child' }),
+    { code: 'PENDING_INVOCATION_NOT_FOUND' },
+  );
 });
 
 test('installed Rescue instructions keep needs-choice and every wait continuation on one child', async () => {
@@ -254,8 +297,8 @@ test('installed Rescue instructions keep needs-choice and every wait continuatio
   assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
   assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
   assert.match(source, /select only the result or status belonging to `rescueChildId`/);
-  assert.equal(source.split(resume).length - 1, 1);
-  assert.equal(source.split(fresh).length - 1, 1);
+  assert.equal(source.split(resume).length - 1, 2);
+  assert.equal(source.split(fresh).length - 1, 2);
   assert.match(role, /return a `needs-choice` response byte-for-byte and stop without selecting/i);
   assert.match(role, /For the exact resume continuation above, run only:[\s\S]+invoke-choice rescue resume/);
   assert.match(role, /For the exact fresh continuation above, run only:[\s\S]+invoke-choice rescue fresh/);
@@ -265,22 +308,24 @@ test('invoke-choice executes with the originating permission snapshot in both di
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA }); const record = join(ctx.workspace, 'permission-record.jsonl');
   const env = { ...ctx.env, FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_PERMISSION_RISK: 'high', FAKE_ZCODE_RECORD: record };
   const decisions = async () => (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((frame) => frame?.result?.decision).map((frame) => frame.result.decision);
+  await startRescueChild(ctx, 'normal-origin', 'normal-child');
+  await startRescueChild(ctx, 'bypass-origin', 'bypass-child');
 
   await identity.beginCallerTurn({ sessionId: 'normal-origin', turnId: 'seed-normal', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait seed normal' });
-  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-origin' } })).code, 0);
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-child' } })).code, 0);
   await identity.beginCallerTurn({ sessionId: 'normal-origin', turnId: 'origin-normal', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait protected normal' });
-  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-origin' } })).code, 3);
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-child' } })).code, 3);
   await identity.beginCallerTurn({ sessionId: 'normal-origin', turnId: 'answer-bypass', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: 'fresh' });
-  const denied = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-origin' } });
+  const denied = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-child' } });
   assert.equal(denied.code, 0, denied.stderr || denied.stdout);
   assert.equal((await decisions()).at(-1), 'deny', 'a bypass answer turn must not upgrade the normal origin turn');
 
   await identity.beginCallerTurn({ sessionId: 'bypass-origin', turnId: 'seed-bypass', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: '$zcode:rescue --fresh --wait seed bypass' });
-  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-origin' } })).code, 0);
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-child' } })).code, 0);
   await identity.beginCallerTurn({ sessionId: 'bypass-origin', turnId: 'origin-bypass', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: '$zcode:rescue --wait protected bypass' });
-  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-origin' } })).code, 3);
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-child' } })).code, 3);
   await identity.beginCallerTurn({ sessionId: 'bypass-origin', turnId: 'answer-normal', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'fresh' });
-  const allowed = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-origin' } });
+  const allowed = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-child' } });
   assert.equal(allowed.code, 0, allowed.stderr || allowed.stdout);
   assert.equal((await decisions()).at(-1), 'allow', 'a normal answer turn must not downgrade the bypass origin turn');
 });

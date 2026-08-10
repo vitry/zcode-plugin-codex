@@ -172,21 +172,22 @@ test('pending invocation choices preserve the exact originating turn, workspace,
   const { createInvocationStore } = await import('../scripts/lib/invocation.mjs');
   const pending = createInvocationStore({ dataRoot });
   const now = new Date('2026-08-04T00:00:00.000Z');
-  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', spec: { argv: ['rescue', 'literal task'] }, now });
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] }, now });
   await assert.rejects(
-    pending.consumePending({ sessionId: 'session-b', workspace: workspaceA, command: 'rescue', choice: 'resume', now }),
+    pending.consumePending({ sessionId: 'session-b', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child', now }),
     (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_NOT_FOUND' && error.remedy === 'Repeat the original command in this Codex thread.',
   );
   await assert.rejects(
-    pending.consumePending({ sessionId: 'session-a', workspace: workspaceB, command: 'rescue', choice: 'resume', now }),
+    pending.consumePending({ sessionId: 'session-a', workspace: workspaceB, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child', now }),
     (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_NOT_FOUND' && error.remedy === 'Repeat the original command in this Codex thread.',
   );
-  assert.deepEqual(await pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', now }), {
+  await assert.rejects(pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'sibling-child', now }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+  assert.deepEqual(await pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child', now }), {
     argv: ['rescue', '--resume', 'literal task'],
     caller: { sessionId: 'session-a', turnId: 'turn-a', workspace: await realpath(workspaceA), permissionMode: 'workspace-write' },
   });
   await assert.rejects(
-    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', now }),
+    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', executorAgentId: 'rescue-child', now }),
     (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_NOT_FOUND' && error.remedy === 'Repeat the original command in this Codex thread.',
   );
 });
@@ -196,13 +197,13 @@ test('expired pending Rescue choice is deleted and fails with an actionable reco
   const { createInvocationStore } = await import('../scripts/lib/invocation.mjs');
   const pending = createInvocationStore({ dataRoot });
   const now = new Date('2026-08-04T00:00:00.000Z');
-  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', spec: { argv: ['rescue', 'literal task'] }, now });
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] }, now });
   await assert.rejects(
-    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', now: new Date(now.getTime() + 30 * 60_000) }),
+    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', executorAgentId: 'rescue-child', now: new Date(now.getTime() + 30 * 60_000) }),
     (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_EXPIRED' && typeof error.remedy === 'string' && error.remedy.length > 0,
   );
   await assert.rejects(
-    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', now }),
+    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', executorAgentId: 'rescue-child', now }),
     { code: 'PENDING_INVOCATION_NOT_FOUND' },
   );
 });

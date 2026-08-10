@@ -92,15 +92,7 @@ export function qualifyCodexRescueEvidence(input, options) {
   const child = childCandidates[0];
   const childMeta = sessionMeta(child);
   const threadSpawn = childMeta.source?.subagent?.thread_spawn;
-  if (!threadSpawn || typeof threadSpawn !== 'object') mismatch('thread-spawn-unavailable', 'The child rollout omits thread_spawn metadata.');
-  if (childMeta.session_id !== parentThreadId
-    || childMeta.parent_thread_id !== parentThreadId
-    || childMeta.thread_source !== 'subagent'
-    || threadSpawn.parent_thread_id !== parentThreadId
-    || threadSpawn.depth !== 1
-    || threadSpawn.agent_path !== agentPath) {
-    mismatch('child-link-mismatch', 'Child session metadata does not link exactly to the observed parent and start event.');
-  }
+  validateParentChildRoute({ parentMeta, parentThreadId, start, childMeta, childThreadId, agentPath, codePrefix: '' });
 
   let route;
   let agentType;
@@ -175,11 +167,11 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   const parentCandidates = rollouts.filter((events) => sessionMeta(events)?.id === options.expectedParentThreadId);
   if (parentCandidates.length !== 1) mismatch('choice-parent-count', 'Choice evidence must contain exactly one parent rollout.');
   const parent = parentCandidates[0];
+  const parentMeta = sessionMeta(parent);
   const spawns = namedCalls(parent, 'spawn_agent');
   if (spawns.length !== 1) mismatch('choice-spawn-count', 'Choice continuation must retain exactly one initial spawn.');
-  const encodedSpawn = boundedString(spawns[0].payload.arguments);
-  if (encrypted(encodedSpawn)) unqualified('choice-spawn-encrypted', 'The host encrypted spawn arguments, so the exact choice-flow spawn cannot be qualified.');
-  const spawnArgs = parseObject(encodedSpawn, 'choice-spawn-arguments');
+  const spawnArgs = parseObject(spawns[0].payload.arguments, 'choice-spawn-arguments');
+  const spawnMessageEncrypted = encrypted(spawnArgs.message);
   let expectedSpawnMessage;
   if (Object.hasOwn(spawnArgs, 'agent_type')) {
     assertExactKeys(spawnArgs, ['agent_type', 'fork_turns', 'message', 'task_name'], 'choice-spawn-keys');
@@ -191,7 +183,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     expectedSpawnMessage = options.expectedGenericSpawnMessage;
   }
   if (spawnArgs.task_name !== options.expectedTaskName || spawnArgs.fork_turns !== 'none') mismatch('choice-spawn-contract', 'The choice-flow spawn task or context mode differs from the Rescue contract.');
-  if (spawnArgs.message !== expectedSpawnMessage) mismatch('choice-spawn-message', 'The choice-flow spawn message differs from its fixed contract.');
+  if (!spawnMessageEncrypted && spawnArgs.message !== expectedSpawnMessage) mismatch('choice-spawn-message', 'The choice-flow spawn message differs from its fixed contract.');
   const spawnIndex = parent.indexOf(spawns[0]);
   const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
   if (starts.length !== 1) mismatch('choice-start-count', 'Choice continuation must expose exactly one child start.');
@@ -213,28 +205,46 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   const child = childCandidates[0];
   const meta = sessionMeta(child);
   const spawnMeta = meta?.source?.subagent?.thread_spawn;
-  if (meta?.parent_thread_id !== options.expectedParentThreadId || spawnMeta?.parent_thread_id !== options.expectedParentThreadId || spawnMeta?.agent_path !== agentPath) {
-    mismatch('choice-child-link', 'The retained child rollout is not linked to the exact parent and agent path.');
-  }
+  validateParentChildRoute({ parentMeta, parentThreadId: options.expectedParentThreadId, start: start.payload, childMeta: meta, childThreadId, agentPath, codePrefix: 'choice-' });
   if (Object.hasOwn(spawnArgs, 'agent_type') ? spawnMeta.agent_role !== options.expectedAgentType : spawnMeta.agent_role !== null) {
     mismatch('choice-agent-role', 'The retained child Role metadata differs from the selected route.');
   }
 
   const followups = namedCalls(parent, 'followup_task');
   if (followups.length !== 1) mismatch('choice-followup-count', 'Choice continuation must contain exactly one followup_task.');
-  const encodedFollowup = boundedString(followups[0].payload.arguments);
-  if (encrypted(encodedFollowup)) unqualified('choice-followup-encrypted', 'The host encrypted continuation arguments, so the exact same-child follow-up cannot be qualified.');
-  const followup = parseObject(encodedFollowup, 'choice-followup-arguments');
+  const followup = parseObject(followups[0].payload.arguments, 'choice-followup-arguments');
+  const followupMessageEncrypted = encrypted(followup.message);
   assertExactKeys(followup, ['message', 'target'], 'choice-followup-keys');
   if (followup.target !== childThreadId) mismatch('choice-followup-target', 'The continuation target differs from the original child ID.');
-  if (followup.message !== options.expectedFollowupMessage) mismatch('choice-followup-message', 'The continuation message differs from the fixed choice contract.');
+  if (!followupMessageEncrypted && followup.message !== options.expectedFollowupMessage) mismatch('choice-followup-message', 'The continuation message differs from the fixed choice contract.');
 
   const waits = namedCalls(parent, 'wait_agent');
   if (waits.length < 2) mismatch('choice-wait-count', 'The choice flow must expose waits before and after the same-child follow-up.');
+  const timedOutWaitIndexes = [];
   for (const wait of waits) {
     const args = parseObject(wait.payload.arguments, 'choice-wait-arguments');
     assertExactKeys(args, ['timeout_ms'], 'choice-wait-keys');
     if (!Number.isSafeInteger(args.timeout_ms) || args.timeout_ms < 10_000 || args.timeout_ms > 3_600_000) mismatch('choice-wait-bound', 'A choice wait timeout is outside the supported bound.');
+    const linked = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output' && event.payload.call_id === wait.payload.call_id);
+    if (linked.length !== 1 || parent.indexOf(wait) >= parent.indexOf(linked[0])) mismatch('choice-wait-output-link', 'Each wait must have one later linked host output.');
+    const result = parseObject(linked[0].payload.output, 'choice-wait-output-shape');
+    assertExactKeys(result, ['message', 'timed_out'], 'choice-wait-output-shape');
+    if (typeof result.timed_out !== 'boolean' || result.message !== (result.timed_out ? 'Wait timed out.' : 'Wait completed.')) mismatch('choice-wait-output-shape', 'A wait result differs from the observed host contract.');
+    if (result.timed_out) timedOutWaitIndexes.push(parent.indexOf(linked[0]));
+  }
+  if (timedOutWaitIndexes.length > 0) {
+    const lists = namedCalls(parent, 'list_agents');
+    if (lists.length !== 1) mismatch('choice-child-state-count', 'Timeout recovery must inspect the retained child exactly once.');
+    assertExactKeys(parseObject(lists[0].payload.arguments, 'choice-child-state-shape'), [], 'choice-child-state-shape');
+    const linked = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output' && event.payload.call_id === lists[0].payload.call_id);
+    if (linked.length !== 1 || parent.indexOf(lists[0]) >= parent.indexOf(linked[0])) mismatch('choice-child-state-link', 'The child-state output must link after list_agents.');
+    const state = parseObject(linked[0].payload.output, 'choice-child-state-shape');
+    assertExactKeys(state, ['agents'], 'choice-child-state-shape');
+    if (!Array.isArray(state.agents) || state.agents.length !== 1) mismatch('choice-child-state-shape', 'Child-state evidence must contain only the retained child.');
+    assertExactKeys(state.agents[0], ['agent_name', 'agent_status'], 'choice-child-state-shape');
+    if (state.agents[0].agent_name !== agentPath || state.agents[0].agent_status !== 'running') mismatch('choice-child-state-mismatch', 'Timeout recovery did not observe the retained child running.');
+    const firstReturnIndex = parent.findIndex((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath);
+    if (!(timedOutWaitIndexes[0] < parent.indexOf(lists[0]) && parent.indexOf(linked[0]) < firstReturnIndex)) mismatch('choice-child-state-order', 'Timeout recovery state inspection is out of order.');
   }
 
   const childCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
@@ -262,6 +272,10 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   }
   boundedJson(needsChoice.candidate);
   assertTerminalSentinel(outputs[1].payload.output, options.expectedPublicOutput);
+  const childFinals = child.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
+  if (childFinals.length !== 2 || childFinals[0].payload.message !== needsChoiceText || childFinals[1].payload.message !== options.expectedPublicOutput
+    || child.indexOf(outputs[0]) >= child.indexOf(childFinals[0]) || child.indexOf(childFinals[0]) >= child.indexOf(childExecs[1])
+    || child.indexOf(outputs[1]) >= child.indexOf(childFinals[1])) mismatch('choice-child-terminal-sequence', 'The same child must finalize each exact stdout after its linked command output.');
 
   const returns = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath && event.payload.recipient === '/root');
   if (returns.length !== 2) mismatch('choice-child-return-count', 'The parent must receive needs-choice and terminal results from the same child.');
@@ -274,19 +288,49 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     mismatch('choice-parent-output', 'The parent must ask once after verbatim needs-choice stdout, then return exact terminal stdout.');
   }
   const followupIndex = parent.indexOf(followups[0]);
-  if (!(parent.indexOf(returns[0]) < followupIndex && followupIndex < parent.indexOf(returns[1]))) mismatch('choice-followup-order', 'The follow-up must occur between the two returns from the same child.');
+  if (!(parent.indexOf(returns[0]) < parent.indexOf(parentFinals[0]) && parent.indexOf(parentFinals[0]) < followupIndex && followupIndex < parent.indexOf(returns[1]) && parent.indexOf(returns[1]) < parent.indexOf(parentFinals[1]))) mismatch('choice-followup-order', 'The unique ask and follow-up must separate the two linked child returns.');
   const waitIndexes = waits.map((event) => parent.indexOf(event));
   if (!waitIndexes.some((index) => startIndex < index && index < parent.indexOf(returns[0]))
     || !waitIndexes.some((index) => followupIndex < index && index < parent.indexOf(returns[1]))) {
     mismatch('choice-wait-order', 'Wait evidence does not bracket the two same-child turns.');
   }
 
+  const timeline = [childExecs[0], outputs[0], childFinals[0], returns[0], parentFinals[0], followups[0], childExecs[1], outputs[1], childFinals[1], returns[1], parentFinals[1]].map(eventTimestamp);
+  if (timeline.some((value) => value === undefined) || timeline.some((value, index) => index > 0 && value <= timeline[index - 1])) {
+    mismatch('choice-terminal-timeline', 'The observable timestamps do not prove the complete initial-exec through terminal-parent sequence.');
+  }
+
   assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
-  return { parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, choice: options.expectedChoice };
+  const evidence = { parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, choice: options.expectedChoice };
+  if (spawnMessageEncrypted) unqualified('choice-spawn-encrypted', 'Codex encrypted only the spawn message field, so its exact runtime value cannot be qualified.', evidence);
+  if (followupMessageEncrypted) unqualified('choice-followup-encrypted', 'Codex encrypted only the continuation message field, so its exact runtime value cannot be qualified.', evidence);
+  return evidence;
+}
+
+function validateParentChildRoute({ parentMeta, parentThreadId, start, childMeta, childThreadId, agentPath, codePrefix }) {
+  const code = codePrefix ? 'choice-child-link' : 'child-link-mismatch';
+  if (parentMeta?.session_id !== parentThreadId || parentMeta?.id !== parentThreadId
+    || Object.hasOwn(parentMeta ?? {}, 'parent_thread_id') || parentMeta?.thread_source !== 'user' || parentMeta?.source !== 'exec') {
+    mismatch(codePrefix ? 'choice-parent-link' : 'parent-session-mismatch', 'Parent session metadata does not describe the exact top-level exec thread.');
+  }
+  if (start?.agent_thread_id !== childThreadId || start?.agent_path !== agentPath) mismatch(codePrefix ? 'choice-child-identity' : 'child-identity-unavailable', 'The start event does not identify the exact child route.');
+  const spawnMeta = childMeta?.source?.subagent?.thread_spawn;
+  if (!spawnMeta || typeof spawnMeta !== 'object') mismatch(codePrefix ? code : 'thread-spawn-unavailable', 'The child rollout omits thread_spawn metadata.');
+  if (childMeta?.id !== childThreadId || childMeta?.session_id !== parentThreadId
+    || childMeta?.parent_thread_id !== parentThreadId || childMeta?.thread_source !== 'subagent'
+    || spawnMeta.parent_thread_id !== parentThreadId || spawnMeta.depth !== 1 || spawnMeta.agent_path !== agentPath) {
+    mismatch(code, 'Child session metadata does not link exactly to the observed parent and start event.');
+  }
 }
 
 function namedCalls(events, name) {
   return events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === name);
+}
+
+function eventTimestamp(event) {
+  const value = boundedString(event?.timestamp);
+  const parsed = value === undefined ? Number.NaN : Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function childReturnText(event, agentPath) {

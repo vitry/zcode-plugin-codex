@@ -32,6 +32,18 @@ Background workers remain capability-bound, but production Node creates,
 transports, starts, and reaps them without a Codex subagent or model seeing the
 capability.
 
+For native Rescue subagents on qualified Codex 0.147, shell commands observe the
+child thread ID in `CODEX_THREAD_ID`, not the parent ID. `SubagentStart` records
+that child `agent_id` together with its parent session, child turn, Role, and
+canonical workspace in the private hook store. Rescue invocation cross-checks
+the ambient child ID against exactly one active record and binds pending choice
+state to that executor ID. Parent-direct, sibling, stopped, missing, ambiguous,
+and wrong-workspace callers therefore fail closed. The answer may arrive in a
+later parent turn; execution still restores the originating turn and permission
+snapshot. This is an integrity check inside the existing private `0700`
+same-UID trust boundary, not a claim that environment variables or local files
+are cryptographically unforgeable by a hostile process running as that UID.
+
 ## Rejected alternative
 
 A bundled stdio MCP server would provide structured arguments, and current

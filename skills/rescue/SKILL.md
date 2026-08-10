@@ -39,6 +39,10 @@ For the generic route, substitute only the preflight-verified absolute canonical
 Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:
 node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke rescue
 Preserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request/print/persist authorization material.
+If that command returned a needs-choice response, stop. Only after the parent sends exactly `Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.` run exactly:
+node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-choice rescue resume
+Only after the parent sends exactly `Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.` run exactly:
+node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-choice rescue fresh
 ```
 
 Keep the returned child ID as `rescueChildId`. Do not call `spawn_agent` again after `rescueChildId` exists. Wait for that same child to reach a terminal or idle state. A wait timeout, early return, or ordinary user steering does not authorize a new child or a second execution; continue only with the same `rescueChildId`. Call `wait_agent` again as appropriate, use `list_agents` to inspect only that child, or rejoin it.

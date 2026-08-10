@@ -27,17 +27,17 @@ export function parseRecordedInvocation(command, prompt) {
 export function createInvocationStore({ dataRoot }) {
   if (typeof dataRoot !== 'string' || !dataRoot) throw invocationError('DATA_ROOT_REQUIRED', 'A plugin data root is required.');
   return {
-    /** @param {{sessionId:string,turnId:string,workspace:string,permissionMode:string,command:string,spec:{argv:string[]},now?:Date|number|string}} input */
+    /** @param {{sessionId:string,turnId:string,workspace:string,permissionMode:string,command:string,spec:{argv:string[]},executorAgentId?:string,now?:Date|number|string}} input */
     async savePending(input) {
       validatePendingInput(input); const storage = await pendingStorage(dataRoot, input.workspace); const key = pendingKey(input.sessionId, storage.workspacePath, input.command); const createdAt = timestamp(input.now);
-      await withFileLock(storage.lockPath, () => atomicWriteJson(join(storage.directory, `${key}.json`), { key, sessionId: input.sessionId, originatingTurnId: input.turnId, workspace: storage.workspacePath, permissionMode: input.permissionMode, command: input.command, spec: normalizeSpec(input.spec), createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + PENDING_LIFETIME_MS).toISOString() }));
+      await withFileLock(storage.lockPath, () => atomicWriteJson(join(storage.directory, `${key}.json`), { key, sessionId: input.sessionId, originatingTurnId: input.turnId, workspace: storage.workspacePath, permissionMode: input.permissionMode, command: input.command, spec: normalizeSpec(input.spec), ...(input.executorAgentId === undefined ? {} : { executorAgentId: input.executorAgentId }), createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + PENDING_LIFETIME_MS).toISOString() }));
     },
-    /** @param {{sessionId:string,workspace:string,command:string,choice:string,now?:Date|number|string}} input */
+    /** @param {{sessionId:string,workspace:string,command:string,choice:string,executorAgentId?:string,now?:Date|number|string}} input */
     async consumePending(input) {
       validateChoiceInput(input); const storage = await pendingStorage(dataRoot, input.workspace); const key = pendingKey(input.sessionId, storage.workspacePath, input.command); const path = join(storage.directory, `${key}.json`);
       return withFileLock(storage.lockPath, async () => {
         let record; try { record = await readJsonFile(path); } catch (error) { if (error instanceof PluginError && error.code === 'JSON_READ_FAILED' && /** @type {any} */ (error.cause)?.code === 'ENOENT') throw pendingNotFound(error); throw error; }
-        if (!validPending(record) || record.key !== key || record.sessionId !== input.sessionId || record.workspace !== storage.workspacePath || record.command !== input.command) throw pendingNotFound();
+        if (!validPending(record) || record.key !== key || record.sessionId !== input.sessionId || record.workspace !== storage.workspacePath || record.command !== input.command || record.command === 'rescue' && record.executorAgentId !== input.executorAgentId) throw pendingNotFound();
         if (timestamp(input.now) >= Date.parse(record.expiresAt)) { await unlink(path).catch(() => {}); throw invocationError('PENDING_INVOCATION_EXPIRED', 'The pending invocation has expired.'); }
         await unlink(path);
         return {
@@ -72,15 +72,15 @@ async function pendingStorage(dataRoot, workspace) { const storage = await resol
 /** @param {string} sessionId @param {string} workspace @param {string} command */
 function pendingKey(sessionId, workspace, command) { return createHash('sha256').update(JSON.stringify([sessionId, workspace, command])).digest('hex'); }
 /** @param {any} input */
-function validatePendingInput(input) { if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.turnId) || !nonempty(input.workspace) || !PERMISSION_MODES.includes(input.permissionMode) || !PUBLIC_COMMANDS.has(input.command)) throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation is invalid.'); normalizeSpec(input.spec); }
+function validatePendingInput(input) { if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.turnId) || !nonempty(input.workspace) || !PERMISSION_MODES.includes(input.permissionMode) || !PUBLIC_COMMANDS.has(input.command) || input.command === 'rescue' && !nonempty(input.executorAgentId) || input.command !== 'rescue' && input.executorAgentId !== undefined) throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation is invalid.'); normalizeSpec(input.spec); }
 /** @param {any} input */
-function validateChoiceInput(input) { if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.workspace) || !PUBLIC_COMMANDS.has(input.command) || !allowedChoice(input.command, input.choice)) throw invocationError('INVOCATION_CHOICE_INVALID', 'The invocation choice is invalid.'); }
+function validateChoiceInput(input) { if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.workspace) || !PUBLIC_COMMANDS.has(input.command) || !allowedChoice(input.command, input.choice) || input.command === 'rescue' && !nonempty(input.executorAgentId) || input.command !== 'rescue' && input.executorAgentId !== undefined) throw invocationError('INVOCATION_CHOICE_INVALID', 'The invocation choice is invalid.'); }
 /** @param {string} command @param {string} choice */
 function allowedChoice(command, choice) { return command === 'rescue' ? ['resume', 'fresh'].includes(choice) : ['review', 'adversarial-review'].includes(command) && ['wait', 'background'].includes(choice); }
 /** @param {any} spec */
 function normalizeSpec(spec) { if (!plain(spec) || Object.keys(spec).length !== 1 || !Array.isArray(spec.argv) || spec.argv.some((/** @type {unknown} */ value) => typeof value !== 'string') || !PUBLIC_COMMANDS.has(spec.argv[0])) throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation is invalid.'); return { argv: [...spec.argv] }; }
 /** @param {any} value */
-function validPending(value) { return plain(value) && /^[a-f0-9]{64}$/.test(value.key) && nonempty(value.sessionId) && nonempty(value.originatingTurnId) && nonempty(value.workspace) && PERMISSION_MODES.includes(value.permissionMode) && PUBLIC_COMMANDS.has(value.command) && validDate(value.createdAt) && validDate(value.expiresAt) && Date.parse(value.expiresAt) > Date.parse(value.createdAt) && (() => { try { normalizeSpec(value.spec); return true; } catch { return false; } })(); }
+function validPending(value) { return plain(value) && /^[a-f0-9]{64}$/.test(value.key) && nonempty(value.sessionId) && nonempty(value.originatingTurnId) && nonempty(value.workspace) && PERMISSION_MODES.includes(value.permissionMode) && PUBLIC_COMMANDS.has(value.command) && (value.command === 'rescue' ? nonempty(value.executorAgentId) : value.executorAgentId === undefined) && validDate(value.createdAt) && validDate(value.expiresAt) && Date.parse(value.expiresAt) > Date.parse(value.createdAt) && (() => { try { normalizeSpec(value.spec); return true; } catch { return false; } })(); }
 /** @param {string} command */
 function validateCommand(command) { if (!PUBLIC_COMMANDS.has(command)) throw invocationError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.'); }
 /** @param {unknown} value */
