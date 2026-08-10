@@ -267,9 +267,11 @@ input.on('line', async (line) => {
       send({ id: message.id, result: snapshot(p.sessionId) });
       break;
     case 'session/list': {
-      listCount += 1; if (process.env.FAKE_ZCODE_LIST_NOTIFICATION_ONCE === '1' && listCount === 1) send({ method: 'fixture/notification', params: { occurrence: 1 } });
+      listCount += 1;
       const mode = await recoveryMode(); const listed = mode === 'missing' ? [] : [...sessions.values()];
       for (const session of listed) applyRecoveryMode(session, mode);
+      if (process.env.FAKE_ZCODE_LIST_NOTIFICATION_ONCE === '1' && listCount === 1) send({ method: 'fixture/notification', params: { occurrence: 1 } });
+      if (process.env.FAKE_ZCODE_LIST_ROUTING_NOTIFICATIONS === '1' && listCount === 1) { send({ method: 'fixture/globalNotification', params: { occurrence: 1 } }); if (listed[0]) send({ method: 'fixture/sessionNotification', params: { sessionId: listed[0].sessionId, occurrence: 1 } }); }
       send({ id: message.id, result: { sessions: process.env.FAKE_ZCODE_BAD_LIST === 'session-id-only' ? listed.map(({ sessionId }) => ({ sessionId })) : listed.map(({ sessionId, workspacePath, projectionStatus }) => sessionInfo(sessionId, workspacePath, projectionStatus)) } });
       break;
     }

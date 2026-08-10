@@ -184,7 +184,7 @@ export async function ensureZCodeBroker(options) {
 
 export class ZCodeBroker {
   /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string}} options */
-  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
+  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.protocolCloseStarted = new WeakSet(); this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
     if (this.server) return this;
@@ -293,7 +293,7 @@ export class ZCodeBroker {
             if (sessionAdmission && !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError();
             if (this.protocol !== protocol) throw brokerInputError();
             if (frame.method === 'session/stop') validateStopResult(result);
-            if (frame.method === 'v4/conversation/unsubscribe' && !validConversationUnsubscribeResult(result)) { this.conversationSubscriptions.delete(unsubscribeRecord.key); this.retainOrphanedSubscription(protocol, unsubscribeRecord); this.clearProtocolGeneration(protocol); await protocol.close().catch(() => {}); throw invalidUnsubscribeResult(); }
+            if (frame.method === 'v4/conversation/unsubscribe' && !validConversationUnsubscribeResult(result)) { this.conversationSubscriptions.delete(unsubscribeRecord.key); this.retainOrphanedSubscription(protocol, unsubscribeRecord); this.clearProtocolGeneration(protocol); this.closeProtocolInBackground(protocol); throw invalidUnsubscribeResult(); }
             if (frame.method === 'session/send') { validateSendResult(result, frame.params.sessionId); const active = this.activeSessionSockets.get(frame.params.sessionId); if (active?.token !== sendToken) throw brokerInputError(); active.baseline = result.stateRevision; active.inputId = frame.params.inputId; this.activeSessions.add(frame.params.sessionId); protocol.armTurn(frame.params.sessionId, result.stateRevision, frame.params.inputId); this.admittingSessions.delete(frame.params.sessionId); }
           } catch (error) { if (frame.method === 'session/send') { protocol.abortTurn(frame.params.sessionId); if (this.activeSessionSockets.get(frame.params.sessionId)?.token === sendToken) this.activeSessionSockets.delete(frame.params.sessionId); if (this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); } if (subscriptionToken && this.pendingConversationTopics.get(frame.params.topic)?.token === subscriptionToken) this.pendingConversationTopics.delete(frame.params.topic); throw error; }
           if (frame.method === 'session/create') {
@@ -309,7 +309,7 @@ export class ZCodeBroker {
             const pending = this.pendingConversationTopics.get(frame.params.topic); const subscriptionId = result?.ack?.subscriptionId; const addressable = isBoundedPublicIdentifier(subscriptionId); const duplicate = addressable && [...this.conversationSubscriptions.values(), ...this.orphanedConversationSubscriptions.values()].some((subscription) => subscription.subscriptionId === subscriptionId);
             if (!pending || pending.token !== subscriptionToken || !validConversationSubscribeResult(result) || duplicate) {
               if (addressable) await this.unsubscribeConversationRecords(protocol, [{ key: conversationKey(frame.params.topic, subscriptionId), socket, topic: frame.params.topic, subscriptionId, connectionId: frame.params.connectionId, sessionId: requestedSessionId, ownerId }], OWNER_RELEASE_REQUEST_MS);
-              else { this.clearProtocolGeneration(protocol); await protocol.close().catch(() => {}); }
+              else { this.clearProtocolGeneration(protocol); this.closeProtocolInBackground(protocol); }
               throw brokerInputError();
             }
             this.pendingConversationTopics.delete(frame.params.topic); const key = conversationKey(frame.params.topic, subscriptionId);
@@ -434,8 +434,7 @@ export class ZCodeBroker {
       if (isTerminalStateNotification(message)) return;
       const active = message.params?.sessionId ? this.activeSessionSockets.get(message.params.sessionId) : null;
       const sessionOwner = message.params?.sessionId ? active?.socket ?? this.sessionOwners.get(message.params.sessionId)?.socket : null;
-      if (message.params?.sessionId) { if (sessionOwner) writeLocal(sessionOwner, message); }
-      else for (const socket of this.sockets) if (this.authenticated.has(socket)) writeLocal(socket, message);
+      if (message.params?.sessionId && sessionOwner) writeLocal(sessionOwner, message);
       });
       protocol.setPermissionHandler((request) => this.requestPermission(request));
       protocol.consumeTerminalsWith((params, turn) => { const active = this.activeSessionSockets.get(params.sessionId); if (active?.baseline === turn.baseline && active.inputId === turn.inputId) { if (active.socket?.writable) writeLocal(active.socket, { method: 'state.updated', params }); this.activeSessionSockets.delete(params.sessionId); this.activeSessions.delete(params.sessionId); this.scheduleIdleShutdown(); } });
@@ -451,6 +450,14 @@ export class ZCodeBroker {
     for (const [id, pending] of this.permissionPending) { clearTimeout(pending.timer); this.retirePermissionResponse(id, pending.socket); pending.resolve(offeredDeny(pending.request)); }
     this.permissionPending.clear(); this.protocol = null; this.protocolPromise = null; this.scheduleIdleShutdown();
     for (const [token, capturedProtocol] of this.ownerCommitTokens) if (capturedProtocol === protocol) this.ownerCommitTokens.delete(token);
+  }
+
+  // Generation invalidation is synchronous. Teardown is observational and
+  // coalesced so an untrusted close cannot hold a request or release budget.
+  closeProtocolInBackground(protocol) {
+    if (this.protocolCloseStarted.has(protocol)) return;
+    this.protocolCloseStarted.add(protocol);
+    try { void Promise.resolve(protocol.close()).catch(() => {}); } catch { /* close failure is observational after generation invalidation */ }
   }
 
   async requestPermission(request) {
@@ -531,7 +538,7 @@ export class ZCodeBroker {
       if (outcomes[index].status === 'fulfilled' && validConversationUnsubscribeResult(outcomes[index].value) && this.protocol === protocol && subscription.protocol === protocol) this.orphanedConversationSubscriptions.delete(subscription.key);
       else { subscription.retryAfter = Date.now() + 50; if (outcomes[index].status === 'fulfilled' && !validConversationUnsubscribeResult(outcomes[index].value) && this.protocol === protocol) malformedCurrentGeneration = true; }
     }
-    if (malformedCurrentGeneration) { this.clearProtocolGeneration(protocol); await protocol.close().catch(() => {}); }
+    if (malformedCurrentGeneration) { this.clearProtocolGeneration(protocol); this.closeProtocolInBackground(protocol); }
   }
 
   close() {
