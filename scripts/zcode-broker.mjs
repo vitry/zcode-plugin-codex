@@ -41,18 +41,22 @@ class BrokerAdmission {
     let state = this.ownerStates.get(ownerId);
     if (method === 'session/create') {
       if (state?.release) throw turnActiveError('The broker owner is being released.'); const token = randomBytes(16).toString('hex'); this.reserveOperation();
-      if (!state) { state = { epoch: 0, creates: new Map(), release: null }; this.ownerStates.set(ownerId, state); }
+      if (!state) { state = { epoch: 0, creates: new Map(), preflights: new Map(), release: null }; this.ownerStates.set(ownerId, state); }
       const lease = { kind: 'create', ownerId, token, epoch: state.epoch, sessionId: null }; state.creates.set(lease.token, lease); this.onChange(); return lease;
     }
     if (state?.release) throw turnActiveError('The broker owner is already being released.'); const token = randomBytes(16).toString('hex'); this.reserveOperation();
-    if (!state) { state = { epoch: 0, creates: new Map(), release: null }; this.ownerStates.set(ownerId, state); }
+    if (!state) { state = { epoch: 0, creates: new Map(), preflights: new Map(), release: null }; this.ownerStates.set(ownerId, state); }
     const lease = { kind: 'release', ownerId, token, epoch: state.epoch, grandfatheredCreates: new Map([...state.creates].map(([createToken, create]) => [createToken, create.sessionId])) }; state.release = lease; this.onChange(); return lease;
   }
 
   ownerRequestCurrent(lease) { const state = this.ownerStates.get(lease?.ownerId); return lease?.kind === 'create' ? state?.creates.get(lease.token) === lease && state.epoch === lease.epoch : lease?.kind === 'release' && state?.release === lease; }
-  finishOwnerRequest(lease) { if (!lease) return; const state = this.ownerStates.get(lease.ownerId); if (!state) return; if (lease.kind === 'create' && state.creates.get(lease.token) === lease) state.creates.delete(lease.token); else if (lease.kind === 'release' && state.release === lease) state.release = null; else return; this.activeOperationCount -= 1; if (!state.release && !state.creates.size) this.ownerStates.delete(lease.ownerId); this.onChange(); }
+  finishOwnerRequest(lease) { if (!lease) return; const state = this.ownerStates.get(lease.ownerId); if (!state) return; if (lease.kind === 'create' && state.creates.get(lease.token) === lease) state.creates.delete(lease.token); else if (lease.kind === 'release' && state.release === lease) state.release = null; else return; this.activeOperationCount -= 1; if (!state.release && !state.creates.size && !state.preflights.size) this.ownerStates.delete(lease.ownerId); this.onChange(); }
 
-  beginSessionRequest(method, sessionId, ownerId, socket, ownerRequest = null) {
+  beginOwnershipPreflight(ownerId, sessionId) { let state = this.ownerStates.get(ownerId); if (state?.release) throw turnActiveError('The broker owner is being released.'); const token = randomBytes(16).toString('hex'); this.reserveOperation(); if (!state) { state = { epoch: 0, creates: new Map(), preflights: new Map(), release: null }; this.ownerStates.set(ownerId, state); } const lease = { kind: 'ownership-preflight', ownerId, sessionId, token }; state.preflights.set(token, lease); this.onChange(); return lease; }
+  ownershipPreflightCurrent(lease) { return lease?.kind === 'ownership-preflight' && this.ownerStates.get(lease.ownerId)?.preflights.get(lease.token) === lease; }
+  finishOwnershipPreflight(lease) { if (!this.ownershipPreflightCurrent(lease)) return; const state = this.ownerStates.get(lease.ownerId); state.preflights.delete(lease.token); this.activeOperationCount -= 1; if (!state.release && !state.creates.size && !state.preflights.size) this.ownerStates.delete(lease.ownerId); this.onChange(); }
+
+  beginSessionRequest(method, sessionId, ownerId, socket, ownerRequest = null, ownershipPreflight = null) {
     const mode = OWNER_SCOPED_SESSION_METHODS.has(method) ? 'shared' : EXCLUSIVE_SESSION_METHODS.has(method) ? 'exclusive' : null;
     if (!mode) return null;
     if (method === 'session/create' && sessionId === undefined) return null;
@@ -61,9 +65,11 @@ class BrokerAdmission {
     if (!isSafeIdentifier(sessionId)) throw turnActiveError('The session has a conflicting owner operation.');
     let leases = this.sessionLeases.get(sessionId);
     if (leases?.size && (mode === 'exclusive' || [...leases.values()].some((lease) => lease.mode === 'exclusive'))) throw turnActiveError('The session has a conflicting owner operation.');
-    const token = randomBytes(16).toString('hex'); const pairedOwnerRequest = method === 'session/create' && this.ownerRequestCurrent(ownerRequest); if (!pairedOwnerRequest) this.reserveOperation();
+    const pairedOwnerRequest = method === 'session/create' && this.ownerRequestCurrent(ownerRequest); const transferredPreflight = !pairedOwnerRequest && ownershipPreflight?.ownerId === ownerId && ownershipPreflight?.sessionId === sessionId && this.ownershipPreflightCurrent(ownershipPreflight); if (ownershipPreflight && !transferredPreflight) throw turnActiveError('The session ownership preflight is no longer active.'); const token = randomBytes(16).toString('hex'); if (!pairedOwnerRequest && !transferredPreflight) this.reserveOperation();
     if (!leases) { leases = new Map(); this.sessionLeases.set(sessionId, leases); }
-    const lease = { token, sessionId, ownerId, socket, method, mode, protocol: null, ownerRequestToken: method === 'session/create' ? ownerRequest?.token ?? null : null, countsOperation: !pairedOwnerRequest }; leases.set(lease.token, lease); this.activeSessionCount += 1; this.onChange(); return lease;
+    const lease = { token, sessionId, ownerId, socket, method, mode, protocol: null, ownerRequestToken: method === 'session/create' ? ownerRequest?.token ?? null : null, countsOperation: !pairedOwnerRequest }; leases.set(lease.token, lease); this.activeSessionCount += 1;
+    if (transferredPreflight) { const state = this.ownerStates.get(ownerId); state.preflights.delete(ownershipPreflight.token); if (!state.release && !state.creates.size && !state.preflights.size) this.ownerStates.delete(ownerId); }
+    this.onChange(); return lease;
   }
 
   claimSession(lease) { const state = this.ownerStates.get(lease?.ownerId); const create = state?.creates.get(lease?.ownerRequestToken); if (!lease || lease.method !== 'session/create' || !this.sessionLeaseStored(lease, null) || !create || create.sessionId !== null && create.sessionId !== lease.sessionId || this.sessionClaims.has(lease.sessionId)) throw turnActiveError('The session ownership claim is already active.'); create.sessionId = lease.sessionId; if (state.release?.grandfatheredCreates.has(create.token)) state.release.grandfatheredCreates.set(create.token, lease.sessionId); const claim = { token: lease.token, sessionId: lease.sessionId, ownerId: lease.ownerId, socket: lease.socket }; this.sessionClaims.set(lease.sessionId, claim); return claim; }
@@ -265,16 +271,17 @@ export class ZCodeBroker {
     const conversationSessionId = frame.method === 'broker/releaseOwner' ? null : sessionIdFromConversationRequest(frame);
     if (conversationSessionId === false) { writeRequestError(socket, frame.id, brokerInputError()); return; }
     const requestedSessionId = conversationSessionId ?? frame.params.sessionId;
-    const ownerId = this.socketOwnerIds.get(socket); const claimMethod = frame.method === 'session/create'; let ownershipReloaded = false; let ownerAdmission; let sessionAdmission;
+    const ownerId = this.socketOwnerIds.get(socket); const claimMethod = frame.method === 'session/create'; let ownershipReloaded = false; let ownershipPreflight; let ownerAdmission; let sessionAdmission;
     if (typeof requestedSessionId === 'string' && this.admission.hasForeignSessionAuthority(requestedSessionId, ownerId)) { writeSessionOwnerDenied(socket, frame.id); return; }
     if (typeof requestedSessionId === 'string' && !claimMethod && !this.admission.hasSessionAuthority(requestedSessionId)) {
-      try { await this.reloadOwnership(); ownershipReloaded = true; } catch (error) { writeRequestError(socket, frame.id, error); return; }
-      const loadedOwner = this.sessionOwners.get(requestedSessionId); if (!loadedOwner || loadedOwner.ownerId !== ownerId) { writeSessionOwnerDenied(socket, frame.id); return; }
+      try { ownershipPreflight = this.admission.beginOwnershipPreflight(ownerId, requestedSessionId); } catch (error) { writeRequestError(socket, frame.id, error); return; }
+      try { await this.reloadOwnership(); ownershipReloaded = true; } catch (error) { this.admission.finishOwnershipPreflight(ownershipPreflight); ownershipPreflight = null; writeRequestError(socket, frame.id, error); return; }
+      const loadedOwner = this.sessionOwners.get(requestedSessionId); if (!loadedOwner || loadedOwner.ownerId !== ownerId) { this.admission.finishOwnershipPreflight(ownershipPreflight); ownershipPreflight = null; writeSessionOwnerDenied(socket, frame.id); return; }
     }
     try { ownerAdmission = this.admission.beginOwnerRequest(frame.method, ownerId); }
     catch (error) { writeRequestError(socket, frame.id, error); return; }
     try {
-      try { sessionAdmission = this.admission.beginSessionRequest(frame.method, requestedSessionId, ownerId, socket, ownerAdmission); if (frame.method === 'session/create' && sessionAdmission) this.admission.claimSession(sessionAdmission); }
+      try { sessionAdmission = this.admission.beginSessionRequest(frame.method, requestedSessionId, ownerId, socket, ownerAdmission, ownershipPreflight); if (frame.method === 'session/create' && sessionAdmission) this.admission.claimSession(sessionAdmission); }
       catch (error) { this.admission.finishSessionRequest(sessionAdmission); sessionAdmission = null; writeRequestError(socket, frame.id, error); return; }
       try {
         if (frame.method === 'broker/releaseOwner') {
@@ -352,7 +359,7 @@ export class ZCodeBroker {
           writeLocal(socket, { id: frame.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Broker request failed', ...(pluginError ? { data: { pluginError } } : {}) } });
         }
       } finally { this.admission.finishSessionRequest(sessionAdmission); }
-    } finally { this.admission.finishOwnerRequest(ownerAdmission); }
+    } finally { this.admission.finishOwnerRequest(ownerAdmission); this.admission.finishOwnershipPreflight(ownershipPreflight); }
   }
 
   cancelIdleShutdown() { clearTimeout(this.idleTimer); this.idleTimer = null; }
