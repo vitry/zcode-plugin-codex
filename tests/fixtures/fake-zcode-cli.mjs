@@ -79,7 +79,9 @@ async function scheduleCompletion(sessionId, completion) {
 function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
 function flushConcurrentCreateSubscribe() {
   if (!pendingConcurrentCreateResponse || !pendingConcurrentSubscribeResponse) return;
-  sendBatch([pendingConcurrentSubscribeResponse, pendingConcurrentCreateResponse]);
+  sendBatch(process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_REVERSE_BATCH === '1'
+    ? [pendingConcurrentCreateResponse, pendingConcurrentSubscribeResponse]
+    : [pendingConcurrentSubscribeResponse, pendingConcurrentCreateResponse]);
   pendingConcurrentCreateResponse = undefined; pendingConcurrentSubscribeResponse = undefined;
 }
 function flushConcurrentStopSubscribe() {
@@ -175,7 +177,7 @@ input.on('line', async (line) => {
         send({ id: runtimePreferencesId, method: 'session/requestRuntimePreferences', params: { sessionId: 'session-1', scope: 'runtime-materialization' } });
         break;
       }
-      if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1') { pendingConcurrentCreateResponse = completeCreate(message, () => {}); flushConcurrentCreateSubscribe(); }
+      if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1' || process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_REVERSE_BATCH === '1') { pendingConcurrentCreateResponse = completeCreate(message, () => {}); flushConcurrentCreateSubscribe(); }
       else completeCreate(message);
       break;
     }
@@ -243,7 +245,7 @@ input.on('line', async (line) => {
       const subscriptionId = badAcknowledgement ? '' : `subscription-${sessionId}`; conversationSubscriptions.set(sessionId, subscriptionId);
       if (process.env.FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'online', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 39, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 39, kind: 'toolCall', toolCallId: 'prebind', toolName: 'Bash', status: 'running', inputText: '{"command":"echo prebind"}', input: { command: 'echo prebind' }, startedAt: 1_786_233_600_000 } }] }));
       const response = { id: message.id, result: { ack: { subscriptionId, mode: 'snapshot', logEpoch: 'epoch-1' } } };
-      if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentCreateSubscribe(); }
+      if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1' || process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_REVERSE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentCreateSubscribe(); }
       else if (process.env.FAKE_ZCODE_CONCURRENT_STOP_SUBSCRIBE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentStopSubscribe(); }
       else send(response);
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 40, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: 1_786_233_600_000 } }] }));

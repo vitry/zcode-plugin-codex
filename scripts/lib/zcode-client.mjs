@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 
 import { PluginError } from './errors.mjs';
-import { isSafeIdentifier } from './identifier.mjs';
+import { isBoundedPublicIdentifier, isSafeIdentifier } from './identifier.mjs';
 import { connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
 import { brokerIdentityNameForWireOptions, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
@@ -91,7 +91,7 @@ export class ZCodeClient {
   async subscribeConversation(sessionId, options) {
     requireSessionId(sessionId);
     requireExactObject(options, ['connectionId', 'clientMode'], []);
-    if (!boundedPublicIdentifier(options.connectionId) || !['desktop-continuous', 'web-remote-replayable'].includes(options.clientMode)) throw inputError();
+    if (!isBoundedPublicIdentifier(options.connectionId) || !['desktop-continuous', 'web-remote-replayable'].includes(options.clientMode)) throw inputError();
     const result = requireObjectResult(await this.protocol.request('v4/conversation/subscribe', {
       topic: `conversation/${sessionId}`,
       connectionId: options.connectionId,
@@ -99,7 +99,7 @@ export class ZCodeClient {
     }), 'v4/conversation/subscribe');
     const ack = result.ack;
     if (!exactObjectKeys(result, ['ack']) || !plainObject(ack) || !exactObjectKeys(ack, ['subscriptionId', 'mode', 'logEpoch'])
-      || !boundedPublicIdentifier(ack.subscriptionId) || !['snapshot', 'resume'].includes(ack.mode) || !boundedPublicIdentifier(ack.logEpoch)) throw outputError('v4/conversation/subscribe');
+      || !isBoundedPublicIdentifier(ack.subscriptionId) || !['snapshot', 'resume'].includes(ack.mode) || !isBoundedPublicIdentifier(ack.logEpoch)) throw outputError('v4/conversation/subscribe');
     let unsubscribed = false;
     return {
       subscriptionId: ack.subscriptionId,
@@ -248,8 +248,6 @@ function requireExactObject(value, required, optional) { if (!plainObject(value)
 function plainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 /** @param {unknown} value @returns {value is string} */
 function nonEmpty(value) { return typeof value === 'string' && value.length > 0; }
-/** @param {unknown} value */
-function boundedPublicIdentifier(value) { return typeof value === 'string' && value.length > 0 && value.length <= 256 && ![...value].some((character) => { const code = character.codePointAt(0) ?? 0; return code <= 31 || code >= 127 && code <= 159; }); }
 /** @param {Record<string,any>} value @param {string[]} keys */
 function exactObjectKeys(value, keys) { const actual = Object.keys(value); return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
 function inputError() { return new PluginError('ZCODE_INPUT_INVALID', 'ZCode client input is invalid.', { category: 'validation', remedy: 'Provide only documented fields with valid runtime types.' }); }
