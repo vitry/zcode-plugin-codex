@@ -9,7 +9,7 @@ import net from 'node:net';
 import test from 'node:test';
 
 import { createExistingManagedZCodeClient, createManagedZCodeClient, createZCodeClient, releaseManagedZCodeOwner, ZCodeClient } from '../scripts/lib/zcode-client.mjs';
-import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, reconcileBrokerOwnership, writeBrokerIdentity, ZCodeBroker as ZCodeBrokerClass } from '../scripts/zcode-broker.mjs';
+import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity, ZCodeBroker as ZCodeBrokerClass } from '../scripts/zcode-broker.mjs';
 import { atomicWriteJson, withFileLock } from '../scripts/lib/fs.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
@@ -564,6 +564,16 @@ test('a live unhealthy broker identity prevents concurrent replacement startup',
     closeServer = await createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangHealth: true }); await writeBrokerIdentity(join(brokerDirectory, identityName), { endpoint, pid: process.pid, instanceId, brokerToken }); const options = { dataRoot: directory, workspace: directory, launch: { command: join(directory, 'must-not-spawn'), args: [] } };
     outcomes = await Promise.allSettled([ensureZCodeBroker(options), ensureZCodeBroker(options)]); assert.deepEqual(outcomes.map((outcome) => outcome.status), ['rejected', 'rejected']); for (const outcome of outcomes) assert.equal(outcome.reason?.code, 'ZCODE_BROKER_UNHEALTHY'); assert.equal((await stat(endpoint)).isSocket(), true); assert.equal((await readdir(brokerDirectory)).some((name) => name.startsWith('config-')), false);
   } finally { for (const outcome of outcomes) if (outcome.status === 'fulfilled' && processAlive(outcome.value.pid)) try { process.kill(outcome.value.pid, 'SIGTERM'); } catch { /* already exited */ } await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('missing identity cannot let failed broker startups replace a live canonical endpoint', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-ensure-live-missing-identity-')); const record = join(directory, 'calls.jsonl'); const outcomes = []; let closeServer; let oldClient;
+  try {
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const brokerDirectory = join(storage.directory, 'broker'); const identityPath = join(brokerDirectory, brokerIdentityNameForWireOptions()); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const oldRecord = { endpoint, pid: process.pid, instanceId: '7'.repeat(48), brokerToken: '8'.repeat(64) };
+    closeServer = await createHealthOnlyServer(endpoint, oldRecord); oldClient = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken: oldRecord.brokerToken, ownerId: 'live-missing-identity-owner', requestTimeoutMs: 100 }); assert.deepEqual(await oldClient.brokerCapabilities(), { releaseOwnerExclusions: false }); const options = { dataRoot: directory, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_RECORD: record } };
+    for (let attempt = 0; attempt < 2; attempt += 1) outcomes.push(await ensureZCodeBroker(options).then((value) => ({ status: 'fulfilled', value }), (error) => ({ status: 'rejected', error })));
+    assert.deepEqual(outcomes.map((outcome) => outcome.status), ['rejected', 'rejected']); for (const outcome of outcomes) assert.equal(outcome.error?.code, 'ZCODE_BROKER_START_FAILED'); assert.deepEqual(await oldClient.brokerCapabilities(), { releaseOwnerExclusions: false }); assert.equal(await probeBrokerHealth(oldRecord, 100), true); await assert.rejects(readFile(identityPath), (error) => error.code === 'ENOENT'); assert.equal((await stat(endpoint)).isSocket(), true); assert.deepEqual(await readRecordedCalls(record), []); assert.equal((await readdir(brokerDirectory)).some((name) => name.startsWith('config-')), false);
+  } finally { await oldClient?.close().catch(() => {}); for (const outcome of outcomes) if (outcome.status === 'fulfilled' && processAlive(outcome.value.pid)) { try { process.kill(outcome.value.pid, 'SIGTERM'); } catch { /* already exited */ } await waitForProcessExit(outcome.value.pid); } await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('a confirmed dead exact broker identity can be replaced safely', async () => {

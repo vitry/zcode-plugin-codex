@@ -194,35 +194,53 @@ export async function ensureZCodeBroker(options) {
     const instanceId = randomBytes(24).toString('hex');
     const brokerToken = randomBytes(32).toString('hex');
     const configPath = join(brokerDirectory, `config-${instanceId}.json`);
-    await atomicWriteJson(configPath, { endpoint, instanceId, brokerToken, launch: options.launch, workspace: storage.workspacePath, launchCwd: (options.platform ?? process.platform) === 'win32' ? tmpdir() : storage.workspacePath, idleTimeoutMs: options.idleTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs, ownershipPath: join(brokerDirectory, profile ? `session-owners-${profile}.json` : 'session-owners.json'), identityPath });
+    await atomicWriteJson(configPath, { endpoint, instanceId, brokerToken, launch: options.launch, workspace: storage.workspacePath, launchCwd: (options.platform ?? process.platform) === 'win32' ? tmpdir() : storage.workspacePath, idleTimeoutMs: options.idleTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs, ownershipPath: join(brokerDirectory, profile ? `session-owners-${profile}.json` : 'session-owners.json'), identityPath, publishIdentityAfterListen: true });
     // Keep the daemon's process cwd outside the workspace. Windows holds the
     // cwd directory open for the lifetime of the process, which otherwise
     // prevents callers from removing short-lived workspace fixtures (and can
     // make a real workspace impossible to rename or delete).
     const child = await spawnDaemon({ command: process.execPath, args: [fileURLToPath(import.meta.url)], target: fileURLToPath(import.meta.url) }, { args: [configPath], cwd: tmpdir(), env: options.env });
-    const record = await writeBrokerIdentity(identityPath, { endpoint, pid: child.pid, instanceId, brokerToken });
+    const candidate = { endpoint, pid: child.pid, instanceId, brokerToken };
     const deadline = Date.now() + 5_000;
+    let startupConflict = false;
     while (Date.now() < deadline) {
-      if (await probeBrokerHealth(record)) return record;
+      const published = await inspectBrokerIdentity(identityPath, { expectedEndpoint: endpoint });
+      if (sameBrokerIdentity(published.record, candidate)) {
+        if (published.status === 'healthy') return published.record;
+        if (published.status === 'dead') break;
+      } else if (published.status !== 'missing' && !(existing.status === 'dead' && sameBrokerIdentity(published.record, existing.record))) { startupConflict = true; break; }
+      if (!isProcessAlive(child.pid)) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     try { process.kill(child.pid, 'SIGTERM'); } catch { /* already exited */ }
+    await removeBrokerIdentityInstance(identityPath, instanceId).catch(() => {});
+    if (startupConflict) throw brokerUnhealthyError();
     throw new PluginError('ZCODE_BROKER_START_FAILED', 'The ZCode broker failed its startup health probe.', { category: 'runtime', remedy: 'Retry or run $zcode:setup.' });
   });
 }
 
 export class ZCodeBroker {
-  /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string}} options */
+  /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string,identityPath?:string,publishIdentityAfterListen?:boolean}} options */
   constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); let workspace; try { workspace = realpathSync(resolve(options.workspace)); } catch { throw brokerInputError(); } this.options = { ...options, workspace }; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.ownershipRevision = 0; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.conversationSubscriptionGeneration = null; this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.releaseTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
     if (this.server) return this;
-    await this.loadOwnership();
-    if (process.platform !== 'win32') await ensurePrivateDirectory(dirname(this.options.endpoint));
-    this.server = net.createServer((socket) => this.accept(socket));
-    await new Promise((resolve, reject) => { this.server.once('error', reject); this.server.listen(this.options.endpoint, resolve); });
-    if (process.platform !== 'win32') await chmod(this.options.endpoint, 0o600);
-    return this;
+    try {
+      await this.loadOwnership();
+      if (process.platform !== 'win32') await ensurePrivateDirectory(dirname(this.options.endpoint));
+      this.server = net.createServer((socket) => this.accept(socket));
+      await new Promise((resolve, reject) => { this.server.once('error', reject); this.server.listen(this.options.endpoint, resolve); });
+      if (process.platform !== 'win32') await chmod(this.options.endpoint, 0o600);
+      if (this.options.publishIdentityAfterListen === true) {
+        if (typeof this.options.identityPath !== 'string' || typeof this.options.instanceId !== 'string') throw brokerInputError();
+        try { await writeBrokerIdentity(this.options.identityPath, { endpoint: this.options.endpoint, pid: process.pid, instanceId: this.options.instanceId, brokerToken: this.options.brokerToken }); }
+        catch (error) { await removeBrokerIdentityInstance(this.options.identityPath, this.options.instanceId).catch(() => {}); throw error; }
+      }
+      return this;
+    } catch (error) {
+      if (this.server?.listening) await new Promise((resolvePromise) => this.server.close(() => resolvePromise()));
+      this.server = null; throw error;
+    }
   }
 
   accept(socket) {
@@ -762,6 +780,8 @@ function turnActiveError(message) { return new PluginError('ZCODE_TURN_ACTIVE', 
 function validWireOption(value, maximum) { return value === undefined || Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
 function validDrainOption(value) { return value === undefined || Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAIN_TIMEOUT_MS; }
 function canonicalEndpointPath(path) { try { return realpathSync(resolve(path)); } catch { return path; } }
+function sameBrokerIdentity(left, right) { return left?.endpoint === right?.endpoint && left?.pid === right?.pid && left?.instanceId === right?.instanceId && left?.brokerToken === right?.brokerToken; }
+async function removeBrokerIdentityInstance(path, instanceId) { let value; try { value = JSON.parse(await readFile(path, 'utf8')); } catch (error) { if (error?.code === 'ENOENT') return false; return false; } if (value?.instanceId !== instanceId) return false; try { await unlink(path); return true; } catch (error) { if (error?.code === 'ENOENT') return false; throw error; } }
 function isWindowsNamedPipe(endpoint) { return typeof endpoint === 'string' && endpoint.toLowerCase().startsWith('\\\\.\\pipe\\'); }
 function isProcessAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 function safeTokenEqual(left, right) { const a = Buffer.from(left); const b = Buffer.from(right); return a.length === b.length && timingSafeEqual(a, b); }
