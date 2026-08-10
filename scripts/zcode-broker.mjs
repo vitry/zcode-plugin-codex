@@ -11,6 +11,7 @@ import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, ensurePrivateDirectory, withFileLock } from './lib/fs.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './lib/identifier.mjs';
 import { spawnDaemon } from './lib/process.mjs';
+import { validSnapshot } from './lib/zcode-schema.mjs';
 import { BoundedWriter, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 
@@ -52,6 +53,7 @@ class BrokerAdmission {
     const mode = OWNER_SCOPED_SESSION_METHODS.has(method) ? 'shared' : EXCLUSIVE_SESSION_METHODS.has(method) ? 'exclusive' : null;
     if (!mode) return null;
     if (method === 'session/create' && sessionId === undefined) return null;
+    if (method !== 'broker/releaseSession' && this.ownerStates.get(ownerId)?.release) throw turnActiveError('The broker owner is being released.');
     if (!isSafeIdentifier(sessionId) || this.activeSessionCount >= MAX_OWNER_OPERATION_LEASES) throw turnActiveError('The session has a conflicting owner operation.');
     let leases = this.sessionLeases.get(sessionId); if (!leases) { leases = new Map(); this.sessionLeases.set(sessionId, leases); }
     if (leases.size && (mode === 'exclusive' || [...leases.values()].some((lease) => lease.mode === 'exclusive'))) throw turnActiveError('The session has a conflicting owner operation.');
@@ -184,7 +186,7 @@ export async function ensureZCodeBroker(options) {
 
 export class ZCodeBroker {
   /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string}} options */
-  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
+  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); this.options = options; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.releaseTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
     if (this.server) return this;
@@ -260,12 +262,13 @@ export class ZCodeBroker {
       try { sessionAdmission = this.admission.beginSessionRequest(frame.method, requestedSessionId, ownerId, socket); if (frame.method === 'session/create' && sessionAdmission) this.admission.claimSession(sessionAdmission); }
       catch (error) { this.admission.finishSessionRequest(sessionAdmission); sessionAdmission = null; writeRequestError(socket, frame.id, error); return; }
       try {
-        try { await this.reloadOwnership(releaseDeadline); } catch (error) { writeRequestError(socket, frame.id, error); return; }
         if (frame.method === 'broker/releaseOwner') {
-          try { writeLocal(socket, { id: frame.id, result: await this.releaseOwner(socket, ownerId, releaseExcluded, releaseDeadline, ownerAdmission) }); this.fastIdleRequested = true; }
+          const trackedOwnerAdmission = ownerAdmission; ownerAdmission = null;
+          try { writeLocal(socket, { id: frame.id, result: await this.releaseOwnerRequest(socket, ownerId, releaseExcluded, releaseDeadline, trackedOwnerAdmission) }); this.fastIdleRequested = true; }
           catch (error) { writeRequestError(socket, frame.id, error); }
           return;
         }
+        try { await this.reloadOwnership(); } catch (error) { writeRequestError(socket, frame.id, error); return; }
         const existingOwner = typeof requestedSessionId === 'string' ? this.sessionOwners.get(requestedSessionId) : null; const claimMethod = frame.method === 'session/create';
         if (existingOwner && existingOwner.ownerId !== ownerId || typeof requestedSessionId === 'string' && !existingOwner && !claimMethod) { writeLocal(socket, { id: frame.id, error: { code: -32041, message: 'Session is not owned by this broker client.' } }); return; }
         let subscriptionToken; let stopToken; let sendToken; let stoppedGeneration; let ownerCommitToken; let unsubscribeRecord; let protocol;
@@ -297,7 +300,8 @@ export class ZCodeBroker {
             if (frame.method === 'session/send') { validateSendResult(result, frame.params.sessionId); const active = this.activeSessionSockets.get(frame.params.sessionId); if (active?.token !== sendToken) throw brokerInputError(); active.baseline = result.stateRevision; active.inputId = frame.params.inputId; this.activeSessions.add(frame.params.sessionId); protocol.armTurn(frame.params.sessionId, result.stateRevision, frame.params.inputId); this.admittingSessions.delete(frame.params.sessionId); }
           } catch (error) { if (frame.method === 'session/send') { protocol.abortTurn(frame.params.sessionId); if (this.activeSessionSockets.get(frame.params.sessionId)?.token === sendToken) this.activeSessionSockets.delete(frame.params.sessionId); if (this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); } if (subscriptionToken && this.pendingConversationTopics.get(frame.params.topic)?.token === subscriptionToken) this.pendingConversationTopics.delete(frame.params.topic); throw error; }
           if (frame.method === 'session/create') {
-            const createdSessionId = result?.session?.sessionId; if (!isSafeIdentifier(createdSessionId) || typeof requestedSessionId === 'string' && createdSessionId !== requestedSessionId) throw invalidSessionCreateResult();
+            const createdSessionId = result?.session?.sessionId;
+            if (!isSafeIdentifier(createdSessionId) || typeof requestedSessionId === 'string' && createdSessionId !== requestedSessionId || !validSnapshot(result, createdSessionId)) { this.clearProtocolGeneration(protocol); throw invalidSessionCreateResult(); }
             const anonymousCreate = typeof requestedSessionId !== 'string';
             if (anonymousCreate && this.sessionOwners.has(createdSessionId)) { this.clearProtocolGeneration(protocol); throw invalidSessionCreateResult(); }
             if (!this.admission.ownerRequestCurrent(ownerAdmission)) throw brokerInputError();
@@ -340,9 +344,19 @@ export class ZCodeBroker {
   scheduleIdleShutdown() { this.cancelIdleShutdown(); if (this.closing || this.owners || this.activeSessions.size || this.permissionPending.size || this.localTasks.size || this.admission.activeCount || this.retiredProtocolGeneration || this.protocolPromise && !this.protocol) return; this.idleTimer = setTimeout(() => { this.idleTimer = null; if (!this.owners && !this.activeSessions.size && !this.permissionPending.size && !this.localTasks.size && !this.admission.activeCount && !this.retiredProtocolGeneration && !(this.protocolPromise && !this.protocol)) void this.close().catch(() => {}); }, this.fastIdleRequested ? 0 : this.options.idleTimeoutMs ?? 30_000); this.idleTimer.unref?.(); }
 
   async releaseOwner(socket, ownerId, excludeSessionIds = [], deadline = Date.now() + OWNER_RELEASE_BUDGET_MS, ownerAdmission = null) {
-    const ownsAdmission = !ownerAdmission; const admission = ownerAdmission ?? this.admission.beginOwnerRequest('broker/releaseOwner', ownerId);
-    try { return await this.releaseOwnerAdmitted(socket, ownerId, excludeSessionIds, deadline, admission); }
-    finally { if (ownsAdmission) this.admission.finishOwnerRequest(admission); }
+    const admission = ownerAdmission ?? this.admission.beginOwnerRequest('broker/releaseOwner', ownerId);
+    return await this.trackOwnerRelease(admission, deadline, () => this.releaseOwnerAdmitted(socket, ownerId, excludeSessionIds, deadline, admission));
+  }
+
+  async releaseOwnerRequest(socket, ownerId, excludeSessionIds, deadline, admission) {
+    return await this.trackOwnerRelease(admission, deadline, async () => { await this.reloadOwnership(deadline); if (Date.now() >= deadline) throw ownerReleaseTimeout(); return await this.releaseOwnerAdmitted(socket, ownerId, excludeSessionIds, deadline, admission); });
+  }
+
+  async trackOwnerRelease(admission, deadline, continuation) {
+    const operation = (async () => { try { return await continuation(); } finally { this.admission.finishOwnerRequest(admission); } })();
+    this.releaseTasks.add(operation);
+    void operation.then(() => { this.releaseTasks.delete(operation); this.scheduleIdleShutdown(); }, () => { this.releaseTasks.delete(operation); this.scheduleIdleShutdown(); });
+    return await settleOwnerReleaseCaller(operation, deadline);
   }
 
   async releaseOwnerAdmitted(socket, ownerId, excludeSessionIds, deadline, ownerAdmission) {
@@ -572,16 +586,19 @@ export class ZCodeBroker {
   }
 
   async closeOnce() {
+    const startingReleaseTasks = [...this.releaseTasks];
     this.cancelIdleShutdown(); for (const pending of this.permissionPending.values()) { clearTimeout(pending.timer); pending.resolve(offeredDeny(pending.request)); } this.permissionPending.clear(); this.retiredPermissionResponses.clear(); for (const socket of this.sockets) socket.destroy(); this.sockets.clear();
     const startingProtocol = this.protocolPromise; let retired = this.protocol ? this.clearProtocolGeneration(this.protocol) : this.retiredProtocolGeneration;
     if (!retired && startingProtocol) { const spawned = await startingProtocol.catch(() => null); if (spawned && this.protocol === spawned) retired = this.clearProtocolGeneration(spawned); else retired = this.retiredProtocolGeneration; }
     if (retired) await retired.closePromise;
     const closeError = retired?.error; this.protocol = null; this.protocolPromise = null;
+    const releaseOutcomes = await Promise.allSettled(startingReleaseTasks); const releaseError = releaseOutcomes.find((outcome) => outcome.status === 'rejected')?.reason;
     await Promise.allSettled([...this.localTasks]);
     if (this.server) await new Promise((resolve) => this.server.close(() => resolve()));
     this.server = null;
     await this.removeIdentityIfOwned();
     if (closeError) throw closeError;
+    if (releaseError) throw releaseError;
   }
 
   async loadOwnership() {
@@ -680,6 +697,7 @@ function conversationKey(topic, subscriptionId) { return JSON.stringify([topic, 
 function conversationFrameBytes(message) { try { return Buffer.byteLength(JSON.stringify(message)); } catch { return Number.POSITIVE_INFINITY; } }
 function isTerminalStateNotification(message) { return message.method === 'state.updated' && message.params?.scope === 'session' && ['prompt_completed', 'prompt_failed'].includes(message.params?.reason); }
 async function withinOwnerReleaseDeadline(deadline, operation) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) throw ownerReleaseTimeout(); const controller = new AbortController(); const timer = setTimeout(() => controller.abort(ownerReleaseTimeout()), remainingMs); timer.unref?.(); try { const result = await operation(controller.signal); if (Date.now() >= deadline) throw ownerReleaseTimeout(); return result; } catch (error) { if (controller.signal.aborted) throw controller.signal.reason; if (Date.now() >= deadline) throw ownerReleaseTimeout(); throw error; } finally { clearTimeout(timer); } }
+async function settleOwnerReleaseCaller(operation, deadline) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) throw ownerReleaseTimeout(); let timer; try { return await Promise.race([operation, new Promise((_resolvePromise, rejectPromise) => { timer = setTimeout(() => rejectPromise(ownerReleaseTimeout()), remainingMs); timer.unref?.(); })]); } finally { clearTimeout(timer); } }
 function turnActiveError(message) { return new PluginError('ZCODE_TURN_ACTIVE', message, { category: 'state', remedy: 'Wait for the active session operation to finish.' }); }
 function validWireOption(value, maximum) { return value === undefined || Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
 function validDrainOption(value) { return value === undefined || Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAIN_TIMEOUT_MS; }
