@@ -67,19 +67,15 @@ test('shared parent-child route validation fails every trusted metadata field cl
 });
 
 test('wait timeout, early return, and ordinary steering retain one spawn and one child', () => {
-  const input = choiceFixture('resume');
-  const firstReturn = input.rollouts[0].findIndex((event) => event?.payload?.author === agentPath);
-  input.rollouts[0].splice(firstReturn, 0,
-    structuredWait('wait-timeout'),
-    waitOutput('wait-timeout', true),
-    structuredList('list-after-timeout'),
-    listOutput('list-after-timeout'),
-    { type: 'event_msg', payload: { type: 'user_message', message: 'status?' } },
-    structuredWait('wait-after-steering'),
-    waitOutput('wait-after-steering', false));
+  const input = timeoutFixture();
   const evidence = qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume'));
   assert.equal(evidence.childThreadId, childId);
   assert.equal(input.rollouts[0].filter((event) => event?.payload?.name === 'spawn_agent').length, 1);
+  for (const mutate of [
+    (value) => { value.rollouts[0].find((event) => event?.payload?.call_id === 'list-after-timeout' && event.payload.type === 'function_call_output').payload.call_id = 'foreign'; },
+    (value) => { const parent = value.rollouts[0]; const output = parent.splice(parent.findIndex((event) => event?.payload?.call_id === 'list-after-timeout' && event.payload.type === 'function_call_output'), 1)[0]; parent.splice(parent.findIndex((event) => event?.payload?.name === 'list_agents'), 0, output); },
+    (value) => { const parent = value.rollouts[0]; const wait = parent.splice(parent.findIndex((event) => event?.payload?.call_id === 'wait-after-steering' && event.payload.type === 'function_call'), 1)[0]; parent.splice(parent.findIndex((event) => event?.payload?.call_id === 'list-after-timeout' && event.payload.type === 'function_call_output'), 0, wait); },
+  ]) { const invalid = timeoutFixture(); mutate(invalid); assert.throws(() => qualifyCodexRescueChoiceEvidence(invalid, choiceOptions('resume')), CodexRescueEvidenceMismatchError); }
 });
 
 test('choice qualification fails closed on duplicate execution, identity drift, replay, and weak wait evidence', () => {
@@ -90,9 +86,12 @@ test('choice qualification fails closed on duplicate execution, identity drift, 
     { code: 'choice-followup-count', mutate: (input) => input.rollouts[0].splice(-1, 0, structuredFollowup('followup-2', 'resume')) },
     { code: 'choice-followup-target', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: 'sibling-child', message: choiceOptions('resume').expectedFollowupMessage }); } },
     { code: 'choice-followup-message', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: childId, message: `${choiceOptions('resume').expectedFollowupMessage} task text` }); } },
+    { code: 'choice-followup-output-link', mutate: (input) => { followupResult(input).payload.call_id = 'foreign'; } },
+    { code: 'choice-followup-output-order', mutate: (input) => { const output = input.rollouts[0].splice(input.rollouts[0].indexOf(followupResult(input)), 1)[0]; input.rollouts[0].splice(input.rollouts[0].indexOf(choiceFollowup(input)), 0, output); } },
     { code: 'choice-wait-count', mutate: (input) => { input.rollouts[0] = input.rollouts[0].filter((event) => event?.payload?.name !== 'wait_agent'); } },
     { code: 'choice-wait-output-link', mutate: (input) => { input.rollouts[0] = input.rollouts[0].filter((event) => event?.payload?.call_id !== 'wait-1' || event?.payload?.type !== 'function_call_output'); } },
     { code: 'choice-wait-output-shape', mutate: (input) => { waitResult(input, 'wait-1').payload.output = JSON.stringify({ message: 'Wait completed.', timed_out: true }); } },
+    { code: 'choice-wait-return-order', mutate: (input) => { const output = waitResult(input, 'wait-2'); input.rollouts[0].splice(input.rollouts[0].indexOf(output), 1); input.rollouts[0].push(output); } },
     { code: 'choice-command-count', mutate: (input) => input.rollouts[1].splice(-1, 0, structuredExec(expectedCommand, 'exec-3')) },
     { code: 'choice-command-mismatch', mutate: (input) => { choiceExec(input).payload.input = structuredExec('node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue fresh', 'exec-2').payload.input; } },
     { code: 'choice-child-terminal-sequence', mutate: (input) => { input.rollouts[1][3].payload.message = 'tampered'; } },
@@ -106,6 +105,24 @@ test('choice qualification fails closed on duplicate execution, identity drift, 
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
     );
   }
+});
+
+test('choice timeline preserves RFC3339 nanosecond ordering without Date precision loss', () => {
+  const input = choiceFixture('resume'); const first = input.rollouts[1][1]; const second = input.rollouts[1][2];
+  first.timestamp = '2026-08-10T00:00:00.000001Z'; second.timestamp = '2026-08-10T00:00:00.000999Z';
+  assert.equal(qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')).choice, 'resume');
+  [first.timestamp, second.timestamp] = [second.timestamp, first.timestamp];
+  assert.throws(() => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-terminal-timeline');
+});
+
+test('generic default choice continuation is explicitly unqualified after observable evidence passes', () => {
+  const input = choiceFixture('resume');
+  const args = JSON.parse(spawnEvent(input).payload.arguments); delete args.agent_type; args.message = choiceOptions('resume').expectedGenericSpawnMessage; spawnEvent(input).payload.arguments = JSON.stringify(args);
+  childMeta(input).payload.source.subagent.thread_spawn.agent_role = null;
+  assert.throws(
+    () => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')),
+    (error) => error instanceof CodexRescueUnqualifiedError && error.code === 'choice-generic-executor-unqualified',
+  );
 });
 
 test('choice qualification marks only explicitly encrypted continuation arguments unqualified', () => {
@@ -128,13 +145,11 @@ test('choice qualification marks only explicitly encrypted continuation argument
   );
 });
 
-test('automatically qualifies generic Rescue only for the verified 0.147 hidden schema', () => {
+test('records the verified 0.147 generic route then reports executor identity unqualified', () => {
   const input = fixture();
   spawnEvent(input).payload.arguments = JSON.stringify({ fork_turns: 'none', message: 'fixed generic forwarder', task_name: 'zcode_rescue' });
   childMeta(input).payload.source.subagent.thread_spawn.agent_role = null;
-  const evidence = qualifyCodexRescueEvidence(input, options());
-  assert.equal(evidence.route, 'generic-schema-hidden');
-  assert.equal(evidence.agentType, null);
+  assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => error instanceof CodexRescueUnqualifiedError && error.code === 'generic-executor-identity-unqualified' && error.evidence?.route === 'generic-schema-hidden');
 });
 
 test('does not self-report generic compatibility and lets named metadata work on another version', () => {
@@ -509,6 +524,7 @@ function choiceFixture(choice) {
     { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: firstEnvelope }] } },
     { type: 'event_msg', payload: { type: 'agent_message', message: `${needsChoice}Choose resume or fresh.`, phase: 'final_answer' } },
     structuredFollowup('followup-1', choice),
+    followupOutput('followup-1'),
     structuredWait('wait-2'),
     waitOutput('wait-2', false),
     { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: secondEnvelope }] } },
@@ -525,8 +541,13 @@ function choiceFixture(choice) {
   ];
   const at = (event, offset) => { event.timestamp = new Date(Date.parse('2026-08-10T00:00:00.000Z') + offset).toISOString(); };
   at(child[1], 4); at(child[2], 5); at(child[3], 6); at(parent[7], 7); at(parent[8], 8);
-  at(parent[9], 9); at(child[4], 10); at(child[5], 11); at(child[6], 12); at(parent[12], 13); at(parent[13], 14);
+  at(parent[9], 9); at(parent[10], 10); at(child[4], 11); at(child[5], 12); at(child[6], 13); at(parent[13], 14); at(parent[14], 15);
   return { rollouts: [parent, child] };
+}
+
+function timeoutFixture() {
+  const input = choiceFixture('resume'); const firstReturn = input.rollouts[0].findIndex((event) => event?.payload?.author === agentPath);
+  input.rollouts[0].splice(firstReturn, 0, structuredWait('wait-timeout'), waitOutput('wait-timeout', true), structuredList('list-after-timeout'), listOutput('list-after-timeout'), { type: 'event_msg', payload: { type: 'user_message', message: 'status?' } }, structuredWait('wait-after-steering'), waitOutput('wait-after-steering', false)); return input;
 }
 
 function structuredSpawn(callId) {
@@ -536,6 +557,7 @@ function structuredSpawn(callId) {
 function structuredFollowup(callId, choice) {
   return { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: callId, arguments: JSON.stringify({ target: childId, message: choiceOptions(choice).expectedFollowupMessage }) } };
 }
+function followupOutput(callId) { return { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '' } }; }
 
 function structuredWait(callId) {
   return { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: callId, arguments: JSON.stringify({ timeout_ms: 30000 }) } };
@@ -574,6 +596,7 @@ function preflightOutput(input) { return input.rollouts[0].find((event) => event
 function childExec(input) { return input.rollouts[1].find((event) => event.payload?.type === 'custom_tool_call'); }
 function childOutput(input) { return input.rollouts[1].find((event) => event.payload?.type === 'custom_tool_call_output'); }
 function choiceFollowup(input) { return input.rollouts[0].find((event) => event.payload?.name === 'followup_task'); }
+function followupResult(input) { const call = choiceFollowup(input); return input.rollouts[0].find((event) => event.payload?.type === 'function_call_output' && event.payload.call_id === call.payload.call_id); }
 function choiceExec(input) { return input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call')[1]; }
 function waitResult(input, callId) { return input.rollouts[0].find((event) => event.payload?.type === 'function_call_output' && event.payload.call_id === callId); }
 function execAgentMessage(text, id = 'item-1') { return { type: 'item.completed', item: { id, type: 'agent_message', text } }; }

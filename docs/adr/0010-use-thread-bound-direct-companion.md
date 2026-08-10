@@ -34,15 +34,25 @@ capability.
 
 For native Rescue subagents on qualified Codex 0.147, shell commands observe the
 child thread ID in `CODEX_THREAD_ID`, not the parent ID. `SubagentStart` records
-that child `agent_id` together with its parent session, child turn, Role, and
-canonical workspace in the private hook store. Rescue invocation cross-checks
-the ambient child ID against exactly one active record and binds pending choice
-state to that executor ID. Parent-direct, sibling, stopped, missing, ambiguous,
-and wrong-workspace callers therefore fail closed. The answer may arrive in a
-later parent turn; execution still restores the originating turn and permission
-snapshot. This is an integrity check inside the existing private `0700`
-same-UID trust boundary, not a claim that environment variables or local files
-are cryptographically unforgeable by a hostile process running as that UID.
+that child `agent_id` together with its parent session, child turn, Role,
+canonical workspace, and the exact parent active-turn and permission snapshot
+that existed at spawn. Initial Rescue invocation requires exactly one active
+approved record and the same still-active parent snapshot. Codex emits
+`SubagentStop` after the child's first final response and does not emit another
+`SubagentStart` for `followup_task`, so named `zcode-rescue` choice continuation
+instead consumes the stopped executor record bound into pending state, within
+the same TTL. Parent-direct, sibling, stale/missing stop, missing, ambiguous,
+expired, corrupt, and wrong-workspace callers fail closed. The answer may arrive
+in a later parent turn; execution still restores the originating turn and
+permission snapshot. Codex 0.147 reports every role-less generic child only as
+`agent_type: "default"`; this cannot distinguish the intended forwarder from a
+general sibling. The compatibility route may perform one initial invocation
+under the exact active parent turn, but it cannot persist or consume an
+interactive choice. A generic `needs-choice` response instructs the user to make
+a new original Rescue request with an explicit `--resume` or `--fresh`. This is
+an integrity check inside the existing private `0700` same-UID trust boundary,
+not a claim that environment variables or local files are cryptographically
+unforgeable by a hostile process running as that UID.
 
 ## Rejected alternative
 

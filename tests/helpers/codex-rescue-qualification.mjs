@@ -151,10 +151,10 @@ export function qualifyCodexRescueEvidence(input, options) {
   }
   const evidence = { parentThreadId, childThreadId, agentPath, taskName: spawnArgs.task_name, agentType, route, publicOutput: execFinal };
   if (!spawnMessage) mismatch('spawn-message-unavailable', 'The structured spawn metadata does not expose a bounded message field.');
-  if (/^gAAAA[A-Za-z0-9_-]{40,}={0,2}$/u.test(spawnMessage)) {
-    unqualified('spawn-message-encrypted', 'Codex 0.147 persisted the spawn message as ciphertext, so its exact runtime value cannot be qualified.', evidence);
-  }
-  if (spawnMessage !== expectedSpawnMessage) mismatch('spawn-message-mismatch', 'The runtime spawn message differs from the fixed Rescue forwarder contract.');
+  const spawnMessageEncrypted = encrypted(spawnMessage);
+  if (!spawnMessageEncrypted && spawnMessage !== expectedSpawnMessage) mismatch('spawn-message-mismatch', 'The runtime spawn message differs from the fixed Rescue forwarder contract.');
+  if (route === 'generic-schema-hidden') unqualified('generic-executor-identity-unqualified', 'Codex 0.147 reports generic children as agent_type default, which cannot distinguish the approved forwarder from a general sibling.', evidence);
+  if (spawnMessageEncrypted) unqualified('spawn-message-encrypted', 'Codex 0.147 persisted the spawn message field as ciphertext, so its exact runtime value cannot be qualified.', evidence);
 
   return evidence;
 }
@@ -172,15 +172,17 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (spawns.length !== 1) mismatch('choice-spawn-count', 'Choice continuation must retain exactly one initial spawn.');
   const spawnArgs = parseObject(spawns[0].payload.arguments, 'choice-spawn-arguments');
   const spawnMessageEncrypted = encrypted(spawnArgs.message);
-  let expectedSpawnMessage;
+  let expectedSpawnMessage; let namedRoute;
   if (Object.hasOwn(spawnArgs, 'agent_type')) {
     assertExactKeys(spawnArgs, ['agent_type', 'fork_turns', 'message', 'task_name'], 'choice-spawn-keys');
     if (spawnArgs.agent_type !== options.expectedAgentType) mismatch('choice-agent-type', 'The choice-flow spawn does not select the managed Rescue Role.');
     expectedSpawnMessage = options.expectedNamedSpawnMessage;
+    namedRoute = true;
   } else {
     assertExactKeys(spawnArgs, ['fork_turns', 'message', 'task_name'], 'choice-spawn-keys');
     if (!GENERIC_HIDDEN_SCHEMA_VERSIONS.has(sessionMeta(parent)?.cli_version)) mismatch('choice-generic-version', 'The choice-flow generic spawn is not qualified for this Codex version.');
     expectedSpawnMessage = options.expectedGenericSpawnMessage;
+    namedRoute = false;
   }
   if (spawnArgs.task_name !== options.expectedTaskName || spawnArgs.fork_turns !== 'none') mismatch('choice-spawn-contract', 'The choice-flow spawn task or context mode differs from the Rescue contract.');
   if (!spawnMessageEncrypted && spawnArgs.message !== expectedSpawnMessage) mismatch('choice-spawn-message', 'The choice-flow spawn message differs from its fixed contract.');
@@ -217,10 +219,14 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   assertExactKeys(followup, ['message', 'target'], 'choice-followup-keys');
   if (followup.target !== childThreadId) mismatch('choice-followup-target', 'The continuation target differs from the original child ID.');
   if (!followupMessageEncrypted && followup.message !== options.expectedFollowupMessage) mismatch('choice-followup-message', 'The continuation message differs from the fixed choice contract.');
+  const followupOutputs = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output' && event.payload.call_id === followups[0].payload.call_id);
+  if (followupOutputs.length !== 1) mismatch('choice-followup-output-link', 'The follow-up must have exactly one linked host output.');
+  if (parent.indexOf(followups[0]) >= parent.indexOf(followupOutputs[0])) mismatch('choice-followup-output-order', 'The linked follow-up host output must follow its call.');
+  if (boundedString(followupOutputs[0].payload.output) === undefined) mismatch('choice-followup-output-shape', 'The linked follow-up host output is not a bounded string.');
 
   const waits = namedCalls(parent, 'wait_agent');
   if (waits.length < 2) mismatch('choice-wait-count', 'The choice flow must expose waits before and after the same-child follow-up.');
-  const timedOutWaitIndexes = [];
+  const timedOutWaitIndexes = []; const waitEvidence = [];
   for (const wait of waits) {
     const args = parseObject(wait.payload.arguments, 'choice-wait-arguments');
     assertExactKeys(args, ['timeout_ms'], 'choice-wait-keys');
@@ -231,6 +237,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     assertExactKeys(result, ['message', 'timed_out'], 'choice-wait-output-shape');
     if (typeof result.timed_out !== 'boolean' || result.message !== (result.timed_out ? 'Wait timed out.' : 'Wait completed.')) mismatch('choice-wait-output-shape', 'A wait result differs from the observed host contract.');
     if (result.timed_out) timedOutWaitIndexes.push(parent.indexOf(linked[0]));
+    waitEvidence.push({ callIndex: parent.indexOf(wait), outputIndex: parent.indexOf(linked[0]), timedOut: result.timed_out });
   }
   if (timedOutWaitIndexes.length > 0) {
     const lists = namedCalls(parent, 'list_agents');
@@ -244,7 +251,8 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     assertExactKeys(state.agents[0], ['agent_name', 'agent_status'], 'choice-child-state-shape');
     if (state.agents[0].agent_name !== agentPath || state.agents[0].agent_status !== 'running') mismatch('choice-child-state-mismatch', 'Timeout recovery did not observe the retained child running.');
     const firstReturnIndex = parent.findIndex((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath);
-    if (!(timedOutWaitIndexes[0] < parent.indexOf(lists[0]) && parent.indexOf(linked[0]) < firstReturnIndex)) mismatch('choice-child-state-order', 'Timeout recovery state inspection is out of order.');
+    const nextWaitIndex = waitEvidence.find(({ callIndex }) => callIndex > parent.indexOf(linked[0]))?.callIndex ?? -1;
+    if (!(timedOutWaitIndexes[0] < parent.indexOf(lists[0]) && parent.indexOf(linked[0]) < nextWaitIndex && nextWaitIndex < firstReturnIndex)) mismatch('choice-child-state-order', 'Timeout recovery state inspection is out of order.');
   }
 
   const childCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
@@ -281,6 +289,11 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (returns.length !== 2) mismatch('choice-child-return-count', 'The parent must receive needs-choice and terminal results from the same child.');
   const returnPayloads = returns.map((event) => childReturnText(event, agentPath));
   if (returnPayloads[0] !== needsChoiceText || returnPayloads[1] !== options.expectedPublicOutput) mismatch('choice-child-return-output', 'Same-child return payloads are not exact public stdout.');
+  const waitBoundaries = [startIndex, parent.indexOf(followupOutputs[0])];
+  for (let index = 0; index < returns.length; index += 1) {
+    const returnIndex = parent.indexOf(returns[index]);
+    if (!waitEvidence.some(({ callIndex, outputIndex, timedOut }) => !timedOut && waitBoundaries[index] < callIndex && callIndex < outputIndex && outputIndex < returnIndex)) mismatch('choice-wait-return-order', 'Each child return must follow its corresponding linked completed wait output.');
+  }
   const parentFinals = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
   if (parentFinals.length !== 2
     || parentFinals[0].payload.message !== `${needsChoiceText}Choose resume or fresh.`
@@ -295,13 +308,14 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     mismatch('choice-wait-order', 'Wait evidence does not bracket the two same-child turns.');
   }
 
-  const timeline = [childExecs[0], outputs[0], childFinals[0], returns[0], parentFinals[0], followups[0], childExecs[1], outputs[1], childFinals[1], returns[1], parentFinals[1]].map(eventTimestamp);
+  const timeline = [childExecs[0], outputs[0], childFinals[0], returns[0], parentFinals[0], followups[0], followupOutputs[0], childExecs[1], outputs[1], childFinals[1], returns[1], parentFinals[1]].map(eventTimestamp);
   if (timeline.some((value) => value === undefined) || timeline.some((value, index) => index > 0 && value <= timeline[index - 1])) {
     mismatch('choice-terminal-timeline', 'The observable timestamps do not prove the complete initial-exec through terminal-parent sequence.');
   }
 
   assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
   const evidence = { parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, choice: options.expectedChoice };
+  if (!namedRoute) unqualified('choice-generic-executor-unqualified', 'A generic child reports agent_type default and cannot be trusted as the pending Rescue executor.', evidence);
   if (spawnMessageEncrypted) unqualified('choice-spawn-encrypted', 'Codex encrypted only the spawn message field, so its exact runtime value cannot be qualified.', evidence);
   if (followupMessageEncrypted) unqualified('choice-followup-encrypted', 'Codex encrypted only the continuation message field, so its exact runtime value cannot be qualified.', evidence);
   return evidence;
@@ -329,8 +343,10 @@ function namedCalls(events, name) {
 
 function eventTimestamp(event) {
   const value = boundedString(event?.timestamp);
-  const parsed = value === undefined ? Number.NaN : Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  const match = value === undefined ? null : /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/u.exec(value);
+  if (!match) return undefined;
+  const seconds = Date.parse(`${match[1]}Z`); if (!Number.isFinite(seconds)) return undefined;
+  return BigInt(seconds) * 1_000_000n + BigInt((match[2] ?? '').padEnd(9, '0'));
 }
 
 function childReturnText(event, agentPath) {

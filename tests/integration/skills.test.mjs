@@ -74,11 +74,40 @@ async function fixture(t) {
   return { workspace, dataRoot, callerA, callerB, env };
 }
 
-async function startRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`) {
+async function startRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
   const result = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], {
     cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
-    input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: 'zcode-rescue' },
+    input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: agentType },
   });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+}
+
+test('0.147 default compatibility child may invoke once but cannot persist or consume Rescue choice', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  await identity.beginCallerTurn({ sessionId: 'generic-parent', turnId: 'generic-seed', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait seed' });
+  await startRescueChild(ctx, 'generic-parent', 'generic-child', 'generic-seed-child', 'default');
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'generic-child' } })).code, 0);
+  await stopRescueChild(ctx, 'generic-parent', 'generic-child', 'generic-seed-child', 'default');
+  await identity.beginCallerTurn({ sessionId: 'generic-parent', turnId: 'generic-origin', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait continue' });
+  await startRescueChild(ctx, 'generic-parent', 'generic-child', 'generic-origin-child', 'default');
+  const undecided = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'generic-child' } });
+  assert.equal(undecided.code, 3); assert.match(undecided.stdout, /needs-choice/);
+  await stopRescueChild(ctx, 'generic-parent', 'generic-child', 'generic-origin-child', 'default');
+  await identity.beginCallerTurn({ sessionId: 'generic-parent', turnId: 'generic-answer', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'resume' });
+  const choice = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'generic-child' } });
+  assert.notEqual(choice.code, 0); assert.match(choice.stdout, /EXECUTOR_ROLE_UNAPPROVED/);
+  await assert.rejects(createInvocationStore({ dataRoot: ctx.dataRoot }).consumePending({ sessionId: 'generic-parent', workspace: ctx.workspace, command: 'rescue', choice: 'resume', executorAgentId: 'generic-child' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+});
+test('initial Rescue invocation must match the parent turn captured by SubagentStart', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  await identity.beginCallerTurn({ sessionId: 'turn-parent', turnId: 'captured-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
+  await startRescueChild(ctx, 'turn-parent', 'turn-child');
+  await identity.beginCallerTurn({ sessionId: 'turn-parent', turnId: 'replacement-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait different' });
+  const result = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'turn-child' } });
+  assert.notEqual(result.code, 0); assert.match(result.stdout, /EXECUTOR_PARENT_TURN_MISMATCH/);
+});
+async function stopRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
+  const result = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], { cwd: ctx.workspace, env: ctx.env, ordinaryInput: true, input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: agentType, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } });
   assert.equal(result.code, 0, result.stderr || result.stdout);
 }
 
@@ -238,17 +267,20 @@ test('role-status default app-server path is read-only and leaves caller context
 
 test('invoke-choice consumes only the same session pending rescue once', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
-  await startRescueChild(ctx, 'codex-a', 'choice-child-a');
-  await startRescueChild(ctx, 'codex-b', 'choice-child-b');
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'seed', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait first repair' });
+  await startRescueChild(ctx, 'codex-a', 'choice-child-a');
   assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } })).code, 0);
+  await stopRescueChild(ctx, 'codex-a', 'choice-child-a');
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'choice-origin', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait continue repair' });
+  await startRescueChild(ctx, 'codex-a', 'choice-child-a', 'choice-origin-child');
   const undecided = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } });
   assert.equal(undecided.code, 3); assert.match(undecided.stdout, /needs-choice/);
+  await stopRescueChild(ctx, 'codex-a', 'choice-child-a', 'choice-origin-child');
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'choice-answer', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'resume' });
   await identity.beginCallerTurn({ sessionId: 'codex-b', turnId: 'sibling-answer', workspace: ctx.workspace, permissionMode: 'read-only', prompt: 'resume' });
+  await startRescueChild(ctx, 'codex-b', 'choice-child-b');
   const sibling = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-b' } });
-  assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /PENDING_INVOCATION_NOT_FOUND/);
+  assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /(?:PENDING_INVOCATION_NOT_FOUND|EXECUTOR_STATE_MISMATCH)/);
   const accepted = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } });
   assert.equal(accepted.code, 0, accepted.stderr || accepted.stdout);
   const replay = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } });
@@ -274,10 +306,9 @@ test('same-parent sibling cannot consume a pending Rescue choice without trusted
   assert.equal((await agentHook('SubagentStart', 'sibling-child', 'sibling-answer')).code, 0);
   const sibling = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'sibling-child' } });
   assert.notEqual(sibling.code, 0);
-  assert.match(sibling.stdout, /PENDING_INVOCATION_NOT_FOUND/);
+  assert.match(sibling.stdout, /(?:PENDING_INVOCATION_NOT_FOUND|EXECUTOR_STATE_MISMATCH)/);
   const parent = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'shared-parent' } });
   assert.notEqual(parent.code, 0); assert.match(parent.stdout, /EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)/);
-  assert.equal((await agentHook('SubagentStart', 'rescue-child', 'child-answer')).code, 0);
   const accepted = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'rescue-child' } });
   assert.equal(accepted.code, 0, accepted.stderr || accepted.stdout);
   await assert.rejects(
@@ -308,22 +339,27 @@ test('invoke-choice executes with the originating permission snapshot in both di
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA }); const record = join(ctx.workspace, 'permission-record.jsonl');
   const env = { ...ctx.env, FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_PERMISSION_RISK: 'high', FAKE_ZCODE_RECORD: record };
   const decisions = async () => (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((frame) => frame?.result?.decision).map((frame) => frame.result.decision);
-  await startRescueChild(ctx, 'normal-origin', 'normal-child');
-  await startRescueChild(ctx, 'bypass-origin', 'bypass-child');
-
   await identity.beginCallerTurn({ sessionId: 'normal-origin', turnId: 'seed-normal', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait seed normal' });
+  await startRescueChild(ctx, 'normal-origin', 'normal-child', 'seed-normal-child');
   assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-child' } })).code, 0);
+  await stopRescueChild(ctx, 'normal-origin', 'normal-child', 'seed-normal-child');
   await identity.beginCallerTurn({ sessionId: 'normal-origin', turnId: 'origin-normal', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait protected normal' });
+  await startRescueChild(ctx, 'normal-origin', 'normal-child', 'origin-normal-child');
   assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-child' } })).code, 3);
+  await stopRescueChild(ctx, 'normal-origin', 'normal-child', 'origin-normal-child');
   await identity.beginCallerTurn({ sessionId: 'normal-origin', turnId: 'answer-bypass', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: 'fresh' });
   const denied = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-child' } });
   assert.equal(denied.code, 0, denied.stderr || denied.stdout);
   assert.equal((await decisions()).at(-1), 'deny', 'a bypass answer turn must not upgrade the normal origin turn');
 
   await identity.beginCallerTurn({ sessionId: 'bypass-origin', turnId: 'seed-bypass', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: '$zcode:rescue --fresh --wait seed bypass' });
+  await startRescueChild(ctx, 'bypass-origin', 'bypass-child', 'seed-bypass-child');
   assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-child' } })).code, 0);
+  await stopRescueChild(ctx, 'bypass-origin', 'bypass-child', 'seed-bypass-child');
   await identity.beginCallerTurn({ sessionId: 'bypass-origin', turnId: 'origin-bypass', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: '$zcode:rescue --wait protected bypass' });
+  await startRescueChild(ctx, 'bypass-origin', 'bypass-child', 'origin-bypass-child');
   assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-child' } })).code, 3);
+  await stopRescueChild(ctx, 'bypass-origin', 'bypass-child', 'origin-bypass-child');
   await identity.beginCallerTurn({ sessionId: 'bypass-origin', turnId: 'answer-normal', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'fresh' });
   const allowed = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-child' } });
   assert.equal(allowed.code, 0, allowed.stderr || allowed.stdout);

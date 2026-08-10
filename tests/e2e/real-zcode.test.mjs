@@ -15,6 +15,7 @@ import { discoverZCode } from '../../scripts/lib/zcode-discovery.mjs';
 import { runCompanion } from '../../scripts/zcode-companion.mjs';
 
 const requestedModel = process.env.ZCODE_REAL_E2E_MODEL?.trim();
+const qualificationRequired = process.env.ZCODE_REQUIRE_QUALIFIED === '1';
 const skipReason = process.env.ZCODE_REAL_E2E !== '1'
   ? 'unqualified local real E2E: set ZCODE_REAL_E2E=1 on an authenticated macOS ZCode installation'
   : process.platform !== 'darwin'
@@ -24,9 +25,10 @@ const skipReason = process.env.ZCODE_REAL_E2E !== '1'
       : false;
 
 test('real ZCode discovery, read-only turn, cancellation, model, and history import', {
-  skip: skipReason,
+  skip: qualificationRequired ? false : skipReason,
   timeout: 240_000,
 }, async (t) => {
+  if (skipReason) assert.fail(skipReason);
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-real-e2e-'));
   const sessions = new Set();
   let client;

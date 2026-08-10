@@ -208,6 +208,20 @@ test('expired pending Rescue choice is deleted and fails with an actionable reco
   );
 });
 
+test('legacy pending Rescue without an executor binding is atomically rejected and deleted', async () => {
+  const { dataRoot, workspaceA } = await fixture();
+  const { createInvocationStore } = await import('../scripts/lib/invocation.mjs');
+  const pending = createInvocationStore({ dataRoot });
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] } });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory);
+  const legacy = JSON.parse(await readFile(join(directory, name), 'utf8')); delete legacy.executorAgentId; await atomicWriteJson(join(directory, name), legacy);
+  await assert.rejects(
+    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child' }),
+    (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_INCOMPATIBLE' && /Repeat the original Rescue command/.test(error.remedy),
+  );
+  await assert.rejects(pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+});
+
 test('ending an active turn does not hide corrupted private identity state', async () => {
   const { dataRoot, identity, workspaceA } = await fixture();
   await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default', prompt: 'work' });

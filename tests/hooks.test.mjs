@@ -171,27 +171,68 @@ test('subagent hook marks forwarding suppression without changing parent permiss
 test('trusted SubagentStart binds one active child executor and fails closed on sibling, parent, workspace, stale stop, and duplicate records', async () => {
   const { cwd, data, env } = await workspace();
   const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd });
-  const input = (event, turnId) => ({ session_id: 'parent-thread', turn_id: turnId, cwd, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'rescue-child', agent_type: 'zcode-rescue', ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
+  const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'parent-thread', turnId: 'parent-origin', workspace: cwd, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait repair' });
+  const input = (event, turnId, agentId = 'rescue-child', agentType = 'zcode-rescue') => ({ session_id: 'parent-thread', turn_id: turnId, cwd, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: agentId, agent_type: agentType, ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
   assert.equal((await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-1'), env)).code, 0);
   assert.deepEqual(await resolveForwardingExecutor(data, cwd, 'rescue-child'), {
-    kind: 'subagent-executor', agentId: 'rescue-child', agentType: 'zcode-rescue', parentSessionId: 'parent-thread', childTurnId: 'child-turn-1', workspace: storage.workspacePath, active: true, updatedAt: (await resolveForwardingExecutor(data, cwd, 'rescue-child')).updatedAt,
+    kind: 'subagent-executor', agentId: 'rescue-child', agentType: 'zcode-rescue', parentSessionId: 'parent-thread', parentTurnId: 'parent-origin', parentPermissionMode: 'workspace-write', childTurnId: 'child-turn-1', workspace: storage.workspacePath, active: true, createdAt: (await resolveForwardingExecutor(data, cwd, 'rescue-child')).createdAt,
   });
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'general-turn', 'general-child', 'default'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'general-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
+  await runHook('subagent-hook.mjs', input('SubagentStop', 'general-turn', 'general-child', 'default'), env);
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'wrong-role-turn', 'wrong-role-child', 'explorer'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'wrong-role-child'), { code: 'EXECUTOR_ROLE_UNAPPROVED' });
+  await runHook('subagent-hook.mjs', input('SubagentStop', 'wrong-role-turn', 'wrong-role-child', 'explorer'), env);
   await assert.rejects(resolveForwardingExecutor(data, cwd, 'sibling-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
   await assert.rejects(resolveForwardingExecutor(data, cwd, 'parent-thread'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
   const other = await mkdtemp(join(tmpdir(), 'zcode-wrong-workspace-'));
   await assert.rejects(resolveForwardingExecutor(data, other, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
   await rm(other, { recursive: true });
+  await identity.beginCallerTurn({ sessionId: 'parent-thread', turnId: 'parent-answer', workspace: cwd, permissionMode: 'bypassPermissions', prompt: 'resume' });
   await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-2'), env);
   await runHook('subagent-hook.mjs', input('SubagentStop', 'child-turn-1'), env);
   assert.equal((await resolveForwardingExecutor(data, cwd, 'rescue-child')).childTurnId, 'child-turn-2', 'a stale stop cannot deactivate a newer child turn');
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'other-turn', 'other-rescue-child'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
+  await runHook('subagent-hook.mjs', input('SubagentStop', 'other-turn', 'other-rescue-child'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child', { continuation: true }), { code: 'EXECUTOR_STATE_MISMATCH' });
   await runHook('subagent-hook.mjs', input('SubagentStop', 'child-turn-2'), env);
   await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  assert.equal((await resolveForwardingExecutor(data, cwd, 'rescue-child', { continuation: true })).parentTurnId, 'parent-answer');
   await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-3'), env);
   await cleanupSession(data, cwd, 'parent-thread');
   await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
   await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-4'), env);
   await writeFile(join(storage.directory, 'hook-state', 'executor-forged.json'), JSON.stringify({ ...(await resolveForwardingExecutor(data, cwd, 'rescue-child')), updatedAt: new Date().toISOString() }));
-  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
+});
+
+test('executor records enforce exact schema, byte, time, TTL, and file-count bounds', async () => {
+  const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'bounded-parent', turnId: 'bounded-turn', workspace: cwd, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait bounded' });
+  const start = { session_id: 'bounded-parent', turn_id: 'bounded-child-turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'bounded-child', agent_type: 'zcode-rescue' };
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const directory = join(storage.directory, 'hook-state');
+  const reset = async () => { assert.equal((await runHook('subagent-hook.mjs', start, env)).code, 0); return (await readdir(directory)).find((name) => name.startsWith('executor-') && name.endsWith('.json')); };
+  for (const mutate of [
+    (record) => { record.extra = true; },
+    (record) => { record.agentId = 'x'.repeat(513); },
+    (record) => { record.parentPermissionMode = 'hostile'; },
+    (record) => { record.createdAt = '2026-08-10T00:00:00.000001Z'; },
+  ]) {
+    const name = await reset(); const path = join(directory, name); const record = JSON.parse(await readFile(path, 'utf8')); mutate(record); await writeFile(path, JSON.stringify(record));
+    await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
+  }
+  let name = await reset(); await writeFile(join(directory, name), `{"kind":"subagent-executor","pad":"${'x'.repeat(17 * 1024)}"}`);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
+  name = await reset(); const fresh = await resolveForwardingExecutor(data, cwd, 'bounded-child');
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child', { now: new Date(Date.parse(fresh.createdAt) - 1) }), { code: 'EXECUTOR_IDENTITY_INVALID' });
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child', { now: new Date(Date.parse(fresh.createdAt) + 30 * 60_000) }), { code: 'EXECUTOR_IDENTITY_EXPIRED' });
+  await reset(); await writeFile(join(directory, 'executor-corrupt-sibling.json'), '{');
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
+  await unlink(join(directory, 'executor-corrupt-sibling.json'));
+  await reset(); await Promise.all(Array.from({ length: 1_024 }, (_, index) => writeFile(join(directory, `executor-unrelated-${index}.json`), '{}')));
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
 });
 
 test('SessionEnd removes only its session contexts and leaves sibling jobs/session ownership', async () => {

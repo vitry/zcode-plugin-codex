@@ -244,6 +244,14 @@ substituted for the verbatim ZCode result.
 No error caused by a missing, damaged, shadowed, or outdated Role is eligible
 for generic fallback. No route is eligible for parent-inline fallback.
 
+Codex 0.147 exposes a role-less child to hooks only as `agent_type: "default"`;
+hook input has no task name or route path that distinguishes the approved
+forwarder from an ordinary general sibling. The generic route is therefore a
+version-pinned compatibility boundary, not a qualified exact-role identity. It
+may make one initial invocation only while it is the unique active approved
+candidate bound to the exact spawning parent turn and permission snapshot. It
+cannot persist or consume a choice continuation.
+
 ### Waiting and final result
 
 The parent waits for the existing child and does not start another executor when
@@ -256,7 +264,7 @@ without adding a second interpretation.
 
 ## Resume/Fresh Choice
 
-When the first child invocation returns `needs-choice`:
+When the first named `zcode-rescue` child invocation returns `needs-choice`:
 
 1. The child returns that public response verbatim and becomes idle.
 2. The parent asks the user once whether to resume or start fresh.
@@ -268,6 +276,14 @@ When the first child invocation returns `needs-choice`:
 The pending invocation remains exact-session, exact-workspace, exact-turn, and
 single-use. A second child must not consume it. Invalid or expired pending choice
 state fails with the existing recovery commands instead of starting a new job.
+Codex emits `SubagentStop` after the child's first final response and does not
+emit a second `SubagentStart` for the same-child follow-up. Continuation must
+therefore match the exact stopped named executor captured in pending state and
+remain within its TTL; an active record (including a missing Stop), stale record,
+or generic `default` record fails closed. If the generic compatibility child
+returns `needs-choice`, the parent does not ask/follow up, spawn, or execute
+again. It returns the response and tells the user to issue a new original Rescue
+request with explicit `--resume` or `--fresh`.
 
 ## Thread-Bound Authorization
 
@@ -454,7 +470,8 @@ All public errors preserve exact actionable follow-ups using `$zcode:setup`,
 | Conversation subscription unavailable | Continue with lifecycle progress and heartbeat. |
 | Progress-only sink fails | Disable that sink, preserve job execution and final result. |
 | Wait returns while child remains active | Wait/rejoin the same child; never respawn. |
-| Child returns `needs-choice` | Ask once and continue the same child. |
+| Named child returns `needs-choice` | Ask once and continue the same stopped child; no second Start is expected. |
+| Generic child returns `needs-choice` | Do not continue it; require a new original Rescue request with explicit `--resume` or `--fresh`. |
 | Stop is unacknowledged | Preserve nonterminal state and writable guard. |
 | Parent/subagent disappears | Use durable ownership, lease, and orphan settlement; never double run. |
 

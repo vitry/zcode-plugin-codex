@@ -211,6 +211,7 @@ test('runtime baseline is Node 22.13 across implementation plans and locking ADR
 test('release qualification covers the installed direct bridge and explicit real model', () => {
   const packageJson = JSON.parse(read('package.json')); const qualified = packageJson.scripts['test:qualified'];
   assert.match(qualified, /tests\/e2e\/codex-skills-e2e\.test\.mjs/); assert.match(qualified, /tests\/e2e\/real-zcode\.test\.mjs/);
+  assert.doesNotMatch(qualified, /require-qualified\.cjs/); const required = packageJson.scripts['test:qualification-required']; assert.match(required, /require-qualified\.cjs/); assert.match(read('tests/helpers/require-qualified.cjs'), /ZCODE_REQUIRE_QUALIFIED\s*=\s*['"]1['"]/);
   assert.match(packageJson.scripts.check, /npm run test:qualified/);
   const real = read('tests/e2e/real-zcode.test.mjs');
   assert.match(real, /ZCODE_REAL_E2E_MODEL\?\.trim\(\)/); assert.match(real, /runCompanion/); assert.match(real, /--model/);
