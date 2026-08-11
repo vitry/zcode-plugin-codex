@@ -147,12 +147,15 @@ export function createProgressReporter({
   };
   /** @param {{phase:string,message:string,observedAt:string}} event */
   const dispatch = (event) => {
-    lastActivityAt = event.observedAt;
-    const key = `${event.phase}\u0000${event.message}`;
+    const dispatchedEvent = validTimestamp(lastActivityAt) && Date.parse(event.observedAt) < Date.parse(lastActivityAt)
+      ? { ...event, observedAt: lastActivityAt }
+      : event;
+    lastActivityAt = dispatchedEvent.observedAt;
+    const key = `${dispatchedEvent.phase}\u0000${dispatchedEvent.message}`;
     if (key === previousKey) return null;
     previousKey = key;
-    enqueue(event);
-    return event;
+    enqueue(dispatchedEvent);
+    return dispatchedEvent;
   };
   /** @param {{notification:unknown,observedAt:string}} item */
   const startDescribe = (item) => {

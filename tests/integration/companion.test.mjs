@@ -736,8 +736,33 @@ test('the owner that triggers scavenging cannot status result cancel or resume t
 test('status --all reports a scavenged foreign job only through redacted other-owner metadata', async () => {
   const { context, orphan, ownerB } = await recoverForeignCompletion();
   const listed = await runCompanion(['status', '--all'], { cwd: context.workspace, env: context.env, caller: ownerB });
-  const foreign = listed.jobs.find((/** @type {any} */ job) => job.id === orphan.id); assert.ok(foreign); assert.equal(foreign.owned, false); assert.equal(foreign.owner, 'other');
-  assert.ok(!('ownerSessionId' in foreign) && !('ownerTurnId' in foreign) && !('permissionSnapshot' in foreign));
+  const foreign = listed.jobs.find((/** @type {any} */ job) => job.id === orphan.id); assert.ok(foreign); assert.equal(foreign.hasOwner, true);
+  assert.deepEqual(Object.keys(foreign).sort(), ['createdAt', 'finishedAt', 'hasOwner', 'id', 'startedAt', 'status'].sort());
+});
+
+test('status --all preserves same-owner detail but allowlists foreign job metadata', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const mine = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-a', ownerTurnId: 'owner-a-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'read-only' } });
+  const foreignQueued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-b-secret-session', ownerTurnId: 'owner-b-secret-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'bypassPermissions', secret: 'permission-secret' } });
+  const startedAt = new Date().toISOString();
+  const foreign = await store.transitionJob(context.workspace, foreignQueued.id, ['queued'], 'running', {
+    childPid: 424242, workerLeaseId: 'a'.repeat(64), effort: 'xhigh',
+    model: { providerId: 'secret-provider', modelId: 'secret-model' },
+    promptArtifact: 'artifacts/secret-prompt.json', startedAt, zcodeSessionId: 'secret-zcode-session',
+  });
+  await store.transitionJob(context.workspace, foreign.id, ['running'], 'running', { inputId: 'secret-input', startRevision: 42, beforeMessageIds: ['secret-message'] });
+  await store.updateJobProgress(context.workspace, foreign.id, { phase: 'running', message: 'foreign preview secret', observedAt: startedAt });
+
+  const listed = await runCompanion(['status', '--all'], { cwd: context.workspace, env: context.env, caller: caller('owner-a') });
+  const sameOwner = listed.jobs.find((/** @type {any} */ job) => job.id === mine.id);
+  const otherOwner = listed.jobs.find((/** @type {any} */ job) => job.id === foreign.id);
+  assert.equal(sameOwner.command, 'review'); assert.equal(sameOwner.readOnly, true); assert.equal(sameOwner.owner, 'same-owner');
+  assert.deepEqual(Object.keys(otherOwner).sort(), ['createdAt', 'hasOwner', 'id', 'lastActivityAt', 'startedAt', 'status'].sort());
+  assert.equal(otherOwner.hasOwner, true);
+  const rendered = renderOutput(listed);
+  assert.doesNotMatch(`${JSON.stringify(otherOwner)}\n${rendered}`, /owner-b|secret|xhigh|424242|latest=|result|internal/i);
+
+  await assert.rejects(runCompanion(['status', foreign.id], { cwd: context.workspace, env: context.env, caller: caller('owner-a') }), { code: 'OWNED_JOB_NOT_FOUND' });
 });
 
 test('a recovered foreign completion remains readable only by its original owner', async () => {
@@ -966,7 +991,7 @@ test('result extraction accepts mixed visible output and rejects reasoning-only 
   }
 });
 
-test('status --all reports every workspace job with nonsecret ownership markers', async () => {
+test('status --all reports every workspace job with isolated ownership projections', async () => {
   const context = await fixture();
   await companion(context, ['review', '--background']);
   await companion(context, ['adversarial-review', '--background', 'focus']);
@@ -975,11 +1000,14 @@ test('status --all reports every workspace job with nonsecret ownership markers'
   const listed = await companion(context, ['status', '--all']);
   assert.equal(listed.json.jobs.length, 3);
   assert.equal(listed.json.jobs.filter((/** @type {any} */ job) => job.owned).length, 2);
-  assert.deepEqual(new Set(listed.json.jobs.map((/** @type {any} */ job) => job.owner)), new Set(['same-owner', 'other']));
+  const foreign = listed.json.jobs.find((/** @type {any} */ job) => job.hasOwner === true);
+  assert.deepEqual(Object.keys(foreign).sort(), ['createdAt', 'hasOwner', 'id', 'status'].sort());
   assert.ok(listed.json.jobs.every((/** @type {any} */ job) => !('ownerSessionId' in job) && !('ownerTurnId' in job) && !('permissionSnapshot' in job)));
   const lines = listed.stdout.trim().split('\n');
   assert.equal(lines.pop(), 'Model policy: default=ZCode default; aliases=none');
-  assert.deepEqual(lines, listed.json.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner} phase=— activity=—`));
+  assert.deepEqual(lines, listed.json.jobs.map((/** @type {any} */ job) => job.hasOwner === true
+    ? `${job.id} ${job.status} owner=redacted created=${job.createdAt} started=— finished=— activity=—`
+    : `${job.id} ${job.status} ${job.command} ${job.owner} phase=— activity=—`));
   assert.doesNotMatch(listed.stdout, /codex-session|other-session/);
 });
 

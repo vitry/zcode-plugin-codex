@@ -415,6 +415,54 @@ test('deferred reporter buffers only bounded normalized events and activates sta
   reporter.close();
 });
 
+test('deferred semantic work cannot dispatch timestamps behind activation or later activity', async () => {
+  const persisted = []; const diagnostics = []; const descriptions = [];
+  let currentTime = observedAt;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', deferred: true,
+    persist: async (event) => {
+      const previous = persisted.at(-1);
+      if (previous && Date.parse(event.observedAt) < Date.parse(previous.observedAt)) throw new Error('state rejected a regressing observation');
+      persisted.push(event);
+    },
+    describeNotification: (frame, frameObservedAt) => new Promise((resolve) => descriptions.push({ frame, frameObservedAt, resolve })),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => currentTime, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+
+  reporter.observe({ method: 'v4/conversation/frame', label: 'pre-activation-1' });
+  currentTime = '2026-08-08T00:00:01.000Z';
+  reporter.observe({ method: 'v4/conversation/frame', label: 'pre-activation-2' });
+  currentTime = '2026-08-08T00:00:10.000Z';
+  reporter.activate(notification('prompt_started'));
+  currentTime = '2026-08-08T00:00:30.000Z';
+  reporter.observe({ method: 'v4/conversation/frame', label: 'post-activation' });
+
+  descriptions[0].resolve([
+    { phase: 'running', message: 'First delayed event.', observedAt: descriptions[0].frameObservedAt },
+    { phase: 'running', message: 'Same-frame delayed event.', observedAt: descriptions[0].frameObservedAt },
+  ]);
+  await waitUntil(() => descriptions.length === 2);
+  descriptions[1].resolve([{ phase: 'waiting', message: 'Second delayed event.', observedAt: descriptions[1].frameObservedAt }]);
+  await waitUntil(() => descriptions.length === 3);
+  descriptions[2].resolve([{ phase: 'running', message: 'Late post-activation event.', observedAt: descriptions[2].frameObservedAt }]);
+  await reporter.flush();
+  currentTime = '2026-08-08T00:00:40.000Z';
+  reporter.observe(notification('prompt_completed'));
+  await reporter.flush();
+
+  assert.deepEqual(diagnostics, []);
+  assert.deepEqual(persisted.map(({ message, observedAt: at }) => [message, at]), [
+    ['ZCode started the delegated turn.', '2026-08-08T00:00:10.000Z'],
+    ['First delayed event.', '2026-08-08T00:00:10.000Z'],
+    ['Same-frame delayed event.', '2026-08-08T00:00:10.000Z'],
+    ['Second delayed event.', '2026-08-08T00:00:10.000Z'],
+    ['Late post-activation event.', '2026-08-08T00:00:30.000Z'],
+    ['ZCode completed the delegated turn.', '2026-08-08T00:00:40.000Z'],
+  ]);
+  reporter.close();
+});
+
 test('does not create a heartbeat interval without a writer', () => {
   let intervalCalls = 0;
   const reporter = progressModule.createProgressReporter({
@@ -426,3 +474,11 @@ test('does not create a heartbeat interval without a writer', () => {
   assert.equal(intervalCalls, 0);
   reporter.close();
 });
+
+async function waitUntil(predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error('condition was not reached');
+}
