@@ -74,7 +74,7 @@ export async function runProcess(launch, options = {}) {
   let timer; const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs); });
   let resolveAbort = () => {}; const abort = new Promise((resolve) => { resolveAbort = () => resolve('aborted'); }); signal?.addEventListener('abort', resolveAbort, { once: true });
   let outcome;
-  try { outcome = await Promise.race([new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, childSignal) => resolve({ code, signal: childSignal })); }), timeout, abort]); }
+  try { outcome = await Promise.race([new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, childSignal) => { setImmediate(() => { child.stdout?.destroy(); child.stderr?.destroy(); resolve({ code, signal: childSignal }); }); }); }), timeout, abort]); }
   catch (error) { await terminateProcess(child).catch(() => {}); throw wrapError(error, 'ZCODE_PROCESS_FAILED', 'The ZCode process failed.', { category: 'runtime', remedy: 'Verify the installation and retry.' }); }
   finally { clearTimeout(timer); signal?.removeEventListener('abort', resolveAbort); }
   if (outcome === 'aborted') { await terminateProcess(child); throw new PluginError('ZCODE_PROCESS_ABORTED', 'The ZCode process was aborted.', { category: 'state', remedy: 'Retry when the operation should continue.' }); }

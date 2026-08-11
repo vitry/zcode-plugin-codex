@@ -354,7 +354,7 @@ async function ensureLockLayout(lockPath) {
     if (handle) await handle.close().catch(() => {});
     await unlink(join(temporaryPath, 'advisory.lock')).catch(() => {});
     await rmdir(temporaryPath).catch(() => {});
-    if (!isNodeError(error, 'EEXIST') && !isNodeError(error, 'ENOTEMPTY')) throw error;
+    if (!isNodeError(error, 'EEXIST') && !isNodeError(error, 'ENOTEMPTY') && !(process.platform === 'win32' && isNodeError(error, 'EPERM'))) throw error;
   }
   await safeLockStats(lockPath, 'lock directory', 'directory');
   await safeLockStats(join(lockPath, 'advisory.lock'), 'advisory lock file', 'file');
