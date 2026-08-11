@@ -102,13 +102,13 @@ export async function readPrivateDirectory(root, path, maximumEntries) {
 export async function readBoundedJsonFile(root, path, maximumBytes) {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new TypeError('maximumBytes must be a positive safe integer');
   const parent = dirname(path); const parentBefore = await safeContainedDirectoryStats(root, parent);
-  const before = await lstat(path);
-  if (before.isSymbolicLink() || !before.isFile() || before.size > maximumBytes) throw unsafePrivatePath(path);
+  const pathBefore = await lstat(path);
+  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > maximumBytes) throw unsafePrivatePath(path);
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.size > maximumBytes || !sameIdentity(before, opened)) throw unsafePrivatePath(path);
+    const handleBefore = await handle.stat();
+    if (!handleBefore.isFile() || handleBefore.size > maximumBytes) throw unsafePrivatePath(path);
     const bytes = Buffer.alloc(maximumBytes + 1); let offset = 0;
     while (offset < bytes.length) {
       const result = await handle.read(bytes, offset, bytes.length - offset, offset);
@@ -116,9 +116,17 @@ export async function readBoundedJsonFile(root, path, maximumBytes) {
       offset += result.bytesRead;
     }
     if (offset > maximumBytes) throw unsafePrivatePath(path);
-    const [after, parentAfter] = await Promise.all([lstat(path), safeContainedDirectoryStats(root, parent)]);
-    if (after.isSymbolicLink() || !after.isFile() || !sameIdentity(opened, after)
-      || !sameIdentity(parentBefore, parentAfter)) throw unsafePrivatePath(path);
+    const handleAfter = await handle.stat();
+    const currentHandle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    let current;
+    try {
+      current = await currentHandle.stat();
+    } finally { await currentHandle.close(); }
+    const [pathAfter, parentAfter] = await Promise.all([lstat(path), safeContainedDirectoryStats(root, parent)]);
+    if (pathAfter.isSymbolicLink() || !pathAfter.isFile() || pathAfter.size > maximumBytes
+      || !handleAfter.isFile() || handleAfter.size > maximumBytes || !current.isFile() || current.size > maximumBytes
+      || !sameIdentity(pathBefore, pathAfter) || !sameIdentity(handleBefore, handleAfter)
+      || !sameIdentity(handleBefore, current) || !sameIdentity(parentBefore, parentAfter)) throw unsafePrivatePath(path);
     return JSON.parse(bytes.subarray(0, offset).toString('utf8'));
   } finally { await handle?.close().catch(() => {}); }
 }
