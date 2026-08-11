@@ -463,6 +463,73 @@ test('deferred semantic work cannot dispatch timestamps behind activation or lat
   reporter.close();
 });
 
+test('a received terminal survives a full persistence queue and delayed pre-terminal descriptions', async () => {
+  const persisted = []; const descriptions = [];
+  let releaseFirst;
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  let currentTime = observedAt;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    persist: async (event) => { if (persisted.length === 0) await firstBlocked; persisted.push(event); },
+    describeNotification: (_frame, frameObservedAt) => new Promise((resolve) => descriptions.push({ frameObservedAt, resolve })),
+    now: () => currentTime, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+
+  reporter.observe(notification('tool_call_started'));
+  currentTime = '2026-08-08T00:00:01.000Z';
+  reporter.observe({ method: 'v4/conversation/frame', label: 'older-frame' });
+  for (const [seconds, reason] of [[2, 'api_retry'], [3, 'tool_call_result'], [4, 'model_streaming']]) {
+    currentTime = `2026-08-08T00:00:0${seconds}.000Z`; reporter.observe(notification(reason));
+  }
+  currentTime = '2026-08-08T00:00:05.000Z';
+  reporter.observe(notification('prompt_completed'));
+  descriptions[0].resolve([
+    { phase: 'running', message: 'Delayed one.', observedAt: descriptions[0].frameObservedAt },
+    { phase: 'running', message: 'Delayed two.', observedAt: descriptions[0].frameObservedAt },
+  ]);
+  releaseFirst(); await reporter.flush();
+
+  assert.ok(persisted.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS);
+  assert.equal(persisted.at(-1).message, 'ZCode completed the delegated turn.');
+  assert.equal(persisted.at(-1).observedAt, '2026-08-08T00:00:05.000Z');
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  reporter.close();
+});
+
+test('descriptor overflow cannot dispatch late frames after a received terminal', async () => {
+  const persisted = []; const descriptions = []; const diagnostics = [];
+  let releaseFirst;
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  let currentTime = observedAt;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    persist: async (event) => { if (persisted.length === 0) await firstBlocked; persisted.push(event); },
+    describeNotification: (frame, frameObservedAt) => new Promise((resolve) => descriptions.push({ frame, frameObservedAt, resolve })),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => currentTime, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+
+  reporter.observe(notification('tool_call_started'));
+  for (let index = 1; index <= 7; index += 1) {
+    currentTime = `2026-08-08T00:00:0${index}.000Z`;
+    reporter.observe({ method: 'v4/conversation/frame', index });
+  }
+  currentTime = '2026-08-08T00:00:08.000Z'; reporter.observe(notification('prompt_completed'));
+  descriptions[0].resolve([{ phase: 'running', message: 'Old retained frame.', observedAt: descriptions[0].frameObservedAt }]);
+  await waitUntil(() => descriptions.length === 2);
+  descriptions[1].resolve([{ phase: 'running', message: 'Overflow survivor frame.', observedAt: descriptions[1].frameObservedAt }]);
+  await waitUntil(() => descriptions.length === 3);
+  descriptions[2].resolve([{ phase: 'running', message: 'Newest overflow frame.', observedAt: descriptions[2].frameObservedAt }]);
+  releaseFirst(); await reporter.flush();
+
+  assert.deepEqual(diagnostics, ['conversation-frame-overflow']);
+  const terminalIndex = persisted.findIndex((event) => event.phase === 'finalizing');
+  assert.notEqual(terminalIndex, -1);
+  assert.doesNotMatch(persisted.slice(terminalIndex + 1).map((event) => event.message).join(' '), /frame/i);
+  assert.ok(persisted.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS);
+  reporter.close();
+});
+
 test('does not create a heartbeat interval without a writer', () => {
   let intervalCalls = 0;
   const reporter = progressModule.createProgressReporter({

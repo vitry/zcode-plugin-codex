@@ -77,17 +77,22 @@ export function createProgressReporter({
   let lastActivityAt = active ? now() : null;
   /** @type {string|null} */
   let previousKey = null;
-  /** @type {Array<{phase:string,message:string,observedAt:string}>} */
+  /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */
   const buffered = [];
   const bufferedKeys = new Set();
-  /** @type {Array<{phase:string,message:string,observedAt:string}>} */
+  /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */
   const pending = [];
   /** @type {Promise<void>|null} */
   let inFlight = null;
   let writerDisabled = false; let persistDisabled = false;
   /** @type {Promise<void>|null} */ let descriptorInFlight = null;
-  /** @type {Array<{notification:unknown,observedAt:string}>} */ const descriptorPending = [];
+  /** @type {number|null} */ let descriptorActiveSequence = null;
+  /** @type {Array<{notification:unknown,observedAt:string,sequence:number}>} */ const descriptorPending = [];
   let descriptorOverflowed = false;
+  let observationSequence = 0;
+  /** @type {number|null} */ let terminalSequence = null;
+  /** @type {{event:{phase:string,message:string,observedAt:string},sequence:number}|null} */ let heldTerminal = null;
+  let terminalStarted = false; let terminalPersisted = false;
   const diagnosedKinds = new Set();
   /** @param {string} kind */
   const diagnose = (kind) => {
@@ -99,7 +104,9 @@ export function createProgressReporter({
       if (closed) return;
       const observedAt = now(); if (!validTimestamp(observedAt)) return;
       const event = { phase: 'waiting', message, observedAt };
-      if (!active) bufferEvent(event); else dispatch(event);
+      const sequence = observationSequence; observationSequence += 1;
+      if (terminalSequence !== null) { dispatchDiagnostic(event, sequence); return; }
+      if (!active) bufferEvent(event, sequence); else dispatch(event, sequence);
     });
     return true;
   };
@@ -124,29 +131,37 @@ export function createProgressReporter({
     }, PROGRESS_HEARTBEAT_MS);
     timer?.unref?.();
   };
-  /** @param {{phase:string,message:string,observedAt:string}} event */
-  const startPersist = (event) => {
+  /** @param {{event:{phase:string,message:string,observedAt:string},sequence:number}} entry */
+  const startPersist = (entry) => {
+    const { event } = entry;
     if (typeof persist !== 'function' || persistDisabled) { writeEvent(event); return; }
     writeEvent(event);
+    if (event.phase === 'finalizing') terminalStarted = true;
     let operation;
     try { operation = Promise.resolve(persist(event)); }
     catch { operation = Promise.reject(new Error('progress persistence failed')); }
-    const tracked = operation.catch(() => { persistDisabled = true; pending.length = 0; diagnose('preview-disabled'); }).then(() => {
+    const tracked = operation.then(() => { if (event.phase === 'finalizing') terminalPersisted = true; }).catch(() => { persistDisabled = true; pending.length = 0; diagnose('preview-disabled'); }).then(() => {
       inFlight = null;
       const next = pending.shift();
       if (next) startPersist(next);
     });
     inFlight = tracked;
   };
-  /** @param {{phase:string,message:string,observedAt:string}} event */
-  const enqueue = (event) => {
+  /** @param {{phase:string,message:string,observedAt:string}} event @param {number} sequence */
+  const enqueue = (event, sequence) => {
     if (typeof persist !== 'function' || persistDisabled) { writeEvent(event); return; }
-    if (inFlight === null) { startPersist(event); return; }
-    if (pending.length < MAX_PROGRESS_PENDING_EVENTS) { pending.push(event); return; }
-    pending[pending.length - 1] = event;
+    const entry = { event, sequence };
+    if (inFlight === null) { startPersist(entry); return; }
+    pending.push(entry);
+    pending.sort((left, right) => left.sequence - right.sequence);
+    if (pending.length <= MAX_PROGRESS_PENDING_EVENTS) return;
+    const removeIndex = pending.findIndex((item) => item.event.phase !== 'finalizing');
+    if (removeIndex !== -1) pending.splice(removeIndex, 1);
+    else pending.pop();
   };
-  /** @param {{phase:string,message:string,observedAt:string}} event */
-  const dispatch = (event) => {
+  /** @param {{phase:string,message:string,observedAt:string}} event @param {number} [sequence] */
+  const dispatch = (event, sequence = observationSequence++) => {
+    if (terminalSequence !== null && sequence > terminalSequence || terminalStarted && event.phase !== 'finalizing' || terminalPersisted) return null;
     const dispatchedEvent = validTimestamp(lastActivityAt) && Date.parse(event.observedAt) < Date.parse(lastActivityAt)
       ? { ...event, observedAt: lastActivityAt }
       : event;
@@ -154,28 +169,49 @@ export function createProgressReporter({
     const key = `${dispatchedEvent.phase}\u0000${dispatchedEvent.message}`;
     if (key === previousKey) return null;
     previousKey = key;
-    enqueue(dispatchedEvent);
+    enqueue(dispatchedEvent, sequence);
     return dispatchedEvent;
   };
-  /** @param {{notification:unknown,observedAt:string}} item */
+  /** Diagnostics remain observational and may follow terminal semantic progress. @param {{phase:string,message:string,observedAt:string}} event @param {number} sequence */
+  const dispatchDiagnostic = (event, sequence) => {
+    const dispatchedEvent = validTimestamp(lastActivityAt) && Date.parse(event.observedAt) < Date.parse(lastActivityAt)
+      ? { ...event, observedAt: lastActivityAt }
+      : event;
+    lastActivityAt = dispatchedEvent.observedAt;
+    enqueue(dispatchedEvent, sequence);
+    return dispatchedEvent;
+  };
+  /** @param {{notification:unknown,observedAt:string,sequence:number}} item */
   const startDescribe = (item) => {
     if (typeof describeNotification !== 'function') return;
+    descriptorActiveSequence = item.sequence;
     let described;
     try { described = Promise.resolve(describeNotification(item.notification, item.observedAt)); }
     catch { diagnose('conversation-render-failed'); described = Promise.resolve([]); }
     descriptorInFlight = described.then((events) => {
       if (!Array.isArray(events) || closed) return;
       for (const describedEvent of events.slice(0, MAX_PROGRESS_PENDING_EVENTS)) if (validPublicEvent(describedEvent)) {
-        if (!active) bufferEvent(describedEvent);
-        else dispatch(describedEvent);
+        if (terminalSequence !== null && item.sequence > terminalSequence) continue;
+        if (describedEvent.phase === 'finalizing') {
+          terminalSequence = terminalSequence === null ? item.sequence : Math.min(terminalSequence, item.sequence);
+          if (heldTerminal && heldTerminal.sequence > terminalSequence) heldTerminal = null;
+        }
+        if (!active) bufferEvent(describedEvent, item.sequence);
+        else dispatch(describedEvent, item.sequence);
       }
     }).catch(() => diagnose('conversation-render-failed')).then(() => {
-      descriptorInFlight = null;
-      const next = descriptorPending.shift(); if (next) startDescribe(next);
-      else descriptorOverflowed = false;
+      descriptorInFlight = null; descriptorActiveSequence = null;
+      while (descriptorPending.length > 0 && terminalSequence !== null && descriptorPending[0].sequence > terminalSequence) descriptorPending.shift();
+      const next = descriptorPending.shift();
+      if (next) startDescribe(next);
+      else {
+        descriptorOverflowed = false;
+        const terminal = heldTerminal; heldTerminal = null;
+        if (terminal && terminal.sequence === terminalSequence) dispatch(terminal.event, terminal.sequence);
+      }
     });
   };
-  /** @param {{notification:unknown,observedAt:string}} item */
+  /** @param {{notification:unknown,observedAt:string,sequence:number}} item */
   const enqueueDescribe = (item) => {
     if (descriptorInFlight === null) { startDescribe(item); return; }
     if (descriptorPending.length < MAX_PROGRESS_PENDING_EVENTS) descriptorPending.push(item);
@@ -194,24 +230,32 @@ export function createProgressReporter({
     /** @param {unknown} notification */
     observe(notification) {
       if (closed || !accepting) return null;
+      const sequence = observationSequence; observationSequence += 1;
+      if (terminalSequence !== null && sequence > terminalSequence) return null;
       const observedAt = now();
       const event = normalizeZCodeProgress(notification, sessionId, observedAt);
       if (event === null && typeof describeNotification === 'function' && plainObject(notification) && notification.method === 'v4/conversation/frame') {
-        enqueueDescribe({ notification, observedAt }); return null;
+        enqueueDescribe({ notification, observedAt, sequence }); return null;
       }
       if (event === null) return null;
+      const terminal = event.phase === 'finalizing';
+      if (terminal) terminalSequence = sequence;
       if (!active) {
-        bufferEvent(event); return event;
+        bufferEvent(event, sequence); return event;
       }
-      return dispatch(event);
+      if (terminal && (descriptorActiveSequence !== null && descriptorActiveSequence < sequence
+        || descriptorPending.some((item) => item.sequence < sequence))) {
+        heldTerminal = { event, sequence }; return event;
+      }
+      return dispatch(event, sequence);
     },
     /** @param {unknown} initialNotification */
     activate(initialNotification) {
       if (active || closed) return false;
       const activatedAt = now(); active = true; lastActivityAt = activatedAt; startTimer();
       const initial = normalizeZCodeProgress(initialNotification, sessionId, activatedAt);
-      if (initial) dispatch(initial);
-      for (const event of buffered) dispatch({ ...event, observedAt: activatedAt });
+      if (initial) dispatch(initial, -1);
+      for (const { event, sequence } of buffered.sort((left, right) => left.sequence - right.sequence)) dispatch({ ...event, observedAt: activatedAt }, sequence);
       buffered.length = 0; bufferedKeys.clear(); return true;
     },
     /** @param {string} kind */
@@ -241,14 +285,14 @@ export function createProgressReporter({
   };
 
   /** @param {{phase:string,message:string,observedAt:string}} event */
-  function bufferEvent(event) {
+  function bufferEvent(event, sequence = observationSequence++) {
     const key = `${event.phase}\u0000${event.message}`;
     if (bufferedKeys.has(key)) return;
     if (buffered.length === MAX_PROGRESS_PREVIEW_ENTRIES) {
       const removed = buffered.shift();
-      if (removed) bufferedKeys.delete(`${removed.phase}\u0000${removed.message}`);
+      if (removed) bufferedKeys.delete(`${removed.event.phase}\u0000${removed.event.message}`);
     }
-    buffered.push(event); bufferedKeys.add(key);
+    buffered.push({ event, sequence }); bufferedKeys.add(key);
   }
 }
 
