@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
-import { runProcess, spawnProcess, terminateProcess } from '../scripts/lib/process.mjs';
+import { drainExitedProcessStreams, runProcess, spawnProcess, terminateProcess } from '../scripts/lib/process.mjs';
 import { BoundedWriter, RedactedTail, ZCodeProtocolClient } from '../scripts/lib/zcode-protocol.mjs';
 
 const fakeFixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
@@ -42,6 +42,25 @@ test('runProcess fails closed on timeout and bounded output', async () => {
   await assert.rejects(runProcess({ command: process.execPath, args: ['-e', 'process.stdout.write("x".repeat(4096))'], target: process.execPath }, { maxOutputBytes: 128 }), { code: 'ZCODE_PROCESS_OUTPUT_LIMIT' });
 });
 
+test('post-exit drain waits for direct-child stream completion beyond one check turn', async () => {
+  const stream = new PassThrough(); let output = '';
+  stream.setEncoding('utf8'); stream.on('data', (chunk) => { output += chunk; });
+  const draining = drainExitedProcessStreams([stream], 100);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  stream.end('direct-tail');
+  await draining;
+  assert.equal(output, 'direct-tail');
+  assert.equal(stream.readableEnded, true);
+});
+
+test('runProcess captures a backpressured direct-child tail before natural exit', async () => {
+  const bytes = 512 * 1024; const source = `process.stdout.write('x'.repeat(${bytes}))`;
+  const result = await runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath }, { timeoutMs: 2_000, maxOutputBytes: bytes + 1 });
+  assert.equal(Buffer.byteLength(result.stdout), bytes);
+  assert.equal(result.stdout.at(-1), 'x');
+});
+
 test('runProcess flushes direct-child output without waiting for an inherited descendant pipe', { timeout: 2_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-process-pipe-')); const pidFile = join(directory, 'descendant.pid');
   const descendant = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setTimeout(()=>process.stdout.write('late-descendant\\n'),100);setInterval(()=>{},10000);`;
@@ -52,8 +71,11 @@ test('runProcess flushes direct-child output without waiting for an inherited de
     assert.equal(result.code, 0);
     assert.equal(result.stdout, 'direct-child\n');
   } finally {
-    for (let turn = 0; turn < 100 && !descendantPid; turn += 1) { descendantPid = Number(await readFile(pidFile, 'utf8').catch(() => '')); if (!descendantPid) await new Promise((resolve) => setImmediate(resolve)); }
-    if (Number.isSafeInteger(descendantPid) && descendantPid > 1) { try { process.kill(descendantPid, 'SIGTERM'); } catch { /* exited */ } await assertProcessGone(descendantPid); }
+    const pidDeadline = Date.now() + 1_000;
+    while (!descendantPid && Date.now() < pidDeadline) { descendantPid = Number(await readFile(pidFile, 'utf8').catch(() => '')); if (!descendantPid) await new Promise((resolve) => setTimeout(resolve, 5)); }
+    assert.ok(Number.isSafeInteger(descendantPid) && descendantPid > 1 && descendantPid !== process.pid, 'owned descendant PID must be recorded before cleanup');
+    try { process.kill(descendantPid, 'SIGTERM'); } catch { /* exited */ }
+    await assertProcessGone(descendantPid);
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
-import { atomicWriteJson, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
+import { atomicWriteJson, isLockPublishCollision, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 
 test('production terminal callers delegate finishedAt selection to the locked state API', async () => {
@@ -1137,6 +1137,13 @@ test('concurrent first use publishes one valid advisory lock layout', async () =
     assert.equal(maximumInside, 1);
     assert.deepEqual(await readdir(lockPath), ['advisory.lock']);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('only a Windows rename EPERM is classified as a lock publish collision', () => {
+  const denied = Object.assign(new Error('denied'), { code: 'EPERM' });
+  assert.equal(isLockPublishCollision(denied, 'win32'), true);
+  assert.equal(isLockPublishCollision(denied, 'linux'), false);
+  assert.equal(isLockPublishCollision(Object.assign(new Error('I/O failure'), { code: 'EIO' }), 'win32'), false);
 });
 
 test('lock timing options reject non-finite, fractional, or unsafe values', async () => {

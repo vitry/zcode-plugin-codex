@@ -4,6 +4,7 @@ import { access } from 'node:fs/promises';
 import { PluginError, wrapError } from './errors.mjs';
 
 const JS_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+const POST_EXIT_DRAIN_MS = 50;
 
 /** @param {string} path @param {string} [execPath] @param {string} [platform] @param {NodeJS.ProcessEnv|Record<string,string|undefined>} [env] */
 export function launchForPath(path, execPath = process.execPath, platform = process.platform, env = process.env) {
@@ -74,12 +75,47 @@ export async function runProcess(launch, options = {}) {
   let timer; const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs); });
   let resolveAbort = () => {}; const abort = new Promise((resolve) => { resolveAbort = () => resolve('aborted'); }); signal?.addEventListener('abort', resolveAbort, { once: true });
   let outcome;
-  try { outcome = await Promise.race([new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, childSignal) => { setImmediate(() => { child.stdout?.destroy(); child.stderr?.destroy(); resolve({ code, signal: childSignal }); }); }); }), timeout, abort]); }
+  try { outcome = await Promise.race([new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, childSignal) => { void drainExitedProcessStreams([child.stdout, child.stderr], POST_EXIT_DRAIN_MS).then(() => resolve({ code, signal: childSignal }), reject); }); }), timeout, abort]); }
   catch (error) { await terminateProcess(child).catch(() => {}); throw wrapError(error, 'ZCODE_PROCESS_FAILED', 'The ZCode process failed.', { category: 'runtime', remedy: 'Verify the installation and retry.' }); }
   finally { clearTimeout(timer); signal?.removeEventListener('abort', resolveAbort); }
   if (outcome === 'aborted') { await terminateProcess(child); throw new PluginError('ZCODE_PROCESS_ABORTED', 'The ZCode process was aborted.', { category: 'state', remedy: 'Retry when the operation should continue.' }); }
   if (outcome === 'timeout' || overflow) { await terminateProcess(child); throw new PluginError(outcome === 'timeout' ? 'ZCODE_PROCESS_TIMEOUT' : 'ZCODE_PROCESS_OUTPUT_LIMIT', outcome === 'timeout' ? 'The ZCode process timed out.' : 'The ZCode process exceeded its output limit.', { category: outcome === 'timeout' ? 'timeout' : 'runtime', remedy: 'Inspect the ZCode installation and retry.', details: { timeoutMs, maxOutputBytes } }); }
   return { ...outcome, stdout, stderr };
+}
+
+/**
+ * Drain bytes already owned by an exited child without allowing a descendant
+ * that inherited the pipe to retain the caller indefinitely.
+ * @param {Array<import('node:stream').Readable|null|undefined>} streams
+ * @param {number} [timeoutMs]
+ */
+export async function drainExitedProcessStreams(streams, timeoutMs = POST_EXIT_DRAIN_MS) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw processInputError();
+  const pending = /** @type {import('node:stream').Readable[]} */ (streams.filter((stream) => stream && !stream.destroyed && !stream.readableEnded));
+  if (pending.length === 0) return;
+  /** @type {NodeJS.Timeout | undefined} */
+  let timer;
+  /** @type {Array<() => void>} */
+  const removeListeners = [];
+  const completed = new Promise((resolve) => {
+    let remaining = pending.length;
+    for (const stream of pending) {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        remaining -= 1;
+        if (remaining === 0) resolve('completed');
+      };
+      stream.once('end', finish); stream.once('close', finish); stream.once('error', finish);
+      removeListeners.push(() => { stream.removeListener('end', finish); stream.removeListener('close', finish); stream.removeListener('error', finish); });
+    }
+  });
+  const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve('deadline'), timeoutMs); });
+  const result = await Promise.race([completed, deadline]);
+  clearTimeout(timer);
+  for (const remove of removeListeners) remove();
+  if (result === 'deadline') for (const stream of pending) stream.destroy();
 }
 
 /** @param {import('node:child_process').ChildProcess} child @param {{ graceMs?: number }} [options] */

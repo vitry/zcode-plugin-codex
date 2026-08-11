@@ -349,15 +349,28 @@ async function ensureLockLayout(lockPath) {
     await handle.chmod(0o600);
     await handle.close();
     handle = undefined;
-    await rename(temporaryPath, lockPath);
   } catch (error) {
     if (handle) await handle.close().catch(() => {});
     await unlink(join(temporaryPath, 'advisory.lock')).catch(() => {});
     await rmdir(temporaryPath).catch(() => {});
-    if (!isNodeError(error, 'EEXIST') && !isNodeError(error, 'ENOTEMPTY') && !(process.platform === 'win32' && isNodeError(error, 'EPERM'))) throw error;
+    throw error;
+  }
+  try {
+    await rename(temporaryPath, lockPath);
+  } catch (error) {
+    if (!isLockPublishCollision(error)) throw error;
+  } finally {
+    await unlink(join(temporaryPath, 'advisory.lock')).catch(() => {});
+    await rmdir(temporaryPath).catch(() => {});
   }
   await safeLockStats(lockPath, 'lock directory', 'directory');
   await safeLockStats(join(lockPath, 'advisory.lock'), 'advisory lock file', 'file');
+}
+
+/** @param {unknown} error @param {NodeJS.Platform} [platform] */
+export function isLockPublishCollision(error, platform = process.platform) {
+  return isNodeError(error, 'EEXIST') || isNodeError(error, 'ENOTEMPTY')
+    || platform === 'win32' && isNodeError(error, 'EPERM');
 }
 
 /** @param {string} path @param {string} kind @param {'directory'|'file'} type */
