@@ -277,7 +277,7 @@ export class ZCodeBroker {
       for (const [id, pending] of this.permissionPending) if (pending.socket === socket) { clearTimeout(pending.timer); this.permissionPending.delete(id); pending.resolve(offeredDeny(pending.request)); }
       for (const [id, retired] of this.retiredPermissionResponses) if (retired.socket === socket) this.retiredPermissionResponses.delete(id);
       for (const owner of this.sessionOwners.values()) if (owner.socket === socket) owner.socket = null;
-      for (const [sessionId, active] of this.activeSessionSockets) if (active.socket === socket) this.activeSessionSockets.delete(sessionId);
+      for (const active of this.activeSessionSockets.values()) if (active.socket === socket) active.socket = null;
       const cleanup = this.cleanupSocketSubscriptions(socket); this.localTasks.add(cleanup); void cleanup.finally(() => { this.localTasks.delete(cleanup); this.scheduleIdleShutdown(); });
       for (const [topic, pending] of this.pendingConversationTopics) if (pending.socket === socket) this.pendingConversationTopics.delete(topic);
       if (this.authenticated.has(socket)) this.owners -= 1; this.scheduleIdleShutdown();
