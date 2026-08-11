@@ -648,12 +648,14 @@ test('executor reports only same-session progress and drains persistence before 
   const persisted = [];
   /** @type {string[]} */
   const order = [];
-  /** @type {null|((message:any)=>void)} */ let handler = null; let unsubscribes = 0; let closes = 0; /** @type {null|(()=>void)} */ let intervalCallback = null; let cleared = 0;
+  /** @type {()=>void} */ let signalFinalizingEntered = () => {}; const finalizingEntered = new Promise((resolve) => { signalFinalizingEntered = () => resolve(undefined); });
+  /** @type {()=>void} */ let releaseFinalizing = () => {}; const finalizingGate = new Promise((resolve) => { releaseFinalizing = () => resolve(undefined); });
+  /** @type {null|((message:any)=>void)} */ let handler = null; let unsubscribes = 0; let closes = 0; let readSessionCalls = 0; let successFinishes = 0; /** @type {null|(()=>void)} */ let intervalCallback = null; let cleared = 0;
   const wrapped = {
     ...store,
     updateJobProgress: async (/** @type {string} */ _workspaceArg, /** @type {string} */ _jobId, /** @type {any} */ event) => {
       persisted.push(event);
-      await Promise.resolve();
+      if (event.phase === 'finalizing') { signalFinalizingEntered(); await finalizingGate; }
       order.push(`persist:${event.phase}`);
       return event;
     },
@@ -661,7 +663,7 @@ test('executor reports only same-session progress and drains persistence before 
       return store.transitionJob(workspaceArg, jobId, expected, next, patch);
     },
     finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => {
-      if (next === 'succeeded') { order.push('transition:succeeded'); if (handler) handler(notification('zs-progress', 'api_retry', 5)); }
+      if (next === 'succeeded') { successFinishes += 1; order.push('transition:succeeded'); if (handler) handler(notification('zs-progress', 'api_retry', 5)); }
       return store.finishJob(workspaceArg, jobId, expected, next, patch);
     },
   };
@@ -678,10 +680,10 @@ test('executor reports only same-session progress and drains persistence before 
       emit(notification('zs-progress', 'tool_call_started', 3));
       emit(notification('zs-progress', 'prompt_completed', 4));
     },
-    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-progress', parentMessageId: 'input-progress' }, parts: [{ type: 'text', text: 'done' }] }] }),
+    readSession: async () => { readSessionCalls += 1; return { messages: [{ info: { role: 'assistant', messageId: 'assistant-progress', parentMessageId: 'input-progress' }, parts: [{ type: 'text', text: 'done' }] }] }; },
     close: async () => { closes += 1; throw new Error('close refused after success'); },
   };
-  const result = await executeJob({
+  const execution = executeJob({
     job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task',
     progressWriter: (line) => lines.push(line),
     progressDependencies: {
@@ -690,6 +692,11 @@ test('executor reports only same-session progress and drains persistence before 
       clearInterval: () => { cleared += 1; },
     },
   });
+  await finalizingEntered;
+  try {
+    assert.equal(readSessionCalls, 0); assert.equal(successFinishes, 0); assert.equal(order.includes('transition:succeeded'), false);
+  } finally { releaseFinalizing(); }
+  const result = await execution;
   assert.equal(result.job.status, 'succeeded'); assert.equal(typeof intervalCallback, 'function');
   assert.deepEqual(lines, [
     '[zcode] ZCode started the delegated turn.\n',
