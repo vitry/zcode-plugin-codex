@@ -22,6 +22,7 @@ test('diagnostic: Windows path and handle identities', { skip: process.platform 
         stat(target, { bigint: true }),
         handle.stat({ bigint: true }),
       ]);
+      /** @param {import('node:fs').BigIntStats} value */
       const identity = (value) => ({ dev: String(value.dev), ino: String(value.ino), size: String(value.size) });
       assert.fail(`WINDOWS_IDENTITY_DIAGNOSTIC ${JSON.stringify({ lstat: identity(pathLstat), stat: identity(pathStat), fstat: identity(handleStat) })}`);
     } finally { await handle.close(); }
