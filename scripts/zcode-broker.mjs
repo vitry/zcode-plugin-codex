@@ -259,6 +259,7 @@ export class ZCodeBroker {
   }
 
   accept(socket) {
+    if (this.closing) { socket.destroy(); return; }
     this.sockets.add(socket); socket.zcodeWriter = new BoundedWriter(socket, { maxQueuedBytes: this.options.maxOutboundBytes, drainTimeoutMs: this.options.drainTimeoutMs, onFailure: () => socket.destroy() }); this.socketWriters.set(socket, socket.zcodeWriter); socket.setEncoding('utf8'); let buffer = '';
     const authTimer = setTimeout(() => { if (!this.authenticated.has(socket)) socket.destroy(); }, 1_000); authTimer.unref?.();
     socket.authTimer = authTimer;
@@ -287,6 +288,7 @@ export class ZCodeBroker {
   async handleLocal(socket, line) {
     let frame;
     try { frame = JSON.parse(line); } catch { socket.destroy(); return; }
+    if (this.closing) { socket.destroy(); return; }
     if (!this.authenticated.has(socket)) {
       if (!frame || !Number.isSafeInteger(frame.id) || frame.method !== 'broker/auth'
         || !frame.params || typeof frame.params !== 'object' || Object.keys(frame.params).some((key) => !['token', 'ownerId', 'existingProtocolOnly'].includes(key))
@@ -307,7 +309,7 @@ export class ZCodeBroker {
     }
     if (!frame || !Number.isSafeInteger(frame.id) || typeof frame.method !== 'string' || !frame.params || typeof frame.params !== 'object') { socket.destroy(); return; }
     if (!LOCAL_BROKER_METHODS.has(frame.method)) { writeRequestError(socket, frame.id, brokerInputError()); return; }
-    if (frame.method === 'broker/health') { writeLocal(socket, { id: frame.id, result: { ok: true, pid: process.pid, instanceId: this.options.instanceId, capabilities: { releaseOwnerExclusions: true } } }); return; }
+    if (frame.method === 'broker/health') { writeLocal(socket, { id: frame.id, result: { ok: this.retiredProtocolGeneration === null, pid: process.pid, instanceId: this.options.instanceId, capabilities: { releaseOwnerExclusions: true } } }); return; }
     if (frame.method === 'session/create' && !validCreateWorkspace(frame.params.workspace, this.options.workspace)) { writeRequestError(socket, frame.id, brokerInputError()); return; }
     const releaseDeadline = frame.method === 'broker/releaseOwner' ? Date.now() + OWNER_RELEASE_BUDGET_MS : undefined; let releaseExcluded;
     if (frame.method === 'broker/releaseOwner') {
@@ -396,7 +398,7 @@ export class ZCodeBroker {
             for (const message of pending.frames) if (conversationKey(message.params.topic, message.params.subscriptionId) === key) writeLocal(socket, message);
           }
           if (frame.method === 'v4/conversation/unsubscribe') { this.conversationSubscriptions.delete(unsubscribeRecord.key); if (!this.retireConversationSubscription(protocol, unsubscribeRecord)) throw brokerInputError(); }
-          if (frame.method === 'session/stop' && frame.params.sessionId) { if (this.protocol !== protocol || this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); if (this.isExactCurrentTurn(frame.params.sessionId, stoppedGeneration)) { protocol.cancelTurn(frame.params.sessionId); this.settleStoppedSession(frame.params.sessionId, stoppedGeneration); } await this.cleanupSessionSubscriptions(protocol, frame.params.sessionId); if (this.protocol !== protocol || this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); this.stoppingSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); }
+          if (frame.method === 'session/stop' && frame.params.sessionId) { if (this.protocol !== protocol || this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); let stopCommitted = false; if (this.isExactCurrentTurn(frame.params.sessionId, stoppedGeneration)) { protocol.cancelTurn(frame.params.sessionId); stopCommitted = this.settleStoppedSession(frame.params.sessionId, stoppedGeneration); } await this.cleanupSessionSubscriptions(protocol, frame.params.sessionId); if (!stopCommitted && (this.protocol !== protocol || this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol))) throw brokerInputError(); if (this.stoppingSessions.get(frame.params.sessionId)?.token === stopToken) this.stoppingSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); }
           if (frame.method === 'session/list' && Array.isArray(result?.sessions)) result = { ...result, sessions: result.sessions.filter((session) => this.sessionOwners.get(session.sessionId)?.ownerId === ownerId) };
           if (ownerCommitToken) this.ownerCommitTokens.delete(ownerCommitToken); writeLocal(socket, { id: frame.id, result });
         } catch (error) {
@@ -432,7 +434,7 @@ export class ZCodeBroker {
   async releaseOwnerAdmitted(socket, ownerId, excludeSessionIds, deadline, ownerAdmission) {
     const excluded = new Set([...excludeSessionIds, ...[...ownerAdmission.grandfatheredCreates.values()].filter((sessionId) => typeof sessionId === 'string')]); const stableOwned = [...this.sessionOwners].filter(([, owner]) => owner.ownerId === ownerId).map(([sessionId]) => sessionId); const eligible = stableOwned.filter((sessionId) => !excluded.has(sessionId)); const owned = eligible.slice(0, OWNER_RELEASE_MAX_SESSIONS); const inFlightCreates = ownerAdmission.grandfatheredCreates.size;
     if (!owned.length) return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: inFlightCreates };
-    const released = []; const failed = []; const stoppedFences = new Map(); const releaseSessionAdmissions = new Map(); let releaseProtocol = null;
+    const released = []; const failed = []; const stoppedFences = new Map(); const releaseSessionAdmissions = new Map(); const authoritativeStops = new Set(); let releaseProtocol = null;
     try {
       if (!this.protocol) {
         if (this.protocolPromise || this.retiredProtocolGeneration) failed.push(...owned);
@@ -454,25 +456,43 @@ export class ZCodeBroker {
           for (let index = 0; index < batch.length; index += 1) if (outcomes[index].status === 'fulfilled') { stoppedFences.set(batch[index], outcomes[index].value.stopToken); releaseSessionAdmissions.set(batch[index], outcomes[index].value.sessionAdmission); }
           const detachedSubscriptions = [];
           for (let index = 0; index < batch.length; index += 1) {
-            const sessionId = batch[index]; if (outcomes[index].status === 'fulfilled' && this.protocol === protocol && this.stoppingSessions.get(sessionId)?.token === outcomes[index].value.stopToken && this.admission.sessionRequestCurrent(outcomes[index].value.sessionAdmission, protocol)) { const stopped = outcomes[index].value; if (this.isExactCurrentTurn(sessionId, stopped.activeSession)) { protocol.cancelTurn(sessionId); this.settleStoppedSession(sessionId, stopped.activeSession); } detachedSubscriptions.push(...this.detachSessionSubscriptions(sessionId)); released.push(sessionId); } else failed.push(sessionId);
+            const sessionId = batch[index]; if (outcomes[index].status === 'fulfilled' && this.protocol === protocol && this.stoppingSessions.get(sessionId)?.token === outcomes[index].value.stopToken && this.admission.sessionRequestCurrent(outcomes[index].value.sessionAdmission, protocol)) { const stopped = outcomes[index].value; if (this.isExactCurrentTurn(sessionId, stopped.activeSession)) { protocol.cancelTurn(sessionId); if (this.settleStoppedSession(sessionId, stopped.activeSession)) authoritativeStops.add(sessionId); } detachedSubscriptions.push(...this.detachSessionSubscriptions(sessionId)); released.push(sessionId); } else failed.push(sessionId);
           }
           await this.unsubscribeConversationRecords(protocol, detachedSubscriptions, Math.max(0, deadline - Date.now()));
-          if (this.protocol !== protocol) { for (const sessionId of released.splice(0)) if (!failed.includes(sessionId)) failed.push(sessionId); }
+          if (this.protocol !== protocol) { for (const sessionId of released.splice(0)) { if (authoritativeStops.has(sessionId)) released.push(sessionId); else if (!failed.includes(sessionId)) failed.push(sessionId); } }
         }
       }
-      if (!this.admission.ownerRequestCurrent(ownerAdmission) || releaseProtocol && (this.protocol !== releaseProtocol || released.some((sessionId) => this.stoppingSessions.get(sessionId)?.token !== stoppedFences.get(sessionId) || !this.admission.sessionRequestCurrent(releaseSessionAdmissions.get(sessionId), releaseProtocol)))) for (const sessionId of released.splice(0)) if (!failed.includes(sessionId)) failed.push(sessionId);
+      const releaseSessionCurrent = (sessionId, committed) => {
+        if (!releaseProtocol) return true;
+        const admission = releaseSessionAdmissions.get(sessionId); const leaseCurrent = committed ? this.admission.sessionLeaseStored(admission, releaseProtocol) : this.admission.sessionRequestCurrent(admission, releaseProtocol);
+        return leaseCurrent && (authoritativeStops.has(sessionId) || this.protocol === releaseProtocol && this.stoppingSessions.get(sessionId)?.token === stoppedFences.get(sessionId));
+      };
+      const failReleasedSessions = (sessionIds) => { const stale = new Set(sessionIds); for (let index = released.length - 1; index >= 0; index -= 1) if (stale.has(released[index])) { const [sessionId] = released.splice(index, 1); if (!failed.includes(sessionId)) failed.push(sessionId); } };
+      if (!this.admission.ownerRequestCurrent(ownerAdmission)) failReleasedSessions(released);
+      else failReleasedSessions(released.filter((sessionId) => !releaseSessionCurrent(sessionId, false)));
       if (released.length) {
-        const releaseCurrent = () => this.admission.ownerRequestCurrent(ownerAdmission) && (!releaseProtocol || this.protocol === releaseProtocol && released.every((sessionId) => this.stoppingSessions.get(sessionId)?.token === stoppedFences.get(sessionId) && this.admission.sessionRequestCurrent(releaseSessionAdmissions.get(sessionId), releaseProtocol)));
-        const committedReleaseCurrent = () => this.admission.ownerRequestCurrent(ownerAdmission) && (!releaseProtocol || this.protocol === releaseProtocol && released.every((sessionId) => this.stoppingSessions.get(sessionId)?.token === stoppedFences.get(sessionId) && this.admission.sessionLeaseStored(releaseSessionAdmissions.get(sessionId), releaseProtocol)));
+        const releaseCurrent = () => this.admission.ownerRequestCurrent(ownerAdmission) && released.every((sessionId) => releaseSessionCurrent(sessionId, false));
+        const commitMutationCurrent = () => this.admission.ownerRequestCurrent(ownerAdmission) && released.every((sessionId) => this.admission.sessionLeaseStored(releaseSessionAdmissions.get(sessionId), releaseProtocol)) && released.filter((sessionId) => authoritativeStops.has(sessionId)).every((sessionId) => releaseSessionCurrent(sessionId, false));
         const restoreStaleRelease = async () => {
           try { await withinOwnerReleaseDeadline(deadline, (signal) => this.restoreReleasedOwnership(released, ownerId, { timeoutMs: Math.max(0, deadline - Date.now()), signal })); }
           catch (error) { for (const sessionId of released) this.setUncertainOwnerRelease(sessionId, ownerId); throw error; }
           for (const sessionId of released.splice(0)) if (!failed.includes(sessionId)) failed.push(sessionId);
         };
         try {
-          const commit = await withinOwnerReleaseDeadline(deadline, (signal) => this.commitOwnerMutation(false, releaseCurrent, (sessions) => { for (const sessionId of released) if (sessions[sessionId] === ownerId) delete sessions[sessionId]; }, { timeoutMs: Math.max(0, deadline - Date.now()), signal }));
+          const commit = await withinOwnerReleaseDeadline(deadline, (signal) => this.commitOwnerMutation(false, commitMutationCurrent, (sessions) => { failReleasedSessions(released.filter((sessionId) => !releaseSessionCurrent(sessionId, false))); for (const sessionId of released) if (sessions[sessionId] === ownerId) delete sessions[sessionId]; }, { timeoutMs: Math.max(0, deadline - Date.now()), signal }));
           let committed = commit.committed;
-          if (committed && !committedReleaseCurrent()) { await withinOwnerReleaseDeadline(deadline, (signal) => this.compensateOwnerCommit(commit, released, { timeoutMs: Math.max(0, deadline - Date.now()), signal })); committed = false; }
+          if (committed) {
+            const stale = released.filter((sessionId) => !releaseSessionCurrent(sessionId, true)); failReleasedSessions(stale);
+            if (stale.length) try { await withinOwnerReleaseDeadline(deadline, (signal) => this.compensateOwnerCommit(commit, stale, { timeoutMs: Math.max(0, deadline - Date.now()), signal }, released)); }
+            catch (error) {
+              let winner; try { winner = await withinOwnerReleaseDeadline(deadline, (signal) => this.readOwnerStore(false, { timeoutMs: Math.max(0, deadline - Date.now()), signal })); } catch { /* uncertain subsets remain fenced below */ }
+              const preserved = winner && released.every((sessionId) => sameOwnerEntry(winner.sessions, commit.after, sessionId));
+              if (winner) this.applyOwnership(winner.sessions);
+              for (const sessionId of [...stale, ...(!preserved ? released : [])]) this.setUncertainOwnerRelease(sessionId, ownerId);
+              if (!winner) for (const sessionId of stale) if (Object.hasOwn(commit.before, sessionId)) this.sessionOwners.set(sessionId, { ownerId: commit.before[sessionId], socket: null });
+              if (!preserved) throw error;
+            }
+          }
           if (!committed) for (const sessionId of released.splice(0)) if (!failed.includes(sessionId)) failed.push(sessionId);
         } catch (error) {
           if (!releaseCurrent()) {
@@ -686,6 +706,7 @@ export class ZCodeBroker {
 
   async closeOnce() {
     const startingReleaseTasks = [...this.releaseTasks];
+    const closingServer = this.server ? new Promise((resolvePromise) => this.server.close(() => resolvePromise())) : Promise.resolve();
     this.cancelIdleShutdown(); for (const pending of this.permissionPending.values()) { clearTimeout(pending.timer); pending.resolve(offeredDeny(pending.request)); } this.permissionPending.clear(); this.retiredPermissionResponses.clear(); for (const socket of this.sockets) socket.destroy(); this.sockets.clear();
     const startingProtocol = this.protocolPromise; let retired = this.protocol ? this.clearProtocolGeneration(this.protocol) : this.retiredProtocolGeneration;
     if (!retired && startingProtocol) { const spawned = await startingProtocol.catch(() => null); if (spawned && this.protocol === spawned) retired = this.clearProtocolGeneration(spawned); else retired = this.retiredProtocolGeneration; }
@@ -693,7 +714,7 @@ export class ZCodeBroker {
     const closeError = retired?.error; this.protocol = null; this.protocolPromise = null;
     const releaseOutcomes = await Promise.allSettled(startingReleaseTasks); const releaseError = releaseOutcomes.find((outcome) => outcome.status === 'rejected')?.reason;
     await Promise.allSettled([...this.localTasks]);
-    if (this.server) await new Promise((resolve) => this.server.close(() => resolve()));
+    await closingServer;
     this.server = null;
     await this.removeIdentityIfOwned();
     if (closeError) throw closeError;
@@ -720,16 +741,17 @@ export class ZCodeBroker {
     }, lockOptions);
   }
 
-  async compensateOwnerCommit(commit, sessionIds, lockOptions = {}) {
+  async compensateOwnerCommit(commit, sessionIds, lockOptions = {}, preserveAfterSessionIds = []) {
     await mutateOwnerStore(this.ownershipPath, false, async (sessions) => {
-      let changed = false;
+      let changed = false; let applied = sessions;
       for (const sessionId of sessionIds) {
         if (sameOwnerEntry(sessions, commit.before, sessionId)) continue;
         if (!sameOwnerEntry(sessions, commit.after, sessionId)) throw ownerStoreInvalid();
         if (Object.hasOwn(commit.before, sessionId)) sessions[sessionId] = commit.before[sessionId]; else delete sessions[sessionId]; changed = true;
       }
-      if (changed) await this.writeOwnerStoreRevision(sessions, { signal: lockOptions.signal });
-      this.applyOwnership(sessions);
+      if (changed) try { await this.writeOwnerStoreRevision(sessions, { signal: lockOptions.signal }); }
+      catch (error) { const winner = await this.readOwnerStoreUnlocked(false, { signal: lockOptions.signal }); if (sessionIds.some((sessionId) => !sameOwnerEntry(winner.sessions, commit.before, sessionId)) || preserveAfterSessionIds.some((sessionId) => !sameOwnerEntry(winner.sessions, commit.after, sessionId))) throw error; applied = winner.sessions; }
+      this.applyOwnership(applied);
     }, lockOptions);
   }
 
