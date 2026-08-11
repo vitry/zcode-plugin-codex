@@ -827,6 +827,27 @@ test('executor stops notification intake then bounded-drains already received se
   assert.match(lines.join(''), /conversation progress cleanup was incomplete/);
 });
 
+test('executor cleanup yields at its outer deadline before closing a ready I/O diagnostic', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const readyPath = join(workspace, 'ready-semantic.txt'); await writeFile(readyPath, 'ready');
+  /** @type {string[]} */ const lines = []; const sessionId = 'zs-cleanup-ready-io'; const subscriptionId = 'subscription-ready-io';
+  const client = {
+    createSession: async () => ({ session: { sessionId }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    subscribeConversation: async () => ({ subscriptionId, unsubscribe: () => {
+      setTimeout(() => { const stalledAt = Date.now(); while (Date.now() - stalledAt < 300) { /* align outer and reporter timers with ready I/O */ } }, 0);
+      return readFile(readyPath).then(() => { throw new Error('ready unsubscribe failure'); });
+    } }),
+    subscribe: () => () => {},
+    setPermissionHandler: () => {}, send: async () => ({ inputId: 'input-cleanup-ready-io', stateRevision: 1 }),
+    waitForCompletion: async () => {},
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-cleanup-ready-io', parentMessageId: 'input-cleanup-ready-io' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+  };
+  const started = Date.now();
+  const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line) });
+  assert.ok(Date.now() - started < 1_000); assert.equal(result.result, 'done');
+  assert.match(lines.join(''), /conversation progress cleanup was incomplete/);
+});
+
 test('cleanup failures preserve the primary PluginError envelope and close once', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const primary = new PluginError('PRIMARY_STABLE', 'primary failure', { category: 'protocol', remedy: 'keep this remedy' }); let closes = 0;

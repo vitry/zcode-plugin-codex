@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -604,6 +604,81 @@ test('flush drains a manually resolved descriptor within semantic grace', async 
   await reporter.flush();
   assert.deepEqual(diagnostics, []);
   assert.deepEqual(persisted.map((event) => event.message), ['Resolved inside grace.']);
+  reporter.close();
+});
+
+test('flush yields after its grace timer so ready I/O semantics are not fenced', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-progress-ready-io-'));
+  const path = join(directory, 'semantic.txt'); await writeFile(path, 'ready semantic');
+  const lines = []; const diagnostics = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line),
+    describeNotification: async (_frame, frameObservedAt) => {
+      const message = await readFile(path, 'utf8');
+      return [{ phase: 'running', message, observedAt: frameObservedAt }];
+    },
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame' });
+  const flushing = reporter.flush();
+  const stalledAt = Date.now(); while (Date.now() - stalledAt < 150) { /* force timer and ready I/O into the same turn */ }
+  await flushing;
+  assert.deepEqual(diagnostics, []);
+  assert.match(lines.join(''), /ready semantic/);
+  reporter.close();
+});
+
+test('slow persistence cannot withhold logical writer progress or its timeout diagnostic', async () => {
+  const lines = []; const persisted = []; const diagnostics = []; let resolvePersist;
+  const stalledPersist = new Promise((resolve) => { resolvePersist = resolve; });
+  let currentTime = observedAt;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line),
+    persist: async (event) => { persisted.push(event); await stalledPersist; },
+    describeNotification: async (_frame, frameObservedAt) => [{ phase: 'running', message: 'Independent semantic.', observedAt: frameObservedAt }],
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => currentTime, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started'));
+  currentTime = '2026-08-08T00:00:01.000Z'; reporter.observe({ method: 'v4/conversation/frame' });
+  currentTime = '2026-08-08T00:00:02.000Z'; reporter.observe(notification('prompt_completed'));
+  const started = Date.now(); await reporter.flush();
+  assert.ok(Date.now() - started < 1_000);
+  assert.deepEqual(diagnostics, ['progress-flush-timeout']);
+  assert.deepEqual(lines, [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] Independent semantic.\n',
+    '[zcode] ZCode completed the delegated turn.\n',
+    '[zcode] ZCode progress cleanup reached its time limit.\n',
+  ]);
+  assert.equal(persisted.length, 1);
+  resolvePersist(); await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+  assert.equal(persisted.length, 1); assert.equal(lines.filter((line) => /completed the delegated turn/.test(line)).length, 1);
+  reporter.close();
+});
+
+test('stalled writer timeout disables only writer while persistence drains and receives the diagnostic', async () => {
+  const lines = []; const persisted = []; const diagnostics = []; let resolveWriter;
+  const stalledWriter = new Promise((resolve) => { resolveWriter = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    write: (line) => { lines.push(line); return stalledWriter; },
+    persist: async (event) => persisted.push(event),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started')); reporter.observe(notification('prompt_completed'));
+  await reporter.flush();
+  assert.deepEqual(lines, ['[zcode] ZCode started the delegated turn.\n']);
+  assert.deepEqual(diagnostics, ['progress-flush-timeout']);
+  assert.deepEqual(persisted.map((event) => event.message), [
+    'ZCode started the delegated turn.',
+    'ZCode completed the delegated turn.',
+    'ZCode progress cleanup reached its time limit.',
+  ]);
+  resolveWriter(); await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+  assert.equal(lines.length, 1); assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
   reporter.close();
 });
 

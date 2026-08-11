@@ -59,9 +59,12 @@ export async function executeJob(input) {
     let remoteCleanup = Promise.resolve();
     try { remoteCleanup = Promise.resolve(unsubscribeConversation()).catch(() => { reporter?.diagnose('conversation-unsubscribe-failed'); }); }
     catch { reporter?.diagnose('conversation-unsubscribe-failed'); }
-    const initialDrain = Promise.resolve().then(() => reporter?.flush()).catch(() => {});
-    const remoteDrain = remoteCleanup.then(() => Promise.resolve()).then(() => reporter?.flush()).catch(() => {});
-    await waitForOptionalProgress(Promise.all([initialDrain, remoteDrain]), OPTIONAL_PROGRESS_FENCE_MS);
+    const deadline = Date.now() + OPTIONAL_PROGRESS_FENCE_MS;
+    const initialDrain = Promise.resolve().then(() => reporter?.flush(deadline)).catch(() => {});
+    const remoteDrain = remoteCleanup.then(() => Promise.resolve()).then(() => reporter?.flush(deadline)).catch(() => {});
+    await waitForOptionalProgress(Promise.all([initialDrain, remoteDrain]), deadline);
+    const reporterSettled = await waitForOptionalProgress(initialDrain, deadline);
+    if (!reporterSettled) return;
     try { conversationObserver?.markTerminal(); } catch { /* progress-only */ }
     try { reporter?.close(); } catch { /* progress-only */ }
   };
@@ -167,13 +170,19 @@ export async function executeJob(input) {
   return output;
 }
 
-/** @param {Promise<unknown>} operation @param {number} timeoutMs */
-async function waitForOptionalProgress(operation, timeoutMs) {
-  operation.catch(() => {});
+/** @param {Promise<unknown>} operation @param {number} deadline */
+async function waitForOptionalProgress(operation, deadline) {
+  let completed = false;
+  const tracked = operation.then(() => { completed = true; }).catch(() => { completed = true; });
   /** @type {ReturnType<typeof setTimeout>|undefined} */ let timer;
-  try { await Promise.race([operation, new Promise((resolvePromise) => { timer = setTimeout(resolvePromise, timeoutMs); })]); }
+  try {
+    const timeoutMs = Math.max(0, deadline - Date.now());
+    if (timeoutMs > 0) await Promise.race([tracked, new Promise((resolvePromise) => { timer = setTimeout(resolvePromise, timeoutMs); })]);
+    if (!completed) { await new Promise((resolvePromise) => setImmediate(resolvePromise)); await Promise.resolve(); }
+  }
   catch { /* optional progress cleanup */ }
   finally { if (timer !== undefined) clearTimeout(timer); }
+  return completed;
 }
 
 /** Serialize executor terminal publication with cancellation and lifecycle maintenance. @param {{input:any,job:any,workspace:string,dataRoot:string,result:string}} publication */
