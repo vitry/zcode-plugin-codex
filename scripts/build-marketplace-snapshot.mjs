@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // @ts-check
 import process from 'node:process';
-import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -48,11 +48,7 @@ export function validateResolvedSource(input) {
 export async function buildMarketplaceSnapshot(input) {
   const root = await realpath(input.root ?? moduleRoot);
   const output = resolve(input.output);
-  const outputFromRoot = relative(root, output); const rootFromOutput = relative(output, root);
-  /** @param {string} value */
-  const contains = (value) => value === '' || value !== '..' && !value.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(value);
-  if (contains(outputFromRoot) || contains(rootFromOutput)) throw new Error('Marketplace snapshot output must be outside the source root.');
-  if (await lstat(output).then(() => true, (error) => { if (error?.code === 'ENOENT') return false; throw error; })) throw new Error('Marketplace snapshot output must not already exist.');
+  assertSeparatePaths(root, output);
   const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   const pluginJson = JSON.parse(await readFile(join(root, '.codex-plugin', 'plugin.json'), 'utf8'));
   const identity = validateReleaseIdentity({ packageVersion: packageJson.version, pluginVersion: pluginJson.version, sourceRef: input.sourceRef, sourceSha: input.sourceSha, releaseTag: input.releaseTag });
@@ -64,10 +60,15 @@ export async function buildMarketplaceSnapshot(input) {
     const ref = await runProcess({ command: 'git', args: [] }, { cwd: root, env: input.env, args: ['rev-parse', '--verify', '--end-of-options', `${input.sourceRef}^{commit}`], timeoutMs: 10_000, maxOutputBytes: 4096 });
     if (head.code !== 0 || ref.code !== 0) throw new Error('Could not resolve marketplace source ref and SHA.');
     validateResolvedSource({ sourceRef: input.sourceRef, sourceSha: input.sourceSha, headSha: head.stdout.trim(), refSha: ref.stdout.trim() });
+    const status = await runProcess({ command: 'git', args: [] }, { cwd: root, env: input.env, args: ['status', '--porcelain=v1', '--untracked-files=all'], timeoutMs: 10_000, maxOutputBytes: 1024 * 1024 });
+    if (status.code !== 0) throw new Error('Could not verify that the marketplace source tree is clean.');
+    if (status.stdout.length !== 0) throw new Error('Marketplace source tree must be clean, including tracked and untracked files.');
   }
 
-  const temporary = await mkdtemp(join(tmpdir(), 'zcode-marketplace-build-'));
+  const publication = await preparePublication(root, output);
+  let temporary;
   try {
+    temporary = await mkdtemp(join(tmpdir(), 'zcode-marketplace-build-'));
     const packages = join(temporary, 'packages'); const consumer = join(temporary, 'consumer');
     await Promise.all([mkdir(packages), mkdir(consumer)]);
     const npmTool = npmLaunch([], { env: { ...input.env, npm_execpath: npmExecPath } });
@@ -81,16 +82,76 @@ export async function buildMarketplaceSnapshot(input) {
     if (installed.code !== 0) throw new Error(`production package install failed: ${installed.stderr}`);
     const installedPluginRoot = join(consumer, 'node_modules', packageJson.name);
     await verifyQualifiedRescuePayload(installedPluginRoot);
-    await mkdir(join(output, '.agents', 'plugins'), { recursive: true });
-    await cp(join(root, 'marketplace', '.agents', 'plugins', 'marketplace.json'), join(output, '.agents', 'plugins', 'marketplace.json'));
-    await writeFile(join(output, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o644 });
-    await mkdir(join(output, 'plugins'), { recursive: true });
-    await cp(installedPluginRoot, join(output, 'plugins', pluginJson.name), { recursive: true });
+    await mkdir(join(publication.staging, '.agents', 'plugins'), { recursive: true });
+    await cp(join(root, 'marketplace', '.agents', 'plugins', 'marketplace.json'), join(publication.staging, '.agents', 'plugins', 'marketplace.json'));
+    await writeFile(join(publication.staging, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o644 });
+    await mkdir(join(publication.staging, 'plugins'), { recursive: true });
+    await cp(installedPluginRoot, join(publication.staging, 'plugins', pluginJson.name), { recursive: true });
+    await publication.publish();
     return { output, plugin: join(output, 'plugins', pluginJson.name), identity };
   } finally {
-    await rm(temporary, { recursive: true, force: true });
+    await Promise.all([temporary ? rm(temporary, { recursive: true, force: true }) : Promise.resolve(), publication.cleanup()]);
   }
 }
+
+/** @param {string} root @param {string} output */
+async function preparePublication(root, output) {
+  const parent = dirname(output); const missing = []; let nearest = parent;
+  while (true) {
+    const metadata = await lstat(nearest).catch((error) => { if (error?.code === 'ENOENT') return null; throw error; });
+    if (metadata) {
+      if (metadata.isSymbolicLink()) throw new Error('Marketplace snapshot output ancestor must not be a symlink; canonical output must remain outside the source root.');
+      if (!metadata.isDirectory()) throw new Error('Marketplace snapshot output parent must be a directory.');
+      break;
+    }
+    const next = dirname(nearest);
+    if (next === nearest) throw new Error('Marketplace snapshot output has no existing parent directory.');
+    missing.unshift(basename(nearest)); nearest = next;
+  }
+  const canonicalNearest = await realpath(nearest);
+  const canonicalOutput = join(canonicalNearest, ...missing, basename(output));
+  assertSeparatePaths(root, canonicalOutput);
+  let createdParent = canonicalNearest;
+  for (const segment of missing) {
+    createdParent = join(createdParent, segment);
+    await mkdir(createdParent);
+    const metadata = await lstat(createdParent);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new Error('Marketplace snapshot output ancestor must be a real directory.');
+  }
+  const canonicalParent = await realpath(createdParent);
+  assertSeparatePaths(root, join(canonicalParent, basename(output)));
+  await assertAbsentOutput(output);
+  const staging = await mkdtemp(join(canonicalParent, '.zcode-marketplace-staging-'));
+  let published = false;
+  return {
+    staging,
+    async publish() {
+      const currentParent = await realpath(parent);
+      if (currentParent !== canonicalParent) throw new Error('Marketplace snapshot output parent changed during build.');
+      const metadata = await lstat(parent);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new Error('Marketplace snapshot output ancestor changed during build.');
+      assertSeparatePaths(root, join(currentParent, basename(output)));
+      await assertAbsentOutput(output);
+      await rename(staging, output); published = true;
+    },
+    async cleanup() { if (!published) await rm(staging, { recursive: true, force: true }); },
+  };
+}
+
+/** @param {string} output */
+async function assertAbsentOutput(output) {
+  const metadata = await lstat(output).catch((error) => { if (error?.code === 'ENOENT') return null; throw error; });
+  if (metadata?.isSymbolicLink()) throw new Error('Marketplace snapshot output leaf must not be a symlink.');
+  if (metadata) throw new Error('Marketplace snapshot output must not already exist.');
+}
+
+/** @param {string} root @param {string} output */
+function assertSeparatePaths(root, output) {
+  if (contains(relative(root, output)) || contains(relative(output, root))) throw new Error('Marketplace snapshot output must be outside the source root.');
+}
+
+/** @param {string} value */
+function contains(value) { return value === '' || value !== '..' && !value.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(value); }
 
 /** @param {string} pluginRoot */
 async function verifyQualifiedRescuePayload(pluginRoot) {

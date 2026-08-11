@@ -44,7 +44,7 @@ ZCode Desktop 与 ZCode CLI 分别保存 model provider 设置。运行 `$zcode:
 
 前台 Rescue 只在一个原生子线程中运行常量 forwarder。host 支持 `agent_type` 时，Codex 选择具名 `zcode-rescue` Role。generic child 只是 host-only 兼容回退：仅当当前 spawn schema 缺少 `agent_type`，或能证明该字段在任何 child 启动前已被拒绝时才允许；Role 缺失、被 shadow、漂移或属于外部配置时绝不回退。父线程只运行只读 Role preflight、显示原生生命周期并返回 child 的最终公开 stdout；它不会 inline 执行 Rescue，也不会把 child stderr、工具输出、原始 conversation frame 或中间进度复制到父线程。
 
-使用 `/agent` 或 `/subagents` 选择 Rescue child 并查看它的 transcript。`/ps` 含义不同：它只列出当前活动线程拥有的后台 terminal，所以若一个耗时 child terminal 已 yield，应先切换到 child；短命令可能在出现在列表前就已结束。操作系统的 `ps` 只能显示进程和 argv，不能显示 Codex 模型活动或线程 transcript。非交互 qualification harness 不暴露这些 TUI event，因此会把该观测记录为机器可读的 `unqualified`，不会伪称已有 UI 证据。
+使用 `/agent` 或 `/subagents` 选择 Rescue child 并查看它的 transcript。`/ps` 含义不同：它只列出当前活动线程拥有的后台 terminal，所以若一个耗时 child terminal 已 yield，应先切换到 child；短命令可能在出现在列表前就已结束。操作系统的 `ps` 只能显示进程和 argv，不能显示 Codex 模型活动或线程 transcript。非交互 qualification harness 不暴露这些 TUI event，因此会输出机器可读的作用域观测 `{ "observed": false, "code": "tui-evidence-not-exposed", "qualificationScope": "tui" }`。该观测不是资格结果，也不会声称 UI 已通过或失败。
 
 ZCode 支持时，child 会订阅 online conversation progress。allowlist 内的工具活动可以带一行、去控制字符、最长 96 字符的命令或搜索 query 预览。截断不是秘密脱敏：如果秘密本来就在命令或 query 中，它仍可能出现在 child transcript 和持久 status 预览里。原始输出、文件内容、推理、assistant draft、环境值和授权材料都不是进度字段。subscription 或可选进度 sink 失败时，Rescue 会降级到生命周期消息与 20 秒心跳；带 revision guard 的终态结果仍是权威结果。
 
@@ -111,7 +111,7 @@ Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺�
 - Hook trust / restart required：只让 setup 信任当前安装插件的精确 hook hash，重启后再次检查。
 - `plugin-data-root-added`：setup 只把稳定数据目录加入 Codex 配置，尚未写入插件状态；重启 Codex 后再次运行 setup。
 
-macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。协议客户端可处理 CLI 0.16.1 发出的 string-ID runtime-preference server request。发布前应在 CLI model provider 可用的机器上运行 `ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualification-required`。如需同时验证“已安装 marketplace → 真实 Codex → ZCode”桥接，还要设置 `ZCODE_CODEX_SKILLS_E2E=1`；该测试会消耗已认证 Codex 账户的额度。默认 `npm run test:qualified` 是 opt-in 诊断：结构化 `unqualified` skip 让普通 CI 可移植，但不能作为资格证据。严格脚本会把缺少 opt-in、provider 配置或认证、模型、额度及其他 unqualified 观测转为非零失败；未知执行错误也会让测试失败。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
+macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。协议客户端可处理 CLI 0.16.1 发出的 string-ID runtime-preference server request。发布前必须在 CLI model provider 可用且 Codex 已认证并有额度的机器上运行完整严格命令：`ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_MODEL='provider/model' npm run test:qualification-required`。默认 `npm run test:qualified` 是 opt-in 诊断：结构化 `unqualified` skip 让普通 CI 可移植，但不能作为资格证据。严格脚本会把缺少 opt-in、provider 配置或认证、模型、额度及其他 unqualified runtime 结果转为非零失败；作用域 `tui-evidence-not-exposed` 观测不是 runtime 资格结果，也从不声称 UI 已通过资格。未知执行错误也会让测试失败。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
 
 ## 许可证与来源
 

@@ -1,10 +1,10 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
@@ -58,14 +58,19 @@ test('preserved installed evidence scrubs isolated credential copies on normal, 
   });
 });
 
-test('installed Rescue qualification declares its supported Codex line and unavailable TUI evidence', async (t) => {
+test('installed Rescue qualification declares its supported Codex line and a scoped TUI observation', async (t) => {
   const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   assert.equal(packageJson.devDependencies?.['@openai/codex'], '0.147.0');
   assert.deepEqual(SUPPORTED_CODEX_LINES, ['0.147']);
-  t.diagnostic(unqualified(
-    'tui-evidence-unavailable',
+  const diagnostic = observation(
+    'tui-evidence-not-exposed',
+    'tui',
     'The exec/app-server harness exposes no interactive /agent, /subagents, or current-thread /ps events; those UI observations are not qualification evidence.',
-  ));
+  );
+  const payload = JSON.parse(diagnostic.slice('codex-skills-observation '.length));
+  assert.deepEqual(payload, { observed: false, code: 'tui-evidence-not-exposed', qualificationScope: 'tui', detail: payload.detail });
+  assert.equal(Object.hasOwn(payload, 'qualified'), false, 'a harness-scoped TUI observation must not claim qualification success or failure');
+  t.diagnostic(diagnostic);
 });
 
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
@@ -119,8 +124,9 @@ test('installed Rescue uses one isolated native child for initial and choice con
     setupReady = /status\\?"?\s*:\s*\\?"ready\\?"/.test(setup.stdout);
   }
   assert.equal(setupReady, true, 'four successful setup turns did not establish a fresh-session ready Rescue Role');
+  await qualifyInstalledIdentityFailures({ installedPluginRoot, installedDataRoot: join(codexHome, 'plugins', 'data', 'zcode-vitry'), temporary, env, zcodeRecord });
   await writeFile(zcodeRecord, '');
-  const rescue = await codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait repair the fixture skill exactly once now. Return only its final public result.'], workspace, env, 240_000);
+  const rescue = await codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result.'], workspace, env, 240_000);
   if (skipExternalFailure(t, rescue)) return;
   assert.equal(rescue.code, 0, `codex Rescue failed\n${rescue.stdout}\n${rescue.stderr}`);
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
@@ -144,6 +150,10 @@ test('installed Rescue uses one isolated native child for initial and choice con
         expectedNamedSpawnMessage,
         expectedGenericSpawnMessage,
         expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
+        expectedSemanticProgress: {
+          start: '[zcode] Running command: npm test.',
+          terminal: '[zcode] Command completed: npm test (25ms).',
+        },
         forbiddenParentText: [
           'Running command: npm test.',
           'Command completed: npm test (25ms).',
@@ -155,6 +165,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
       },
     );
     assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route), 'qualification must record an automatically observed native route');
+    assert.equal(evidence.semanticProgressChecked, true);
     t.diagnostic(`qualified native Rescue route: ${evidence.route}`);
   } catch (error) {
     if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
@@ -220,6 +231,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   await writeFile(zcodeRecord, '');
   const installedDataRoot = join(codexHome, 'plugins', 'data', 'zcode-vitry');
   const backgroundWorkspace = join(temporary, 'background-workspace'); await initializeGitWorkspace(backgroundWorkspace); const backgroundCanonicalWorkspace = await realpath(backgroundWorkspace);
+  const privateCapabilityEvidence = await installPrivateCapabilityObserver(installedPluginRoot, temporary);
   const backgroundGate = join(temporary, 'background-completion.gate'); const backgroundGateReached = join(temporary, 'background-completion.reached');
   const backgroundStorage = await resolveWorkspaceStorage({ dataRoot: installedDataRoot, workspace: backgroundCanonicalWorkspace }); const backgroundJobsDirectory = join(backgroundStorage.directory, 'jobs');
   const backgroundBaseline = await canonicalJobIds(backgroundJobsDirectory); let backgroundJobId; let backgroundIdentity; let backgroundVerified = false;
@@ -228,7 +240,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
     const background = await codex([
       ...commonArgs.slice(0, -1), backgroundWorkspace,
       'Use the installed $zcode:rescue --fresh --background repair the background fixture skill exactly once now. Return only its public queued result.',
-    ], backgroundWorkspace, { ...env, FAKE_ZCODE_COMPLETION_GATE: backgroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: backgroundGateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' }, 240_000);
+    ], backgroundWorkspace, { ...env, ZCODE_TEST_PRIVATE_CAPABILITY_EVIDENCE: privateCapabilityEvidence, FAKE_ZCODE_COMPLETION_GATE: backgroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: backgroundGateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' }, 240_000);
     backgroundJobId = /Reserved background job ([a-f0-9]{64})\./.exec(background.stdout)?.[1];
     if (skipExternalFailure(t, background)) return;
     assert.equal(background.code, 0, `codex background Rescue failed\n${background.stdout}\n${background.stderr}`);
@@ -237,6 +249,10 @@ test('installed Rescue uses one isolated native child for initial and choice con
     backgroundIdentity = exactWorkerIdentity(job);
     await waitUntil(async () => await readFile(backgroundGateReached, 'utf8').catch(() => '') === 'blocked', 5_000, 'background worker did not reach the explicit post-ack completion gate');
     assert.equal(job.status, 'running'); assert.equal(await exactWorkerLeaseAvailable(installedDataRoot, backgroundCanonicalWorkspace, backgroundJobId, backgroundIdentity.workerLeaseId), false);
+    const privateCapability = await waitForValue(async () => {
+      const observed = await readFile(privateCapabilityEvidence, 'utf8').then(JSON.parse).catch(() => null);
+      return observed?.jobId === backgroundJobId && typeof observed?.executionCapability === 'string' ? observed.executionCapability : undefined;
+    }, 5_000, 'private observer did not capture the production FD3 capability');
     const backgroundFrames = background.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
     try {
       const evidence = qualifyCodexRescueBackgroundEvidence(
@@ -245,11 +261,13 @@ test('installed Rescue uses one isolated native child for initial and choice con
           expectedJobId: backgroundJobId,
           expectedTaskName: 'zcode_rescue', expectedAgentPath: '/root/zcode_rescue', expectedAgentType: 'zcode-rescue', expectedWorkspace: backgroundCanonicalWorkspace,
           expectedCommand, expectedPreflightCommand, expectedNamedSpawnMessage, expectedGenericSpawnMessage,
+          privateExecutionCapability: privateCapability,
           publicLogs: [background.stdout, background.stderr],
           forbiddenParentText: ['Running command: npm test.', 'Command completed: npm test (25ms).', 'raw output must stay private', 'reasoning must stay private', 'capability must stay private', 'v4/conversation/frame'],
         },
       );
-      assert.equal(evidence.jobId, backgroundJobId); assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route));
+      assert.equal(evidence.jobId, backgroundJobId); assert.equal(evidence.capabilityChecked, true); assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route));
+      if (`${background.stdout}${background.stderr}${JSON.stringify(job)}`.includes(privateCapability)) assert.fail('production capability entered public background diagnostics');
     } catch (error) {
       if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') { markUnqualified(t, unqualified(error.code, error.message)); return; }
       throw error;
@@ -446,6 +464,67 @@ test('installed Rescue uses one isolated native child for initial and choice con
   }
 });
 
+async function qualifyInstalledIdentityFailures({ installedPluginRoot, installedDataRoot, temporary, env, zcodeRecord }) {
+  const companionPath = join(installedPluginRoot, 'scripts', 'zcode-companion.mjs');
+  const { createIdentityStore: createInstalledIdentityStore } = await import(pathToFileURL(join(installedPluginRoot, 'scripts', 'lib', 'identity.mjs')).href);
+  const { markForwarding: markInstalledForwarding } = await import(pathToFileURL(join(installedPluginRoot, 'hooks', 'lib', 'hook-state.mjs')).href);
+  for (const scenario of [
+    { name: 'missing-thread', expectedCode: 'THREAD_ID_REQUIRED' },
+    { name: 'sibling-thread', expectedCode: 'EXECUTOR_IDENTITY_NOT_FOUND' },
+    { name: 'stale-executor', expectedCode: 'EXECUTOR_IDENTITY_EXPIRED' },
+    { name: 'mismatched-parent-turn', expectedCode: 'EXECUTOR_PARENT_TURN_MISMATCH' },
+  ]) {
+    const scenarioWorkspace = join(temporary, `identity-${scenario.name}`); await initializeGitWorkspace(scenarioWorkspace); const canonicalWorkspace = await realpath(scenarioWorkspace);
+    const identity = createInstalledIdentityStore({ dataRoot: installedDataRoot });
+    const parentSessionId = `parent-${scenario.name}`; const parentTurnId = `turn-${scenario.name}`; const approvedChildId = `child-${scenario.name}`;
+    const parentSecret = `PARENT_PRIVATE_IDENTITY_${scenario.name}_MUST_NOT_RENDER`;
+    await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: parentTurnId, workspace: canonicalWorkspace, permissionMode: 'workspace-write', prompt: `Use $zcode:rescue --fresh --wait ${parentSecret}` });
+    const active = await identity.resolveActiveTurn({ sessionId: parentSessionId, workspace: canonicalWorkspace });
+    await markInstalledForwarding(installedDataRoot, {
+      session_id: parentSessionId, turn_id: `child-turn-${scenario.name}`, cwd: canonicalWorkspace,
+      hook_event_name: 'SubagentStart', agent_id: approvedChildId, agent_type: 'zcode-rescue',
+    }, active);
+    const storage = await resolveWorkspaceStorage({ dataRoot: installedDataRoot, workspace: canonicalWorkspace });
+    if (scenario.name === 'stale-executor') {
+      const executorNames = (await readdir(join(storage.directory, 'hook-state'))).filter((name) => name.startsWith('executor-') && name.endsWith('.json'));
+      assert.equal(executorNames.length, 1); const executorPath = join(storage.directory, 'hook-state', executorNames[0]);
+      const record = JSON.parse(await readFile(executorPath, 'utf8')); record.createdAt = new Date(Date.now() - 31 * 60_000).toISOString(); await writeFile(executorPath, JSON.stringify(record));
+    }
+    if (scenario.name === 'mismatched-parent-turn') {
+      await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: `replacement-${parentTurnId}`, workspace: canonicalWorkspace, permissionMode: 'workspace-write', prompt: `Use $zcode:rescue --fresh --wait ${parentSecret}` });
+    }
+    await writeFile(zcodeRecord, '');
+    const directEnv = { ...env, ZCODE_DATA_ROOT: installedDataRoot, FAKE_ZCODE_RECORD: zcodeRecord, ZCODE_DEBUG: '0' };
+    if (scenario.name !== 'missing-thread') directEnv.CODEX_THREAD_ID = scenario.name === 'sibling-thread' ? `sibling-${approvedChildId}` : approvedChildId;
+    else delete directEnv.CODEX_THREAD_ID;
+    const result = await runProcess({ command: process.execPath, args: [companionPath, 'invoke', 'rescue'], target: process.execPath }, { cwd: canonicalWorkspace, env: directEnv, timeoutMs: 30_000, maxOutputBytes: 1024 * 1024 });
+    assert.notEqual(result.code, 0, `${scenario.name} unexpectedly executed installed Rescue`);
+    assert.match(`${result.stdout}\n${result.stderr}`, new RegExp(scenario.expectedCode));
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(parentSecret));
+    const calls = await readZCodeCalls(zcodeRecord); assert.equal(calls.filter((call) => call.method === 'session/send').length, 0, `${scenario.name} reached ZCode`);
+    assert.equal((await canonicalJobIds(join(storage.directory, 'jobs'))).size, 0, `${scenario.name} reserved a job before Role identity failed closed`);
+  }
+}
+
+async function installPrivateCapabilityObserver(installedPluginRoot, temporary) {
+  const worker = join(installedPluginRoot, 'scripts', 'lib', 'background-worker.mjs');
+  const productionWorker = join(installedPluginRoot, 'scripts', 'lib', 'background-worker-production.mjs');
+  const evidencePath = join(temporary, 'private-production-capability.json');
+  await rename(worker, productionWorker);
+  await writeFile(worker, [
+    "import { writeFile } from 'node:fs/promises';",
+    "import { startBackgroundWorker as productionStartBackgroundWorker } from './background-worker-production.mjs';",
+    "export * from './background-worker-production.mjs';",
+    'export async function startBackgroundWorker(input) {',
+    '  const evidencePath = process.env.ZCODE_TEST_PRIVATE_CAPABILITY_EVIDENCE;',
+    "  if (evidencePath) await writeFile(evidencePath, JSON.stringify({ jobId: input.jobId, executionCapability: input.executionCapability }), { mode: 0o600, flag: 'wx' });",
+    '  return productionStartBackgroundWorker(input);',
+    '}',
+    '',
+  ].join('\n'), { mode: 0o600 });
+  return evidencePath;
+}
+
 async function codex(args, cwd, env, timeoutMs = 60_000) { return runProcess(codexLaunch(args, { root, env }), { cwd, env, timeoutMs, maxOutputBytes: 16 * 1024 * 1024 }); }
 async function git(args, cwd) { const result = await runProcess({ command: 'git', args, options: { shell: false } }, { cwd, timeoutMs: 30_000 }); assert.equal(result.code, 0, result.stderr); }
 async function initializeGitWorkspace(workspace) { await mkdir(workspace, { recursive: true }); await git(['init', '-q'], workspace); await writeFile(join(workspace, 'tracked.txt'), 'base\n'); await git(['add', 'tracked.txt'], workspace); await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], workspace); }
@@ -582,6 +661,7 @@ function pathWithin(root, path) {
 }
 
 function unqualified(code, detail) { return `codex-skills-unqualified ${JSON.stringify({ qualified: false, code, detail })}`; }
+function observation(code, qualificationScope, detail) { return `codex-skills-observation ${JSON.stringify({ observed: false, code, qualificationScope, detail })}`; }
 function markUnqualified(t, message) { if (qualificationRequired) assert.fail(message); t.skip(message); }
 async function requireSupportedCodexLine(t, cwd, env) {
   const result = await codex(['--version'], cwd, env, 30_000);

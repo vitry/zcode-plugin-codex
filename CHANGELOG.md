@@ -12,6 +12,8 @@ All notable changes follow Semantic Versioning.
 - Added bounded foreground `SIGINT` and `SIGTERM` handling: the plugin cancels before session creation or sends `session/stop` only to the exact persisted ZCode session, while background jobs continue until completion or explicit cancellation with `$zcode:cancel`.
 - Added safe orphan settlement through best-effort `SessionEnd` handling and a reservation-time crash fallback while preserving owner-only access. A broker-unavailable orphan with a free worker lease is archived as `failed` and releases the writable guard; an unacknowledged stop on a reachable control channel still retains the guard.
 - Added a digest-backed managed `zcode-rescue` Role, one isolated native child for foreground Rescue and same-child choices, bounded semantic progress, parent-output isolation, unchanged production-owned background authorization, and opt-in installed Codex 0.147 qualification coverage for steering, acknowledged cancellation, and durable loss recovery.
+- Hardened marketplace publication to require an exact clean source commit, reject canonical or symlink output overlap, and atomically publish only a complete staged snapshot.
+- Strengthened installed Codex 0.147 qualification with fail-closed runtime identity negatives, exact child semantic-progress evidence, private production capability verification, and an explicit scoped observation when the noninteractive harness cannot expose TUI events.
 - Kept the package version at `0.1.0` for these Unreleased behavior changes.
 
 ## 0.1.0 - 2026-08-06

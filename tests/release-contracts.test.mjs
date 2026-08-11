@@ -214,12 +214,17 @@ test('release qualification covers the installed direct bridge and explicit real
   assert.doesNotMatch(qualified, /require-qualified\.cjs/); const required = packageJson.scripts['test:qualification-required']; assert.match(required, /require-qualified\.cjs/); assert.match(read('tests/helpers/require-qualified.cjs'), /ZCODE_REQUIRE_QUALIFIED\s*=\s*['"]1['"]/);
   assert.match(packageJson.scripts.check, /npm run test:qualified/);
   const real = read('tests/e2e/real-zcode.test.mjs');
-  assert.match(real, /ZCODE_REAL_E2E_MODEL\?\.trim\(\)/); assert.match(real, /runCompanion/); assert.match(real, /--model/);
+  assert.match(real, /ZCODE_REAL_MODEL\?\.trim\(\)/); assert.match(real, /runCompanion/); assert.match(real, /--model/);
   const installed = read('tests/e2e/codex-skills-e2e.test.mjs');
   assert.match(installed, /codex-skills-unqualified/); assert.match(installed, /exec/); assert.match(installed, /--ephemeral/); assert.match(installed, /--json/); assert.match(installed, /\$zcode:review/); assert.match(installed, /buildMarketplaceSnapshot/);
+  assert.match(installed, /codex-skills-observation/); assert.match(installed, /tui-evidence-not-exposed/); assert.match(installed, /qualificationScope:\s*'tui'/);
+  assert.doesNotMatch(installed, /unqualified\(\s*['"]tui-evidence/);
   assert.match(installed, /turn\/steer/); assert.match(installed, /pendingWait/); assert.match(installed, /steering must retain the exact native child ID/);
   assert.match(installed, /target must remain nonterminal before stop acknowledgement/); assert.match(installed, /installed cancel must stop the exact durable remote session/);
   assert.match(installed, /close\('SIGKILL'\)/); assert.match(installed, /the exact installed Codex parent process must be gone before recovery/); assert.match(installed, /must not execute another ZCode turn/);
+  assert.match(installed, /qualifyInstalledIdentityFailures/);
+  for (const code of ['THREAD_ID_REQUIRED', 'EXECUTOR_IDENTITY_NOT_FOUND', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_PARENT_TURN_MISMATCH']) assert.match(installed, new RegExp(code));
+  assert.match(installed, /installPrivateCapabilityObserver/); assert.match(installed, /capabilityChecked/); assert.match(installed, /privateExecutionCapability/);
   const manifest = JSON.parse(read('.codex-plugin/plugin.json')); assert.equal(Object.hasOwn(manifest, 'hooks'), false); assert.ok(JSON.parse(read('hooks/hooks.json')).hooks);
   const companion = read('scripts/zcode-companion.mjs'); assert.match(companion, /startBackgroundWorker/);
   for (const command of commands) {
@@ -240,6 +245,8 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
     assert.match(source, /agent_type/);
     assert.match(source, /subscription/i);
     assert.match(source, /uninstall/i);
+    assert.match(source, /ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_MODEL='provider\/model' npm run test:qualification-required/);
+    assert.doesNotMatch(source, /ZCODE_REAL_E2E_MODEL/);
   }
   assert.match(english, /restart Codex.{0,160}rerun `?\$zcode:setup/is);
   assert.match(english, /collision.{0,200}(?:foreign|project|higher-precedence)/is);
@@ -290,7 +297,8 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
 
   const installedQualification = read('tests/e2e/codex-skills-e2e.test.mjs');
   assert.match(installedQualification, /SUPPORTED_CODEX_LINES\s*=\s*Object\.freeze\(\['0\.147'\]\)/);
-  assert.match(installedQualification, /tui-evidence-unavailable/);
-  assert.match(installedQualification, /codex-skills-unqualified/);
+  assert.match(installedQualification, /tui-evidence-not-exposed/);
+  assert.match(installedQualification, /codex-skills-observation/);
+  assert.match(installedQualification, /Object\.hasOwn\(payload, 'qualified'\), false/);
   assert.match(read('tests/e2e/real-zcode.test.mjs'), /real-zcode-unqualified/);
 });

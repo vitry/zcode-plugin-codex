@@ -136,6 +136,7 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   if (childOutputs.length !== 1) mismatch('child-output-count', 'The child rollout must have exactly one structured exec output.');
   if (childOutputs[0].payload.call_id !== childExecCalls[0].payload.call_id) mismatch('child-output-link', 'The child exec output does not link to its unique call.');
   if (child.indexOf(childExecCalls[0]) >= child.indexOf(childOutputs[0])) mismatch('child-output-order', 'The linked child output must follow its exec call.');
+  assertSemanticProgress(childOutputs[0].payload.output, options.expectedSemanticProgress);
   assertTerminalSentinel(childOutputs[0].payload.output, options.expectedPublicOutput);
   const childFinalIndex = child.findIndex((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
   if (childFinalIndex <= child.indexOf(childOutputs[0])) mismatch('child-terminal-order', 'The child final message must follow its linked exec output.');
@@ -153,7 +154,8 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   for (const actual of [childFinal, childReturn, parentFinal, execFinal]) {
     if (actual !== options.expectedPublicOutput) mismatch('public-output-mismatch', 'Child and parent terminal public output must equal the expected sentinel byte-for-byte.');
   }
-  const evidence = { parentThreadId, childThreadId, agentPath, taskName: spawnArgs.task_name, agentType, route, publicOutput: execFinal };
+  const evidence = { parentThreadId, childThreadId, agentPath, taskName: spawnArgs.task_name, agentType, route, publicOutput: execFinal,
+    ...(options.expectedSemanticProgress === undefined ? {} : { semanticProgressChecked: true }) };
   if (!spawnMessage) mismatch('spawn-message-unavailable', 'The structured spawn metadata does not expose a bounded message field.');
   const spawnMessageEncrypted = encrypted(spawnMessage);
   if (!spawnMessageEncrypted && spawnMessage !== expectedSpawnMessage) mismatch('spawn-message-mismatch', 'The runtime spawn message differs from the fixed Rescue forwarder contract.');
@@ -168,19 +170,17 @@ export function qualifyCodexRescueBackgroundEvidence(input, options) {
   const publicOutput = `Reserved background job ${jobId}.`;
   const publicLogs = options?.publicLogs === undefined ? [] : boundedArray(options.publicLogs, 64, 'background-public-logs');
   if (publicLogs.some((entry) => boundedString(entry) === undefined)) mismatch('background-public-logs', 'Background public logs exceed their count or text bound.');
-  const capability = options?.privateExecutionCapability === undefined ? undefined : boundedString(options.privateExecutionCapability);
-  if (options?.privateExecutionCapability !== undefined && !capability) mismatch('background-capability-evidence', 'The private execution capability evidence is absent or unbounded.');
-  if (capability) {
-    const visible = boundedJson({ execFrames: input?.execFrames, rollouts: input?.rollouts, publicLogs });
-    if (visible.includes(capability)) mismatch('background-capability-leak', 'The private execution capability entered model-visible or public evidence.');
-  }
+  const capability = boundedString(options?.privateExecutionCapability);
+  if (!capability) mismatch('background-capability-evidence', 'The private execution capability evidence is absent or unbounded.');
+  const visible = boundedJson({ execFrames: input?.execFrames, rollouts: input?.rollouts, publicLogs });
+  if (visible.includes(capability)) mismatch('background-capability-leak', 'The private execution capability entered model-visible or public evidence.');
   const evidence = qualifyCodexRescueEvidenceCore(input, { ...options, expectedPublicOutput: publicOutput }, true);
   const child = input.rollouts.find((events) => sessionMeta(events)?.id === evidence.childThreadId);
   const outputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
   if (!Array.isArray(outputs[0]?.payload?.output) || outputs[0].payload.output.length !== 1) mismatch('background-child-stdout', 'The linked child command must expose one exact structured queued stdout item.');
   const exactStdout = terminalOutputText(outputs[0]?.payload?.output, 'background-child-stdout');
   if (exactStdout !== publicOutput && exactStdout !== `${publicOutput}\n`) mismatch('background-child-stdout', 'The linked child command output is not only the exact queued stdout.');
-  const result = { ...evidence, jobId, capabilityChecked: capability !== undefined };
+  const result = { ...evidence, jobId, capabilityChecked: true };
   const parent = input.rollouts.find((events) => sessionMeta(events)?.id === evidence.parentThreadId);
   const spawn = parent.find((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === 'spawn_agent');
   if (encrypted(parseObject(spawn.payload.arguments, 'background-spawn-arguments').message)) unqualified('spawn-message-encrypted', 'Codex 0.147 persisted the spawn message field as ciphertext, so its exact runtime value cannot be qualified.', result);
@@ -450,6 +450,20 @@ function assertTerminalSentinel(output, sentinel) {
   const occurrences = output.flatMap((item) => item.text.split('\n')).filter((line) => line === sentinel).length;
   if (lines.at(-1) !== sentinel || occurrences !== 1) {
     mismatch('child-output-mismatch', 'The unique public sentinel is not the terminal child stdout line.');
+  }
+}
+
+function assertSemanticProgress(output, expected) {
+  if (expected === undefined) return;
+  assertExactKeys(expected, ['start', 'terminal'], 'semantic-progress-contract');
+  const start = boundedString(expected.start); const terminal = boundedString(expected.terminal);
+  if (!start || !terminal || !start.startsWith('[zcode] ') || !terminal.startsWith('[zcode] ')) mismatch('semantic-progress-contract', 'Semantic progress expectations must be exact bounded allowlisted ZCode lines.');
+  terminalOutputText(output, 'semantic-progress-missing');
+  const lines = output.flatMap((item) => item.text.split('\n'));
+  const startIndexes = lines.map((line, index) => line === start ? index : -1).filter((index) => index >= 0);
+  const terminalIndexes = lines.map((line, index) => line === terminal ? index : -1).filter((index) => index >= 0);
+  if (startIndexes.length !== 1 || terminalIndexes.length !== 1 || startIndexes[0] >= terminalIndexes[0]) {
+    mismatch('semantic-progress-missing', 'The child transcript lacks one ordered exact semantic progress start and terminal line.');
   }
 }
 

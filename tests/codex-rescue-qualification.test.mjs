@@ -23,6 +23,10 @@ const expectedWorkspace = '/repo';
 const expectedCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke rescue';
 const expectedPreflightCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" role-status rescue';
 const expectedPublicOutput = 'done';
+const expectedSemanticProgress = Object.freeze({
+  start: '[zcode] Running command: npm test.',
+  terminal: '[zcode] Command completed: npm test (25ms).',
+});
 const backgroundJobId = 'b'.repeat(64);
 const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
 const executionCapability = 'qualification-capability-sentinel-private';
@@ -37,7 +41,21 @@ test('qualifies named Rescue from linked parent and child rollout metadata', () 
     agentType: 'zcode-rescue',
     route: 'named',
     publicOutput: expectedPublicOutput,
+    semanticProgressChecked: true,
   });
+});
+
+test('foreground qualification fails closed unless child transcript contains exact semantic start and terminal progress', () => {
+  for (const missing of ['start', 'terminal']) {
+    const input = fixture();
+    childOutput(input).payload.output[1].text = childOutput(input).payload.output[1].text
+      .split('\n').filter((line) => line !== expectedSemanticProgress[missing]).join('\n');
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'semantic-progress-missing',
+      missing,
+    );
+  }
 });
 
 test('qualifies named and generic background Rescue with one linked queued output and no capability leak', () => {
@@ -48,6 +66,13 @@ test('qualifies named and generic background Rescue with one linked queued outpu
   });
   const generic = backgroundFixture(); const args = JSON.parse(spawnEvent(generic).payload.arguments); delete args.agent_type; args.message = 'fixed generic forwarder'; spawnEvent(generic).payload.arguments = JSON.stringify(args); childMeta(generic).payload.source.subagent.thread_spawn.agent_role = null;
   assert.equal(qualifyCodexRescueBackgroundEvidence(generic, backgroundOptions()).route, 'generic-schema-hidden');
+});
+
+test('background qualification fails closed without private production capability evidence', () => {
+  assert.throws(
+    () => qualifyCodexRescueBackgroundEvidence(backgroundFixture(), backgroundOptions({ privateExecutionCapability: undefined })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'background-capability-evidence',
+  );
 });
 
 test('background qualification fails closed on inline, self-printed, wrong-child, duplicate, unlinked, and token-leak evidence', () => {
@@ -217,7 +242,7 @@ test('qualifies the verified 0.147 generic route from its complete fixed assignm
   childMeta(input).payload.source.subagent.thread_spawn.agent_role = null;
   assert.deepEqual(qualifyCodexRescueEvidence(input, options()), {
     parentThreadId: parentId, childThreadId: childId, agentPath, taskName: 'zcode_rescue', agentType: 'default',
-    route: 'generic-schema-hidden', publicOutput: expectedPublicOutput,
+    route: 'generic-schema-hidden', publicOutput: expectedPublicOutput, semanticProgressChecked: true,
   });
 });
 
@@ -257,9 +282,9 @@ test('binds child stdout to the unique exec call and terminal sentinel', () => {
     { code: 'child-output-count', mutate: (input) => input.rollouts[1].splice(2, 1) },
     { code: 'child-output-count', mutate: (input) => input.rollouts[1].splice(3, 0, toolOutput('exec-1', `${expectedPublicOutput}\n`)) },
     { code: 'child-output-link', mutate: (input) => { childOutput(input).payload.call_id = 'wrong-call'; } },
-    { code: 'child-output-mismatch', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', 'not-done\n').payload.output; } },
-    { code: 'child-output-mismatch', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', `${expectedPublicOutput}\nprogress-after\n`).payload.output; } },
-    { code: 'child-output-mismatch', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', `${expectedPublicOutput}\n${expectedPublicOutput}\n`).payload.output; } },
+    { code: 'child-output-mismatch', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', semanticText('not-done\n')).payload.output; } },
+    { code: 'child-output-mismatch', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', semanticText(`${expectedPublicOutput}\nprogress-after\n`)).payload.output; } },
+    { code: 'child-output-mismatch', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', semanticText(`${expectedPublicOutput}\n${expectedPublicOutput}\n`)).payload.output; } },
     { code: 'child-output-mismatch', mutate: (input) => { childOutput(input).payload.output[0].text += `${expectedPublicOutput}\n`; } },
     { code: 'child-output-order', mutate: (input) => { const output = input.rollouts[1].splice(2, 1)[0]; input.rollouts[1].splice(1, 0, output); } },
     { code: 'child-terminal-order', mutate: (input) => { const final = input.rollouts[1].pop(); input.rollouts[1].splice(2, 0, final); } },
@@ -526,6 +551,7 @@ function options(overrides = {}) {
     expectedCommand,
     expectedPreflightCommand,
     expectedPublicOutput,
+    expectedSemanticProgress,
     expectedNamedSpawnMessage: 'fixed named forwarder',
     expectedGenericSpawnMessage: 'fixed generic forwarder',
     forbiddenParentText: ['Running command: npm test', 'raw output must stay private', 'reasoning must stay private'],
@@ -535,7 +561,7 @@ function options(overrides = {}) {
 }
 
 function backgroundOptions(overrides = {}) {
-  return options({ expectedJobId: backgroundJobId, expectedPublicOutput: undefined, privateExecutionCapability: executionCapability, publicLogs: ['bounded public log without private material'], ...overrides });
+  return options({ expectedJobId: backgroundJobId, expectedPublicOutput: undefined, expectedSemanticProgress: undefined, privateExecutionCapability: executionCapability, publicLogs: ['bounded public log without private material'], ...overrides });
 }
 
 function fixture(publicOutput = expectedPublicOutput) {
@@ -558,7 +584,7 @@ function fixture(publicOutput = expectedPublicOutput) {
   const child = [
       { type: 'session_meta', payload: { session_id: parentId, id: childId, parent_thread_id: parentId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_path: agentPath, agent_nickname: 'Ada', agent_role: 'zcode-rescue' } } } } },
       structuredExec(expectedCommand),
-      toolOutput('exec-1', `Running command: npm test.\n${publicOutput}\n`),
+      toolOutput('exec-1', `${expectedSemanticProgress.start}\n${expectedSemanticProgress.terminal}\n${publicOutput}\n`),
       { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
     ];
   return { execFrames, rollouts: [parent, child] };
@@ -660,6 +686,7 @@ function structuredExecUnquotedInline(command) {
 function toolOutput(callId, terminalText) {
   return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text: terminalText }] } };
 }
+function semanticText(terminalText) { return `${expectedSemanticProgress.start}\n${expectedSemanticProgress.terminal}\n${terminalText}`; }
 
 function spawnEvent(input) { return input.rollouts[0].find((event) => event.payload?.name === 'spawn_agent'); }
 function startEvent(input) { return input.rollouts[0].find((event) => event.payload?.type === 'sub_agent_activity'); }
