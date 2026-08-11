@@ -68,9 +68,20 @@ export async function runProcess(launch, options = {}) {
   const timeoutMs = options.timeoutMs ?? 30_000; const maxOutputBytes = options.maxOutputBytes ?? 1024 * 1024;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0) throw processInputError();
   if (options.signal?.aborted) throw new PluginError('ZCODE_PROCESS_ABORTED', 'The ZCode process was aborted.', { category: 'state', remedy: 'Retry when the operation should continue.' });
-  const { signal, ...spawnOptions } = options; const child = await spawnProcess(launch, spawnOptions); let stdout = ''; let stderr = ''; let overflow = false;
+  const { signal, ...spawnOptions } = options; const child = await spawnProcess(launch, spawnOptions); let stdout = ''; let stderr = ''; let capturedOutputBytes = 0; let overflow = false;
   child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
-  const capture = (/** @type {'stdout'|'stderr'} */ kind, /** @type {string} */ chunk) => { if (kind === 'stdout') stdout += chunk; else stderr += chunk; if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > maxOutputBytes) { overflow = true; void terminateProcess(child).catch(() => {}); } };
+  const capture = (/** @type {'stdout'|'stderr'} */ kind, /** @type {string} */ chunk) => {
+    if (overflow) return;
+    const chunkBytes = Buffer.byteLength(chunk);
+    if (capturedOutputBytes + chunkBytes > maxOutputBytes) {
+      overflow = true;
+      child.stdout?.destroy(); child.stderr?.destroy();
+      void terminateProcess(child).catch(() => {});
+      return;
+    }
+    capturedOutputBytes += chunkBytes;
+    if (kind === 'stdout') stdout += chunk; else stderr += chunk;
+  };
   child.stdout?.on('data', (chunk) => capture('stdout', chunk)); child.stderr?.on('data', (chunk) => capture('stderr', chunk));
   let timer; const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs); });
   let resolveAbort = () => {}; const abort = new Promise((resolve) => { resolveAbort = () => resolve('aborted'); }); signal?.addEventListener('abort', resolveAbort, { once: true });
@@ -79,7 +90,7 @@ export async function runProcess(launch, options = {}) {
   catch (error) { await terminateProcess(child).catch(() => {}); throw wrapError(error, 'ZCODE_PROCESS_FAILED', 'The ZCode process failed.', { category: 'runtime', remedy: 'Verify the installation and retry.' }); }
   finally { clearTimeout(timer); signal?.removeEventListener('abort', resolveAbort); }
   if (outcome === 'aborted') { await terminateProcess(child); throw new PluginError('ZCODE_PROCESS_ABORTED', 'The ZCode process was aborted.', { category: 'state', remedy: 'Retry when the operation should continue.' }); }
-  if (outcome === 'timeout' || overflow) { await terminateProcess(child); throw new PluginError(outcome === 'timeout' ? 'ZCODE_PROCESS_TIMEOUT' : 'ZCODE_PROCESS_OUTPUT_LIMIT', outcome === 'timeout' ? 'The ZCode process timed out.' : 'The ZCode process exceeded its output limit.', { category: outcome === 'timeout' ? 'timeout' : 'runtime', remedy: 'Inspect the ZCode installation and retry.', details: { timeoutMs, maxOutputBytes } }); }
+  if (outcome === 'timeout' || overflow) { await terminateProcess(child); throw new PluginError(outcome === 'timeout' ? 'ZCODE_PROCESS_TIMEOUT' : 'ZCODE_PROCESS_OUTPUT_LIMIT', outcome === 'timeout' ? 'The ZCode process timed out.' : 'The ZCode process exceeded its output limit.', { category: outcome === 'timeout' ? 'timeout' : 'runtime', remedy: 'Inspect the ZCode installation and retry.', details: { timeoutMs, maxOutputBytes, capturedOutputBytes } }); }
   return { ...outcome, stdout, stderr };
 }
 
