@@ -479,7 +479,12 @@ export class ZCodeBroker {
           for (const sessionId of released.splice(0)) if (!failed.includes(sessionId)) failed.push(sessionId);
         };
         try {
-          const commit = await withinOwnerReleaseDeadline(deadline, (signal) => this.commitOwnerMutation(false, commitMutationCurrent, (sessions) => { failReleasedSessions(released.filter((sessionId) => !releaseSessionCurrent(sessionId, false))); for (const sessionId of released) if (sessions[sessionId] === ownerId) delete sessions[sessionId]; }, { timeoutMs: Math.max(0, deadline - Date.now()), signal }));
+          const commit = await withinOwnerReleaseDeadline(deadline, (signal) => this.commitOwnerMutation(false, commitMutationCurrent, (sessions) => { failReleasedSessions(released.filter((sessionId) => !releaseSessionCurrent(sessionId, false))); for (const sessionId of released) if (sessions[sessionId] === ownerId) delete sessions[sessionId]; }, { timeoutMs: Math.max(0, deadline - Date.now()), signal }, async ({ error, commit: uncertainCommit }) => {
+            let winner; try { winner = await this.readOwnerStoreUnlocked(false, { signal }); } catch { throw error; }
+            const releaseIds = new Set(released); const outsideIds = new Set([...Object.keys(winner.sessions), ...Object.keys(uncertainCommit.after)].filter((sessionId) => !releaseIds.has(sessionId)));
+            if ([...outsideIds].some((sessionId) => !sameOwnerEntry(winner.sessions, uncertainCommit.after, sessionId)) || released.some((sessionId) => releaseSessionCurrent(sessionId, true) ? !sameOwnerEntry(winner.sessions, uncertainCommit.after, sessionId) : !sameOwnerEntry(winner.sessions, uncertainCommit.after, sessionId) && !sameOwnerEntry(winner.sessions, uncertainCommit.before, sessionId))) throw error;
+            this.applyOwnership(winner.sessions); uncertainCommit.committed = true; return uncertainCommit;
+          }));
           let committed = commit.committed;
           if (committed) {
             const stale = released.filter((sessionId) => !releaseSessionCurrent(sessionId, true)); failReleasedSessions(stale);
@@ -743,6 +748,7 @@ export class ZCodeBroker {
 
   async compensateOwnerCommit(commit, sessionIds, lockOptions = {}, preserveAfterSessionIds = []) {
     await mutateOwnerStore(this.ownershipPath, false, async (sessions) => {
+      if (preserveAfterSessionIds.some((sessionId) => !sameOwnerEntry(sessions, commit.after, sessionId))) throw ownerStoreInvalid();
       let changed = false; let applied = sessions;
       for (const sessionId of sessionIds) {
         if (sameOwnerEntry(sessions, commit.before, sessionId)) continue;
