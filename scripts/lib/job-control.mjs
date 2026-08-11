@@ -38,11 +38,12 @@ export function createJobController(options) {
   return {
     /** @param {string} workspace @param {string} ownerSessionId */
     async listOwned(workspace, ownerSessionId) {
-      return (await options.store.listJobs(workspace)).filter((/** @type {any} */ job) => job.ownerSessionId === ownerSessionId);
+      return options.store.listOwnedJobs(workspace, ownerSessionId);
     },
     /** @param {string} workspace @param {string} ownerSessionId @param {string} [jobId] @param {'status'|'result'|'cancel'} [eligibility] */
     async selectOwned(workspace, ownerSessionId, jobId, eligibility = 'status') {
-      const jobs = (await options.store.listJobs(workspace)).filter((/** @type {any} */ job) => job.ownerSessionId === ownerSessionId && (jobId ? job.id === jobId : eligibleImplicit(job, eligibility)));
+      const jobs = (await options.store.listOwnedJobs(workspace, ownerSessionId))
+        .filter((/** @type {any} */ job) => jobId ? job.id === jobId : eligibleImplicit(job, eligibility));
       const selected = jobs.at(-1);
       if (!selected) throw new PluginError('OWNED_JOB_NOT_FOUND', 'No matching owned job was found.', { category: 'authorization', remedy: 'Check the job ID and invoke the command from its owning Codex session.' });
       return selected;
@@ -75,7 +76,8 @@ export function createJobController(options) {
     },
     /** @param {string} workspace @param {string} ownerSessionId */
     async resumeCandidate(workspace, ownerSessionId) {
-      const candidates = (await options.store.listJobs(workspace)).filter((/** @type {any} */ job) => job.ownerSessionId === ownerSessionId && job.command === 'rescue' && typeof job.zcodeSessionId === 'string' && ['running', 'succeeded', 'failed'].includes(job.status));
+      const candidates = (await options.store.listOwnedJobs(workspace, ownerSessionId))
+        .filter((/** @type {any} */ job) => job.command === 'rescue' && typeof job.zcodeSessionId === 'string' && ['running', 'succeeded', 'failed'].includes(job.status));
       return candidates.at(-1) ?? null;
     },
   };
@@ -114,7 +116,7 @@ async function performCancellation(input, attempts, election) {
   if (job.status === 'queued') {
     if (job.workerLeaseId) throw cancelError(job.id, 'The claimed worker is still starting; retry after it advances or recovery proves it orphaned.');
     const cancelled = await finishJob(input.options.store, input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null });
-    await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'succeeded'); return cancelled;
+    return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }
   if (!['running', 'cancelling'].includes(job.status)) throw cancelError(job.id, 'Job is not cancellable.');
   if (job.status === 'cancelling' && attempt.status === 'finalize-pending') {
@@ -122,7 +124,7 @@ async function performCancellation(input, attempts, election) {
     try {
       cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
     } catch (error) { throw finalizeError(job.id, error); }
-    await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'succeeded'); return cancelled;
+    return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }
   const cancelling = job.status === 'running' ? await input.options.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling', job.lastCancelError ? { lastCancelError: null } : {}) : job;
   try {
@@ -140,7 +142,18 @@ async function performCancellation(input, attempts, election) {
   catch (error) {
     await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'finalize-pending'); throw finalizeError(job.id, error);
   }
-  await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'succeeded'); return cancelled;
+  return recordCancelledAttempt(input, attempts, attempt, cancelled);
+}
+
+/** Durable job terminality is authoritative; cancellation attempts remain auxiliary election evidence. @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {any} attempt @param {any} cancelled */
+async function recordCancelledAttempt(input, attempts, attempt, cancelled) {
+  try { await attempts.update(cancelled.id, input.ownerSessionId, attempt.attemptId, 'succeeded'); return cancelled; }
+  catch (error) {
+    let winner;
+    try { winner = await input.options.store.readJob(input.workspace, input.jobId); } catch { throw error; }
+    if (winner.ownerSessionId === input.ownerSessionId && winner.status === 'cancelled') return winner;
+    throw error;
+  }
 }
 
 /** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {any} outcome */

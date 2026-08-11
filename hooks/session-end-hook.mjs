@@ -34,8 +34,8 @@ try {
         requestTimeoutMs: 250,
       }),
     });
-    const retainedWritableGuard = (await store.listJobs(input.cwd)).some((job) => job.ownerSessionId === ownerSessionId
-      && job.command === 'rescue' && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
+    const retainedWritableGuard = (await store.listOwnedJobs(input.cwd, ownerSessionId)).some((job) => job.command === 'rescue'
+      && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
     ownerReleaseSafe = !retainedWritableGuard;
   } catch { /* retain broker ownership unless durable state proves release safe */ }
   if (ownerReleaseSafe) await releaseManagedZCodeOwner({ dataRoot, workspace: input.cwd, ownerId, requestTimeoutMs: 500 }).catch(() => null);

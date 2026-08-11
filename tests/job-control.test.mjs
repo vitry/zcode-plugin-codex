@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
-import { mkdir, mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -41,6 +41,17 @@ test('latest selection is canonical-workspace and owner confined', async () => {
   await store.reserveJob({ workspace, ...reservation, ownerSessionId: 'session-b', readOnly: true });
   assert.equal((await controller.selectOwned(workspace, 'session-a')).id, mine.id);
   assert.equal((await controller.listOwned(workspace, 'session-a')).length, 1);
+});
+
+test('owned client selection ignores a corrupt foreign job through its trusted owner binding', async () => {
+  const { root, workspace, store, controller } = await setup();
+  const mine = await store.reserveJob({ workspace, ...reservation, readOnly: true });
+  const foreign = await store.reserveJob({ workspace, ...reservation, ownerSessionId: 'session-b', readOnly: true });
+  const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace });
+  await writeFile(join(storage.directory, 'jobs', `${foreign.id}.json`), '{');
+
+  assert.deepEqual((await controller.listOwned(workspace, 'session-a')).map((/** @type {any} */ job) => job.id), [mine.id]);
+  assert.equal((await controller.selectOwned(workspace, 'session-a', mine.id)).id, mine.id);
 });
 
 test('implicit cancel and result use command-specific eligibility while explicit IDs stay exact', async () => {
@@ -131,6 +142,31 @@ test('queued cancellation is safe and terminal cancellation is idempotent', asyn
   const queued = await store.reserveJob({ workspace, ...reservation });
   assert.equal((await controller.cancel(workspace, queued.id, 'session-a')).status, 'cancelled');
   assert.equal((await controller.cancel(workspace, queued.id, 'session-a')).status, 'cancelled');
+});
+
+test('queued and running cancellation return a durable cancelled winner after attempt evidence faults', async () => {
+  for (const initialStatus of ['queued', 'running']) {
+    const { root, workspace, store } = await setup();
+    const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: `turn-${initialStatus}` });
+    if (initialStatus === 'running') await store.transitionJob(workspace, job.id, ['queued'], 'running', { zcodeSessionId: `zs-${initialStatus}` });
+    const attemptFile = await attemptFixture(root, workspace, job.id); let stops = 0; let injected = false;
+    const wrapped = {
+      ...store,
+      /** @param {string} workspaceArg @param {string} jobIdArg @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} [patch] */
+      finishJob: async (workspaceArg, jobIdArg, expectedStatuses, nextStatus, patch = {}) => {
+        const winner = await store.finishJob(workspaceArg, jobIdArg, expectedStatuses, nextStatus, patch);
+        if (!injected) { injected = true; await atomicWriteJson(attemptFile.path, { broken: true }); }
+        return winner;
+      },
+    };
+    const controller = createJobController({ store: wrapped, dataRoot: join(root, 'data'), stopSession: async () => { stops += 1; } });
+    const cancelled = await controller.cancel(workspace, job.id, 'session-a');
+    assert.equal(cancelled.status, 'cancelled', initialStatus);
+    assert.equal((await store.readJob(workspace, job.id)).status, 'cancelled', initialStatus);
+    assert.deepEqual(await attemptFile.read(), { broken: true }, `${initialStatus}: auxiliary attempt evidence stays conservative`);
+    assert.equal((await controller.cancel(workspace, job.id, 'session-a')).status, 'cancelled', initialStatus);
+    assert.equal(stops, initialStatus === 'running' ? 1 : 0, `${initialStatus}: terminal retry must not stop again`);
+  }
 });
 
 test('cancellation retains a queued job already claimed by a potentially live worker', async () => {

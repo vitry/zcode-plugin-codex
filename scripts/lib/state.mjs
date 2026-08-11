@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { readdir } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
@@ -26,6 +26,11 @@ export const EFFORT_LEVELS = Object.freeze(['none', 'minimal', 'low', 'medium', 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling']);
 const BEFORE_MESSAGE_IDS_MAX_BYTES = 256 * 1024;
+const OWNER_INDEX_VERSION = 1;
+const OWNER_SESSION_ID_MAX_BYTES = 4 * 1024;
+const OWNER_BINDING_MAX_BYTES = 8 * 1024;
+const OWNER_INDEX_MARKER_MAX_BYTES = 1024;
+const OWNER_JOB_ENTRIES_MAX = 10_000;
 const JOB_PATCH_FIELDS = new Set([
   'beforeMessageIds', 'childPid', 'effort', 'error', 'exitCode', 'finishedAt', 'inputId',
   'lastCancelError', 'model', 'promptArtifact', 'resultArtifact', 'startedAt', 'startRevision',
@@ -55,6 +60,7 @@ export function createStateStore(options) {
       const storage = await jobStorage(dataRoot, reservation.workspace);
       return withFileLock(storage.lockPath, async () => {
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
+        await ensureOwnerIndex(storage, jobs);
         if (!reservation.readOnly && jobs.some(isActiveWritableJob)) {
           throw new PluginError('WRITABLE_JOB_EXISTS', 'This workspace already has an active writable rescue job.', {
             category: 'state',
@@ -76,6 +82,9 @@ export function createStateStore(options) {
           createdAt: timestamp,
           updatedAt: timestamp,
         };
+        // Publish the trusted owner binding first. A crash can then leave only a
+        // harmless dangling binding, never an unindexed canonical job.
+        await writeOwnerBinding(storage, job);
         await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), job);
         return job;
       });
@@ -194,6 +203,23 @@ export function createStateStore(options) {
           || left.id.localeCompare(right.id));
       });
     },
+
+    /** @param {string} workspace @param {string} ownerSessionId */
+    async listOwnedJobs(workspace, ownerSessionId) {
+      if (!isNonEmptyString(workspace) || !isBoundedOwnerSessionId(ownerSessionId)) {
+        throw new PluginError('OWNED_JOB_LIST_INPUT_INVALID', 'Owned job listing input is invalid.', {
+          category: 'state',
+          remedy: 'Provide one workspace and its exact bounded Codex session identifier.',
+        });
+      }
+      const storage = await jobStorage(dataRoot, workspace);
+      return withFileLock(storage.lockPath, async () => {
+        await ensureOwnerIndex(storage);
+        const jobs = await readOwnedJobs(storage, ownerSessionId);
+        return jobs.sort((left, right) => left.createdAt.localeCompare(right.createdAt)
+          || left.id.localeCompare(right.id));
+      });
+    },
   };
 }
 
@@ -254,8 +280,167 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
 async function jobStorage(dataRoot, workspace) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const jobsDirectory = join(storage.directory, 'jobs');
-  await ensurePrivateDirectory(jobsDirectory);
-  return { ...storage, jobsDirectory, lockPath: join(storage.directory, '.state.lock') };
+  const ownerIndexDirectory = join(storage.directory, 'job-owners');
+  await Promise.all([
+    ensurePrivateDirectory(jobsDirectory),
+    ensurePrivateDirectory(ownerIndexDirectory),
+  ]);
+  return {
+    ...storage,
+    jobsDirectory,
+    ownerIndexDirectory,
+    ownerIndexMarkerPath: join(ownerIndexDirectory, 'index.json'),
+    lockPath: join(storage.directory, '.state.lock'),
+  };
+}
+
+/**
+ * Build the owner index under the workspace state lock. The completion marker
+ * is published last, so an interrupted legacy migration is safely retried.
+ * @param {any} storage @param {any[]} [knownJobs]
+ */
+async function ensureOwnerIndex(storage, knownJobs) {
+  const marker = await readOwnerIndexMarker(storage.ownerIndexMarkerPath);
+  if (marker !== null) return;
+  let jobs = knownJobs;
+  if (jobs === undefined) {
+    jobs = [];
+    const entries = (await readdir(storage.jobsDirectory))
+      .filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry));
+    if (entries.length > OWNER_JOB_ENTRIES_MAX) throw ownedJobIndexInvalid();
+    for (const entry of entries) {
+      const jobId = entry.slice(0, -'.json'.length);
+      try {
+        jobs.push(await readJobRecord(
+          join(storage.jobsDirectory, entry),
+          jobId,
+          storage.workspacePath,
+        ));
+      } catch {
+        throw ownedJobIndexInvalid(jobId);
+      }
+    }
+  }
+  if (jobs.length > OWNER_JOB_ENTRIES_MAX) throw ownedJobIndexInvalid();
+  for (const job of jobs) await writeOwnerBinding(storage, job);
+  await atomicWriteJson(storage.ownerIndexMarkerPath, {
+    complete: true,
+    version: OWNER_INDEX_VERSION,
+  });
+}
+
+/** @param {string} path */
+async function readOwnerIndexMarker(path) {
+  let marker;
+  try {
+    marker = await readBoundedJson(path, OWNER_INDEX_MARKER_MAX_BYTES);
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error)?.code === 'ENOENT') return null;
+    throw ownedJobIndexInvalid();
+  }
+  if (!isPlainJsonObject(marker)
+    || Object.keys(marker).sort().join(',') !== 'complete,version'
+    || marker.complete !== true || marker.version !== OWNER_INDEX_VERSION) {
+    throw ownedJobIndexInvalid();
+  }
+  return marker;
+}
+
+/** @param {any} storage @param {any} job */
+async function writeOwnerBinding(storage, job) {
+  if (!isDigest(job?.id) || !isBoundedOwnerSessionId(job?.ownerSessionId)) {
+    throw ownedJobIndexInvalid(isDigest(job?.id) ? job.id : undefined);
+  }
+  const directory = ownerBindingDirectory(storage.ownerIndexDirectory, job.ownerSessionId);
+  await ensurePrivateDirectory(directory);
+  await atomicWriteJson(join(directory, `${job.id}.json`), {
+    jobId: job.id,
+    ownerSessionId: job.ownerSessionId,
+    version: OWNER_INDEX_VERSION,
+  });
+}
+
+/** @param {any} storage @param {string} ownerSessionId */
+async function readOwnedJobs(storage, ownerSessionId) {
+  const directory = ownerBindingDirectory(storage.ownerIndexDirectory, ownerSessionId);
+  let entries;
+  try {
+    entries = await readdir(directory);
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error)?.code === 'ENOENT') return [];
+    throw ownedJobIndexInvalid();
+  }
+  const unexpected = entries.filter((entry) => !entry.startsWith('.')
+    && !/^[a-f0-9]{64}\.json$/.test(entry));
+  const canonical = entries.filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry));
+  if (unexpected.length > 0 || canonical.length > OWNER_JOB_ENTRIES_MAX) {
+    throw ownedJobIndexInvalid();
+  }
+  const jobs = [];
+  for (const entry of canonical) {
+    const jobId = entry.slice(0, -'.json'.length);
+    let binding;
+    try {
+      binding = await readBoundedJson(join(directory, entry), OWNER_BINDING_MAX_BYTES);
+    } catch {
+      throw ownedJobIndexInvalid(jobId);
+    }
+    if (!isPlainJsonObject(binding)
+      || Object.keys(binding).sort().join(',') !== 'jobId,ownerSessionId,version'
+      || binding.version !== OWNER_INDEX_VERSION || binding.jobId !== jobId
+      || binding.ownerSessionId !== ownerSessionId) {
+      throw ownedJobIndexInvalid(jobId);
+    }
+    let job;
+    try {
+      job = await readJobRecord(
+        jobPath(storage.jobsDirectory, jobId),
+        jobId,
+        storage.workspacePath,
+      );
+    } catch (error) {
+      // Binding-first publication intentionally makes a missing canonical job
+      // a recoverable crash remnant.
+      if (error instanceof PluginError && error.code === 'JOB_NOT_FOUND') continue;
+      throw ownedJobRecordInvalid(jobId);
+    }
+    if (job.ownerSessionId !== ownerSessionId) throw ownedJobRecordInvalid(jobId);
+    jobs.push(job);
+  }
+  return jobs;
+}
+
+/** @param {string} root @param {string} ownerSessionId */
+function ownerBindingDirectory(root, ownerSessionId) {
+  const digest = createHash('sha256')
+    .update(`zcode-owner-index-v${OWNER_INDEX_VERSION}\0${ownerSessionId}`)
+    .digest('hex');
+  return join(root, digest);
+}
+
+/** @param {string} path @param {number} maximumBytes */
+async function readBoundedJson(path, maximumBytes) {
+  const bytes = await readFile(path);
+  if (bytes.byteLength > maximumBytes) throw new Error('bounded JSON file exceeds its limit');
+  return JSON.parse(bytes.toString('utf8'));
+}
+
+/** @param {string} [jobId] */
+function ownedJobIndexInvalid(jobId) {
+  return new PluginError('OWNED_JOB_INDEX_INVALID', 'Trusted owned-job index failed validation.', {
+    category: 'state',
+    remedy: 'Repair the private owner index before retrying recovery.',
+    details: jobId === undefined ? {} : { jobId },
+  });
+}
+
+/** @param {string} jobId */
+function ownedJobRecordInvalid(jobId) {
+  return new PluginError('OWNED_JOB_RECORD_INVALID', `Owned job ${jobId} failed validation.`, {
+    category: 'state',
+    remedy: 'Repair the owned canonical job record before retrying recovery.',
+    details: { jobId },
+  });
 }
 
 /** @param {string} jobsDirectory @param {string} expectedWorkspacePath */
@@ -293,7 +478,7 @@ function validateReservation(reservation) {
   if (!isPlainJsonObject(reservation)) throw invalidReservation(['reservation']);
   const invalidFields = [];
   if (!isNonEmptyString(reservation.workspace)) invalidFields.push('workspace');
-  if (!isNonEmptyString(reservation.ownerSessionId)) invalidFields.push('ownerSessionId');
+  if (!isBoundedOwnerSessionId(reservation.ownerSessionId)) invalidFields.push('ownerSessionId');
   if (!isNonEmptyString(reservation.ownerTurnId)) invalidFields.push('ownerTurnId');
   if (!JOB_COMMANDS.includes(reservation.command)) invalidFields.push('command');
   if (typeof reservation.readOnly !== 'boolean') invalidFields.push('readOnly');
@@ -369,7 +554,7 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
   const validShape = isPlainJsonObject(job)
     && job.id === expectedJobId
     && job.workspace === expectedWorkspacePath
-    && isNonEmptyString(job.ownerSessionId)
+    && isBoundedOwnerSessionId(job.ownerSessionId)
     && isNonEmptyString(job.ownerTurnId)
     && JOB_COMMANDS.includes(job.command)
     && typeof job.readOnly === 'boolean'
@@ -528,6 +713,15 @@ function isTrackedError(value) {
 
 /** @param {unknown} value */
 function isBoundedThreadId(value) { return isNonEmptyString(value) && Buffer.byteLength(value) <= 512 && ![...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code <= 31 || code === 127; }); }
+
+/** @param {unknown} value */
+function isBoundedOwnerSessionId(value) {
+  return isNonEmptyString(value) && Buffer.byteLength(value) <= OWNER_SESSION_ID_MAX_BYTES
+    && ![...value].some((character) => {
+      const code = /** @type {number} */ (character.codePointAt(0));
+      return code <= 31 || code === 127;
+    });
+}
 
 /** @param {unknown} value */
 function isModel(value) {

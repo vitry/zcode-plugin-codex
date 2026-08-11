@@ -19,7 +19,8 @@ export async function withWorkerLease(input, operation) {
 
 /** Reconcile only provably orphaned jobs owned by one exact Codex session. @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,createClient:(job:any,ownerId:string)=>Promise<any>,reconcileOwnership?:(input:any)=>Promise<any>,now?:()=>number,signal?:AbortSignal}} input */
 export async function reconcileOwnedJobs(input) {
-  const jobs = (await input.store.listJobs(input.workspace)).filter((/** @type {any} */ job) => job.ownerSessionId === input.ownerSessionId && !TERMINAL.has(job.status));
+  const jobs = (await input.store.listOwnedJobs(input.workspace, input.ownerSessionId))
+    .filter((/** @type {any} */ job) => !TERMINAL.has(job.status));
   const outcomes = [];
   for (const job of jobs) {
     try { outcomes.push(await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'owner-recovery' })); }
@@ -47,9 +48,9 @@ export async function scavengeWritableJobs(input) {
  * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,lockTimeoutMs?:number,requestTimeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal}} input
  */
 export async function settleEndedOwnerWritableJob(input) {
-  const selected = (await input.store.listJobs(input.workspace))
-    .filter((/** @type {any} */ job) => job.ownerSessionId === input.ownerSessionId
-      && job.command === 'rescue' && job.readOnly === false && !TERMINAL.has(job.status))
+  const selected = (await input.store.listOwnedJobs(input.workspace, input.ownerSessionId))
+    .filter((/** @type {any} */ job) => job.command === 'rescue'
+      && job.readOnly === false && !TERMINAL.has(job.status))
     .at(-1);
   if (!selected) return null;
   try {

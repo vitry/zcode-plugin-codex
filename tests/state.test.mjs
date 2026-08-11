@@ -363,6 +363,46 @@ test('persisted jobs are schema-validated before use', async () => {
   }
 });
 
+test('owned job listing migrates valid legacy records and fails closed without path disclosure on corrupt legacy state', async () => {
+  const { dataRoot, root, workspace } = await fixture(); const source = createStateStore({ dataRoot });
+  const legacyJob = await source.reserveJob({ workspace, ...jobInput });
+
+  const migratedDataRoot = join(root, 'legacy-valid-data');
+  const migratedStorage = await resolveWorkspaceStorage({ dataRoot: migratedDataRoot, workspace });
+  await atomicWriteJson(join(migratedStorage.directory, 'jobs', `${legacyJob.id}.json`), legacyJob);
+  const migratedStore = createStateStore({ dataRoot: migratedDataRoot });
+  assert.deepEqual(await migratedStore.listOwnedJobs(workspace, legacyJob.ownerSessionId), [legacyJob]);
+
+  const corruptDataRoot = join(root, 'legacy-corrupt-data');
+  const corruptStorage = await resolveWorkspaceStorage({ dataRoot: corruptDataRoot, workspace });
+  await mkdir(join(corruptStorage.directory, 'jobs'), { recursive: true });
+  await writeFile(join(corruptStorage.directory, 'jobs', `${legacyJob.id}.json`), '{');
+  const corruptStore = createStateStore({ dataRoot: corruptDataRoot });
+  await assert.rejects(corruptStore.listOwnedJobs(workspace, legacyJob.ownerSessionId), (error) => {
+    assert.ok(error instanceof PluginError);
+    assert.equal(error.code, 'OWNED_JOB_INDEX_INVALID'); assert.deepEqual(error.details, { jobId: legacyJob.id });
+    assert.doesNotMatch(error.message, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    return true;
+  });
+});
+
+test('owned job bindings enforce exact bounded schema and tolerate only binding-first crash remnants', async () => {
+  const { dataRoot, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput }); const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const indexRoot = join(storage.directory, 'job-owners');
+  const [ownerDirectory] = (await readdir(indexRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  assert.ok(ownerDirectory, 'reservation must publish one hashed owner binding directory');
+  const bindingPath = join(indexRoot, ownerDirectory.name, `${job.id}.json`); const original = await readFile(bindingPath, 'utf8');
+
+  await atomicWriteJson(bindingPath, { jobId: job.id, ownerSessionId: job.ownerSessionId, version: 1, extra: true });
+  await assert.rejects(store.listOwnedJobs(workspace, job.ownerSessionId), { code: 'OWNED_JOB_INDEX_INVALID', details: { jobId: job.id } });
+  await writeFile(bindingPath, 'x'.repeat(8 * 1024 + 1));
+  await assert.rejects(store.listOwnedJobs(workspace, job.ownerSessionId), { code: 'OWNED_JOB_INDEX_INVALID', details: { jobId: job.id } });
+
+  await writeFile(bindingPath, original); await rm(join(storage.directory, 'jobs', `${job.id}.json`));
+  assert.deepEqual(await store.listOwnedJobs(workspace, job.ownerSessionId), [], 'binding-first publication may leave one ignorable missing-job remnant');
+});
+
 test('persisted jobs are bound to their filename and canonical workspace scope', async () => {
   const { dataRoot, root, workspace } = await fixture();
   const otherWorkspace = join(root, 'other-workspace');
