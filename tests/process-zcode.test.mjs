@@ -42,12 +42,20 @@ test('runProcess fails closed on timeout and bounded output', async () => {
   await assert.rejects(runProcess({ command: process.execPath, args: ['-e', 'process.stdout.write("x".repeat(4096))'], target: process.execPath }, { maxOutputBytes: 128 }), { code: 'ZCODE_PROCESS_OUTPUT_LIMIT' });
 });
 
-test('runProcess waits for inherited output pipes to close after the direct child exits', async () => {
-  const delayedWriter = 'setTimeout(() => process.stdout.write("exact-sha\\n"), 20)';
-  const source = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(delayedWriter)}], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] }).unref();`;
-  const result = await runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath });
-  assert.equal(result.code, 0);
-  assert.equal(result.stdout, 'exact-sha\n');
+test('runProcess flushes direct-child output without waiting for an inherited descendant pipe', { timeout: 2_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-process-pipe-')); const pidFile = join(directory, 'descendant.pid');
+  const descendant = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setTimeout(()=>process.stdout.write('late-descendant\\n'),100);setInterval(()=>{},10000);`;
+  const source = `const {spawn}=require('node:child_process');process.stdout.write('direct-child\\n');spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit']}).unref();`;
+  let descendantPid;
+  try {
+    const result = await runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath }, { timeoutMs: 500 });
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, 'direct-child\n');
+  } finally {
+    for (let turn = 0; turn < 100 && !descendantPid; turn += 1) { descendantPid = Number(await readFile(pidFile, 'utf8').catch(() => '')); if (!descendantPid) await new Promise((resolve) => setImmediate(resolve)); }
+    if (Number.isSafeInteger(descendantPid) && descendantPid > 1) { try { process.kill(descendantPid, 'SIGTERM'); } catch { /* exited */ } await assertProcessGone(descendantPid); }
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('termination kills the spawned process group including descendants', async () => {

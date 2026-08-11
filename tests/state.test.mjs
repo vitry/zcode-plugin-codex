@@ -1130,6 +1130,15 @@ test('the advisory lock keeps one stable inode and never renames ownership metad
   });
 });
 
+test('concurrent first use publishes one valid advisory lock layout', async () => {
+  const { root } = await fixture(); const lockPath = join(root, 'concurrent-layout.lock'); let inside = 0; let maximumInside = 0;
+  try {
+    await Promise.all(Array.from({ length: 16 }, () => withFileLock(lockPath, async () => { inside += 1; maximumInside = Math.max(maximumInside, inside); await new Promise((resolvePromise) => setImmediate(resolvePromise)); inside -= 1; })));
+    assert.equal(maximumInside, 1);
+    assert.deepEqual(await readdir(lockPath), ['advisory.lock']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('lock timing options reject non-finite, fractional, or unsafe values', async () => {
   const { root } = await fixture();
   const lockPath = join(root, 'options.lock');
