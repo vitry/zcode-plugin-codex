@@ -78,7 +78,16 @@ async function cleanRepositoryClone(t) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   const root = join(directory, 'source tree'); const output = join(directory, 'snapshot output');
   await git(['clone', '--no-local', '--quiet', repositoryRoot, root], directory);
+  const base = (await git(['rev-parse', 'HEAD'], root)).stdout.trim();
+  await git(['checkout', '--detach', '--quiet', base], root);
+  await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '--quiet', '-m', 'detached merge side'], root);
+  const side = (await git(['rev-parse', 'HEAD'], root)).stdout.trim();
+  await git(['checkout', '--detach', '--quiet', base], root);
+  await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'merge', '--no-ff', '--quiet', '-m', 'detached merge checkout', side], root);
   const sha = (await git(['rev-parse', 'HEAD'], root)).stdout.trim();
+  assert.equal((await git(['rev-parse', '--verify', 'HEAD^2'], root)).stdout.trim(), side);
+  const symbolicHead = await runProcess({ command: 'git', args: [] }, { cwd: root, args: ['symbolic-ref', '--quiet', 'HEAD'], timeoutMs: 10_000 });
+  assert.notEqual(symbolicHead.code, 0, 'fixture must model a detached pull-request merge checkout');
   return { directory, root, output, sha };
 }
 

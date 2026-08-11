@@ -42,6 +42,14 @@ test('runProcess fails closed on timeout and bounded output', async () => {
   await assert.rejects(runProcess({ command: process.execPath, args: ['-e', 'process.stdout.write("x".repeat(4096))'], target: process.execPath }, { maxOutputBytes: 128 }), { code: 'ZCODE_PROCESS_OUTPUT_LIMIT' });
 });
 
+test('runProcess waits for inherited output pipes to close after the direct child exits', async () => {
+  const delayedWriter = 'setTimeout(() => process.stdout.write("exact-sha\\n"), 20)';
+  const source = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(delayedWriter)}], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] }).unref();`;
+  const result = await runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath });
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, 'exact-sha\n');
+});
+
 test('termination kills the spawned process group including descendants', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-tree-')); const pidFile = join(directory, 'pid');
   const source = `const {spawn}=require('node:child_process'),fs=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},10000)'],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));setInterval(()=>{},10000);`;
