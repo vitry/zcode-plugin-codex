@@ -273,6 +273,7 @@ input.on('line', async (line) => {
     }
     case 'v4/conversation/unsubscribe':
       if (process.env.FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_FAIL === '1') send({ id: message.id, error: { code: -32099, message: 'unsubscribe failed' } });
+      else if (process.env.FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED === '1') send({ id: message.id, result: { malformed: true } });
       else send({ id: message.id, result: {} });
       break;
     case 'session/read': {
