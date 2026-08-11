@@ -36,3 +36,11 @@ if (mode === 'after-publish') {
     return emit.call(this, event, ...args);
   };
 }
+
+if (mode === 'stale-listener') {
+  const endpoint = process.env.FAKE_BROKER_STARTUP_ENDPOINT;
+  const server = net.createServer();
+  server.listen(endpoint, () => {
+    if (marker) fs.writeFileSync(marker, JSON.stringify({ pid: process.pid }));
+  });
+}
