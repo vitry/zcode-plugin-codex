@@ -7,8 +7,11 @@ import {
   mkdir,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
+  symlink,
+  truncate,
   utimes,
   writeFile,
 } from 'node:fs/promises';
@@ -401,6 +404,86 @@ test('owned job bindings enforce exact bounded schema and tolerate only binding-
 
   await writeFile(bindingPath, original); await rm(join(storage.directory, 'jobs', `${job.id}.json`));
   assert.deepEqual(await store.listOwnedJobs(workspace, job.ownerSessionId), [], 'binding-first publication may leave one ignorable missing-job remnant');
+});
+
+test('owned job index repairs deleted bindings and mixed-version canonical writes before owner selection', async () => {
+  const { dataRoot, workspace } = await fixture(); const firstStore = createStateStore({ dataRoot });
+  const first = await firstStore.reserveJob({ workspace, ...jobInput }); const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const indexRoot = join(storage.directory, 'job-owners');
+  const [firstOwnerDirectory] = (await readdir(indexRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  assert.ok(firstOwnerDirectory);
+  await rm(join(indexRoot, firstOwnerDirectory.name, `${first.id}.json`));
+
+  const legacyId = 'b'.repeat(64);
+  const legacy = {
+    ...first,
+    id: legacyId,
+    ownerSessionId: 'session-from-old-writer',
+    ownerTurnId: 'turn-from-old-writer',
+    readOnly: true,
+  };
+  await atomicWriteJson(join(storage.directory, 'jobs', `${legacyId}.json`), legacy);
+
+  const secondStore = createStateStore({ dataRoot });
+  assert.deepEqual(await secondStore.listOwnedJobs(workspace, first.ownerSessionId), [first], 'a deleted binding must not make an existing owner disappear');
+  assert.deepEqual(await secondStore.listOwnedJobs(workspace, legacy.ownerSessionId), [legacy], 'a canonical record from an older writer must be indexed before owner selection');
+
+  const marker = JSON.parse(await readFile(join(indexRoot, 'index.json'), 'utf8'));
+  assert.deepEqual(Object.keys(marker).sort(), ['bindingJobIds', 'canonicalJobIds', 'complete', 'version']);
+  assert.equal(marker.version, 2); assert.equal(marker.complete, true);
+  assert.deepEqual(marker.canonicalJobIds.count, 2); assert.deepEqual(marker.bindingJobIds.count, 2);
+  assert.match(marker.canonicalJobIds.digest, /^[a-f0-9]{64}$/); assert.match(marker.bindingJobIds.digest, /^[a-f0-9]{64}$/);
+  assert.deepEqual(marker.canonicalJobIds, marker.bindingJobIds, 'the repaired complete index must summarize the same canonical and binding filename set');
+});
+
+test('owned job index rejects directory and binding symlinks that escape private workspace state', async () => {
+  const directoryFixture = await fixture(); const directoryStore = createStateStore({ dataRoot: directoryFixture.dataRoot });
+  const directoryJob = await directoryStore.reserveJob({ workspace: directoryFixture.workspace, ...jobInput });
+  const directoryStorage = await resolveWorkspaceStorage({ dataRoot: directoryFixture.dataRoot, workspace: directoryFixture.workspace });
+  const indexRoot = join(directoryStorage.directory, 'job-owners'); const outsideIndex = join(directoryFixture.root, 'outside-index');
+  await rename(indexRoot, outsideIndex); await symlink(outsideIndex, indexRoot);
+  await assert.rejects(directoryStore.listOwnedJobs(directoryFixture.workspace, directoryJob.ownerSessionId), (error) => {
+    assert.ok(error instanceof PluginError);
+    assert.equal(error.code, 'OWNED_JOB_INDEX_INVALID');
+    assert.doesNotMatch(error.message, new RegExp(directoryFixture.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    return true;
+  });
+
+  const bindingFixture = await fixture(); const bindingStore = createStateStore({ dataRoot: bindingFixture.dataRoot });
+  const bindingJob = await bindingStore.reserveJob({ workspace: bindingFixture.workspace, ...jobInput });
+  const bindingStorage = await resolveWorkspaceStorage({ dataRoot: bindingFixture.dataRoot, workspace: bindingFixture.workspace });
+  const bindingIndex = join(bindingStorage.directory, 'job-owners');
+  const [bindingOwnerDirectory] = (await readdir(bindingIndex, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  assert.ok(bindingOwnerDirectory);
+  const bindingPath = join(bindingIndex, bindingOwnerDirectory.name, `${bindingJob.id}.json`); const outsideBinding = join(bindingFixture.root, 'outside-binding.json');
+  await rename(bindingPath, outsideBinding); await symlink(outsideBinding, bindingPath);
+  await assert.rejects(bindingStore.listOwnedJobs(bindingFixture.workspace, bindingJob.ownerSessionId), (error) => {
+    assert.ok(error instanceof PluginError);
+    assert.equal(error.code, 'OWNED_JOB_INDEX_INVALID');
+    assert.doesNotMatch(error.message, new RegExp(bindingFixture.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    return true;
+  });
+  assert.deepEqual(JSON.parse(await readFile(outsideBinding, 'utf8')), { jobId: bindingJob.id, ownerSessionId: bindingJob.ownerSessionId, version: 1 });
+});
+
+test('owned job index rejects a huge sparse binding through its bounded reader', async () => {
+  const { dataRoot, root, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput }); const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const indexRoot = join(storage.directory, 'job-owners');
+  const [ownerDirectory] = (await readdir(indexRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  assert.ok(ownerDirectory);
+  const bindingPath = join(indexRoot, ownerDirectory.name, `${job.id}.json`); await truncate(bindingPath, 4 * 1024 * 1024 * 1024);
+  const started = Date.now();
+  await assert.rejects(store.listOwnedJobs(workspace, job.ownerSessionId), (error) => {
+    assert.ok(error instanceof PluginError);
+    assert.equal(error.code, 'OWNED_JOB_INDEX_INVALID'); assert.deepEqual(error.details, { jobId: job.id });
+    assert.doesNotMatch(error.message, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    return true;
+  });
+  assert.ok(Date.now() - started < 1_000, 'a sparse oversized binding must be rejected before an unbounded file read');
 });
 
 test('persisted jobs are bound to their filename and canonical workspace scope', async () => {

@@ -1,9 +1,16 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
-import { atomicWriteJson, ensurePrivateDirectory, readJsonFile, withFileLock } from './fs.mjs';
+import {
+  atomicWriteJson,
+  ensurePrivateDirectoryWithin,
+  readBoundedJsonFile,
+  readJsonFile,
+  readPrivateDirectory,
+  withFileLock,
+} from './fs.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
 import {
   MAX_PROGRESS_MESSAGE_BYTES,
@@ -26,7 +33,8 @@ export const EFFORT_LEVELS = Object.freeze(['none', 'minimal', 'low', 'medium', 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling']);
 const BEFORE_MESSAGE_IDS_MAX_BYTES = 256 * 1024;
-const OWNER_INDEX_VERSION = 1;
+const OWNER_INDEX_VERSION = 2;
+const OWNER_BINDING_VERSION = 1;
 const OWNER_SESSION_ID_MAX_BYTES = 4 * 1024;
 const OWNER_BINDING_MAX_BYTES = 8 * 1024;
 const OWNER_INDEX_MARKER_MAX_BYTES = 1024;
@@ -86,6 +94,7 @@ export function createStateStore(options) {
         // harmless dangling binding, never an unindexed canonical job.
         await writeOwnerBinding(storage, job);
         await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), job);
+        await publishOwnerIndexMarker(storage);
         return job;
       });
     },
@@ -281,10 +290,10 @@ async function jobStorage(dataRoot, workspace) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const jobsDirectory = join(storage.directory, 'jobs');
   const ownerIndexDirectory = join(storage.directory, 'job-owners');
-  await Promise.all([
-    ensurePrivateDirectory(jobsDirectory),
-    ensurePrivateDirectory(ownerIndexDirectory),
-  ]);
+  try {
+    await ensurePrivateDirectoryWithin(storage.directory, jobsDirectory);
+    await ensurePrivateDirectoryWithin(storage.directory, ownerIndexDirectory);
+  } catch { throw ownedJobIndexInvalid(); }
   return {
     ...storage,
     jobsDirectory,
@@ -295,54 +304,55 @@ async function jobStorage(dataRoot, workspace) {
 }
 
 /**
- * Build the owner index under the workspace state lock. The completion marker
- * is published last, so an interrupted legacy migration is safely retried.
+ * Validate and repair the owner index under the workspace state lock. The
+ * marker records both live filename sets and is published last, so a deleted
+ * binding, an older writer, or an interrupted reservation cannot hide a job.
  * @param {any} storage @param {any[]} [knownJobs]
  */
 async function ensureOwnerIndex(storage, knownJobs) {
-  const marker = await readOwnerIndexMarker(storage.ownerIndexMarkerPath);
-  if (marker !== null) return;
-  let jobs = knownJobs;
-  if (jobs === undefined) {
-    jobs = [];
-    const entries = (await readdir(storage.jobsDirectory))
-      .filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry));
-    if (entries.length > OWNER_JOB_ENTRIES_MAX) throw ownedJobIndexInvalid();
-    for (const entry of entries) {
-      const jobId = entry.slice(0, -'.json'.length);
+  const marker = await readOwnerIndexMarker(storage);
+  let layout = await readOwnerIndexLayout(storage);
+  const boundJobIds = new Set(layout.bindings.map((binding) => binding.jobId));
+  const firstUnbound = layout.canonicalJobIds.find((jobId) => !boundJobIds.has(jobId));
+  if (firstUnbound === undefined && marker?.version === OWNER_INDEX_VERSION
+    && ownerIndexMarkerMatches(marker, layout)) return layout;
+
+  const knownById = new Map((knownJobs ?? []).map((job) => [job.id, job]));
+  for (const jobId of layout.canonicalJobIds) {
+    if (boundJobIds.has(jobId)) continue;
+    let job = knownById.get(jobId);
+    if (job === undefined) {
       try {
-        jobs.push(await readJobRecord(
-          join(storage.jobsDirectory, entry),
-          jobId,
-          storage.workspacePath,
-        ));
-      } catch {
-        throw ownedJobIndexInvalid(jobId);
-      }
+        job = await readJobRecord(jobPath(storage.jobsDirectory, jobId), jobId, storage.workspacePath);
+      } catch { throw ownedJobIndexInvalid(jobId); }
     }
+    await writeOwnerBinding(storage, job);
   }
-  if (jobs.length > OWNER_JOB_ENTRIES_MAX) throw ownedJobIndexInvalid();
-  for (const job of jobs) await writeOwnerBinding(storage, job);
-  await atomicWriteJson(storage.ownerIndexMarkerPath, {
-    complete: true,
-    version: OWNER_INDEX_VERSION,
-  });
+  layout = await readOwnerIndexLayout(storage);
+  const repairedBindings = new Set(layout.bindings.map((binding) => binding.jobId));
+  const stillUnbound = layout.canonicalJobIds.find((jobId) => !repairedBindings.has(jobId));
+  if (stillUnbound !== undefined) throw ownedJobIndexInvalid(stillUnbound);
+  await writeOwnerIndexMarker(storage, layout);
+  return layout;
 }
 
-/** @param {string} path */
-async function readOwnerIndexMarker(path) {
+/** @param {any} storage */
+async function readOwnerIndexMarker(storage) {
   let marker;
   try {
-    marker = await readBoundedJson(path, OWNER_INDEX_MARKER_MAX_BYTES);
+    marker = await readBoundedJsonFile(
+      storage.ownerIndexDirectory,
+      storage.ownerIndexMarkerPath,
+      OWNER_INDEX_MARKER_MAX_BYTES,
+    );
   } catch (error) {
     if (/** @type {NodeJS.ErrnoException} */ (error)?.code === 'ENOENT') return null;
     throw ownedJobIndexInvalid();
   }
-  if (!isPlainJsonObject(marker)
-    || Object.keys(marker).sort().join(',') !== 'complete,version'
-    || marker.complete !== true || marker.version !== OWNER_INDEX_VERSION) {
-    throw ownedJobIndexInvalid();
-  }
+  if (isPlainJsonObject(marker)
+    && Object.keys(marker).sort().join(',') === 'complete,version'
+    && marker.complete === true && marker.version === OWNER_BINDING_VERSION) return marker;
+  if (!validOwnerIndexMarker(marker)) throw ownedJobIndexInvalid();
   return marker;
 }
 
@@ -352,12 +362,14 @@ async function writeOwnerBinding(storage, job) {
     throw ownedJobIndexInvalid(isDigest(job?.id) ? job.id : undefined);
   }
   const directory = ownerBindingDirectory(storage.ownerIndexDirectory, job.ownerSessionId);
-  await ensurePrivateDirectory(directory);
-  await atomicWriteJson(join(directory, `${job.id}.json`), {
-    jobId: job.id,
-    ownerSessionId: job.ownerSessionId,
-    version: OWNER_INDEX_VERSION,
-  });
+  try {
+    await ensurePrivateDirectoryWithin(storage.ownerIndexDirectory, directory);
+    await atomicWriteJson(join(directory, `${job.id}.json`), {
+      jobId: job.id,
+      ownerSessionId: job.ownerSessionId,
+      version: OWNER_BINDING_VERSION,
+    }, { privateRoot: storage.ownerIndexDirectory });
+  } catch { throw ownedJobIndexInvalid(job.id); }
 }
 
 /** @param {any} storage @param {string} ownerSessionId */
@@ -365,29 +377,33 @@ async function readOwnedJobs(storage, ownerSessionId) {
   const directory = ownerBindingDirectory(storage.ownerIndexDirectory, ownerSessionId);
   let entries;
   try {
-    entries = await readdir(directory);
+    entries = await readPrivateDirectory(storage.ownerIndexDirectory, directory, OWNER_JOB_ENTRIES_MAX + 1);
   } catch (error) {
     if (/** @type {NodeJS.ErrnoException} */ (error)?.code === 'ENOENT') return [];
     throw ownedJobIndexInvalid();
   }
-  const unexpected = entries.filter((entry) => !entry.startsWith('.')
-    && !/^[a-f0-9]{64}\.json$/.test(entry));
-  const canonical = entries.filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry));
+  const unexpected = entries.filter((entry) => !entry.name.startsWith('.')
+    && !/^[a-f0-9]{64}\.json$/.test(entry.name));
+  const canonical = entries.filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry.name));
   if (unexpected.length > 0 || canonical.length > OWNER_JOB_ENTRIES_MAX) {
     throw ownedJobIndexInvalid();
   }
   const jobs = [];
   for (const entry of canonical) {
-    const jobId = entry.slice(0, -'.json'.length);
+    const jobId = entry.name.slice(0, -'.json'.length);
     let binding;
     try {
-      binding = await readBoundedJson(join(directory, entry), OWNER_BINDING_MAX_BYTES);
+      binding = await readBoundedJsonFile(
+        storage.ownerIndexDirectory,
+        join(directory, entry.name),
+        OWNER_BINDING_MAX_BYTES,
+      );
     } catch {
       throw ownedJobIndexInvalid(jobId);
     }
     if (!isPlainJsonObject(binding)
       || Object.keys(binding).sort().join(',') !== 'jobId,ownerSessionId,version'
-      || binding.version !== OWNER_INDEX_VERSION || binding.jobId !== jobId
+      || binding.version !== OWNER_BINDING_VERSION || binding.jobId !== jobId
       || binding.ownerSessionId !== ownerSessionId) {
       throw ownedJobIndexInvalid(jobId);
     }
@@ -413,16 +429,106 @@ async function readOwnedJobs(storage, ownerSessionId) {
 /** @param {string} root @param {string} ownerSessionId */
 function ownerBindingDirectory(root, ownerSessionId) {
   const digest = createHash('sha256')
-    .update(`zcode-owner-index-v${OWNER_INDEX_VERSION}\0${ownerSessionId}`)
+    .update(`zcode-owner-index-v${OWNER_BINDING_VERSION}\0${ownerSessionId}`)
     .digest('hex');
   return join(root, digest);
 }
 
-/** @param {string} path @param {number} maximumBytes */
-async function readBoundedJson(path, maximumBytes) {
-  const bytes = await readFile(path);
-  if (bytes.byteLength > maximumBytes) throw new Error('bounded JSON file exceeds its limit');
-  return JSON.parse(bytes.toString('utf8'));
+/** @param {any} storage */
+async function publishOwnerIndexMarker(storage) {
+  const layout = await readOwnerIndexLayout(storage);
+  const boundJobIds = new Set(layout.bindings.map((binding) => binding.jobId));
+  const unbound = layout.canonicalJobIds.find((jobId) => !boundJobIds.has(jobId));
+  if (unbound !== undefined) throw ownedJobIndexInvalid(unbound);
+  await writeOwnerIndexMarker(storage, layout);
+}
+
+/** @param {any} storage @param {any} layout */
+async function writeOwnerIndexMarker(storage, layout) {
+  try {
+    await atomicWriteJson(storage.ownerIndexMarkerPath, {
+      bindingJobIds: layout.bindingJobIds,
+      canonicalJobIds: layout.canonicalJobIdsSummary,
+      complete: true,
+      version: OWNER_INDEX_VERSION,
+    }, { privateRoot: storage.ownerIndexDirectory });
+  } catch { throw ownedJobIndexInvalid(); }
+}
+
+/** @param {any} storage */
+async function readOwnerIndexLayout(storage) {
+  let jobEntries; let indexEntries;
+  try {
+    [jobEntries, indexEntries] = await Promise.all([
+      readPrivateDirectory(storage.directory, storage.jobsDirectory, OWNER_JOB_ENTRIES_MAX),
+      readPrivateDirectory(storage.directory, storage.ownerIndexDirectory, OWNER_JOB_ENTRIES_MAX + 1),
+    ]);
+  } catch { throw ownedJobIndexInvalid(); }
+  const canonicalJobIds = jobEntries.map((entry) => entry.name)
+    .filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry))
+    .map((entry) => entry.slice(0, -'.json'.length));
+  if (canonicalJobIds.length > OWNER_JOB_ENTRIES_MAX) throw ownedJobIndexInvalid();
+
+  const visibleIndexEntries = indexEntries.filter((entry) => !entry.name.startsWith('.'));
+  const unexpected = visibleIndexEntries.filter((entry) => entry.name !== 'index.json'
+    && !/^[a-f0-9]{64}$/.test(entry.name));
+  const ownerDirectories = visibleIndexEntries.filter((entry) => /^[a-f0-9]{64}$/.test(entry.name));
+  if (unexpected.length > 0 || ownerDirectories.length > OWNER_JOB_ENTRIES_MAX) throw ownedJobIndexInvalid();
+  const bindings = [];
+  for (const ownerDirectory of ownerDirectories) {
+    let entries;
+    try { entries = await readPrivateDirectory(storage.ownerIndexDirectory, join(storage.ownerIndexDirectory, ownerDirectory.name), OWNER_JOB_ENTRIES_MAX + 1); }
+    catch { throw ownedJobIndexInvalid(); }
+    const invalid = entries.filter((entry) => !entry.name.startsWith('.')
+      && !/^[a-f0-9]{64}\.json$/.test(entry.name));
+    if (invalid.length > 0) throw ownedJobIndexInvalid();
+    for (const entry of entries) {
+      if (!/^[a-f0-9]{64}\.json$/.test(entry.name)) continue;
+      bindings.push({ jobId: entry.name.slice(0, -'.json'.length), ownerDirectory: ownerDirectory.name });
+      if (bindings.length > OWNER_JOB_ENTRIES_MAX) throw ownedJobIndexInvalid();
+    }
+  }
+  return {
+    bindings,
+    bindingJobIds: summarizeJobIds(bindings.map((binding) => binding.jobId)),
+    canonicalJobIds,
+    canonicalJobIdsSummary: summarizeJobIds(canonicalJobIds),
+  };
+}
+
+/** @param {string[]} jobIds */
+function summarizeJobIds(jobIds) {
+  const hash = createHash('sha256').update('zcode-owner-index-job-ids-v2\0');
+  for (const jobId of [...jobIds].sort()) hash.update(jobId);
+  return { count: jobIds.length, digest: hash.digest('hex') };
+}
+
+/** @param {any} marker @param {any} layout */
+function ownerIndexMarkerMatches(marker, layout) {
+  return marker.complete === true && marker.version === OWNER_INDEX_VERSION
+    && markerSummaryMatches(marker.canonicalJobIds, layout.canonicalJobIdsSummary)
+    && markerSummaryMatches(marker.bindingJobIds, layout.bindingJobIds);
+}
+
+/** @param {any} marker */
+function validOwnerIndexMarker(marker) {
+  return isPlainJsonObject(marker)
+    && Object.keys(marker).sort().join(',') === 'bindingJobIds,canonicalJobIds,complete,version'
+    && marker.complete === true && marker.version === OWNER_INDEX_VERSION
+    && validJobIdSummary(marker.canonicalJobIds) && validJobIdSummary(marker.bindingJobIds);
+}
+
+/** @param {any} value */
+function validJobIdSummary(value) {
+  return isPlainJsonObject(value)
+    && Object.keys(value).sort().join(',') === 'count,digest'
+    && Number.isSafeInteger(value.count) && value.count >= 0 && value.count <= OWNER_JOB_ENTRIES_MAX
+    && isDigest(value.digest);
+}
+
+/** @param {any} left @param {any} right */
+function markerSummaryMatches(left, right) {
+  return left.count === right.count && left.digest === right.digest;
 }
 
 /** @param {string} [jobId] */

@@ -5,13 +5,15 @@ import {
   lstat,
   mkdir,
   open,
+  opendir,
   readFile,
+  realpath,
   rename,
   rmdir,
   unlink,
 } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { PluginError, wrapError } from './errors.mjs';
 
@@ -40,9 +42,89 @@ export async function ensurePrivateDirectory(path) {
 }
 
 /**
+ * Creates a private descendant without following a directory symlink outside
+ * its trusted root. Each path component is checked before it is used.
+ * @param {string} root @param {string} path
+ */
+export async function ensurePrivateDirectoryWithin(root, path) {
+  const { rootPath, targetPath, segments } = containedPath(root, path);
+  await safeContainedDirectoryStats(rootPath, rootPath);
+  let current = rootPath;
+  for (const segment of segments) {
+    current = join(current, segment);
+    try { await mkdir(current, { mode: 0o700 }); }
+    catch (error) { if (!isNodeError(error, 'EEXIST')) throw error; }
+    const before = await safeContainedDirectoryStats(rootPath, current);
+    if (process.platform === 'win32') await chmod(current, 0o700);
+    else {
+      let handle;
+      try {
+        handle = await open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        const opened = await handle.stat();
+        if (!opened.isDirectory() || !sameIdentity(before, opened)) throw unsafePrivatePath(current);
+        await handle.chmod(0o700);
+      } finally { await handle?.close().catch(() => {}); }
+    }
+    const after = await safeContainedDirectoryStats(rootPath, current);
+    if (!sameIdentity(before, after)) throw unsafePrivatePath(current);
+  }
+  return targetPath;
+}
+
+/**
+ * Reads one trusted directory with containment and identity checks around the
+ * enumeration so callers can validate a stable bounded filename set.
+ * @param {string} root @param {string} path @param {number} maximumEntries
+ */
+export async function readPrivateDirectory(root, path, maximumEntries) {
+  if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 0) throw new TypeError('maximumEntries must be a nonnegative safe integer');
+  const before = await safeContainedDirectoryStats(root, path);
+  const directory = await opendir(path); const entries = [];
+  try {
+    for await (const entry of directory) {
+      entries.push(entry);
+      if (entries.length > maximumEntries) throw unsafePrivatePath(path);
+    }
+  } finally { await directory.close().catch(() => {}); }
+  const after = await safeContainedDirectoryStats(root, path);
+  if (!sameIdentity(before, after)) throw unsafePrivatePath(path);
+  return entries;
+}
+
+/**
+ * Opens a regular JSON file without following its final symlink, rejects its
+ * declared size before allocating, and reads at most maximumBytes + 1 so a
+ * concurrent growth cannot bypass the bound.
+ * @param {string} root @param {string} path @param {number} maximumBytes
+ */
+export async function readBoundedJsonFile(root, path, maximumBytes) {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new TypeError('maximumBytes must be a positive safe integer');
+  const parent = dirname(path); const parentBefore = await safeContainedDirectoryStats(root, parent);
+  const before = await lstat(path);
+  if (before.isSymbolicLink() || !before.isFile() || before.size > maximumBytes) throw unsafePrivatePath(path);
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.size > maximumBytes || !sameIdentity(before, opened)) throw unsafePrivatePath(path);
+    const bytes = Buffer.alloc(maximumBytes + 1); let offset = 0;
+    while (offset < bytes.length) {
+      const result = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (result.bytesRead === 0) break;
+      offset += result.bytesRead;
+    }
+    if (offset > maximumBytes) throw unsafePrivatePath(path);
+    const [after, parentAfter] = await Promise.all([lstat(path), safeContainedDirectoryStats(root, parent)]);
+    if (after.isSymbolicLink() || !after.isFile() || !sameIdentity(opened, after)
+      || !sameIdentity(parentBefore, parentAfter)) throw unsafePrivatePath(path);
+    return JSON.parse(bytes.subarray(0, offset).toString('utf8'));
+  } finally { await handle?.close().catch(() => {}); }
+}
+
+/**
  * @param {string} path
  * @param {unknown} value
- * @param {{signal?:AbortSignal}} [options]
+ * @param {{signal?:AbortSignal,privateRoot?:string}} [options]
  */
 export async function atomicWriteJson(path, value, options = {}) {
   await atomicWritePrivateFile(path, `${JSON.stringify(value, null, 2)}\n`, options);
@@ -51,7 +133,7 @@ export async function atomicWriteJson(path, value, options = {}) {
 /**
  * @param {string} path
  * @param {string|Buffer} bytes
- * @param {{signal?:AbortSignal}} [options]
+ * @param {{signal?:AbortSignal,privateRoot?:string}} [options]
  */
 export async function atomicWritePrivateFile(path, bytes, options = {}) {
   const directory = dirname(path);
@@ -62,7 +144,8 @@ export async function atomicWritePrivateFile(path, bytes, options = {}) {
   let handle;
   try {
     options.signal?.throwIfAborted();
-    await ensurePrivateDirectory(directory);
+    if (options.privateRoot === undefined) await ensurePrivateDirectory(directory);
+    else await ensurePrivateDirectoryWithin(options.privateRoot, directory);
     options.signal?.throwIfAborted();
     handle = await open(temporaryPath, 'wx', 0o600);
     options.signal?.throwIfAborted();
@@ -282,6 +365,38 @@ async function safeLockStats(path, kind, type) {
   const stats = await lstat(path);
   if (stats.isSymbolicLink() || (type === 'directory' ? !stats.isDirectory() : !stats.isFile())) throw unsafeLockPath(path, kind);
   return stats;
+}
+
+/** @param {string} root @param {string} path */
+async function safeContainedDirectoryStats(root, path) {
+  const { rootPath, targetPath } = containedPath(root, path);
+  const [rootStats, targetStats] = await Promise.all([lstat(rootPath), lstat(targetPath)]);
+  if (rootStats.isSymbolicLink() || !rootStats.isDirectory()
+    || targetStats.isSymbolicLink() || !targetStats.isDirectory()) throw unsafePrivatePath(targetPath);
+  const [canonicalRoot, canonicalTarget] = await Promise.all([realpath(rootPath), realpath(targetPath)]);
+  if (!pathIsWithin(canonicalRoot, canonicalTarget)) throw unsafePrivatePath(targetPath);
+  return targetStats;
+}
+
+/** @param {string} root @param {string} path */
+function containedPath(root, path) {
+  const rootPath = resolve(root); const targetPath = resolve(path);
+  if (!pathIsWithin(rootPath, targetPath)) throw unsafePrivatePath(targetPath);
+  const descendant = relative(rootPath, targetPath);
+  return { rootPath, targetPath, segments: descendant === '' ? [] : descendant.split(/[\\/]/) };
+}
+
+/** @param {string} root @param {string} path */
+function pathIsWithin(root, path) {
+  const descendant = relative(root, path);
+  return descendant === '' || descendant !== '..' && !descendant.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(descendant);
+}
+
+/** @param {string} path */
+function unsafePrivatePath(path) {
+  return new PluginError('PRIVATE_PATH_UNSAFE', `Private state path is a symbolic link, outside its root, or has an unsafe type: ${path}`, {
+    category: 'storage', remedy: 'Repair the private state path before retrying.', details: { path },
+  });
 }
 
 /** @param {{dev:number|bigint,ino:number|bigint}} left @param {{dev:number|bigint,ino:number|bigint}} right */
