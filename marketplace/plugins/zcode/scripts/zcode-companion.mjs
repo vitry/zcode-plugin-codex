@@ -279,7 +279,25 @@ function requireAuthorization(value, keys) {
 }
 function authorizationInputError() { return new PluginError('INTERNAL_AUTHORIZATION_INVALID', 'The internal authorization envelope is invalid.', { category: 'authorization', remedy: 'Invoke this command through its installed skill using the protected internal channel.' }); }
 /** @param {any} job @param {string} ownerSessionId */
-function publicJob(job, ownerSessionId) { const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; return { ...visible, owned: job.ownerSessionId === ownerSessionId, owner: job.ownerSessionId === ownerSessionId ? 'same-owner' : 'other' }; }
+function publicJob(job, ownerSessionId) {
+  if (job.ownerSessionId !== ownerSessionId) {
+    return {
+      id: job.id,
+      status: job.status,
+      createdAt: job.createdAt,
+      ...copyOptionalFields(job, ['startedAt', 'finishedAt', 'lastActivityAt']),
+      hasOwner: true,
+    };
+  }
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot;
+  return { ...visible, owned: true, owner: 'same-owner' };
+}
+/** @param {Record<string,any>} source @param {string[]} fields */
+function copyOptionalFields(source, fields) {
+  const result = /** @type {Record<string,any>} */ ({});
+  for (const field of fields) if (Object.hasOwn(source, field)) result[field] = source[field];
+  return result;
+}
 /** @param {any} input */
 function normalizeSpec(input) {
   const allowed = ['command', 'scope', 'base', 'focus', 'task', 'model', 'effort', 'resumeSessionId', 'candidateJobId'];

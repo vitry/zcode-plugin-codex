@@ -19,6 +19,17 @@ export function renderOutput(value, options = {}) {
 
 /** @param {any} job */
 function renderCompactJob(job) {
+  if (job.hasOwner === true && job.owned === undefined) {
+    return [
+      job.id,
+      job.status,
+      'owner=redacted',
+      `created=${safeInline(job.createdAt)}`,
+      `started=${safeInline(job.startedAt)}`,
+      `finished=${safeInline(job.finishedAt)}`,
+      `activity=${safeInline(job.lastActivityAt)}`,
+    ].map((value) => typeof value === 'string' && value.includes('=') ? value : safeInline(value)).join(' ');
+  }
   const fields = [job.id, job.status, job.command, job.owner].map((value) => safeInline(value));
   fields.push(`phase=${safeInline(job.phase)}`);
   fields.push(`activity=${safeInline(job.lastActivityAt)}`);
