@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { readdir } from 'node:fs/promises';
+import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
@@ -33,7 +33,7 @@ export const EFFORT_LEVELS = Object.freeze(['none', 'minimal', 'low', 'medium', 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling']);
 const BEFORE_MESSAGE_IDS_MAX_BYTES = 256 * 1024;
-const OWNER_INDEX_VERSION = 2;
+const OWNER_INDEX_VERSION = 3;
 const OWNER_BINDING_VERSION = 1;
 const OWNER_SESSION_ID_MAX_BYTES = 4 * 1024;
 const OWNER_BINDING_MAX_BYTES = 8 * 1024;
@@ -312,26 +312,33 @@ async function jobStorage(dataRoot, workspace) {
 async function ensureOwnerIndex(storage, knownJobs) {
   const marker = await readOwnerIndexMarker(storage);
   let layout = await readOwnerIndexLayout(storage);
-  const boundJobIds = new Set(layout.bindings.map((binding) => binding.jobId));
-  const firstUnbound = layout.canonicalJobIds.find((jobId) => !boundJobIds.has(jobId));
-  if (firstUnbound === undefined && marker?.version === OWNER_INDEX_VERSION
-    && ownerIndexMarkerMatches(marker, layout)) return layout;
+  if (marker?.version === OWNER_INDEX_VERSION && ownerIndexMarkerMatches(marker, layout)) return layout;
 
   const knownById = new Map((knownJobs ?? []).map((job) => [job.id, job]));
+  const canonicalJobs = [];
   for (const jobId of layout.canonicalJobIds) {
-    if (boundJobIds.has(jobId)) continue;
     let job = knownById.get(jobId);
     if (job === undefined) {
       try {
         job = await readJobRecord(jobPath(storage.jobsDirectory, jobId), jobId, storage.workspacePath);
       } catch { throw ownedJobIndexInvalid(jobId); }
     }
+    canonicalJobs.push(job);
+  }
+  const expectedTuples = canonicalJobs.map((job) => ownerBindingTuple(job.ownerSessionId, job.id)).sort();
+  const expectedTupleSet = new Set(expectedTuples);
+  if (expectedTupleSet.size !== expectedTuples.length) throw ownedJobIndexInvalid();
+  for (const job of canonicalJobs) {
     await writeOwnerBinding(storage, job);
   }
+  for (const binding of layout.bindings) {
+    if (expectedTupleSet.has(binding.tuple)) continue;
+    try { await unlink(join(storage.ownerIndexDirectory, binding.ownerDirectory, `${binding.jobId}.json`)); }
+    catch { throw ownedJobIndexInvalid(binding.jobId); }
+  }
   layout = await readOwnerIndexLayout(storage);
-  const repairedBindings = new Set(layout.bindings.map((binding) => binding.jobId));
-  const stillUnbound = layout.canonicalJobIds.find((jobId) => !repairedBindings.has(jobId));
-  if (stillUnbound !== undefined) throw ownedJobIndexInvalid(stillUnbound);
+  const actualTuples = layout.bindings.map((binding) => binding.tuple).sort();
+  if (!sameStringList(expectedTuples, actualTuples)) throw ownedJobIndexInvalid();
   await writeOwnerIndexMarker(storage, layout);
   return layout;
 }
@@ -352,6 +359,10 @@ async function readOwnerIndexMarker(storage) {
   if (isPlainJsonObject(marker)
     && Object.keys(marker).sort().join(',') === 'complete,version'
     && marker.complete === true && marker.version === OWNER_BINDING_VERSION) return marker;
+  if (isPlainJsonObject(marker)
+    && Object.keys(marker).sort().join(',') === 'bindingJobIds,canonicalJobIds,complete,version'
+    && marker.complete === true && marker.version === 2
+    && validJobIdSummary(marker.canonicalJobIds) && validJobIdSummary(marker.bindingJobIds)) return marker;
   if (!validOwnerIndexMarker(marker)) throw ownedJobIndexInvalid();
   return marker;
 }
@@ -428,10 +439,14 @@ async function readOwnedJobs(storage, ownerSessionId) {
 
 /** @param {string} root @param {string} ownerSessionId */
 function ownerBindingDirectory(root, ownerSessionId) {
-  const digest = createHash('sha256')
+  return join(root, ownerBindingDirectoryName(ownerSessionId));
+}
+
+/** @param {string} ownerSessionId */
+function ownerBindingDirectoryName(ownerSessionId) {
+  return createHash('sha256')
     .update(`zcode-owner-index-v${OWNER_BINDING_VERSION}\0${ownerSessionId}`)
     .digest('hex');
-  return join(root, digest);
 }
 
 /** @param {any} storage */
@@ -439,7 +454,7 @@ async function publishOwnerIndexMarker(storage) {
   const layout = await readOwnerIndexLayout(storage);
   const boundJobIds = new Set(layout.bindings.map((binding) => binding.jobId));
   const unbound = layout.canonicalJobIds.find((jobId) => !boundJobIds.has(jobId));
-  if (unbound !== undefined) throw ownedJobIndexInvalid(unbound);
+  if (unbound !== undefined || layout.bindings.length !== layout.canonicalJobIds.length) throw ownedJobIndexInvalid(unbound);
   await writeOwnerIndexMarker(storage, layout);
 }
 
@@ -447,7 +462,7 @@ async function publishOwnerIndexMarker(storage) {
 async function writeOwnerIndexMarker(storage, layout) {
   try {
     await atomicWriteJson(storage.ownerIndexMarkerPath, {
-      bindingJobIds: layout.bindingJobIds,
+      bindingTuples: layout.bindingTuplesSummary,
       canonicalJobIds: layout.canonicalJobIdsSummary,
       complete: true,
       version: OWNER_INDEX_VERSION,
@@ -484,13 +499,14 @@ async function readOwnerIndexLayout(storage) {
     if (invalid.length > 0) throw ownedJobIndexInvalid();
     for (const entry of entries) {
       if (!/^[a-f0-9]{64}\.json$/.test(entry.name)) continue;
-      bindings.push({ jobId: entry.name.slice(0, -'.json'.length), ownerDirectory: ownerDirectory.name });
+      const jobId = entry.name.slice(0, -'.json'.length);
+      bindings.push({ jobId, ownerDirectory: ownerDirectory.name, tuple: `${ownerDirectory.name}/${jobId}` });
       if (bindings.length > OWNER_JOB_ENTRIES_MAX) throw ownedJobIndexInvalid();
     }
   }
   return {
     bindings,
-    bindingJobIds: summarizeJobIds(bindings.map((binding) => binding.jobId)),
+    bindingTuplesSummary: summarizeBindingTuples(bindings.map((binding) => binding.tuple)),
     canonicalJobIds,
     canonicalJobIdsSummary: summarizeJobIds(canonicalJobIds),
   };
@@ -503,19 +519,26 @@ function summarizeJobIds(jobIds) {
   return { count: jobIds.length, digest: hash.digest('hex') };
 }
 
+/** @param {string[]} tuples */
+function summarizeBindingTuples(tuples) {
+  const hash = createHash('sha256').update('zcode-owner-index-binding-tuples-v3\0');
+  for (const tuple of [...tuples].sort()) hash.update(tuple);
+  return { count: tuples.length, digest: hash.digest('hex') };
+}
+
 /** @param {any} marker @param {any} layout */
 function ownerIndexMarkerMatches(marker, layout) {
   return marker.complete === true && marker.version === OWNER_INDEX_VERSION
     && markerSummaryMatches(marker.canonicalJobIds, layout.canonicalJobIdsSummary)
-    && markerSummaryMatches(marker.bindingJobIds, layout.bindingJobIds);
+    && markerSummaryMatches(marker.bindingTuples, layout.bindingTuplesSummary);
 }
 
 /** @param {any} marker */
 function validOwnerIndexMarker(marker) {
   return isPlainJsonObject(marker)
-    && Object.keys(marker).sort().join(',') === 'bindingJobIds,canonicalJobIds,complete,version'
+    && Object.keys(marker).sort().join(',') === 'bindingTuples,canonicalJobIds,complete,version'
     && marker.complete === true && marker.version === OWNER_INDEX_VERSION
-    && validJobIdSummary(marker.canonicalJobIds) && validJobIdSummary(marker.bindingJobIds);
+    && validJobIdSummary(marker.canonicalJobIds) && validJobIdSummary(marker.bindingTuples);
 }
 
 /** @param {any} value */
@@ -529,6 +552,16 @@ function validJobIdSummary(value) {
 /** @param {any} left @param {any} right */
 function markerSummaryMatches(left, right) {
   return left.count === right.count && left.digest === right.digest;
+}
+
+/** @param {string} ownerSessionId @param {string} jobId */
+function ownerBindingTuple(ownerSessionId, jobId) {
+  return `${ownerBindingDirectoryName(ownerSessionId)}/${jobId}`;
+}
+
+/** @param {string[]} left @param {string[]} right */
+function sameStringList(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 /** @param {string} [jobId] */

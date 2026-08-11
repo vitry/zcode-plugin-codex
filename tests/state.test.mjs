@@ -16,7 +16,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -36,6 +36,17 @@ async function fixture() {
   const workspace = join(root, 'workspace');
   await mkdir(workspace);
   return { dataRoot, root, workspace };
+}
+
+/** @param {string} indexRoot @param {string} jobId */
+async function bindingLocation(indexRoot, jobId) {
+  const ownerDirectories = (await readdir(indexRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  for (const ownerDirectory of ownerDirectories) {
+    const directory = join(indexRoot, ownerDirectory.name); const path = join(directory, `${jobId}.json`);
+    try { await access(path); return { directory, path }; } catch { /* inspect the next exact owner directory */ }
+  }
+  assert.fail(`binding ${jobId} was not found`);
 }
 
 const jobInput = {
@@ -410,6 +421,13 @@ test('owned job index repairs deleted bindings and mixed-version canonical write
   const { dataRoot, workspace } = await fixture(); const firstStore = createStateStore({ dataRoot });
   const first = await firstStore.reserveJob({ workspace, ...jobInput }); const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const indexRoot = join(storage.directory, 'job-owners');
+  const markerPath = join(indexRoot, 'index.json'); const currentMarker = JSON.parse(await readFile(markerPath, 'utf8'));
+  await atomicWriteJson(markerPath, {
+    bindingJobIds: currentMarker.canonicalJobIds,
+    canonicalJobIds: currentMarker.canonicalJobIds,
+    complete: true,
+    version: 2,
+  });
   const [firstOwnerDirectory] = (await readdir(indexRoot, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
   assert.ok(firstOwnerDirectory);
@@ -429,12 +447,44 @@ test('owned job index repairs deleted bindings and mixed-version canonical write
   assert.deepEqual(await secondStore.listOwnedJobs(workspace, first.ownerSessionId), [first], 'a deleted binding must not make an existing owner disappear');
   assert.deepEqual(await secondStore.listOwnedJobs(workspace, legacy.ownerSessionId), [legacy], 'a canonical record from an older writer must be indexed before owner selection');
 
-  const marker = JSON.parse(await readFile(join(indexRoot, 'index.json'), 'utf8'));
-  assert.deepEqual(Object.keys(marker).sort(), ['bindingJobIds', 'canonicalJobIds', 'complete', 'version']);
-  assert.equal(marker.version, 2); assert.equal(marker.complete, true);
-  assert.deepEqual(marker.canonicalJobIds.count, 2); assert.deepEqual(marker.bindingJobIds.count, 2);
-  assert.match(marker.canonicalJobIds.digest, /^[a-f0-9]{64}$/); assert.match(marker.bindingJobIds.digest, /^[a-f0-9]{64}$/);
-  assert.deepEqual(marker.canonicalJobIds, marker.bindingJobIds, 'the repaired complete index must summarize the same canonical and binding filename set');
+  const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+  assert.deepEqual(Object.keys(marker).sort(), ['bindingTuples', 'canonicalJobIds', 'complete', 'version']);
+  assert.equal(marker.version, 3); assert.equal(marker.complete, true);
+  assert.deepEqual(marker.canonicalJobIds.count, 2); assert.deepEqual(marker.bindingTuples.count, 2);
+  assert.match(marker.canonicalJobIds.digest, /^[a-f0-9]{64}$/); assert.match(marker.bindingTuples.digest, /^[a-f0-9]{64}$/);
+});
+
+test('owned job index repairs relocated, rewritten, duplicated, and swapped owner bindings', async (t) => {
+  /** @type {Record<string, (input:any) => Promise<void>>} */
+  const variants = {
+    'move unchanged record': async ({ first, second }) => { await rename(first.path, join(second.directory, basename(first.path))); },
+    'move and rewrite owner': async ({ first, second, firstJob }) => {
+      const moved = join(second.directory, basename(first.path)); await rename(first.path, moved);
+      await atomicWriteJson(moved, { jobId: firstJob.id, ownerSessionId: 'owner-b', version: 1 });
+    },
+    'duplicate binding': async ({ first, second }) => { await writeFile(join(second.directory, basename(first.path)), await readFile(first.path)); },
+    'swap owner directories': async ({ root, first, second, firstJob, secondJob }) => {
+      const temporary = join(root, 'binding-swap.tmp'); await rename(first.path, temporary);
+      await rename(second.path, join(first.directory, `${secondJob.id}.json`));
+      await rename(temporary, join(second.directory, `${firstJob.id}.json`));
+    },
+  };
+  for (const [name, tamper] of Object.entries(variants)) await t.test(name, async () => {
+    const { dataRoot, root, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+    const firstJob = await store.reserveJob({ workspace, ...jobInput, ownerSessionId: 'owner-a' });
+    const secondJob = await store.reserveJob({ workspace, ...jobInput, ownerSessionId: 'owner-b', ownerTurnId: 'turn-b', readOnly: true });
+    const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const indexRoot = join(storage.directory, 'job-owners');
+    const first = await bindingLocation(indexRoot, firstJob.id); const second = await bindingLocation(indexRoot, secondJob.id);
+    const markerBefore = await readFile(join(indexRoot, 'index.json'), 'utf8');
+    await tamper({ root, first, second, firstJob, secondJob });
+    assert.equal(await readFile(join(indexRoot, 'index.json'), 'utf8'), markerBefore, 'tamper fixture must leave the last trusted marker unchanged');
+
+    assert.deepEqual(await store.listOwnedJobs(workspace, firstJob.ownerSessionId), [firstJob], `${name} must not hide owner A's writable guard`);
+    assert.deepEqual(await store.listOwnedJobs(workspace, secondJob.ownerSessionId), [secondJob], `${name} must not authorize owner B for owner A's job`);
+    const repairedFirst = await bindingLocation(indexRoot, firstJob.id); const repairedSecond = await bindingLocation(indexRoot, secondJob.id);
+    assert.equal(repairedFirst.directory, first.directory); assert.equal(repairedSecond.directory, second.directory);
+    assert.equal(JSON.parse(await readFile(join(indexRoot, 'index.json'), 'utf8')).version, 3);
+  });
 });
 
 test('owned job index rejects directory and binding symlinks that escape private workspace state', async () => {

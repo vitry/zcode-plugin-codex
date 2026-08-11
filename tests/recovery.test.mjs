@@ -561,7 +561,6 @@ test('owned recovery ignores a foreign corrupt job through its trusted owner bin
     jobs.push(await store.transitionJob(fixture.workspace, reserved.id, ['running'], 'running', { inputId: `input-${suffix}`, startRevision: 1, beforeMessageIds: [] }));
   }
   const [mine, foreign] = jobs; const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace });
-  await atomicWriteJson(join(storage.directory, 'job-owners', 'index.json'), { complete: true, version: 1 });
   await writeFile(join(storage.directory, 'jobs', `${foreign.id}.json`), '{');
   let clients = 0;
   const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
@@ -571,7 +570,7 @@ test('owned recovery ignores a foreign corrupt job through its trusted owner bin
   });
   assert.equal(clients, 1); assert.equal(recovered.length, 1); assert.equal(recovered[0].id, mine.id); assert.equal(recovered[0].status, 'succeeded');
   assert.equal((await store.readJob(fixture.workspace, mine.id)).status, 'succeeded');
-  assert.equal(JSON.parse(await readFile(join(storage.directory, 'job-owners', 'index.json'), 'utf8')).version, 2, 'a legacy marker must upgrade without parsing bound foreign canonical state');
+  assert.equal(JSON.parse(await readFile(join(storage.directory, 'job-owners', 'index.json'), 'utf8')).version, 3, 'a matching tuple marker must avoid parsing bound foreign canonical state');
 });
 
 test('owned recovery fails closed on its own corrupt job without exposing an absolute state path', async () => {

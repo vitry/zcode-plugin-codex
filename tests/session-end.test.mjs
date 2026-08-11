@@ -1,7 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
@@ -301,6 +301,24 @@ test('SessionEnd repairs a missing owner binding before deciding no writable gua
   const settled = await settle(input, async () => { throw new Error('queued settlement must not create a client'); });
   assert.equal(settled.id, value.id); assert.equal(settled.status, 'cancelled');
   assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled');
+});
+
+test('SessionEnd repairs an owner binding relocated into a sibling directory before guard selection', async () => {
+  const input = await fixture(); const value = await job(input, { claim: false, status: 'queued' });
+  const sibling = await job(input, { ownerSessionId: 'owner-b', ownerTurnId: 'turn-b', readOnly: true, claim: false, status: 'queued' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace }); const indexRoot = join(storage.directory, 'job-owners');
+  const ownerDirectories = (await readdir(indexRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  let valuePath; let siblingDirectory;
+  for (const ownerDirectory of ownerDirectories) {
+    const directory = join(indexRoot, ownerDirectory.name); const entries = await readdir(directory);
+    if (entries.includes(`${value.id}.json`)) valuePath = join(directory, `${value.id}.json`);
+    if (entries.includes(`${sibling.id}.json`)) siblingDirectory = directory;
+  }
+  assert.ok(valuePath); assert.ok(siblingDirectory); await rename(valuePath, join(siblingDirectory, `${value.id}.json`));
+  const settled = await settle(input, async () => { throw new Error('queued settlement must not create a client'); });
+  assert.equal(settled.id, value.id); assert.equal(settled.status, 'cancelled');
+  assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled');
+  assert.equal((await input.store.readJob(input.workspace, sibling.id)).status, 'queued');
 });
 
 test('SessionEnd never overwrites a terminal executor race', async () => {
