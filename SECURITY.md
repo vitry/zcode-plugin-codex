@@ -10,5 +10,10 @@ Report suspected vulnerabilities privately through GitHub's private vulnerabilit
 - ZCode permission approval is not an operating-system sandbox. Read-only reviews deny mutation; Rescue uses the initiating Codex turn's immutable permission snapshot and restricts unknown states.
 - Jobs are scoped to the canonical workspace and owning Codex session. Knowing a job ID does not authorize status, result, cancellation, or resumption.
 - Transfer imports only visible text. Review output and Git content remain untrusted model input.
+- The digest-backed managed Role is owned only when its stable-data receipt, file, and exact Codex registration agree. Foreign registrations, project shadowing, higher-precedence overrides, and modified Role files fail closed instead of being overwritten.
+- The named child and Codex 0.147 generic compatibility child rely on exact host-issued thread identity inside the private same-UID data boundary. This prevents accidental sibling reuse; it is not a cryptographic boundary against a hostile process running as the same operating-system user.
+- Semantic progress is an allowlist over untrusted conversation frames. A command or query preview is one control-free line with a 96-character display bound, but truncation is not secret redaction. Never place credentials or authorization material in commands or searches; raw output, file contents, reasoning, and environment values are not allowed progress fields.
+- Child stderr and detailed progress stay in the child thread. Parent-visible output is limited to host lifecycle events and the final public result. Subscription or optional progress-sink failure is observational and cannot weaken the authoritative completion guard.
+- Uninstall does not automatically erase stable plugin data, managed Role artifacts, durable jobs, or user-config leaves. Verify ownership before removing residue, and never remove a colliding foreign or project Role.
 
 Only the latest release receives security fixes. Rotate exposed credentials and disable the plugin until a compromised capability has expired or its Codex turn has ended.

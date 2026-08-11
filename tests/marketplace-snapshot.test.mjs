@@ -2,7 +2,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateReleaseIdentity, validateResolvedSource } from '../scripts/build-marketplace-snapshot.mjs';
+import {
+  REQUIRED_RESCUE_PAYLOAD,
+  validateReleaseIdentity,
+  validateResolvedSource,
+} from '../scripts/build-marketplace-snapshot.mjs';
+
+test('marketplace builder requires the complete isolated Rescue payload', () => {
+  assert.deepEqual(REQUIRED_RESCUE_PAYLOAD, [
+    'agents/zcode-rescue.toml.template',
+    'scripts/lib/conversation-progress.mjs',
+    'scripts/lib/managed-agent-role.mjs',
+    'scripts/lib/progress.mjs',
+  ]);
+});
 
 test('release identity binds package, plugin, source ref, SHA, and exact version tag', () => {
   const sha = 'a'.repeat(40);

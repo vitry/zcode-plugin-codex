@@ -11,6 +11,13 @@ import { npmLaunch } from './lib/tool-launch.mjs';
 
 const moduleRoot = fileURLToPath(new URL('..', import.meta.url));
 
+export const REQUIRED_RESCUE_PAYLOAD = Object.freeze([
+  'agents/zcode-rescue.toml.template',
+  'scripts/lib/conversation-progress.mjs',
+  'scripts/lib/managed-agent-role.mjs',
+  'scripts/lib/progress.mjs',
+]);
+
 /** @param {{packageVersion:string,pluginVersion:string,sourceRef:string,sourceSha:string,releaseTag?:string}} input */
 export function validateReleaseIdentity(input) {
   const values = input && typeof input === 'object' ? input : /** @type {any} */ ({});
@@ -72,15 +79,33 @@ export async function buildMarketplaceSnapshot(input) {
     await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'zcode-marketplace-snapshot-builder', private: true }), { mode: 0o600 });
     const installed = await runProcess(npmDescriptor, { cwd: consumer, env: input.env, args: ['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', join(packages, filename)], timeoutMs: 120_000, maxOutputBytes: 2 * 1024 * 1024 });
     if (installed.code !== 0) throw new Error(`production package install failed: ${installed.stderr}`);
+    const installedPluginRoot = join(consumer, 'node_modules', packageJson.name);
+    await verifyQualifiedRescuePayload(installedPluginRoot);
     await mkdir(join(output, '.agents', 'plugins'), { recursive: true });
     await cp(join(root, 'marketplace', '.agents', 'plugins', 'marketplace.json'), join(output, '.agents', 'plugins', 'marketplace.json'));
     await writeFile(join(output, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o644 });
     await mkdir(join(output, 'plugins'), { recursive: true });
-    await cp(join(consumer, 'node_modules', packageJson.name), join(output, 'plugins', pluginJson.name), { recursive: true });
+    await cp(installedPluginRoot, join(output, 'plugins', pluginJson.name), { recursive: true });
     return { output, plugin: join(output, 'plugins', pluginJson.name), identity };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
+}
+
+/** @param {string} pluginRoot */
+async function verifyQualifiedRescuePayload(pluginRoot) {
+  for (const relativePath of REQUIRED_RESCUE_PAYLOAD) {
+    const metadata = await lstat(join(pluginRoot, relativePath)).catch(() => null);
+    if (!metadata?.isFile() || metadata.isSymbolicLink()) throw new Error(`Marketplace payload is missing required file: ${relativePath}`);
+  }
+  const template = await readFile(join(pluginRoot, REQUIRED_RESCUE_PAYLOAD[0]), 'utf8');
+  if (!template.startsWith('developer_instructions = """')) throw new Error('Marketplace payload has an invalid Rescue Role template.');
+  const obsoletePath = join(pluginRoot, 'agents', 'zcode-rescue.md');
+  const obsolete = await lstat(obsoletePath).then(() => true, (error) => {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  });
+  if (obsolete) throw new Error('Marketplace payload contains the obsolete Markdown Rescue forwarder.');
 }
 
 /** @param {string[]} argv */

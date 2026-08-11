@@ -121,6 +121,11 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.ok(JSON.parse(await readFile(join(installedRoot, 'hooks', 'hooks.json'), 'utf8')).hooks);
   assert.match(await readFile(join(installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8'), /^developer_instructions = """/);
   await assert.rejects(readFile(join(installedRoot, 'agents', 'zcode-rescue.md'), 'utf8'), { code: 'ENOENT' });
+  for (const modulePath of [
+    'scripts/lib/conversation-progress.mjs',
+    'scripts/lib/managed-agent-role.mjs',
+    'scripts/lib/progress.mjs',
+  ]) assert.ok((await readFile(join(installedRoot, modulePath), 'utf8')).length > 0, `${modulePath} missing from installed marketplace payload`);
   const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const preflightOffset = installedRescue.indexOf('role-status rescue');
   const namedSpawnOffset = installedRescue.indexOf("task_name: 'zcode_rescue'");
@@ -217,6 +222,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.equal(JSON.parse(rerun.stdout).status, 'restart-required');
   const rolePath = join(pluginData, 'agent-roles', 'zcode-rescue.toml');
   assert.match(await readFile(rolePath, 'utf8'), /invoke rescue/);
+  assert.equal(relative(pluginData, rolePath), join('agent-roles', 'zcode-rescue.toml'));
   assert.doesNotMatch(rolePath, /cache|0\.1\.0/);
   const ended = await runChild(process.execPath, [join(installedRoot, 'hooks', 'session-end-hook.mjs')], {
     cwd: temporary, env: hookEnv, ordinaryInput: true,

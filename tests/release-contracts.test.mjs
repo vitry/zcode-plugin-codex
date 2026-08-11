@@ -227,3 +227,70 @@ test('release qualification covers the installed direct bridge and explicit real
     assert.doesNotMatch(skill, /FD3|FD4|caller.?context|execution capability/i);
   }
 });
+
+test('isolated Rescue release guidance states exact inspection, privacy, recovery, and compatibility limits', () => {
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  for (const source of [english, chinese]) {
+    assert.match(source, /zcode-rescue/);
+    assert.match(source, /\/agent/);
+    assert.match(source, /\/subagents/);
+    assert.match(source, /\/ps/);
+    assert.match(source, /96/);
+    assert.match(source, /agent_type/);
+    assert.match(source, /subscription/i);
+    assert.match(source, /uninstall/i);
+  }
+  assert.match(english, /restart Codex.{0,160}rerun `?\$zcode:setup/is);
+  assert.match(english, /collision.{0,200}(?:foreign|project|higher-precedence)/is);
+  assert.match(english, /truncation.{0,120}not secret redaction/is);
+  assert.match(english, /parent thread/i);
+  assert.match(english, /child thread/i);
+  assert.match(english, /\/ps.{0,180}current(?:ly active)? thread/is);
+  assert.match(english, /background semantics remain unchanged/i);
+  assert.match(english, /Codex 0\.147/);
+  assert.match(english, /unqualified/i);
+  assert.match(chinese, /重启 Codex.{0,160}(?:再次|重新)运行 `?\$zcode:setup/is);
+  assert.match(chinese, /冲突.{0,200}(?:外部|项目|高优先级|更高优先级)/is);
+  assert.match(chinese, /截断.{0,120}不是秘密脱敏/is);
+  assert.match(chinese, /父线程/);
+  assert.match(chinese, /子线程/);
+  assert.match(chinese, /\/ps.{0,180}当前(?:活动)?线程/is);
+  assert.match(chinese, /后台语义保持不变/);
+  assert.match(chinese, /Codex 0\.147/);
+  assert.match(chinese, /unqualified/i);
+
+  const security = read('SECURITY.md');
+  assert.match(security, /96-character/);
+  assert.match(security, /not secret redaction/i);
+  assert.match(security, /managed Role/i);
+  assert.match(security, /same-UID/i);
+  assert.match(security, /uninstall/i);
+
+  const changelog = read('CHANGELOG.md');
+  assert.match(changelog, /managed `zcode-rescue` Role/);
+  assert.match(changelog, /semantic progress/);
+  assert.match(changelog, /native child/i);
+
+  const setup = read('skills/setup/SKILL.md');
+  assert.match(setup, /stable plugin data/i);
+  assert.match(setup, /restart Codex/i);
+  assert.match(setup, /collision/i);
+  const rescue = read('skills/rescue/SKILL.md');
+  assert.match(rescue, /\/agent|\/subagents/);
+  assert.match(rescue, /\/ps/);
+  assert.match(rescue, /96-character/);
+  assert.match(rescue, /not secret redaction/i);
+  assert.match(rescue, /subscription/i);
+  const status = read('skills/status/SKILL.md');
+  assert.match(status, /durable/i);
+  assert.match(status, /parent|owner/i);
+  assert.match(status, /semantic progress/i);
+  assert.match(status, /uninstall/i);
+
+  const installedQualification = read('tests/e2e/codex-skills-e2e.test.mjs');
+  assert.match(installedQualification, /SUPPORTED_CODEX_LINES\s*=\s*Object\.freeze\(\['0\.147'\]\)/);
+  assert.match(installedQualification, /tui-evidence-unavailable/);
+  assert.match(installedQualification, /codex-skills-unqualified/);
+  assert.match(read('tests/e2e/real-zcode.test.mjs'), /real-zcode-unqualified/);
+});

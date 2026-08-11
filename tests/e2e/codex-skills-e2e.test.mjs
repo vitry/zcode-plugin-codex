@@ -23,6 +23,7 @@ import {
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
+const SUPPORTED_CODEX_LINES = Object.freeze(['0.147']);
 const qualificationRequired = process.env.ZCODE_REQUIRE_QUALIFIED === '1';
 const optInSkip = process.env.ZCODE_CODEX_SKILLS_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_SKILLS_E2E=1 to spend authenticated Codex credits.');
 const rescueOptInSkip = process.env.ZCODE_CODEX_RESCUE_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_RESCUE_E2E=1 to qualify the runtime-observed native Rescue route.');
@@ -57,6 +58,16 @@ test('preserved installed evidence scrubs isolated credential copies on normal, 
   });
 });
 
+test('installed Rescue qualification declares its supported Codex line and unavailable TUI evidence', async (t) => {
+  const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  assert.equal(packageJson.devDependencies?.['@openai/codex'], '0.147.0');
+  assert.deepEqual(SUPPORTED_CODEX_LINES, ['0.147']);
+  t.diagnostic(unqualified(
+    'tui-evidence-unavailable',
+    'The exec/app-server harness exposes no interactive /agent, /subagents, or current-thread /ps events; those UI observations are not qualification evidence.',
+  ));
+});
+
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
   if (process.env.ZCODE_CODEX_SKILLS_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_SKILLS_E2E=1.'));
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-skills-e2e-'));
@@ -67,6 +78,7 @@ test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode
   try { await stat(join(sourceCodexHome, 'auth.json')); await cp(join(sourceCodexHome, 'auth.json'), isolatedAuthPath); await chmod(isolatedAuthPath, 0o600); }
   catch { markUnqualified(t, unqualified('auth-required', 'No transferable Codex auth.json was found.')); return; }
   const env = { ...process.env, CODEX_HOME: codexHome, HOME: home, USERPROFILE: home, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, PATH: process.env.PATH ?? '' };
+  if (!await requireSupportedCodexLine(t, temporary, env)) return;
   const auth = await codex(['login', 'status'], temporary, env, 30_000); if (auth.code !== 0) { markUnqualified(t, unqualified('auth-required', 'The isolated Codex home is not authenticated.')); return; }
   await buildMarketplaceSnapshot({ root, output: marketplace, sourceRef: 'qualified-e2e', sourceSha: '0'.repeat(40), npmExecPath: process.env.NPM_CLI_JS ?? npmLaunch([]).args[0], env });
   for (const args of [['plugin', 'marketplace', 'add', marketplace, '--json'], ['plugin', 'add', 'zcode@vitry', '--json']]) { const result = await codex(args, temporary, env); assert.equal(result.code, 0, result.stderr || result.stdout); }
@@ -92,6 +104,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   try { await stat(join(sourceCodexHome, 'auth.json')); await cp(join(sourceCodexHome, 'auth.json'), isolatedAuthPath); await chmod(isolatedAuthPath, 0o600); }
   catch { markUnqualified(t, unqualified('auth-required', 'No transferable Codex auth.json was found.')); return; }
   const env = { ...process.env, CODEX_HOME: codexHome, HOME: home, USERPROFILE: home, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_ZCODE_RECOVERY_CONTROL: recoveryControl, FAKE_ZCODE_CONVERSATION_PROGRESS: '1', FAKE_ZCODE_GATE_RESULT: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C', PATH: process.env.PATH ?? '' };
+  if (!await requireSupportedCodexLine(t, temporary, env)) return;
   const auth = await codex(['login', 'status'], temporary, env, 30_000); if (auth.code !== 0) { markUnqualified(t, unqualified('auth-required', 'The isolated Codex home is not authenticated.')); return; }
   await buildMarketplaceSnapshot({ root, output: marketplace, sourceRef: 'qualified-rescue-e2e', sourceSha: '0'.repeat(40), npmExecPath: process.env.NPM_CLI_JS ?? npmLaunch([]).args[0], env });
   for (const args of [['plugin', 'marketplace', 'add', marketplace, '--json'], ['plugin', 'add', 'zcode@vitry', '--json']]) { const result = await codex(args, temporary, env); assert.equal(result.code, 0, result.stderr || result.stdout); }
@@ -570,6 +583,13 @@ function pathWithin(root, path) {
 
 function unqualified(code, detail) { return `codex-skills-unqualified ${JSON.stringify({ qualified: false, code, detail })}`; }
 function markUnqualified(t, message) { if (qualificationRequired) assert.fail(message); t.skip(message); }
+async function requireSupportedCodexLine(t, cwd, env) {
+  const result = await codex(['--version'], cwd, env, 30_000);
+  const match = /\b(\d+\.\d+)\.\d+(?:\b|$)/u.exec(`${result.stdout}\n${result.stderr}`);
+  if (result.code === 0 && match && SUPPORTED_CODEX_LINES.includes(match[1])) return true;
+  markUnqualified(t, unqualified('codex-version-unsupported', `Installed Codex did not report a supported line (${SUPPORTED_CODEX_LINES.join(', ')}).`));
+  return false;
+}
 function skipExternalFailure(t, result) {
   const output = `${result.stdout}\n${result.stderr}`;
   if (result.code !== 0 && /unauthorized|authentication|not logged in|login required|\b401\b/i.test(output)) { markUnqualified(t, unqualified('auth-required', 'Codex authentication expired or was rejected.')); return true; }

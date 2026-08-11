@@ -38,6 +38,20 @@ ZCode Desktop 与 ZCode CLI 分别保存 model provider 设置。运行 `$zcode:
 
 公开命令不提供无限制执行捷径。两个 Review 始终只读。Rescue 可以修改工作区，但 ZCode permission 请求受发起 Codex turn 的权限快照约束：缺失或未知状态采用更严格策略，高风险操作只在 Codex `bypassPermissions` 模式下允许。后台 worker 继承预留时的权限，后续 turn 不能提升它。
 
+## 隔离的 Rescue Role 与检查方式
+
+`$zcode:setup` 在稳定的 plugin data 根目录下管理一个带 digest 收据的 `zcode-rescue` Role，而不是把它写进带版本号的插件缓存。Setup 只写该 Role 所需的精确 user-config 注册项和 spawn-metadata 配置叶。首次安装或受管升级会返回 `restart-required`；请重启 Codex，并在新 session 中再次运行 `$zcode:setup` 后再使用 Rescue。Setup 不会接管或覆盖冲突：外部 `zcode-rescue` 注册、同名项目 Role、或更高优先级 override 都会 fail closed 并给出 setup 诊断。收据、Role 文件和有效注册必须精确一致。
+
+前台 Rescue 只在一个原生子线程中运行常量 forwarder。host 支持 `agent_type` 时，Codex 选择具名 `zcode-rescue` Role。generic child 只是 host-only 兼容回退：仅当当前 spawn schema 缺少 `agent_type`，或能证明该字段在任何 child 启动前已被拒绝时才允许；Role 缺失、被 shadow、漂移或属于外部配置时绝不回退。父线程只运行只读 Role preflight、显示原生生命周期并返回 child 的最终公开 stdout；它不会 inline 执行 Rescue，也不会把 child stderr、工具输出、原始 conversation frame 或中间进度复制到父线程。
+
+使用 `/agent` 或 `/subagents` 选择 Rescue child 并查看它的 transcript。`/ps` 含义不同：它只列出当前活动线程拥有的后台 terminal，所以若一个耗时 child terminal 已 yield，应先切换到 child；短命令可能在出现在列表前就已结束。操作系统的 `ps` 只能显示进程和 argv，不能显示 Codex 模型活动或线程 transcript。非交互 qualification harness 不暴露这些 TUI event，因此会把该观测记录为机器可读的 `unqualified`，不会伪称已有 UI 证据。
+
+ZCode 支持时，child 会订阅 online conversation progress。allowlist 内的工具活动可以带一行、去控制字符、最长 96 字符的命令或搜索 query 预览。截断不是秘密脱敏：如果秘密本来就在命令或 query 中，它仍可能出现在 child transcript 和持久 status 预览里。原始输出、文件内容、推理、assistant draft、环境值和授权材料都不是进度字段。subscription 或可选进度 sink 失败时，Rescue 会降级到生命周期消息与 20 秒心跳；带 revision guard 的终态结果仍是权威结果。
+
+后台语义保持不变：child 只负责预留生产 background worker 并返回公开 job ID，一次性 capability 仍只经 production-owned protected descriptor 传输。持久恢复继续使用 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。普通 steering、等待超时或父/child 丢失都不授权替代执行。
+
+Codex 0.147 是本次发布唯一被固定并纳入原生 Rescue installed-host qualification suite 的版本线。只有严格认证套件完整成功的 build 才算 qualified；默认的机器可读 `unqualified` 结果不是兼容性证据。其他 Codex 版本在各自的 installed qualification 成功前不宣称兼容。uninstall 插件不会自动删除稳定私有数据、受管 Role 收据/文件、job 历史或精确 user-config 配置叶。请先结束或取消 owner job，再审查这些卸载残留，只移除能证明属于本插件的条目；绝不能删除有冲突的用户或项目 Role。
+
 ## 模型
 
 `--model` 可使用 ZCode 公布的 `provider/model`、唯一的精确 model ID 或已配置 alias。模型策略是私有配置，并按 canonical workspace 隔离。把 setup 变量放入启动 Codex 的环境，然后在 Codex 中调用 `$zcode:setup`：

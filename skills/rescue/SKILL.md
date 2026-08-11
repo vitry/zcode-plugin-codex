@@ -57,6 +57,8 @@ wait_agent({ timeout_ms: 30000 })
 
 Do not relay raw child progress, stderr, tool output, or intermediate messages into the parent. On terminal completion, return only the child's public stdout verbatim without interpretation.
 
+Detailed semantic progress belongs only to the child transcript and durable job preview. When explaining inspection, direct the user to `/agent` or `/subagents` to select the Rescue child; `/ps` lists background terminals for the currently active thread and is not a subagent selector. Online conversation subscription may degrade to fixed lifecycle messages and the 20-second heartbeat without changing the authoritative result. Command and query previews are control-free single lines shortened to 96-character display bounds, but truncation is not secret redaction; never claim it removes secrets supplied in a command or search.
+
 The named and generic routes use the same same-child choice continuation. If that child returns a public `needs-choice` response, preserve that response verbatim and ask the user exactly once; do not choose for the user. Immediately after the verbatim stdout, append exactly `Choose resume or fresh.` and no other text. Retain the original `rescueChildId` across that user turn. A non-choice reply or ordinary steering must not be forwarded to the child and must not cause another question, spawn, or execution. After the user supplies one unambiguous choice, set `continuationMessage` to exactly one of these strings, with no prefix, suffix, interpolation, or additional field:
 
 ```text

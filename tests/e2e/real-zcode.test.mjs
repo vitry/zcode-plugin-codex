@@ -17,12 +17,14 @@ import { runCompanion } from '../../scripts/zcode-companion.mjs';
 const requestedModel = process.env.ZCODE_REAL_E2E_MODEL?.trim();
 const qualificationRequired = process.env.ZCODE_REQUIRE_QUALIFIED === '1';
 const skipReason = process.env.ZCODE_REAL_E2E !== '1'
-  ? 'unqualified local real E2E: set ZCODE_REAL_E2E=1 on an authenticated macOS ZCode installation'
+  ? unqualified('opt-in-required', 'Set ZCODE_REAL_E2E=1 on an authenticated macOS ZCode installation.')
   : process.platform !== 'darwin'
-    ? 'unqualified real E2E: macOS is the only real-CLI-qualified platform'
+    ? unqualified('platform-unsupported', 'macOS is the only real-CLI-qualified platform.')
     : !requestedModel
-      ? 'unqualified real E2E: set a non-empty ZCODE_REAL_E2E_MODEL'
+      ? unqualified('model-required', 'Set a non-empty ZCODE_REAL_E2E_MODEL.')
       : false;
+
+function unqualified(code, detail) { return `real-zcode-unqualified ${JSON.stringify({ qualified: false, code, detail })}`; }
 
 test('real ZCode discovery, read-only turn, cancellation, model, and history import', {
   skip: qualificationRequired ? false : skipReason,
