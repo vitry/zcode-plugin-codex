@@ -610,20 +610,39 @@ test('flush drains a manually resolved descriptor within semantic grace', async 
 test('flush yields after its grace timer so ready I/O semantics are not fenced', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-progress-ready-io-'));
   const path = join(directory, 'semantic.txt'); await writeFile(path, 'ready semantic');
-  const lines = []; const diagnostics = [];
+  const readyRead = readFile(path, 'utf8'); await readyRead;
+  const lines = []; const diagnostics = []; let descriptorReadReady = false; let graceTimerRegistered = false; let releaseSemantic;
+  const semanticGate = new Promise((resolve) => { releaseSemantic = resolve; });
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a', write: (line) => lines.push(line),
     describeNotification: async (_frame, frameObservedAt) => {
-      const message = await readFile(path, 'utf8');
+      const message = await readyRead; descriptorReadReady = true; await semanticGate;
       return [{ phase: 'running', message, observedAt: frameObservedAt }];
     },
     onDiagnostic: ({ kind }) => diagnostics.push(kind),
     now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
   });
   reporter.observe({ method: 'v4/conversation/frame' });
-  const flushing = reporter.flush();
-  const stalledAt = Date.now(); while (Date.now() - stalledAt < 150) { /* force timer and ready I/O into the same turn */ }
-  await flushing;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, milliseconds, ...args) => {
+    if (milliseconds !== 125) return originalSetTimeout(callback, milliseconds, ...args);
+    graceTimerRegistered = true;
+    return originalSetTimeout(() => {
+      callback(...args);
+      // Register first in check so waitWithin's post-timer recheck runs after
+      // the already-ready descriptor is released. Without that yield it fences.
+      setImmediate(releaseSemantic);
+    }, milliseconds);
+  };
+  try {
+    const flushing = reporter.flush();
+    // flush() first yields one microtask, then synchronously registers its grace
+    // timer inside waitWithin(). Resume before the event loop enters timers.
+    await Promise.resolve();
+    assert.equal(descriptorReadReady, true); assert.equal(graceTimerRegistered, true);
+    const stalledAt = Date.now(); while (Date.now() - stalledAt < 150) { /* make the registered grace timer ready */ }
+    await flushing;
+  } finally { globalThis.setTimeout = originalSetTimeout; }
   assert.deepEqual(diagnostics, []);
   assert.match(lines.join(''), /ready semantic/);
   reporter.close();
