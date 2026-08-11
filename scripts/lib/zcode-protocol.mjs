@@ -328,6 +328,7 @@ export async function connectZCodeBroker(endpoint, options) {
   if (!nonEmpty(endpoint) || !plainObject(options) || !nonEmpty(options.brokerToken) || options.brokerToken.length < 32 || !nonEmpty(options.ownerId) || options.ownerId.length < 16
     || options.existingProtocolOnly !== undefined && typeof options.existingProtocolOnly !== 'boolean') throw protocolInputError();
   const requestTimeoutMs = boundedInteger(options.requestTimeoutMs, 30_000, 1, 3_600_000);
+  const deadline = Date.now() + requestTimeoutMs;
   const socket = net.createConnection(endpoint);
   await new Promise((resolve, reject) => {
     const cleanup = () => { clearTimeout(timer); socket.off('connect', onConnect); socket.off('error', onError); };
@@ -350,16 +351,21 @@ export async function connectZCodeBroker(endpoint, options) {
   let protocol;
   try {
     protocol = new ZCodeProtocolClient(transport, { ...options, acceptBrokerControl: true });
-    const authenticated = await protocol.request('broker/auth', { token: options.brokerToken, ownerId: options.ownerId, ...(options.existingProtocolOnly === undefined ? {} : { existingProtocolOnly: options.existingProtocolOnly }) });
+    const authenticated = await protocol.request('broker/auth', { token: options.brokerToken, ownerId: options.ownerId, ...(options.existingProtocolOnly === undefined ? {} : { existingProtocolOnly: options.existingProtocolOnly }) }, requiredRequestTime(deadline, 'broker/auth', requestTimeoutMs));
     if (!plainObject(authenticated) || authenticated.authenticated !== true
       || options.existingProtocolOnly === true && authenticated.existingProtocolOnly !== true) throw brokerCapabilityUnavailable();
     return protocol;
   } catch (error) {
     socket.destroy();
-    await protocol?.close().catch(() => {});
+    await closeProtocolUntil(protocol, deadline);
     throw error;
   }
 }
+
+/** @param {number} deadline @param {string} method @param {number} requestTimeoutMs */
+function requiredRequestTime(deadline, method, requestTimeoutMs) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) throw requestTimeout(method, requestTimeoutMs); return Math.min(requestTimeoutMs, remainingMs); }
+/** @param {{close:()=>Promise<unknown>}|undefined|null} closeable @param {number} deadline */
+export async function closeProtocolUntil(closeable, deadline) { if (!closeable) return; let closing; try { closing = Promise.resolve(closeable.close()).catch(() => {}); } catch { return; } const remainingMs = deadline - Date.now(); if (remainingMs <= 0) { void closing; return; } let timer; try { await Promise.race([closing, new Promise((resolvePromise) => { timer = setTimeout(resolvePromise, remainingMs); })]); } finally { clearTimeout(timer); } }
 
 /** @param {any} message @param {unknown} sessionId */
 function isCompletionFor(message, sessionId, /** @type {any} */ turn) { return nonEmpty(sessionId) && turn?.status === 'armed' && Number.isSafeInteger(message.params?.revision) && message.params.revision > turn.baseline && message.method === 'state.updated' && message.params?.scope === 'session' && message.params.sessionId === sessionId && COMPLETION_REASONS.includes(message.params.reason); }

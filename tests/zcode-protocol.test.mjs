@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 
-import { connectZCodeBroker } from '../scripts/lib/zcode-protocol.mjs';
+import { closeProtocolUntil, connectZCodeBroker, ZCodeProtocolClient } from '../scripts/lib/zcode-protocol.mjs';
 
 test('broker connect bounds authentication and closes the socket when the peer never answers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-protocol-auth-'));
@@ -33,6 +33,16 @@ test('broker connect bounds authentication and closes the socket when the peer n
     await new Promise((resolvePromise) => server.close(resolvePromise));
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('broker connect and authentication share one absolute timeout budget', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-protocol-shared-budget-')); const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\zcode-protocol-${randomUUID()}` : join(directory, 'broker.sock'); let peer; const server = net.createServer((socket) => { peer = socket; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 70); socket.resume(); }); await new Promise((resolvePromise, reject) => { server.once('error', reject); server.listen(endpoint, resolvePromise); });
+  try { const startedAt = Date.now(); let observed; await assert.rejects(connectZCodeBroker(endpoint, { brokerToken: 'a'.repeat(64), ownerId: 'protocol-shared-budget-owner', requestTimeoutMs: 200 }), (error) => { observed = error; return error?.code === 'ZCODE_REQUEST_TIMEOUT'; }); const elapsed = Date.now() - startedAt; assert.ok(observed.details.timeoutMs < 200, 'authentication must receive only the remaining connect budget'); assert.ok(elapsed < 400, `connect and auth exceeded one bounded budget with scheduling slack: ${elapsed}ms`); }
+  finally { peer?.destroy(); await new Promise((resolvePromise) => server.close(resolvePromise)); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('deadline-aware protocol close returns while an uncooperative transport never exits', async () => {
+  const killCalls = []; const transport = { stdout: null, stderr: null, stdin: { end() {} }, exitCode: null, signalCode: null, once() { return this; }, kill(signal) { killCalls.push(signal); return true; } }; const protocol = new ZCodeProtocolClient(transport); const startedAt = Date.now(); await closeProtocolUntil(protocol, startedAt + 50); const elapsed = Date.now() - startedAt; assert.ok(elapsed >= 40 && elapsed < 200); assert.deepEqual(killCalls, ['SIGTERM']);
 });
 
 test('broker connect rejects a malformed existing-protocol-only capability before opening a socket', async () => {

@@ -4,7 +4,7 @@ import { readFile, readdir, realpath } from 'node:fs/promises';
 
 import { PluginError } from './errors.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './identifier.mjs';
-import { connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
+import { closeProtocolUntil, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
 import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, MAX_BROKER_IDLE_TIMEOUT_MS, MIN_BROKER_IDLE_TIMEOUT_MS, prioritizeBrokerOwnership, probeBrokerHealth, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -186,7 +186,7 @@ export async function releaseManagedZCodeOwner(options) {
     /** @type {ZCodeClient|null} */ let client = null;
     let profileDeferred = 0; let profileError = null; let releaseProof = false;
     try {
-      const requestTimeoutMs = options.requestTimeoutMs ?? 750; client = await createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs }); const attempted = new Set(); const deadline = cleanupDeadline; const capabilities = await client.brokerCapabilities(boundedCleanupTimeout(deadline, requestTimeoutMs));
+      const requestTimeoutMs = options.requestTimeoutMs ?? 750; const deadline = cleanupDeadline; client = await createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs: requiredCleanupTimeout(deadline, requestTimeoutMs) }); const attempted = new Set(); const capabilities = await client.brokerCapabilities(boundedCleanupTimeout(deadline, requestTimeoutMs));
       let legacyFallback = false;
       for (let batch = 0; batch < OWNER_CLEANUP_MAX_BATCHES && Date.now() < deadline; batch += 1) {
         const result = await releaseOwnerWithBusyRetry(client, capabilities.releaseOwnerExclusions ? [...attempted] : undefined, deadline, requestTimeoutMs); releaseProof = true; profileDeferred = result.deferredSessionCount;
@@ -205,7 +205,7 @@ export async function releaseManagedZCodeOwner(options) {
       if (!releaseProof) throw ownerReleaseIncomplete({ releaseProofMissingProfileCount: 1 });
     }
     catch (error) { profileError = error; }
-    finally { await client?.close().catch(() => {}); }
+    finally { await closeProtocolUntil(client, cleanupDeadline); }
     return { releasedSessionIds: [...released], failedSessionIds: [...failed], deferredSessionCount: profileDeferred, releaseProof, error: profileError };
   }));
   const released = outcomes.flatMap((outcome) => outcome.releasedSessionIds); const failed = outcomes.flatMap((outcome) => outcome.failedSessionIds); const deferredSessionCount = outcomes.reduce((total, outcome) => total + outcome.deferredSessionCount, 0);
@@ -222,6 +222,8 @@ function boundedCauseCodeCounts(errors) { const counts = /** @type {Record<strin
 /** @param {Record<string,unknown>} details */
 function ownerReleaseIncomplete(details) { return new PluginError('ZCODE_OWNER_RELEASE_INCOMPLETE', 'ZCode owner cleanup could not confirm every broker profile or bounded result.', { category: 'state', remedy: 'Retry owner cleanup; confirmed releases are idempotent.', details }); }
 
+/** @param {number} deadline @param {number} requestTimeoutMs */
+function requiredCleanupTimeout(deadline, requestTimeoutMs) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) throw ownerReleaseIncomplete({ releaseProofMissingProfileCount: 1 }); return Math.min(requestTimeoutMs, remainingMs); }
 /** @param {number} deadline @param {number} requestTimeoutMs */
 function boundedCleanupTimeout(deadline, requestTimeoutMs) { return Math.max(1, Math.min(requestTimeoutMs, deadline - Date.now())); }
 /** @param {number} deadline */

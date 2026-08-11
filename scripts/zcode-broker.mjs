@@ -13,7 +13,7 @@ import { atomicWriteJson, ensurePrivateDirectory, withFileLock } from './lib/fs.
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './lib/identifier.mjs';
 import { spawnDaemon } from './lib/process.mjs';
 import { validSnapshot } from './lib/zcode-schema.mjs';
-import { BoundedWriter, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
+import { BoundedWriter, closeProtocolUntil, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 
 const MAX_LOCAL_FRAME_BYTES = 1024 * 1024;
@@ -169,12 +169,14 @@ async function inspectBrokerIdentity(path, options = {}) {
 /** @param {{endpoint:string,brokerToken:string,pid:number,instanceId:string}} record @param {number} [requestTimeoutMs] */
 export async function probeBrokerHealth(record, requestTimeoutMs = 1_000) {
   if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 3_600_000) throw brokerInputError();
+  const deadline = Date.now() + requestTimeoutMs;
   let protocol;
   try {
     protocol = await connectZCodeBroker(record.endpoint, { brokerToken: record.brokerToken, ownerId: `health-${record.instanceId}`, requestTimeoutMs });
-    const result = await protocol.request('broker/health', {});
+    const remainingMs = deadline - Date.now(); if (remainingMs <= 0) return false;
+    const result = await protocol.request('broker/health', {}, Math.min(requestTimeoutMs, remainingMs));
     return result?.ok === true && result.pid === record.pid && result.instanceId === record.instanceId;
-  } catch { return false; } finally { await protocol?.close().catch(() => {}); }
+  } catch { return false; } finally { await closeProtocolUntil(protocol, deadline); }
 }
 
 /** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},env?:NodeJS.ProcessEnv,platform?:string,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */

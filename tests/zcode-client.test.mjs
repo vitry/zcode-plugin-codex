@@ -114,18 +114,20 @@ async function createPersistedTestBroker({ dataRoot, workspace, tokenByte, insta
   return broker;
 }
 
-async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangHealth = false, closeAfterHealth = false, healthDelayMs = 0, capabilitiesDelayAfterWriteMs = 0, onMethod = () => {} }) {
+async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangHealth = false, closeAfterHealth = false, hangAuthAfterHealth = false, authDelayMs = 0, healthDelayMs = 0, capabilitiesDelayAfterWriteMs = 0, onMethod = () => {} }) {
   const sockets = new Set();
+  let healthCompleted = false;
   const server = net.createServer((socket) => {
     sockets.add(socket); socket.setEncoding('utf8'); let buffer = '';
     socket.on('data', (chunk) => {
       buffer += chunk; let newline = buffer.indexOf('\n');
       while (newline !== -1) {
         const frame = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); newline = buffer.indexOf('\n');
-        onMethod(frame.method); if (frame.method === 'broker/auth' && frame.params?.token === brokerToken) socket.write(`${JSON.stringify({ id: frame.id, result: { authenticated: true } })}\n`);
+        onMethod(frame.method); if (frame.method === 'broker/auth' && frame.params?.token === brokerToken && !(hangAuthAfterHealth && healthCompleted)) { if (authDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, authDelayMs); socket.write(`${JSON.stringify({ id: frame.id, result: { authenticated: true } })}\n`); }
         else if (frame.method === 'broker/health' && !hangHealth) {
           if (healthDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, healthDelayMs);
           socket.write(`${JSON.stringify({ id: frame.id, result: { ok: true, pid: process.pid, instanceId } })}\n`);
+          healthCompleted = true;
           if (closeAfterHealth) server.close();
         }
         else if (frame.method === 'broker/capabilities') { socket.write(`${JSON.stringify({ id: frame.id, result: { releaseOwnerExclusions: false } })}\n`); if (capabilitiesDelayAfterWriteMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, capabilitiesDelayAfterWriteMs); }
@@ -612,6 +614,12 @@ test('existing managed client bounds an unhealthy broker probe', async () => {
     assert.equal(await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-hung-owner', requestTimeoutMs: 40, ...wireOptions }), null);
     assert.ok(Date.now() - startedAt < 500);
   } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('broker health connect authentication request and close share one probe budget', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-health-shared-budget-')); const endpoint = join(directory, 'broker.sock'); const record = { endpoint, pid: process.pid, instanceId: '4'.repeat(48), brokerToken: '5'.repeat(64) }; let closeServer;
+  try { closeServer = await createHealthOnlyServer(endpoint, { ...record, authDelayMs: 100, hangHealth: true }); const startedAt = Date.now(); assert.equal(await probeBrokerHealth(record, 300), false); const elapsed = Date.now() - startedAt; assert.ok(elapsed < 360, `health probe consumed separate stage budgets: ${elapsed}ms`); }
+  finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('a live unhealthy broker identity prevents concurrent replacement startup', async () => {
@@ -1489,6 +1497,13 @@ test('managed owner cleanup cannot report success without one release proof befo
   try {
     const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const record = { endpoint, pid: process.pid, instanceId: '9'.repeat(48), brokerToken: 'a'.repeat(64) }; closeServer = await createHealthOnlyServer(endpoint, { ...record, healthDelayMs: 900, capabilitiesDelayAfterWriteMs: 950, onMethod: (method) => methods.push(method) }); await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), record); await assert.rejects(releaseManagedZCodeOwner({ dataRoot: directory, workspace: directory, ownerId: 'managed-release-proof-owner', requestTimeoutMs: 1_800 }), (error) => { assert.equal(error?.code, 'ZCODE_OWNER_RELEASE_INCOMPLETE'); assert.equal(error.details?.releaseProofMissingProfileCount, 1); assert.deepEqual(error.details?.causeCodeCounts, { ZCODE_REQUEST_TIMEOUT: 1 }); return true; }); assert.equal(methods.includes('broker/releaseOwner'), false);
   } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('managed owner cleanup bounds connect authentication inside its shared deadline', { timeout: 4_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-managed-release-auth-budget-')); const methods = []; let closeServer; let cleanup;
+  try {
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const record = { endpoint, pid: process.pid, instanceId: 'b'.repeat(48), brokerToken: 'c'.repeat(64) }; closeServer = await createHealthOnlyServer(endpoint, { ...record, healthDelayMs: 250, hangAuthAfterHealth: true, onMethod: (method) => methods.push(method) }); await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), record); const started = Date.now(); cleanup = releaseManagedZCodeOwner({ dataRoot: directory, workspace: directory, ownerId: 'managed-release-auth-budget-owner', requestTimeoutMs: 3_600_000 }); const timeout = Symbol('cleanup-timeout'); const outcome = await Promise.race([cleanup.then(() => ({ status: 'fulfilled' }), (error) => ({ status: 'rejected', error })), new Promise((resolvePromise) => setTimeout(() => resolvePromise(timeout), 2_300))]); if (outcome === timeout) { await closeServer(); closeServer = null; await cleanup.catch(() => {}); assert.fail('owner cleanup exceeded its shared deadline during broker authentication'); } assert.equal(outcome.status, 'rejected'); assert.equal(outcome.error?.code, 'ZCODE_OWNER_RELEASE_INCOMPLETE'); assert.equal(outcome.error?.details?.releaseProofMissingProfileCount, 1); assert.equal(outcome.error?.details?.causeCodeCounts?.ZCODE_REQUEST_TIMEOUT, 1); assert.ok(Date.now() - started < 2_200); assert.equal(methods.filter((method) => method === 'broker/auth').length, 2); assert.equal(methods.includes('broker/releaseOwner'), false);
+  } finally { await closeServer?.(); await cleanup?.catch(() => {}); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('owner release uses the same exact-session stop notification without disconnecting the client', async () => {
