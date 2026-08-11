@@ -103,14 +103,15 @@ export async function readPrivateDirectory(root, path, maximumEntries) {
 export async function readBoundedJsonFile(root, path, maximumBytes, options = {}) {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new TypeError('maximumBytes must be a positive safe integer');
   const platform = options.platform ?? process.platform;
+  const maximumFileSize = BigInt(maximumBytes);
   const parent = dirname(path); const parentBefore = await safeContainedDirectoryStats(root, parent);
-  const pathBefore = await lstat(path);
-  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > maximumBytes) throw unsafePrivatePath(path);
+  const pathBefore = await lstat(path, { bigint: true });
+  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > maximumFileSize) throw unsafePrivatePath(path);
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const handleBefore = await handle.stat();
-    if (!handleBefore.isFile() || handleBefore.size > maximumBytes) throw unsafePrivatePath(path);
+    const handleBefore = await handle.stat({ bigint: true });
+    if (!handleBefore.isFile() || handleBefore.size > maximumFileSize) throw unsafePrivatePath(path);
     const bytes = Buffer.alloc(maximumBytes + 1); let offset = 0;
     while (offset < bytes.length) {
       const result = await handle.read(bytes, offset, bytes.length - offset, offset);
@@ -118,15 +119,15 @@ export async function readBoundedJsonFile(root, path, maximumBytes, options = {}
       offset += result.bytesRead;
     }
     if (offset > maximumBytes) throw unsafePrivatePath(path);
-    const handleAfter = await handle.stat();
+    const handleAfter = await handle.stat({ bigint: true });
     const currentHandle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     let current;
     try {
-      current = await currentHandle.stat();
+      current = await currentHandle.stat({ bigint: true });
     } finally { await currentHandle.close(); }
-    const [pathAfter, parentAfter] = await Promise.all([lstat(path), safeContainedDirectoryStats(root, parent)]);
-    if (pathAfter.isSymbolicLink() || !pathAfter.isFile() || pathAfter.size > maximumBytes
-      || !handleAfter.isFile() || handleAfter.size > maximumBytes || !current.isFile() || current.size > maximumBytes
+    const [pathAfter, parentAfter] = await Promise.all([lstat(path, { bigint: true }), safeContainedDirectoryStats(root, parent)]);
+    if (pathAfter.isSymbolicLink() || !pathAfter.isFile() || pathAfter.size > maximumFileSize
+      || !handleAfter.isFile() || handleAfter.size > maximumFileSize || !current.isFile() || current.size > maximumFileSize
       || !sameIdentity(pathBefore, pathAfter) || !sameIdentity(handleBefore, handleAfter)
       || !sameIdentity(handleBefore, current)
       || !samePathHandleIdentity(pathBefore, handleBefore, platform)
