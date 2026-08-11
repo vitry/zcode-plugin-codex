@@ -28,6 +28,7 @@ const MAX_PENDING_CONVERSATION_FRAMES = 16;
 const MAX_PENDING_CONVERSATION_BYTES = 1024 * 1024;
 const MAX_CONVERSATION_FRAME_BYTES = 64 * 1024;
 const MAX_OWNER_OPERATION_LEASES = 256;
+const RAW_ENDPOINT_PROBE_MS = 100;
 const LOCAL_BROKER_METHODS = new Set(['session/create', 'session/send', 'session/read', 'session/resume', 'session/list', 'session/stop', 'session/setModel', 'session/setThoughtLevel', 'v4/conversation/subscribe', 'v4/conversation/unsubscribe', 'broker/health', 'broker/releaseOwner']);
 const OWNER_SCOPED_SESSION_METHODS = new Set(['session/read', 'session/resume', 'session/setModel', 'session/setThoughtLevel']);
 const EXCLUSIVE_SESSION_METHODS = new Set(['session/create', 'session/send', 'session/stop', 'v4/conversation/subscribe', 'v4/conversation/unsubscribe', 'broker/releaseSession']);
@@ -188,13 +189,15 @@ export async function ensureZCodeBroker(options) {
     if (existing.status === 'healthy') return existing.record;
     if (existing.status === 'unhealthy' || existing.status === 'invalid') throw brokerUnhealthyError();
     if (existing.status === 'dead') {
-      if (isProcessAlive(existing.record.pid)) throw brokerUnhealthyError();
-      if ((options.platform ?? process.platform) !== 'win32') await unlink(endpoint).catch((error) => { if (error?.code !== 'ENOENT') throw error; });
+      if (!await retireDeadBrokerIdentity(identityPath, endpoint, existing.record, options.platform ?? process.platform)) throw brokerUnhealthyError();
     }
+    if (existing.status === 'missing') await clearStaleMissingEndpoint(identityPath, endpoint, options.platform ?? process.platform);
     const instanceId = randomBytes(24).toString('hex');
     const brokerToken = randomBytes(32).toString('hex');
     const configPath = join(brokerDirectory, `config-${instanceId}.json`);
-    await atomicWriteJson(configPath, { endpoint, instanceId, brokerToken, launch: options.launch, workspace: storage.workspacePath, launchCwd: (options.platform ?? process.platform) === 'win32' ? tmpdir() : storage.workspacePath, idleTimeoutMs: options.idleTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs, ownershipPath: join(brokerDirectory, profile ? `session-owners-${profile}.json` : 'session-owners.json'), identityPath, publishIdentityAfterListen: true });
+    const config = JSON.parse(JSON.stringify({ endpoint, instanceId, brokerToken, launch: options.launch, workspace: storage.workspacePath, launchCwd: (options.platform ?? process.platform) === 'win32' ? tmpdir() : storage.workspacePath, idleTimeoutMs: options.idleTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs, ownershipPath: join(brokerDirectory, profile ? `session-owners-${profile}.json` : 'session-owners.json'), identityPath, publishIdentityAfterListen: true }));
+    try {
+      await atomicWriteJson(configPath, config);
     // Keep the daemon's process cwd outside the workspace. Windows holds the
     // cwd directory open for the lifetime of the process, which otherwise
     // prevents callers from removing short-lived workspace fixtures (and can
@@ -203,19 +206,26 @@ export async function ensureZCodeBroker(options) {
     const candidate = { endpoint, pid: child.pid, instanceId, brokerToken };
     const deadline = Date.now() + 5_000;
     let startupConflict = false;
+    let candidateDead = false;
     while (Date.now() < deadline) {
       const published = await inspectBrokerIdentity(identityPath, { expectedEndpoint: endpoint });
       if (sameBrokerIdentity(published.record, candidate)) {
         if (published.status === 'healthy') return published.record;
-        if (published.status === 'dead') break;
+        if (published.status === 'dead') { candidateDead = true; break; }
       } else if (published.status !== 'missing' && !(existing.status === 'dead' && sameBrokerIdentity(published.record, existing.record))) { startupConflict = true; break; }
       if (!isProcessAlive(child.pid)) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     try { process.kill(child.pid, 'SIGTERM'); } catch { /* already exited */ }
-    await removeBrokerIdentityInstance(identityPath, instanceId).catch(() => {});
-    if (startupConflict) throw brokerUnhealthyError();
-    throw new PluginError('ZCODE_BROKER_START_FAILED', 'The ZCode broker failed its startup health probe.', { category: 'runtime', remedy: 'Retry or run $zcode:setup.' });
+    if (candidateDead) await retireDeadBrokerIdentity(identityPath, endpoint, candidate, options.platform ?? process.platform).catch(() => false);
+    else if (!isProcessAlive(child.pid)) {
+      const published = await inspectBrokerIdentity(identityPath, { expectedEndpoint: endpoint });
+      if (sameBrokerIdentity(published.record, candidate) && published.status === 'dead') await retireDeadBrokerIdentity(identityPath, endpoint, candidate, options.platform ?? process.platform).catch(() => false);
+      else if (published.status === 'missing') await clearStaleMissingEndpoint(identityPath, endpoint, options.platform ?? process.platform).catch(() => {});
+    }
+      if (startupConflict) throw brokerUnhealthyError();
+      throw new PluginError('ZCODE_BROKER_START_FAILED', 'The ZCode broker failed its startup health probe.', { category: 'runtime', remedy: 'Retry or run $zcode:setup.' });
+    } finally { await removeBrokerStartupConfig(configPath, config).catch(() => {}); }
   });
 }
 
@@ -302,7 +312,7 @@ export class ZCodeBroker {
     const conversationSessionId = frame.method === 'broker/releaseOwner' ? null : sessionIdFromConversationRequest(frame);
     if (conversationSessionId === false) { writeRequestError(socket, frame.id, brokerInputError()); return; }
     const requestedSessionId = conversationSessionId ?? frame.params.sessionId;
-    const ownerId = this.socketOwnerIds.get(socket); const claimMethod = frame.method === 'session/create'; let ownershipReloaded = false; let ownershipPreflight; let ownerAdmission; let sessionAdmission;
+    const ownerId = this.socketOwnerIds.get(socket); const claimMethod = frame.method === 'session/create'; let ownershipReloaded = false; let ownershipPreflight; let ownerAdmission; let sessionAdmission; let sendToken;
     if (typeof requestedSessionId === 'string' && this.admission.hasForeignSessionAuthority(requestedSessionId, ownerId)) { writeSessionOwnerDenied(socket, frame.id); return; }
     if (typeof requestedSessionId === 'string' && !claimMethod && !this.admission.hasSessionAuthority(requestedSessionId)) {
       try { ownershipPreflight = this.admission.beginOwnershipPreflight(ownerId, requestedSessionId); } catch (error) { writeRequestError(socket, frame.id, error); return; }
@@ -324,7 +334,7 @@ export class ZCodeBroker {
         try { if (!ownershipReloaded) await this.reloadOwnership(); } catch (error) { writeRequestError(socket, frame.id, error); return; }
         const existingOwner = typeof requestedSessionId === 'string' ? this.sessionOwners.get(requestedSessionId) : null;
         if (existingOwner && existingOwner.ownerId !== ownerId || typeof requestedSessionId === 'string' && !existingOwner && !claimMethod) { writeSessionOwnerDenied(socket, frame.id); return; }
-        let subscriptionToken; let stopToken; let sendToken; let stoppedGeneration; let ownerCommitToken; let unsubscribeRecord; let protocol;
+        let subscriptionToken; let stopToken; let stoppedGeneration; let ownerCommitToken; let unsubscribeRecord; let protocol;
         if (frame.method === 'session/send') { sendToken = sessionAdmission.token; this.admittingSessions.set(frame.params.sessionId, sendToken); }
         if (frame.method === 'session/stop') { stoppedGeneration = this.activeSessionSockets.get(frame.params.sessionId); stopToken = sessionAdmission.token; this.stoppingSessions.set(frame.params.sessionId, { token: stopToken, activeToken: stoppedGeneration?.token ?? null }); }
         try {
@@ -391,7 +401,7 @@ export class ZCodeBroker {
           const pluginError = error instanceof PluginError ? { code: error.code, category: error.category, remedy: error.remedy, details: error.details } : null;
           writeLocal(socket, { id: frame.id, error: { code: -32000, message: error instanceof Error ? error.message : 'Broker request failed', ...(pluginError ? { data: { pluginError } } : {}) } });
         }
-      } finally { this.admission.finishSessionRequest(sessionAdmission); }
+      } finally { if (sendToken && this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.admission.finishSessionRequest(sessionAdmission); }
     } finally { this.admission.finishOwnerRequest(ownerAdmission); this.admission.finishOwnershipPreflight(ownershipPreflight); }
   }
 
@@ -782,6 +792,10 @@ function validDrainOption(value) { return value === undefined || Number.isSafeIn
 function canonicalEndpointPath(path) { try { return realpathSync(resolve(path)); } catch { return path; } }
 function sameBrokerIdentity(left, right) { return left?.endpoint === right?.endpoint && left?.pid === right?.pid && left?.instanceId === right?.instanceId && left?.brokerToken === right?.brokerToken; }
 async function removeBrokerIdentityInstance(path, instanceId) { let value; try { value = JSON.parse(await readFile(path, 'utf8')); } catch (error) { if (error?.code === 'ENOENT') return false; return false; } if (value?.instanceId !== instanceId) return false; try { await unlink(path); return true; } catch (error) { if (error?.code === 'ENOENT') return false; throw error; } }
+async function removeBrokerStartupConfig(path, expected) { let value; try { value = JSON.parse(await readFile(path, 'utf8')); } catch { return false; } if (JSON.stringify(value) !== JSON.stringify(expected)) return false; try { await unlink(path); return true; } catch (error) { if (error?.code === 'ENOENT') return false; throw error; } }
+async function retireDeadBrokerIdentity(identityPath, endpoint, expected, platform) { const current = await inspectBrokerIdentity(identityPath, { expectedEndpoint: endpoint }); if (current.status !== 'dead' || !sameBrokerIdentity(current.record, expected) || isProcessAlive(expected.pid)) return false; if (platform !== 'win32') await unlink(endpoint).catch((error) => { if (error?.code !== 'ENOENT') throw error; }); return removeBrokerIdentityInstance(identityPath, expected.instanceId); }
+async function clearStaleMissingEndpoint(identityPath, endpoint, platform) { if (await rawEndpointState(endpoint) !== 'stale') throw brokerUnhealthyError(); const identity = await inspectBrokerIdentity(identityPath, { expectedEndpoint: endpoint }); if (identity.status !== 'missing') throw brokerUnhealthyError(); if (await rawEndpointState(endpoint) !== 'stale') throw brokerUnhealthyError(); if (platform !== 'win32') await unlink(endpoint).catch((error) => { if (error?.code !== 'ENOENT') throw error; }); }
+async function rawEndpointState(endpoint) { return new Promise((resolvePromise) => { const socket = net.createConnection(endpoint); let settled = false; const settle = (state) => { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); resolvePromise(state); }; const timer = setTimeout(() => settle('unknown'), RAW_ENDPOINT_PROBE_MS); timer.unref?.(); socket.once('connect', () => settle('live')); socket.once('error', (error) => settle(['ECONNREFUSED', 'ENOENT'].includes(error?.code) ? 'stale' : 'unknown')); }); }
 function isWindowsNamedPipe(endpoint) { return typeof endpoint === 'string' && endpoint.toLowerCase().startsWith('\\\\.\\pipe\\'); }
 function isProcessAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 function safeTokenEqual(left, right) { const a = Buffer.from(left); const b = Buffer.from(right); return a.length === b.length && timingSafeEqual(a, b); }
