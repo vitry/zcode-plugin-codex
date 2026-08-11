@@ -693,6 +693,7 @@ test('executor reports only same-session progress and drains persistence before 
     },
   });
   await finalizingEntered;
+  await new Promise((resolve) => setImmediate(resolve));
   try {
     assert.equal(readSessionCalls, 0); assert.equal(successFinishes, 0); assert.equal(order.includes('transition:succeeded'), false);
   } finally { releaseFinalizing(); }
