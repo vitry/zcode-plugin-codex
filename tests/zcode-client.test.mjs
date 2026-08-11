@@ -132,7 +132,7 @@ async function createPersistedTestBroker({ dataRoot, workspace, tokenByte, insta
   return broker;
 }
 
-async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangHealth = false, closeAfterHealth = false, hangAuthAfterHealth = false, authDelayMs = 0, healthDelayMs = 0, capabilitiesDelayAfterWriteMs = 0, onMethod = () => {} }) {
+async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangHealth = false, hangCapabilities = false, closeAfterHealth = false, hangAuthAfterHealth = false, authDelayMs = 0, healthDelayMs = 0, onMethod = () => {} }) {
   const sockets = new Set();
   let healthCompleted = false;
   const server = net.createServer((socket) => {
@@ -142,13 +142,13 @@ async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangH
       while (newline !== -1) {
         const frame = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); newline = buffer.indexOf('\n');
         onMethod(frame.method); if (frame.method === 'broker/auth' && frame.params?.token === brokerToken && !(hangAuthAfterHealth && healthCompleted)) { if (authDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, authDelayMs); socket.write(`${JSON.stringify({ id: frame.id, result: { authenticated: true } })}\n`); }
-        else if (frame.method === 'broker/health' && !hangHealth) {
+        else if (frame.method === 'broker/health' && !hangHealth && !(hangCapabilities && healthCompleted)) {
           if (healthDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, healthDelayMs);
           socket.write(`${JSON.stringify({ id: frame.id, result: { ok: true, pid: process.pid, instanceId } })}\n`);
           healthCompleted = true;
           if (closeAfterHealth) server.close();
         }
-        else if (frame.method === 'broker/capabilities') { socket.write(`${JSON.stringify({ id: frame.id, result: { releaseOwnerExclusions: false } })}\n`); if (capabilitiesDelayAfterWriteMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, capabilitiesDelayAfterWriteMs); }
+        else if (frame.method === 'broker/capabilities') socket.write(`${JSON.stringify({ id: frame.id, result: { releaseOwnerExclusions: false } })}\n`);
       }
     });
     socket.once('close', () => sockets.delete(socket));
@@ -1605,7 +1605,7 @@ test('managed owner cleanup reports a healthy-profile connection race instead of
 test('managed owner cleanup cannot report success without one release proof before its deadline', { timeout: 4_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-managed-release-proof-')); const methods = []; let closeServer;
   try {
-    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const record = { endpoint, pid: process.pid, instanceId: '9'.repeat(48), brokerToken: 'a'.repeat(64) }; closeServer = await createHealthOnlyServer(endpoint, { ...record, healthDelayMs: 900, capabilitiesDelayAfterWriteMs: 950, onMethod: (method) => methods.push(method) }); await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), record); await assert.rejects(releaseManagedZCodeOwner({ dataRoot: directory, workspace: directory, ownerId: 'managed-release-proof-owner', requestTimeoutMs: 1_800 }), (error) => { assert.equal(error?.code, 'ZCODE_OWNER_RELEASE_INCOMPLETE'); assert.equal(error.details?.releaseProofMissingProfileCount, 1); assert.deepEqual(error.details?.causeCodeCounts, { ZCODE_REQUEST_TIMEOUT: 1 }); return true; }); assert.equal(methods.includes('broker/releaseOwner'), false);
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const record = { endpoint, pid: process.pid, instanceId: '9'.repeat(48), brokerToken: 'a'.repeat(64) }; closeServer = await createHealthOnlyServer(endpoint, { ...record, hangCapabilities: true, onMethod: (method) => methods.push(method) }); await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), record); await assert.rejects(releaseManagedZCodeOwner({ dataRoot: directory, workspace: directory, ownerId: 'managed-release-proof-owner', requestTimeoutMs: 1_800 }), (error) => { assert.equal(error?.code, 'ZCODE_OWNER_RELEASE_INCOMPLETE'); assert.equal(error.details?.releaseProofMissingProfileCount, 1, JSON.stringify(error.details)); assert.deepEqual(error.details?.causeCodeCounts, { ZCODE_REQUEST_TIMEOUT: 1 }); return true; }); assert.equal(methods.filter((method) => method === 'broker/auth').length, 2); assert.equal(methods.filter((method) => method === 'broker/health').length, 2); assert.equal(methods.includes('broker/releaseOwner'), false);
   } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
 });
 
