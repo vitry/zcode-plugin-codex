@@ -84,9 +84,12 @@ test('runProcess flushes direct-child output without waiting for an inherited de
 });
 
 test('post-exit descendant overflow stops capture at the configured byte cap', { timeout: 2_000 }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-process-overflow-')); const pidFile = join(directory, 'descendant.pid'); const maxOutputBytes = 1_024;
-  const descendant = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));process.stdout.on('error',()=>clearInterval(writer));const write=()=>process.stdout.write('x'.repeat(4096));const writer=setInterval(write,0);write();setInterval(()=>{},10000);`;
-  const source = `const {spawn}=require('node:child_process');spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit']}).unref();`;
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-process-overflow-')); const pidFile = join(directory, 'descendant.pid'); const readyFile = join(directory, 'descendant.ready'); const maxOutputBytes = 1_024;
+  // The startup stall is longer than the production post-exit drain. Removing
+  // the ready handshake therefore makes this test deterministically miss the
+  // overflow, while stdin EOF proves the flood starts only after parent exit.
+  const descendant = `const fs=require('node:fs');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,75);fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));fs.writeFileSync(${JSON.stringify(readyFile)},'ready');const input=Buffer.alloc(1);while(fs.readSync(0,input,0,1,null)>0){};try{fs.writeSync(1,'x'.repeat(4096));}catch{};setInterval(()=>{},10000);`;
+  const source = `const {spawn}=require('node:child_process'),fs=require('node:fs');const child=spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['pipe','inherit','inherit']});child.unref();child.stdin.unref();const awaitReady=()=>fs.access(${JSON.stringify(readyFile)},fs.constants.F_OK,(error)=>{if(error)setImmediate(awaitReady);});awaitReady();`;
   let descendantPid;
   try {
     await assert.rejects(
