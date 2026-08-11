@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,24 @@ import { atomicWritePrivateFile, replaceFileAtomically } from '../scripts/lib/fs
 
 const fsModule = new URL('../scripts/lib/fs.mjs', import.meta.url).href;
 const reviewModule = new URL('../scripts/lib/review.mjs', import.meta.url).href;
+
+test('diagnostic: Windows path and handle identities', { skip: process.platform !== 'win32' }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-win-identity-diagnostic-'));
+  const target = join(directory, 'record.json');
+  try {
+    await writeFile(target, '{"ok":true}');
+    const handle = await open(target, 'r');
+    try {
+      const [pathLstat, pathStat, handleStat] = await Promise.all([
+        lstat(target, { bigint: true }),
+        stat(target, { bigint: true }),
+        handle.stat({ bigint: true }),
+      ]);
+      const identity = (value) => ({ dev: String(value.dev), ino: String(value.ino), size: String(value.size) });
+      assert.fail(`WINDOWS_IDENTITY_DIAGNOSTIC ${JSON.stringify({ lstat: identity(pathLstat), stat: identity(pathStat), fstat: identity(handleStat) })}`);
+    } finally { await handle.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 /** @param {'all-handles'|'handle-after'|'reopened-path'} mode */
 function boundedReadIdentityProbe(mode) {
