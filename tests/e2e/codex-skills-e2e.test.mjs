@@ -34,21 +34,27 @@ test('preserved installed evidence scrubs isolated credential copies on normal, 
     const codexHome = join(temporary, 'codex-home'); const evidence = join(temporary, 'evidence.jsonl'); const auth = join(codexHome, 'auth.json'); const copied = join(codexHome, 'auth-copy.json');
     const outside = join(dirname(temporary), `${basename(temporary)}-real-auth.json`); const linked = join(codexHome, 'linked-auth.json'); const secret = `credential-${mode}-must-not-enter-diagnostics`;
     await mkdir(codexHome, { recursive: true, mode: 0o700 }); await Promise.all([writeFile(auth, secret, { mode: 0o600 }), writeFile(copied, secret, { mode: 0o600 }), writeFile(outside, secret, { mode: 0o600 }), writeFile(evidence, 'preserved failure evidence')]); await symlink(outside, linked);
-    t.after(() => rm(outside, { force: true })); const diagnostics = [];
+    t.after(() => rm(outside, { force: true })); const diagnostics = []; const deadlineStages = []; let stalledRemovals = 0;
     const removeCredential = mode === 'sync-throw' ? () => { throw new Error(secret); }
-      : mode === 'timeout' ? () => new Promise(() => {}) : undefined;
+      : mode === 'timeout' ? () => { stalledRemovals += 1; return new Promise(() => {}); } : undefined;
+    const runCleanupDeadline = mode === 'timeout' ? async (operation, _timeoutMs, stage) => {
+      deadlineStages.push(stage); const pending = Promise.resolve().then(operation); await Promise.resolve();
+      if (stage === 'credential') throw new Error('installed evidence cleanup timed out');
+      return pending;
+    } : undefined;
     await cleanupInstalledEvidence({
-      cleanupTimeoutMs: 10,
       credentialPaths: [auth, copied, linked],
       diagnostic: (message) => diagnostics.push(message),
       preserve: true,
       removeCredential,
+      runCleanupDeadline,
       temporary,
     });
     assert.equal(await readFile(evidence, 'utf8'), 'preserved failure evidence');
     for (const credential of [auth, copied, linked]) await assert.rejects(stat(credential), { code: 'ENOENT' });
     assert.equal(await readFile(outside, 'utf8'), secret, 'cleanup must unlink only the isolated symlink, never the external auth target');
     assert.doesNotMatch(diagnostics.join('\n'), new RegExp(secret)); assert.match(diagnostics.join('\n'), /preserved installed evidence/);
+    if (mode === 'timeout') { assert.equal(stalledRemovals, 3); assert.deepEqual(deadlineStages, ['credential', 'fallback', 'credential', 'fallback', 'credential', 'fallback']); }
   });
   await t.test('outside exact path is rejected without deleting user auth', async () => {
     const temporary = await mkdtemp(join(tmpdir(), 'zcode-installed-evidence-outside-')); const evidence = join(temporary, 'evidence.jsonl'); const outside = join(dirname(temporary), `${basename(temporary)}-user-auth.json`); const secret = 'outside-user-auth-secret';
@@ -614,8 +620,10 @@ async function createInstalledCodexAppServer(cwd, env) {
 
 async function cleanupInstalledEvidence(input) {
   const cleanupTimeoutMs = input.cleanupTimeoutMs ?? 2_000;
+  const runCleanupDeadline = input.runCleanupDeadline ?? cleanupDeadline;
   if (!Number.isSafeInteger(cleanupTimeoutMs) || cleanupTimeoutMs < 1
-    || !Array.isArray(input.credentialPaths) || input.credentialPaths.length > 16) throw new Error('installed evidence cleanup input is invalid');
+    || !Array.isArray(input.credentialPaths) || input.credentialPaths.length > 16
+    || typeof runCleanupDeadline !== 'function') throw new Error('installed evidence cleanup input is invalid');
   const temporary = resolve(input.temporary); const rootStats = await lstat(temporary); const canonicalRoot = await realpath(temporary);
   if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) throw new Error('installed evidence root is unsafe');
   let scrubFailed = false;
@@ -625,22 +633,22 @@ async function cleanupInstalledEvidence(input) {
       if (!pathWithin(temporary, exactPath)) throw new Error('isolated credential path is outside evidence root');
       const canonicalParent = await realpath(dirname(exactPath));
       if (!pathWithin(canonicalRoot, canonicalParent)) throw new Error('isolated credential parent escapes evidence root');
-      await removeCredentialWithFallback(exactPath, input.removeCredential, cleanupTimeoutMs);
+      await removeCredentialWithFallback(exactPath, input.removeCredential, cleanupTimeoutMs, runCleanupDeadline);
     } catch { scrubFailed = true; }
   }
   if (scrubFailed) {
-    await cleanupDeadline(() => rm(temporary, { recursive: true, force: true }), cleanupTimeoutMs).catch(() => {});
+    await runCleanupDeadline(() => rm(temporary, { recursive: true, force: true }), cleanupTimeoutMs, 'temporary').catch(() => {});
     throw new Error('isolated installed credentials could not be scrubbed safely');
   }
   if (input.preserve) input.diagnostic?.(`preserved installed evidence at ${temporary} after isolated credential scrub`);
-  else await cleanupDeadline(() => rm(temporary, { recursive: true, force: true }), cleanupTimeoutMs);
+  else await runCleanupDeadline(() => rm(temporary, { recursive: true, force: true }), cleanupTimeoutMs, 'temporary');
 }
 
-async function removeCredentialWithFallback(path, removeCredential, cleanupTimeoutMs) {
+async function removeCredentialWithFallback(path, removeCredential, cleanupTimeoutMs, runCleanupDeadline) {
   const remove = removeCredential ?? unlink;
-  try { await cleanupDeadline(() => remove(path), cleanupTimeoutMs); }
+  try { await runCleanupDeadline(() => remove(path), cleanupTimeoutMs, 'credential'); }
   catch {
-    try { await cleanupDeadline(() => unlink(path), cleanupTimeoutMs); }
+    try { await runCleanupDeadline(() => unlink(path), cleanupTimeoutMs, 'fallback'); }
     catch (error) { if (error?.code !== 'ENOENT') throw error; }
   }
   try { await lstat(path); throw new Error('isolated credential still exists after cleanup'); }
