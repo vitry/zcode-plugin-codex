@@ -1,12 +1,12 @@
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { readdir, realpath } from 'node:fs/promises';
+import { readFile, readdir, realpath } from 'node:fs/promises';
 
 import { PluginError } from './errors.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './identifier.mjs';
 import { connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
-import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
+import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, MAX_BROKER_IDLE_TIMEOUT_MS, MIN_BROKER_IDLE_TIMEOUT_MS, prioritizeBrokerOwnership, probeBrokerHealth, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const THOUGHT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
@@ -142,10 +142,10 @@ export async function createZCodeClient(options) {
   return new ZCodeClient(protocol, workspacePath, options.brokerEndpoint !== undefined);
 }
 
-/** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},ownerId:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
+/** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},ownerId:string,env?:NodeJS.ProcessEnv,requestTimeoutMs?:number,completionTimeoutMs?:number,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
 export async function createManagedZCodeClient(options) {
   if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !plainObject(options.launch) || !nonEmpty(options.ownerId) || options.ownerId.length < 16
-    || !boundedWireOption(options.maxFrameBytes, 16 * 1024 * 1024) || !boundedWireOption(options.maxOutboundBytes, 64 * 1024 * 1024) || !boundedDrainOption(options.drainTimeoutMs)) throw inputError();
+    || !boundedIdleTimeoutOption(options.idleTimeoutMs) || !boundedWireOption(options.maxFrameBytes, 16 * 1024 * 1024) || !boundedWireOption(options.maxOutboundBytes, 64 * 1024 * 1024) || !boundedDrainOption(options.drainTimeoutMs)) throw inputError();
   const storage = await resolveWorkspaceStorage(options);
   const identity = await ensureZCodeBroker({ ...options, workspace: storage.workspacePath });
   return createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs: options.requestTimeoutMs, completionTimeoutMs: options.completionTimeoutMs, maxFrameBytes: options.maxFrameBytes, maxOutboundBytes: options.maxOutboundBytes, drainTimeoutMs: options.drainTimeoutMs });
@@ -178,16 +178,18 @@ export async function releaseManagedZCodeOwner(options) {
   if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw inputError();
   const storage = await resolveWorkspaceStorage(options); const brokerDirectory = resolve(storage.directory, 'broker'); let names;
   try { names = await readdir(brokerDirectory); } catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code === 'ENOENT') return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 }; throw error; }
-  const profiles = (await Promise.all(names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).slice(0, 32).map(async (name) => ({ identity: await readHealthyBrokerIdentity(resolve(brokerDirectory, name), { expectedEndpoint: expectedBrokerEndpoint(options.dataRoot, storage.workspacePath, name) }), identityName: name })))).filter((profile) => profile.identity);
+  const matchingNames = names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).sort(); const selectedNames = matchingNames.slice(0, 32); const truncatedProfileCount = matchingNames.length - selectedNames.length; const cleanupDeadline = Date.now() + OWNER_CLEANUP_BUDGET_MS;
+  const candidates = await Promise.all(selectedNames.map(async (identityName) => { const identityPath = resolve(brokerDirectory, identityName); const expectedEndpoint = expectedBrokerEndpoint(options.dataRoot, storage.workspacePath, identityName); const identity = await readHealthyBrokerIdentity(identityPath, { expectedEndpoint }); if (identity) return { identity, identityName, unavailable: false }; try { const value = JSON.parse(await readFile(identityPath, 'utf8')); return { identity: null, identityName, unavailable: value?.endpoint === expectedEndpoint }; } catch (error) { return { identity: null, identityName, unavailable: (/** @type {NodeJS.ErrnoException} */ (error))?.code !== 'ENOENT' }; } }));
+  const unavailableProfileCount = candidates.filter((profile) => profile.unavailable).length; const profiles = candidates.filter((profile) => profile.identity);
   const outcomes = await Promise.all(profiles.map(async ({ identity, identityName }) => {
     /** @type {Set<string>} */ const released = new Set(); /** @type {Set<string>} */ const failed = new Set();
     /** @type {ZCodeClient|null} */ let client = null;
-    let profileDeferred = 0;
+    let profileDeferred = 0; let profileError = null; let releaseProof = false;
     try {
-      const requestTimeoutMs = options.requestTimeoutMs ?? 750; client = await createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs }); const attempted = new Set(); const deadline = Date.now() + OWNER_CLEANUP_BUDGET_MS; const capabilities = await client.brokerCapabilities(boundedCleanupTimeout(deadline, requestTimeoutMs));
+      const requestTimeoutMs = options.requestTimeoutMs ?? 750; client = await createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: identity.endpoint, brokerToken: identity.brokerToken, ownerId: options.ownerId, requestTimeoutMs }); const attempted = new Set(); const deadline = cleanupDeadline; const capabilities = await client.brokerCapabilities(boundedCleanupTimeout(deadline, requestTimeoutMs));
       let legacyFallback = false;
       for (let batch = 0; batch < OWNER_CLEANUP_MAX_BATCHES && Date.now() < deadline; batch += 1) {
-        const result = await client.releaseOwner(capabilities.releaseOwnerExclusions ? [...attempted] : undefined, boundedCleanupTimeout(deadline, requestTimeoutMs)); profileDeferred = result.deferredSessionCount;
+        const result = await releaseOwnerWithBusyRetry(client, capabilities.releaseOwnerExclusions ? [...attempted] : undefined, deadline, requestTimeoutMs); releaseProof = true; profileDeferred = result.deferredSessionCount;
         for (const sessionId of result.releasedSessionIds) { attempted.add(sessionId); released.add(sessionId); failed.delete(sessionId); }
         for (const sessionId of result.failedSessionIds) { attempted.add(sessionId); if (!released.has(sessionId)) failed.add(sessionId); }
         if (!profileDeferred || result.releasedSessionIds.length + result.failedSessionIds.length === 0) break;
@@ -197,17 +199,28 @@ export async function releaseManagedZCodeOwner(options) {
         const listed = await client.listSessions(boundedCleanupTimeout(deadline, requestTimeoutMs)); const candidates = listed.sessions.map((/** @type {any} */ session) => session.sessionId).filter((/** @type {string} */ sessionId) => !attempted.has(sessionId)).slice(0, OWNER_CLEANUP_LEGACY_ACTIVE_MAX);
         for (let offset = 0; offset < candidates.length && Date.now() < deadline; offset += OWNER_CLEANUP_LEGACY_BATCH_SIZE) {
           const batch = candidates.slice(offset, offset + OWNER_CLEANUP_LEGACY_BATCH_SIZE); const prioritized = await prioritizeBrokerOwnership({ dataRoot: options.dataRoot, workspace: storage.workspacePath, identityName, ownerId: options.ownerId, sessionIds: batch, lockTimeoutMs: remainingCleanupTimeout(deadline) }); if (!prioritized.prioritizedSessionIds.length) continue;
-          const result = await client.releaseOwner(undefined, boundedCleanupTimeout(deadline, requestTimeoutMs)); profileDeferred = result.deferredSessionCount; for (const sessionId of result.releasedSessionIds) { attempted.add(sessionId); released.add(sessionId); failed.delete(sessionId); } for (const sessionId of result.failedSessionIds) { attempted.add(sessionId); if (!released.has(sessionId)) failed.add(sessionId); }
+          const result = await releaseOwnerWithBusyRetry(client, undefined, deadline, requestTimeoutMs); releaseProof = true; profileDeferred = result.deferredSessionCount; for (const sessionId of result.releasedSessionIds) { attempted.add(sessionId); released.add(sessionId); failed.delete(sessionId); } for (const sessionId of result.failedSessionIds) { attempted.add(sessionId); if (!released.has(sessionId)) failed.add(sessionId); }
         }
       }
+      if (!releaseProof) throw ownerReleaseIncomplete({ releaseProofMissingProfileCount: 1 });
     }
-    catch { /* SessionEnd cleanup is advisory and continues across profiles. */ }
+    catch (error) { profileError = error; }
     finally { await client?.close().catch(() => {}); }
-    return { releasedSessionIds: [...released], failedSessionIds: [...failed], deferredSessionCount: profileDeferred };
+    return { releasedSessionIds: [...released], failedSessionIds: [...failed], deferredSessionCount: profileDeferred, releaseProof, error: profileError };
   }));
   const released = outcomes.flatMap((outcome) => outcome.releasedSessionIds); const failed = outcomes.flatMap((outcome) => outcome.failedSessionIds); const deferredSessionCount = outcomes.reduce((total, outcome) => total + outcome.deferredSessionCount, 0);
+  const errorOutcomes = outcomes.filter((outcome) => outcome.error); const releaseProofMissingProfileCount = outcomes.filter((outcome) => !outcome.releaseProof).length; const proofOnlyFailureCount = outcomes.filter((outcome) => !outcome.releaseProof && !outcome.error).length; const causeCodeCounts = boundedCauseCodeCounts(errorOutcomes.map((outcome) => outcome.error)); const resultTruncated = released.length > 1_000 || failed.length > 1_000; const failedProfileCount = unavailableProfileCount + errorOutcomes.length + proofOnlyFailureCount + truncatedProfileCount; if (failedProfileCount || resultTruncated) throw ownerReleaseIncomplete({ failedProfileCount, completedProfileCount: outcomes.length - errorOutcomes.length - proofOnlyFailureCount, releasedSessionCount: released.length, failedSessionCount: failed.length, deferredSessionCount, releaseProofMissingProfileCount, truncatedProfileCount, resultTruncated, causeCodeCounts });
   return { releasedSessionIds: released.slice(0, 1_000), failedSessionIds: failed.slice(0, 1_000), deferredSessionCount };
 }
+
+/** @param {ZCodeClient} client @param {string[]|undefined} excludeSessionIds @param {number} deadline @param {number} requestTimeoutMs */
+async function releaseOwnerWithBusyRetry(client, excludeSessionIds, deadline, requestTimeoutMs) { let busyError; while (Date.now() < deadline) { try { return await client.releaseOwner(excludeSessionIds, boundedCleanupTimeout(deadline, requestTimeoutMs)); } catch (error) { if ((/** @type {{code?:string}} */ (error))?.code !== 'ZCODE_TURN_ACTIVE') throw error; busyError = error; const remainingMs = deadline - Date.now(); if (remainingMs <= 1) break; await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(25, remainingMs - 1))); } } throw busyError ?? ownerReleaseIncomplete({ failedProfileCount: 1 }); }
+
+/** @param {unknown[]} errors */
+function boundedCauseCodeCounts(errors) { const counts = /** @type {Record<string,number>} */ ({}); for (const error of errors.slice(0, 32)) { const candidate = (/** @type {{code?:unknown}} */ (error))?.code; const code = typeof candidate === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(candidate) ? candidate : 'UNKNOWN'; counts[code] = (counts[code] ?? 0) + 1; } return counts; }
+
+/** @param {Record<string,unknown>} details */
+function ownerReleaseIncomplete(details) { return new PluginError('ZCODE_OWNER_RELEASE_INCOMPLETE', 'ZCode owner cleanup could not confirm every broker profile or bounded result.', { category: 'state', remedy: 'Retry owner cleanup; confirmed releases are idempotent.', details }); }
 
 /** @param {number} deadline @param {number} requestTimeoutMs */
 function boundedCleanupTimeout(deadline, requestTimeoutMs) { return Math.max(1, Math.min(requestTimeoutMs, deadline - Date.now())); }
@@ -233,6 +246,8 @@ function normalizeImportedHistory(history) {
 
 /** @param {unknown} value @param {number} maximum */
 function boundedWireOption(value, maximum) { return value === undefined || typeof value === 'number' && Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
+/** @param {unknown} value */
+function boundedIdleTimeoutOption(value) { return value === undefined || typeof value === 'number' && Number.isSafeInteger(value) && value >= MIN_BROKER_IDLE_TIMEOUT_MS && value <= MAX_BROKER_IDLE_TIMEOUT_MS; }
 /** @param {unknown} value */
 function boundedDrainOption(value) { return value === undefined || typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAIN_TIMEOUT_MS; }
 /** @param {unknown} value */

@@ -28,7 +28,10 @@ const MAX_PENDING_CONVERSATION_FRAMES = 16;
 const MAX_PENDING_CONVERSATION_BYTES = 1024 * 1024;
 const MAX_CONVERSATION_FRAME_BYTES = 64 * 1024;
 const MAX_OWNER_OPERATION_LEASES = 256;
+const MAX_CONCURRENT_OWNER_RELEASES = 16;
 const RAW_ENDPOINT_PROBE_MS = 100;
+export const MIN_BROKER_IDLE_TIMEOUT_MS = 1_000;
+export const MAX_BROKER_IDLE_TIMEOUT_MS = 3_600_000;
 const LOCAL_BROKER_METHODS = new Set(['session/create', 'session/send', 'session/read', 'session/resume', 'session/list', 'session/stop', 'session/setModel', 'session/setThoughtLevel', 'v4/conversation/subscribe', 'v4/conversation/unsubscribe', 'broker/health', 'broker/releaseOwner']);
 const OWNER_SCOPED_SESSION_METHODS = new Set(['session/read', 'session/resume', 'session/setModel', 'session/setThoughtLevel']);
 const EXCLUSIVE_SESSION_METHODS = new Set(['session/create', 'session/send', 'session/stop', 'v4/conversation/subscribe', 'v4/conversation/unsubscribe', 'broker/releaseSession']);
@@ -46,7 +49,7 @@ class BrokerAdmission {
       if (!state) { state = { epoch: 0, creates: new Map(), preflights: new Map(), release: null }; this.ownerStates.set(ownerId, state); }
       const lease = { kind: 'create', ownerId, token, epoch: state.epoch, sessionId: null }; state.creates.set(lease.token, lease); this.onChange(); return lease;
     }
-    if (state?.release || this.activeReleaseCount) throw turnActiveError('The broker owner is already being released.'); const token = randomBytes(16).toString('hex'); this.activeReleaseCount = 1;
+    if (state?.release) throw turnActiveError('The broker owner is already being released.'); if (this.activeReleaseCount >= MAX_CONCURRENT_OWNER_RELEASES) throw turnActiveError('The broker has too many active owner releases.'); const token = randomBytes(16).toString('hex'); this.activeReleaseCount += 1;
     if (!state) { state = { epoch: 0, creates: new Map(), preflights: new Map(), release: null }; this.ownerStates.set(ownerId, state); }
     else for (const preflight of state.preflights.values()) preflight.retired = true;
     const lease = { kind: 'release', ownerId, token, epoch: state.epoch, grandfatheredCreates: new Map([...state.creates].map(([createToken, create]) => [createToken, create.sessionId])) }; state.release = lease; this.onChange(); return lease;
@@ -176,7 +179,7 @@ export async function probeBrokerHealth(record, requestTimeoutMs = 1_000) {
 
 /** @param {{dataRoot:string,workspace:string,launch:{command:string,args:string[],target?:string},env?:NodeJS.ProcessEnv,platform?:string,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number}} options */
 export async function ensureZCodeBroker(options) {
-  if (!validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs)) throw brokerInputError();
+  if (!validIdleTimeoutOption(options?.idleTimeoutMs) || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs)) throw brokerInputError();
   const storage = await resolveWorkspaceStorage(options);
   const brokerDirectory = join(storage.directory, 'broker');
   const identityName = brokerIdentityNameForWireOptions(options);
@@ -231,7 +234,7 @@ export async function ensureZCodeBroker(options) {
 
 export class ZCodeBroker {
   /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string,identityPath?:string,publishIdentityAfterListen?:boolean}} options */
-  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); let workspace; try { workspace = realpathSync(resolve(options.workspace)); } catch { throw brokerInputError(); } this.options = { ...options, workspace }; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.ownershipRevision = 0; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.conversationSubscriptionGeneration = null; this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.releaseTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
+  constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validIdleTimeoutOption(options?.idleTimeoutMs) || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); let workspace; try { workspace = realpathSync(resolve(options.workspace)); } catch { throw brokerInputError(); } this.options = { ...options, workspace }; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.ownershipRevision = 0; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.conversationSubscriptionGeneration = null; this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.releaseTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
     if (this.server) return this;
@@ -522,7 +525,7 @@ export class ZCodeBroker {
       if (message.params?.sessionId && sessionOwner) writeLocal(sessionOwner, message);
       });
       protocol.setPermissionHandler((request) => this.requestPermission(request));
-      protocol.consumeTerminalsWith((params, turn) => { const active = this.activeSessionSockets.get(params.sessionId); if (active?.baseline === turn.baseline && active.inputId === turn.inputId) { if (active.socket?.writable) writeLocal(active.socket, { method: 'state.updated', params }); this.activeSessionSockets.delete(params.sessionId); this.activeSessions.delete(params.sessionId); this.scheduleIdleShutdown(); } });
+      protocol.consumeTerminalsWith((params, turn) => { const active = this.activeSessionSockets.get(params.sessionId); if (active?.baseline === turn.baseline && active.inputId === turn.inputId) { if (active.socket?.writable) writeLocal(active.socket, { method: 'state.updated', params }); this.settleTurnPermissions(params.sessionId, active.token); this.activeSessionSockets.delete(params.sessionId); this.activeSessions.delete(params.sessionId); this.scheduleIdleShutdown(); } });
       protocol.setCloseHandler(() => this.clearProtocolGeneration(protocol));
       return protocol;
     } catch (error) { if (this.protocol === protocol) this.protocol = null; await protocol.close().catch(() => {}); throw error; }
@@ -567,21 +570,26 @@ export class ZCodeBroker {
 
   async requestPermission(request) {
     const activeSession = this.activeSessionSockets.get(request.sessionId);
-    const socket = activeSession?.socket ?? this.sessionOwners.get(request.sessionId)?.socket;
+    const socket = activeSession?.socket;
     if (!socket?.writable) return offeredDeny(request);
     const id = this.nextPermissionId++;
     if (this.permissionPending.size >= 256) return offeredDeny(request);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { const pending = this.permissionPending.get(id); if (pending) { this.permissionPending.delete(id); this.retirePermissionResponse(id, pending.socket); } resolve(offeredDeny(request)); }, 30_000);
-      timer.unref?.(); this.permissionPending.set(id, { socket, turnToken: activeSession?.token ?? null, resolve, reject, timer, request }); this.cancelIdleShutdown();
+      timer.unref?.(); this.permissionPending.set(id, { socket, turnToken: activeSession.token, resolve, reject, timer, request }); this.cancelIdleShutdown();
       writeLocal(socket, { id, method: 'interaction/requestPermission', params: request });
     });
   }
 
   settleStoppedSession(sessionId, activeSession) {
     if (this.activeSessionSockets.get(sessionId)?.token === activeSession?.token) this.activeSessionSockets.delete(sessionId);
-    for (const [id, pending] of this.permissionPending) if (pending.request.sessionId === sessionId && pending.turnToken === (activeSession?.token ?? null)) { clearTimeout(pending.timer); this.permissionPending.delete(id); this.retirePermissionResponse(id, pending.socket); pending.resolve(offeredDeny(pending.request)); }
+    this.settleTurnPermissions(sessionId, activeSession?.token);
     if (activeSession?.socket?.writable) writeLocal(activeSession.socket, { method: 'broker/sessionStopped', params: { sessionId } });
+  }
+
+  settleTurnPermissions(sessionId, turnToken) {
+    if (typeof turnToken !== 'string') return;
+    for (const [id, pending] of this.permissionPending) if (pending.request.sessionId === sessionId && pending.turnToken === turnToken) { clearTimeout(pending.timer); this.permissionPending.delete(id); this.retirePermissionResponse(id, pending.socket); pending.resolve(offeredDeny(pending.request)); }
   }
 
   retirePermissionResponse(id, socket) {
@@ -788,6 +796,7 @@ async function withinOwnerReleaseDeadline(deadline, operation) { const remaining
 async function settleOwnerReleaseCaller(operation, deadline) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) throw ownerReleaseTimeout(); const controller = new AbortController(); let timer; try { const result = await Promise.race([operation, new Promise((_resolvePromise, rejectPromise) => { timer = setTimeout(() => { controller.abort(ownerReleaseTimeout()); rejectPromise(controller.signal.reason); }, remainingMs); timer.unref?.(); })]); if (Date.now() >= deadline) throw ownerReleaseTimeout(); return result; } catch (error) { if (controller.signal.aborted) throw controller.signal.reason; if (Date.now() >= deadline) throw ownerReleaseTimeout(); throw error; } finally { clearTimeout(timer); } }
 function turnActiveError(message) { return new PluginError('ZCODE_TURN_ACTIVE', message, { category: 'state', remedy: 'Wait for the active session operation to finish.' }); }
 function validWireOption(value, maximum) { return value === undefined || Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
+function validIdleTimeoutOption(value) { return value === undefined || Number.isSafeInteger(value) && value >= MIN_BROKER_IDLE_TIMEOUT_MS && value <= MAX_BROKER_IDLE_TIMEOUT_MS; }
 function validDrainOption(value) { return value === undefined || Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAIN_TIMEOUT_MS; }
 function canonicalEndpointPath(path) { try { return realpathSync(resolve(path)); } catch { return path; } }
 function sameBrokerIdentity(left, right) { return left?.endpoint === right?.endpoint && left?.pid === right?.pid && left?.instanceId === right?.instanceId && left?.brokerToken === right?.brokerToken; }
