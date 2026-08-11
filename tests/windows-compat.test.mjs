@@ -28,9 +28,10 @@ function boundedReadIdentityProbe(mode) {
     prototype.stat = async function patchedStat(...args) {
       const stats = await originalStat.call(this, ...args);
       statCalls += 1;
+      if (typeof stats.dev !== 'bigint' || typeof stats.ino !== 'bigint') throw new Error('bounded JSON identity was not read as bigint');
       if (${JSON.stringify(mode)}.startsWith('all-handles') || ${JSON.stringify(mode)} === 'handle-after' && statCalls === 2 || ${JSON.stringify(mode)} === 'reopened-path' && statCalls === 3) return new Proxy(stats, { get(target, property) {
-        if (property === 'dev' && ${JSON.stringify(mode)} !== 'all-handles-ino') return target.dev + 1;
-        if (property === 'ino' && ${JSON.stringify(mode)} !== 'all-handles-dev') return target.ino + 1;
+        if (property === 'dev' && ${JSON.stringify(mode)} !== 'all-handles-ino') return target.dev + 1n;
+        if (property === 'ino' && ${JSON.stringify(mode)} !== 'all-handles-dev') return target.ino + 1n;
         return Reflect.get(target, property);
       } });
       return stats;
