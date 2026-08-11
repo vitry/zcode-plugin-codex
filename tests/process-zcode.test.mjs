@@ -39,7 +39,10 @@ test('grace timer does not retain the caller after the child exits', async () =>
 
 test('runProcess fails closed on timeout and bounded output', async () => {
   await assert.rejects(runProcess({ command: process.execPath, args: ['-e', 'setInterval(()=>{},10000)'], target: process.execPath }, { timeoutMs: 20 }), { code: 'ZCODE_PROCESS_TIMEOUT' });
-  await assert.rejects(runProcess({ command: process.execPath, args: ['-e', 'process.stdout.write("x".repeat(4096))'], target: process.execPath }, { maxOutputBytes: 128 }), { code: 'ZCODE_PROCESS_OUTPUT_LIMIT' });
+  await assert.rejects(
+    runProcess({ command: process.execPath, args: ['-e', 'process.stdout.write("x".repeat(4096))'], target: process.execPath }, { maxOutputBytes: 128 }),
+    (error) => error.code === 'ZCODE_PROCESS_OUTPUT_LIMIT' && error.details.capturedOutputBytes <= 128,
+  );
 });
 
 test('post-exit drain waits for direct-child stream completion beyond one check turn', async () => {
@@ -70,6 +73,26 @@ test('runProcess flushes direct-child output without waiting for an inherited de
     const result = await runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath }, { timeoutMs: 500 });
     assert.equal(result.code, 0);
     assert.equal(result.stdout, 'direct-child\n');
+  } finally {
+    const pidDeadline = Date.now() + 1_000;
+    while (!descendantPid && Date.now() < pidDeadline) { descendantPid = Number(await readFile(pidFile, 'utf8').catch(() => '')); if (!descendantPid) await new Promise((resolve) => setTimeout(resolve, 5)); }
+    assert.ok(Number.isSafeInteger(descendantPid) && descendantPid > 1 && descendantPid !== process.pid, 'owned descendant PID must be recorded before cleanup');
+    try { process.kill(descendantPid, 'SIGTERM'); } catch { /* exited */ }
+    await assertProcessGone(descendantPid);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('post-exit descendant overflow stops capture at the configured byte cap', { timeout: 2_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-process-overflow-')); const pidFile = join(directory, 'descendant.pid'); const maxOutputBytes = 1_024;
+  const descendant = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));process.stdout.on('error',()=>clearInterval(writer));const write=()=>process.stdout.write('x'.repeat(4096));const writer=setInterval(write,0);write();setInterval(()=>{},10000);`;
+  const source = `const {spawn}=require('node:child_process');spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit']}).unref();`;
+  let descendantPid;
+  try {
+    await assert.rejects(
+      runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath }, { timeoutMs: 500, maxOutputBytes }),
+      (error) => error.code === 'ZCODE_PROCESS_OUTPUT_LIMIT' && error.details.capturedOutputBytes <= maxOutputBytes,
+    );
   } finally {
     const pidDeadline = Date.now() + 1_000;
     while (!descendantPid && Date.now() < pidDeadline) { descendantPid = Number(await readFile(pidFile, 'utf8').catch(() => '')); if (!descendantPid) await new Promise((resolve) => setTimeout(resolve, 5)); }
