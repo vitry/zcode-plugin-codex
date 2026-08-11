@@ -651,10 +651,11 @@ test('executor reports only same-session progress and drains persistence before 
   /** @type {null|((message:any)=>void)} */ let handler = null; let unsubscribes = 0; let closes = 0; /** @type {null|(()=>void)} */ let intervalCallback = null; let cleared = 0;
   const wrapped = {
     ...store,
-    updateJobProgress: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {any} */ event) => {
-      order.push(`persist:${event.phase}`); persisted.push(event);
-      await new Promise((resolve) => setImmediate(resolve));
-      return store.updateJobProgress(workspaceArg, jobId, event);
+    updateJobProgress: async (/** @type {string} */ _workspaceArg, /** @type {string} */ _jobId, /** @type {any} */ event) => {
+      persisted.push(event);
+      await Promise.resolve();
+      order.push(`persist:${event.phase}`);
+      return event;
     },
     transitionJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => {
       return store.transitionJob(workspaceArg, jobId, expected, next, patch);
