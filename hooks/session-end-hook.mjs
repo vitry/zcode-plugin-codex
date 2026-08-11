@@ -18,21 +18,27 @@ try {
   const ownerSessionId = input.session_id;
   const ownerId = ownerIdForSession(ownerSessionId);
   const store = createStateStore({ dataRoot });
-  await settleEndedOwnerWritableJob({
-    store,
-    dataRoot,
-    workspace: input.cwd,
-    ownerSessionId,
-    requestTimeoutMs: 250,
-    lockTimeoutMs: 0,
-    createClient: (job, derivedOwnerId) => createExistingManagedZCodeClient({
+  let ownerReleaseSafe = false;
+  try {
+    await settleEndedOwnerWritableJob({
+      store,
       dataRoot,
       workspace: input.cwd,
-      ownerId: derivedOwnerId,
+      ownerSessionId,
       requestTimeoutMs: 250,
-    }),
-  }).catch(() => null);
-  await releaseManagedZCodeOwner({ dataRoot, workspace: input.cwd, ownerId, requestTimeoutMs: 500 }).catch(() => null);
+      lockTimeoutMs: 0,
+      createClient: (job, derivedOwnerId) => createExistingManagedZCodeClient({
+        dataRoot,
+        workspace: input.cwd,
+        ownerId: derivedOwnerId,
+        requestTimeoutMs: 250,
+      }),
+    });
+    const retainedWritableGuard = (await store.listJobs(input.cwd)).some((job) => job.ownerSessionId === ownerSessionId
+      && job.command === 'rescue' && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
+    ownerReleaseSafe = !retainedWritableGuard;
+  } catch { /* retain broker ownership unless durable state proves release safe */ }
+  if (ownerReleaseSafe) await releaseManagedZCodeOwner({ dataRoot, workspace: input.cwd, ownerId, requestTimeoutMs: 500 }).catch(() => null);
   await Promise.allSettled([
     cleanupSession(dataRoot, input.cwd, ownerSessionId),
     createIdentityStore({ dataRoot }).cleanupSession(input.cwd, ownerSessionId),

@@ -20,6 +20,8 @@ import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { runCompanion } from '../../scripts/zcode-companion.mjs';
+import { markForwarding } from '../../hooks/lib/hook-state.mjs';
+import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
@@ -28,6 +30,7 @@ const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
 const completionSignalProbe = join(root, 'tests', 'fixtures', 'completion-signal-probe.cjs');
 const signalHandlerProbe = join(root, 'tests', 'fixtures', 'signal-handler-probe.cjs');
 const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs');
+const sessionEndHook = join(root, 'hooks', 'session-end-hook.mjs');
 const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
 
 async function fixture() {
@@ -75,6 +78,21 @@ async function waitFor(predicate, message) {
   throw new Error(message);
 }
 
+/** @param {any} context @param {()=>Promise<any[]>} recorded @param {string} message */
+async function waitForAcceptedBoundary(context, recorded, message) {
+  const storage = await resolveWorkspaceStorage(context);
+  await waitFor(async () => {
+    if (!(await recorded()).some((frame) => frame.method === 'session/send')) return false;
+    const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
+    for (const name of names) {
+      if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
+      const job = await readFile(join(storage.directory, 'jobs', name), 'utf8').then(JSON.parse).catch(() => null);
+      if (typeof job?.inputId === 'string' && Number.isSafeInteger(job?.startRevision)) return true;
+    }
+    return false;
+  }, message);
+}
+
 /** @param {any} context @param {{ownerSessionId?:string,ownerTurnId?:string,workerLeaseId?:string,zcodeSessionId?:string}} [options] */
 async function reserveOrphan(context, options = {}) {
   const store = createStateStore({ dataRoot: context.dataRoot });
@@ -89,6 +107,23 @@ async function reserveOrphan(context, options = {}) {
 
 /** @param {string} sessionId @param {string} [turnId] */
 function caller(sessionId, turnId = `${sessionId}-turn`) { return { sessionId, turnId, permissionMode: 'workspace-write' }; }
+
+/** @param {any} context @param {{parentSessionId:string,parentTurnId:string,childId:string,childTurnId:string,prompt:string}} input */
+async function prepareDirectRescueChild(context, input) {
+  const parent = { sessionId: input.parentSessionId, turnId: input.parentTurnId, workspace: context.workspace, permissionMode: 'workspace-write', prompt: input.prompt };
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  const callerContext = await identity.beginCallerTurn(parent);
+  const active = await identity.resolveActiveTurn({ sessionId: input.parentSessionId, workspace: context.workspace });
+  await markForwarding(context.dataRoot, {
+    session_id: input.parentSessionId,
+    turn_id: input.childTurnId,
+    cwd: context.workspace,
+    hook_event_name: 'SubagentStart',
+    agent_id: input.childId,
+    agent_type: 'zcode-rescue',
+  }, active);
+  return { callerContext, parent };
+}
 
 test('role-status rescue is bounded and returns before caller consumption, reconciliation, discovery, or reservation', async () => {
   const context = await fixture();
@@ -279,6 +314,158 @@ test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves 
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.ok(jobs[0].finishedAt); assert.equal(jobs[0].resultArtifact, undefined);
   assert.equal(stdout, ''); assert.equal(internal, ''); assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|"error"/);
+});
+
+test('isolated Rescue child SIGTERM after accepted send stops once and keeps the parent thread as durable owner', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const record = join(context.directory, 'isolated-child-sigterm.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'isolated-parent'; const parentTurnId = 'isolated-parent-turn'; const childId = 'isolated-rescue-child';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId, childId, childTurnId: 'isolated-child-turn',
+    prompt: '$zcode:rescue --fresh --wait repair after isolated SIGTERM',
+  });
+  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
+  });
+  let stdout = ''; let stderr = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  await waitForAcceptedBoundary(context, recorded, 'isolated child send boundary was not durably accepted');
+  child.kill('SIGTERM');
+  const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+
+  assert.deepEqual(exit, { code: 143, signal: null });
+  const calls = await recorded(); const sentSession = calls.find((frame) => frame.method === 'session/send').params.sessionId;
+  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
+  assert.equal(calls.filter((frame) => frame.method === 'session/stop' && frame.params.sessionId === sentSession).length, 1);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].ownerSessionId, parentSessionId); assert.equal(jobs[0].ownerTurnId, parentTurnId);
+  assert.equal(jobs[0].status, 'cancelled'); assert.equal(jobs[0].resultArtifact, undefined);
+  assert.equal(stdout, ''); assert.match(stderr, /Interrupted by SIGTERM\./);
+});
+
+test('unacknowledged parent SessionEnd retains the durable guard without a second owner-release stop', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const record = join(context.directory, 'session-end-unacknowledged.jsonl'); const recovery = join(context.directory, 'session-end-recovery.json');
+  await Promise.all([writeFile(record, ''), writeFile(recovery, JSON.stringify({ mode: 'active' }))]);
+  const parentSessionId = 'session-end-parent'; const childId = 'session-end-rescue-child';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'session-end-parent-turn', childId, childTurnId: 'session-end-child-turn',
+    prompt: '$zcode:rescue --fresh --wait preserve the unacknowledged guard',
+  });
+  const env = {
+    ...context.env,
+    CODEX_THREAD_ID: childId,
+    FAKE_ZCODE_RECORD: record,
+    FAKE_ZCODE_RECOVERY_CONTROL: recovery,
+    FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1',
+    FAKE_ZCODE_STOP_ERROR_ONCE: '1',
+  };
+  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+  let exited = false; child.stdout?.resume(); child.stderr?.resume();
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  await waitForAcceptedBoundary(context, recorded, 'isolated child send boundary was not durably accepted before SessionEnd');
+  child.kill('SIGKILL');
+  await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', () => { exited = true; resolve(undefined); }); });
+
+  const hookInput = {
+    session_id: parentSessionId,
+    cwd: context.workspace,
+    hook_event_name: 'SessionEnd',
+    transcript_path: null,
+    reason: 'other',
+  };
+  try {
+    const first = await runChild(process.execPath, [sessionEndHook], { cwd: context.workspace, env, ordinaryInput: true, input: hookInput });
+    assert.equal(first.code, 0, first.stderr || first.stdout);
+    const calls = await recorded();
+    assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
+    assert.equal(calls.filter((frame) => frame.method === 'session/stop').length, 1, 'owner release must not retry an unacknowledged SessionEnd stop behind durable state');
+    const [job] = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+    assert.equal(job.ownerSessionId, parentSessionId); assert.equal(job.status, 'running'); assert.equal(job.finishedAt, undefined);
+    assert.match(job.lastCancelError, /fixture first stop failed/);
+    await assert.rejects(createStateStore({ dataRoot: context.dataRoot }).reserveJob({
+      workspace: context.workspace, ownerSessionId: 'later-owner', ownerTurnId: 'later-turn', command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    }), { code: 'WRITABLE_JOB_EXISTS' });
+  } finally {
+    await runChild(process.execPath, [sessionEndHook], { cwd: context.workspace, env, ordinaryInput: true, input: hookInput }).catch(() => {});
+  }
+});
+
+test('parent steering leaves one isolated Rescue child running with zero cancel or duplicate send', async (t) => {
+  const context = await fixture(); const record = join(context.directory, 'steering.jsonl'); const gate = join(context.directory, 'steering.gate');
+  await Promise.all([writeFile(record, ''), writeFile(gate, 'hold')]);
+  const parentSessionId = 'steering-parent'; const originalTurnId = 'steering-origin'; const childId = 'steering-rescue-child';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: originalTurnId, childId, childTurnId: 'steering-child-turn',
+    prompt: '$zcode:rescue --fresh --wait keep using the same child',
+  });
+  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: gate };
+  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+  let stdout = ''; let stderr = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  await waitForAcceptedBoundary(context, recorded, 'steered child send boundary was not durably accepted');
+
+  await createIdentityStore({ dataRoot: context.dataRoot }).beginCallerTurn({
+    sessionId: parentSessionId, turnId: 'steering-later-turn', workspace: context.workspace,
+    permissionMode: 'workspace-write', prompt: 'ordinary steering that must not cancel or respawn Rescue',
+  });
+  await writeFile(gate, 'release');
+  const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+
+  assert.deepEqual(exit, { code: 0, signal: null }); assert.equal(stdout, 'done\n'); assert.equal(stderr.includes('Interrupted by'), false);
+  const calls = await recorded(); assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1); assert.equal(calls.filter((frame) => frame.method === 'session/stop').length, 0);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].ownerSessionId, parentSessionId); assert.equal(jobs[0].ownerTurnId, originalTurnId); assert.equal(jobs[0].status, 'succeeded');
+});
+
+test('isolated child loss recovers the accepted parent-owned turn without another session send', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const record = join(context.directory, 'child-loss-recovery.jsonl'); const recovery = join(context.directory, 'child-loss-recovery.json');
+  await Promise.all([writeFile(record, ''), writeFile(recovery, JSON.stringify({ mode: 'active' }))]);
+  const parentSessionId = 'recovery-parent'; const childId = 'recovery-rescue-child';
+  const prepared = await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'recovery-parent-turn', childId, childTurnId: 'recovery-child-turn',
+    prompt: '$zcode:rescue --fresh --wait recover this accepted child turn',
+  });
+  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: recovery, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' };
+  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+  let exited = false; child.stdout?.resume(); child.stderr?.resume();
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  await waitForAcceptedBoundary(context, recorded, 'recoverable child send boundary was not durably accepted');
+  child.kill('SIGKILL');
+  await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', () => { exited = true; resolve(undefined); }); });
+  await writeFile(recovery, JSON.stringify({ mode: 'completed' }));
+
+  const status = await companion(context, ['status'], { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: recovery }, { callerContext: prepared.callerContext });
+  assert.equal(status.code, 0, status.stderr || status.stdout); assert.equal(status.json.job.status, 'succeeded', JSON.stringify(status.json.job));
+  const result = await companion(context, ['result', status.json.job.id], { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: recovery }, { callerContext: prepared.callerContext });
+  assert.equal(result.code, 0, result.stderr || result.stdout); assert.equal(result.json.result, 'done');
+  const calls = await recorded(); assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1); assert.equal(calls.filter((frame) => frame.method === 'session/stop').length, 0);
+  const jobs = await store.listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].ownerSessionId, parentSessionId); assert.equal(jobs[0].status, 'succeeded');
+});
+
+test('sibling child rejection happens before reservation, session send, or stop', async () => {
+  const context = await fixture(); const record = join(context.directory, 'sibling-rejection.jsonl'); await writeFile(record, '');
+  await prepareDirectRescueChild(context, {
+    parentSessionId: 'sibling-parent', parentTurnId: 'sibling-parent-turn', childId: 'approved-rescue-child', childTurnId: 'approved-child-turn',
+    prompt: '$zcode:rescue --fresh --wait reject every sibling',
+  });
+  const sibling = await run(process.execPath, [cli, 'invoke', 'rescue'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_THREAD_ID: 'ordinary-sibling-child', FAKE_ZCODE_RECORD: record },
+  });
+  assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /EXECUTOR_IDENTITY_NOT_FOUND/);
+  assert.equal(await readFile(record, 'utf8'), '');
+  assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), []);
 });
 
 test('real CLI completion that wins before SIGINT remains succeeded with exit zero', async () => {

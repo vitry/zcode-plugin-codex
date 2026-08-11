@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
-import { settleEndedOwnerWritableJob, withWorkerLease } from '../scripts/lib/recovery.mjs';
+import { reconcileOwnedJobs, settleEndedOwnerWritableJob, withWorkerLease } from '../scripts/lib/recovery.mjs';
 import { executeJob } from '../scripts/lib/review.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
@@ -340,4 +340,54 @@ test('executeJob does not write a result after SessionEnd cancellation wins', as
   }), { code: 'JOB_TERMINAL' });
   const stored = await input.store.readJob(input.workspace, reservation.id); const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
   assert.equal(stored.status, 'cancelled'); await assert.rejects(readFile(join(storage.directory, 'results', `${reservation.id}.md`)), { code: 'ENOENT' });
+});
+
+test('late child success and progress cannot mutate a SessionEnd cancellation winner', async () => {
+  const input = await fixture(); const reservation = await job(input, { claim: false, status: 'queued' }); let observe = () => {}; let cancelledWinner;
+  const client = {
+    ...executorClient('late child success'),
+    subscribe: (handler) => { observe = handler; return () => {}; },
+  };
+  await assert.rejects(executeJob({
+    job: reservation, workspace: input.workspace, dataRoot: input.dataRoot, store: input.store, client, task: 'finish late',
+    onBoundaryPersisted: async () => {
+      await settle(input, async (current) => clientFor(current, {
+        reads: [{ projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] }, { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] }],
+      }));
+      cancelledWinner = await input.store.readJob(input.workspace, reservation.id);
+      observe({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: 'remote-a', revision: 9, reason: 'tool_call_started', patch: {} } });
+      observe({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: 'remote-a', revision: 10, reason: 'prompt_completed', patch: { status: 'idle' } } });
+    },
+  }), { code: 'JOB_TERMINAL' });
+  const stored = await input.store.readJob(input.workspace, reservation.id); const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
+  assert.deepEqual(stored, cancelledWinner); assert.equal(stored.status, 'cancelled'); assert.equal(stored.resultArtifact, undefined);
+  await assert.rejects(readFile(join(storage.directory, 'results', `${reservation.id}.md`)), { code: 'ENOENT' });
+});
+
+test('competing SessionEnd and orphan recovery elect exactly one terminal settlement', async () => {
+  const input = await fixture(); const value = await job(input); let stops = 0; let recoveryClients = 0; let announceStop = () => {}; let releaseStop = () => {}; let announceOrphanListed = () => {};
+  const stopEntered = new Promise((resolve) => { announceStop = resolve; }); const stopGate = new Promise((resolve) => { releaseStop = resolve; });
+  const orphanListed = new Promise((resolve) => { announceOrphanListed = resolve; });
+  const ending = settle(input, async (current) => {
+    let reads = 0;
+    return {
+      readSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); reads += 1; return { projection: { status: reads === 1 ? 'running' : 'paused' }, runtime: { stateRevision: 8 }, messages: [] }; },
+      stopSession: async (sessionId) => { assert.equal(sessionId, current.zcodeSessionId); stops += 1; announceStop(); await stopGate; },
+      close: async () => {},
+    };
+  });
+  await stopEntered;
+  const competingStore = {
+    ...input.store,
+    listJobs: async (...args) => { const listed = await input.store.listJobs(...args); announceOrphanListed(); return listed; },
+  };
+  const orphan = reconcileOwnedJobs({
+    store: competingStore, dataRoot: input.dataRoot, workspace: input.workspace, ownerSessionId: 'owner-a', reconcileOwnership: async () => {},
+    createClient: async () => { recoveryClients += 1; throw new Error('orphan contender must observe the SessionEnd winner'); },
+  });
+  await orphanListed;
+  releaseStop();
+  const [ended, recovered] = await Promise.all([ending, orphan]);
+  const stored = await input.store.readJob(input.workspace, value.id);
+  assert.equal(stops, 1); assert.equal(recoveryClients, 0); assert.equal(ended.status, 'cancelled'); assert.equal(recovered[0].status, 'cancelled'); assert.deepEqual(stored, ended);
 });

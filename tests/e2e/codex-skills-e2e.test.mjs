@@ -53,12 +53,12 @@ test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode
 test('installed Rescue uses one isolated native child for initial and choice continuations', { skip: rescueOptInSkip, timeout: 1_200_000 }, async (t) => {
   if (process.env.ZCODE_CODEX_RESCUE_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_RESCUE_E2E=1.'));
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-rescue-e2e-')); let preserveTemporary = false; t.after(() => preserveTemporary ? t.diagnostic(`preserved active background evidence at ${temporary}`) : rm(temporary, { recursive: true, force: true }));
-  const codexHome = join(temporary, 'codex-home'); const home = join(temporary, 'home'); const marketplace = join(temporary, 'marketplace'); const workspace = join(temporary, 'workspace'); const zcodeRecord = join(temporary, 'zcode.jsonl');
-  await Promise.all([mkdir(codexHome, { recursive: true, mode: 0o700 }), mkdir(home, { recursive: true, mode: 0o700 }), mkdir(workspace, { recursive: true }), writeFile(zcodeRecord, '')]);
+  const codexHome = join(temporary, 'codex-home'); const home = join(temporary, 'home'); const marketplace = join(temporary, 'marketplace'); const workspace = join(temporary, 'workspace'); const zcodeRecord = join(temporary, 'zcode.jsonl'); const recoveryControl = join(temporary, 'zcode-recovery.json');
+  await Promise.all([mkdir(codexHome, { recursive: true, mode: 0o700 }), mkdir(home, { recursive: true, mode: 0o700 }), mkdir(workspace, { recursive: true }), writeFile(zcodeRecord, ''), writeFile(recoveryControl, JSON.stringify({ mode: 'completed' }))]);
   const sourceCodexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
   try { await stat(join(sourceCodexHome, 'auth.json')); await cp(join(sourceCodexHome, 'auth.json'), join(codexHome, 'auth.json')); await chmod(join(codexHome, 'auth.json'), 0o600); }
   catch { markUnqualified(t, unqualified('auth-required', 'No transferable Codex auth.json was found.')); return; }
-  const env = { ...process.env, CODEX_HOME: codexHome, HOME: home, USERPROFILE: home, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_ZCODE_CONVERSATION_PROGRESS: '1', FAKE_ZCODE_GATE_RESULT: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C', PATH: process.env.PATH ?? '' };
+  const env = { ...process.env, CODEX_HOME: codexHome, HOME: home, USERPROFILE: home, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_ZCODE_RECOVERY_CONTROL: recoveryControl, FAKE_ZCODE_CONVERSATION_PROGRESS: '1', FAKE_ZCODE_GATE_RESULT: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C', PATH: process.env.PATH ?? '' };
   const auth = await codex(['login', 'status'], temporary, env, 30_000); if (auth.code !== 0) { markUnqualified(t, unqualified('auth-required', 'The isolated Codex home is not authenticated.')); return; }
   await buildMarketplaceSnapshot({ root, output: marketplace, sourceRef: 'qualified-rescue-e2e', sourceSha: '0'.repeat(40), npmExecPath: process.env.NPM_CLI_JS ?? npmLaunch([]).args[0], env });
   for (const args of [['plugin', 'marketplace', 'add', marketplace, '--json'], ['plugin', 'add', 'zcode@vitry', '--json']]) { const result = await codex(args, temporary, env); assert.equal(result.code, 0, result.stderr || result.stdout); }
@@ -175,7 +175,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const backgroundGate = join(temporary, 'background-completion.gate'); const backgroundGateReached = join(temporary, 'background-completion.reached');
   const backgroundDataRoot = join(codexHome, 'plugins', 'data', 'zcode-vitry'); const backgroundStorage = await resolveWorkspaceStorage({ dataRoot: backgroundDataRoot, workspace: canonicalWorkspace });
   const backgroundJobsDirectory = join(backgroundStorage.directory, 'jobs'); const baselineJobIds = await canonicalJobIds(backgroundJobsDirectory);
-  await writeFile(backgroundGate, 'hold'); let backgroundIdentity; let backgroundJobId; let backgroundJobPath; let backgroundVerified = false;
+  await Promise.all([writeFile(backgroundGate, 'hold'), writeFile(recoveryControl, JSON.stringify({ mode: 'active' }))]); let backgroundIdentity; let backgroundJobId; let backgroundJobPath; let backgroundVerified = false;
   preserveTemporary = true;
   try {
     const background = await codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --background repair the fixture in background skill exactly once now. Return only its public queued result.'], workspace, { ...env, FAKE_ZCODE_COMPLETION_GATE: backgroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: backgroundGateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' }, 240_000);
@@ -193,6 +193,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
     await waitUntil(async () => await readFile(backgroundGateReached, 'utf8').catch(() => '') === 'blocked', 5_000, 'background worker did not reach the explicit post-ack completion gate');
     assert.equal(job.status, 'running'); assert.equal(await exactWorkerLeaseAvailable(backgroundDataRoot, canonicalWorkspace, jobId, backgroundIdentity.workerLeaseId), false);
     const backgroundFrames = background.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const backgroundParentIds = [...new Set(backgroundFrames.filter((frame) => frame?.type === 'thread.started').map((frame) => frame.thread_id))];
+    assert.equal(backgroundParentIds.length, 1, 'installed background Rescue must expose one recoverable parent thread ID');
     try {
       const evidence = qualifyCodexRescueBackgroundEvidence(
         { execFrames: backgroundFrames, rollouts: await loadCodexRollouts(codexHome) },
@@ -209,13 +211,23 @@ test('installed Rescue uses one isolated native child for initial and choice con
       if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') { markUnqualified(t, unqualified(error.code, error.message)); return; }
       throw error;
     }
-    await writeFile(backgroundGate, 'release');
-    await waitUntil(async () => { job = await readExactJob(jobPath, jobId); return job?.status === 'succeeded' && await exactWorkerLeaseAvailable(backgroundDataRoot, canonicalWorkspace, jobId, backgroundIdentity.workerLeaseId); }, 30_000, 'exact background job or detached worker did not reach terminal cleanup');
+    process.kill(backgroundIdentity.pid, 'SIGKILL');
+    await waitUntil(() => !processAlive(backgroundIdentity.pid), 5_000, 'exact installed background worker did not exit after simulated Codex/child loss');
+    await writeFile(recoveryControl, JSON.stringify({ mode: 'completed' }));
+    const recovered = await codex([
+      'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+      '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all',
+      backgroundParentIds[0], `Use the installed $zcode:status ${jobId} --wait skill exactly once now. Do not run Rescue again. Return only its public status.`,
+    ], workspace, env, 240_000);
+    if (skipExternalFailure(t, recovered)) return;
+    assert.equal(recovered.code, 0, `installed recovery failed\n${recovered.stdout}\n${recovered.stderr}`);
+    await waitUntil(async () => { job = await readExactJob(jobPath, jobId); return job?.status === 'succeeded' && await exactWorkerLeaseAvailable(backgroundDataRoot, canonicalWorkspace, jobId, backgroundIdentity.workerLeaseId); }, 30_000, 'exact background job was not recovered without another worker');
     assert.ok(typeof job.resultArtifact === 'string' && job.resultArtifact.length > 0, 'terminal background job must retain its result artifact');
     const result = await readFile(join(dirname(dirname(jobPath)), job.resultArtifact), 'utf8');
     assert.equal(result, 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C'); assert.doesNotMatch(result, new RegExp(`${escapeRegExp(backgroundGate)}|${escapeRegExp(backgroundGateReached)}`));
     const backgroundCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
-    assert.equal(backgroundCalls.filter((call) => call.method === 'session/send').length, 1, 'background Rescue must execute exactly one ZCode turn');
+    assert.equal(backgroundCalls.filter((call) => call.method === 'session/send').length, 1, 'installed worker loss and status recovery must not execute another ZCode turn');
+    assert.equal(backgroundCalls.filter((call) => call.method === 'session/stop').length, 0, 'installed recovery of a completed remote turn must not cancel it');
     backgroundVerified = true;
   } finally {
     await writeFile(backgroundGate, 'release').catch(() => {});
@@ -235,6 +247,7 @@ async function canonicalJobIds(jobsDirectory) { try { return new Set((await read
 async function discoverNewJobIds(jobsDirectory, baselineJobIds, timeoutMs) { const deadline = Date.now() + timeoutMs; let discovered = []; do { discovered = [...await canonicalJobIds(jobsDirectory)].filter((jobId) => !baselineJobIds.has(jobId)); if (discovered.length > 0) break; await new Promise((resolve) => setTimeout(resolve, 50)); } while (Date.now() < deadline); return discovered.sort(); }
 async function readExactJob(jobPath, jobId) { try { const job = JSON.parse(await readFile(jobPath, 'utf8')); return job?.id === jobId ? job : undefined; } catch { return undefined; } }
 function exactWorkerIdentity(job) { assert.ok(Number.isSafeInteger(job?.childPid) && job.childPid > 0); assert.ok(typeof job.workerLeaseId === 'string' && /^[a-f0-9]{64}$/u.test(job.workerLeaseId)); return { pid: job.childPid, workerLeaseId: job.workerLeaseId }; }
+function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 async function exactWorkerLeaseAvailable(dataRoot, workspace, jobId, workerLeaseId) { try { await withWorkerLease({ dataRoot, workspace, jobId, workerLeaseId, timeoutMs: 0 }, async () => {}); return true; } catch (error) { if (error?.code === 'LOCK_TIMEOUT') return false; throw error; } }
 async function cleanupExactJobNaturally(dataRoot, workspace, jobPath, jobId, identity) { let job = await waitForValue(() => readExactJob(jobPath, jobId), 2_000, 'exact background job was not persisted before teardown'); const exact = identity ?? (job.workerLeaseId ? exactWorkerIdentity(job) : null); await waitUntil(async () => { job = await readExactJob(jobPath, jobId); return job && ['succeeded', 'failed', 'cancelled'].includes(job.status) && (!exact || job.workerLeaseId === exact.workerLeaseId && await exactWorkerLeaseAvailable(dataRoot, workspace, jobId, exact.workerLeaseId)); }, 30_000, `exact background job ${jobId} did not naturally reach terminal state and release its worker lease`); }
 function escapeRegExp(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
