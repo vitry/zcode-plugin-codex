@@ -10,6 +10,65 @@ import { atomicWritePrivateFile, replaceFileAtomically } from '../scripts/lib/fs
 const fsModule = new URL('../scripts/lib/fs.mjs', import.meta.url).href;
 const reviewModule = new URL('../scripts/lib/review.mjs', import.meta.url).href;
 
+/** @param {'all-handles'|'handle-after'|'reopened-path'} mode */
+function boundedReadIdentityProbe(mode) {
+  return `
+    import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { readBoundedJsonFile } from ${JSON.stringify(fsModule)};
+    const directory = await mkdtemp(join(tmpdir(), 'zcode-bounded-identity-'));
+    const target = join(directory, 'record.json');
+    await writeFile(target, '{"ok":true}');
+    const probe = await open(join(directory, 'probe'), 'a+');
+    const prototype = Object.getPrototypeOf(probe);
+    await probe.close();
+    const originalStat = prototype.stat;
+    let statCalls = 0;
+    prototype.stat = async function patchedStat(...args) {
+      const stats = await originalStat.call(this, ...args);
+      statCalls += 1;
+      if (${JSON.stringify(mode)} === 'all-handles' || ${JSON.stringify(mode)} === 'handle-after' && statCalls === 2 || ${JSON.stringify(mode)} === 'reopened-path' && statCalls === 3) return new Proxy(stats, { get(target, property) {
+        if (property === 'dev') return target.dev + 1;
+        if (property === 'ino') return target.ino + 1;
+        return Reflect.get(target, property);
+      } });
+      return stats;
+    };
+    try {
+      if (${JSON.stringify(mode)} === 'all-handles') {
+        const value = await readBoundedJsonFile(directory, target, 1024);
+        if (value.ok !== true || statCalls !== 3) throw new Error('bounded JSON did not compare three handle-bound identities');
+      } else {
+        try {
+          await readBoundedJsonFile(directory, target, 1024);
+          throw new Error('bounded JSON accepted a changed handle-bound identity');
+        } catch (error) {
+          if (error?.code !== 'PRIVATE_PATH_UNSAFE') throw error;
+        }
+      }
+    } finally {
+      prototype.stat = originalStat;
+      await rm(directory, { recursive: true, force: true });
+    }
+  `;
+}
+
+test('bounded JSON identity checks do not mix handle and path stat implementations', async () => {
+  const result = await runNode(boundedReadIdentityProbe('all-handles'));
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('bounded JSON reads reject a changed identity on the opened handle', async () => {
+  const result = await runNode(boundedReadIdentityProbe('handle-after'));
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('bounded JSON reads reject a changed reopened current-path handle identity', async () => {
+  const result = await runNode(boundedReadIdentityProbe('reopened-path'));
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
 test('Windows atomic replacement retries only transient EPERM without exposing an unlink window', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-win-replace-'));
   const temporaryPath = join(directory, 'record.tmp'); const targetPath = join(directory, 'record.json');
