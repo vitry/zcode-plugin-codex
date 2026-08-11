@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { lstat, mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -15,8 +15,9 @@ test('diagnostic: Windows path and handle identities', { skip: process.platform 
   const target = join(directory, 'record.json');
   try {
     await writeFile(target, '{"ok":true}');
-    const handle = await open(target, 'r');
-    try {
+    const snapshot = async () => {
+      const handle = await open(target, 'r');
+      try {
       const [pathLstat, pathStat, handleStat] = await Promise.all([
         lstat(target, { bigint: true }),
         stat(target, { bigint: true }),
@@ -24,8 +25,15 @@ test('diagnostic: Windows path and handle identities', { skip: process.platform 
       ]);
       /** @param {import('node:fs').BigIntStats} value */
       const identity = (value) => ({ dev: String(value.dev), ino: String(value.ino), size: String(value.size) });
-      assert.fail(`WINDOWS_IDENTITY_DIAGNOSTIC ${JSON.stringify({ lstat: identity(pathLstat), stat: identity(pathStat), fstat: identity(handleStat) })}`);
-    } finally { await handle.close(); }
+        return { lstat: identity(pathLstat), stat: identity(pathStat), fstat: identity(handleStat) };
+      } finally { await handle.close(); }
+    };
+    const fresh = await snapshot();
+    const temporary = join(directory, 'record.tmp');
+    await writeFile(temporary, '{"ok":false}');
+    await rename(temporary, target);
+    const replaced = await snapshot();
+    assert.fail(`WINDOWS_IDENTITY_DIAGNOSTIC ${JSON.stringify({ fresh, replaced })}`);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
