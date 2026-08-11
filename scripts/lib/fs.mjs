@@ -18,7 +18,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { PluginError, wrapError } from './errors.mjs';
 
 const require = createRequire(import.meta.url);
-const { tryLock, unlock, swap } = /** @type {{ tryLock(fd: number): boolean, unlock(fd: number): void, swap(from: string, to: string): Promise<void> }} */ (
+const { tryLock, unlock } = /** @type {{ tryLock(fd: number): boolean, unlock(fd: number): void }} */ (
   require('fs-native-extensions')
 );
 
@@ -26,6 +26,8 @@ const DEFAULT_LOCK_OPTIONS = Object.freeze({
   pollIntervalMs: 20,
   timeoutMs: 5_000,
 });
+const WINDOWS_RENAME_ATTEMPTS = 21;
+const WINDOWS_RENAME_RETRY_MS = 5;
 
 /** @param {string} path */
 export async function ensurePrivateDirectory(path) {
@@ -124,7 +126,7 @@ export async function readBoundedJsonFile(root, path, maximumBytes) {
 /**
  * @param {string} path
  * @param {unknown} value
- * @param {{signal?:AbortSignal,privateRoot?:string}} [options]
+ * @param {{signal?:AbortSignal,privateRoot?:string,platform?:NodeJS.Platform,maximumAttempts?:number,renameFn?:(from:string,to:string)=>Promise<void>,retryDelayFn?:(milliseconds:number,signal?:AbortSignal)=>Promise<void>}} [options]
  */
 export async function atomicWriteJson(path, value, options = {}) {
   await atomicWritePrivateFile(path, `${JSON.stringify(value, null, 2)}\n`, options);
@@ -133,7 +135,7 @@ export async function atomicWriteJson(path, value, options = {}) {
 /**
  * @param {string} path
  * @param {string|Buffer} bytes
- * @param {{signal?:AbortSignal,privateRoot?:string}} [options]
+ * @param {{signal?:AbortSignal,privateRoot?:string,platform?:NodeJS.Platform,maximumAttempts?:number,renameFn?:(from:string,to:string)=>Promise<void>,retryDelayFn?:(milliseconds:number,signal?:AbortSignal)=>Promise<void>}} [options]
  */
 export async function atomicWritePrivateFile(path, bytes, options = {}) {
   const directory = dirname(path);
@@ -156,18 +158,7 @@ export async function atomicWritePrivateFile(path, bytes, options = {}) {
     await handle.close();
     handle = undefined;
     options.signal?.throwIfAborted();
-    try {
-      await rename(temporaryPath, path);
-    } catch (error) {
-      // Node's Windows rename cannot replace an existing destination.  The
-      // native swap helper uses MoveFileEx(REPLACE_EXISTING) on Windows and
-      // keeps the replacement operation within the filesystem primitive
-      // instead of opening an unlink/rename window.  The old destination is
-      // left at temporaryPath and is removed after the swap.
-      if (process.platform !== 'win32' || /** @type {NodeJS.ErrnoException} */ (error)?.code !== 'EPERM') throw error;
-      await swap(temporaryPath, path);
-      await unlink(temporaryPath);
-    }
+    await replaceFileAtomically(temporaryPath, path, options);
     options.signal?.throwIfAborted();
     await chmod(path, 0o600);
     options.signal?.throwIfAborted();
@@ -182,6 +173,33 @@ export async function atomicWritePrivateFile(path, bytes, options = {}) {
       remedy: 'Check available disk space and permissions, then retry.',
       details: { path },
     });
+  }
+}
+
+/**
+ * Retries the same atomic rename only for transient Windows sharing failures.
+ * The source and destination remain untouched between attempts; callers own
+ * cleanup if the final attempt fails.
+ * @param {string} temporaryPath @param {string} path
+ * @param {{signal?:AbortSignal,platform?:NodeJS.Platform,maximumAttempts?:number,renameFn?:(from:string,to:string)=>Promise<void>,retryDelayFn?:(milliseconds:number,signal?:AbortSignal)=>Promise<void>}} [options]
+ */
+export async function replaceFileAtomically(temporaryPath, path, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const maximumAttempts = options.maximumAttempts ?? WINDOWS_RENAME_ATTEMPTS;
+  const renameFn = options.renameFn ?? rename;
+  const retryDelayFn = options.retryDelayFn ?? delay;
+  if (!Number.isSafeInteger(maximumAttempts) || maximumAttempts < 1) {
+    throw new TypeError('maximumAttempts must be a positive safe integer');
+  }
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    options.signal?.throwIfAborted();
+    try {
+      await renameFn(temporaryPath, path);
+      return;
+    } catch (error) {
+      if (platform !== 'win32' || !isNodeError(error, 'EPERM') || attempt === maximumAttempts) throw error;
+    }
+    await retryDelayFn(WINDOWS_RENAME_RETRY_MS, options.signal);
   }
 }
 

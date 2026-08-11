@@ -171,6 +171,19 @@ test('jobs follow queued -> running -> succeeded and persist complete metadata',
   assert.deepEqual(await store.listJobs(workspace), [succeeded]);
 });
 
+test('repeated atomic job updates remain readable across a later reservation', async () => {
+  const { dataRoot, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+  const first = await store.reserveJob({ workspace, ...jobInput });
+  await store.claimJobWorker(workspace, first.id, { childPid: 123, workerLeaseId: 'a'.repeat(64) });
+  await store.transitionJob(workspace, first.id, ['queued'], 'running');
+  await store.transitionJob(workspace, first.id, ['running'], 'succeeded', { exitCode: 0 });
+  const second = await store.reserveJob({
+    workspace, ...jobInput, ownerTurnId: 'turn-b', readOnly: true,
+  });
+  assert.deepEqual((await store.listOwnedJobs(workspace, jobInput.ownerSessionId)).map((job) => job.id).sort(),
+    [first.id, second.id].sort());
+});
+
 test('a queued job durably claims one exact worker before long-running setup', async () => {
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });

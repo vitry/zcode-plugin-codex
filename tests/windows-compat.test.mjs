@@ -1,9 +1,87 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+
+import { atomicWritePrivateFile, replaceFileAtomically } from '../scripts/lib/fs.mjs';
 
 const fsModule = new URL('../scripts/lib/fs.mjs', import.meta.url).href;
 const reviewModule = new URL('../scripts/lib/review.mjs', import.meta.url).href;
+
+test('Windows atomic replacement retries only transient EPERM without exposing an unlink window', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-win-replace-'));
+  const temporaryPath = join(directory, 'record.tmp'); const targetPath = join(directory, 'record.json');
+  await writeFile(temporaryPath, 'new'); await writeFile(targetPath, 'old');
+  /** @type {Array<[string,string]>} */
+  const calls = []; let attempts = 0;
+  try {
+    await replaceFileAtomically(temporaryPath, targetPath, {
+      platform: 'win32', maximumAttempts: 3,
+      renameFn: async (from, to) => {
+        calls.push([from, to]); attempts += 1;
+        if (attempts < 3) {
+          assert.equal(await readFile(targetPath, 'utf8'), 'old');
+          assert.equal(await readFile(temporaryPath, 'utf8'), 'new');
+          throw Object.assign(new Error('destination temporarily locked'), { code: 'EPERM' });
+        }
+        const { rename } = await import('node:fs/promises'); await rename(from, to);
+      },
+      retryDelayFn: async () => {},
+    });
+    assert.equal(await readFile(targetPath, 'utf8'), 'new');
+    assert.deepEqual(calls, Array(3).fill([temporaryPath, targetPath]));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Windows atomic replacement bounds persistent EPERM and preserves both files for fail-closed cleanup', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-win-replace-fail-'));
+  const temporaryPath = join(directory, 'record.tmp'); const targetPath = join(directory, 'record.json');
+  await writeFile(temporaryPath, 'new'); await writeFile(targetPath, 'old'); let attempts = 0; let delays = 0;
+  try {
+    await assert.rejects(replaceFileAtomically(temporaryPath, targetPath, {
+      platform: 'win32', maximumAttempts: 3,
+      renameFn: async () => { attempts += 1; throw Object.assign(new Error('still locked'), { code: 'EPERM' }); },
+      retryDelayFn: async () => { delays += 1; },
+    }), { code: 'EPERM' });
+    assert.equal(attempts, 3); assert.equal(delays, 2);
+    assert.equal(await readFile(targetPath, 'utf8'), 'old');
+    assert.equal(await readFile(temporaryPath, 'utf8'), 'new');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('atomic private write removes its temporary file after persistent Windows EPERM', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-win-write-fail-')); const targetPath = join(directory, 'record.json');
+  await writeFile(targetPath, 'old'); let temporaryPath;
+  try {
+    await assert.rejects(atomicWritePrivateFile(targetPath, 'new', {
+      platform: 'win32', maximumAttempts: 2,
+      renameFn: async (from) => {
+        temporaryPath = from;
+        throw Object.assign(new Error('still locked'), { code: 'EPERM' });
+      },
+      retryDelayFn: async () => {},
+    }), { code: 'ATOMIC_WRITE_FAILED' });
+    assert.equal(await readFile(targetPath, 'utf8'), 'old');
+    assert.ok(temporaryPath);
+    await assert.rejects(readFile(temporaryPath), { code: 'ENOENT' });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('atomic replacement does not retry non-Windows or non-EPERM failures', async () => {
+  /** @type {Array<[NodeJS.Platform,string]>} */
+  const failures = [['linux', 'EPERM'], ['win32', 'EACCES']];
+  for (const [platform, code] of failures) {
+    let attempts = 0;
+    await assert.rejects(replaceFileAtomically('temporary', 'target', {
+      platform, maximumAttempts: 3,
+      renameFn: async () => { attempts += 1; throw Object.assign(new Error(code), { code }); },
+      retryDelayFn: async () => assert.fail('an ineligible error must not wait'),
+    }), { code });
+    assert.equal(attempts, 1);
+  }
+});
 
 /** @param {string} source @returns {Promise<{code:number|null,signal:NodeJS.Signals|null,stdout:string,stderr:string}>} */
 function runNode(source) {
