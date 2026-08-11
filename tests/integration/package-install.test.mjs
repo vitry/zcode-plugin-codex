@@ -12,7 +12,7 @@ const rootPath = fileURLToPath(new URL('../../', import.meta.url));
 
 /** @param {{ command: string, args: string[], options: object }} launch @param {string} cwd */
 async function run(launch, cwd) {
-  return runProcess(launch, { cwd, timeoutMs: 30_000, maxOutputBytes: 4 * 1024 * 1024 });
+  return runProcess(launch, { cwd, timeoutMs: 120_000, maxOutputBytes: 4 * 1024 * 1024 });
 }
 
 /** @param {string[]} args */

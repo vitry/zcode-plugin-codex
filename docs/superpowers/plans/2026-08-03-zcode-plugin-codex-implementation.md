@@ -474,6 +474,7 @@ Run:
 
 ```bash
 npm ci
+node --test tests/marketplace-snapshot.test.mjs tests/integration/marketplace-snapshot-build.mjs
 npm run check
 node --test tests/integration/package-install.test.mjs
 npm pack --dry-run

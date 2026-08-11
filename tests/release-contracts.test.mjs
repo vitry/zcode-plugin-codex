@@ -194,6 +194,21 @@ test('CI runs full and packed native suites on three platforms and Node 22.13', 
   }
   assert.match(packageTest, /NODE22_BINARY/);
   assert.doesNotMatch(packageTest, /NODE18_BINARY|node@18|Node 18/);
+  assert.match(packageTest, /timeoutMs:\s*120_000/);
+});
+
+test('required marketplace builder coverage runs explicitly after the default-discovered suite', () => {
+  const packageJson = JSON.parse(read('package.json'));
+  assert.equal(packageJson.scripts.test, 'node --test && node --test tests/integration/marketplace-snapshot-build.mjs');
+  const lightweight = read('tests/marketplace-snapshot.test.mjs');
+  const heavy = read('tests/integration/marketplace-snapshot-build.mjs');
+  assert.doesNotMatch(lightweight, /cleanRepositoryClone|concurrent snapshot|break dependency lock/);
+  assert.match(heavy, /cleanRepositoryClone/);
+  assert.match(heavy, /concurrent snapshot one/);
+  assert.match(heavy, /break dependency lock/);
+  assert.doesNotMatch(heavy, /npm\(\['ci'/);
+  const plan = read('docs/superpowers/plans/2026-08-03-zcode-plugin-codex-implementation.md');
+  assert.match(plan, /node --test tests\/marketplace-snapshot\.test\.mjs tests\/integration\/marketplace-snapshot-build\.mjs/);
 });
 
 test('runtime baseline is Node 22.13 across implementation plans and locking ADR', () => {
