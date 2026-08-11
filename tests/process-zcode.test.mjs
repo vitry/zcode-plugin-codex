@@ -22,6 +22,11 @@ async function assertProcessGone(pid) {
   assert.fail(`process ${pid} remained observable after termination`);
 }
 
+function ownedPidPublicationSource(pidFile, options = {}) {
+  const temporaryPidFile = `${pidFile}.tmp`;
+  return `const ownedPidTemporary=${JSON.stringify(temporaryPidFile)};fs.writeFileSync(ownedPidTemporary,String(process.pid));${options.readyFile ? `fs.writeFileSync(${JSON.stringify(options.readyFile)},'ready');` : ''}${options.delayMs ? `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,${options.delayMs});` : ''}fs.renameSync(ownedPidTemporary,${JSON.stringify(pidFile)});`;
+}
+
 async function cleanupOwnedDescendant(directory, pidFile, options = {}) {
   const killFn = options.killFn ?? ((pid, signal) => process.kill(pid, signal));
   const waitGoneFn = options.waitGoneFn ?? assertProcessGone;
@@ -103,6 +108,21 @@ test('owned descendant cleanup removes its directory even when KILL cannot prove
   await assert.rejects(access(directory), { code: 'ENOENT' });
 });
 
+test('owned descendant PID publication hides a partial temporary file until atomic rename', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-process-atomic-pid-')); const pidFile = join(directory, 'descendant.pid'); const readyFile = join(directory, 'publisher.ready');
+  const source = `const fs=require('node:fs');${ownedPidPublicationSource(pidFile, { readyFile, delayMs: 75 })}setInterval(()=>{},10000);`;
+  const child = spawn(process.execPath, ['-e', source], { stdio: 'ignore' });
+  try {
+    while (await access(readyFile).then(() => false, () => true)) await new Promise((resolve) => setImmediate(resolve));
+    await assert.rejects(access(pidFile), { code: 'ENOENT' });
+    await cleanupOwnedDescendant(directory, pidFile);
+    await assertProcessGone(child.pid);
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL');
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('post-exit drain waits for direct-child stream completion beyond one check turn', async () => {
   const stream = new PassThrough(); let output = '';
   stream.setEncoding('utf8'); stream.on('data', (chunk) => { output += chunk; });
@@ -124,7 +144,7 @@ test('runProcess captures a backpressured direct-child tail before natural exit'
 
 test('runProcess flushes direct-child output without waiting for an inherited descendant pipe', { timeout: 2_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-process-pipe-')); const pidFile = join(directory, 'descendant.pid');
-  const descendant = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setTimeout(()=>process.stdout.write('late-descendant\\n'),100);setInterval(()=>{},10000);`;
+  const descendant = `const fs=require('node:fs');${ownedPidPublicationSource(pidFile)}setTimeout(()=>process.stdout.write('late-descendant\\n'),100);setInterval(()=>{},10000);`;
   const source = `const {spawn}=require('node:child_process');process.stdout.write('direct-child\\n');spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit']}).unref();`;
   try {
     const result = await runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath }, { timeoutMs: 500 });
@@ -138,7 +158,7 @@ test('post-exit descendant overflow stops capture at the configured byte cap', {
   // The startup stall is longer than the production post-exit drain. Removing
   // the ready handshake therefore makes this test deterministically miss the
   // overflow, while stdin EOF proves the flood starts only after parent exit.
-  const descendant = `const fs=require('node:fs');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,75);fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));fs.writeFileSync(${JSON.stringify(readyFile)},'ready');const input=Buffer.alloc(1);while(fs.readSync(0,input,0,1,null)>0){};try{fs.writeSync(1,'x'.repeat(4096));}catch{};setInterval(()=>{},10000);`;
+  const descendant = `const fs=require('node:fs');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,75);${ownedPidPublicationSource(pidFile)}fs.writeFileSync(${JSON.stringify(readyFile)},'ready');const input=Buffer.alloc(1);while(fs.readSync(0,input,0,1,null)>0){};try{fs.writeSync(1,'x'.repeat(4096));}catch{};setInterval(()=>{},10000);`;
   const source = `const {spawn}=require('node:child_process'),fs=require('node:fs');const child=spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['pipe','inherit','inherit']});child.unref();child.stdin.unref();const awaitReady=()=>fs.access(${JSON.stringify(readyFile)},fs.constants.F_OK,(error)=>{if(error)setImmediate(awaitReady);});awaitReady();`;
   try {
     await assert.rejects(
