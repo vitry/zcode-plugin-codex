@@ -155,7 +155,7 @@ export async function readHealthyBrokerIdentity(path, options = {}) {
   return inspected.status === 'healthy' ? inspected.record : null;
 }
 
-async function inspectBrokerIdentity(path, options = {}) {
+export async function inspectBrokerIdentity(path, options = {}) {
   let value;
   try { value = JSON.parse(await readFile(path, 'utf8')); } catch (error) { return { status: error?.code === 'ENOENT' ? 'missing' : 'invalid', record: null }; }
   if (!value || value.version !== 1 || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.instanceId !== 'string' || value.instanceId.length < 32 || typeof value.brokerToken !== 'string' || value.brokerToken.length < 32 || typeof value.endpoint !== 'string' || options.expectedEndpoint !== undefined && value.endpoint !== options.expectedEndpoint) return { status: 'invalid', record: null };
@@ -367,7 +367,7 @@ export class ZCodeBroker {
             if (frame.method === 'session/stop') validateStopResult(result);
             if (frame.method === 'v4/conversation/unsubscribe' && !validConversationUnsubscribeResult(result)) { this.conversationSubscriptions.delete(unsubscribeRecord.key); this.retainOrphanedSubscription(protocol, unsubscribeRecord); this.clearProtocolGeneration(protocol); throw invalidUnsubscribeResult(); }
             if (frame.method === 'session/send') { validateSendResult(result, frame.params.sessionId); const active = this.activeSessionSockets.get(frame.params.sessionId); if (active?.token !== sendToken) throw brokerInputError(); active.baseline = result.stateRevision; active.inputId = frame.params.inputId; this.activeSessions.add(frame.params.sessionId); protocol.armTurn(frame.params.sessionId, result.stateRevision, frame.params.inputId); this.admittingSessions.delete(frame.params.sessionId); }
-          } catch (error) { if (frame.method === 'session/send') { protocol.abortTurn(frame.params.sessionId); if (this.activeSessionSockets.get(frame.params.sessionId)?.token === sendToken) this.activeSessionSockets.delete(frame.params.sessionId); if (this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); } if (subscriptionToken && this.pendingConversationTopics.get(frame.params.topic)?.token === subscriptionToken) this.pendingConversationTopics.delete(frame.params.topic); throw error; }
+          } catch (error) { if (frame.method === 'session/send') { protocol.abortTurn(frame.params.sessionId); this.settleTurnPermissions(frame.params.sessionId, sendToken); if (this.activeSessionSockets.get(frame.params.sessionId)?.token === sendToken) this.activeSessionSockets.delete(frame.params.sessionId); if (this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); } if (subscriptionToken && this.pendingConversationTopics.get(frame.params.topic)?.token === subscriptionToken) this.pendingConversationTopics.delete(frame.params.topic); throw error; }
           if (frame.method === 'session/create') {
             const createdSessionId = result?.session?.sessionId;
             if (!isSafeIdentifier(createdSessionId) || typeof requestedSessionId === 'string' && createdSessionId !== requestedSessionId || !validSnapshot(result, createdSessionId, this.options.workspace)) { this.clearProtocolGeneration(protocol); throw invalidSessionCreateResult(); }

@@ -1,12 +1,12 @@
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { readFile, readdir, realpath } from 'node:fs/promises';
+import { readdir, realpath } from 'node:fs/promises';
 
 import { PluginError } from './errors.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './identifier.mjs';
 import { closeProtocolUntil, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
 import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
-import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, MAX_BROKER_IDLE_TIMEOUT_MS, MIN_BROKER_IDLE_TIMEOUT_MS, prioritizeBrokerOwnership, probeBrokerHealth, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
+import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, inspectBrokerIdentity, MAX_BROKER_IDLE_TIMEOUT_MS, MIN_BROKER_IDLE_TIMEOUT_MS, prioritizeBrokerOwnership, probeBrokerHealth, readHealthyBrokerIdentity } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const THOUGHT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
@@ -179,8 +179,8 @@ export async function releaseManagedZCodeOwner(options) {
   const storage = await resolveWorkspaceStorage(options); const brokerDirectory = resolve(storage.directory, 'broker'); let names;
   try { names = await readdir(brokerDirectory); } catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code === 'ENOENT') return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 }; throw error; }
   const matchingNames = names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).sort(); const selectedNames = matchingNames.slice(0, 32); const truncatedProfileCount = matchingNames.length - selectedNames.length; const cleanupDeadline = Date.now() + OWNER_CLEANUP_BUDGET_MS;
-  const candidates = await Promise.all(selectedNames.map(async (identityName) => { const identityPath = resolve(brokerDirectory, identityName); const expectedEndpoint = expectedBrokerEndpoint(options.dataRoot, storage.workspacePath, identityName); const identity = await readHealthyBrokerIdentity(identityPath, { expectedEndpoint }); if (identity) return { identity, identityName, unavailable: false }; try { const value = JSON.parse(await readFile(identityPath, 'utf8')); return { identity: null, identityName, unavailable: value?.endpoint === expectedEndpoint }; } catch (error) { return { identity: null, identityName, unavailable: (/** @type {NodeJS.ErrnoException} */ (error))?.code !== 'ENOENT' }; } }));
-  const unavailableProfileCount = candidates.filter((profile) => profile.unavailable).length; const profiles = candidates.filter((profile) => profile.identity);
+  const candidates = await Promise.all(selectedNames.map(async (identityName) => { const identityPath = resolve(brokerDirectory, identityName); const expectedEndpoint = expectedBrokerEndpoint(options.dataRoot, storage.workspacePath, identityName); const inspected = await inspectBrokerIdentity(identityPath, { expectedEndpoint }); return { identity: inspected.status === 'healthy' ? inspected.record : null, identityName, status: inspected.status, unavailable: inspected.status !== 'healthy' }; }));
+  const unavailableProfiles = candidates.filter((profile) => profile.unavailable); const unavailableProfileCount = unavailableProfiles.length; const identityStatusCounts = boundedIdentityStatusCounts(unavailableProfiles.map((profile) => profile.status)); const profiles = candidates.filter((profile) => profile.identity);
   const outcomes = await Promise.all(profiles.map(async ({ identity, identityName }) => {
     /** @type {Set<string>} */ const released = new Set(); /** @type {Set<string>} */ const failed = new Set();
     /** @type {ZCodeClient|null} */ let client = null;
@@ -209,7 +209,7 @@ export async function releaseManagedZCodeOwner(options) {
     return { releasedSessionIds: [...released], failedSessionIds: [...failed], deferredSessionCount: profileDeferred, releaseProof, error: profileError };
   }));
   const released = outcomes.flatMap((outcome) => outcome.releasedSessionIds); const failed = outcomes.flatMap((outcome) => outcome.failedSessionIds); const deferredSessionCount = outcomes.reduce((total, outcome) => total + outcome.deferredSessionCount, 0);
-  const errorOutcomes = outcomes.filter((outcome) => outcome.error); const releaseProofMissingProfileCount = outcomes.filter((outcome) => !outcome.releaseProof).length; const proofOnlyFailureCount = outcomes.filter((outcome) => !outcome.releaseProof && !outcome.error).length; const causeCodeCounts = boundedCauseCodeCounts(errorOutcomes.map((outcome) => outcome.error)); const resultTruncated = released.length > 1_000 || failed.length > 1_000; const failedProfileCount = unavailableProfileCount + errorOutcomes.length + proofOnlyFailureCount + truncatedProfileCount; if (failedProfileCount || resultTruncated) throw ownerReleaseIncomplete({ failedProfileCount, completedProfileCount: outcomes.length - errorOutcomes.length - proofOnlyFailureCount, releasedSessionCount: released.length, failedSessionCount: failed.length, deferredSessionCount, releaseProofMissingProfileCount, truncatedProfileCount, resultTruncated, causeCodeCounts });
+  const errorOutcomes = outcomes.filter((outcome) => outcome.error); const releaseProofMissingProfileCount = outcomes.filter((outcome) => !outcome.releaseProof).length; const proofOnlyFailureCount = outcomes.filter((outcome) => !outcome.releaseProof && !outcome.error).length; const causeCodeCounts = boundedCauseCodeCounts(errorOutcomes.map((outcome) => outcome.error)); const resultTruncated = released.length > 1_000 || failed.length > 1_000; const failedProfileCount = unavailableProfileCount + errorOutcomes.length + proofOnlyFailureCount + truncatedProfileCount; if (failedProfileCount || resultTruncated) throw ownerReleaseIncomplete({ failedProfileCount, completedProfileCount: outcomes.length - errorOutcomes.length - proofOnlyFailureCount, releasedSessionCount: released.length, failedSessionCount: failed.length, deferredSessionCount, releaseProofMissingProfileCount, truncatedProfileCount, resultTruncated, identityStatusCounts, causeCodeCounts });
   return { releasedSessionIds: released.slice(0, 1_000), failedSessionIds: failed.slice(0, 1_000), deferredSessionCount };
 }
 
@@ -218,6 +218,8 @@ async function releaseOwnerWithBusyRetry(client, excludeSessionIds, deadline, re
 
 /** @param {unknown[]} errors */
 function boundedCauseCodeCounts(errors) { const counts = /** @type {Record<string,number>} */ ({}); for (const error of errors.slice(0, 32)) { const candidate = (/** @type {{code?:unknown}} */ (error))?.code; const code = typeof candidate === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(candidate) ? candidate : 'UNKNOWN'; counts[code] = (counts[code] ?? 0) + 1; } return counts; }
+/** @param {string[]} statuses */
+function boundedIdentityStatusCounts(statuses) { const counts = /** @type {Record<string,number>} */ ({}); for (const status of statuses.slice(0, 32)) if (['missing', 'invalid', 'dead', 'unhealthy'].includes(status)) counts[status] = (counts[status] ?? 0) + 1; return counts; }
 
 /** @param {Record<string,unknown>} details */
 function ownerReleaseIncomplete(details) { return new PluginError('ZCODE_OWNER_RELEASE_INCOMPLETE', 'ZCode owner cleanup could not confirm every broker profile or bounded result.', { category: 'state', remedy: 'Retry owner cleanup; confirmed releases are idempotent.', details }); }
