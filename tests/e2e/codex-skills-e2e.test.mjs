@@ -1,9 +1,9 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -27,13 +27,44 @@ const qualificationRequired = process.env.ZCODE_REQUIRE_QUALIFIED === '1';
 const optInSkip = process.env.ZCODE_CODEX_SKILLS_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_SKILLS_E2E=1 to spend authenticated Codex credits.');
 const rescueOptInSkip = process.env.ZCODE_CODEX_RESCUE_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_RESCUE_E2E=1 to qualify the runtime-observed native Rescue route.');
 
+test('preserved installed evidence scrubs isolated credential copies on normal, thrown, and timed-out cleanup', async (t) => {
+  for (const mode of ['normal', 'sync-throw', 'timeout']) await t.test(mode, async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'zcode-installed-evidence-cleanup-')); t.after(() => rm(temporary, { recursive: true, force: true }));
+    const codexHome = join(temporary, 'codex-home'); const evidence = join(temporary, 'evidence.jsonl'); const auth = join(codexHome, 'auth.json'); const copied = join(codexHome, 'auth-copy.json');
+    const outside = join(dirname(temporary), `${basename(temporary)}-real-auth.json`); const linked = join(codexHome, 'linked-auth.json'); const secret = `credential-${mode}-must-not-enter-diagnostics`;
+    await mkdir(codexHome, { recursive: true, mode: 0o700 }); await Promise.all([writeFile(auth, secret, { mode: 0o600 }), writeFile(copied, secret, { mode: 0o600 }), writeFile(outside, secret, { mode: 0o600 }), writeFile(evidence, 'preserved failure evidence')]); await symlink(outside, linked);
+    t.after(() => rm(outside, { force: true })); const diagnostics = [];
+    const removeCredential = mode === 'sync-throw' ? () => { throw new Error(secret); }
+      : mode === 'timeout' ? () => new Promise(() => {}) : undefined;
+    await cleanupInstalledEvidence({
+      cleanupTimeoutMs: 10,
+      credentialPaths: [auth, copied, linked],
+      diagnostic: (message) => diagnostics.push(message),
+      preserve: true,
+      removeCredential,
+      temporary,
+    });
+    assert.equal(await readFile(evidence, 'utf8'), 'preserved failure evidence');
+    for (const credential of [auth, copied, linked]) await assert.rejects(stat(credential), { code: 'ENOENT' });
+    assert.equal(await readFile(outside, 'utf8'), secret, 'cleanup must unlink only the isolated symlink, never the external auth target');
+    assert.doesNotMatch(diagnostics.join('\n'), new RegExp(secret)); assert.match(diagnostics.join('\n'), /preserved installed evidence/);
+  });
+  await t.test('outside exact path is rejected without deleting user auth', async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'zcode-installed-evidence-outside-')); const evidence = join(temporary, 'evidence.jsonl'); const outside = join(dirname(temporary), `${basename(temporary)}-user-auth.json`); const secret = 'outside-user-auth-secret';
+    await Promise.all([writeFile(evidence, 'failure evidence'), writeFile(outside, secret, { mode: 0o600 })]); t.after(() => Promise.all([rm(temporary, { recursive: true, force: true }), rm(outside, { force: true })]));
+    await assert.rejects(cleanupInstalledEvidence({ credentialPaths: [outside], preserve: true, temporary }), /could not be scrubbed safely/);
+    assert.equal(await readFile(outside, 'utf8'), secret);
+  });
+});
+
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
   if (process.env.ZCODE_CODEX_SKILLS_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_SKILLS_E2E=1.'));
-  const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-skills-e2e-')); t.after(() => rm(temporary, { recursive: true, force: true }));
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-skills-e2e-'));
   const codexHome = join(temporary, 'codex-home'); const home = join(temporary, 'home'); const marketplace = join(temporary, 'marketplace'); const workspace = join(temporary, 'workspace'); const zcodeRecord = join(temporary, 'zcode.jsonl');
+  const isolatedAuthPath = join(codexHome, 'auth.json'); t.after(() => cleanupInstalledEvidence({ credentialPaths: [isolatedAuthPath], preserve: false, temporary }));
   await Promise.all([mkdir(codexHome, { recursive: true, mode: 0o700 }), mkdir(home, { recursive: true, mode: 0o700 }), mkdir(workspace, { recursive: true }), writeFile(zcodeRecord, '')]);
   const sourceCodexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
-  try { await stat(join(sourceCodexHome, 'auth.json')); await cp(join(sourceCodexHome, 'auth.json'), join(codexHome, 'auth.json')); await chmod(join(codexHome, 'auth.json'), 0o600); }
+  try { await stat(join(sourceCodexHome, 'auth.json')); await cp(join(sourceCodexHome, 'auth.json'), isolatedAuthPath); await chmod(isolatedAuthPath, 0o600); }
   catch { markUnqualified(t, unqualified('auth-required', 'No transferable Codex auth.json was found.')); return; }
   const env = { ...process.env, CODEX_HOME: codexHome, HOME: home, USERPROFILE: home, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, PATH: process.env.PATH ?? '' };
   const auth = await codex(['login', 'status'], temporary, env, 30_000); if (auth.code !== 0) { markUnqualified(t, unqualified('auth-required', 'The isolated Codex home is not authenticated.')); return; }
@@ -53,11 +84,12 @@ test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode
 
 test('installed Rescue uses one isolated native child for initial and choice continuations', { skip: rescueOptInSkip, timeout: 1_200_000 }, async (t) => {
   if (process.env.ZCODE_CODEX_RESCUE_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_RESCUE_E2E=1.'));
-  const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-rescue-e2e-')); let preserveTemporary = false; t.after(() => preserveTemporary ? t.diagnostic(`preserved active installed recovery evidence at ${temporary}`) : rm(temporary, { recursive: true, force: true }));
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-rescue-e2e-')); let preserveTemporary = false;
   const codexHome = join(temporary, 'codex-home'); const home = join(temporary, 'home'); const marketplace = join(temporary, 'marketplace'); const workspace = join(temporary, 'workspace'); const zcodeRecord = join(temporary, 'zcode.jsonl'); const recoveryControl = join(temporary, 'zcode-recovery.json');
+  const isolatedAuthPath = join(codexHome, 'auth.json'); t.after(() => cleanupInstalledEvidence({ credentialPaths: [isolatedAuthPath], diagnostic: (message) => t.diagnostic(message), preserve: preserveTemporary, temporary }));
   await Promise.all([mkdir(codexHome, { recursive: true, mode: 0o700 }), mkdir(home, { recursive: true, mode: 0o700 }), mkdir(workspace, { recursive: true }), writeFile(zcodeRecord, ''), writeFile(recoveryControl, JSON.stringify({ mode: 'completed' }))]);
   const sourceCodexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
-  try { await stat(join(sourceCodexHome, 'auth.json')); await cp(join(sourceCodexHome, 'auth.json'), join(codexHome, 'auth.json')); await chmod(join(codexHome, 'auth.json'), 0o600); }
+  try { await stat(join(sourceCodexHome, 'auth.json')); await cp(join(sourceCodexHome, 'auth.json'), isolatedAuthPath); await chmod(isolatedAuthPath, 0o600); }
   catch { markUnqualified(t, unqualified('auth-required', 'No transferable Codex auth.json was found.')); return; }
   const env = { ...process.env, CODEX_HOME: codexHome, HOME: home, USERPROFILE: home, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_ZCODE_RECOVERY_CONTROL: recoveryControl, FAKE_ZCODE_CONVERSATION_PROGRESS: '1', FAKE_ZCODE_GATE_RESULT: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C', PATH: process.env.PATH ?? '' };
   const auth = await codex(['login', 'status'], temporary, env, 30_000); if (auth.code !== 0) { markUnqualified(t, unqualified('auth-required', 'The isolated Codex home is not authenticated.')); return; }
@@ -485,6 +517,57 @@ async function createInstalledCodexAppServer(cwd, env) {
   child.stdin.write(`${JSON.stringify({ method: 'initialized', params: {} })}\n`);
   return { close, frames, pid: child.pid, request, stderr: () => stderr };
 }
+
+async function cleanupInstalledEvidence(input) {
+  const cleanupTimeoutMs = input.cleanupTimeoutMs ?? 2_000;
+  if (!Number.isSafeInteger(cleanupTimeoutMs) || cleanupTimeoutMs < 1
+    || !Array.isArray(input.credentialPaths) || input.credentialPaths.length > 16) throw new Error('installed evidence cleanup input is invalid');
+  const temporary = resolve(input.temporary); const rootStats = await lstat(temporary); const canonicalRoot = await realpath(temporary);
+  if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) throw new Error('installed evidence root is unsafe');
+  let scrubFailed = false;
+  for (const credentialPath of input.credentialPaths) {
+    try {
+      const exactPath = resolve(credentialPath);
+      if (!pathWithin(temporary, exactPath)) throw new Error('isolated credential path is outside evidence root');
+      const canonicalParent = await realpath(dirname(exactPath));
+      if (!pathWithin(canonicalRoot, canonicalParent)) throw new Error('isolated credential parent escapes evidence root');
+      await removeCredentialWithFallback(exactPath, input.removeCredential, cleanupTimeoutMs);
+    } catch { scrubFailed = true; }
+  }
+  if (scrubFailed) {
+    await cleanupDeadline(() => rm(temporary, { recursive: true, force: true }), cleanupTimeoutMs).catch(() => {});
+    throw new Error('isolated installed credentials could not be scrubbed safely');
+  }
+  if (input.preserve) input.diagnostic?.(`preserved installed evidence at ${temporary} after isolated credential scrub`);
+  else await cleanupDeadline(() => rm(temporary, { recursive: true, force: true }), cleanupTimeoutMs);
+}
+
+async function removeCredentialWithFallback(path, removeCredential, cleanupTimeoutMs) {
+  const remove = removeCredential ?? unlink;
+  try { await cleanupDeadline(() => remove(path), cleanupTimeoutMs); }
+  catch {
+    try { await cleanupDeadline(() => unlink(path), cleanupTimeoutMs); }
+    catch (error) { if (error?.code !== 'ENOENT') throw error; }
+  }
+  try { await lstat(path); throw new Error('isolated credential still exists after cleanup'); }
+  catch (error) { if (error?.code !== 'ENOENT') throw error; }
+}
+
+async function cleanupDeadline(operation, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('installed evidence cleanup timed out')), timeoutMs); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
+function pathWithin(root, path) {
+  const descendant = relative(root, path);
+  return descendant === '' || descendant !== '..' && !descendant.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(descendant);
+}
+
 function unqualified(code, detail) { return `codex-skills-unqualified ${JSON.stringify({ qualified: false, code, detail })}`; }
 function markUnqualified(t, message) { if (qualificationRequired) assert.fail(message); t.skip(message); }
 function skipExternalFailure(t, result) {

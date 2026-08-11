@@ -115,7 +115,9 @@ async function performCancellation(input, attempts, election) {
   else attempt = await attempts.start(job.id, input.ownerSessionId);
   if (job.status === 'queued') {
     if (job.workerLeaseId) throw cancelError(job.id, 'The claimed worker is still starting; retry after it advances or recovery proves it orphaned.');
-    const cancelled = await finishJob(input.options.store, input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null });
+    let cancelled;
+    try { cancelled = await finishJob(input.options.store, input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
+    catch (error) { cancelled = await durableCancelledWinner(cancelledWinnerInput(input), error); }
     return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }
   if (!['running', 'cancelling'].includes(job.status)) throw cancelError(job.id, 'Job is not cancellable.');
@@ -123,7 +125,10 @@ async function performCancellation(input, attempts, election) {
     let cancelled;
     try {
       cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
-    } catch (error) { throw finalizeError(job.id, error); }
+    } catch (error) {
+      try { cancelled = await durableCancelledWinner(cancelledWinnerInput(input), error); }
+      catch (finalizeFailure) { throw finalizeError(job.id, finalizeFailure); }
+    }
     return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }
   const cancelling = job.status === 'running' ? await input.options.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling', job.lastCancelError ? { lastCancelError: null } : {}) : job;
@@ -140,7 +145,10 @@ async function performCancellation(input, attempts, election) {
   let cancelled;
   try { cancelled = await finishJob(input.options.store, input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null }); }
   catch (error) {
-    await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'finalize-pending'); throw finalizeError(job.id, error);
+    try { cancelled = await durableCancelledWinner(cancelledWinnerInput(input), error); }
+    catch (finalizeFailure) {
+      await attempts.update(job.id, input.ownerSessionId, attempt.attemptId, 'finalize-pending'); throw finalizeError(job.id, finalizeFailure);
+    }
   }
   return recordCancelledAttempt(input, attempts, attempt, cancelled);
 }
@@ -148,12 +156,20 @@ async function performCancellation(input, attempts, election) {
 /** Durable job terminality is authoritative; cancellation attempts remain auxiliary election evidence. @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {any} attempt @param {any} cancelled */
 async function recordCancelledAttempt(input, attempts, attempt, cancelled) {
   try { await attempts.update(cancelled.id, input.ownerSessionId, attempt.attemptId, 'succeeded'); return cancelled; }
-  catch (error) {
-    let winner;
-    try { winner = await input.options.store.readJob(input.workspace, input.jobId); } catch { throw error; }
-    if (winner.ownerSessionId === input.ownerSessionId && winner.status === 'cancelled') return winner;
-    throw error;
-  }
+  catch (error) { return durableCancelledWinner(cancelledWinnerInput(input), error); }
+}
+
+/** Resolve only the exact durable cancellation winner; every ambiguous read or identity mismatch preserves the initiating error. @param {{store:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {unknown} error */
+export async function durableCancelledWinner(input, error) {
+  let winner;
+  try { winner = await input.store.readJob(input.workspace, input.jobId); } catch { throw error; }
+  if (winner?.id === input.jobId && winner.ownerSessionId === input.ownerSessionId && winner.status === 'cancelled') return winner;
+  throw error;
+}
+
+/** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input */
+function cancelledWinnerInput(input) {
+  return { store: input.options.store, workspace: input.workspace, jobId: input.jobId, ownerSessionId: input.ownerSessionId };
 }
 
 /** @param {{options:any,workspace:string,jobId:string,ownerSessionId:string}} input @param {ReturnType<typeof createCancelAttemptStore>} attempts @param {any} outcome */

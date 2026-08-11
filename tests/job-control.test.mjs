@@ -7,7 +7,7 @@ import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
-import { createJobController, ownerIdForSession } from '../scripts/lib/job-control.mjs';
+import { createJobController, durableCancelledWinner, ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { executeJob } from '../scripts/lib/review.mjs';
@@ -169,6 +169,48 @@ test('queued and running cancellation return a durable cancelled winner after at
   }
 });
 
+test('queued and running cancellation return an exact durable cancelled winner when finish applies then throws', async () => {
+  for (const initialStatus of ['queued', 'running']) {
+    const { root, workspace, store } = await setup(); const dataRoot = join(root, 'data');
+    const job = await store.reserveJob({ workspace, ...reservation, ownerTurnId: `apply-then-throw-${initialStatus}` });
+    if (initialStatus === 'running') await store.transitionJob(workspace, job.id, ['queued'], 'running', { zcodeSessionId: `zs-${initialStatus}` });
+    const storageError = new PluginError('ATOMIC_WRITE_FAILED', `${initialStatus} finish reported a late write failure`, { category: 'storage', remedy: 'retry' }); let stops = 0; let applied = 0;
+    const wrapped = {
+      ...store,
+      finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => {
+        const winner = await store.finishJob(workspaceArg, jobIdArg, expected, next, patch); applied += 1; assert.equal(winner.status, 'cancelled'); throw storageError;
+      },
+    };
+    const controller = createJobController({ store: wrapped, dataRoot, stopSession: async () => { stops += 1; } });
+    const winner = await controller.cancel(workspace, job.id, job.ownerSessionId);
+    assert.equal(applied, 1); assert.equal(winner.id, job.id); assert.equal(winner.ownerSessionId, job.ownerSessionId); assert.equal(winner.status, 'cancelled');
+    assert.equal((await controller.cancel(workspace, job.id, job.ownerSessionId)).status, 'cancelled');
+    assert.equal(stops, initialStatus === 'running' ? 1 : 0, `${initialStatus} winner must prevent a second stop`);
+  }
+});
+
+test('durable cancelled winner resolution preserves the initiating error on ambiguous identity, state, or read failure', async () => {
+  const original = new PluginError('ATOMIC_WRITE_FAILED', 'original finalize error', { category: 'storage', remedy: 'retry' });
+  const exact = { id: 'a'.repeat(64), ownerSessionId: 'owner-a', status: 'cancelled' };
+  for (const readJob of [
+    async () => ({ ...exact, id: 'b'.repeat(64) }),
+    async () => ({ ...exact, ownerSessionId: 'owner-b' }),
+    async () => ({ ...exact, status: 'cancelling' }),
+    async () => { throw new Error('winner read unavailable'); },
+  ]) await assert.rejects(durableCancelledWinner({ store: { readJob }, workspace: '/workspace', jobId: exact.id, ownerSessionId: exact.ownerSessionId }, original), (error) => error === original);
+});
+
+test('queued apply-before cancel finalization preserves the original error and nonterminal job', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  const storageError = new PluginError('ATOMIC_WRITE_FAILED', 'queued finish failed before apply', { category: 'storage', remedy: 'retry' });
+  const controller = createJobController({
+    store: { ...store, finishJob: async () => { throw storageError; } },
+    dataRoot: join(root, 'data'),
+  });
+  await assert.rejects(controller.cancel(workspace, job.id, job.ownerSessionId), (error) => error === storageError);
+  assert.equal((await store.readJob(workspace, job.id)).status, 'queued');
+});
+
 test('cancellation retains a queued job already claimed by a potentially live worker', async () => {
   const { root, store, workspace } = await setup(); const dataRoot = join(root, 'data');
   const job = await store.reserveJob({ workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
@@ -311,6 +353,20 @@ test('finalize failure after stop acknowledgement preserves cancelling for recon
   const controller = createJobController({ store: wrapped, stopSession: async () => { stops += 1; } });
   await assert.rejects(controller.cancel(workspace, job.id, 'session-a'), { code: 'JOB_CANCEL_FINALIZE_FAILED' }); assert.equal(stops, 1); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelling'); const pending = await attemptFile.read(); assert.equal(pending.status, 'finalize-pending');
   assert.equal((await controller.cancel(workspace, job.id, 'session-a')).status, 'cancelled'); const succeeded = await attemptFile.read(); assert.equal(stops, 1); assert.equal(succeeded.attemptId, pending.attemptId); assert.equal(succeeded.status, 'succeeded');
+});
+
+test('apply-before cancel finalization plus winner-read failure preserves finalize-pending and the original error', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); await store.transitionJob(workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'zs' }); const attemptFile = await attemptFixture(root, workspace, job.id);
+  const storageError = new PluginError('ATOMIC_WRITE_FAILED', 'finish failed before apply', { category: 'storage', remedy: 'retry' }); let failFinalize = true; let winnerReadFailed = false; let finalizeStarted = false; let stops = 0;
+  const wrapped = {
+    ...store,
+    readJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg) => { if (finalizeStarted && !winnerReadFailed) { winnerReadFailed = true; throw new Error('winner read unavailable'); } return store.readJob(workspaceArg, jobIdArg); },
+    finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobIdArg, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => { if (failFinalize) { failFinalize = false; finalizeStarted = true; throw storageError; } return store.finishJob(workspaceArg, jobIdArg, expected, next, patch); },
+  };
+  const controller = createJobController({ store: wrapped, stopSession: async () => { stops += 1; } });
+  await assert.rejects(controller.cancel(workspace, job.id, job.ownerSessionId), (error) => error instanceof PluginError && error.code === 'JOB_CANCEL_FINALIZE_FAILED' && error.cause === storageError);
+  assert.equal(winnerReadFailed, true); assert.equal((await store.readJob(workspace, job.id)).status, 'cancelling'); assert.equal((await attemptFile.read()).status, 'finalize-pending'); assert.equal(stops, 1);
+  assert.equal((await controller.cancel(workspace, job.id, job.ownerSessionId)).status, 'cancelled'); assert.equal(stops, 1);
 });
 
 test('cancel finalization timestamps after progress persisted concurrently with stop acknowledgement', async () => {

@@ -1,5 +1,5 @@
 import { PluginError } from './errors.mjs';
-import { boundedCancelMessage, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
+import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
 import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
 import { withFileLock } from './fs.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -189,14 +189,26 @@ async function cancelJob(input, job) {
   try {
     if (current.status === 'running') await input.store.transitionJob(input.workspace, job.id, ['running'], 'cancelling');
     return await input.store.finishJob(input.workspace, job.id, ['cancelling'], 'cancelled', { exitCode: null });
-  } catch (error) { return conflictWinner(input, job, error); }
+  } catch (error) { return cancelledConflictWinner(input, job, error); }
 }
 /** @param {any} input @param {any} job */
 async function cancelQueuedJob(input, job) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
   try { return await input.store.finishJob(input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
-  catch (error) { return conflictWinner(input, job, error); }
+  catch (error) { return cancelledConflictWinner(input, job, error); }
+}
+
+/** @param {any} input @param {any} job @param {unknown} error */
+async function cancelledConflictWinner(input, job, error) {
+  try {
+    return await durableCancelledWinner({
+      store: input.store,
+      workspace: input.workspace,
+      jobId: job.id,
+      ownerSessionId: job.ownerSessionId,
+    }, error);
+  } catch (winnerError) { return conflictWinner(input, job, winnerError); }
 }
 
 /** @param {any} input @param {any} job */

@@ -99,6 +99,20 @@ test('SessionEnd cancels an unclaimed queued reservation and prevents a later cl
   await assert.rejects(input.store.claimJobWorker(input.workspace, value.id, { childPid: process.pid, workerLeaseId: 'a'.repeat(64) }), { code: 'WORKER_LEASE_CONFLICT' });
 });
 
+test('SessionEnd returns its exact queued cancelled winner when finish applies then throws', async () => {
+  const input = await fixture(); const value = await job(input, { claim: false, status: 'queued' }); const storageError = new PluginError('ATOMIC_WRITE_FAILED', 'late queued SessionEnd write failure', { category: 'storage', remedy: 'retry' }); let finishes = 0;
+  const wrapped = {
+    ...input.store,
+    finishJob: async (workspace, jobId, expected, next, patch) => {
+      const winner = await input.store.finishJob(workspace, jobId, expected, next, patch); finishes += 1; assert.equal(winner.status, 'cancelled'); throw storageError;
+    },
+  };
+  const winner = await settle({ ...input, store: wrapped }, async () => { throw new Error('queued settlement must not create a client'); });
+  assert.equal(finishes, 1); assert.equal(winner.id, value.id); assert.equal(winner.ownerSessionId, value.ownerSessionId); assert.equal(winner.status, 'cancelled');
+  assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled');
+  assert.equal((await wrapped.listOwnedJobs(input.workspace, value.ownerSessionId)).some((jobValue) => jobValue.command === 'rescue' && jobValue.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(jobValue.status)), false, 'owner release must see no retained writable guard after the durable winner');
+});
+
 test('SessionEnd leaves a held claimed queued lease but cancels it after the lease is free', async () => {
   const input = await fixture(); const lease = 'e'.repeat(64); const value = await job(input, { status: 'queued', workerLeaseId: lease });
   await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: value.id, workerLeaseId: lease }, () => settle(input, async () => { throw new Error('queued jobs need no client'); }));
