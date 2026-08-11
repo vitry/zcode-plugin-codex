@@ -1,7 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,32 @@ async function assertProcessGone(pid) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.fail(`process ${pid} remained observable after termination`);
+}
+
+async function cleanupOwnedDescendant(directory, pidFile, options = {}) {
+  const killFn = options.killFn ?? ((pid, signal) => process.kill(pid, signal));
+  const waitGoneFn = options.waitGoneFn ?? assertProcessGone;
+  try {
+    const pidDeadline = Date.now() + 1_000; let rawPid;
+    while (rawPid === undefined && Date.now() < pidDeadline) {
+      rawPid = await readFile(pidFile, 'utf8').catch((error) => { if (error.code === 'ENOENT') return undefined; throw error; });
+      if (rawPid === undefined) await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const pid = typeof rawPid === 'string' && /^[1-9]\d*$/.test(rawPid) ? Number(rawPid) : Number.NaN;
+    assert.ok(Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid, 'owned descendant PID must be a safe non-self process identifier');
+    const signal = (value) => {
+      try { killFn(pid, value); return true; }
+      catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+    };
+    if (!signal('SIGTERM')) return;
+    try { await waitGoneFn(pid); }
+    catch {
+      if (!signal('SIGKILL')) return;
+      await waitGoneFn(pid);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 test('grace timer does not retain the caller after the child exits', async () => {
@@ -45,6 +71,38 @@ test('runProcess fails closed on timeout and bounded output', async () => {
   );
 });
 
+test('owned descendant cleanup rejects unsafe PIDs before signaling and still removes its directory', async () => {
+  for (const value of ['0', '-1', '1.5', String(process.pid)]) {
+    const directory = await mkdtemp(join(tmpdir(), 'zcode-process-invalid-pid-')); const pidFile = join(directory, 'descendant.pid'); const signals = [];
+    await writeFile(pidFile, value);
+    await assert.rejects(cleanupOwnedDescendant(directory, pidFile, { killFn: (...args) => signals.push(args) }), /owned descendant PID/);
+    assert.deepEqual(signals, []);
+    await assert.rejects(access(directory), { code: 'ENOENT' });
+  }
+});
+
+test('owned descendant cleanup escalates a TERM-stubborn process to KILL', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-process-stubborn-pid-')); const pidFile = join(directory, 'descendant.pid'); const signals = []; let waits = 0;
+  await writeFile(pidFile, '424242');
+  await cleanupOwnedDescendant(directory, pidFile, {
+    killFn: (pid, signal) => signals.push([pid, signal]),
+    waitGoneFn: async () => { waits += 1; if (waits === 1) throw new Error('still alive after TERM'); },
+  });
+  assert.deepEqual(signals, [[424242, 'SIGTERM'], [424242, 'SIGKILL']]);
+  await assert.rejects(access(directory), { code: 'ENOENT' });
+});
+
+test('owned descendant cleanup removes its directory even when KILL cannot prove reap', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-process-failed-reap-')); const pidFile = join(directory, 'descendant.pid'); const signals = [];
+  await writeFile(pidFile, '424243');
+  await assert.rejects(cleanupOwnedDescendant(directory, pidFile, {
+    killFn: (pid, signal) => signals.push([pid, signal]),
+    waitGoneFn: async () => { throw new Error('still alive'); },
+  }), /still alive/);
+  assert.deepEqual(signals, [[424243, 'SIGTERM'], [424243, 'SIGKILL']]);
+  await assert.rejects(access(directory), { code: 'ENOENT' });
+});
+
 test('post-exit drain waits for direct-child stream completion beyond one check turn', async () => {
   const stream = new PassThrough(); let output = '';
   stream.setEncoding('utf8'); stream.on('data', (chunk) => { output += chunk; });
@@ -68,19 +126,11 @@ test('runProcess flushes direct-child output without waiting for an inherited de
   const directory = await mkdtemp(join(tmpdir(), 'zcode-process-pipe-')); const pidFile = join(directory, 'descendant.pid');
   const descendant = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setTimeout(()=>process.stdout.write('late-descendant\\n'),100);setInterval(()=>{},10000);`;
   const source = `const {spawn}=require('node:child_process');process.stdout.write('direct-child\\n');spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit']}).unref();`;
-  let descendantPid;
   try {
     const result = await runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath }, { timeoutMs: 500 });
     assert.equal(result.code, 0);
     assert.equal(result.stdout, 'direct-child\n');
-  } finally {
-    const pidDeadline = Date.now() + 1_000;
-    while (!descendantPid && Date.now() < pidDeadline) { descendantPid = Number(await readFile(pidFile, 'utf8').catch(() => '')); if (!descendantPid) await new Promise((resolve) => setTimeout(resolve, 5)); }
-    assert.ok(Number.isSafeInteger(descendantPid) && descendantPid > 1 && descendantPid !== process.pid, 'owned descendant PID must be recorded before cleanup');
-    try { process.kill(descendantPid, 'SIGTERM'); } catch { /* exited */ }
-    await assertProcessGone(descendantPid);
-    await rm(directory, { recursive: true, force: true });
-  }
+  } finally { await cleanupOwnedDescendant(directory, pidFile); }
 });
 
 test('post-exit descendant overflow stops capture at the configured byte cap', { timeout: 2_000 }, async () => {
@@ -90,20 +140,12 @@ test('post-exit descendant overflow stops capture at the configured byte cap', {
   // overflow, while stdin EOF proves the flood starts only after parent exit.
   const descendant = `const fs=require('node:fs');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,75);fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));fs.writeFileSync(${JSON.stringify(readyFile)},'ready');const input=Buffer.alloc(1);while(fs.readSync(0,input,0,1,null)>0){};try{fs.writeSync(1,'x'.repeat(4096));}catch{};setInterval(()=>{},10000);`;
   const source = `const {spawn}=require('node:child_process'),fs=require('node:fs');const child=spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['pipe','inherit','inherit']});child.unref();child.stdin.unref();const awaitReady=()=>fs.access(${JSON.stringify(readyFile)},fs.constants.F_OK,(error)=>{if(error)setImmediate(awaitReady);});awaitReady();`;
-  let descendantPid;
   try {
     await assert.rejects(
       runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath }, { timeoutMs: 500, maxOutputBytes }),
       (error) => error.code === 'ZCODE_PROCESS_OUTPUT_LIMIT' && error.details.capturedOutputBytes <= maxOutputBytes,
     );
-  } finally {
-    const pidDeadline = Date.now() + 1_000;
-    while (!descendantPid && Date.now() < pidDeadline) { descendantPid = Number(await readFile(pidFile, 'utf8').catch(() => '')); if (!descendantPid) await new Promise((resolve) => setTimeout(resolve, 5)); }
-    assert.ok(Number.isSafeInteger(descendantPid) && descendantPid > 1 && descendantPid !== process.pid, 'owned descendant PID must be recorded before cleanup');
-    try { process.kill(descendantPid, 'SIGTERM'); } catch { /* exited */ }
-    await assertProcessGone(descendantPid);
-    await rm(directory, { recursive: true, force: true });
-  }
+  } finally { await cleanupOwnedDescendant(directory, pidFile); }
 });
 
 test('termination kills the spawned process group including descendants', async () => {
