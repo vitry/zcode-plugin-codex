@@ -15,7 +15,7 @@ import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
-import { createManagedZCodeClient } from '../../scripts/lib/zcode-client.mjs';
+import { createManagedZCodeClient, releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
@@ -61,6 +61,59 @@ function run(command, args, options = {}) {
 }
 
 function consumePipeError() {}
+
+/** @param {number} pid */
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code === 'ESRCH') return false; throw error; }
+}
+
+/** @param {number} pid @param {number} [timeoutMs] */
+async function waitForProcessExit(pid, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (processAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  return !processAlive(pid);
+}
+
+/** @param {number} pid */
+async function terminateOwnedProcess(pid) {
+  if (!processAlive(pid)) return;
+  process.kill(pid, 'SIGTERM');
+  if (await waitForProcessExit(pid)) return;
+  process.kill(pid, 'SIGKILL');
+  assert.equal(await waitForProcessExit(pid), true, `owned process ${pid} was not reaped`);
+}
+
+/** @param {any} input */
+async function cleanupChildLossProcesses(input) {
+  let cleanupError;
+  try {
+    if (!input.childExited()) { input.child.kill('SIGKILL'); await input.childExit.catch(() => {}); }
+    const brokerIdentity = await readFile(input.identityPath, 'utf8').then(JSON.parse).catch(() => null);
+    const workerIdentity = await readFile(input.workerProcess, 'utf8').then(JSON.parse).catch(() => null);
+    if (brokerIdentity && workerIdentity) assert.equal(workerIdentity.ppid, brokerIdentity.pid);
+    let releaseError;
+    try {
+      const released = await releaseManagedZCodeOwner({ dataRoot: input.context.dataRoot, workspace: input.context.workspace, ownerId: input.ownerId, requestTimeoutMs: 750 });
+      const sessionId = input.sessionId();
+      if (sessionId) { assert.equal(released.releasedSessionIds.includes(sessionId), true); assert.equal(released.failedSessionIds.includes(sessionId), false); }
+    }
+    catch (error) { releaseError = error; }
+    const currentIdentity = await readFile(input.identityPath, 'utf8').then(JSON.parse).catch(() => null);
+    const exactBroker = brokerIdentity && currentIdentity && currentIdentity.pid === brokerIdentity.pid && currentIdentity.instanceId === brokerIdentity.instanceId && currentIdentity.endpoint === brokerIdentity.endpoint;
+    if (exactBroker) await terminateOwnedProcess(brokerIdentity.pid);
+    if (brokerIdentity && workerIdentity?.ppid === brokerIdentity.pid) await terminateOwnedProcess(workerIdentity.pid);
+    if (brokerIdentity) assert.equal(processAlive(brokerIdentity.pid), false);
+    if (workerIdentity) assert.equal(processAlive(workerIdentity.pid), false);
+    if (brokerIdentity) await assert.rejects(stat(brokerIdentity.endpoint), { code: 'ENOENT' });
+    await assert.rejects(stat(input.identityPath), { code: 'ENOENT' });
+    if (releaseError) throw releaseError;
+  }
+  catch (error) { cleanupError = error; }
+  finally { await rm(input.context.directory, { recursive: true, force: true }); }
+  await assert.rejects(stat(input.context.directory), { code: 'ENOENT' });
+  if (cleanupError) throw cleanupError;
+}
 
 /** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} [extraEnv] @param {Record<string,unknown>} [authorization] */
 async function companion(context, args, extraEnv = {}, authorization = { callerContext: context.caller }) {
@@ -426,22 +479,26 @@ test('parent steering leaves one isolated Rescue child running with zero cancel 
 });
 
 test('isolated child loss recovers the accepted parent-owned turn without another session send', { skip: windowsRealSignalSkip }, async (t) => {
-  const context = await fixture(); const record = join(context.directory, 'child-loss-recovery.jsonl'); const recovery = join(context.directory, 'child-loss-recovery.json');
+  const context = await fixture(); const record = join(context.directory, 'child-loss-recovery.jsonl'); const recovery = join(context.directory, 'child-loss-recovery.json'); const workerProcess = join(context.directory, 'child-loss-worker.json');
   await Promise.all([writeFile(record, ''), writeFile(recovery, JSON.stringify({ mode: 'active' }))]);
   const parentSessionId = 'recovery-parent'; const childId = 'recovery-rescue-child';
   const prepared = await prepareDirectRescueChild(context, {
     parentSessionId, parentTurnId: 'recovery-parent-turn', childId, childTurnId: 'recovery-child-turn',
     prompt: '$zcode:rescue --fresh --wait recover this accepted child turn',
   });
-  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: recovery, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' };
+  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_PROCESS_FILE: workerProcess, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: recovery, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' };
+  const storage = await resolveWorkspaceStorage(context); const identityPath = join(storage.directory, 'broker', 'identity.json');
+  /** @type {string|undefined} */ let ownedSessionId;
   const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
   let exited = false; child.stdout?.resume(); child.stderr?.resume();
-  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const childExit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', () => { exited = true; resolve(undefined); }); });
+  t.after(() => cleanupChildLossProcesses({ child, childExit, childExited: () => exited, context, identityPath, ownerId: ownerIdForSession(parentSessionId), sessionId: () => ownedSessionId, workerProcess }));
   const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const store = createStateStore({ dataRoot: context.dataRoot });
   await waitForAcceptedBoundary(context, recorded, 'recoverable child send boundary was not durably accepted');
+  [ownedSessionId] = (await store.listJobs(context.workspace)).map((job) => job.zcodeSessionId);
   child.kill('SIGKILL');
-  await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', () => { exited = true; resolve(undefined); }); });
+  await childExit;
   await writeFile(recovery, JSON.stringify({ mode: 'completed' }));
 
   const status = await companion(context, ['status'], { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: recovery }, { callerContext: prepared.callerContext });

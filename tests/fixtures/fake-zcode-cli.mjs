@@ -8,6 +8,7 @@ if (process.argv.includes('--version')) {
   process.stdout.write(`${process.env.FAKE_ZCODE_VERSION ?? '0.16.1'}\n`);
   process.exit(0);
 }
+if (process.env.FAKE_ZCODE_PROCESS_FILE) await writeFile(process.env.FAKE_ZCODE_PROCESS_FILE, JSON.stringify({ pid: process.pid, ppid: process.ppid }));
 if (process.env.FAKE_ZCODE_STDERR_BYTES) process.stderr.write((process.env.FAKE_ZCODE_STDERR_TEXT ?? 'sensitive-stderr').repeat(Math.ceil(Number(process.env.FAKE_ZCODE_STDERR_BYTES) / (process.env.FAKE_ZCODE_STDERR_TEXT ?? 'sensitive-stderr').length)));
 
 const sessions = new Map();
