@@ -32,6 +32,7 @@ const signalHandlerProbe = join(root, 'tests', 'fixtures', 'signal-handler-probe
 const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs');
 const sessionEndHook = join(root, 'hooks', 'session-end-hook.mjs');
 const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
+/** @typedef {(pid:number,signal?:number|string)=>boolean} KillFn */
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-companion-'));
@@ -62,36 +63,59 @@ function run(command, args, options = {}) {
 
 function consumePipeError() {}
 
-/** @param {number} pid */
-function processAlive(pid) {
-  try { process.kill(pid, 0); return true; }
+/** @param {number} pid @param {KillFn} [killFn] */
+function processAlive(pid, killFn = process.kill) {
+  try { killFn(pid, 0); return true; }
   catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code === 'ESRCH') return false; throw error; }
 }
 
-/** @param {number} pid @param {number} [timeoutMs] */
-async function waitForProcessExit(pid, timeoutMs = 1_000) {
+/** @param {number} pid @param {number} [timeoutMs] @param {KillFn} [killFn] */
+async function waitForProcessExit(pid, timeoutMs = 1_000, killFn = process.kill) {
   const deadline = Date.now() + timeoutMs;
-  while (processAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-  return !processAlive(pid);
+  while (processAlive(pid, killFn) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  return !processAlive(pid, killFn);
 }
 
-/** @param {number} pid */
-async function terminateOwnedProcess(pid) {
-  if (!processAlive(pid)) return;
-  process.kill(pid, 'SIGTERM');
-  if (await waitForProcessExit(pid)) return;
-  process.kill(pid, 'SIGKILL');
-  assert.equal(await waitForProcessExit(pid), true, `owned process ${pid} was not reaped`);
+/** @param {number} pid @param {KillFn} [killFn] */
+async function terminateOwnedProcess(pid, killFn = process.kill) {
+  if (!processAlive(pid, killFn)) return;
+  killFn(pid, 'SIGTERM');
+  if (await waitForProcessExit(pid, 1_000, killFn)) return;
+  killFn(pid, 'SIGKILL');
+  assert.equal(await waitForProcessExit(pid, 1_000, killFn), true, `owned process ${pid} was not reaped`);
+}
+
+/** @param {unknown} value @param {number} selfPid */
+function validRecordedPid(value, selfPid) { return Number.isSafeInteger(value) && Number(value) > 1 && value !== selfPid; }
+
+/** @param {any} brokerIdentity @param {any} workerIdentity @param {number} selfPid */
+function validateRecordedProcessIdentities(brokerIdentity, workerIdentity, selfPid) {
+  if (brokerIdentity === null && workerIdentity === null) return null;
+  if (!brokerIdentity || typeof brokerIdentity !== 'object' || Array.isArray(brokerIdentity) || !validRecordedPid(brokerIdentity.pid, selfPid)) throw new Error('child-loss broker identity has an unsafe pid');
+  if (workerIdentity !== null && (!workerIdentity || typeof workerIdentity !== 'object' || Array.isArray(workerIdentity)
+    || !validRecordedPid(workerIdentity.pid, selfPid) || workerIdentity.pid === brokerIdentity.pid
+    || !validRecordedPid(workerIdentity.ppid, selfPid) || workerIdentity.ppid !== brokerIdentity.pid)) throw new Error('child-loss worker identity has an unsafe pid');
+  return { brokerPid: brokerIdentity.pid, workerPid: workerIdentity?.pid ?? null };
+}
+
+/** @param {any} input */
+async function terminateRecordedOwnedProcesses(input) {
+  const recorded = validateRecordedProcessIdentities(input.brokerIdentity, input.workerIdentity, input.selfPid ?? process.pid);
+  const current = validateRecordedProcessIdentities(input.currentIdentity, null, input.selfPid ?? process.pid);
+  if (!recorded || !current || input.currentIdentity.pid !== input.brokerIdentity.pid || input.currentIdentity.instanceId !== input.brokerIdentity.instanceId || input.currentIdentity.endpoint !== input.brokerIdentity.endpoint) return recorded;
+  await terminateOwnedProcess(recorded.brokerPid, input.killFn);
+  if (recorded.workerPid !== null) await terminateOwnedProcess(recorded.workerPid, input.killFn);
+  return recorded;
 }
 
 /** @param {any} input */
 async function cleanupChildLossProcesses(input) {
   let cleanupError;
   try {
-    if (!input.childExited()) { input.child.kill('SIGKILL'); await input.childExit.catch(() => {}); }
     const brokerIdentity = await readFile(input.identityPath, 'utf8').then(JSON.parse).catch(() => null);
     const workerIdentity = await readFile(input.workerProcess, 'utf8').then(JSON.parse).catch(() => null);
-    if (brokerIdentity && workerIdentity) assert.equal(workerIdentity.ppid, brokerIdentity.pid);
+    const recorded = validateRecordedProcessIdentities(brokerIdentity, workerIdentity, process.pid);
+    if (!input.childExited()) { input.child.kill('SIGKILL'); await input.childExit.catch(() => {}); }
     let releaseError;
     try {
       const released = await releaseManagedZCodeOwner({ dataRoot: input.context.dataRoot, workspace: input.context.workspace, ownerId: input.ownerId, requestTimeoutMs: 750 });
@@ -100,11 +124,9 @@ async function cleanupChildLossProcesses(input) {
     }
     catch (error) { releaseError = error; }
     const currentIdentity = await readFile(input.identityPath, 'utf8').then(JSON.parse).catch(() => null);
-    const exactBroker = brokerIdentity && currentIdentity && currentIdentity.pid === brokerIdentity.pid && currentIdentity.instanceId === brokerIdentity.instanceId && currentIdentity.endpoint === brokerIdentity.endpoint;
-    if (exactBroker) await terminateOwnedProcess(brokerIdentity.pid);
-    if (brokerIdentity && workerIdentity?.ppid === brokerIdentity.pid) await terminateOwnedProcess(workerIdentity.pid);
-    if (brokerIdentity) assert.equal(processAlive(brokerIdentity.pid), false);
-    if (workerIdentity) assert.equal(processAlive(workerIdentity.pid), false);
+    await terminateRecordedOwnedProcesses({ brokerIdentity, currentIdentity, workerIdentity });
+    if (recorded) assert.equal(processAlive(recorded.brokerPid), false);
+    if (recorded && recorded.workerPid !== null) assert.equal(processAlive(recorded.workerPid), false);
     if (brokerIdentity) await assert.rejects(stat(brokerIdentity.endpoint), { code: 'ENOENT' });
     await assert.rejects(stat(input.identityPath), { code: 'ENOENT' });
     if (releaseError) throw releaseError;
@@ -247,6 +269,30 @@ async function recoverForeignCompletion() {
 test('module import has no CLI side effects', async () => {
   const result = await run(process.execPath, ['--input-type=module', '--eval', `await import(${JSON.stringify(new URL('../../scripts/zcode-companion.mjs', import.meta.url).href)}); process.stdout.write('imported')`]);
   assert.deepEqual({ code: result.code, stdout: result.stdout, stderr: result.stderr }, { code: 0, stdout: 'imported', stderr: '' });
+});
+
+test('child-loss teardown rejects unsafe recorded pids before probing or signaling', async () => {
+  const selfPid = 424_240; const broker = { endpoint: '/test/broker.sock', instanceId: 'instance', pid: 424_241 }; const worker = { pid: 424_242, ppid: broker.pid };
+  /** @type {any[]} */
+  const variants = [
+    { broker: null, worker },
+    { broker: { ...broker, pid: 'malformed' }, worker },
+    ...[0, 1, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, selfPid].map((pid) => ({ broker: { ...broker, pid }, worker: { ...worker, ppid: pid } })),
+    { broker, worker: [] },
+    { broker, worker: { pid: 'malformed', ppid: broker.pid } },
+    ...[0, 1, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, selfPid, broker.pid].map((pid) => ({ broker, worker: { ...worker, pid } })),
+    ...[0, 1, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, selfPid, broker.pid + 9].map((ppid) => ({ broker, worker: { ...worker, ppid } })),
+    { broker, current: { ...broker, pid: 0 }, worker },
+  ];
+  for (const variant of variants) {
+    let killCalls = 0;
+    const currentIdentity = variant.current ?? { ...variant.broker };
+    await assert.rejects(terminateRecordedOwnedProcesses({
+      brokerIdentity: variant.broker, currentIdentity, workerIdentity: variant.worker, selfPid,
+      killFn: () => { killCalls += 1; const error = /** @type {NodeJS.ErrnoException} */ (new Error('unexpected kill')); error.code = 'ESRCH'; throw error; },
+    }), /unsafe pid/);
+    assert.equal(killCalls, 0);
+  }
 });
 
 test('an already-aborted foreground invocation cancels its reservation before launcher discovery', async () => {
