@@ -15,8 +15,10 @@ const input = readline.createInterface({ input: process.stdin });
 let permissionId = 9000;
 let sendCount = 0;
 let conversationSubscribeCount = 0;
+let conversationUnsubscribeCount = 0;
 let resumeCount = 0;
 let listCount = 0;
+let stopCount = 0;
 let pendingRuntimePreferencesCreate;
 let pendingConcurrentCreateResponse;
 let pendingConcurrentSubscribeResponse;
@@ -272,8 +274,9 @@ input.on('line', async (line) => {
       break;
     }
     case 'v4/conversation/unsubscribe':
+      conversationUnsubscribeCount += 1;
       if (process.env.FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_FAIL === '1') send({ id: message.id, error: { code: -32099, message: 'unsubscribe failed' } });
-      else if (process.env.FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED === '1') send({ id: message.id, result: { malformed: true } });
+      else if (process.env.FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED === '1' || Number(process.env.FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_MALFORMED_AFTER) === conversationUnsubscribeCount) send({ id: message.id, result: { malformed: true } });
       else send({ id: message.id, result: {} });
       break;
     case 'session/read': {
@@ -297,8 +300,10 @@ input.on('line', async (line) => {
       break;
     }
     case 'session/stop': {
+      stopCount += 1;
       if (process.env.FAKE_ZCODE_STOP_GATE_REACHED) await writeFile(process.env.FAKE_ZCODE_STOP_GATE_REACHED, 'blocked');
       while (process.env.FAKE_ZCODE_STOP_GATE && (await readFile(process.env.FAKE_ZCODE_STOP_GATE, 'utf8').catch(() => '')).trim() !== 'release') await new Promise((resolve) => setTimeout(resolve, 5));
+      if (process.env.FAKE_ZCODE_STOP_ERROR_ONCE === '1' && stopCount === 1) { send({ id: message.id, error: { code: -32099, message: 'fixture first stop failed' } }); break; }
       if (process.env.FAKE_ZCODE_STOP_ERROR_PREFIX && p.sessionId.startsWith(process.env.FAKE_ZCODE_STOP_ERROR_PREFIX)) { send({ id: message.id, error: { code: -32099, message: 'fixture stop failed' } }); break; }
       const timer = pendingCompletionTimers.get(p.sessionId); if (timer) { clearTimeout(timer); pendingCompletionTimers.delete(p.sessionId); }
       const response = { id: message.id, result: process.env.FAKE_ZCODE_BAD_STOP_EXTRA === '1' ? { stopped: true } : {} };
