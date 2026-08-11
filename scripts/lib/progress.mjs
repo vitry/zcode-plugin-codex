@@ -5,6 +5,7 @@ export const MAX_PROGRESS_MESSAGE_BYTES = 256;
 export const PROGRESS_HEARTBEAT_MS = 20_000;
 export const MAX_PROGRESS_DIAGNOSTIC_KINDS = 8;
 const PROGRESS_FLUSH_TIMEOUT_MS = 250;
+const PROGRESS_SEMANTIC_GRACE_MS = 125;
 
 const PROGRESS_DIAGNOSTICS = new Map([
   ['conversation-subscribe-failed', 'ZCode conversation progress is unavailable.'],
@@ -84,18 +85,20 @@ export function createProgressReporter({
   const pending = [];
   /** @type {Promise<void>|null} */
   let inFlight = null;
+  /** @type {string|null} */ let lastPersistedAt = null;
   let writerDisabled = false; let persistDisabled = false;
   /** @type {Promise<void>|null} */ let descriptorInFlight = null;
   /** @type {number|null} */ let descriptorActiveSequence = null;
   /** @type {Array<{notification:unknown,observedAt:string,sequence:number}>} */ const descriptorPending = [];
+  let descriptorEpoch = 0;
   let descriptorOverflowed = false;
   let observationSequence = 0;
   /** @type {number|null} */ let terminalSequence = null;
   /** @type {{event:{phase:string,message:string,observedAt:string},sequence:number}|null} */ let heldTerminal = null;
   let terminalStarted = false; let terminalPersisted = false;
   const diagnosedKinds = new Set();
-  /** @param {string} kind */
-  const diagnose = (kind) => {
+  /** @param {string} kind @param {boolean} [writeImmediately] */
+  const diagnose = (kind, writeImmediately = false) => {
     const message = PROGRESS_DIAGNOSTICS.get(kind);
     if (!message || diagnosedKinds.has(kind) || diagnosedKinds.size >= MAX_PROGRESS_DIAGNOSTIC_KINDS) return false;
     diagnosedKinds.add(kind);
@@ -105,6 +108,9 @@ export function createProgressReporter({
       const observedAt = now(); if (!validTimestamp(observedAt)) return;
       const event = { phase: 'waiting', message, observedAt };
       const sequence = observationSequence; observationSequence += 1;
+      if (writeImmediately) {
+        writeEvent(event); enqueue(event, sequence, false); return;
+      }
       if (terminalSequence !== null) { dispatchDiagnostic(event, sequence); return; }
       if (!active) bufferEvent(event, sequence); else dispatch(event, sequence);
     });
@@ -131,26 +137,31 @@ export function createProgressReporter({
     }, PROGRESS_HEARTBEAT_MS);
     timer?.unref?.();
   };
-  /** @param {{event:{phase:string,message:string,observedAt:string},sequence:number}} entry */
+  /** @param {{event:{phase:string,message:string,observedAt:string},sequence:number,write?:boolean}} entry */
   const startPersist = (entry) => {
-    const { event } = entry;
-    if (typeof persist !== 'function' || persistDisabled) { writeEvent(event); return; }
-    writeEvent(event);
+    const event = validTimestamp(lastPersistedAt) && Date.parse(entry.event.observedAt) < Date.parse(lastPersistedAt)
+      ? { ...entry.event, observedAt: lastPersistedAt }
+      : entry.event;
+    if (typeof persist !== 'function' || persistDisabled) { if (entry.write !== false) writeEvent(event); return; }
+    if (entry.write !== false) writeEvent(event);
     if (event.phase === 'finalizing') terminalStarted = true;
     let operation;
     try { operation = Promise.resolve(persist(event)); }
     catch { operation = Promise.reject(new Error('progress persistence failed')); }
-    const tracked = operation.then(() => { if (event.phase === 'finalizing') terminalPersisted = true; }).catch(() => { persistDisabled = true; pending.length = 0; diagnose('preview-disabled'); }).then(() => {
+    const tracked = operation.then(() => {
+      lastPersistedAt = event.observedAt;
+      if (event.phase === 'finalizing') terminalPersisted = true;
+    }).catch(() => { persistDisabled = true; pending.length = 0; diagnose('preview-disabled'); }).then(() => {
       inFlight = null;
       const next = pending.shift();
       if (next) startPersist(next);
     });
     inFlight = tracked;
   };
-  /** @param {{phase:string,message:string,observedAt:string}} event @param {number} sequence */
-  const enqueue = (event, sequence) => {
-    if (typeof persist !== 'function' || persistDisabled) { writeEvent(event); return; }
-    const entry = { event, sequence };
+  /** @param {{phase:string,message:string,observedAt:string}} event @param {number} sequence @param {boolean} [write] */
+  const enqueue = (event, sequence, write = true) => {
+    if (typeof persist !== 'function' || persistDisabled) { if (write) writeEvent(event); return; }
+    const entry = { event, sequence, write };
     if (inFlight === null) { startPersist(entry); return; }
     pending.push(entry);
     pending.sort((left, right) => left.sequence - right.sequence);
@@ -162,34 +173,29 @@ export function createProgressReporter({
   /** @param {{phase:string,message:string,observedAt:string}} event @param {number} [sequence] */
   const dispatch = (event, sequence = observationSequence++) => {
     if (terminalSequence !== null && sequence > terminalSequence || terminalStarted && event.phase !== 'finalizing' || terminalPersisted) return null;
-    const dispatchedEvent = validTimestamp(lastActivityAt) && Date.parse(event.observedAt) < Date.parse(lastActivityAt)
-      ? { ...event, observedAt: lastActivityAt }
-      : event;
-    lastActivityAt = dispatchedEvent.observedAt;
-    const key = `${dispatchedEvent.phase}\u0000${dispatchedEvent.message}`;
+    if (!validTimestamp(lastActivityAt) || Date.parse(event.observedAt) > Date.parse(lastActivityAt)) lastActivityAt = event.observedAt;
+    const key = `${event.phase}\u0000${event.message}`;
     if (key === previousKey) return null;
     previousKey = key;
-    enqueue(dispatchedEvent, sequence);
-    return dispatchedEvent;
+    enqueue(event, sequence);
+    return event;
   };
   /** Diagnostics remain observational and may follow terminal semantic progress. @param {{phase:string,message:string,observedAt:string}} event @param {number} sequence */
   const dispatchDiagnostic = (event, sequence) => {
-    const dispatchedEvent = validTimestamp(lastActivityAt) && Date.parse(event.observedAt) < Date.parse(lastActivityAt)
-      ? { ...event, observedAt: lastActivityAt }
-      : event;
-    lastActivityAt = dispatchedEvent.observedAt;
-    enqueue(dispatchedEvent, sequence);
-    return dispatchedEvent;
+    if (!validTimestamp(lastActivityAt) || Date.parse(event.observedAt) > Date.parse(lastActivityAt)) lastActivityAt = event.observedAt;
+    enqueue(event, sequence);
+    return event;
   };
   /** @param {{notification:unknown,observedAt:string,sequence:number}} item */
   const startDescribe = (item) => {
     if (typeof describeNotification !== 'function') return;
+    const epoch = descriptorEpoch;
     descriptorActiveSequence = item.sequence;
     let described;
     try { described = Promise.resolve(describeNotification(item.notification, item.observedAt)); }
     catch { diagnose('conversation-render-failed'); described = Promise.resolve([]); }
     descriptorInFlight = described.then((events) => {
-      if (!Array.isArray(events) || closed) return;
+      if (epoch !== descriptorEpoch || !Array.isArray(events) || closed) return;
       for (const describedEvent of events.slice(0, MAX_PROGRESS_PENDING_EVENTS)) if (validPublicEvent(describedEvent)) {
         if (terminalSequence !== null && item.sequence > terminalSequence) continue;
         if (describedEvent.phase === 'finalizing') {
@@ -199,15 +205,15 @@ export function createProgressReporter({
         if (!active) bufferEvent(describedEvent, item.sequence);
         else dispatch(describedEvent, item.sequence);
       }
-    }).catch(() => diagnose('conversation-render-failed')).then(() => {
+    }).catch(() => { if (epoch === descriptorEpoch) diagnose('conversation-render-failed'); }).then(() => {
+      if (epoch !== descriptorEpoch) return;
       descriptorInFlight = null; descriptorActiveSequence = null;
       while (descriptorPending.length > 0 && terminalSequence !== null && descriptorPending[0].sequence > terminalSequence) descriptorPending.shift();
       const next = descriptorPending.shift();
       if (next) startDescribe(next);
       else {
         descriptorOverflowed = false;
-        const terminal = heldTerminal; heldTerminal = null;
-        if (terminal && terminal.sequence === terminalSequence) dispatch(terminal.event, terminal.sequence);
+        releaseHeldTerminal();
       }
     });
   };
@@ -262,18 +268,20 @@ export function createProgressReporter({
     diagnose(kind) { return diagnose(kind); },
     stopAccepting() { accepting = false; },
     async flush() {
-      const drain = async () => {
-        while (descriptorInFlight !== null || inFlight !== null) {
-          if (descriptorInFlight !== null) await descriptorInFlight;
-          if (inFlight !== null) await inFlight;
-        }
-      };
-      /** @type {ReturnType<typeof globalThis.setTimeout>|undefined} */ let flushTimer; let timedOut = false;
-      try { await Promise.race([drain(), new Promise((resolve) => { flushTimer = globalThis.setTimeout(() => { timedOut = true; resolve(undefined); }, PROGRESS_FLUSH_TIMEOUT_MS); })]); }
-      finally { if (flushTimer !== undefined) globalThis.clearTimeout(flushTimer); }
-      if (timedOut) {
-        descriptorPending.length = 0; pending.length = 0; persistDisabled = true; writerDisabled = true;
-        diagnose('progress-flush-timeout');
+      const deadline = Date.now() + PROGRESS_FLUSH_TIMEOUT_MS;
+      const descriptorsDrained = await waitWithin(drainDescriptors(), Math.min(PROGRESS_SEMANTIC_GRACE_MS, remaining(deadline)));
+      if (!descriptorsDrained && descriptorInFlight !== null) {
+        descriptorEpoch += 1; descriptorInFlight = null; descriptorActiveSequence = null;
+        descriptorPending.length = 0; descriptorOverflowed = false;
+        releaseHeldTerminal();
+        diagnose('progress-flush-timeout', true);
+        await Promise.resolve();
+      }
+      const persistenceDrained = await waitWithin(drainPersistence(), remaining(deadline));
+      if (!persistenceDrained) {
+        diagnose('progress-flush-timeout', true);
+        await Promise.resolve();
+        pending.length = 0; persistDisabled = true;
       }
     },
     close() {
@@ -294,7 +302,37 @@ export function createProgressReporter({
     }
     buffered.push({ event, sequence }); bufferedKeys.add(key);
   }
+
+  function releaseHeldTerminal() {
+    const terminal = heldTerminal; heldTerminal = null;
+    if (terminal && terminal.sequence === terminalSequence) dispatch(terminal.event, terminal.sequence);
+  }
+
+  async function drainDescriptors() {
+    while (descriptorInFlight !== null) await descriptorInFlight;
+  }
+
+  async function drainPersistence() {
+    while (inFlight !== null) await inFlight;
+  }
 }
+
+/** @param {Promise<void>} operation @param {number} milliseconds */
+async function waitWithin(operation, milliseconds) {
+  if (milliseconds <= 0) return false;
+  /** @type {ReturnType<typeof globalThis.setTimeout>|undefined} */ let timer;
+  let completed = false;
+  try {
+    await Promise.race([
+      operation.then(() => { completed = true; }),
+      new Promise((resolve) => { timer = globalThis.setTimeout(resolve, milliseconds); }),
+    ]);
+  } finally { if (timer !== undefined) globalThis.clearTimeout(timer); }
+  return completed;
+}
+
+/** @param {number} deadline */
+function remaining(deadline) { return Math.max(0, deadline - Date.now()); }
 
 /** @param {unknown} event */
 function validPublicEvent(event) {

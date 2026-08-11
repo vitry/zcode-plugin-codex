@@ -463,6 +463,41 @@ test('deferred semantic work cannot dispatch timestamps behind activation or lat
   reporter.close();
 });
 
+test('persistence normalizes timestamps only when receive-sequenced entries dequeue', async () => {
+  const persisted = []; const lines = []; const diagnostics = []; const descriptions = [];
+  let releaseFirst;
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  let lastPersistedAt = null; let currentTime = observedAt; let calls = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line),
+    persist: async (event) => {
+      calls += 1; if (calls === 1) await firstBlocked;
+      if (lastPersistedAt && Date.parse(event.observedAt) < Date.parse(lastPersistedAt)) throw new Error('state rejected regressing persistence');
+      lastPersistedAt = event.observedAt; persisted.push(event);
+    },
+    describeNotification: (_frame, frameObservedAt) => new Promise((resolve) => descriptions.push({ frameObservedAt, resolve })),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => currentTime, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+
+  reporter.observe(notification('tool_call_started'));
+  currentTime = '2026-08-08T00:00:01.000Z'; reporter.observe({ method: 'v4/conversation/frame' });
+  currentTime = '2026-08-08T00:00:02.000Z'; reporter.observe(notification('api_retry'));
+  currentTime = '2026-08-08T00:00:03.000Z'; reporter.observe(notification('tool_call_result'));
+  descriptions[0].resolve([{ phase: 'running', message: 'Sequence one semantic event.', observedAt: descriptions[0].frameObservedAt }]);
+  releaseFirst(); await reporter.flush();
+
+  assert.deepEqual(diagnostics, []);
+  assert.deepEqual(persisted.map(({ message, observedAt: at }) => [message, at]), [
+    ['ZCode started a tool call.', observedAt],
+    ['Sequence one semantic event.', '2026-08-08T00:00:01.000Z'],
+    ['ZCode is retrying the model request.', '2026-08-08T00:00:02.000Z'],
+    ['ZCode completed a tool call.', '2026-08-08T00:00:03.000Z'],
+  ]);
+  assert.deepEqual(lines, persisted.map((event) => `[zcode] ${event.message}\n`));
+  reporter.close();
+});
+
 test('a received terminal survives a full persistence queue and delayed pre-terminal descriptions', async () => {
   const persisted = []; const descriptions = [];
   let releaseFirst;
@@ -527,6 +562,48 @@ test('descriptor overflow cannot dispatch late frames after a received terminal'
   assert.notEqual(terminalIndex, -1);
   assert.doesNotMatch(persisted.slice(terminalIndex + 1).map((event) => event.message).join(' '), /frame/i);
   assert.ok(persisted.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS);
+  reporter.close();
+});
+
+test('flush fences a never-settling descriptor but still delivers its held terminal and timeout diagnostic', async () => {
+  const persisted = []; const lines = []; const diagnostics = []; let resolveLate;
+  let currentTime = observedAt;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), persist: async (event) => persisted.push(event),
+    describeNotification: () => new Promise((resolve) => { resolveLate = resolve; }),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => currentTime, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame', label: 'never-settling' });
+  currentTime = '2026-08-08T00:00:02.000Z'; reporter.observe(notification('prompt_completed'));
+
+  const started = Date.now(); await reporter.flush(); const elapsed = Date.now() - started;
+  assert.ok(elapsed < 1_000, elapsed);
+  assert.deepEqual(diagnostics, ['progress-flush-timeout']);
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  assert.match(lines.join(''), /ZCode completed the delegated turn\./);
+  assert.match(lines.join(''), /progress cleanup reached its time limit\./);
+
+  resolveLate([{ phase: 'running', message: 'MUST NOT CROSS FLUSH FENCE.', observedAt }]);
+  await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+  assert.doesNotMatch(`${lines.join('')} ${JSON.stringify(persisted)}`, /MUST NOT CROSS/);
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  reporter.close();
+});
+
+test('flush drains a manually resolved descriptor within semantic grace', async () => {
+  const persisted = []; const diagnostics = []; let resolveDescription;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', persist: async (event) => persisted.push(event),
+    describeNotification: () => new Promise((resolve) => { resolveDescription = resolve; }),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame' });
+  globalThis.setTimeout(() => resolveDescription([{ phase: 'running', message: 'Resolved inside grace.', observedAt }]), 20);
+  await reporter.flush();
+  assert.deepEqual(diagnostics, []);
+  assert.deepEqual(persisted.map((event) => event.message), ['Resolved inside grace.']);
   reporter.close();
 });
 
