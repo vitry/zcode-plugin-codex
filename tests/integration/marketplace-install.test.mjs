@@ -1,5 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, relative, sep } from 'node:path';
@@ -81,19 +82,34 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   const codexHome = join(temporary, 'codex-home');
   const isolatedHome = join(temporary, 'home');
   await Promise.all([mkdir(codexHome, { recursive: true }), mkdir(isolatedHome, { recursive: true })]);
-  if (!process.env.MARKETPLACE_SNAPSHOT) await buildMarketplaceSnapshot({
-    root,
-    output: marketplace,
-    sourceRef: 'test',
-    sourceSha: '0'.repeat(40),
-    npmExecPath: process.env.NPM_CLI_JS ?? npmLaunch([]).args[0],
-    env: process.env,
-  });
+  let localSourceSha;
+  if (!process.env.MARKETPLACE_SNAPSHOT) {
+    const resolved = await runProcess({ command: 'git', args: [] }, { cwd: root, args: ['rev-parse', 'HEAD'], timeoutMs: 10_000, maxOutputBytes: 4096 });
+    assert.equal(resolved.code, 0, resolved.stderr); localSourceSha = resolved.stdout.trim();
+    await buildMarketplaceSnapshot({
+      root,
+      output: marketplace,
+      sourceRef: localSourceSha,
+      sourceSha: localSourceSha,
+      npmExecPath: process.env.NPM_CLI_JS ?? npmLaunch([]).args[0],
+      env: process.env,
+    });
+  }
   const provenance = JSON.parse(await readFile(join(marketplace, '.agents', 'plugins', 'provenance.json'), 'utf8'));
   assert.equal(provenance.packageVersion, JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).version);
   assert.equal(provenance.pluginVersion, provenance.packageVersion);
-  assert.equal(provenance.sourceRef, process.env.MARKETPLACE_SOURCE_REF ?? 'test');
-  assert.equal(provenance.sourceSha, process.env.MARKETPLACE_SOURCE_SHA ?? '0'.repeat(40));
+  if (localSourceSha) {
+    assert.equal(provenance.sourceRef, localSourceSha); assert.equal(provenance.sourceSha, localSourceSha);
+  } else {
+    assert.ok(process.env.MARKETPLACE_SOURCE_REF && process.env.MARKETPLACE_SOURCE_SHA, 'external snapshot tests require the expected source ref and SHA');
+    assert.equal(provenance.sourceRef, process.env.MARKETPLACE_SOURCE_REF); assert.equal(provenance.sourceSha, process.env.MARKETPLACE_SOURCE_SHA);
+  }
+  assert.match(provenance.dependencyLock?.file, /^(?:npm-shrinkwrap|package-lock)\.json$/);
+  assert.match(provenance.dependencyLock?.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(
+    provenance.dependencyLock.sha256,
+    createHash('sha256').update(await readFile(join(marketplace, 'plugins', 'zcode', provenance.dependencyLock.file))).digest('hex'),
+  );
   await assert.rejects(readFile(join(marketplace, 'plugins', 'zcode', 'node_modules', '@openai', 'codex', 'package.json'), 'utf8'), { code: 'ENOENT' });
   await assert.rejects(readFile(join(marketplace, 'plugins', 'zcode', 'tests', 'integration', 'marketplace-install.test.mjs'), 'utf8'), { code: 'ENOENT' });
   const env = { ...process.env, CODEX_HOME: codexHome, HOME: isolatedHome, USERPROFILE: isolatedHome };

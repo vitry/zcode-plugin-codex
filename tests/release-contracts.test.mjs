@@ -214,7 +214,9 @@ test('release qualification covers the installed direct bridge and explicit real
   assert.doesNotMatch(qualified, /require-qualified\.cjs/); const required = packageJson.scripts['test:qualification-required']; assert.match(required, /require-qualified\.cjs/); assert.match(read('tests/helpers/require-qualified.cjs'), /ZCODE_REQUIRE_QUALIFIED\s*=\s*['"]1['"]/);
   assert.match(packageJson.scripts.check, /npm run test:qualified/);
   const real = read('tests/e2e/real-zcode.test.mjs');
-  assert.match(real, /ZCODE_REAL_MODEL\?\.trim\(\)/); assert.match(real, /runCompanion/); assert.match(real, /--model/);
+  assert.match(real, /resolveRealZCodeModelEnvironment/); assert.match(real, /ZCODE_REAL_MODEL_CONFLICT/); assert.match(real, /runCompanion/); assert.match(real, /--model/);
+  const realModel = read('tests/helpers/real-zcode-model.mjs');
+  assert.match(realModel, /ZCODE_REAL_E2E_MODEL/); assert.match(realModel, /ZCODE_REAL_MODEL/); assert.match(realModel, /deprecatedAliasUsed/);
   const installed = read('tests/e2e/codex-skills-e2e.test.mjs');
   assert.match(installed, /codex-skills-unqualified/); assert.match(installed, /exec/); assert.match(installed, /--ephemeral/); assert.match(installed, /--json/); assert.match(installed, /\$zcode:review/); assert.match(installed, /buildMarketplaceSnapshot/);
   assert.match(installed, /codex-skills-observation/); assert.match(installed, /tui-evidence-not-exposed/); assert.match(installed, /qualificationScope:\s*'tui'/);
@@ -245,8 +247,9 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
     assert.match(source, /agent_type/);
     assert.match(source, /subscription/i);
     assert.match(source, /uninstall/i);
-    assert.match(source, /ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_MODEL='provider\/model' npm run test:qualification-required/);
-    assert.doesNotMatch(source, /ZCODE_REAL_E2E_MODEL/);
+    assert.match(source, /ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider\/model' npm run test:qualification-required/);
+    assert.match(source, /ZCODE_REAL_MODEL.{0,120}deprecated|deprecated.{0,120}ZCODE_REAL_MODEL/is);
+    assert.match(source, /conflict|冲突/i);
   }
   assert.match(english, /restart Codex.{0,160}rerun `?\$zcode:setup/is);
   assert.match(english, /collision.{0,200}(?:foreign|project|higher-precedence)/is);

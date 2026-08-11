@@ -111,7 +111,7 @@ Transfer 通过 `codex app-server` 读取持久 Codex thread，只导入按顺�
 - Hook trust / restart required：只让 setup 信任当前安装插件的精确 hook hash，重启后再次检查。
 - `plugin-data-root-added`：setup 只把稳定数据目录加入 Codex 配置，尚未写入插件状态；重启 Codex 后再次运行 setup。
 
-macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。协议客户端可处理 CLI 0.16.1 发出的 string-ID runtime-preference server request。发布前必须在 CLI model provider 可用且 Codex 已认证并有额度的机器上运行完整严格命令：`ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_MODEL='provider/model' npm run test:qualification-required`。默认 `npm run test:qualified` 是 opt-in 诊断：结构化 `unqualified` skip 让普通 CI 可移植，但不能作为资格证据。严格脚本会把缺少 opt-in、provider 配置或认证、模型、额度及其他 unqualified runtime 结果转为非零失败；作用域 `tui-evidence-not-exposed` 观测不是 runtime 资格结果，也从不声称 UI 已通过资格。未知执行错误也会让测试失败。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
+macOS + ZCode Desktop 3.6.5 + CLI 0.16.1+ 是发布资格目标。协议客户端可处理 CLI 0.16.1 发出的 string-ID runtime-preference server request。发布前必须在 CLI model provider 可用且 Codex 已认证并有额度的机器上运行完整严格命令：`ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualification-required`。`ZCODE_REAL_MODEL` 仅保留为 deprecated 别名；两个变量都有非空值时，只有去除首尾空白后的值完全相同才继续，否则资格检查会以冲突 fail closed。默认 `npm run test:qualified` 是 opt-in 诊断：结构化 `unqualified` skip 让普通 CI 可移植，但不能作为资格证据。严格脚本会把缺少 opt-in、provider 配置或认证、模型、额度及其他 unqualified runtime 结果转为非零失败；作用域 `tui-evidence-not-exposed` 观测不是 runtime 资格结果，也从不声称 UI 已通过资格。未知执行错误也会让测试失败。Linux and Windows are code-supported but are not real-CLI qualified yet；两者当前由 fake-protocol CI 覆盖。
 
 ## 许可证与来源
 
