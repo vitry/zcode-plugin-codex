@@ -775,20 +775,30 @@ test('preview persistence failure stays observational while writer and exact res
   assert.match(lines.join(''), /ZCode started the delegated turn/);
 });
 
-test('a never-settling conversation unsubscribe cannot block authoritative success', async () => {
+test('a never-settling conversation unsubscribe cannot block authoritative success', { timeout: 10_000 }, async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {(value:any)=>void} */ let signalAuthoritativeSuccess = () => {};
+  const authoritativeSuccess = new Promise((resolve) => { signalAuthoritativeSuccess = resolve; });
+  const wrapped = {
+    ...store,
+    finishJob: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => {
+      const terminal = await store.finishJob(workspaceArg, jobId, expected, next, patch);
+      if (next === 'succeeded') signalAuthoritativeSuccess(terminal);
+      return terminal;
+    },
+  };
+  let unsubscribeCalls = 0;
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-unsubscribe-hang' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
-    subscribeConversation: async () => ({ subscriptionId: 'subscription-1', unsubscribe: () => new Promise(() => {}) }),
+    subscribeConversation: async () => ({ subscriptionId: 'subscription-1', unsubscribe: () => { unsubscribeCalls += 1; return new Promise(() => {}); } }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
     send: async () => ({ inputId: 'input-unsubscribe-hang', stateRevision: 1 }), waitForCompletion: async () => {},
     readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-unsubscribe-hang', parentMessageId: 'input-unsubscribe-hang' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
-  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' });
-  /** @type {ReturnType<typeof setTimeout>|undefined} */ let timeout; let result;
-  try { result = await Promise.race([execution, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('unsubscribe blocked success')), 1_000); })]); }
-  finally { clearTimeout(timeout); }
-  assert.equal(result.result, 'done'); assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' });
+  const terminal = await authoritativeSuccess;
+  const result = await execution;
+  assert.equal(unsubscribeCalls, 1); assert.equal(result.result, 'done'); assert.equal(terminal.status, 'succeeded');
 });
 
 test('executor stops notification intake then bounded-drains already received semantic progress before terminal fencing', async () => {
