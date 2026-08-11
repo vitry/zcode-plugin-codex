@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZCode Setup"
+  short_description: "Check ZCode readiness and review-gate setup"
+  default_prompt: "Use $zcode:setup to check this ZCode plugin installation."
