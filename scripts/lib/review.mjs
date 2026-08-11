@@ -62,9 +62,12 @@ export async function executeJob(input) {
     const deadline = Date.now() + OPTIONAL_PROGRESS_FENCE_MS;
     const initialDrain = Promise.resolve().then(() => reporter?.flush(deadline)).catch(() => {});
     const remoteDrain = remoteCleanup.then(() => Promise.resolve()).then(() => reporter?.flush(deadline)).catch(() => {});
-    await waitForOptionalProgress(Promise.all([initialDrain, remoteDrain]), deadline);
-    const reporterSettled = await waitForOptionalProgress(initialDrain, deadline);
-    if (!reporterSettled) return;
+    const aggregateSettled = await waitForOptionalProgress(Promise.all([initialDrain, remoteDrain]), deadline);
+    if (!aggregateSettled) {
+      reporter?.diagnose('progress-flush-timeout');
+      const timeoutDrain = Promise.resolve().then(() => reporter?.flush(deadline)).catch(() => {});
+      await waitForOptionalProgress(timeoutDrain, deadline);
+    }
     try { conversationObserver?.markTerminal(); } catch { /* progress-only */ }
     try { reporter?.close(); } catch { /* progress-only */ }
   };
@@ -178,7 +181,9 @@ async function waitForOptionalProgress(operation, deadline) {
   try {
     const timeoutMs = Math.max(0, deadline - Date.now());
     if (timeoutMs > 0) await Promise.race([tracked, new Promise((resolvePromise) => { timer = setTimeout(resolvePromise, timeoutMs); })]);
-    if (!completed) { await new Promise((resolvePromise) => setImmediate(resolvePromise)); await Promise.resolve(); }
+    for (let phase = 0; phase < 2 && !completed; phase += 1) {
+      await new Promise((resolvePromise) => setImmediate(resolvePromise)); await Promise.resolve();
+    }
   }
   catch { /* optional progress cleanup */ }
   finally { if (timer !== undefined) clearTimeout(timer); }
