@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { lstat, mkdtemp, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -10,34 +10,7 @@ import { atomicWritePrivateFile, replaceFileAtomically } from '../scripts/lib/fs
 const fsModule = new URL('../scripts/lib/fs.mjs', import.meta.url).href;
 const reviewModule = new URL('../scripts/lib/review.mjs', import.meta.url).href;
 
-test('diagnostic: Windows path and handle identities', { skip: process.platform !== 'win32' }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-win-identity-diagnostic-'));
-  const target = join(directory, 'record.json');
-  try {
-    await writeFile(target, '{"ok":true}');
-    const snapshot = async () => {
-      const handle = await open(target, 'r');
-      try {
-      const [pathLstat, pathStat, handleStat] = await Promise.all([
-        lstat(target, { bigint: true }),
-        stat(target, { bigint: true }),
-        handle.stat({ bigint: true }),
-      ]);
-      /** @param {import('node:fs').BigIntStats} value */
-      const identity = (value) => ({ dev: String(value.dev), ino: String(value.ino), size: String(value.size) });
-        return { lstat: identity(pathLstat), stat: identity(pathStat), fstat: identity(handleStat) };
-      } finally { await handle.close(); }
-    };
-    const fresh = await snapshot();
-    const temporary = join(directory, 'record.tmp');
-    await writeFile(temporary, '{"ok":false}');
-    await rename(temporary, target);
-    const replaced = await snapshot();
-    assert.fail(`WINDOWS_IDENTITY_DIAGNOSTIC ${JSON.stringify({ fresh, replaced })}`);
-  } finally { await rm(directory, { recursive: true, force: true }); }
-});
-
-/** @param {'all-handles'|'handle-after'|'reopened-path'} mode */
+/** @param {'all-handles-dev'|'all-handles-ino'|'handle-after'|'reopened-path'} mode */
 function boundedReadIdentityProbe(mode) {
   return `
     import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
@@ -55,20 +28,20 @@ function boundedReadIdentityProbe(mode) {
     prototype.stat = async function patchedStat(...args) {
       const stats = await originalStat.call(this, ...args);
       statCalls += 1;
-      if (${JSON.stringify(mode)} === 'all-handles' || ${JSON.stringify(mode)} === 'handle-after' && statCalls === 2 || ${JSON.stringify(mode)} === 'reopened-path' && statCalls === 3) return new Proxy(stats, { get(target, property) {
-        if (property === 'dev') return target.dev + 1;
-        if (property === 'ino') return target.ino + 1;
+      if (${JSON.stringify(mode)}.startsWith('all-handles') || ${JSON.stringify(mode)} === 'handle-after' && statCalls === 2 || ${JSON.stringify(mode)} === 'reopened-path' && statCalls === 3) return new Proxy(stats, { get(target, property) {
+        if (property === 'dev' && ${JSON.stringify(mode)} !== 'all-handles-ino') return target.dev + 1;
+        if (property === 'ino' && ${JSON.stringify(mode)} !== 'all-handles-dev') return target.ino + 1;
         return Reflect.get(target, property);
       } });
       return stats;
     };
     try {
-      if (${JSON.stringify(mode)} === 'all-handles') {
-        const value = await readBoundedJsonFile(directory, target, 1024);
+      if (${JSON.stringify(mode)} === 'all-handles-dev') {
+        const value = await readBoundedJsonFile(directory, target, 1024, { platform: 'win32' });
         if (value.ok !== true || statCalls !== 3) throw new Error('bounded JSON did not compare three handle-bound identities');
       } else {
         try {
-          await readBoundedJsonFile(directory, target, 1024);
+          await readBoundedJsonFile(directory, target, 1024, { platform: 'win32' });
           throw new Error('bounded JSON accepted a changed handle-bound identity');
         } catch (error) {
           if (error?.code !== 'PRIVATE_PATH_UNSAFE') throw error;
@@ -81,8 +54,13 @@ function boundedReadIdentityProbe(mode) {
   `;
 }
 
-test('bounded JSON identity checks do not mix handle and path stat implementations', async () => {
-  const result = await runNode(boundedReadIdentityProbe('all-handles'));
+test('bounded JSON identity accepts the Windows path and handle device representation difference', async () => {
+  const result = await runNode(boundedReadIdentityProbe('all-handles-dev'));
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('bounded JSON identity rejects a path-handle inode mismatch', async () => {
+  const result = await runNode(boundedReadIdentityProbe('all-handles-ino'));
   assert.equal(result.code, 0, result.stderr || result.stdout);
 });
 

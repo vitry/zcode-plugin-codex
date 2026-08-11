@@ -24,11 +24,6 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - name: Temporary Windows identity diagnostic
-        if: runner.os == 'Windows'
-        run: >-
-          node --test --test-name-pattern="diagnostic: Windows path and handle identities"
-          tests/windows-compat.test.mjs
       - run: npm run check
       - name: Clean packed production install and Node 22.13 native binding smoke
         run: node --test tests/integration/package-install.test.mjs

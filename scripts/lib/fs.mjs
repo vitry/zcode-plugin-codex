@@ -98,9 +98,11 @@ export async function readPrivateDirectory(root, path, maximumEntries) {
  * declared size before allocating, and reads at most maximumBytes + 1 so a
  * concurrent growth cannot bypass the bound.
  * @param {string} root @param {string} path @param {number} maximumBytes
+ * @param {{platform?:NodeJS.Platform}} [options]
  */
-export async function readBoundedJsonFile(root, path, maximumBytes) {
+export async function readBoundedJsonFile(root, path, maximumBytes, options = {}) {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new TypeError('maximumBytes must be a positive safe integer');
+  const platform = options.platform ?? process.platform;
   const parent = dirname(path); const parentBefore = await safeContainedDirectoryStats(root, parent);
   const pathBefore = await lstat(path);
   if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > maximumBytes) throw unsafePrivatePath(path);
@@ -126,7 +128,10 @@ export async function readBoundedJsonFile(root, path, maximumBytes) {
     if (pathAfter.isSymbolicLink() || !pathAfter.isFile() || pathAfter.size > maximumBytes
       || !handleAfter.isFile() || handleAfter.size > maximumBytes || !current.isFile() || current.size > maximumBytes
       || !sameIdentity(pathBefore, pathAfter) || !sameIdentity(handleBefore, handleAfter)
-      || !sameIdentity(handleBefore, current) || !sameIdentity(parentBefore, parentAfter)) throw unsafePrivatePath(path);
+      || !sameIdentity(handleBefore, current)
+      || !samePathHandleIdentity(pathBefore, handleBefore, platform)
+      || !samePathHandleIdentity(pathAfter, current, platform)
+      || !sameIdentity(parentBefore, parentAfter)) throw unsafePrivatePath(path);
     return JSON.parse(bytes.subarray(0, offset).toString('utf8'));
   } finally { await handle?.close().catch(() => {}); }
 }
@@ -441,6 +446,20 @@ function unsafePrivatePath(path) {
 /** @param {{dev:number|bigint,ino:number|bigint}} left @param {{dev:number|bigint,ino:number|bigint}} right */
 function sameIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+/**
+ * Node 22 on Windows reports a different device value for lstat and
+ * FileHandle.stat on the same file. The inode remains stable across those two
+ * APIs, while the separately validated parent keeps the comparison on one
+ * volume. Other platforms retain the full device-and-inode comparison.
+ * @param {{dev:number|bigint,ino:number|bigint}} pathStats
+ * @param {{dev:number|bigint,ino:number|bigint}} handleStats
+ * @param {NodeJS.Platform} platform
+ */
+function samePathHandleIdentity(pathStats, handleStats, platform) {
+  return pathStats.ino === handleStats.ino
+    && (platform === 'win32' || pathStats.dev === handleStats.dev);
 }
 
 /** @param {string} path @param {string} kind */
