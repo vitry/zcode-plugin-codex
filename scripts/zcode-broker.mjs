@@ -342,9 +342,9 @@ export class ZCodeBroker {
         try { if (!ownershipReloaded) await this.reloadOwnership(); } catch (error) { writeRequestError(socket, frame.id, error); return; }
         const existingOwner = typeof requestedSessionId === 'string' ? this.sessionOwners.get(requestedSessionId) : null;
         if (existingOwner && existingOwner.ownerId !== ownerId || typeof requestedSessionId === 'string' && !existingOwner && !claimMethod) { writeSessionOwnerDenied(socket, frame.id); return; }
-        let subscriptionToken; let stopToken; let stoppedGeneration; let stoppedTerminalWinner; let ownerCommitToken; let unsubscribeRecord; let protocol;
+        let subscriptionToken; let stopToken; let stoppedGeneration; let ownerCommitToken; let unsubscribeRecord; let protocol;
         if (frame.method === 'session/send') { sendToken = sessionAdmission.token; this.admittingSessions.set(frame.params.sessionId, sendToken); }
-        if (frame.method === 'session/stop') { stoppedGeneration = this.activeSessionSockets.get(frame.params.sessionId); stoppedTerminalWinner = this.terminalWinnerEvidence.get(frame.params.sessionId); stopToken = sessionAdmission.token; this.stoppingSessions.set(frame.params.sessionId, { token: stopToken, activeToken: stoppedGeneration?.token ?? null }); }
+        if (frame.method === 'session/stop') { stoppedGeneration = this.activeSessionSockets.get(frame.params.sessionId); stopToken = sessionAdmission.token; this.stoppingSessions.set(frame.params.sessionId, { token: stopToken, activeToken: stoppedGeneration?.token ?? null }); }
         try {
           if (this.existingProtocolOnlySockets.has(socket)) { if (!this.protocol) throw existingProtocolUnavailable(); protocol = this.protocol; }
           else protocol = await this.getProtocol();
@@ -399,7 +399,7 @@ export class ZCodeBroker {
             for (const message of pending.frames) if (conversationKey(message.params.topic, message.params.subscriptionId) === key) writeLocal(socket, message);
           }
           if (frame.method === 'v4/conversation/unsubscribe') { this.conversationSubscriptions.delete(unsubscribeRecord.key); if (!this.retireConversationSubscription(protocol, unsubscribeRecord)) throw brokerInputError(); }
-          if (frame.method === 'session/stop' && frame.params.sessionId) { if (this.protocol !== protocol || this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); let stopCommitted = this.isTerminalWinnerForTurn(frame.params.sessionId, protocol, stoppedGeneration) || this.isTerminalWinnerEvidence(frame.params.sessionId, protocol, stoppedTerminalWinner); if (this.isExactCurrentTurn(frame.params.sessionId, stoppedGeneration)) { protocol.cancelTurn(frame.params.sessionId); stopCommitted = this.settleStoppedSession(frame.params.sessionId, stoppedGeneration); } if (stopCommitted) this.consumeTerminalWinner(frame.params.sessionId, protocol, stoppedGeneration, stoppedTerminalWinner); await this.cleanupSessionSubscriptions(protocol, frame.params.sessionId); if (!stopCommitted && (this.protocol !== protocol || this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol))) throw brokerInputError(); if (this.stoppingSessions.get(frame.params.sessionId)?.token === stopToken) this.stoppingSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); }
+          if (frame.method === 'session/stop' && frame.params.sessionId) { if (this.protocol !== protocol || this.stoppingSessions.get(frame.params.sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); const stopCommitted = this.settleAcknowledgedStop(frame.params.sessionId, protocol, stoppedGeneration); if (!stopCommitted) throw brokerInputError(); this.consumeTerminalWinner(frame.params.sessionId, protocol, stoppedGeneration); await this.cleanupSessionSubscriptions(protocol, frame.params.sessionId); if (this.stoppingSessions.get(frame.params.sessionId)?.token === stopToken) this.stoppingSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); }
           if (frame.method === 'session/list' && Array.isArray(result?.sessions)) result = { ...result, sessions: result.sessions.filter((session) => this.sessionOwners.get(session.sessionId)?.ownerId === ownerId) };
           if (ownerCommitToken) this.ownerCommitTokens.delete(ownerCommitToken); writeLocal(socket, { id: frame.id, result });
         } catch (error) {
@@ -451,13 +451,13 @@ export class ZCodeBroker {
           if (socket.destroyed || remainingMs <= 0 || this.protocol !== protocol) { failed.push(...owned.slice(offset)); break; }
           const outcomes = await Promise.allSettled(batch.map(async (sessionId) => {
             let sessionAdmission; let stopToken;
-            try { sessionAdmission = this.admission.beginSessionRequest('broker/releaseSession', sessionId, ownerId, socket); this.admission.bindSessionProtocol(sessionAdmission, protocol); const activeSession = this.activeSessionSockets.get(sessionId); const terminalWinner = this.terminalWinnerEvidence.get(sessionId); stopToken = sessionAdmission.token; this.stoppingSessions.set(sessionId, { token: stopToken, activeToken: activeSession?.token ?? null, ownerRelease: true }); const result = await protocol.request('session/stop', { sessionId }, Math.max(1, Math.min(OWNER_RELEASE_REQUEST_MS, remainingMs))); validateStopResult(result); if (this.protocol !== protocol || this.stoppingSessions.get(sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); return { activeSession, terminalWinner, result, stopToken, sessionAdmission }; }
+            try { sessionAdmission = this.admission.beginSessionRequest('broker/releaseSession', sessionId, ownerId, socket); this.admission.bindSessionProtocol(sessionAdmission, protocol); const activeSession = this.activeSessionSockets.get(sessionId); stopToken = sessionAdmission.token; this.stoppingSessions.set(sessionId, { token: stopToken, activeToken: activeSession?.token ?? null, ownerRelease: true }); const result = await protocol.request('session/stop', { sessionId }, Math.max(1, Math.min(OWNER_RELEASE_REQUEST_MS, remainingMs))); validateStopResult(result); if (this.protocol !== protocol || this.stoppingSessions.get(sessionId)?.token !== stopToken || !this.admission.sessionRequestCurrent(sessionAdmission, protocol)) throw brokerInputError(); return { activeSession, result, stopToken, sessionAdmission }; }
             catch (error) { if (stopToken && this.stoppingSessions.get(sessionId)?.token === stopToken) this.stoppingSessions.delete(sessionId); this.admission.finishSessionRequest(sessionAdmission); throw error; }
           }));
           for (let index = 0; index < batch.length; index += 1) if (outcomes[index].status === 'fulfilled') { stoppedFences.set(batch[index], outcomes[index].value.stopToken); releaseSessionAdmissions.set(batch[index], outcomes[index].value.sessionAdmission); }
           const detachedSubscriptions = [];
           for (let index = 0; index < batch.length; index += 1) {
-            const sessionId = batch[index]; if (outcomes[index].status === 'fulfilled' && this.protocol === protocol && this.stoppingSessions.get(sessionId)?.token === outcomes[index].value.stopToken && this.admission.sessionRequestCurrent(outcomes[index].value.sessionAdmission, protocol)) { const stopped = outcomes[index].value; let authoritative = this.isTerminalWinnerForTurn(sessionId, protocol, stopped.activeSession) || this.isTerminalWinnerEvidence(sessionId, protocol, stopped.terminalWinner); if (this.isExactCurrentTurn(sessionId, stopped.activeSession)) { protocol.cancelTurn(sessionId); authoritative = this.settleStoppedSession(sessionId, stopped.activeSession); } if (authoritative) { authoritativeStops.add(sessionId); authoritativeStopEvidence.set(sessionId, stopped); } detachedSubscriptions.push(...this.detachSessionSubscriptions(sessionId)); released.push(sessionId); } else failed.push(sessionId);
+            const sessionId = batch[index]; if (outcomes[index].status === 'fulfilled' && this.protocol === protocol && this.stoppingSessions.get(sessionId)?.token === outcomes[index].value.stopToken && this.admission.sessionRequestCurrent(outcomes[index].value.sessionAdmission, protocol)) { const stopped = outcomes[index].value; const authoritative = this.settleAcknowledgedStop(sessionId, protocol, stopped.activeSession); if (authoritative) { authoritativeStops.add(sessionId); authoritativeStopEvidence.set(sessionId, stopped); released.push(sessionId); detachedSubscriptions.push(...this.detachSessionSubscriptions(sessionId)); } else failed.push(sessionId); } else failed.push(sessionId);
           }
           await this.unsubscribeConversationRecords(protocol, detachedSubscriptions, Math.max(0, deadline - Date.now()));
           if (this.protocol !== protocol) { for (const sessionId of released.splice(0)) { if (authoritativeStops.has(sessionId)) released.push(sessionId); else if (!failed.includes(sessionId)) failed.push(sessionId); } }
@@ -520,7 +520,7 @@ export class ZCodeBroker {
             }
           }
         }
-        for (const sessionId of released) { this.uncertainOwnerReleases.delete(sessionId); const stopped = authoritativeStopEvidence.get(sessionId); if (stopped) this.consumeTerminalWinner(sessionId, releaseProtocol, stopped.activeSession, stopped.terminalWinner); }
+        for (const sessionId of released) { this.uncertainOwnerReleases.delete(sessionId); const stopped = authoritativeStopEvidence.get(sessionId); if (stopped) this.consumeTerminalWinner(sessionId, releaseProtocol, stopped.activeSession); }
       }
       this.scheduleIdleShutdown();
       return { releasedSessionIds: released, failedSessionIds: failed, deferredSessionCount: eligible.length - owned.length + inFlightCreates };
@@ -618,17 +618,22 @@ export class ZCodeBroker {
     return evidence;
   }
 
-  isTerminalWinnerEvidence(sessionId, protocol, evidence) { return typeof evidence?.token === 'string' && evidence.protocol === protocol && this.terminalWinnerEvidence.get(sessionId) === evidence; }
-
   isTerminalWinnerForTurn(sessionId, protocol, activeSession) {
     const evidence = this.terminalWinnerEvidence.get(sessionId);
     return typeof activeSession?.token === 'string' && evidence?.protocol === protocol && evidence.token === activeSession.token && evidence.baseline === activeSession.baseline && evidence.inputId === activeSession.inputId;
   }
 
-  consumeTerminalWinner(sessionId, protocol, activeSession, capturedEvidence) {
+  settleAcknowledgedStop(sessionId, protocol, activeSession) {
+    const current = this.activeSessionSockets.get(sessionId);
+    if (!activeSession) return !current;
+    if (current?.token !== activeSession.token) return !current && this.isTerminalWinnerForTurn(sessionId, protocol, activeSession);
+    protocol.cancelTurn(sessionId); return this.settleStoppedSession(sessionId, activeSession);
+  }
+
+  consumeTerminalWinner(sessionId, protocol, activeSession) {
     const evidence = this.terminalWinnerEvidence.get(sessionId);
     if (evidence?.protocol !== protocol) return false;
-    if (evidence === capturedEvidence || typeof activeSession?.token === 'string' && evidence.token === activeSession.token && evidence.baseline === activeSession.baseline && evidence.inputId === activeSession.inputId) { this.terminalWinnerEvidence.delete(sessionId); return true; }
+    if (!activeSession || typeof activeSession.token === 'string' && evidence.token === activeSession.token && evidence.baseline === activeSession.baseline && evidence.inputId === activeSession.inputId) { this.terminalWinnerEvidence.delete(sessionId); return true; }
     return false;
   }
 
