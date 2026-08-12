@@ -320,3 +320,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(installedQualification, /Object\.hasOwn\(payload, 'qualified'\), false/);
   assert.match(read('tests/e2e/real-zcode.test.mjs'), /real-zcode-unqualified/);
 });
+
+test('repository checkout preserves release payloads with LF line endings', () => {
+  assert.match(read('.gitattributes'), /^\* text=auto eol=lf\n$/);
+});
