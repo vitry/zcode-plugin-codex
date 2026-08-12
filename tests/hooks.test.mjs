@@ -48,6 +48,13 @@ async function runHook(script, input, env = {}, options = {}) {
   });
 }
 
+async function probePidFromChild(pid) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, ['-e', `try { process.kill(${JSON.stringify(pid)}, 0); process.stdout.write(JSON.stringify({ ok: true })); } catch (error) { process.stdout.write(JSON.stringify({ ok: false, code: error?.code ?? null })); }`], { stdio: ['ignore', 'pipe', 'ignore'] }); let stdout = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; }); child.once('error', reject); child.once('exit', () => resolvePromise(JSON.parse(stdout)));
+  });
+}
+
 async function workspace() {
   const cwd = await mkdtemp(join(tmpdir(), 'zpc-hooks-workspace-'));
   const data = await mkdtemp(join(tmpdir(), 'zpc-hooks-data-'));
@@ -283,7 +290,7 @@ test('SessionEnd releases only its broker owner sessions and lets the idle broke
   assert.equal(ended.code, 0);
   const owners = JSON.parse(await readFile(ownershipPath, 'utf8'));
   let releaseDiagnostic = 'owner release succeeded without diagnostic collection';
-  if (JSON.stringify(owners.sessions) !== JSON.stringify({ 'zcode-b': ownerIdForSession('b') })) { const callsAtFailure = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)); const ownershipAfter = await stat(ownershipPath); const healthyAfterFailure = await probeBrokerHealth(identity, 250); releaseDiagnostic = `release-stage ${JSON.stringify({ hookElapsedMs, stopObserved: callsAtFailure.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'), ownerStoreReplaced: ownershipAfter.ino !== ownershipBefore.ino || ownershipAfter.mtimeMs !== ownershipBefore.mtimeMs, healthyAfterFailure, hookCode: ended.code, hookDiagnostic: ended.stderr.trim() || null })}`; }
+  if (JSON.stringify(owners.sessions) !== JSON.stringify({ 'zcode-b': ownerIdForSession('b') })) { const callsAtFailure = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)); const ownershipAfter = await stat(ownershipPath); const healthyAfterFailure = await probeBrokerHealth(identity, 250); const childPidProbe = await probePidFromChild(identity.pid); let ownedJobsProbe; try { ownedJobsProbe = { count: (await createStateStore({ dataRoot: data }).listOwnedJobs(cwd, 'a')).length }; } catch (error) { ownedJobsProbe = { error: { code: error?.code ?? null, category: error?.category ?? null, details: error?.details ?? null } }; } releaseDiagnostic = `release-stage ${JSON.stringify({ hookElapsedMs, stopObserved: callsAtFailure.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'), ownerStoreReplaced: ownershipAfter.ino !== ownershipBefore.ino || ownershipAfter.mtimeMs !== ownershipBefore.mtimeMs, healthyAfterFailure, childPidProbe, ownedJobsProbe, hookCode: ended.code, hookDiagnostic: ended.stderr.trim() || null })}`; }
   assert.deepEqual(owners.sessions, { 'zcode-b': ownerIdForSession('b') }, releaseDiagnostic);
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.ok(calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'));
