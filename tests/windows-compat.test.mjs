@@ -100,6 +100,19 @@ test('Windows atomic replacement retries only transient EPERM without exposing a
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('Windows atomic replacement outlasts the former 100ms EPERM window', async () => {
+  let attempts = 0;
+  await replaceFileAtomically('temporary', 'target', {
+    platform: 'win32',
+    renameFn: async () => {
+      attempts += 1;
+      if (attempts <= 21) throw Object.assign(new Error('target remains transiently busy'), { code: 'EPERM' });
+    },
+    retryDelayFn: async () => {},
+  });
+  assert.equal(attempts, 22);
+});
+
 test('Windows atomic replacement bounds persistent EPERM and preserves both files for fail-closed cleanup', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-win-replace-fail-'));
   const temporaryPath = join(directory, 'record.tmp'); const targetPath = join(directory, 'record.json');

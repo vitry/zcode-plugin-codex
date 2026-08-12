@@ -26,7 +26,7 @@ const DEFAULT_LOCK_OPTIONS = Object.freeze({
   pollIntervalMs: 20,
   timeoutMs: 5_000,
 });
-const WINDOWS_RENAME_ATTEMPTS = 21;
+const WINDOWS_RENAME_ATTEMPTS = 101;
 const WINDOWS_RENAME_RETRY_MS = 5;
 
 /** @param {string} path */

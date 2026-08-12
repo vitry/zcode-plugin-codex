@@ -12,6 +12,9 @@ import { createExistingManagedZCodeClient, releaseManagedZCodeOwner } from '../s
 import { cleanupSession } from './lib/hook-state.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
+const existingBrokerRequestTimeoutMs = process.platform === 'win32' ? 500 : 250;
+const ownerReleaseRequestTimeoutMs = process.platform === 'win32' ? 1_000 : 500;
+
 try {
   const input = await readHookInput('SessionEnd');
   const dataRoot = resolvePluginDataRoot({ env: process.env, pluginRoot: resolve(fileURLToPath(new URL('../', import.meta.url))) });
@@ -25,20 +28,20 @@ try {
       dataRoot,
       workspace: input.cwd,
       ownerSessionId,
-      requestTimeoutMs: 250,
+      requestTimeoutMs: existingBrokerRequestTimeoutMs,
       lockTimeoutMs: 0,
       createClient: (job, derivedOwnerId) => createExistingManagedZCodeClient({
         dataRoot,
         workspace: input.cwd,
         ownerId: derivedOwnerId,
-        requestTimeoutMs: 250,
+        requestTimeoutMs: existingBrokerRequestTimeoutMs,
       }),
     });
     const retainedWritableGuard = (await store.listOwnedJobs(input.cwd, ownerSessionId)).some((job) => job.command === 'rescue'
       && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
     ownerReleaseSafe = !retainedWritableGuard;
   } catch { /* retain broker ownership unless durable state proves release safe */ }
-  if (ownerReleaseSafe) await releaseManagedZCodeOwner({ dataRoot, workspace: input.cwd, ownerId, requestTimeoutMs: 500 }).catch(() => null);
+  if (ownerReleaseSafe) await releaseManagedZCodeOwner({ dataRoot, workspace: input.cwd, ownerId, requestTimeoutMs: ownerReleaseRequestTimeoutMs }).catch(() => null);
   await Promise.allSettled([
     cleanupSession(dataRoot, input.cwd, ownerSessionId),
     createIdentityStore({ dataRoot }).cleanupSession(input.cwd, ownerSessionId),
