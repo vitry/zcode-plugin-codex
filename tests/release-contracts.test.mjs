@@ -321,6 +321,21 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(read('tests/e2e/real-zcode.test.mjs'), /real-zcode-unqualified/);
 });
 
-test('repository checkout preserves release payloads with LF line endings', () => {
+test('repository and CI enforce the LF line-ending constitution', () => {
   assert.match(read('.gitattributes'), /^\* text=auto eol=lf\n$/);
+  const adr = read('docs/adr/0012-enforce-lf-line-endings.md');
+  assert.match(adr, /Git-tracked text files/i);
+  assert.match(adr, /generated marketplace/i);
+  assert.match(adr, /CRLF.{0,120}(?:runtime|test)/is);
+
+  const packageJson = JSON.parse(read('package.json'));
+  assert.equal(packageJson.scripts['check:line-endings'], 'node scripts/check-line-endings.mjs');
+  assert.match(packageJson.scripts.check, /^npm run check:line-endings && npm run lint/);
+
+  const workflow = read('.github/workflows/ci.yml');
+  const installIndex = workflow.indexOf('- run: npm ci');
+  const lineEndingIndex = workflow.indexOf('- name: Enforce LF line endings');
+  const checkIndex = workflow.indexOf('- run: npm run check');
+  assert.ok(installIndex >= 0 && installIndex < lineEndingIndex && lineEndingIndex < checkIndex);
+  assert.match(workflow.slice(lineEndingIndex, checkIndex), /run: npm run check:line-endings/);
 });

@@ -24,6 +24,8 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      - name: Enforce LF line endings
+        run: npm run check:line-endings
       - run: npm run check
       - name: Clean packed production install and Node 22.13 native binding smoke
         run: node --test tests/integration/package-install.test.mjs
