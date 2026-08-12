@@ -16,19 +16,19 @@ if (recordPath) {
 }
 
 const fsRecordPath = process.env.ZCODE_TEST_FS_ERROR_RECORD;
-const invalidateFirstBrokerIdentity = process.env.ZCODE_TEST_INVALIDATE_FIRST_BROKER_IDENTITY === '1';
-if (fsRecordPath || invalidateFirstBrokerIdentity) {
-  let invalidatedBrokerIdentity = false;
+const invalidBrokerIdentityReads = Number.parseInt(process.env.ZCODE_TEST_INVALID_BROKER_IDENTITY_READS ?? '0', 10);
+if (fsRecordPath || invalidBrokerIdentityReads > 0) {
+  let brokerIdentityReadCount = 0;
   for (const method of ['chmod', 'lstat', 'mkdir', 'open', 'opendir', 'readFile', 'realpath', 'rename', 'unlink']) {
     const operation = fs.promises[method];
     fs.promises[method] = async function instrumentedFileOperation(...args) {
-      if (method === 'readFile' && invalidateFirstBrokerIdentity && !invalidatedBrokerIdentity
+      if (method === 'readFile' && brokerIdentityReadCount < invalidBrokerIdentityReads
         && /[\\/]broker[\\/]identity(?:-[a-f0-9]{16})?\.json$/.test(String(args[0]))) {
-        invalidatedBrokerIdentity = true;
+        brokerIdentityReadCount += 1;
         if (fsRecordPath) appendFileSync(fsRecordPath, 'identity-read:injected\n');
         return '{';
       }
-      if (method === 'readFile' && invalidateFirstBrokerIdentity
+      if (method === 'readFile' && invalidBrokerIdentityReads > 0
         && /[\\/]broker[\\/]identity(?:-[a-f0-9]{16})?\.json$/.test(String(args[0])) && fsRecordPath) appendFileSync(fsRecordPath, 'identity-read:real\n');
       try { return await operation.apply(this, args); }
       catch (error) { if (fsRecordPath) appendFileSync(fsRecordPath, `${method}:${error?.code ?? 'UNKNOWN'}\n`); throw error; }
