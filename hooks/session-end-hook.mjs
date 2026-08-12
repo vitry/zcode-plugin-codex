@@ -63,13 +63,20 @@ try {
       /* retain broker ownership unless durable state proves release safe */
     }
     const remainingRemoteBudgetMs = remoteDeadline - Date.now();
-    if (ownerReleaseSafe && remainingRemoteBudgetMs > 0) await releaseManagedZCodeOwner({
-      dataRoot,
-      workspace: input.cwd,
-      ownerId,
-      requestTimeoutMs: Math.min(ownerReleaseRequestTimeoutMs, remainingRemoteBudgetMs),
-      cleanupBudgetMs: Math.min(ownerReleaseMaximumBudgetMs, remainingRemoteBudgetMs),
-    }).catch(() => null);
+    if (ownerReleaseSafe && remainingRemoteBudgetMs > 0) {
+      try {
+        await releaseManagedZCodeOwner({
+          dataRoot,
+          workspace: input.cwd,
+          ownerId,
+          requestTimeoutMs: Math.min(ownerReleaseRequestTimeoutMs, remainingRemoteBudgetMs),
+          cleanupBudgetMs: Math.min(ownerReleaseMaximumBudgetMs, remainingRemoteBudgetMs),
+        });
+      } catch (error) {
+        const statusCounts = error?.details?.identityStatusCounts;
+        process.stderr.write(`ZCode SessionEnd broker owner release deferred: ${error?.code ?? 'UNKNOWN'}:${JSON.stringify(statusCounts ?? {})}\n`);
+      }
+    }
   } finally { clearTimeout(remoteTimer); }
   await Promise.allSettled([
     cleanupSession(dataRoot, input.cwd, ownerSessionId),
