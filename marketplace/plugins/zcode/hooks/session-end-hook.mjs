@@ -15,7 +15,9 @@ import { readHookInput } from './lib/hook-input.mjs';
 const existingBrokerRequestTimeoutMs = process.platform === 'win32' ? 500 : 250;
 const ownerReleaseRequestTimeoutMs = process.platform === 'win32' ? 1_000 : 500;
 const ownerReleaseMaximumBudgetMs = 1_800;
-const sessionEndRemoteBudgetMs = 2_000;
+// Reserve at least one Windows request timeout plus local cleanup time before
+// the native hook's three-second hard deadline.
+const sessionEndRemoteBudgetMs = 1_750;
 
 try {
   const input = await readHookInput('SessionEnd');
