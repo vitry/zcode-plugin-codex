@@ -659,10 +659,10 @@ test('existing managed client authenticates and verifies through one connection'
   } finally { await client?.close(); await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test('public broker capabilities rejects malformed private health identity fields', async () => {
+test('public broker capabilities keeps legacy health compatibility without exposing private identity fields', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-health-fields-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); let closeServer; let client;
   try {
-    closeServer = await createHealthOnlyServer(endpoint, { brokerToken: '8'.repeat(64), instanceId: '9'.repeat(48), healthResult: { ok: true, pid: 0, instanceId: 'unsafe\nidentity' } }); client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken: '8'.repeat(64), ownerId: 'malformed-health-fields-owner', requestTimeoutMs: 100 }); await assert.rejects(client.brokerCapabilities(), { code: 'ZCODE_OUTPUT_INVALID' });
+    closeServer = await createHealthOnlyServer(endpoint, { brokerToken: '8'.repeat(64), instanceId: '9'.repeat(48), healthResult: { ok: true } }); client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken: '8'.repeat(64), ownerId: 'legacy-health-fields-owner', requestTimeoutMs: 100 }); assert.deepEqual(await client.brokerCapabilities(), { releaseOwnerExclusions: false }); assert.equal(client.brokerHealth, undefined);
   } finally { await client?.close(); await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
 });
 
