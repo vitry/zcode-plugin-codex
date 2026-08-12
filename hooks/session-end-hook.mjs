@@ -73,8 +73,8 @@ try {
           cleanupBudgetMs: Math.min(ownerReleaseMaximumBudgetMs, remainingRemoteBudgetMs),
         });
       } catch (error) {
-        const statusCounts = error?.details?.identityStatusCounts;
-        process.stderr.write(`ZCode SessionEnd broker owner release deferred: ${error?.code ?? 'UNKNOWN'}:${JSON.stringify(statusCounts ?? {})}\n`);
+        const statusCounts = error?.details?.identityStatusCounts; const reasonCounts = error?.details?.identityReasonCounts;
+        process.stderr.write(`ZCode SessionEnd broker owner release deferred: ${error?.code ?? 'UNKNOWN'}:${JSON.stringify({ statusCounts: statusCounts ?? {}, reasonCounts: reasonCounts ?? {} })}\n`);
       }
     }
   } finally { clearTimeout(remoteTimer); }

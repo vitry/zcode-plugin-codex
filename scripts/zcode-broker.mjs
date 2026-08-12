@@ -158,8 +158,9 @@ export async function readHealthyBrokerIdentity(path, options = {}) {
 
 export async function inspectBrokerIdentity(path, options = {}) {
   let value;
-  try { value = JSON.parse(await readFile(path, 'utf8')); } catch (error) { return { status: error?.code === 'ENOENT' ? 'missing' : 'invalid', record: null }; }
-  if (!value || value.version !== 1 || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.instanceId !== 'string' || value.instanceId.length < 32 || typeof value.brokerToken !== 'string' || value.brokerToken.length < 32 || typeof value.endpoint !== 'string' || options.expectedEndpoint !== undefined && value.endpoint !== options.expectedEndpoint) return { status: 'invalid', record: null };
+  try { value = JSON.parse(await readFile(path, 'utf8')); } catch (error) { return { status: error?.code === 'ENOENT' ? 'missing' : 'invalid', record: null, reason: 'read' }; }
+  if (!value || value.version !== 1 || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.instanceId !== 'string' || value.instanceId.length < 32 || typeof value.brokerToken !== 'string' || value.brokerToken.length < 32 || typeof value.endpoint !== 'string') return { status: 'invalid', record: null, reason: 'schema' };
+  if (options.expectedEndpoint !== undefined && value.endpoint !== options.expectedEndpoint) return { status: 'invalid', record: null, reason: 'endpoint' };
   const alive = options.isProcessAlive ?? isProcessAlive;
   if (!alive(value.pid)) return { status: 'dead', record: value };
   const healthProbe = options.healthProbe ?? probeBrokerHealth;
