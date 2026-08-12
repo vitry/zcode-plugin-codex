@@ -288,7 +288,7 @@ test('SessionEnd releases only its broker owner sessions and lets the idle broke
   }
   for (const client of clients) await client.close();
   const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const identity = JSON.parse(await readFile(join(storage.directory, 'broker/identity.json'), 'utf8')); const ownershipPath = join(storage.directory, 'broker/session-owners.json'); const ownershipBefore = await stat(ownershipPath); const hookStartedAt = Date.now();
-  const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, { ...env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${socketMethodRecorder}`.trim(), ZCODE_TEST_SOCKET_METHOD_RECORD: socketMethods, ZCODE_TEST_FS_ERROR_RECORD: fsErrors, ZCODE_TEST_INVALIDATE_FIRST_BROKER_IDENTITY: '1' }); const hookElapsedMs = Date.now() - hookStartedAt;
+  const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, { ...env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${socketMethodRecorder}`.trim(), ZCODE_TEST_SOCKET_METHOD_RECORD: socketMethods, ZCODE_TEST_FS_ERROR_RECORD: fsErrors }); const hookElapsedMs = Date.now() - hookStartedAt;
   assert.equal(ended.code, 0);
   const owners = JSON.parse(await readFile(ownershipPath, 'utf8'));
   let releaseDiagnostic = 'owner release succeeded without diagnostic collection';
