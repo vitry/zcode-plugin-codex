@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { resolvePluginDataRoot } from '../scripts/lib/plugin-data.mjs';
-import { settleEndedOwnerWritableJob } from '../scripts/lib/recovery.mjs';
+import { listOwnedJobsForRecovery, settleEndedOwnerWritableJob } from '../scripts/lib/recovery.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { createExistingManagedZCodeClient, releaseManagedZCodeOwner } from '../scripts/lib/zcode-client.mjs';
 import { cleanupSession } from './lib/hook-state.mjs';
@@ -48,7 +48,7 @@ try {
         }),
       });
       if (remoteController.signal.aborted) throw remoteController.signal.reason;
-      const retainedWritableGuard = (await store.listOwnedJobs(input.cwd, ownerSessionId)).some((job) => job.command === 'rescue'
+      const retainedWritableGuard = (await listOwnedJobsForRecovery(store, input.cwd, ownerSessionId, remoteController.signal)).some((job) => job.command === 'rescue'
         && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
       ownerReleaseSafe = !retainedWritableGuard;
     } catch { /* retain broker ownership unless durable state proves release safe */ }

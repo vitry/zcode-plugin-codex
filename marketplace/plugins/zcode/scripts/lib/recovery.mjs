@@ -48,7 +48,7 @@ export async function scavengeWritableJobs(input) {
  * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,lockTimeoutMs?:number,requestTimeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal}} input
  */
 export async function settleEndedOwnerWritableJob(input) {
-  const selected = (await input.store.listOwnedJobs(input.workspace, input.ownerSessionId))
+  const selected = (await listOwnedJobsForRecovery(input.store, input.workspace, input.ownerSessionId, input.signal))
     .filter((/** @type {any} */ job) => job.command === 'rescue'
       && job.readOnly === false && !TERMINAL.has(job.status))
     .at(-1);
@@ -84,6 +84,22 @@ export async function settleEndedOwnerWritableJob(input) {
   } catch (error) {
     if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return input.store.readJob(input.workspace, selected.id);
     throw error;
+  }
+}
+
+/**
+ * Retries one exact owner-index validation after the check phase. A freshly
+ * published Windows marker can be transiently unavailable to the first strict
+ * identity read; persistent corruption and every other error remain fail-closed.
+ * @param {any} store @param {string} workspace @param {string} ownerSessionId @param {AbortSignal} [signal]
+ */
+export async function listOwnedJobsForRecovery(store, workspace, ownerSessionId, signal) {
+  try { return await store.listOwnedJobs(workspace, ownerSessionId); }
+  catch (error) {
+    if ((/** @type {{code?:unknown}} */ (error))?.code !== 'OWNED_JOB_INDEX_INVALID' || signal?.aborted) throw error;
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    signal?.throwIfAborted();
+    return store.listOwnedJobs(workspace, ownerSessionId);
   }
 }
 
