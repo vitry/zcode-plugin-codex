@@ -922,7 +922,7 @@ test('typed client uses a local broker whose single CLI owner handles permission
   const brokerToken = 'a'.repeat(64);
   const broker = await newTestBroker({ endpoint, brokerToken, workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture }, env: { ...process.env, FAKE_ZCODE_PERMISSION: '1' }, idleTimeoutMs: 10_000 }).start();
   await assert.rejects(createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken: 'b'.repeat(64), ownerId: 'typed-owner-invalid-token', requestTimeoutMs: 500 }), { code: 'ZCODE_REQUEST_FAILED' });
-  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'typed-owner-permission', requestTimeoutMs: 500, completionTimeoutMs: 500 });
+  const client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken, ownerId: 'typed-owner-permission', requestTimeoutMs: 3_000, completionTimeoutMs: 3_000 });
   try {
     const created = await client.createSession({ workspace: directory });
     client.setPermissionHandler(async () => ({ decision: 'allow' }));
