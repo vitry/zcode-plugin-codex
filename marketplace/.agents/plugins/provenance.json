@@ -1,8 +1,8 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "f8b60f508d5e055084e26246a810e2085230f1c6",
-  "sourceSha": "f8b60f508d5e055084e26246a810e2085230f1c6",
+  "sourceRef": "86b1672ffc7580685ff04d71b65a849b85aff5aa",
+  "sourceSha": "86b1672ffc7580685ff04d71b65a849b85aff5aa",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
