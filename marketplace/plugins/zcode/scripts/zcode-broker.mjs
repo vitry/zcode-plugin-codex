@@ -20,7 +20,6 @@ const MAX_LOCAL_FRAME_BYTES = 1024 * 1024;
 const OWNER_RELEASE_MAX_SESSIONS = 16;
 const OWNER_RELEASE_CONCURRENCY = 8;
 const OWNER_RELEASE_BUDGET_MS = 600;
-const WINDOWS_OWNER_RELEASE_BUDGET_MS = 1_000;
 const OWNER_RELEASE_REQUEST_MS = 250;
 const MAX_PRIORITIZE_LOCK_TIMEOUT_MS = 5_000;
 const MAX_CONVERSATION_SUBSCRIPTIONS = 256;
@@ -237,7 +236,7 @@ export async function ensureZCodeBroker(options) {
 }
 
 export class ZCodeBroker {
-  /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string,identityPath?:string,publishIdentityAfterListen?:boolean,platform?:NodeJS.Platform}} options */
+  /** @param {{endpoint:string,ownershipPath?:string,brokerToken:string,launch:{command:string,args:string[],target?:string},workspace:string,launchCwd?:string,env?:NodeJS.ProcessEnv,idleTimeoutMs?:number,maxFrameBytes?:number,maxOutboundBytes?:number,drainTimeoutMs?:number,instanceId?:string,identityPath?:string,publishIdentityAfterListen?:boolean}} options */
   constructor(options) { if (typeof options?.brokerToken !== 'string' || options.brokerToken.length < 32 || !validIdleTimeoutOption(options?.idleTimeoutMs) || !validWireOption(options?.maxFrameBytes, 16 * 1024 * 1024) || !validWireOption(options?.maxOutboundBytes, 64 * 1024 * 1024) || !validDrainOption(options?.drainTimeoutMs) || isWindowsNamedPipe(options?.endpoint) && (typeof options?.ownershipPath !== 'string' || !options.ownershipPath)) throw brokerInputError(); let workspace; try { workspace = realpathSync(resolve(options.workspace)); } catch { throw brokerInputError(); } this.options = { ...options, workspace }; this.ownershipPath = options.ownershipPath ?? `${options.endpoint}.owners.json`; this.ownershipStoreEstablished = false; this.ownershipRevision = 0; this.uncertainOwnerReleases = new Map(); this.ownerCommitTokens = new Map(); this.server = null; this.protocol = null; this.protocolPromise = null; this.retiredProtocolGeneration = null; this.sockets = new Set(); this.socketWriters = new WeakMap(); this.authenticated = new WeakSet(); this.existingProtocolOnlySockets = new WeakSet(); this.socketOwnerIds = new WeakMap(); this.sessionOwners = new Map(); this.admission = new BrokerAdmission((sessionId) => this.sessionOwners.get(sessionId)?.ownerId, () => this.scheduleIdleShutdown()); this.activeSessionSockets = new Map(); this.terminalWinnerEvidence = new Map(); this.admittingSessions = new Map(); this.stoppingSessions = new Map(); this.conversationSubscriptions = new Map(); this.orphanedConversationSubscriptions = new Map(); this.conversationSubscriptionGeneration = null; this.orphanRetryPromise = null; this.pendingConversationTopics = new Map(); this.permissionPending = new Map(); this.retiredPermissionResponses = new Map(); this.localTasks = new Set(); this.releaseTasks = new Set(); this.nextPermissionId = 1_000_000_000; this.owners = 0; this.activeSessions = new Set(); this.fastIdleRequested = false; this.idleTimer = null; this.closing = false; this.closePromise = null; }
 
   async start() {
@@ -313,7 +312,7 @@ export class ZCodeBroker {
     if (!LOCAL_BROKER_METHODS.has(frame.method)) { writeRequestError(socket, frame.id, brokerInputError()); return; }
     if (frame.method === 'broker/health') { writeLocal(socket, { id: frame.id, result: { ok: this.retiredProtocolGeneration === null, pid: process.pid, instanceId: this.options.instanceId, capabilities: { releaseOwnerExclusions: true } } }); return; }
     if (frame.method === 'session/create' && !validCreateWorkspace(frame.params.workspace, this.options.workspace)) { writeRequestError(socket, frame.id, brokerInputError()); return; }
-    const releaseDeadline = frame.method === 'broker/releaseOwner' ? Date.now() + ownerReleaseBudget(this.options.platform ?? process.platform) : undefined; let releaseExcluded;
+    const releaseDeadline = frame.method === 'broker/releaseOwner' ? Date.now() + OWNER_RELEASE_BUDGET_MS : undefined; let releaseExcluded;
     if (frame.method === 'broker/releaseOwner') {
       try { releaseExcluded = frame.params.excludeSessionIds ?? []; if (Object.keys(frame.params).some((key) => key !== 'excludeSessionIds') || !Array.isArray(releaseExcluded) || releaseExcluded.length > 1_000 || new Set(releaseExcluded).size !== releaseExcluded.length || !releaseExcluded.every((sessionId) => isSafeIdentifier(sessionId))) throw brokerInputError(); }
       catch (error) { writeRequestError(socket, frame.id, error); return; }
@@ -417,7 +416,7 @@ export class ZCodeBroker {
   cancelIdleShutdown() { clearTimeout(this.idleTimer); this.idleTimer = null; }
   scheduleIdleShutdown() { this.cancelIdleShutdown(); if (this.closing || this.owners || this.activeSessions.size || this.permissionPending.size || this.localTasks.size || this.admission.activeCount || this.retiredProtocolGeneration || this.protocolPromise && !this.protocol) return; this.idleTimer = setTimeout(() => { this.idleTimer = null; if (!this.owners && !this.activeSessions.size && !this.permissionPending.size && !this.localTasks.size && !this.admission.activeCount && !this.retiredProtocolGeneration && !(this.protocolPromise && !this.protocol)) void this.close().catch(() => {}); }, this.fastIdleRequested ? 0 : this.options.idleTimeoutMs ?? 30_000); this.idleTimer.unref?.(); }
 
-  async releaseOwner(socket, ownerId, excludeSessionIds = [], deadline = Date.now() + ownerReleaseBudget(this.options.platform ?? process.platform), ownerAdmission = null) {
+  async releaseOwner(socket, ownerId, excludeSessionIds = [], deadline = Date.now() + OWNER_RELEASE_BUDGET_MS, ownerAdmission = null) {
     const admission = ownerAdmission ?? this.admission.beginOwnerRequest('broker/releaseOwner', ownerId);
     return await this.trackOwnerRelease(admission, deadline, () => this.releaseOwnerAdmitted(socket, ownerId, excludeSessionIds, deadline, admission));
   }
@@ -902,7 +901,6 @@ function protocolRetiring() { return new PluginError('ZCODE_PROTOCOL_RETIRING', 
 function brokerUnhealthyError() { return new PluginError('ZCODE_BROKER_UNHEALTHY', 'The recorded ZCode broker identity cannot be safely replaced after its health check failed.', { category: 'state', remedy: 'Stop or repair the recorded broker process before retrying.' }); }
 function brokerInputError() { return new PluginError('ZCODE_BROKER_INPUT_INVALID', 'ZCode broker input is invalid.', { category: 'validation', remedy: 'Provide a data root, workspace, endpoint, and launch target.' }); }
 function ownerReleaseTimeout() { return new PluginError('ZCODE_OWNER_RELEASE_TIMEOUT', 'The ZCode owner release exceeded its bounded storage budget.', { category: 'timeout', remedy: 'Retry after the active owner-store operation completes.' }); }
-function ownerReleaseBudget(platform) { return platform === 'win32' ? WINDOWS_OWNER_RELEASE_BUDGET_MS : OWNER_RELEASE_BUDGET_MS; }
 function identityCleanupError(path, cause) { return new PluginError('ZCODE_BROKER_IDENTITY_CLEANUP_FAILED', 'The ZCode broker identity could not be safely removed.', { category: 'storage', remedy: 'Inspect the broker identity path and retry cleanup.', ...(cause === undefined ? {} : { cause }), details: { path } }); }
 
 async function main() {
