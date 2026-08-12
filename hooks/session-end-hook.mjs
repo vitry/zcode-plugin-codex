@@ -50,8 +50,11 @@ try {
       });
       if (remoteController.signal.aborted) throw remoteController.signal.reason;
       ownerCleanupStage = 'retained-writable-guard';
-      const retainedWritableGuard = (await listOwnedJobsForRecovery(store, input.cwd, ownerSessionId, remoteController.signal)).some((job) => job.command === 'rescue'
+      const ownedJobs = await listOwnedJobsForRecovery(store, input.cwd, ownerSessionId, remoteController.signal);
+      const retainedJobs = ownedJobs.filter((job) => job.command === 'rescue'
         && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
+      const retainedWritableGuard = retainedJobs.length > 0;
+      if (retainedWritableGuard) process.stderr.write(`ZCode SessionEnd retained writable guard: ${retainedJobs.map((job) => `${job.status}:${typeof job.workerLeaseId === 'string'}`).join(',')}\n`);
       ownerReleaseSafe = !retainedWritableGuard;
     } catch (error) {
       // SessionEnd is advisory, but a sanitized stage/code is essential for
