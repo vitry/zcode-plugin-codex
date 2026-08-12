@@ -189,7 +189,7 @@ export async function ensureZCodeBroker(options) {
   const identityName = brokerIdentityNameForWireOptions(options);
   const profile = identityName === 'identity.json' ? null : identityName.slice('identity-'.length, -'.json'.length);
   const identityPath = join(brokerDirectory, identityName);
-  const endpoint = brokerEndpointFor({ platform: options.platform, dataRoot: options.dataRoot, workspace: storage.workspacePath, ...(profile ? { identity: profile } : {}) });
+  const endpoint = brokerEndpointFor({ platform: options.platform, dataRoot: storage.dataRootPath, workspace: storage.workspacePath, ...(profile ? { identity: profile } : {}) });
   await ensurePrivateDirectory(brokerDirectory);
   return withFileLock(join(brokerDirectory, '.lock'), async () => {
     const existing = await inspectBrokerIdentity(identityPath, { expectedEndpoint: endpoint });
@@ -864,7 +864,7 @@ function turnActiveError(message) { return new PluginError('ZCODE_TURN_ACTIVE', 
 function validWireOption(value, maximum) { return value === undefined || Number.isSafeInteger(value) && value >= 128 && value <= maximum; }
 function validIdleTimeoutOption(value) { return value === undefined || Number.isSafeInteger(value) && value >= MIN_BROKER_IDLE_TIMEOUT_MS && value <= MAX_BROKER_IDLE_TIMEOUT_MS; }
 function validDrainOption(value) { return value === undefined || Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAIN_TIMEOUT_MS; }
-function canonicalEndpointPath(path) { try { return realpathSync(resolve(path)); } catch { return path; } }
+function canonicalEndpointPath(path) { try { return realpathSync.native(resolve(path)); } catch { return path; } }
 function sameBrokerIdentity(left, right) { return left?.endpoint === right?.endpoint && left?.pid === right?.pid && left?.instanceId === right?.instanceId && left?.brokerToken === right?.brokerToken; }
 async function removeBrokerIdentityInstance(path, instanceId) { let value; try { value = JSON.parse(await readFile(path, 'utf8')); } catch (error) { if (error?.code === 'ENOENT') return false; return false; } if (value?.instanceId !== instanceId) return false; try { await unlink(path); return true; } catch (error) { if (error?.code === 'ENOENT') return false; throw error; } }
 async function removeBrokerIdentityRecord(path, expected) { let value; try { value = JSON.parse(await readFile(path, 'utf8')); } catch { return false; } if (!sameBrokerIdentity(value, expected)) return false; try { await unlink(path); return true; } catch (error) { if (error?.code === 'ENOENT') return false; throw error; } }

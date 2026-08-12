@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { resolvePluginDataRoot } from '../scripts/lib/plugin-data.mjs';
-import { listOwnedJobsForRecovery, settleEndedOwnerWritableJob } from '../scripts/lib/recovery.mjs';
+import { settleEndedOwnerWritableJob } from '../scripts/lib/recovery.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { createExistingManagedZCodeClient, releaseManagedZCodeOwner } from '../scripts/lib/zcode-client.mjs';
 import { cleanupSession } from './lib/hook-state.mjs';
@@ -50,7 +50,7 @@ try {
       });
       if (remoteController.signal.aborted) throw remoteController.signal.reason;
       ownerCleanupStage = 'retained-writable-guard';
-      const ownedJobs = await listOwnedJobsForRecovery(store, input.cwd, ownerSessionId, remoteController.signal);
+      const ownedJobs = await store.listOwnedJobs(input.cwd, ownerSessionId);
       const retainedJobs = ownedJobs.filter((job) => job.command === 'rescue'
         && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
       const retainedWritableGuard = retainedJobs.length > 0;
