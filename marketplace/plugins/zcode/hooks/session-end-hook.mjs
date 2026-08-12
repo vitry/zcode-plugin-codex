@@ -31,6 +31,7 @@ try {
   remoteTimer.unref?.();
   try {
     let ownerReleaseSafe = false;
+    let ownerCleanupStage = 'settlement';
     try {
       await settleEndedOwnerWritableJob({
         store,
@@ -48,10 +49,16 @@ try {
         }),
       });
       if (remoteController.signal.aborted) throw remoteController.signal.reason;
+      ownerCleanupStage = 'retained-writable-guard';
       const retainedWritableGuard = (await listOwnedJobsForRecovery(store, input.cwd, ownerSessionId, remoteController.signal)).some((job) => job.command === 'rescue'
         && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
       ownerReleaseSafe = !retainedWritableGuard;
-    } catch { /* retain broker ownership unless durable state proves release safe */ }
+    } catch (error) {
+      // SessionEnd is advisory, but a sanitized stage/code is essential for
+      // distinguishing a durable guard from an unavailable broker cleanup.
+      process.stderr.write(`ZCode SessionEnd owner cleanup deferred: ${ownerCleanupStage}:${error?.code ?? 'UNKNOWN'}\n`);
+      /* retain broker ownership unless durable state proves release safe */
+    }
     const remainingRemoteBudgetMs = remoteDeadline - Date.now();
     if (ownerReleaseSafe && remainingRemoteBudgetMs > 0) await releaseManagedZCodeOwner({
       dataRoot,
