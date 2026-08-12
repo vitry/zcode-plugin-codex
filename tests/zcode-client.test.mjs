@@ -132,7 +132,7 @@ async function createPersistedTestBroker({ dataRoot, workspace, tokenByte, insta
   return broker;
 }
 
-async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangHealth = false, hangAuth = false, hangRelease = false, authDelayMs = 0, healthDelayMs = 0, onMethod = () => {} }) {
+async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, healthResult, hangHealth = false, hangAuth = false, hangRelease = false, authDelayMs = 0, healthDelayMs = 0, onMethod = () => {} }) {
   const sockets = new Set();
   const server = net.createServer((socket) => {
     sockets.add(socket); socket.setEncoding('utf8'); let buffer = '';
@@ -143,7 +143,7 @@ async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, hangH
         onMethod(frame.method); if (frame.method === 'broker/auth' && frame.params?.token === brokerToken && !hangAuth) { if (authDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, authDelayMs); socket.write(`${JSON.stringify({ id: frame.id, result: { authenticated: true, ...(frame.params.existingProtocolOnly === true ? { existingProtocolOnly: true } : {}) } })}\n`); }
         else if (frame.method === 'broker/health' && !hangHealth) {
           if (healthDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, healthDelayMs);
-          socket.write(`${JSON.stringify({ id: frame.id, result: { ok: true, pid: process.pid, instanceId } })}\n`);
+          socket.write(`${JSON.stringify({ id: frame.id, result: healthResult ?? { ok: true, pid: process.pid, instanceId } })}\n`);
         }
         else if (frame.method === 'broker/releaseOwner' && !hangRelease) socket.write(`${JSON.stringify({ id: frame.id, result: { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 } })}\n`);
         else if (frame.method === 'broker/capabilities') socket.write(`${JSON.stringify({ id: frame.id, result: { releaseOwnerExclusions: false } })}\n`);
@@ -655,7 +655,14 @@ test('existing managed client authenticates and verifies through one connection'
   const directory = await mkdtemp(join(tmpdir(), 'zcode-existing-single-probe-')); const methods = []; let closeServer; let client;
   try {
     const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const record = { endpoint, pid: process.pid, instanceId: '2'.repeat(48), brokerToken: '3'.repeat(64) }; closeServer = await createHealthOnlyServer(endpoint, { ...record, onMethod: (method) => methods.push(method) }); await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), record);
-    client = await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-single-probe-owner', requestTimeoutMs: 500 }); assert.ok(client); assert.deepEqual(methods, ['broker/auth', 'broker/health']);
+    client = await createExistingManagedZCodeClient({ dataRoot: directory, workspace: directory, ownerId: 'existing-single-probe-owner', requestTimeoutMs: 500 }); assert.ok(client); assert.equal(client.brokerHealth, undefined); assert.deepEqual(methods, ['broker/auth', 'broker/health']);
+  } finally { await client?.close(); await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('public broker capabilities rejects malformed private health identity fields', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-health-fields-')); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: directory }); let closeServer; let client;
+  try {
+    closeServer = await createHealthOnlyServer(endpoint, { brokerToken: '8'.repeat(64), instanceId: '9'.repeat(48), healthResult: { ok: true, pid: 0, instanceId: 'unsafe\nidentity' } }); client = await createZCodeClient({ workspace: directory, brokerEndpoint: endpoint, brokerToken: '8'.repeat(64), ownerId: 'malformed-health-fields-owner', requestTimeoutMs: 100 }); await assert.rejects(client.brokerCapabilities(), { code: 'ZCODE_OUTPUT_INVALID' });
   } finally { await client?.close(); await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
 });
 
