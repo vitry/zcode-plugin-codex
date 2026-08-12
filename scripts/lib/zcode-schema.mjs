@@ -149,11 +149,31 @@ function validSnapshotRelations(value, sessionId, workspacePath) {
     && value.messages.every((/** @type {any} */ message) => message.info.sessionId === sessionId && message.parts.every((/** @type {any} */ part) => part.sessionId === sessionId && part.messageId === message.info.messageId));
 }
 
-/** Kne */
-export function validSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId, /** @type {string} */ workspacePath) {
+/** Validate a complete runtime snapshot with strict session identity relations. */
+function validSnapshotEnvelope(/** @type {any} */ value) {
   return exact(value, ['protocol', 'session', 'settings', 'projection', 'runtime', 'messages'], ['goalStats', 'todos', 'todoGroups', 'slashCommands'])
     && exact(value.protocol, ['name', 'version']) && value.protocol.name === 'ZCode Protocol' && value.protocol.version === 1
     && validSessionInfo(value.session) && validSettings(value.settings) && validProjection(value.projection) && validRuntime(value.runtime) && arrayOf(value.messages, validMessage)
-    && validSnapshotRelations(value, sessionId, workspacePath)
     && optional(value.goalStats, validGoalStats) && optional(value.todos, (items) => arrayOf(items, validTodo)) && optional(value.todoGroups, (items) => arrayOf(items, validTodoGroup)) && optional(value.slashCommands, (items) => arrayOf(items, validSlashCommand));
+}
+
+export function validSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId, /** @type {string} */ workspacePath) {
+  return validSnapshotEnvelope(value) && validSnapshotRelations(value, sessionId, workspacePath);
+}
+
+/**
+ * Setup-only compatibility validation for ZCode 0.16.1's empty projection.
+ * The normal validSnapshot relation remains strict for all runtime paths.
+ * @param {any} value @param {string} sessionId @param {string} workspacePath
+ */
+export function validSetupAuthProbeSnapshot(value, sessionId, workspacePath) {
+  return validSnapshotEnvelope(value)
+    && text(sessionId) && value.session.sessionId === sessionId
+    && value.session.workspace.workspacePath === workspacePath && value.session.workspace.workspaceKey === workspacePath
+    && value.session.status === 'idle'
+    && value.projection.sessionId === 'unknown' && value.projection.status === 'idle'
+    && (value.session.target === undefined || value.session.target === null)
+    && (value.projection.target === undefined || value.projection.target === null)
+    && value.projection.pendingPermissions.length === 0 && value.projection.activeToolCalls.length === 0 && value.projection.backgroundJobs.length === 0
+    && value.runtime.eventSeq === 0 && value.runtime.pendingRequestIds.length === 0 && value.messages.length === 0;
 }

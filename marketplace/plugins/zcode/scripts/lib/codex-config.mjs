@@ -34,7 +34,7 @@ export async function runSetup(input) {
     catch (error) { if (error?.code === 'ZCODE_NOT_FOUND' || error?.code === 'ZCODE_VERSION_UNSUPPORTED') return reportAndPersist(input, { path: null, version: null }, { ready: false }, error.code === 'ZCODE_NOT_FOUND' ? 'missing' : 'outdated', error.message, false); throw error; }
     const hooks = await client.request('hooks/list', { cwds: [cwd] }); const inspected = await validateHooks(hooks, cwd, pluginRoot, hooksPath);
     if (!inspected.ok) return reportAndPersist(input, discovery, { ready: false }, 'untrusted', inspected.reason, false);
-    const auth = await diagnoseZCodeAuth({ workspace: cwd, discovery, env: input.env }); if (!auth.ready) return reportAndPersist(input, discovery, auth, 'unauthenticated', auth.reason, false);
+    const auth = await diagnoseZCodeAuth({ workspace: cwd, discovery, env: input.env }); if (!auth.ready) return reportAndPersist(input, discovery, auth, auth.status === 'incompatible' ? 'incompatible' : 'unauthenticated', auth.reason, false);
     const edits = []; if (config?.config?.features?.hooks !== true) edits.push({ keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' }); const trust = {}; for (const hook of inspected.hooks) if (!['trusted', 'managed'].includes(hook.trustStatus)) trust[hook.key] = { trusted_hash: hook.currentHash }; if (Object.keys(trust).length) edits.push({ keyPath: 'hooks.state', value: trust, mergeStrategy: 'upsert' });
     const packageJson = JSON.parse(await readFile(join(pluginRoot, 'package.json'), 'utf8'));
     const template = await readFile(join(pluginRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
@@ -159,16 +159,23 @@ export async function diagnoseZCodeAuth(input) {
   let client; let sessionId;
   try {
     client = await (input.createClient ?? createZCodeClient)({ workspace: input.workspace, launch: input.discovery.launch, env: input.env, requestTimeoutMs: input.requestTimeoutMs ?? 2_000 });
-    const snapshot = await client.createSession({ workspace: input.workspace });
+    const create = client.createSessionForSetupAuthProbe ?? client.createSession;
+    const snapshot = await create.call(client, { workspace: input.workspace });
     sessionId = snapshot.session.sessionId;
     return { ready: true, status: 'authenticated' };
   } catch (error) {
     if (error?.code === 'ZCODE_REQUEST_FAILED' && error.details?.method === 'session/create' && error.details.remoteCode === 'model_config_missing') {
       return { ready: false, status: 'unauthenticated', reason: 'ZCode CLI model provider is not configured.', remedy: 'Configure an API-key provider in ZCode CLI, then run $zcode:setup again.' };
     }
-    return { ready: false, status: 'unauthenticated', reason: 'ZCode session/create could not prove model authentication.', remedy: 'Authenticate with ZCode, then run $zcode:setup again.' };
+    if (error?.code === 'ZCODE_REQUEST_FAILED') {
+      return { ready: false, status: 'unauthenticated', reason: 'ZCode session/create could not prove model authentication.', remedy: 'Authenticate with ZCode, then run $zcode:setup again.' };
+    }
+    if (error?.code === 'ZCODE_OUTPUT_INVALID' || error?.category === 'protocol') {
+      return { ready: false, status: 'incompatible', reason: 'ZCode session/create returned a snapshot incompatible with the setup probe contract.', remedy: 'Upgrade ZCode to a compatible protocol version, then run $zcode:setup again.' };
+    }
+    return { ready: false, status: 'incompatible', reason: 'ZCode session/create could not be verified by the setup authentication probe.', remedy: 'Check the ZCode CLI protocol and rerun $zcode:setup.' };
   } finally {
-    if (sessionId) await client?.stopSession(sessionId).catch(() => {});
+    if (sessionId && typeof client?.stopSession === 'function') await client.stopSession(sessionId).catch(() => {});
     await client?.close().catch(() => {});
   }
 }

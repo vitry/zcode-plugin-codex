@@ -5,7 +5,7 @@ import { readdir, realpath } from 'node:fs/promises';
 import { PluginError } from './errors.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './identifier.mjs';
 import { closeProtocolUntil, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
-import { validSessionInfo, validSnapshot as snapshotValid } from './zcode-schema.mjs';
+import { validSessionInfo, validSetupAuthProbeSnapshot, validSnapshot as snapshotValid } from './zcode-schema.mjs';
 import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, inspectBrokerIdentity, MAX_BROKER_IDLE_TIMEOUT_MS, MIN_BROKER_IDLE_TIMEOUT_MS, prioritizeBrokerOwnership } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
@@ -22,6 +22,16 @@ export class ZCodeClient {
 
   /** @param {{workspace:string,sessionId?:string,model?:{providerId:string,modelId:string,variant?:string},importedHistory?:{title?:string,createdAt?:number,updatedAt?:number,messages:Array<{role:'user'|'assistant',content:string,timestamp?:number}>}}} input */
   async createSession(input) {
+    return this.createSessionValidated(input, snapshotValid);
+  }
+
+  /** @param {{workspace:string,sessionId?:string,model?:{providerId:string,modelId:string,variant?:string},importedHistory?:{title?:string,createdAt?:number,updatedAt?:number,messages:Array<{role:'user'|'assistant',content:string,timestamp?:number}>}}} input Setup-only compatibility probe; formal runtime callers must use createSession(). */
+  async createSessionForSetupAuthProbe(input) {
+    return this.createSessionValidated(input, validSetupAuthProbeSnapshot);
+  }
+
+  /** @param {{workspace:string,sessionId?:string,model?:{providerId:string,modelId:string,variant?:string},importedHistory?:{title?:string,createdAt?:number,updatedAt?:number,messages:Array<{role:'user'|'assistant',content:string,timestamp?:number}>}}} input @param {(value:any,sessionId:string,workspace:string)=>boolean} validator */
+  async createSessionValidated(input, validator) {
     requireExactObject(input, ['workspace'], ['sessionId', 'model', 'importedHistory']);
     requireString(input.workspace);
     if (input.sessionId !== undefined) requireSessionId(input.sessionId);
@@ -39,7 +49,7 @@ export class ZCodeClient {
     if (input.importedHistory !== undefined) params.importedHistory = normalizeImportedHistory(input.importedHistory);
     const result = await this.protocol.request('session/create', params);
     if (!plainObject(result) || !plainObject(result.session) || !isSafeIdentifier(result.session.sessionId) || input.sessionId && result.session.sessionId !== input.sessionId) throw outputError('session/create');
-    validateSnapshot(result, result.session.sessionId, workspacePath, 'session/create');
+    if (!validator(result, result.session.sessionId, workspacePath)) throw outputError('session/create');
     this.sessionWorkspaces.set(result.session.sessionId, workspacePath);
     if (plainObject(result.settings?.model) && Array.isArray(result.settings.model.available)) this.sessionCatalogs.set(result.session.sessionId, result.settings.model);
     return result;

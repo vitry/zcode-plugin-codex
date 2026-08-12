@@ -200,6 +200,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     cwd: temporary,
     env: {
       ...env,
+      FAKE_ZCODE_EMPTY_SESSION: '1',
       CODEX_APP_SERVER_PATH: process.execPath,
       CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
       FAKE_CODEX_RECORD: setupRecord,
@@ -225,6 +226,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     cwd: temporary,
     env: {
       ...env,
+      FAKE_ZCODE_EMPTY_SESSION: '1',
       ZCODE_PATH: join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs'),
       CODEX_APP_SERVER_PATH: process.execPath,
       CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
@@ -260,6 +262,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     cwd: temporary,
     env: {
       ...env,
+      FAKE_ZCODE_EMPTY_SESSION: '1',
       ZCODE_PATH: join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs'),
       CODEX_APP_SERVER_PATH: process.execPath,
       CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),

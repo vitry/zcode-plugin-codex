@@ -37,7 +37,7 @@ async function context({ hooks = hookMetadata(root), features = { hooks: false }
   const writable = { sandbox_workspace_write: { writable_roots: [dataRoot] } };
   const configResult = { config: { features, unrelated: { preserved: true }, ...writable }, origins: {}, layers: [{ name: { type: 'user', file: join(dataRoot, 'config.toml') }, version: 'version-1', config: { unrelated: { preserved: true }, ...writable } }] };
   const hooksResult = { data: [{ cwd, errors: [], warnings: [], hooks }] };
-  return { cwd, dataRoot, record, zcodeRecord, options: { pluginRoot: root, dataRoot, cwd, reviewGate: undefined, sessionStartedAt: '2000-01-01T00:00:00.000Z', env: { ...process.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_CODEX_RECORD: record, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configResult), FAKE_CODEX_HOOKS_RESULT: JSON.stringify(hooksResult), ...zcodeEnv, ...codexEnv }, codex: { executable: process.execPath, args: [fakeCodex], timeoutMs: 5_000 } } };
+  return { cwd, dataRoot, record, zcodeRecord, options: { pluginRoot: root, dataRoot, cwd, reviewGate: undefined, sessionStartedAt: '2000-01-01T00:00:00.000Z', env: { ...process.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_EMPTY_SESSION: '1', FAKE_ZCODE_RECORD: zcodeRecord, FAKE_CODEX_RECORD: record, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configResult), FAKE_CODEX_HOOKS_RESULT: JSON.stringify(hooksResult), ...zcodeEnv, ...codexEnv }, codex: { executable: process.execPath, args: [fakeCodex], timeoutMs: 5_000 } } };
 }
 
 async function recordSetupSession(ctx, sessionId, prompt) {
@@ -226,6 +226,59 @@ test('plugin-level authentication diagnostic is session/create based and actiona
   assert.equal(unavailable.status, 'unauthenticated');
   assert.match(unavailable.reason, /session\/create/i);
   assert.match(unavailable.remedy, /authenticate.*ZCode/i);
+});
+
+test('setup accepts ZCode 0.16.1 empty-session projection unknown', async () => {
+  const ready = await context({ zcodeEnv: { FAKE_ZCODE_EMPTY_SESSION: '1' } });
+  const diagnostic = await diagnoseZCodeAuth({ workspace: ready.cwd, discovery: { launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode } }, env: ready.options.env });
+  assert.deepEqual(diagnostic, { ready: true, status: 'authenticated' });
+});
+
+test('setup rejects non-empty or conflicting empty-session snapshots', async () => {
+  for (const variant of ['conflict', 'messages', 'target', 'non-idle', 'event-seq']) {
+    const ready = await context({ zcodeEnv: { FAKE_ZCODE_EMPTY_SESSION: '1', FAKE_ZCODE_EMPTY_SESSION_VARIANT: variant } });
+    const diagnostic = await diagnoseZCodeAuth({ workspace: ready.cwd, discovery: { launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode } }, env: ready.options.env });
+    assert.equal(diagnostic.ready, false, variant);
+    assert.equal(diagnostic.status, 'incompatible', variant);
+  }
+});
+
+test('setup reports an incompatible empty-session protocol instead of unauthenticated', async () => {
+  const ctx = await context({ zcodeEnv: { FAKE_ZCODE_EMPTY_SESSION: '1', FAKE_ZCODE_EMPTY_SESSION_VARIANT: 'conflict' } });
+  const report = await runSetup(ctx.options);
+  assert.equal(report.status, 'incompatible');
+  assert.equal(report.auth.status, 'incompatible');
+  assert.match(report.auth.reason, /incompatible|protocol|snapshot/i);
+});
+
+test('setup authentication uses the dedicated empty-session probe seam', async () => {
+  let probeCalls = 0;
+  const diagnostic = await diagnoseZCodeAuth({
+    workspace: '/repo',
+    discovery: { launch: { command: 'unused', args: [] } },
+    createClient: async () => ({
+      createSession: async () => { throw new Error('setup must not use the strict runtime createSession seam'); },
+      createSessionForSetupAuthProbe: async ({ workspace }) => { probeCalls += 1; assert.equal(workspace, '/repo'); return { session: { sessionId: 'setup-session' } }; },
+      stopSession: async () => {}, close: async () => {},
+    }),
+  });
+  assert.equal(probeCalls, 1);
+  assert.deepEqual(diagnostic, { ready: true, status: 'authenticated' });
+});
+
+test('setup does not mislabel protocol output invalid as unauthenticated', async () => {
+  const diagnostic = await diagnoseZCodeAuth({
+    workspace: '/repo',
+    discovery: { launch: { command: 'unused', args: [] } },
+    createClient: async () => ({
+      createSessionForSetupAuthProbe: async () => { throw Object.assign(new Error('invalid snapshot'), { code: 'ZCODE_OUTPUT_INVALID', details: { method: 'session/create' } }); },
+      close: async () => {},
+    }),
+  });
+  assert.equal(diagnostic.ready, false);
+  assert.equal(diagnostic.status, 'incompatible');
+  assert.match(diagnostic.reason, /protocol|snapshot|incompatible/i);
+  assert.doesNotMatch(diagnostic.reason, /unauthenticated/i);
 });
 
 test('plugin-level authentication diagnostic identifies a missing ZCode CLI model provider', async () => {
