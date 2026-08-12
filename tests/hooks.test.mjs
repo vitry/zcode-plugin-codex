@@ -279,7 +279,7 @@ test('SessionEnd removes only its session contexts and leaves sibling jobs/sessi
 });
 
 test('SessionEnd releases only its broker owner sessions and lets the idle broker exit', async () => {
-  const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); const socketMethods = join(data, 'hook-socket-methods.txt'); await writeFile(record, ''); await writeFile(socketMethods, '');
+  const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); const socketMethods = join(data, 'hook-socket-methods.txt'); const fsErrors = join(data, 'hook-fs-errors.txt'); await writeFile(record, ''); await writeFile(socketMethods, ''); await writeFile(fsErrors, '');
   const launch = { command: process.execPath, args: [fakeZCode], target: fakeZCode }; const clients = [];
   for (const sessionId of ['a', 'b']) {
     await runHook('session-lifecycle-hook.mjs', { session_id: sessionId, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
@@ -288,16 +288,17 @@ test('SessionEnd releases only its broker owner sessions and lets the idle broke
   }
   for (const client of clients) await client.close();
   const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const identity = JSON.parse(await readFile(join(storage.directory, 'broker/identity.json'), 'utf8')); const ownershipPath = join(storage.directory, 'broker/session-owners.json'); const ownershipBefore = await stat(ownershipPath); const hookStartedAt = Date.now();
-  const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, { ...env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${socketMethodRecorder}`.trim(), ZCODE_TEST_SOCKET_METHOD_RECORD: socketMethods }); const hookElapsedMs = Date.now() - hookStartedAt;
+  const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, { ...env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${socketMethodRecorder}`.trim(), ZCODE_TEST_SOCKET_METHOD_RECORD: socketMethods, ZCODE_TEST_FS_ERROR_RECORD: fsErrors }); const hookElapsedMs = Date.now() - hookStartedAt;
   assert.equal(ended.code, 0);
   const owners = JSON.parse(await readFile(ownershipPath, 'utf8'));
   let releaseDiagnostic = 'owner release succeeded without diagnostic collection';
   if (JSON.stringify(owners.sessions) !== JSON.stringify({ 'zcode-b': ownerIdForSession('b') })) {
-    const callsAtFailure = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)); const ownershipAfter = await stat(ownershipPath); const healthyAfterFailure = await probeBrokerHealth(identity, 250); const childPidProbe = await probePidFromChild(identity.pid); let ownedJobsProbe;
+    const callsAtFailure = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)); const ownershipAfter = await stat(ownershipPath); const healthyAfterFailure = await probeBrokerHealth(identity, 250); const childPidProbe = await probePidFromChild(identity.pid); let ownedJobsProbe; let markerBeforeRetry;
+    try { markerBeforeRetry = { value: JSON.parse(await readFile(join(storage.directory, 'job-owners/index.json'), 'utf8')) }; } catch (error) { markerBeforeRetry = { errorCode: error?.code ?? null }; }
     try { ownedJobsProbe = { count: (await createStateStore({ dataRoot: data }).listOwnedJobs(cwd, 'a')).length }; } catch (error) { ownedJobsProbe = { error: { code: error?.code ?? null, category: error?.category ?? null, details: error?.details ?? null } }; }
     const hookSocketMethods = (await readFile(socketMethods, 'utf8')).trim().split('\n').filter(Boolean); const retrySocketMethodsPath = join(data, 'retry-socket-methods.txt'); await writeFile(retrySocketMethodsPath, '');
     const retry = await runHook(ownerReleaseProbe, { dataRoot: data, workspace: cwd, ownerSessionId: 'a', ownerId: ownerIdForSession('a') }, { ...env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${socketMethodRecorder}`.trim(), ZCODE_TEST_SOCKET_METHOD_RECORD: retrySocketMethodsPath }, { absolute: true });
-    releaseDiagnostic = `release-stage ${JSON.stringify({ hookElapsedMs, stopObserved: callsAtFailure.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'), hookSocketMethods, retrySocketMethods: (await readFile(retrySocketMethodsPath, 'utf8')).trim().split('\n').filter(Boolean), retry: retry.json ?? { code: retry.code, stderr: retry.stderr.trim() || null }, ownerStoreReplaced: ownershipAfter.ino !== ownershipBefore.ino || ownershipAfter.mtimeMs !== ownershipBefore.mtimeMs, healthyAfterFailure, childPidProbe, ownedJobsProbe, hookCode: ended.code, hookDiagnostic: ended.stderr.trim() || null })}`;
+    releaseDiagnostic = `release-stage ${JSON.stringify({ hookElapsedMs, stopObserved: callsAtFailure.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'), hookSocketMethods, hookFsErrors: (await readFile(fsErrors, 'utf8')).trim().split('\n').filter(Boolean), markerBeforeRetry, retrySocketMethods: (await readFile(retrySocketMethodsPath, 'utf8')).trim().split('\n').filter(Boolean), retry: retry.json ?? { code: retry.code, stderr: retry.stderr.trim() || null }, ownerStoreReplaced: ownershipAfter.ino !== ownershipBefore.ino || ownershipAfter.mtimeMs !== ownershipBefore.mtimeMs, healthyAfterFailure, childPidProbe, ownedJobsProbe, hookCode: ended.code, hookDiagnostic: ended.stderr.trim() || null })}`;
   }
   assert.deepEqual(owners.sessions, { 'zcode-b': ownerIdForSession('b') }, releaseDiagnostic);
   assert.deepEqual((await readFile(socketMethods, 'utf8')).trim().split('\n'), ['broker/auth', 'broker/health', 'broker/releaseOwner']);
