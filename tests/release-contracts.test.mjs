@@ -194,6 +194,21 @@ test('CI runs full and packed native suites on three platforms and Node 22.13', 
   }
   assert.match(packageTest, /NODE22_BINARY/);
   assert.doesNotMatch(packageTest, /NODE18_BINARY|node@18|Node 18/);
+  assert.match(packageTest, /timeoutMs:\s*120_000/);
+});
+
+test('required marketplace builder coverage runs explicitly after the default-discovered suite', () => {
+  const packageJson = JSON.parse(read('package.json'));
+  assert.equal(packageJson.scripts.test, 'node --test && node --test tests/integration/marketplace-snapshot-build.mjs');
+  const lightweight = read('tests/marketplace-snapshot.test.mjs');
+  const heavy = read('tests/integration/marketplace-snapshot-build.mjs');
+  assert.doesNotMatch(lightweight, /cleanRepositoryClone|concurrent snapshot|break dependency lock/);
+  assert.match(heavy, /cleanRepositoryClone/);
+  assert.match(heavy, /concurrent snapshot one/);
+  assert.match(heavy, /break dependency lock/);
+  assert.doesNotMatch(heavy, /npm\(\['ci'/);
+  const plan = read('docs/superpowers/plans/2026-08-03-zcode-plugin-codex-implementation.md');
+  assert.match(plan, /node --test tests\/marketplace-snapshot\.test\.mjs tests\/integration\/marketplace-snapshot-build\.mjs/);
 });
 
 test('runtime baseline is Node 22.13 across implementation plans and locking ADR', () => {
@@ -211,15 +226,116 @@ test('runtime baseline is Node 22.13 across implementation plans and locking ADR
 test('release qualification covers the installed direct bridge and explicit real model', () => {
   const packageJson = JSON.parse(read('package.json')); const qualified = packageJson.scripts['test:qualified'];
   assert.match(qualified, /tests\/e2e\/codex-skills-e2e\.test\.mjs/); assert.match(qualified, /tests\/e2e\/real-zcode\.test\.mjs/);
+  assert.doesNotMatch(qualified, /require-qualified\.cjs/); const required = packageJson.scripts['test:qualification-required']; assert.match(required, /require-qualified\.cjs/); assert.match(read('tests/helpers/require-qualified.cjs'), /ZCODE_REQUIRE_QUALIFIED\s*=\s*['"]1['"]/);
   assert.match(packageJson.scripts.check, /npm run test:qualified/);
   const real = read('tests/e2e/real-zcode.test.mjs');
-  assert.match(real, /ZCODE_REAL_E2E_MODEL\?\.trim\(\)/); assert.match(real, /runCompanion/); assert.match(real, /--model/);
+  assert.match(real, /resolveRealZCodeModelEnvironment/); assert.match(real, /ZCODE_REAL_MODEL_CONFLICT/); assert.match(real, /runCompanion/); assert.match(real, /--model/);
+  const realModel = read('tests/helpers/real-zcode-model.mjs');
+  assert.match(realModel, /ZCODE_REAL_E2E_MODEL/); assert.match(realModel, /ZCODE_REAL_MODEL/); assert.match(realModel, /deprecatedAliasUsed/);
   const installed = read('tests/e2e/codex-skills-e2e.test.mjs');
   assert.match(installed, /codex-skills-unqualified/); assert.match(installed, /exec/); assert.match(installed, /--ephemeral/); assert.match(installed, /--json/); assert.match(installed, /\$zcode:review/); assert.match(installed, /buildMarketplaceSnapshot/);
+  assert.match(installed, /codex-skills-observation/); assert.match(installed, /tui-evidence-not-exposed/); assert.match(installed, /qualificationScope:\s*'tui'/);
+  assert.doesNotMatch(installed, /unqualified\(\s*['"]tui-evidence/);
+  assert.match(installed, /turn\/steer/); assert.match(installed, /pendingWait/); assert.match(installed, /steering must retain the exact native child ID/);
+  assert.match(installed, /target must remain nonterminal before stop acknowledgement/); assert.match(installed, /installed cancel must stop the exact durable remote session/);
+  assert.match(installed, /close\('SIGKILL'\)/); assert.match(installed, /the exact installed Codex parent process must be gone before recovery/); assert.match(installed, /must not execute another ZCode turn/);
+  assert.match(installed, /qualifyInstalledIdentityFailures/);
+  for (const code of ['THREAD_ID_REQUIRED', 'EXECUTOR_IDENTITY_NOT_FOUND', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_PARENT_TURN_MISMATCH']) assert.match(installed, new RegExp(code));
+  assert.match(installed, /installPrivateCapabilityObserver/); assert.match(installed, /capabilityChecked/); assert.match(installed, /privateExecutionCapability/);
   const manifest = JSON.parse(read('.codex-plugin/plugin.json')); assert.equal(Object.hasOwn(manifest, 'hooks'), false); assert.ok(JSON.parse(read('hooks/hooks.json')).hooks);
   const companion = read('scripts/zcode-companion.mjs'); assert.match(companion, /startBackgroundWorker/);
   for (const command of commands) {
     const skill = read(`skills/${command}/SKILL.md`);
     assert.doesNotMatch(skill, /FD3|FD4|caller.?context|execution capability/i);
   }
+});
+
+test('isolated Rescue release guidance states exact inspection, privacy, recovery, and compatibility limits', () => {
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  for (const source of [english, chinese]) {
+    assert.match(source, /zcode-rescue/);
+    assert.match(source, /\/agent/);
+    assert.match(source, /\/subagents/);
+    assert.match(source, /\/ps/);
+    assert.match(source, /96/);
+    assert.match(source, /agent_type/);
+    assert.match(source, /subscription/i);
+    assert.match(source, /uninstall/i);
+    assert.match(source, /ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider\/model' npm run test:qualification-required/);
+    assert.match(source, /ZCODE_REAL_MODEL.{0,120}deprecated|deprecated.{0,120}ZCODE_REAL_MODEL/is);
+    assert.match(source, /conflict|冲突/i);
+  }
+  assert.match(english, /restart Codex.{0,160}rerun `?\$zcode:setup/is);
+  assert.match(english, /collision.{0,200}(?:foreign|project|higher-precedence)/is);
+  assert.match(english, /truncation.{0,120}not secret redaction/is);
+  assert.match(english, /parent thread/i);
+  assert.match(english, /child thread/i);
+  assert.match(english, /\/ps.{0,180}current(?:ly active)? thread/is);
+  assert.match(english, /background semantics remain unchanged/i);
+  assert.match(english, /Codex 0\.147/);
+  assert.match(english, /unqualified/i);
+  assert.match(chinese, /重启 Codex.{0,160}(?:再次|重新)运行 `?\$zcode:setup/is);
+  assert.match(chinese, /冲突.{0,200}(?:外部|项目|高优先级|更高优先级)/is);
+  assert.match(chinese, /截断.{0,120}不是秘密脱敏/is);
+  assert.match(chinese, /父线程/);
+  assert.match(chinese, /子线程/);
+  assert.match(chinese, /\/ps.{0,180}当前(?:活动)?线程/is);
+  assert.match(chinese, /后台语义保持不变/);
+  assert.match(chinese, /Codex 0\.147/);
+  assert.match(chinese, /unqualified/i);
+
+  const security = read('SECURITY.md');
+  assert.match(security, /96-character/);
+  assert.match(security, /not secret redaction/i);
+  assert.match(security, /managed Role/i);
+  assert.match(security, /same-UID/i);
+  assert.match(security, /uninstall/i);
+
+  const changelog = read('CHANGELOG.md');
+  assert.match(changelog, /managed `zcode-rescue` Role/);
+  assert.match(changelog, /semantic progress/);
+  assert.match(changelog, /native child/i);
+
+  const setup = read('skills/setup/SKILL.md');
+  assert.match(setup, /stable plugin data/i);
+  assert.match(setup, /restart Codex/i);
+  assert.match(setup, /collision/i);
+  const rescue = read('skills/rescue/SKILL.md');
+  assert.match(rescue, /\/agent|\/subagents/);
+  assert.match(rescue, /\/ps/);
+  assert.match(rescue, /96-character/);
+  assert.match(rescue, /not secret redaction/i);
+  assert.match(rescue, /subscription/i);
+  const status = read('skills/status/SKILL.md');
+  assert.match(status, /durable/i);
+  assert.match(status, /parent|owner/i);
+  assert.match(status, /semantic progress/i);
+  assert.match(status, /uninstall/i);
+
+  const installedQualification = read('tests/e2e/codex-skills-e2e.test.mjs');
+  assert.match(installedQualification, /SUPPORTED_CODEX_LINES\s*=\s*Object\.freeze\(\['0\.147'\]\)/);
+  assert.match(installedQualification, /tui-evidence-not-exposed/);
+  assert.match(installedQualification, /codex-skills-observation/);
+  assert.match(installedQualification, /Object\.hasOwn\(payload, 'qualified'\), false/);
+  assert.match(read('tests/e2e/real-zcode.test.mjs'), /real-zcode-unqualified/);
+});
+
+test('repository and CI enforce the LF line-ending constitution', () => {
+  assert.match(read('.gitattributes'), /^\* text=auto eol=lf\n$/);
+  const adr = read('docs/adr/0012-enforce-lf-line-endings.md');
+  assert.match(adr, /Git-tracked text files/i);
+  assert.match(adr, /generated marketplace/i);
+  assert.match(adr, /CRLF.{0,120}(?:runtime|test)/is);
+
+  const packageJson = JSON.parse(read('package.json'));
+  assert.equal(packageJson.scripts['check:line-endings'], 'node scripts/check-line-endings.mjs');
+  assert.match(packageJson.scripts.check, /^npm run check:line-endings && npm run lint/);
+
+  const workflow = read('.github/workflows/ci.yml');
+  const installIndex = workflow.indexOf('- run: npm ci');
+  const lineEndingIndex = workflow.indexOf('- name: Enforce LF line endings');
+  const checkIndex = workflow.indexOf('- run: npm run check');
+  assert.ok(installIndex >= 0 && installIndex < lineEndingIndex && lineEndingIndex < checkIndex);
+  assert.match(workflow.slice(lineEndingIndex, checkIndex), /run: npm run check:line-endings/);
 });

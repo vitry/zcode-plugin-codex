@@ -1,22 +1,27 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { PassThrough } from 'node:stream';
 
+import { startBackgroundWorker } from '../../scripts/lib/background-worker.mjs';
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
-import { createManagedZCodeClient } from '../../scripts/lib/zcode-client.mjs';
+import { createManagedZCodeClient, releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { runCompanion } from '../../scripts/zcode-companion.mjs';
+import { markForwarding } from '../../hooks/lib/hook-state.mjs';
+import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
@@ -25,7 +30,9 @@ const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
 const completionSignalProbe = join(root, 'tests', 'fixtures', 'completion-signal-probe.cjs');
 const signalHandlerProbe = join(root, 'tests', 'fixtures', 'signal-handler-probe.cjs');
 const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs');
+const sessionEndHook = join(root, 'hooks', 'session-end-hook.mjs');
 const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
+/** @typedef {(pid:number,signal?:number|string)=>boolean} KillFn */
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-companion-'));
@@ -56,6 +63,80 @@ function run(command, args, options = {}) {
 
 function consumePipeError() {}
 
+/** @param {number} pid @param {KillFn} [killFn] */
+function processAlive(pid, killFn = process.kill) {
+  try { killFn(pid, 0); return true; }
+  catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code === 'ESRCH') return false; throw error; }
+}
+
+/** @param {number} pid @param {number} [timeoutMs] @param {KillFn} [killFn] */
+async function waitForProcessExit(pid, timeoutMs = 1_000, killFn = process.kill) {
+  const deadline = Date.now() + timeoutMs;
+  while (processAlive(pid, killFn) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  return !processAlive(pid, killFn);
+}
+
+/** @param {number} pid @param {KillFn} [killFn] */
+async function terminateOwnedProcess(pid, killFn = process.kill) {
+  if (!processAlive(pid, killFn)) return;
+  killFn(pid, 'SIGTERM');
+  if (await waitForProcessExit(pid, 1_000, killFn)) return;
+  killFn(pid, 'SIGKILL');
+  assert.equal(await waitForProcessExit(pid, 1_000, killFn), true, `owned process ${pid} was not reaped`);
+}
+
+/** @param {unknown} value @param {number} selfPid */
+function validRecordedPid(value, selfPid) { return Number.isSafeInteger(value) && Number(value) > 1 && value !== selfPid; }
+
+/** @param {any} brokerIdentity @param {any} workerIdentity @param {number} selfPid */
+function validateRecordedProcessIdentities(brokerIdentity, workerIdentity, selfPid) {
+  if (brokerIdentity === null && workerIdentity === null) return null;
+  if (!brokerIdentity || typeof brokerIdentity !== 'object' || Array.isArray(brokerIdentity) || !validRecordedPid(brokerIdentity.pid, selfPid)) throw new Error('child-loss broker identity has an unsafe pid');
+  if (workerIdentity !== null && (!workerIdentity || typeof workerIdentity !== 'object' || Array.isArray(workerIdentity)
+    || !validRecordedPid(workerIdentity.pid, selfPid) || workerIdentity.pid === brokerIdentity.pid
+    || !validRecordedPid(workerIdentity.ppid, selfPid) || workerIdentity.ppid !== brokerIdentity.pid)) throw new Error('child-loss worker identity has an unsafe pid');
+  return { brokerPid: brokerIdentity.pid, workerPid: workerIdentity?.pid ?? null };
+}
+
+/** @param {any} input */
+async function terminateRecordedOwnedProcesses(input) {
+  const recorded = validateRecordedProcessIdentities(input.brokerIdentity, input.workerIdentity, input.selfPid ?? process.pid);
+  const current = validateRecordedProcessIdentities(input.currentIdentity, null, input.selfPid ?? process.pid);
+  if (!recorded || !current || input.currentIdentity.pid !== input.brokerIdentity.pid || input.currentIdentity.instanceId !== input.brokerIdentity.instanceId || input.currentIdentity.endpoint !== input.brokerIdentity.endpoint) return recorded;
+  await terminateOwnedProcess(recorded.brokerPid, input.killFn);
+  if (recorded.workerPid !== null) await terminateOwnedProcess(recorded.workerPid, input.killFn);
+  return recorded;
+}
+
+/** @param {any} input */
+async function cleanupChildLossProcesses(input) {
+  let cleanupError;
+  try {
+    const brokerIdentity = await readFile(input.identityPath, 'utf8').then(JSON.parse).catch(() => null);
+    const workerIdentity = await readFile(input.workerProcess, 'utf8').then(JSON.parse).catch(() => null);
+    const recorded = validateRecordedProcessIdentities(brokerIdentity, workerIdentity, process.pid);
+    if (!input.childExited()) { input.child.kill('SIGKILL'); await input.childExit.catch(() => {}); }
+    let releaseError;
+    try {
+      const released = await releaseManagedZCodeOwner({ dataRoot: input.context.dataRoot, workspace: input.context.workspace, ownerId: input.ownerId, requestTimeoutMs: 750 });
+      const sessionId = input.sessionId();
+      if (sessionId) { assert.equal(released.releasedSessionIds.includes(sessionId), true); assert.equal(released.failedSessionIds.includes(sessionId), false); }
+    }
+    catch (error) { releaseError = error; }
+    const currentIdentity = await readFile(input.identityPath, 'utf8').then(JSON.parse).catch(() => null);
+    await terminateRecordedOwnedProcesses({ brokerIdentity, currentIdentity, workerIdentity });
+    if (recorded) assert.equal(processAlive(recorded.brokerPid), false);
+    if (recorded && recorded.workerPid !== null) assert.equal(processAlive(recorded.workerPid), false);
+    if (brokerIdentity) await assert.rejects(stat(brokerIdentity.endpoint), { code: 'ENOENT' });
+    await assert.rejects(stat(input.identityPath), { code: 'ENOENT' });
+    if (releaseError) throw releaseError;
+  }
+  catch (error) { cleanupError = error; }
+  finally { await rm(input.context.directory, { recursive: true, force: true }); }
+  await assert.rejects(stat(input.context.directory), { code: 'ENOENT' });
+  if (cleanupError) throw cleanupError;
+}
+
 /** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} [extraEnv] @param {Record<string,unknown>} [authorization] */
 async function companion(context, args, extraEnv = {}, authorization = { callerContext: context.caller }) {
   const result = await run(process.execPath, [cli, ...args], { cwd: context.workspace, env: { ...context.env, ...extraEnv }, input: authorization });
@@ -72,6 +153,21 @@ async function waitFor(predicate, message) {
   throw new Error(message);
 }
 
+/** @param {any} context @param {()=>Promise<any[]>} recorded @param {string} message */
+async function waitForAcceptedBoundary(context, recorded, message) {
+  const storage = await resolveWorkspaceStorage(context);
+  await waitFor(async () => {
+    if (!(await recorded()).some((frame) => frame.method === 'session/send')) return false;
+    const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
+    for (const name of names) {
+      if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
+      const job = await readFile(join(storage.directory, 'jobs', name), 'utf8').then(JSON.parse).catch(() => null);
+      if (typeof job?.inputId === 'string' && Number.isSafeInteger(job?.startRevision)) return true;
+    }
+    return false;
+  }, message);
+}
+
 /** @param {any} context @param {{ownerSessionId?:string,ownerTurnId?:string,workerLeaseId?:string,zcodeSessionId?:string}} [options] */
 async function reserveOrphan(context, options = {}) {
   const store = createStateStore({ dataRoot: context.dataRoot });
@@ -86,6 +182,58 @@ async function reserveOrphan(context, options = {}) {
 
 /** @param {string} sessionId @param {string} [turnId] */
 function caller(sessionId, turnId = `${sessionId}-turn`) { return { sessionId, turnId, permissionMode: 'workspace-write' }; }
+
+/** @param {any} context @param {{parentSessionId:string,parentTurnId:string,childId:string,childTurnId:string,prompt:string}} input */
+async function prepareDirectRescueChild(context, input) {
+  const parent = { sessionId: input.parentSessionId, turnId: input.parentTurnId, workspace: context.workspace, permissionMode: 'workspace-write', prompt: input.prompt };
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  const callerContext = await identity.beginCallerTurn(parent);
+  const active = await identity.resolveActiveTurn({ sessionId: input.parentSessionId, workspace: context.workspace });
+  await markForwarding(context.dataRoot, {
+    session_id: input.parentSessionId,
+    turn_id: input.childTurnId,
+    cwd: context.workspace,
+    hook_event_name: 'SubagentStart',
+    agent_id: input.childId,
+    agent_type: 'zcode-rescue',
+  }, active);
+  return { callerContext, parent };
+}
+
+test('role-status rescue is bounded and returns before caller consumption, reconciliation, discovery, or reservation', async () => {
+  const context = await fixture();
+  const forbidden = () => { throw new Error('role-status crossed the read-only preflight boundary'); };
+  const output = await runCompanion(['role-status', 'rescue'], {
+    cwd: context.workspace,
+    env: context.env,
+    authorization: { callerContext: 'must-not-be-consumed' },
+    dependencies: {
+      inspectRescueRoleStatus: async (/** @type {any} */ input) => {
+        assert.equal(input.cwd, context.workspace);
+        assert.equal(input.pluginRoot, await realpath(root));
+        return { status: 'ready', rolePath: '/private/path/must-not-render' };
+      },
+      reconcileOwnedJobs: forbidden,
+      discoverLaunch: forbidden,
+      reserveJob: forbidden,
+    },
+  });
+  assert.deepEqual(output, { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.equal(renderOutput(output), '{"type":"role-status","role":"zcode-rescue","status":"ready"}\n');
+});
+
+test('role-status rescue maps every non-ready managed state to the exact setup remedy', async () => {
+  const context = await fixture();
+  for (const status of ['restart-required', 'install-required', 'upgrade-required', 'drift', 'foreign-conflict', 'project-shadowed', 'higher-precedence-conflict', 'unsupported']) {
+    const output = await runCompanion(['role-status', 'rescue'], { cwd: context.workspace, env: context.env, dependencies: { inspectRescueRoleStatus: async () => ({ status }) } });
+    assert.deepEqual(output, { type: 'role-status', role: 'zcode-rescue', status, remedy: '$zcode:setup' });
+    assert.ok(Buffer.byteLength(renderOutput(output)) < 256);
+  }
+  const invalid = await runCompanion(['role-status', 'rescue'], { cwd: context.workspace, env: context.env, dependencies: { inspectRescueRoleStatus: async () => ({ status: 'secret'.repeat(10_000) }) } });
+  assert.deepEqual(invalid, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+  const failed = await runCompanion(['role-status', 'rescue'], { cwd: context.workspace, env: context.env, dependencies: { inspectRescueRoleStatus: async () => { throw new Error('private config parser detail'); } } });
+  assert.deepEqual(failed, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+});
 
 /** @param {any[]} [calls] */
 function missingRemoteDependencies(calls = []) {
@@ -121,6 +269,30 @@ async function recoverForeignCompletion() {
 test('module import has no CLI side effects', async () => {
   const result = await run(process.execPath, ['--input-type=module', '--eval', `await import(${JSON.stringify(new URL('../../scripts/zcode-companion.mjs', import.meta.url).href)}); process.stdout.write('imported')`]);
   assert.deepEqual({ code: result.code, stdout: result.stdout, stderr: result.stderr }, { code: 0, stdout: 'imported', stderr: '' });
+});
+
+test('child-loss teardown rejects unsafe recorded pids before probing or signaling', async () => {
+  const selfPid = 424_240; const broker = { endpoint: '/test/broker.sock', instanceId: 'instance', pid: 424_241 }; const worker = { pid: 424_242, ppid: broker.pid };
+  /** @type {any[]} */
+  const variants = [
+    { broker: null, worker },
+    { broker: { ...broker, pid: 'malformed' }, worker },
+    ...[0, 1, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, selfPid].map((pid) => ({ broker: { ...broker, pid }, worker: { ...worker, ppid: pid } })),
+    { broker, worker: [] },
+    { broker, worker: { pid: 'malformed', ppid: broker.pid } },
+    ...[0, 1, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, selfPid, broker.pid].map((pid) => ({ broker, worker: { ...worker, pid } })),
+    ...[0, 1, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, selfPid, broker.pid + 9].map((ppid) => ({ broker, worker: { ...worker, ppid } })),
+    { broker, current: { ...broker, pid: 0 }, worker },
+  ];
+  for (const variant of variants) {
+    let killCalls = 0;
+    const currentIdentity = variant.current ?? { ...variant.broker };
+    await assert.rejects(terminateRecordedOwnedProcesses({
+      brokerIdentity: variant.broker, currentIdentity, workerIdentity: variant.worker, selfPid,
+      killFn: () => { killCalls += 1; const error = /** @type {NodeJS.ErrnoException} */ (new Error('unexpected kill')); error.code = 'ESRCH'; throw error; },
+    }), /unsafe pid/);
+    assert.equal(killCalls, 0);
+  }
 });
 
 test('an already-aborted foreground invocation cancels its reservation before launcher discovery', async () => {
@@ -183,6 +355,40 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   ]);
 });
 
+test('conversation online progress reaches stderr and preview while initial and foreign frames stay private', async () => {
+  const context = await fixture();
+  const result = await companion(context, ['rescue', '--fresh', 'surface conversation progress'], { FAKE_ZCODE_CONVERSATION_PROGRESS: '1' });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.result, 'done');
+  assert.match(result.stderr, /\[zcode\] Running command: npm test\./);
+  assert.match(result.stderr, /\[zcode\] Command completed: npm test \(25ms\)\./);
+  assert.doesNotMatch(result.stderr, /INITIAL_SECRET|FOREIGN_SECRET|raw output|reasoning/);
+  const status = await companion(context, ['status', result.json.job.id]);
+  assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: npm test/);
+  assert.doesNotMatch(JSON.stringify(status.json.job.progressPreview), /INITIAL_SECRET|FOREIGN_SECRET/);
+});
+
+test('conversation online progress sent before the subscribe response is buffered until the subscription binds', async () => {
+  const context = await fixture();
+  const result = await companion(context, ['rescue', '--fresh', 'prebind conversation progress'], { FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE: '1' });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.result, 'done');
+  assert.match(result.stderr, /Running command: echo prebind\./);
+  const status = await companion(context, ['status', result.json.job.id]);
+  assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: echo prebind/);
+});
+
+test('conversation subscribe and unsubscribe failures are observational and preserve the exact result', async () => {
+  for (const failure of ['subscribe', 'unsubscribe']) {
+    const context = await fixture();
+    const result = await companion(context, ['rescue', '--fresh', `${failure} failure`], { [`FAKE_ZCODE_CONVERSATION_${failure.toUpperCase()}_FAIL`]: '1' });
+    assert.equal(result.code, 0, `${failure}: ${result.stderr}${result.stdout}`);
+    assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
+    assert.match(result.stderr, failure === 'subscribe' ? /ZCode conversation progress is unavailable\./ : /ZCode conversation progress cleanup was incomplete\./);
+    assert.doesNotMatch(result.stderr, /unsupported conversation subscription|unsubscribe failed|-32601|-32099/);
+    const status = await companion(context, ['status', result.json.job.id]);
+    assert.match(JSON.stringify(status.json.job.progressPreview), failure === 'subscribe' ? /conversation progress is unavailable/ : /conversation progress cleanup was incomplete/);
+  }
+});
+
 test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves no running job', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const record = join(context.directory, 'interrupt.jsonl'); await writeFile(record, '');
   const child = spawn(process.execPath, [cli, 'rescue', '--fresh', 'interrupt me'], {
@@ -207,6 +413,162 @@ test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves 
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.ok(jobs[0].finishedAt); assert.equal(jobs[0].resultArtifact, undefined);
   assert.equal(stdout, ''); assert.equal(internal, ''); assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|"error"/);
+});
+
+test('isolated Rescue child SIGTERM after accepted send stops once and keeps the parent thread as durable owner', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const record = join(context.directory, 'isolated-child-sigterm.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'isolated-parent'; const parentTurnId = 'isolated-parent-turn'; const childId = 'isolated-rescue-child';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId, childId, childTurnId: 'isolated-child-turn',
+    prompt: '$zcode:rescue --fresh --wait repair after isolated SIGTERM',
+  });
+  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
+  });
+  let stdout = ''; let stderr = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  await waitForAcceptedBoundary(context, recorded, 'isolated child send boundary was not durably accepted');
+  child.kill('SIGTERM');
+  const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+
+  assert.deepEqual(exit, { code: 143, signal: null });
+  const calls = await recorded(); const sentSession = calls.find((frame) => frame.method === 'session/send').params.sessionId;
+  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
+  assert.equal(calls.filter((frame) => frame.method === 'session/stop' && frame.params.sessionId === sentSession).length, 1);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].ownerSessionId, parentSessionId); assert.equal(jobs[0].ownerTurnId, parentTurnId);
+  assert.equal(jobs[0].status, 'cancelled'); assert.equal(jobs[0].resultArtifact, undefined);
+  assert.equal(stdout, ''); assert.match(stderr, /Interrupted by SIGTERM\./);
+});
+
+test('unacknowledged parent SessionEnd retains the durable guard without a second owner-release stop', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const record = join(context.directory, 'session-end-unacknowledged.jsonl'); const recovery = join(context.directory, 'session-end-recovery.json');
+  await Promise.all([writeFile(record, ''), writeFile(recovery, JSON.stringify({ mode: 'active' }))]);
+  const parentSessionId = 'session-end-parent'; const childId = 'session-end-rescue-child';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'session-end-parent-turn', childId, childTurnId: 'session-end-child-turn',
+    prompt: '$zcode:rescue --fresh --wait preserve the unacknowledged guard',
+  });
+  const env = {
+    ...context.env,
+    CODEX_THREAD_ID: childId,
+    FAKE_ZCODE_RECORD: record,
+    FAKE_ZCODE_RECOVERY_CONTROL: recovery,
+    FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1',
+    FAKE_ZCODE_STOP_ERROR_ONCE: '1',
+  };
+  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+  let exited = false; child.stdout?.resume(); child.stderr?.resume();
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  await waitForAcceptedBoundary(context, recorded, 'isolated child send boundary was not durably accepted before SessionEnd');
+  child.kill('SIGKILL');
+  await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', () => { exited = true; resolve(undefined); }); });
+
+  const hookInput = {
+    session_id: parentSessionId,
+    cwd: context.workspace,
+    hook_event_name: 'SessionEnd',
+    transcript_path: null,
+    reason: 'other',
+  };
+  try {
+    const first = await runChild(process.execPath, [sessionEndHook], { cwd: context.workspace, env, ordinaryInput: true, input: hookInput });
+    assert.equal(first.code, 0, first.stderr || first.stdout);
+    const calls = await recorded();
+    assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
+    assert.equal(calls.filter((frame) => frame.method === 'session/stop').length, 1, 'owner release must not retry an unacknowledged SessionEnd stop behind durable state');
+    const [job] = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+    assert.equal(job.ownerSessionId, parentSessionId); assert.equal(job.status, 'running'); assert.equal(job.finishedAt, undefined);
+    assert.match(job.lastCancelError, /fixture first stop failed/);
+    await assert.rejects(createStateStore({ dataRoot: context.dataRoot }).reserveJob({
+      workspace: context.workspace, ownerSessionId: 'later-owner', ownerTurnId: 'later-turn', command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    }), { code: 'WRITABLE_JOB_EXISTS' });
+  } finally {
+    await runChild(process.execPath, [sessionEndHook], { cwd: context.workspace, env, ordinaryInput: true, input: hookInput }).catch(() => {});
+  }
+});
+
+test('parent steering leaves one isolated Rescue child running with zero cancel or duplicate send', async (t) => {
+  const context = await fixture(); const record = join(context.directory, 'steering.jsonl'); const gate = join(context.directory, 'steering.gate');
+  await Promise.all([writeFile(record, ''), writeFile(gate, 'hold')]);
+  const parentSessionId = 'steering-parent'; const originalTurnId = 'steering-origin'; const childId = 'steering-rescue-child';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: originalTurnId, childId, childTurnId: 'steering-child-turn',
+    prompt: '$zcode:rescue --fresh --wait keep using the same child',
+  });
+  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: gate };
+  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+  let stdout = ''; let stderr = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  await waitForAcceptedBoundary(context, recorded, 'steered child send boundary was not durably accepted');
+
+  await createIdentityStore({ dataRoot: context.dataRoot }).beginCallerTurn({
+    sessionId: parentSessionId, turnId: 'steering-later-turn', workspace: context.workspace,
+    permissionMode: 'workspace-write', prompt: 'ordinary steering that must not cancel or respawn Rescue',
+  });
+  await writeFile(gate, 'release');
+  const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+
+  assert.deepEqual(exit, { code: 0, signal: null }); assert.equal(stdout, 'done\n'); assert.equal(stderr.includes('Interrupted by'), false);
+  const calls = await recorded(); assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1); assert.equal(calls.filter((frame) => frame.method === 'session/stop').length, 0);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].ownerSessionId, parentSessionId); assert.equal(jobs[0].ownerTurnId, originalTurnId); assert.equal(jobs[0].status, 'succeeded');
+});
+
+test('isolated child loss recovers the accepted parent-owned turn without another session send', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const record = join(context.directory, 'child-loss-recovery.jsonl'); const recovery = join(context.directory, 'child-loss-recovery.json'); const workerProcess = join(context.directory, 'child-loss-worker.json');
+  await Promise.all([writeFile(record, ''), writeFile(recovery, JSON.stringify({ mode: 'active' }))]);
+  const parentSessionId = 'recovery-parent'; const childId = 'recovery-rescue-child';
+  const prepared = await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'recovery-parent-turn', childId, childTurnId: 'recovery-child-turn',
+    prompt: '$zcode:rescue --fresh --wait recover this accepted child turn',
+  });
+  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_PROCESS_FILE: workerProcess, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: recovery, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' };
+  const storage = await resolveWorkspaceStorage(context); const identityPath = join(storage.directory, 'broker', 'identity.json');
+  /** @type {string|undefined} */ let ownedSessionId;
+  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+  let exited = false; child.stdout?.resume(); child.stderr?.resume();
+  const childExit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', () => { exited = true; resolve(undefined); }); });
+  t.after(() => cleanupChildLossProcesses({ child, childExit, childExited: () => exited, context, identityPath, ownerId: ownerIdForSession(parentSessionId), sessionId: () => ownedSessionId, workerProcess }));
+  const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  await waitForAcceptedBoundary(context, recorded, 'recoverable child send boundary was not durably accepted');
+  [ownedSessionId] = (await store.listJobs(context.workspace)).map((job) => job.zcodeSessionId);
+  child.kill('SIGKILL');
+  await childExit;
+  await writeFile(recovery, JSON.stringify({ mode: 'completed' }));
+
+  const status = await companion(context, ['status'], { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: recovery }, { callerContext: prepared.callerContext });
+  assert.equal(status.code, 0, status.stderr || status.stdout); assert.equal(status.json.job.status, 'succeeded', JSON.stringify(status.json.job));
+  const result = await companion(context, ['result', status.json.job.id], { FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: recovery }, { callerContext: prepared.callerContext });
+  assert.equal(result.code, 0, result.stderr || result.stdout); assert.equal(result.json.result, 'done');
+  const calls = await recorded(); assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1); assert.equal(calls.filter((frame) => frame.method === 'session/stop').length, 0);
+  const jobs = await store.listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].ownerSessionId, parentSessionId); assert.equal(jobs[0].status, 'succeeded');
+});
+
+test('sibling child rejection happens before reservation, session send, or stop', async () => {
+  const context = await fixture(); const record = join(context.directory, 'sibling-rejection.jsonl'); await writeFile(record, '');
+  await prepareDirectRescueChild(context, {
+    parentSessionId: 'sibling-parent', parentTurnId: 'sibling-parent-turn', childId: 'approved-rescue-child', childTurnId: 'approved-child-turn',
+    prompt: '$zcode:rescue --fresh --wait reject every sibling',
+  });
+  const sibling = await run(process.execPath, [cli, 'invoke', 'rescue'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_THREAD_ID: 'ordinary-sibling-child', FAKE_ZCODE_RECORD: record },
+  });
+  assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /EXECUTOR_IDENTITY_NOT_FOUND/);
+  assert.equal(await readFile(record, 'utf8'), '');
+  assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), []);
 });
 
 test('real CLI completion that wins before SIGINT remains succeeded with exit zero', async () => {
@@ -301,6 +663,37 @@ test('background reservation exposes one private invocation, which is single-use
   assert.notEqual(replay.code, 0); assert.equal(replay.json.error.code, 'EXECUTION_CAPABILITY_CONSUMED');
 });
 
+test('one production background admission mints and transports its exact capability only through fd3', async (t) => {
+  const context = await fixture(); t.after(() => rm(context.directory, { force: true, recursive: true }));
+  const authorization = new PassThrough(); const acknowledgements = new PassThrough(); const child = /** @type {any} */ (new EventEmitter());
+  let envelope = ''; const captures = /** @type {{invocation?:any,workerInput?:any}} */ ({}); let unrefCount = 0;
+  authorization.setEncoding('utf8'); authorization.on('data', (chunk) => { envelope += chunk; });
+  child.pid = 42_424; child.stdio = [null, null, null, authorization, acknowledgements]; child.unref = () => { unrefCount += 1; };
+  const progressLines = /** @type {string[]} */ ([]);
+  const output = await runCompanion(['rescue', '--background', '--fresh', 'production chain'], {
+    cwd: context.workspace, env: { ...context.env, CHAIN_PUBLIC_SETTING: 'visible' }, caller: caller('production-chain'), autoLaunchBackground: true,
+    progressWriter: (line) => { progressLines.push(line); },
+    dependencies: {
+      startBackgroundWorker: async (/** @type {any} */ input) => {
+        captures.workerInput = input;
+        return startBackgroundWorker({ ...input, dependencies: { spawn: (command, args, options) => { captures.invocation = { command, args, options }; queueMicrotask(() => acknowledgements.end('ready\n')); return child; } } });
+      },
+    },
+  });
+  assert.ok(captures.workerInput); assert.ok(captures.invocation);
+  const capturedWorkerInput = captures.workerInput; const capturedInvocation = captures.invocation;
+  const protectedEnvelope = JSON.parse(envelope);
+  const capability = protectedEnvelope.executionCapability;
+  assert.ok(typeof capability === 'string' && capability.length >= 32); assert.equal(protectedEnvelope.jobId, output.job.id); assert.equal(capturedWorkerInput.executionCapability, capability);
+  assert.equal(envelope, `${JSON.stringify({ executionCapability: capability, jobId: output.job.id })}\n`); assert.deepEqual(Object.keys(protectedEnvelope).sort(), ['executionCapability', 'jobId']);
+  assert.deepEqual(capturedInvocation.args, [cli, 'run-reserved-job', output.job.id]); assert.deepEqual(capturedInvocation.options.stdio, ['ignore', 'ignore', 'ignore', 'pipe', 'pipe']);
+  assert.equal(capturedInvocation.options.env.ZCODE_BACKGROUND_WORKER, '1'); assert.equal(capturedInvocation.options.env.CHAIN_PUBLIC_SETTING, 'visible'); assert.equal(unrefCount, 1);
+  assert.doesNotMatch(JSON.stringify(capturedInvocation), new RegExp(capability)); assert.doesNotMatch(JSON.stringify(capturedWorkerInput.env), new RegExp(capability));
+  const role = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8'); const rescueSkill = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const publicOutput = renderOutput(output); const modelVisibleEvidence = JSON.stringify({ output, publicOutput, stderr: '', progressLines, role, rescueSkill });
+  assert.equal(publicOutput, `Reserved background job ${output.job.id}.\n`); assert.doesNotMatch(modelVisibleEvidence, new RegExp(capability));
+});
+
 test('a non-worker reserved-job invocation receives the foreground abort signal', async () => {
   const context = await fixture(); const reserved = await companion(context, ['review', '--background']);
   const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'reserved foreground'); controller.abort(interruption); let discoveries = 0;
@@ -313,6 +706,22 @@ test('a non-worker reserved-job invocation receives the foreground abort signal'
   }), (error) => error === interruption);
   assert.equal(discoveries, 0);
   assert.equal((await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, reserved.json.job.id)).status, 'cancelled');
+});
+
+test('production background launch failure revokes its capability and fails the queued job', async () => {
+  const context = await fixture(); const failure = new Error('simulated descriptor launch failure');
+  await assert.rejects(runCompanion(['rescue', '--background', '--fresh', 'repair'], {
+    cwd: context.workspace, env: context.env, caller: caller('background-owner'), autoLaunchBackground: true,
+    dependencies: { startBackgroundWorker: async () => { throw failure; } },
+  }), (error) => error === failure);
+
+  const store = createStateStore({ dataRoot: context.dataRoot }); const [job] = await store.listJobs(context.workspace);
+  assert.equal(job.status, 'failed'); assert.equal(job.error.message, failure.message);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+  const capabilityFiles = await readdir(join(storage.directory, 'identity', 'capabilities'));
+  assert.equal(capabilityFiles.length, 1);
+  const record = JSON.parse(await readFile(join(storage.directory, 'identity', 'capabilities', capabilityFiles[0]), 'utf8'));
+  assert.equal(record.operation, 'run-reserved-job'); assert.equal(record.jobId, job.id); assert.equal(record.consumedAt, null); assert.ok(Date.parse(record.revokedAt));
 });
 
 test('status/list/result and queued cancellation enforce owned job semantics', async () => {
@@ -430,8 +839,33 @@ test('the owner that triggers scavenging cannot status result cancel or resume t
 test('status --all reports a scavenged foreign job only through redacted other-owner metadata', async () => {
   const { context, orphan, ownerB } = await recoverForeignCompletion();
   const listed = await runCompanion(['status', '--all'], { cwd: context.workspace, env: context.env, caller: ownerB });
-  const foreign = listed.jobs.find((/** @type {any} */ job) => job.id === orphan.id); assert.ok(foreign); assert.equal(foreign.owned, false); assert.equal(foreign.owner, 'other');
-  assert.ok(!('ownerSessionId' in foreign) && !('ownerTurnId' in foreign) && !('permissionSnapshot' in foreign));
+  const foreign = listed.jobs.find((/** @type {any} */ job) => job.id === orphan.id); assert.ok(foreign); assert.equal(foreign.hasOwner, true);
+  assert.deepEqual(Object.keys(foreign).sort(), ['createdAt', 'finishedAt', 'hasOwner', 'id', 'startedAt', 'status'].sort());
+});
+
+test('status --all preserves same-owner detail but allowlists foreign job metadata', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const mine = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-a', ownerTurnId: 'owner-a-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'read-only' } });
+  const foreignQueued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-b-secret-session', ownerTurnId: 'owner-b-secret-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'bypassPermissions', secret: 'permission-secret' } });
+  const startedAt = new Date().toISOString();
+  const foreign = await store.transitionJob(context.workspace, foreignQueued.id, ['queued'], 'running', {
+    childPid: 424242, workerLeaseId: 'a'.repeat(64), effort: 'xhigh',
+    model: { providerId: 'secret-provider', modelId: 'secret-model' },
+    promptArtifact: 'artifacts/secret-prompt.json', startedAt, zcodeSessionId: 'secret-zcode-session',
+  });
+  await store.transitionJob(context.workspace, foreign.id, ['running'], 'running', { inputId: 'secret-input', startRevision: 42, beforeMessageIds: ['secret-message'] });
+  await store.updateJobProgress(context.workspace, foreign.id, { phase: 'running', message: 'foreign preview secret', observedAt: startedAt });
+
+  const listed = await runCompanion(['status', '--all'], { cwd: context.workspace, env: context.env, caller: caller('owner-a') });
+  const sameOwner = listed.jobs.find((/** @type {any} */ job) => job.id === mine.id);
+  const otherOwner = listed.jobs.find((/** @type {any} */ job) => job.id === foreign.id);
+  assert.equal(sameOwner.command, 'review'); assert.equal(sameOwner.readOnly, true); assert.equal(sameOwner.owner, 'same-owner');
+  assert.deepEqual(Object.keys(otherOwner).sort(), ['createdAt', 'hasOwner', 'id', 'lastActivityAt', 'startedAt', 'status'].sort());
+  assert.equal(otherOwner.hasOwner, true);
+  const rendered = renderOutput(listed);
+  assert.doesNotMatch(`${JSON.stringify(otherOwner)}\n${rendered}`, /owner-b|secret|xhigh|424242|latest=|result|internal/i);
+
+  await assert.rejects(runCompanion(['status', foreign.id], { cwd: context.workspace, env: context.env, caller: caller('owner-a') }), { code: 'OWNED_JOB_NOT_FOUND' });
 });
 
 test('a recovered foreign completion remains readable only by its original owner', async () => {
@@ -660,7 +1094,7 @@ test('result extraction accepts mixed visible output and rejects reasoning-only 
   }
 });
 
-test('status --all reports every workspace job with nonsecret ownership markers', async () => {
+test('status --all reports every workspace job with isolated ownership projections', async () => {
   const context = await fixture();
   await companion(context, ['review', '--background']);
   await companion(context, ['adversarial-review', '--background', 'focus']);
@@ -669,11 +1103,14 @@ test('status --all reports every workspace job with nonsecret ownership markers'
   const listed = await companion(context, ['status', '--all']);
   assert.equal(listed.json.jobs.length, 3);
   assert.equal(listed.json.jobs.filter((/** @type {any} */ job) => job.owned).length, 2);
-  assert.deepEqual(new Set(listed.json.jobs.map((/** @type {any} */ job) => job.owner)), new Set(['same-owner', 'other']));
+  const foreign = listed.json.jobs.find((/** @type {any} */ job) => job.hasOwner === true);
+  assert.deepEqual(Object.keys(foreign).sort(), ['createdAt', 'hasOwner', 'id', 'status'].sort());
   assert.ok(listed.json.jobs.every((/** @type {any} */ job) => !('ownerSessionId' in job) && !('ownerTurnId' in job) && !('permissionSnapshot' in job)));
   const lines = listed.stdout.trim().split('\n');
   assert.equal(lines.pop(), 'Model policy: default=ZCode default; aliases=none');
-  assert.deepEqual(lines, listed.json.jobs.map((/** @type {any} */ job) => `${job.id} ${job.status} ${job.command} ${job.owner} phase=— activity=—`));
+  assert.deepEqual(lines, listed.json.jobs.map((/** @type {any} */ job) => job.hasOwner === true
+    ? `${job.id} ${job.status} owner=redacted created=${job.createdAt} started=— finished=— activity=—`
+    : `${job.id} ${job.status} ${job.command} ${job.owner} phase=— activity=—`));
   assert.doesNotMatch(listed.stdout, /codex-session|other-session/);
 });
 

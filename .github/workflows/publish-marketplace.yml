@@ -173,6 +173,7 @@ jobs:
             esac
           done < <(find "$RUNNER_TEMP/qualified-marketplace-snapshot/plugins/zcode" -mindepth 1 -maxdepth 1 -printf '%f\n')
           SNAPSHOT="$RUNNER_TEMP/qualified-marketplace-snapshot" EXPECTED_REF="$EXPECTED_REF" EXPECTED_SHA="$EXPECTED_SHA" EXPECTED_VERSION="$EXPECTED_VERSION" node --input-type=module --eval '
+            import { createHash } from "node:crypto";
             import { readFileSync } from "node:fs";
             const read = (path) => JSON.parse(readFileSync(`${process.env.SNAPSHOT}/${path}`, "utf8"));
             const provenance = read(".agents/plugins/provenance.json");
@@ -180,6 +181,8 @@ jobs:
             const manifest = read("plugins/zcode/.codex-plugin/plugin.json");
             const packageJson = read("plugins/zcode/package.json");
             if (provenance.sourceRef !== process.env.EXPECTED_REF || provenance.sourceSha !== process.env.EXPECTED_SHA || provenance.packageVersion !== process.env.EXPECTED_VERSION || provenance.pluginVersion !== process.env.EXPECTED_VERSION) throw new Error("Snapshot provenance mismatch");
+            const lockFile = provenance.dependencyLock?.file;
+            if (!["npm-shrinkwrap.json", "package-lock.json"].includes(lockFile) || !/^[a-f0-9]{64}$/.test(provenance.dependencyLock?.sha256) || createHash("sha256").update(readFileSync(`${process.env.SNAPSHOT}/plugins/zcode/${lockFile}`)).digest("hex") !== provenance.dependencyLock.sha256) throw new Error("Snapshot dependency-lock provenance mismatch");
             if (manifest.name !== "zcode" || manifest.version !== process.env.EXPECTED_VERSION || packageJson.name !== "zcode-plugin-codex" || packageJson.version !== process.env.EXPECTED_VERSION) throw new Error("Snapshot plugin identity mismatch");
             if (catalog.name !== "vitry" || catalog.plugins?.length !== 1 || catalog.plugins[0]?.name !== "zcode" || catalog.plugins[0]?.source?.path !== "./plugins/zcode") throw new Error("Snapshot catalog mismatch");
           '

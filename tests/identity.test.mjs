@@ -167,17 +167,59 @@ test('active turns resolve only by exact session and canonical workspace without
   await assert.rejects(identity.resolveActiveTurn({ sessionId: 'session-a', workspace: workspaceA, now: new Date(now.getTime() + 30 * 60_000) }), { code: 'ACTIVE_TURN_EXPIRED' });
 });
 
-test('pending invocation choices preserve the originating caller and are exact-session single-use', async () => {
-  const { dataRoot, workspaceA } = await fixture();
+test('pending invocation choices preserve the exact originating turn, workspace, and permission snapshot', async () => {
+  const { dataRoot, workspaceA, workspaceB } = await fixture();
   const { createInvocationStore } = await import('../scripts/lib/invocation.mjs');
   const pending = createInvocationStore({ dataRoot });
-  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', spec: { argv: ['rescue', 'literal task'] } });
-  await assert.rejects(pending.consumePending({ sessionId: 'session-b', workspace: workspaceA, command: 'rescue', choice: 'resume' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
-  assert.deepEqual(await pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume' }), {
+  const now = new Date('2026-08-04T00:00:00.000Z');
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] }, now });
+  await assert.rejects(
+    pending.consumePending({ sessionId: 'session-b', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child', now }),
+    (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_NOT_FOUND' && error.remedy === 'Repeat the original command in this Codex thread.',
+  );
+  await assert.rejects(
+    pending.consumePending({ sessionId: 'session-a', workspace: workspaceB, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child', now }),
+    (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_NOT_FOUND' && error.remedy === 'Repeat the original command in this Codex thread.',
+  );
+  await assert.rejects(pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'sibling-child', now }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+  assert.deepEqual(await pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child', now }), {
     argv: ['rescue', '--resume', 'literal task'],
     caller: { sessionId: 'session-a', turnId: 'turn-a', workspace: await realpath(workspaceA), permissionMode: 'workspace-write' },
   });
-  await assert.rejects(pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+  await assert.rejects(
+    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', executorAgentId: 'rescue-child', now }),
+    (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_NOT_FOUND' && error.remedy === 'Repeat the original command in this Codex thread.',
+  );
+});
+
+test('expired pending Rescue choice is deleted and fails with an actionable recovery', async () => {
+  const { dataRoot, workspaceA } = await fixture();
+  const { createInvocationStore } = await import('../scripts/lib/invocation.mjs');
+  const pending = createInvocationStore({ dataRoot });
+  const now = new Date('2026-08-04T00:00:00.000Z');
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] }, now });
+  await assert.rejects(
+    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', executorAgentId: 'rescue-child', now: new Date(now.getTime() + 30 * 60_000) }),
+    (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_EXPIRED' && typeof error.remedy === 'string' && error.remedy.length > 0,
+  );
+  await assert.rejects(
+    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', executorAgentId: 'rescue-child', now }),
+    { code: 'PENDING_INVOCATION_NOT_FOUND' },
+  );
+});
+
+test('legacy pending Rescue without an executor binding is atomically rejected and deleted', async () => {
+  const { dataRoot, workspaceA } = await fixture();
+  const { createInvocationStore } = await import('../scripts/lib/invocation.mjs');
+  const pending = createInvocationStore({ dataRoot });
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] } });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory);
+  const legacy = JSON.parse(await readFile(join(directory, name), 'utf8')); delete legacy.executorAgentId; await atomicWriteJson(join(directory, name), legacy);
+  await assert.rejects(
+    pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child' }),
+    (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_INCOMPATIBLE' && /Repeat the original Rescue command/.test(error.remedy),
+  );
+  await assert.rejects(pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
 });
 
 test('ending an active turn does not hide corrupted private identity state', async () => {
@@ -194,12 +236,12 @@ test('execution capability is exact-match and atomically single-use', async () =
     jobId: 'job-a',
     ownerSessionId: 'session-a',
     workspace: workspaceA,
-    operation: 'continue',
+    operation: 'run-reserved-job',
     specDigest: 'a'.repeat(64),
   };
   const token = await identity.createExecutionCapability({
     ...expected,
-    permissionSnapshot: { mode: 'workspace-write' },
+    permissionSnapshot: { permissionMode: 'workspace-write' },
   });
 
   await assert.rejects(
@@ -224,6 +266,8 @@ test('execution capability is exact-match and atomically single-use', async () =
   const success = attempts.find(({ status }) => status === 'fulfilled');
   assert.ok(success && success.status === 'fulfilled');
   assert.equal(success.value.jobId, 'job-a');
+  assert.deepEqual(success.value.permissionSnapshot, { permissionMode: 'workspace-write' });
+  assert.equal(JSON.stringify(success.value).includes(token), false);
 });
 
 test('revocation preserves consumed outcomes for legacy and spec-bound capabilities', async () => {

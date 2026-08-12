@@ -1,9 +1,165 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+
+import { atomicWritePrivateFile, replaceFileAtomically } from '../scripts/lib/fs.mjs';
 
 const fsModule = new URL('../scripts/lib/fs.mjs', import.meta.url).href;
 const reviewModule = new URL('../scripts/lib/review.mjs', import.meta.url).href;
+
+/** @param {'all-handles-dev'|'all-handles-ino'|'handle-after'|'reopened-path'} mode */
+function boundedReadIdentityProbe(mode) {
+  return `
+    import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { readBoundedJsonFile } from ${JSON.stringify(fsModule)};
+    const directory = await mkdtemp(join(tmpdir(), 'zcode-bounded-identity-'));
+    const target = join(directory, 'record.json');
+    await writeFile(target, '{"ok":true}');
+    const probe = await open(join(directory, 'probe'), 'a+');
+    const prototype = Object.getPrototypeOf(probe);
+    await probe.close();
+    const originalStat = prototype.stat;
+    let statCalls = 0;
+    prototype.stat = async function patchedStat(...args) {
+      const stats = await originalStat.call(this, ...args);
+      statCalls += 1;
+      if (typeof stats.dev !== 'bigint' || typeof stats.ino !== 'bigint') throw new Error('bounded JSON identity was not read as bigint');
+      if (${JSON.stringify(mode)}.startsWith('all-handles') || ${JSON.stringify(mode)} === 'handle-after' && statCalls === 2 || ${JSON.stringify(mode)} === 'reopened-path' && statCalls === 3) return new Proxy(stats, { get(target, property) {
+        if (property === 'dev' && ${JSON.stringify(mode)} !== 'all-handles-ino') return target.dev + 1n;
+        if (property === 'ino' && ${JSON.stringify(mode)} !== 'all-handles-dev') return target.ino + 1n;
+        return Reflect.get(target, property);
+      } });
+      return stats;
+    };
+    try {
+      if (${JSON.stringify(mode)} === 'all-handles-dev') {
+        const value = await readBoundedJsonFile(directory, target, 1024, { platform: 'win32' });
+        if (value.ok !== true || statCalls !== 3) throw new Error('bounded JSON did not compare three handle-bound identities');
+      } else {
+        try {
+          await readBoundedJsonFile(directory, target, 1024, { platform: 'win32' });
+          throw new Error('bounded JSON accepted a changed handle-bound identity');
+        } catch (error) {
+          if (error?.code !== 'PRIVATE_PATH_UNSAFE') throw error;
+        }
+      }
+    } finally {
+      prototype.stat = originalStat;
+      await rm(directory, { recursive: true, force: true });
+    }
+  `;
+}
+
+test('bounded JSON identity accepts the Windows path and handle device representation difference', async () => {
+  const result = await runNode(boundedReadIdentityProbe('all-handles-dev'));
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('bounded JSON identity rejects a path-handle inode mismatch', async () => {
+  const result = await runNode(boundedReadIdentityProbe('all-handles-ino'));
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('bounded JSON reads reject a changed identity on the opened handle', async () => {
+  const result = await runNode(boundedReadIdentityProbe('handle-after'));
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('bounded JSON reads reject a changed reopened current-path handle identity', async () => {
+  const result = await runNode(boundedReadIdentityProbe('reopened-path'));
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('Windows atomic replacement retries only transient EPERM without exposing an unlink window', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-win-replace-'));
+  const temporaryPath = join(directory, 'record.tmp'); const targetPath = join(directory, 'record.json');
+  await writeFile(temporaryPath, 'new'); await writeFile(targetPath, 'old');
+  /** @type {Array<[string,string]>} */
+  const calls = []; let attempts = 0;
+  try {
+    await replaceFileAtomically(temporaryPath, targetPath, {
+      platform: 'win32', maximumAttempts: 3,
+      renameFn: async (from, to) => {
+        calls.push([from, to]); attempts += 1;
+        if (attempts < 3) {
+          assert.equal(await readFile(targetPath, 'utf8'), 'old');
+          assert.equal(await readFile(temporaryPath, 'utf8'), 'new');
+          throw Object.assign(new Error('destination temporarily locked'), { code: 'EPERM' });
+        }
+        const { rename } = await import('node:fs/promises'); await rename(from, to);
+      },
+      retryDelayFn: async () => {},
+    });
+    assert.equal(await readFile(targetPath, 'utf8'), 'new');
+    assert.deepEqual(calls, Array(3).fill([temporaryPath, targetPath]));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Windows atomic replacement outlasts the former 100ms EPERM window', async () => {
+  let attempts = 0;
+  await replaceFileAtomically('temporary', 'target', {
+    platform: 'win32',
+    renameFn: async () => {
+      attempts += 1;
+      if (attempts <= 21) throw Object.assign(new Error('target remains transiently busy'), { code: 'EPERM' });
+    },
+    retryDelayFn: async () => {},
+  });
+  assert.equal(attempts, 22);
+});
+
+test('Windows atomic replacement bounds persistent EPERM and preserves both files for fail-closed cleanup', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-win-replace-fail-'));
+  const temporaryPath = join(directory, 'record.tmp'); const targetPath = join(directory, 'record.json');
+  await writeFile(temporaryPath, 'new'); await writeFile(targetPath, 'old'); let attempts = 0; let delays = 0;
+  try {
+    await assert.rejects(replaceFileAtomically(temporaryPath, targetPath, {
+      platform: 'win32', maximumAttempts: 3,
+      renameFn: async () => { attempts += 1; throw Object.assign(new Error('still locked'), { code: 'EPERM' }); },
+      retryDelayFn: async () => { delays += 1; },
+    }), { code: 'EPERM' });
+    assert.equal(attempts, 3); assert.equal(delays, 2);
+    assert.equal(await readFile(targetPath, 'utf8'), 'old');
+    assert.equal(await readFile(temporaryPath, 'utf8'), 'new');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('atomic private write removes its temporary file after persistent Windows EPERM', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-win-write-fail-')); const targetPath = join(directory, 'record.json');
+  await writeFile(targetPath, 'old'); let temporaryPath;
+  try {
+    await assert.rejects(atomicWritePrivateFile(targetPath, 'new', {
+      platform: 'win32', maximumAttempts: 2,
+      renameFn: async (from) => {
+        temporaryPath = from;
+        throw Object.assign(new Error('still locked'), { code: 'EPERM' });
+      },
+      retryDelayFn: async () => {},
+    }), { code: 'ATOMIC_WRITE_FAILED' });
+    assert.equal(await readFile(targetPath, 'utf8'), 'old');
+    assert.ok(temporaryPath);
+    await assert.rejects(readFile(temporaryPath), { code: 'ENOENT' });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('atomic replacement does not retry non-Windows or non-EPERM failures', async () => {
+  /** @type {Array<[NodeJS.Platform,string]>} */
+  const failures = [['linux', 'EPERM'], ['win32', 'EACCES']];
+  for (const [platform, code] of failures) {
+    let attempts = 0;
+    await assert.rejects(replaceFileAtomically('temporary', 'target', {
+      platform, maximumAttempts: 3,
+      renameFn: async () => { attempts += 1; throw Object.assign(new Error(code), { code }); },
+      retryDelayFn: async () => assert.fail('an ineligible error must not wait'),
+    }), { code });
+    assert.equal(attempts, 1);
+  }
+});
 
 /** @param {string} source @returns {Promise<{code:number|null,signal:NodeJS.Signals|null,stdout:string,stderr:string}>} */
 function runNode(source) {
@@ -18,7 +174,7 @@ function runNode(source) {
   });
 }
 
-/** @param {string} moduleUrl @param {'atomicWriteJson'|'writeResultArtifact'} operation @returns {string} */
+/** @param {string} moduleUrl @param {'atomicWriteJson'|'atomicWritePrivateFile'|'writeResultArtifact'} operation @returns {string} */
 function syncFailureProbe(moduleUrl, operation) {
   return `
     import { mkdtemp, open, readFile, rm } from 'node:fs/promises';
@@ -42,7 +198,7 @@ function syncFailureProbe(moduleUrl, operation) {
       return originalSync.call(this, ...args);
     };
     try {
-      ${operation === 'atomicWriteJson' ? "await atomicWriteJson(target, { ok: true }); if (!JSON.parse(await readFile(target, 'utf8')).ok) throw new Error('atomic write did not persist');" : "const relative = await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'a'.repeat(64), contents: 'done' }); if (relative !== 'results/' + 'a'.repeat(64) + '.md') throw new Error('artifact path did not persist');"}
+      ${operation === 'atomicWriteJson' ? "await atomicWriteJson(target, { ok: true }); if (!JSON.parse(await readFile(target, 'utf8')).ok) throw new Error('atomic write did not persist');" : operation === 'atomicWritePrivateFile' ? "await atomicWritePrivateFile(target, Buffer.from('role-bytes\\n')); if ((await readFile(target, 'utf8')) !== 'role-bytes\\n') throw new Error('atomic private write did not persist');" : "const relative = await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'a'.repeat(64), contents: 'done' }); if (relative !== 'results/' + 'a'.repeat(64) + '.md') throw new Error('artifact path did not persist');"}
     } finally {
       prototype.sync = originalSync;
       await rm(directory, { recursive: true, force: true });
@@ -52,6 +208,11 @@ function syncFailureProbe(moduleUrl, operation) {
 
 test('atomic JSON writes tolerate an unsupported Windows directory fsync', async () => {
   const result = await runNode(syncFailureProbe(fsModule, 'atomicWriteJson'));
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+});
+
+test('atomic private file writes tolerate an unsupported Windows directory fsync', async () => {
+  const result = await runNode(syncFailureProbe(fsModule, 'atomicWritePrivateFile'));
   assert.equal(result.code, 0, result.stderr || result.stdout);
 });
 

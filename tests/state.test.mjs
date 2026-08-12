@@ -7,19 +7,28 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
+  rename,
   rm,
   stat,
+  symlink,
+  truncate,
   utimes,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
-import { atomicWriteJson, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
+import { atomicWriteJson, isLockPublishCollision, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
+
+test('production terminal callers delegate finishedAt selection to the locked state API', async () => {
+  const sources = ['job-control.mjs', 'review.mjs', 'recovery.mjs', 'transfer.mjs'].map((name) => fileURLToPath(new URL(`../scripts/lib/${name}`, import.meta.url))).concat(fileURLToPath(new URL('../scripts/zcode-companion.mjs', import.meta.url)));
+  for (const source of sources) assert.doesNotMatch(await readFile(source, 'utf8'), /finishedAt:\s*new Date\(\)\.toISOString\(\)/, source);
+});
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 async function fixture() {
@@ -28,6 +37,17 @@ async function fixture() {
   const workspace = join(root, 'workspace');
   await mkdir(workspace);
   return { dataRoot, root, workspace };
+}
+
+/** @param {string} indexRoot @param {string} jobId */
+async function bindingLocation(indexRoot, jobId) {
+  const ownerDirectories = (await readdir(indexRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  for (const ownerDirectory of ownerDirectories) {
+    const directory = join(indexRoot, ownerDirectory.name); const path = join(directory, `${jobId}.json`);
+    try { await access(path); return { directory, path }; } catch { /* inspect the next exact owner directory */ }
+  }
+  assert.fail(`binding ${jobId} was not found`);
 }
 
 const jobInput = {
@@ -150,6 +170,19 @@ test('jobs follow queued -> running -> succeeded and persist complete metadata',
   assert.equal(succeeded.status, 'succeeded');
   assert.deepEqual(await store.readJob(workspace, queued.id), succeeded);
   assert.deepEqual(await store.listJobs(workspace), [succeeded]);
+});
+
+test('repeated atomic job updates remain readable across a later reservation', async () => {
+  const { dataRoot, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+  const first = await store.reserveJob({ workspace, ...jobInput });
+  await store.claimJobWorker(workspace, first.id, { childPid: 123, workerLeaseId: 'a'.repeat(64) });
+  await store.transitionJob(workspace, first.id, ['queued'], 'running');
+  await store.transitionJob(workspace, first.id, ['running'], 'succeeded', { exitCode: 0 });
+  const second = await store.reserveJob({
+    workspace, ...jobInput, ownerTurnId: 'turn-b', readOnly: true,
+  });
+  assert.deepEqual((await store.listOwnedJobs(workspace, jobInput.ownerSessionId)).map((job) => job.id).sort(),
+    [first.id, second.id].sort());
 });
 
 test('a queued job durably claims one exact worker before long-running setup', async () => {
@@ -356,6 +389,165 @@ test('persisted jobs are schema-validated before use', async () => {
       (error) => error instanceof PluginError && error.code === 'JOB_RECORD_INVALID',
     );
   }
+});
+
+test('owned job listing migrates valid legacy records and fails closed without path disclosure on corrupt legacy state', async () => {
+  const { dataRoot, root, workspace } = await fixture(); const source = createStateStore({ dataRoot });
+  const legacyJob = await source.reserveJob({ workspace, ...jobInput });
+
+  const migratedDataRoot = join(root, 'legacy-valid-data');
+  const migratedStorage = await resolveWorkspaceStorage({ dataRoot: migratedDataRoot, workspace });
+  await atomicWriteJson(join(migratedStorage.directory, 'jobs', `${legacyJob.id}.json`), legacyJob);
+  const migratedStore = createStateStore({ dataRoot: migratedDataRoot });
+  assert.deepEqual(await migratedStore.listOwnedJobs(workspace, legacyJob.ownerSessionId), [legacyJob]);
+
+  const corruptDataRoot = join(root, 'legacy-corrupt-data');
+  const corruptStorage = await resolveWorkspaceStorage({ dataRoot: corruptDataRoot, workspace });
+  await mkdir(join(corruptStorage.directory, 'jobs'), { recursive: true });
+  await writeFile(join(corruptStorage.directory, 'jobs', `${legacyJob.id}.json`), '{');
+  const corruptStore = createStateStore({ dataRoot: corruptDataRoot });
+  await assert.rejects(corruptStore.listOwnedJobs(workspace, legacyJob.ownerSessionId), (error) => {
+    assert.ok(error instanceof PluginError);
+    assert.equal(error.code, 'OWNED_JOB_INDEX_INVALID'); assert.deepEqual(error.details, { jobId: legacyJob.id });
+    assert.doesNotMatch(error.message, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    return true;
+  });
+});
+
+test('owned job bindings enforce exact bounded schema and tolerate only binding-first crash remnants', async () => {
+  const { dataRoot, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput }); const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const indexRoot = join(storage.directory, 'job-owners');
+  const [ownerDirectory] = (await readdir(indexRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  assert.ok(ownerDirectory, 'reservation must publish one hashed owner binding directory');
+  const bindingPath = join(indexRoot, ownerDirectory.name, `${job.id}.json`); const original = await readFile(bindingPath, 'utf8');
+
+  await atomicWriteJson(bindingPath, { jobId: job.id, ownerSessionId: job.ownerSessionId, version: 1, extra: true });
+  await assert.rejects(store.listOwnedJobs(workspace, job.ownerSessionId), { code: 'OWNED_JOB_INDEX_INVALID', details: { jobId: job.id } });
+  await writeFile(bindingPath, 'x'.repeat(8 * 1024 + 1));
+  await assert.rejects(store.listOwnedJobs(workspace, job.ownerSessionId), { code: 'OWNED_JOB_INDEX_INVALID', details: { jobId: job.id } });
+
+  await writeFile(bindingPath, original); await rm(join(storage.directory, 'jobs', `${job.id}.json`));
+  assert.deepEqual(await store.listOwnedJobs(workspace, job.ownerSessionId), [], 'binding-first publication may leave one ignorable missing-job remnant');
+});
+
+test('owned job index repairs deleted bindings and mixed-version canonical writes before owner selection', async () => {
+  const { dataRoot, workspace } = await fixture(); const firstStore = createStateStore({ dataRoot });
+  const first = await firstStore.reserveJob({ workspace, ...jobInput }); const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const indexRoot = join(storage.directory, 'job-owners');
+  const markerPath = join(indexRoot, 'index.json'); const currentMarker = JSON.parse(await readFile(markerPath, 'utf8'));
+  await atomicWriteJson(markerPath, {
+    bindingJobIds: currentMarker.canonicalJobIds,
+    canonicalJobIds: currentMarker.canonicalJobIds,
+    complete: true,
+    version: 2,
+  });
+  const [firstOwnerDirectory] = (await readdir(indexRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  assert.ok(firstOwnerDirectory);
+  await rm(join(indexRoot, firstOwnerDirectory.name, `${first.id}.json`));
+
+  const legacyId = 'b'.repeat(64);
+  const legacy = {
+    ...first,
+    id: legacyId,
+    ownerSessionId: 'session-from-old-writer',
+    ownerTurnId: 'turn-from-old-writer',
+    readOnly: true,
+  };
+  await atomicWriteJson(join(storage.directory, 'jobs', `${legacyId}.json`), legacy);
+
+  const secondStore = createStateStore({ dataRoot });
+  assert.deepEqual(await secondStore.listOwnedJobs(workspace, first.ownerSessionId), [first], 'a deleted binding must not make an existing owner disappear');
+  assert.deepEqual(await secondStore.listOwnedJobs(workspace, legacy.ownerSessionId), [legacy], 'a canonical record from an older writer must be indexed before owner selection');
+
+  const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+  assert.deepEqual(Object.keys(marker).sort(), ['bindingTuples', 'canonicalJobIds', 'complete', 'version']);
+  assert.equal(marker.version, 3); assert.equal(marker.complete, true);
+  assert.deepEqual(marker.canonicalJobIds.count, 2); assert.deepEqual(marker.bindingTuples.count, 2);
+  assert.match(marker.canonicalJobIds.digest, /^[a-f0-9]{64}$/); assert.match(marker.bindingTuples.digest, /^[a-f0-9]{64}$/);
+});
+
+test('owned job index repairs relocated, rewritten, duplicated, and swapped owner bindings', async (t) => {
+  /** @type {Record<string, (input:any) => Promise<void>>} */
+  const variants = {
+    'move unchanged record': async ({ first, second }) => { await rename(first.path, join(second.directory, basename(first.path))); },
+    'move and rewrite owner': async ({ first, second, firstJob }) => {
+      const moved = join(second.directory, basename(first.path)); await rename(first.path, moved);
+      await atomicWriteJson(moved, { jobId: firstJob.id, ownerSessionId: 'owner-b', version: 1 });
+    },
+    'duplicate binding': async ({ first, second }) => { await writeFile(join(second.directory, basename(first.path)), await readFile(first.path)); },
+    'swap owner directories': async ({ root, first, second, firstJob, secondJob }) => {
+      const temporary = join(root, 'binding-swap.tmp'); await rename(first.path, temporary);
+      await rename(second.path, join(first.directory, `${secondJob.id}.json`));
+      await rename(temporary, join(second.directory, `${firstJob.id}.json`));
+    },
+  };
+  for (const [name, tamper] of Object.entries(variants)) await t.test(name, async () => {
+    const { dataRoot, root, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+    const firstJob = await store.reserveJob({ workspace, ...jobInput, ownerSessionId: 'owner-a' });
+    const secondJob = await store.reserveJob({ workspace, ...jobInput, ownerSessionId: 'owner-b', ownerTurnId: 'turn-b', readOnly: true });
+    const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const indexRoot = join(storage.directory, 'job-owners');
+    const first = await bindingLocation(indexRoot, firstJob.id); const second = await bindingLocation(indexRoot, secondJob.id);
+    const markerBefore = await readFile(join(indexRoot, 'index.json'), 'utf8');
+    await tamper({ root, first, second, firstJob, secondJob });
+    assert.equal(await readFile(join(indexRoot, 'index.json'), 'utf8'), markerBefore, 'tamper fixture must leave the last trusted marker unchanged');
+
+    assert.deepEqual(await store.listOwnedJobs(workspace, firstJob.ownerSessionId), [firstJob], `${name} must not hide owner A's writable guard`);
+    assert.deepEqual(await store.listOwnedJobs(workspace, secondJob.ownerSessionId), [secondJob], `${name} must not authorize owner B for owner A's job`);
+    const repairedFirst = await bindingLocation(indexRoot, firstJob.id); const repairedSecond = await bindingLocation(indexRoot, secondJob.id);
+    assert.equal(repairedFirst.directory, first.directory); assert.equal(repairedSecond.directory, second.directory);
+    assert.equal(JSON.parse(await readFile(join(indexRoot, 'index.json'), 'utf8')).version, 3);
+  });
+});
+
+test('owned job index rejects directory and binding symlinks that escape private workspace state', async () => {
+  const directoryFixture = await fixture(); const directoryStore = createStateStore({ dataRoot: directoryFixture.dataRoot });
+  const directoryJob = await directoryStore.reserveJob({ workspace: directoryFixture.workspace, ...jobInput });
+  const directoryStorage = await resolveWorkspaceStorage({ dataRoot: directoryFixture.dataRoot, workspace: directoryFixture.workspace });
+  const indexRoot = join(directoryStorage.directory, 'job-owners'); const outsideIndex = join(directoryFixture.root, 'outside-index');
+  await rename(indexRoot, outsideIndex); await symlink(outsideIndex, indexRoot);
+  await assert.rejects(directoryStore.listOwnedJobs(directoryFixture.workspace, directoryJob.ownerSessionId), (error) => {
+    assert.ok(error instanceof PluginError);
+    assert.equal(error.code, 'OWNED_JOB_INDEX_INVALID');
+    assert.doesNotMatch(error.message, new RegExp(directoryFixture.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    return true;
+  });
+
+  const bindingFixture = await fixture(); const bindingStore = createStateStore({ dataRoot: bindingFixture.dataRoot });
+  const bindingJob = await bindingStore.reserveJob({ workspace: bindingFixture.workspace, ...jobInput });
+  const bindingStorage = await resolveWorkspaceStorage({ dataRoot: bindingFixture.dataRoot, workspace: bindingFixture.workspace });
+  const bindingIndex = join(bindingStorage.directory, 'job-owners');
+  const [bindingOwnerDirectory] = (await readdir(bindingIndex, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  assert.ok(bindingOwnerDirectory);
+  const bindingPath = join(bindingIndex, bindingOwnerDirectory.name, `${bindingJob.id}.json`); const outsideBinding = join(bindingFixture.root, 'outside-binding.json');
+  await rename(bindingPath, outsideBinding); await symlink(outsideBinding, bindingPath);
+  await assert.rejects(bindingStore.listOwnedJobs(bindingFixture.workspace, bindingJob.ownerSessionId), (error) => {
+    assert.ok(error instanceof PluginError);
+    assert.equal(error.code, 'OWNED_JOB_INDEX_INVALID');
+    assert.doesNotMatch(error.message, new RegExp(bindingFixture.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    return true;
+  });
+  assert.deepEqual(JSON.parse(await readFile(outsideBinding, 'utf8')), { jobId: bindingJob.id, ownerSessionId: bindingJob.ownerSessionId, version: 1 });
+});
+
+test('owned job index rejects a huge sparse binding through its bounded reader', async () => {
+  const { dataRoot, root, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput }); const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const indexRoot = join(storage.directory, 'job-owners');
+  const [ownerDirectory] = (await readdir(indexRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  assert.ok(ownerDirectory);
+  const bindingPath = join(indexRoot, ownerDirectory.name, `${job.id}.json`); await truncate(bindingPath, 4 * 1024 * 1024 * 1024);
+  const started = Date.now();
+  await assert.rejects(store.listOwnedJobs(workspace, job.ownerSessionId), (error) => {
+    assert.ok(error instanceof PluginError);
+    assert.equal(error.code, 'OWNED_JOB_INDEX_INVALID'); assert.deepEqual(error.details, { jobId: job.id });
+    assert.doesNotMatch(error.message, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    return true;
+  });
+  assert.ok(Date.now() - started < 1_000, 'a sparse oversized binding must be rejected before an unbounded file read');
 });
 
 test('persisted jobs are bound to their filename and canonical workspace scope', async () => {
@@ -612,7 +804,7 @@ test('running and cancelling jobs persist bounded monotonic progress', async () 
     const previousUpdatedAt = job.updatedAt;
     job = await store.updateJobProgress(workspace, job.id, {
       phase: index === 5 ? 'waiting' : 'running',
-      message: `Progress ${index}`,
+      message: index === 5 ? 'Command completed: npm test (25ms).' : `Progress ${index}`,
       observedAt,
     });
     assert.ok(Date.parse(job.updatedAt) >= Date.parse(previousUpdatedAt));
@@ -621,7 +813,7 @@ test('running and cancelling jobs persist bounded monotonic progress', async () 
 
   assert.equal(job.phase, 'waiting');
   assert.equal(job.lastActivityAt, startedAt);
-  assert.deepEqual(job.progressPreview, ['Progress 2', 'Progress 3', 'Progress 4', 'Progress 5']);
+  assert.deepEqual(job.progressPreview, ['Progress 2', 'Progress 3', 'Progress 4', 'Command completed: npm test (25ms).']);
   assert.deepEqual({
     id: job.id,
     workspace: job.workspace,
@@ -636,7 +828,7 @@ test('running and cancelling jobs persist bounded monotonic progress', async () 
 
   const duplicate = await store.updateJobProgress(workspace, job.id, {
     phase: 'running',
-    message: 'Progress 5',
+    message: 'Command completed: npm test (25ms).',
     observedAt: startedAt,
   });
   assert.equal(duplicate.phase, 'running');
@@ -731,11 +923,10 @@ test('progress winning the lock prevents an earlier completion but permits a lat
     }),
     { code: 'JOB_PATCH_INVALID' },
   );
-  const succeeded = await store.transitionJob(workspace, running.id, ['running'], 'succeeded', {
-    finishedAt: '2020-01-01T00:00:03.000Z',
-  });
+  const succeeded = await store.finishJob(workspace, running.id, ['running'], 'succeeded', {});
   assert.equal(succeeded.status, 'succeeded');
   assert.equal(succeeded.lastActivityAt, progressed.lastActivityAt);
+  assert.ok(Date.parse(succeeded.finishedAt) >= Date.parse(progressed.lastActivityAt));
 });
 
 test('progress rejects malformed, unsafe, and out-of-timeline events', async () => {
@@ -914,7 +1105,8 @@ test('workspace storage hashes the real path and creates private directories', a
 
   assert.equal(first.workspaceKey, second.workspaceKey);
   assert.match(first.workspaceKey, /^[a-f0-9]{64}$/);
-  assert.equal(first.directory, join(dataRoot, 'workspaces', first.workspaceKey));
+  assert.equal(first.dataRootPath, await realpath(dataRoot));
+  assert.equal(first.directory, join(first.dataRootPath, 'workspaces', first.workspaceKey));
   const workspaceDirectory = await stat(first.directory); if (process.platform === 'win32') assert.equal(workspaceDirectory.isDirectory(), true); else assert.equal(workspaceDirectory.mode & 0o777, 0o700);
 });
 
@@ -951,6 +1143,22 @@ test('the advisory lock keeps one stable inode and never renames ownership metad
   await withFileLock(lockPath, async () => {
     assert.equal((await stat(join(lockPath, 'advisory.lock'))).ino, inodeWhileHeld);
   });
+});
+
+test('concurrent first use publishes one valid advisory lock layout', async () => {
+  const { root } = await fixture(); const lockPath = join(root, 'concurrent-layout.lock'); let inside = 0; let maximumInside = 0;
+  try {
+    await Promise.all(Array.from({ length: 16 }, () => withFileLock(lockPath, async () => { inside += 1; maximumInside = Math.max(maximumInside, inside); await new Promise((resolvePromise) => setImmediate(resolvePromise)); inside -= 1; })));
+    assert.equal(maximumInside, 1);
+    assert.deepEqual(await readdir(lockPath), ['advisory.lock']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('only a Windows rename EPERM is classified as a lock publish collision', () => {
+  const denied = Object.assign(new Error('denied'), { code: 'EPERM' });
+  assert.equal(isLockPublishCollision(denied, 'win32'), true);
+  assert.equal(isLockPublishCollision(denied, 'linux'), false);
+  assert.equal(isLockPublishCollision(Object.assign(new Error('I/O failure'), { code: 'EIO' }), 'win32'), false);
 });
 
 test('lock timing options reject non-finite, fractional, or unsafe values', async () => {

@@ -71,15 +71,92 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   }
   const source = skill('rescue');
   assert.match(source, /defaults? to foreground/i);
-  assert.doesNotMatch(source, /built-in.*subagent|forwarding subagent/i);
+  assert.match(source, /role-status rescue/);
+  assert.match(source, /task_name:\s*['"]zcode_rescue['"]/);
+  assert.match(source, /fork_turns:\s*['"]none['"]/);
+  assert.match(source, /agent_type:\s*['"]zcode-rescue['"]/);
+  assert.match(source, /Run the installed ZCode Rescue forwarder now\. Return its public stdout verbatim\./);
+  assert.match(source, /schema (?:omits|hides|does not expose) `agent_type`/i);
+  assert.match(source, /unsupported\/reserved/i);
+  assert.match(source, /unknown\/unavailable\/invalid (?:value|Role value) `zcode-rescue`[\s\S]+\$zcode:setup/i);
+  assert.match(source, /wait[\s\S]+same child/i);
+  assert.doesNotMatch(source, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
 });
 
-test('background execution is production-owned and public skills do not forward capabilities', () => {
-  const source = readFileSync(new URL('agents/zcode-rescue.md', root), 'utf8');
-  for (const name of expected.filter((value) => value !== 'setup')) assert.doesNotMatch(skill(name), /zcode:zcode-rescue|forwarding subagent|one-time execution capability/i);
-  assert.ok(source.length > 0);
-  assert.doesNotMatch(source, /--prompt-file|--write|spark|--force/);
+test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task or authorization material', () => {
+  const source = skill('rescue');
+  assert.match(source, /Only after the preflight returned `ready`/);
+  assert.match(source, /Act only as the installed ZCode Rescue forwarder\./);
+  assert.match(source, /node "<canonical-plugin-root>\/scripts\/zcode-companion\.mjs" invoke rescue/);
+  assert.match(source, /Preserve stderr and return public stdout verbatim\./);
+  assert.match(source, /Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request\/print\/persist authorization material\./);
+  assert.match(source, /never issue a second spawn/i);
+  assert.match(source, /unknown\/unrecognized\/unsupported\/reserved (?:field\/key\/parameter|field, key, or parameter) `agent_type`/i);
+  assert.match(source, /no agent ID, start event, or activity/i);
+  assert.match(source, /unknown\/unavailable\/invalid (?:value|Role value) `zcode-rescue`/i);
+  assert.match(source, /timeout[\s\S]+ambiguous[\s\S]+never generic fallback/i);
+  assert.match(source, /may have created a child[\s\S]+same child/i);
+  assert.doesNotMatch(source, /If spawning fails[^\n]+no queued job or authorization artifact/i);
+  assert.doesNotMatch(source, /spawn[^\n]*(?:task text|job ID|capability|permission snapshot)/i);
 });
+
+test('managed Rescue role is a fixed TOML forwarder without capability or task material', () => {
+  assert.equal(existsSync(new URL('agents/zcode-rescue.md', root)), false);
+  const source = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
+  for (const name of expected.filter((value) => value !== 'setup')) assert.doesNotMatch(skill(name), /zcode:zcode-rescue|forwarding subagent|one-time execution capability/i);
+  assert.match(source, /^developer_instructions = """[\s\S]+"""\n$/);
+  assert.equal((source.match(/^developer_instructions\s*=/gm) ?? []).length, 1);
+  assert.match(source, /invoke rescue/);
+  assert.match(source, /invoke-choice rescue resume/);
+  assert.match(source, /invoke-choice rescue fresh/);
+  assert.doesNotMatch(source, /--prompt-file|--write|spark|--force|\{\{(?:TASK|ARGS|JOB|SESSION|PERMISSION|CAPABILITY)[^}]*\}\}/i);
+  assert.match(source, /return public stdout verbatim/i);
+  assert.match(source, /preserve stderr/i);
+  assert.match(source, /(?:Do not|Never) inspect or modify code independently/i);
+});
+
+test('native Rescue forwarders request explicit background through the same capability-free constant invocation', () => {
+  const source = skill('rescue'); const role = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
+  const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source)?.[1];
+  assert.ok(generic, 'generic forwarder fixture must be present');
+  for (const forwarder of [role, generic]) {
+    assert.equal(forwarder.match(/invoke rescue/g)?.length, 1);
+    assert.doesNotMatch(forwarder, /run-reserved-job|executionCapability|callerContext|privateInvocation|FD3|FD4|--background/);
+  }
+  assert.match(source, /native prompt hook has already recorded the exact arguments and task text/i);
+  assert.match(source, /Never place user text, command arguments, job or session identity, permissions, credentials, or authorization material in a process command or agent message\./);
+});
+
+test('Rescue choice continuation reuses one child with exact fixed messages and commands', () => {
+  const source = skill('rescue');
+  const role = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
+  const resume = 'Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.';
+  const fresh = 'Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.';
+  for (const message of [resume, fresh]) {
+    assert.equal(source.split(message).length - 1, 2, `parent and generic child fixture must contain only the exact continuation: ${message}`);
+    assert.equal(role.split(message).length - 1, 1, `Role must accept the exact continuation once: ${message}`);
+  }
+  assert.match(source, /ask the user exactly once/i);
+  assert.match(source, /named and generic[\s\S]+same-child choice continuation/i);
+  assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
+  assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
+  assert.match(source, /select only the result or status belonging to `rescueChildId`/);
+  assert.match(source, /timeout[\s\S]+early return[\s\S]+steering[\s\S]+same `rescueChildId`/i);
+  assert.doesNotMatch(source, /followup_task\([\s\S]{0,160}(?:spawn_agent|invoke rescue)/);
+  assert.match(role, new RegExp(`${escapeRegExp(resume)}[\\s\\S]+invoke-choice rescue resume`));
+  assert.match(role, new RegExp(`${escapeRegExp(fresh)}[\\s\\S]+invoke-choice rescue fresh`));
+  assert.match(role, /return a `needs-choice` response byte-for-byte and stop without selecting/i);
+  const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source)?.[1];
+  assert.ok(generic, 'generic forwarder fixture must be present');
+  for (const fixture of [role, generic]) {
+    assert.match(fixture, new RegExp(`${escapeRegExp(resume)}[\\s\\S]+invoke-choice rescue resume`));
+    assert.match(fixture, new RegExp(`${escapeRegExp(fresh)}[\\s\\S]+invoke-choice rescue fresh`));
+  }
+});
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 test('agents metadata uses quoted strings and namespaced default prompts', () => {
   for (const name of expected) {

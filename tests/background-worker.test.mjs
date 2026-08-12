@@ -33,6 +33,29 @@ test('background startup schedules the production acknowledgement deadline at 30
   assert.equal(scheduled, 30_000); assert.ok(typeof result.pid === 'number' && result.pid > 0);
 });
 
+test('background production launch confines capability transport to fd3 and acknowledgement to fd4', async () => {
+  const executionCapability = 'capability-sentinel-only-fd3'; const jobId = 'd'.repeat(64);
+  const authorization = new PassThrough(); const acknowledgements = new PassThrough(); const child = /** @type {any} */ (new EventEmitter());
+  let invocation; let envelope = ''; let unrefCount = 0;
+  authorization.setEncoding('utf8'); authorization.on('data', (chunk) => { envelope += chunk; });
+  Object.assign(child, { stdio: [null, null, null, authorization, acknowledgements], pid: 4242, exitCode: null, signalCode: null,
+    kill: () => true, unref: () => { unrefCount += 1; } });
+  const spawnWorker = /** @type {any} */ ((/** @type {any} */ command, /** @type {any} */ args, /** @type {any} */ options) => { invocation = { command, args, options }; queueMicrotask(() => acknowledgements.end('ready\n')); return child; });
+
+  const started = startBackgroundWorker({ companionPath: '/plugin/zcode-companion.mjs', jobId, executionCapability, cwd: '/workspace', env: { PUBLIC_SETTING: 'visible' },
+    dependencies: { spawn: spawnWorker } });
+  assert.deepEqual(await started, { pid: 4242 });
+
+  assert.deepEqual(invocation, {
+    command: process.execPath,
+    args: ['/plugin/zcode-companion.mjs', 'run-reserved-job', jobId],
+    options: { cwd: '/workspace', env: { PUBLIC_SETTING: 'visible', ZCODE_BACKGROUND_WORKER: '1' }, detached: true, windowsHide: true, shell: false, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] },
+  });
+  assert.equal(envelope, `${JSON.stringify({ executionCapability, jobId })}\n`);
+  assert.doesNotMatch(JSON.stringify(invocation), new RegExp(executionCapability));
+  assert.equal(unrefCount, 1, 'the acknowledged worker must detach from the short-lived native child');
+});
+
 test('background timeout consumes pipe resets during worker termination without replacing the timeout error', async () => {
   const authorization = new PassThrough(); const acknowledgements = new PassThrough(); const child = /** @type {any} */ (new EventEmitter());
   Object.assign(child, { stdio: [null, null, null, authorization, acknowledgements], exitCode: null, signalCode: null,

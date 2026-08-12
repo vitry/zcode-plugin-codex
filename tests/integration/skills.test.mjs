@@ -1,6 +1,5 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +7,10 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
+import { createInvocationStore } from '../../scripts/lib/invocation.mjs';
+import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
+import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -32,23 +34,32 @@ async function cleanupFixture(directory) {
   throw lastError;
 }
 
-function processAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+async function waitUntil(predicate, timeoutMs, message) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) { if (await predicate()) return; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); }
+  assert.fail(message);
 }
 
-async function ensureWorkerStopped(pid) {
-  if (!Number.isSafeInteger(pid) || !processAlive(pid)) return;
-  const wait = async (milliseconds) => {
-    const deadline = Date.now() + milliseconds;
-    while (processAlive(pid) && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
-  };
-  await wait(process.platform === 'win32' ? 5_000 : 1_000);
-  if (processAlive(pid)) {
-    if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, shell: false, stdio: 'ignore' });
-    else try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { /* already exited */ } }
-    await wait(2_000);
+async function workerLeaseAvailable(ctx, job) {
+  if (!job?.workerLeaseId) return false;
+  try { await withWorkerLease({ dataRoot: ctx.dataRoot, workspace: ctx.workspace, jobId: job.id, workerLeaseId: job.workerLeaseId, timeoutMs: 0 }, async () => {}); return true; }
+  catch (error) { if (error?.code === 'LOCK_TIMEOUT') return false; throw error; }
+}
+
+async function waitForExactJobCleanup(ctx, store, jobId, timeoutMs = process.platform === 'win32' ? 30_000 : 5_000, cancel) {
+  let latest;
+  const settled = async () => { latest = await store.readJob(ctx.workspace, jobId); return ['succeeded', 'failed', 'cancelled'].includes(latest.status) && (!latest.workerLeaseId || await workerLeaseAvailable(ctx, latest)); };
+  try { await waitUntil(settled, timeoutMs, `exact background job ${jobId} did not become terminal and release its worker lease`); }
+  catch (error) {
+    if (cancel) { await cancel().catch(() => {}); try { await waitUntil(settled, timeoutMs, `exact background job ${jobId} did not settle after job-aware cancellation`); return latest; } catch { /* preserve the original bounded cleanup failure */ } }
+    ctx.preserveEvidence = true; throw error;
   }
-  assert.equal(processAlive(pid), false, `background worker ${pid} did not terminate`);
+  return latest;
+}
+
+async function findNewJobs(store, workspace, baselineIds) {
+  const jobs = await store.listJobs(workspace);
+  return jobs.filter((job) => !baselineIds.has(job.id));
 }
 
 async function run(command, args, cwd) {
@@ -69,8 +80,48 @@ async function fixture(t) {
   const callerA = await identity.createCallerContext({ sessionId: 'codex-a', turnId: 'turn-a', workspace, permissionMode: 'workspace-write' });
   const callerB = await identity.createCallerContext({ sessionId: 'codex-b', turnId: 'turn-b', workspace, permissionMode: 'read-only' });
   const env = { ...process.env, PLUGIN_DATA: dataRoot, PLUGIN_ROOT: root, ZCODE_PATH: fakeZCode };
-  t.after(() => cleanupFixture(directory));
-  return { workspace, dataRoot, callerA, callerB, env };
+  const context = { directory, workspace, dataRoot, callerA, callerB, env, preserveEvidence: false };
+  t.after(async () => { if (!context.preserveEvidence) await cleanupFixture(directory); else t.diagnostic(`preserved background cleanup evidence at ${directory}`); });
+  return context;
+}
+
+async function startRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
+  const result = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: agentType },
+  });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+}
+
+test('0.147 default compatibility child persists and consumes one same-child Rescue choice', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  await identity.beginCallerTurn({ sessionId: 'generic-parent', turnId: 'generic-seed', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait seed' });
+  await startRescueChild(ctx, 'generic-parent', 'generic-child', 'generic-seed-child', 'default');
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'generic-child' } })).code, 0);
+  await stopRescueChild(ctx, 'generic-parent', 'generic-child', 'generic-seed-child', 'default');
+  await identity.beginCallerTurn({ sessionId: 'generic-parent', turnId: 'generic-origin', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait continue' });
+  await startRescueChild(ctx, 'generic-parent', 'generic-child', 'generic-origin-child', 'default');
+  const undecided = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'generic-child' } });
+  assert.equal(undecided.code, 3); assert.match(undecided.stdout, /needs-choice/);
+  await stopRescueChild(ctx, 'generic-parent', 'generic-child', 'generic-origin-child', 'default');
+  await identity.beginCallerTurn({ sessionId: 'generic-parent', turnId: 'generic-answer', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'resume' });
+  const choice = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'generic-child' } });
+  assert.equal(choice.code, 0, choice.stderr || choice.stdout); assert.equal(choice.stdout, 'done\n');
+  await assert.rejects(createInvocationStore({ dataRoot: ctx.dataRoot }).consumePending({ sessionId: 'generic-parent', workspace: ctx.workspace, command: 'rescue', choice: 'resume', executorAgentId: 'generic-child' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+  const replay = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'generic-child' } });
+  assert.notEqual(replay.code, 0); assert.match(replay.stdout, /PENDING_INVOCATION_NOT_FOUND/);
+});
+test('initial Rescue invocation must match the parent turn captured by SubagentStart', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  await identity.beginCallerTurn({ sessionId: 'turn-parent', turnId: 'captured-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
+  await startRescueChild(ctx, 'turn-parent', 'turn-child');
+  await identity.beginCallerTurn({ sessionId: 'turn-parent', turnId: 'replacement-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait different' });
+  const result = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'turn-child' } });
+  assert.notEqual(result.code, 0); assert.match(result.stdout, /EXECUTOR_PARENT_TURN_MISMATCH/);
+});
+async function stopRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
+  const result = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], { cwd: ctx.workspace, env: ctx.env, ordinaryInput: true, input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: agentType, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
 }
 
 function invoke(ctx, rawArgv, authorization, extraEnv = {}, ordinaryStdio = false) {
@@ -125,6 +176,16 @@ test('all eight skill commands preserve argv and execute across the CLI fd bound
 
   const setupArgv = ['setup'];
   const setupConfig = { config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } }, origins: {}, layers: [{ name: { type: 'user', file: join(ctx.dataRoot, 'config.toml') }, version: 'version-1', config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } } }] };
+  const lifecycle = await runChild(process.execPath, [join(root, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: 'codex-setup', cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+  });
+  assert.equal(lifecycle.code, 0, lifecycle.stderr || lifecycle.stdout);
+  const prompt = await runChild(process.execPath, [join(root, 'hooks', 'user-prompt-hook.mjs')], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: 'codex-setup', turn_id: 'turn-setup', cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:setup' },
+  });
+  assert.equal(prompt.code, 0, prompt.stderr || prompt.stdout);
   const setup = await invoke(ctx, setupArgv, undefined, {
     FAKE_ZCODE_VERSION: '0.1.0',
     CODEX_APP_SERVER_PATH: process.execPath,
@@ -169,7 +230,8 @@ test('installed-style invoke uses ordinary stdio, ambient thread identity, and l
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
   const marker = join(ctx.workspace, 'escaped'); const record = join(ctx.workspace, 'direct-record.jsonl');
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'direct-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair $(touch escaped) literally' });
-  const result = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-a', FAKE_ZCODE_RECORD: record } });
+  await startRescueChild(ctx, 'codex-a', 'direct-child');
+  const result = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'direct-child', FAKE_ZCODE_RECORD: record } });
   assert.equal(result.code, 0, result.stderr || result.stdout);
   assert.equal(result.stdout, 'done\n');
   await assert.rejects(readFile(marker, 'utf8'), { code: 'ENOENT' });
@@ -185,51 +247,142 @@ test('installed-style invoke uses ordinary stdio, ambient thread identity, and l
   assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /ACTIVE_TURN_NOT_FOUND/);
 });
 
+test('role-status default app-server path is read-only and leaves caller context and jobs untouched', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const sessionId = 'role-status-owner'; const turnId = 'role-status-turn';
+  const callerContext = await identity.beginCallerTurn({ sessionId, turnId, workspace: ctx.workspace, permissionMode: 'acceptEdits', prompt: '$zcode:rescue --fresh repair' });
+  await identity.beginCallerTurn({ sessionId: 'role-status-sibling', turnId: 'sibling-turn', workspace: ctx.workspace, permissionMode: 'read-only', prompt: 'unrelated sibling' });
+  const lifecycle = await runChild(process.execPath, [join(root, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: sessionId, cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+  });
+  assert.equal(lifecycle.code, 0, lifecycle.stderr || lifecycle.stdout);
+  const configRecord = join(ctx.workspace, 'role-status-codex.jsonl');
+  const zcodeRecord = join(ctx.workspace, 'role-status-zcode.jsonl');
+  await writeFile(configRecord, ''); await writeFile(zcodeRecord, '');
+  const configFile = join(ctx.dataRoot, 'config.toml');
+  const config = { config: { features: { multi_agent_v2: { hide_spawn_agent_metadata: false } } }, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: {} }] };
+  const result = await runChild(process.execPath, [cli, 'role-status', 'rescue'], {
+    cwd: ctx.workspace,
+    env: { ...ctx.env, CODEX_THREAD_ID: sessionId, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]), FAKE_CODEX_CONFIG_RESULT: JSON.stringify(config), FAKE_CODEX_RECORD: configRecord, FAKE_ZCODE_RECORD: zcodeRecord },
+  });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'install-required', remedy: '$zcode:setup' });
+  assert.equal(result.internal, '');
+  const configCalls = (await readFile(configRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.deepEqual(configCalls.filter((frame) => frame.method).map((frame) => frame.method), ['initialize', 'initialized', 'config/read']);
+  assert.equal(await readFile(zcodeRecord, 'utf8'), '');
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), []);
+  const consumed = await identity.consumeCallerContext(callerContext, { workspace: ctx.workspace });
+  assert.equal(consumed.sessionId, sessionId);
+  assert.equal(consumed.turnId, turnId);
+});
+
 test('invoke-choice consumes only the same session pending rescue once', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'seed', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait first repair' });
-  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-a' } })).code, 0);
+  await startRescueChild(ctx, 'codex-a', 'choice-child-a');
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } })).code, 0);
+  await stopRescueChild(ctx, 'codex-a', 'choice-child-a');
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'choice-origin', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait continue repair' });
-  const undecided = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-a' } });
+  await startRescueChild(ctx, 'codex-a', 'choice-child-a', 'choice-origin-child');
+  const undecided = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } });
   assert.equal(undecided.code, 3); assert.match(undecided.stdout, /needs-choice/);
+  await stopRescueChild(ctx, 'codex-a', 'choice-child-a', 'choice-origin-child');
   await identity.beginCallerTurn({ sessionId: 'codex-a', turnId: 'choice-answer', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'resume' });
   await identity.beginCallerTurn({ sessionId: 'codex-b', turnId: 'sibling-answer', workspace: ctx.workspace, permissionMode: 'read-only', prompt: 'resume' });
-  const sibling = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-b' } });
-  assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /PENDING_INVOCATION_NOT_FOUND/);
-  const accepted = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-a' } });
+  await startRescueChild(ctx, 'codex-b', 'choice-child-b');
+  const sibling = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-b' } });
+  assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /(?:PENDING_INVOCATION_NOT_FOUND|EXECUTOR_STATE_MISMATCH)/);
+  const accepted = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } });
   assert.equal(accepted.code, 0, accepted.stderr || accepted.stdout);
-  const replay = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'codex-a' } });
+  const replay = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } });
   assert.notEqual(replay.code, 0); assert.match(replay.stdout, /PENDING_INVOCATION_NOT_FOUND/);
+});
+
+test('same-parent sibling cannot consume a pending Rescue choice without trusted executor identity', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
+  const hook = join(root, 'hooks', 'subagent-hook.mjs');
+  const agentHook = (event, agentId, turnId) => runChild(process.execPath, [hook], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: 'shared-parent', turn_id: turnId, cwd: ctx.workspace, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: agentId, agent_type: 'zcode-rescue', ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) },
+  });
+  await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'seed', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait seed' });
+  assert.equal((await agentHook('SubagentStart', 'rescue-child', 'child-seed')).code, 0);
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'rescue-child' } })).code, 0);
+  assert.equal((await agentHook('SubagentStop', 'rescue-child', 'child-seed')).code, 0);
+  await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'origin', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait protected' });
+  assert.equal((await agentHook('SubagentStart', 'rescue-child', 'child-origin')).code, 0);
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'rescue-child' } })).code, 3);
+  assert.equal((await agentHook('SubagentStop', 'rescue-child', 'child-origin')).code, 0);
+  await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'later-answer', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: 'resume' });
+  assert.equal((await agentHook('SubagentStart', 'sibling-child', 'sibling-answer')).code, 0);
+  const sibling = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'sibling-child' } });
+  assert.notEqual(sibling.code, 0);
+  assert.match(sibling.stdout, /(?:PENDING_INVOCATION_NOT_FOUND|EXECUTOR_STATE_MISMATCH)/);
+  const parent = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'shared-parent' } });
+  assert.notEqual(parent.code, 0); assert.match(parent.stdout, /EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)/);
+  const accepted = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'rescue-child' } });
+  assert.equal(accepted.code, 0, accepted.stderr || accepted.stdout);
+  await assert.rejects(
+    createInvocationStore({ dataRoot: ctx.dataRoot }).consumePending({ sessionId: 'shared-parent', workspace: ctx.workspace, command: 'rescue', choice: 'fresh', executorAgentId: 'rescue-child' }),
+    { code: 'PENDING_INVOCATION_NOT_FOUND' },
+  );
+});
+
+test('installed Rescue instructions keep needs-choice and every wait continuation on one child', async () => {
+  const source = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const role = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+  const resume = 'Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.';
+  const fresh = 'Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.';
+  assert.match(source, /Keep the returned child ID as `rescueChildId`/);
+  assert.match(source, /Do not call `spawn_agent` again after `rescueChildId` exists/);
+  assert.match(source, /ask the user exactly once/i);
+  assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
+  assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
+  assert.match(source, /select only the result or status belonging to `rescueChildId`/);
+  assert.equal(source.split(resume).length - 1, 2);
+  assert.equal(source.split(fresh).length - 1, 2);
+  assert.match(role, /return a `needs-choice` response byte-for-byte and stop without selecting/i);
+  assert.match(role, /For the exact resume continuation above, run only:[\s\S]+invoke-choice rescue resume/);
+  assert.match(role, /For the exact fresh continuation above, run only:[\s\S]+invoke-choice rescue fresh/);
 });
 
 test('invoke-choice executes with the originating permission snapshot in both directions', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA }); const record = join(ctx.workspace, 'permission-record.jsonl');
   const env = { ...ctx.env, FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_PERMISSION_RISK: 'high', FAKE_ZCODE_RECORD: record };
   const decisions = async () => (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((frame) => frame?.result?.decision).map((frame) => frame.result.decision);
-
   await identity.beginCallerTurn({ sessionId: 'normal-origin', turnId: 'seed-normal', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait seed normal' });
-  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-origin' } })).code, 0);
+  await startRescueChild(ctx, 'normal-origin', 'normal-child', 'seed-normal-child');
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-child' } })).code, 0);
+  await stopRescueChild(ctx, 'normal-origin', 'normal-child', 'seed-normal-child');
   await identity.beginCallerTurn({ sessionId: 'normal-origin', turnId: 'origin-normal', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait protected normal' });
-  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-origin' } })).code, 3);
+  await startRescueChild(ctx, 'normal-origin', 'normal-child', 'origin-normal-child');
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-child' } })).code, 3);
+  await stopRescueChild(ctx, 'normal-origin', 'normal-child', 'origin-normal-child');
   await identity.beginCallerTurn({ sessionId: 'normal-origin', turnId: 'answer-bypass', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: 'fresh' });
-  const denied = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-origin' } });
+  const denied = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'normal-child' } });
   assert.equal(denied.code, 0, denied.stderr || denied.stdout);
   assert.equal((await decisions()).at(-1), 'deny', 'a bypass answer turn must not upgrade the normal origin turn');
 
   await identity.beginCallerTurn({ sessionId: 'bypass-origin', turnId: 'seed-bypass', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: '$zcode:rescue --fresh --wait seed bypass' });
-  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-origin' } })).code, 0);
+  await startRescueChild(ctx, 'bypass-origin', 'bypass-child', 'seed-bypass-child');
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-child' } })).code, 0);
+  await stopRescueChild(ctx, 'bypass-origin', 'bypass-child', 'seed-bypass-child');
   await identity.beginCallerTurn({ sessionId: 'bypass-origin', turnId: 'origin-bypass', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: '$zcode:rescue --wait protected bypass' });
-  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-origin' } })).code, 3);
+  await startRescueChild(ctx, 'bypass-origin', 'bypass-child', 'origin-bypass-child');
+  assert.equal((await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-child' } })).code, 3);
+  await stopRescueChild(ctx, 'bypass-origin', 'bypass-child', 'origin-bypass-child');
   await identity.beginCallerTurn({ sessionId: 'bypass-origin', turnId: 'answer-normal', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'fresh' });
-  const allowed = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-origin' } });
+  const allowed = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: 'bypass-child' } });
   assert.equal(allowed.code, 0, allowed.stderr || allowed.stdout);
   assert.equal((await decisions()).at(-1), 'allow', 'a normal answer turn must not downgrade the bypass origin turn');
 });
 
 test('direct background invocation keeps capabilities private and production owns the worker', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA });
-  await identity.beginCallerTurn({ sessionId: 'background-owner', turnId: 'background-turn', workspace: ctx.workspace, permissionMode: 'read-only', prompt: '$zcode:review --background' });
-  const launched = await runChild(process.execPath, [cli, 'invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'background-owner' } });
+  const callerContext = await identity.beginCallerTurn({ sessionId: 'background-owner', turnId: 'background-turn', workspace: ctx.workspace, permissionMode: 'read-only', prompt: '$zcode:review --background' });
+  ctx.preserveEvidence = true; const launched = await runChild(process.execPath, [cli, 'invoke', 'review'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'background-owner' } });
   assert.equal(launched.code, 0, launched.stderr || launched.stdout);
   const jobId = /Reserved background job ([a-f0-9]{64})\./.exec(launched.stdout)?.[1];
   assert.ok(jobId, launched.stdout); assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation/);
@@ -239,6 +392,63 @@ test('direct background invocation keeps capabilities private and production own
   // enough room for that startup/lock contention before declaring it stuck.
   const deadline = Date.now() + (process.platform === 'win32' ? 30_000 : 5_000);
   do { job = await store.readJob(ctx.workspace, jobId); if (['succeeded', 'failed', 'cancelled'].includes(job.status)) break; await new Promise((resolvePromise) => setTimeout(resolvePromise, 20)); } while (Date.now() < deadline);
-  await ensureWorkerStopped(job.childPid);
+  job = await waitForExactJobCleanup(ctx, store, jobId, process.platform === 'win32' ? 30_000 : 5_000, () => publicInvoke(ctx, ['cancel', jobId], callerContext));
   assert.equal(job.status, 'succeeded', JSON.stringify(job.error));
+  ctx.preserveEvidence = false;
+});
+
+test('named and generic Rescue children receive only queued background output while production workers remain controllable', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA }); const store = createStateStore({ dataRoot: ctx.env.PLUGIN_DATA });
+  const gate = join(ctx.directory, 'background-completion.gate'); const gateReached = join(ctx.directory, 'background-completion.reached'); const record = join(ctx.directory, 'background-zcode.jsonl');
+  for (const [route, agentType, control] of [['named', 'zcode-rescue', 'result'], ['generic', 'default', 'cancel']]) {
+    const parentId = `background-${route}-parent`; const childId = `background-${route}-child`; const turnId = `background-${route}-turn`;
+    const baselineJobIds = new Set((await store.listJobs(ctx.workspace)).map((job) => job.id));
+    ctx.preserveEvidence = true; let backgroundVerified = false;
+    await writeFile(gate, 'hold'); await writeFile(gateReached, ''); await writeFile(record, '');
+    const callerContext = await identity.beginCallerTurn({ sessionId: parentId, turnId, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue --fresh --background ${route} native child` });
+    await startRescueChild(ctx, parentId, childId, `${turnId}-child`, agentType);
+    try {
+      const launched = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: gate, FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReached, FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100' } });
+      assert.equal(launched.code, 0, launched.stderr || launched.stdout);
+      const jobId = /^Reserved background job ([a-f0-9]{64})\.\n$/.exec(launched.stdout)?.[1];
+      assert.ok(jobId, `native ${route} child must receive only the public queued envelope: ${launched.stdout}`);
+      let job = await store.readJob(ctx.workspace, jobId);
+      await waitUntil(async () => await readFile(gateReached, 'utf8').catch(() => '') === 'blocked', 5_000, 'the fake peer did not reach its exact post-ack completion gate');
+      assert.deepEqual(launched.spawnargs, [process.execPath, cli, 'invoke', 'rescue']);
+      assert.equal(launched.internal, ''); assert.equal(launched.stderr, '');
+      assert.doesNotMatch(`${launched.stdout}${launched.stderr}${launched.spawnargs.join(' ')}`, /executionCapability|callerContext|privateInvocation|capability-sentinel-only-fd3/);
+
+      assert.equal(job.status, 'running', `the ${route} child must be able to exit after fd4 acknowledgement while its detached worker continues`);
+      assert.equal(await workerLeaseAvailable(ctx, job), false, `the ${route} worker must still hold its exact lease after fd4 acknowledgement`);
+      const status = await publicInvoke(ctx, ['status', jobId], callerContext);
+      assert.equal(status.code, 0, status.stderr); assert.equal(status.json.job.status, 'running');
+      assert.doesNotMatch(`${status.stdout}${status.stderr}${status.internal}`, /executionCapability|callerContext|privateInvocation/);
+
+      if (control === 'cancel') {
+        const cancelled = await publicInvoke(ctx, ['cancel', jobId], callerContext);
+        const cancelJob = await store.readJob(ctx.workspace, jobId); const callsAtCancel = await readFile(record, 'utf8').catch((error) => `record-read:${error?.code}`); const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+        const brokerFiles = await readFile(join(storage.directory, 'broker', 'identity.json'), 'utf8').catch((error) => `identity-read:${error?.code}`);
+        const cancelEvidence = JSON.stringify({ code: cancelled.code, stdout: cancelled.stdout, stderr: cancelled.stderr, internal: cancelled.internal, json: cancelled.json, job: cancelJob, callsAtCancel, brokerFiles });
+        assert.equal(cancelled.code, 0, cancelEvidence); assert.equal(cancelled.json.job.status, 'cancelled');
+        await waitForExactJobCleanup(ctx, store, jobId, undefined, () => publicInvoke(ctx, ['cancel', jobId], callerContext));
+        const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+        assert.equal(calls.filter((call) => call.method === 'session/send').length, 1); assert.equal(calls.filter((call) => call.method === 'session/stop').length, 1); assert.equal(cancelled.json.job.resultArtifact, undefined);
+      } else {
+        await writeFile(gate, 'release');
+        const waited = await publicInvoke(ctx, ['status', jobId, '--wait', '--timeout-ms', '5000'], callerContext);
+        assert.equal(waited.code, 0, waited.stderr); assert.equal(waited.json.job.status, 'succeeded');
+        const result = await publicInvoke(ctx, ['result', jobId], callerContext);
+        assert.equal(result.code, 0, result.stderr); assert.equal(result.json.result, 'done');
+        assert.doesNotMatch(`${result.stdout}${result.stderr}${result.internal}`, /executionCapability|callerContext|privateInvocation/);
+      }
+      backgroundVerified = true;
+    } finally {
+      await writeFile(gate, 'release').catch(() => {});
+      const jobs = new Map();
+      for (let attempt = 0; attempt < 20; attempt += 1) { for (const job of await findNewJobs(store, ctx.workspace, baselineJobIds)) jobs.set(job.id, job); await new Promise((resolvePromise) => setTimeout(resolvePromise, 50)); }
+      for (const job of jobs.values()) await waitForExactJobCleanup(ctx, store, job.id, undefined, () => publicInvoke(ctx, ['cancel', job.id], callerContext));
+      assert.equal(jobs.size, 1, `expected exactly one new ${route} background job during cleanup`);
+      if (backgroundVerified) ctx.preserveEvidence = false;
+    }
+  }
 });

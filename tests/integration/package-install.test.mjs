@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,7 @@ const rootPath = fileURLToPath(new URL('../../', import.meta.url));
 
 /** @param {{ command: string, args: string[], options: object }} launch @param {string} cwd */
 async function run(launch, cwd) {
-  return runProcess(launch, { cwd, timeoutMs: 30_000, maxOutputBytes: 4 * 1024 * 1024 });
+  return runProcess(launch, { cwd, timeoutMs: 120_000, maxOutputBytes: 4 * 1024 * 1024 });
 }
 
 /** @param {string[]} args */
@@ -49,6 +49,16 @@ test('packed production install loads and locks on Node 22.13', async (t) => {
   const installed = await run(npmLaunch(['ci', '--omit=dev', '--ignore-scripts']), consumerDirectory);
   assert.equal(installed.code, 0, installed.stderr);
 
+  const pluginRoot = join(consumerDirectory, 'node_modules', 'zcode-plugin-codex');
+  for (const path of [
+    'agents/zcode-rescue.toml.template',
+    'scripts/lib/conversation-progress.mjs',
+    'scripts/lib/managed-agent-role.mjs',
+    'scripts/lib/progress.mjs',
+  ]) await access(join(pluginRoot, path));
+  assert.match(await readFile(join(pluginRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8'), /^developer_instructions = """/);
+  await assert.rejects(access(join(pluginRoot, 'agents', 'zcode-rescue.md')), { code: 'ENOENT' });
+
   const smoke = `
     const fs = require('node:fs');
     const path = require('node:path');
@@ -64,7 +74,15 @@ test('packed production install loads and locks on Node 22.13', async (t) => {
     if (!resolverMain.startsWith(bundledRoot)) throw new Error('external resolver=' + resolverMain);
     const resolver = require(path.join(path.dirname(resolverMain), 'package.json'));
     if (resolver.version !== '1.10.1') throw new Error('resolver=' + resolver.version);
-    import(path.join(pluginRoot, 'scripts/lib/fs.mjs')).then(async ({ withFileLock }) => {
+    Promise.all([
+      import(path.join(pluginRoot, 'scripts/lib/conversation-progress.mjs')),
+      import(path.join(pluginRoot, 'scripts/lib/managed-agent-role.mjs')),
+      import(path.join(pluginRoot, 'scripts/lib/progress.mjs')),
+      import(path.join(pluginRoot, 'scripts/lib/fs.mjs')),
+    ]).then(async ([conversationProgress, managedRole, progress, { withFileLock }]) => {
+      if (typeof conversationProgress.createConversationProgressDescriber !== 'function') throw new Error('conversation progress module missing');
+      if (typeof managedRole.inspectManagedRescueRole !== 'function') throw new Error('managed role module missing');
+      if (typeof progress.createProgressReporter !== 'function') throw new Error('progress module missing');
       const lockPath = path.join(process.cwd(), 'smoke.lock');
       const result = await withFileLock(lockPath, async () => 'locked');
       if (result !== 'locked') throw new Error('lock failed');

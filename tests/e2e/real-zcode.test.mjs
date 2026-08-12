@@ -13,20 +13,31 @@ import { createZCodeClient } from '../../scripts/lib/zcode-client.mjs';
 import { releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
 import { discoverZCode } from '../../scripts/lib/zcode-discovery.mjs';
 import { runCompanion } from '../../scripts/zcode-companion.mjs';
+import { resolveRealZCodeModelEnvironment } from '../helpers/real-zcode-model.mjs';
 
-const requestedModel = process.env.ZCODE_REAL_E2E_MODEL?.trim();
-const skipReason = process.env.ZCODE_REAL_E2E !== '1'
-  ? 'unqualified local real E2E: set ZCODE_REAL_E2E=1 on an authenticated macOS ZCode installation'
+let modelEnvironment; let modelEnvironmentFailure;
+try { modelEnvironment = resolveRealZCodeModelEnvironment(process.env); }
+catch (error) {
+  if (error?.code !== 'ZCODE_REAL_MODEL_CONFLICT') throw error;
+  modelEnvironmentFailure = unqualified('model-environment-conflict', error.message);
+}
+const requestedModel = modelEnvironment?.model;
+const qualificationRequired = process.env.ZCODE_REQUIRE_QUALIFIED === '1';
+const skipReason = modelEnvironmentFailure || (process.env.ZCODE_REAL_E2E !== '1'
+  ? unqualified('opt-in-required', 'Set ZCODE_REAL_E2E=1 on an authenticated macOS ZCode installation.')
   : process.platform !== 'darwin'
-    ? 'unqualified real E2E: macOS is the only real-CLI-qualified platform'
+    ? unqualified('platform-unsupported', 'macOS is the only real-CLI-qualified platform.')
     : !requestedModel
-      ? 'unqualified real E2E: set a non-empty ZCODE_REAL_E2E_MODEL'
-      : false;
+      ? unqualified('model-required', 'Set a non-empty ZCODE_REAL_E2E_MODEL.')
+      : false);
+
+function unqualified(code, detail) { return `real-zcode-unqualified ${JSON.stringify({ qualified: false, code, detail })}`; }
 
 test('real ZCode discovery, read-only turn, cancellation, model, and history import', {
-  skip: skipReason,
+  skip: qualificationRequired ? false : skipReason,
   timeout: 240_000,
 }, async (t) => {
+  if (skipReason) assert.fail(skipReason);
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-real-e2e-'));
   const sessions = new Set();
   let client;

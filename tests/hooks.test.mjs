@@ -1,6 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, mkdir, readdir, symlink, unlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, writeFile, mkdir, readdir, rm, stat, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -13,9 +14,12 @@ import { createManagedZCodeClient, createZCodeClient, releaseManagedZCodeOwner }
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
+import { cleanupSession, resolveForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
+const socketMethodRecorder = new URL('./fixtures/record-socket-methods.mjs', import.meta.url).href;
+const ownerReleaseProbe = fileURLToPath(new URL('./fixtures/probe-owner-release.mjs', import.meta.url));
 const legacyBroker = join(root, 'tests/fixtures/legacy-zcode-broker-v1.mjs');
 const ownerStoreLockHolder = join(root, 'tests/fixtures/owner-store-lock-holder.mjs');
 // Parallel Windows runners can spend more than 750 ms scheduling a legacy
@@ -42,8 +46,15 @@ async function runHook(script, input, env = {}, options = {}) {
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.once('error', reject);
-    child.once('exit', (code) => resolve({ code, stdout, stderr, json: stdout.trim() ? JSON.parse(stdout) : null }));
+    child.once('close', (code) => resolve({ code, stdout, stderr, json: stdout.trim() ? JSON.parse(stdout) : null }));
     child.stdin.end(options.raw ?? JSON.stringify(input));
+  });
+}
+
+async function probePidFromChild(pid) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, ['-e', `try { process.kill(${JSON.stringify(pid)}, 0); process.stdout.write(JSON.stringify({ ok: true })); } catch (error) { process.stdout.write(JSON.stringify({ ok: false, code: error?.code ?? null })); }`], { stdio: ['ignore', 'pipe', 'ignore'] }); let stdout = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; }); child.once('error', reject); child.once('exit', () => resolvePromise(JSON.parse(stdout)));
   });
 }
 
@@ -156,14 +167,103 @@ test('changing only an untracked symlink target changes the fingerprint without 
   assert.equal((await jsonFiles(join(data, 'workspaces'))).filter(isGateRunPath).length, 1, 'same-path symlink target changes must reach the gate path');
 });
 
-test('SubagentStart marks forwarding suppression without changing parent permission snapshot', async () => {
+test('subagent hook marks forwarding suppression without changing parent permission snapshot', async () => {
   const { cwd, env } = await workspace();
   await runHook('session-lifecycle-hook.mjs', { session_id: 'parent', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'plan', source: 'startup' }, env);
   await runHook('user-prompt-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'plan', prompt: 'go' }, env);
   const sub = await runHook('subagent-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', agent_id: 'agent-1', agent_type: 'zcode-rescue' }, env);
   assert.equal(sub.code, 0); assert.match(sub.json.hookSpecificOutput.additionalContext, /forwarding subagent/i);
+  assert.doesNotMatch(JSON.stringify(sub.json), /callerContext|executionCapability|[a-f0-9]{64}/);
   const stop = await runHook('subagent-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', agent_id: 'agent-1', agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
   assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
+});
+
+test('trusted SubagentStart binds one active child executor and fails closed on sibling, parent, workspace, stale stop, and duplicate records', async () => {
+  const { cwd, data, env } = await workspace();
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd });
+  const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'parent-thread', turnId: 'parent-origin', workspace: cwd, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait repair' });
+  const input = (event, turnId, agentId = 'rescue-child', agentType = 'zcode-rescue') => ({ session_id: 'parent-thread', turn_id: turnId, cwd, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: agentId, agent_type: agentType, ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
+  assert.equal((await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-1'), env)).code, 0);
+  assert.deepEqual(await resolveForwardingExecutor(data, cwd, 'rescue-child'), {
+    kind: 'subagent-executor', agentId: 'rescue-child', agentType: 'zcode-rescue', parentSessionId: 'parent-thread', parentTurnId: 'parent-origin', parentPermissionMode: 'workspace-write', childTurnId: 'child-turn-1', workspace: storage.workspacePath, active: true, createdAt: (await resolveForwardingExecutor(data, cwd, 'rescue-child')).createdAt,
+  });
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'general-turn', 'general-child', 'default'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'general-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
+  await runHook('subagent-hook.mjs', input('SubagentStop', 'general-turn', 'general-child', 'default'), env);
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'wrong-role-turn', 'wrong-role-child', 'explorer'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'wrong-role-child'), { code: 'EXECUTOR_ROLE_UNAPPROVED' });
+  await runHook('subagent-hook.mjs', input('SubagentStop', 'wrong-role-turn', 'wrong-role-child', 'explorer'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'sibling-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'parent-thread'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  const other = await mkdtemp(join(tmpdir(), 'zcode-wrong-workspace-'));
+  await assert.rejects(resolveForwardingExecutor(data, other, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await rm(other, { recursive: true });
+  await identity.beginCallerTurn({ sessionId: 'parent-thread', turnId: 'parent-answer', workspace: cwd, permissionMode: 'bypassPermissions', prompt: 'resume' });
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-2'), env);
+  await runHook('subagent-hook.mjs', input('SubagentStop', 'child-turn-1'), env);
+  assert.equal((await resolveForwardingExecutor(data, cwd, 'rescue-child')).childTurnId, 'child-turn-2', 'a stale stop cannot deactivate a newer child turn');
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'other-turn', 'other-rescue-child'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
+  await runHook('subagent-hook.mjs', input('SubagentStop', 'other-turn', 'other-rescue-child'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child', { continuation: true }), { code: 'EXECUTOR_STATE_MISMATCH' });
+  await runHook('subagent-hook.mjs', input('SubagentStop', 'child-turn-2'), env);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  assert.equal((await resolveForwardingExecutor(data, cwd, 'rescue-child', { continuation: true })).parentTurnId, 'parent-answer');
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-3'), env);
+  await cleanupSession(data, cwd, 'parent-thread');
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-4'), env);
+  await writeFile(join(storage.directory, 'hook-state', 'executor-forged.json'), JSON.stringify({ ...(await resolveForwardingExecutor(data, cwd, 'rescue-child')), updatedAt: new Date().toISOString() }));
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
+});
+
+test('executor records enforce exact schema, byte, time, TTL, and file-count bounds', async () => {
+  const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'bounded-parent', turnId: 'bounded-turn', workspace: cwd, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait bounded' });
+  const start = { session_id: 'bounded-parent', turn_id: 'bounded-child-turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'bounded-child', agent_type: 'zcode-rescue' };
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const directory = join(storage.directory, 'hook-state');
+  const reset = async () => { assert.equal((await runHook('subagent-hook.mjs', start, env)).code, 0); return (await readdir(directory)).find((name) => name.startsWith('executor-') && name.endsWith('.json')); };
+  for (const mutate of [
+    (record) => { record.extra = true; },
+    (record) => { record.agentId = 'x'.repeat(513); },
+    (record) => { record.parentPermissionMode = 'hostile'; },
+    (record) => { record.createdAt = '2026-08-10T00:00:00.000001Z'; },
+  ]) {
+    const name = await reset(); const path = join(directory, name); const record = JSON.parse(await readFile(path, 'utf8')); mutate(record); await writeFile(path, JSON.stringify(record));
+    await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
+  }
+  let name = await reset(); await writeFile(join(directory, name), `{"kind":"subagent-executor","pad":"${'x'.repeat(17 * 1024)}"}`);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
+  name = await reset(); const fresh = await resolveForwardingExecutor(data, cwd, 'bounded-child');
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child', { now: new Date(Date.parse(fresh.createdAt) - 1) }), { code: 'EXECUTOR_IDENTITY_INVALID' });
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child', { now: new Date(Date.parse(fresh.createdAt) + 30 * 60_000) }), { code: 'EXECUTOR_IDENTITY_EXPIRED' });
+  await reset(); await writeFile(join(directory, 'executor-corrupt-sibling.json'), '{');
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
+  await cleanupSession(data, cwd, 'ended-unrelated-parent');
+  assert.equal((await resolveForwardingExecutor(data, cwd, 'bounded-child')).agentId, 'bounded-child', 'SessionEnd cleanup must remove corrupt executor state without deleting a valid sibling session');
+  const executorName = (await readdir(directory)).find((candidate) => candidate.startsWith('executor-') && candidate.endsWith('.json'));
+  await writeFile(join(directory, executorName), `{"kind":"subagent-executor","pad":"${'x'.repeat(17 * 1024)}"}`);
+  const boundedStop = await runHook('subagent-hook.mjs', { ...start, hook_event_name: 'SubagentStop', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
+  assert.notEqual(boundedStop.code, 0, 'SubagentStop must reject an oversized exact executor record through the bounded reader');
+  await cleanupSession(data, cwd, 'bounded-parent');
+  await reset();
+  const exactName = (await readdir(directory)).find((candidate) => candidate.startsWith('executor-') && candidate.endsWith('.json'));
+  const inexact = JSON.parse(await readFile(join(directory, exactName), 'utf8')); inexact.extra = true; await writeFile(join(directory, exactName), JSON.stringify(inexact));
+  const exactStop = await runHook('subagent-hook.mjs', { ...start, hook_event_name: 'SubagentStop', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
+  assert.notEqual(exactStop.code, 0, 'SubagentStop must fail closed on an inexact executor schema');
+  await cleanupSession(data, cwd, 'bounded-parent');
+  await reset();
+  const siblingStart = { ...start, turn_id: 'future-sibling-turn', agent_id: 'future-sibling' };
+  assert.equal((await runHook('subagent-hook.mjs', siblingStart, env)).code, 0);
+  for (const candidate of await readdir(directory)) {
+    if (!candidate.startsWith('executor-')) continue;
+    const path = join(directory, candidate); const record = JSON.parse(await readFile(path, 'utf8'));
+    if (record.agentId === 'future-sibling') { record.createdAt = new Date(Date.now() + 60_000).toISOString(); await writeFile(path, JSON.stringify(record)); }
+  }
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
+  await reset(); await Promise.all(Array.from({ length: 1_024 }, (_, index) => writeFile(join(directory, `executor-unrelated-${index}.json`), '{}')));
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
 });
 
 test('SessionEnd removes only its session contexts and leaves sibling jobs/session ownership', async () => {
@@ -180,7 +280,7 @@ test('SessionEnd removes only its session contexts and leaves sibling jobs/sessi
 });
 
 test('SessionEnd releases only its broker owner sessions and lets the idle broker exit', async () => {
-  const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); await writeFile(record, '');
+  const { cwd, data, env } = await workspace(); const record = join(data, 'zcode-calls.jsonl'); const socketMethods = join(data, 'hook-socket-methods.txt'); const fsErrors = join(data, 'hook-fs-errors.txt'); await writeFile(record, ''); await writeFile(socketMethods, ''); await writeFile(fsErrors, '');
   const launch = { command: process.execPath, args: [fakeZCode], target: fakeZCode }; const clients = [];
   for (const sessionId of ['a', 'b']) {
     await runHook('session-lifecycle-hook.mjs', { session_id: sessionId, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
@@ -188,11 +288,22 @@ test('SessionEnd releases only its broker owner sessions and lets the idle broke
     clients.push(client); await client.createSession({ workspace: cwd, sessionId: `zcode-${sessionId}` });
   }
   for (const client of clients) await client.close();
-  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const identity = JSON.parse(await readFile(join(storage.directory, 'broker/identity.json'), 'utf8'));
-  const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const identity = JSON.parse(await readFile(join(storage.directory, 'broker/identity.json'), 'utf8')); const ownershipPath = join(storage.directory, 'broker/session-owners.json'); const ownershipBefore = await stat(ownershipPath); const hookStartedAt = Date.now();
+  const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, { ...env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${socketMethodRecorder}`.trim(), ZCODE_TEST_SOCKET_METHOD_RECORD: socketMethods, ZCODE_TEST_FS_ERROR_RECORD: fsErrors }); const hookElapsedMs = Date.now() - hookStartedAt;
   assert.equal(ended.code, 0);
-  const owners = JSON.parse(await readFile(join(storage.directory, 'broker/session-owners.json'), 'utf8'));
-  assert.deepEqual(owners.sessions, { 'zcode-b': ownerIdForSession('b') });
+  const owners = JSON.parse(await readFile(ownershipPath, 'utf8'));
+  let releaseDiagnostic = 'owner release succeeded without diagnostic collection';
+  if (JSON.stringify(owners.sessions) !== JSON.stringify({ 'zcode-b': ownerIdForSession('b') })) {
+    const callsAtFailure = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)); const ownershipAfter = await stat(ownershipPath); const healthyAfterFailure = await probeBrokerHealth(identity, 250); const childPidProbe = await probePidFromChild(identity.pid); let ownedJobsProbe; let markerBeforeRetry;
+    try { markerBeforeRetry = { value: JSON.parse(await readFile(join(storage.directory, 'job-owners/index.json'), 'utf8')) }; } catch (error) { markerBeforeRetry = { errorCode: error?.code ?? null }; }
+    try { ownedJobsProbe = { count: (await createStateStore({ dataRoot: data }).listOwnedJobs(cwd, 'a')).length }; } catch (error) { ownedJobsProbe = { error: { code: error?.code ?? null, category: error?.category ?? null, details: error?.details ?? null } }; }
+    const hookSocketMethods = (await readFile(socketMethods, 'utf8')).trim().split('\n').filter(Boolean); const retrySocketMethodsPath = join(data, 'retry-socket-methods.txt'); await writeFile(retrySocketMethodsPath, '');
+    const retry = await runHook(ownerReleaseProbe, { dataRoot: data, workspace: cwd, ownerSessionId: 'a', ownerId: ownerIdForSession('a') }, { ...env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${socketMethodRecorder}`.trim(), ZCODE_TEST_SOCKET_METHOD_RECORD: retrySocketMethodsPath }, { absolute: true });
+    const expectedEndpoint = brokerEndpointFor({ dataRoot: data, workspace: storage.workspacePath }); const endpointDigest = (value) => createHash('sha256').update(value).digest('hex').slice(0, 12);
+    releaseDiagnostic = `release-stage ${JSON.stringify({ hookElapsedMs, stopObserved: callsAtFailure.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'), hookSocketMethods, hookFsErrors: (await readFile(fsErrors, 'utf8')).trim().split('\n').filter(Boolean), endpointMatch: identity.endpoint === expectedEndpoint, actualEndpointDigest: endpointDigest(identity.endpoint), expectedEndpointDigest: endpointDigest(expectedEndpoint), markerBeforeRetry, retrySocketMethods: (await readFile(retrySocketMethodsPath, 'utf8')).trim().split('\n').filter(Boolean), retry: retry.json ?? { code: retry.code, stderr: retry.stderr.trim() || null }, ownerStoreReplaced: ownershipAfter.ino !== ownershipBefore.ino || ownershipAfter.mtimeMs !== ownershipBefore.mtimeMs, healthyAfterFailure, childPidProbe, ownedJobsProbe, hookCode: ended.code, hookDiagnostic: ended.stderr.trim() || null })}`;
+  }
+  assert.deepEqual(owners.sessions, { 'zcode-b': ownerIdForSession('b') }, releaseDiagnostic);
+  assert.deepEqual((await readFile(socketMethods, 'utf8')).trim().split('\n'), ['broker/auth', 'broker/health', 'broker/releaseOwner']);
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.ok(calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'));
   assert.ok(!calls.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-b'));

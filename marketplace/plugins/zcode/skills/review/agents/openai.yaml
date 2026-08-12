@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZCode Review"
+  short_description: "Review current code changes with ZCode"
+  default_prompt: "Use $zcode:review to review my current changes."

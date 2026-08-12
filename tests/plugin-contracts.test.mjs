@@ -224,12 +224,13 @@ test('package metadata exposes Node 22.13 and the native lock dependency', () =>
   assert.equal(major, 0);
   assert.ok(minor >= 1);
   assert.equal(packageJson.devDependencies?.['@types/node'], '^22.13.0');
+  assert.equal(packageJson.devDependencies?.['@openai/codex'], '0.147.0');
 });
 
 test('package test scripts do not depend on shell glob expansion', () => {
   const packageJson = readJson('package.json');
 
-  assert.equal(packageJson.scripts?.test, 'node --test');
+  assert.equal(packageJson.scripts?.test, 'node --test && node --test tests/integration/marketplace-snapshot-build.mjs');
   assert.equal(
     packageJson.scripts?.['test:unit'],
     'node --test tests/plugin-contracts.test.mjs',

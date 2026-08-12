@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-nocheck
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 import process from 'node:process';
 import readline from 'node:readline';
@@ -46,6 +46,11 @@ process.on('exit', () => { if (process.env.FAKE_CODEX_EXIT_MARKER) process.stder
 
 let inputQueue = Promise.resolve();
 let configReadIndex = 0;
+const configStatePath = process.env.FAKE_CODEX_CONFIG_STATE
+  ?? (process.env.FAKE_CODEX_RECORD ? `${process.env.FAKE_CODEX_RECORD}.config.json` : null);
+let currentConfig = JSON.parse(configStatePath && existsSync(configStatePath)
+  ? readFileSync(configStatePath, 'utf8')
+  : process.env.FAKE_CODEX_CONFIG_RESULT ?? '{"config":{},"origins":{},"layers":[]}');
 input.on('line', (line) => { inputQueue = inputQueue.then(() => handleLine(line)); });
 
 async function handleLine(line) {
@@ -76,9 +81,37 @@ async function handleLine(line) {
   }
   if (request.method === 'config/read') {
     const results = process.env.FAKE_CODEX_CONFIG_RESULTS_JSON ? JSON.parse(process.env.FAKE_CODEX_CONFIG_RESULTS_JSON) : null;
-    const result = Array.isArray(results) ? results[Math.min(configReadIndex++, results.length - 1)] : JSON.parse(process.env.FAKE_CODEX_CONFIG_RESULT ?? '{"config":{},"origins":{},"layers":[]}');
+    const result = Array.isArray(results) ? results[Math.min(configReadIndex++, results.length - 1)] : currentConfig;
     write({ id: request.id, result }); return;
   }
   if (request.method === 'hooks/list') { write({ id: request.id, result: JSON.parse(process.env.FAKE_CODEX_HOOKS_RESULT ?? '{"data":[]}') }); return; }
-  if (request.method === 'config/batchWrite') { write({ id: request.id, result: { filePath: process.env.FAKE_CODEX_CONFIG_PATH ?? '/tmp/config.toml', status: 'ok', version: 'version-2' } }); }
+  if (request.method === 'config/batchWrite') {
+    const configuredResults = process.env.FAKE_CODEX_CONFIG_RESULTS_JSON ? JSON.parse(process.env.FAKE_CODEX_CONFIG_RESULTS_JSON) : null;
+    if (Array.isArray(configuredResults)) currentConfig = structuredClone(configuredResults[Math.min(configReadIndex, configuredResults.length - 1)]);
+    else applyConfigEdits(request.params);
+    if (configStatePath) writeFileSync(configStatePath, JSON.stringify(currentConfig));
+    write({ id: request.id, result: { filePath: process.env.FAKE_CODEX_CONFIG_PATH ?? request.params.filePath ?? '/tmp/config.toml', status: 'ok', version: 'version-2' } });
+  }
+}
+
+function applyConfigEdits(params) {
+  const copy = structuredClone(currentConfig);
+  copy.config ??= {};
+  const layer = Array.isArray(copy.layers) ? copy.layers.find((item) => item?.name?.file === params.filePath) : null;
+  if (layer) { layer.config ??= {}; layer.version = 'version-2'; }
+  for (const edit of params.edits ?? []) {
+    setLeaf(copy.config, edit.keyPath, edit.value);
+    if (layer) setLeaf(layer.config, edit.keyPath, edit.value);
+  }
+  currentConfig = copy;
+}
+
+function setLeaf(target, keyPath, value) {
+  const parts = keyPath.split('.');
+  let cursor = target;
+  for (const part of parts.slice(0, -1)) {
+    if (!cursor[part] || typeof cursor[part] !== 'object' || Array.isArray(cursor[part])) cursor[part] = {};
+    cursor = cursor[part];
+  }
+  cursor[parts.at(-1)] = structuredClone(value);
 }

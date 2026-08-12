@@ -1,5 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, relative, sep } from 'node:path';
@@ -81,19 +82,34 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   const codexHome = join(temporary, 'codex-home');
   const isolatedHome = join(temporary, 'home');
   await Promise.all([mkdir(codexHome, { recursive: true }), mkdir(isolatedHome, { recursive: true })]);
-  if (!process.env.MARKETPLACE_SNAPSHOT) await buildMarketplaceSnapshot({
-    root,
-    output: marketplace,
-    sourceRef: 'test',
-    sourceSha: '0'.repeat(40),
-    npmExecPath: process.env.NPM_CLI_JS ?? npmLaunch([]).args[0],
-    env: process.env,
-  });
+  let localSourceSha;
+  if (!process.env.MARKETPLACE_SNAPSHOT) {
+    const resolved = await runProcess({ command: 'git', args: [] }, { cwd: root, args: ['rev-parse', 'HEAD'], timeoutMs: 10_000, maxOutputBytes: 4096 });
+    assert.equal(resolved.code, 0, resolved.stderr); localSourceSha = resolved.stdout.trim();
+    await buildMarketplaceSnapshot({
+      root,
+      output: marketplace,
+      sourceRef: localSourceSha,
+      sourceSha: localSourceSha,
+      npmExecPath: process.env.NPM_CLI_JS ?? npmLaunch([]).args[0],
+      env: process.env,
+    });
+  }
   const provenance = JSON.parse(await readFile(join(marketplace, '.agents', 'plugins', 'provenance.json'), 'utf8'));
   assert.equal(provenance.packageVersion, JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).version);
   assert.equal(provenance.pluginVersion, provenance.packageVersion);
-  assert.equal(provenance.sourceRef, process.env.MARKETPLACE_SOURCE_REF ?? 'test');
-  assert.equal(provenance.sourceSha, process.env.MARKETPLACE_SOURCE_SHA ?? '0'.repeat(40));
+  if (localSourceSha) {
+    assert.equal(provenance.sourceRef, localSourceSha); assert.equal(provenance.sourceSha, localSourceSha);
+  } else {
+    assert.ok(process.env.MARKETPLACE_SOURCE_REF && process.env.MARKETPLACE_SOURCE_SHA, 'external snapshot tests require the expected source ref and SHA');
+    assert.equal(provenance.sourceRef, process.env.MARKETPLACE_SOURCE_REF); assert.equal(provenance.sourceSha, process.env.MARKETPLACE_SOURCE_SHA);
+  }
+  assert.match(provenance.dependencyLock?.file, /^(?:npm-shrinkwrap|package-lock)\.json$/);
+  assert.match(provenance.dependencyLock?.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(
+    provenance.dependencyLock.sha256,
+    createHash('sha256').update(await readFile(join(marketplace, 'plugins', 'zcode', provenance.dependencyLock.file))).digest('hex'),
+  );
   await assert.rejects(readFile(join(marketplace, 'plugins', 'zcode', 'node_modules', '@openai', 'codex', 'package.json'), 'utf8'), { code: 'ENOENT' });
   await assert.rejects(readFile(join(marketplace, 'plugins', 'zcode', 'tests', 'integration', 'marketplace-install.test.mjs'), 'utf8'), { code: 'ENOENT' });
   const env = { ...process.env, CODEX_HOME: codexHome, HOME: isolatedHome, USERPROFILE: isolatedHome };
@@ -119,6 +135,23 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.equal(installedManifest.name, 'zcode');
   assert.equal(Object.hasOwn(installedManifest, 'hooks'), false);
   assert.ok(JSON.parse(await readFile(join(installedRoot, 'hooks', 'hooks.json'), 'utf8')).hooks);
+  assert.match(await readFile(join(installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8'), /^developer_instructions = """/);
+  await assert.rejects(readFile(join(installedRoot, 'agents', 'zcode-rescue.md'), 'utf8'), { code: 'ENOENT' });
+  for (const modulePath of [
+    'scripts/lib/conversation-progress.mjs',
+    'scripts/lib/managed-agent-role.mjs',
+    'scripts/lib/progress.mjs',
+  ]) assert.ok((await readFile(join(installedRoot, modulePath), 'utf8')).length > 0, `${modulePath} missing from installed marketplace payload`);
+  const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const preflightOffset = installedRescue.indexOf('role-status rescue');
+  const namedSpawnOffset = installedRescue.indexOf("task_name: 'zcode_rescue'");
+  const childCommandOffset = installedRescue.indexOf('scripts/zcode-companion.mjs" invoke rescue');
+  assert.ok(preflightOffset >= 0 && namedSpawnOffset > preflightOffset && childCommandOffset > namedSpawnOffset, 'installed routing must preflight, spawn, then send only the child command');
+  assert.match(installedRescue, /agent_type:\s*'zcode-rescue'/);
+  assert.match(installedRescue, /fork_turns:\s*'none'/);
+  assert.match(installedRescue, /Do not relay raw child progress, stderr, tool output, or intermediate messages into the parent/);
+  assert.match(installedRescue, /return only the child's public stdout verbatim without interpretation/);
+  assert.doesNotMatch(installedRescue, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
   const listedComponents = await listPluginComponents(temporary, env);
   const installedSkills = listedComponents.skills.data.flatMap((entry) => entry.skills)
     .filter((skill) => /^(?:zcode|zcode-plugin-codex):/.test(skill.name));
@@ -202,7 +235,54 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     },
   });
   assert.equal(rerun.code, 0, rerun.stderr || rerun.stdout);
-  assert.equal(JSON.parse(rerun.stdout).status, 'ready');
+  assert.equal(JSON.parse(rerun.stdout).status, 'restart-required');
+  const rolePath = join(pluginData, 'agent-roles', 'zcode-rescue.toml');
+  assert.match(await readFile(rolePath, 'utf8'), /invoke rescue/);
+  assert.equal(relative(pluginData, rolePath), join('agent-roles', 'zcode-rescue.toml'));
+  assert.doesNotMatch(rolePath, /cache|0\.1\.0/);
+  const ended = await runChild(process.execPath, [join(installedRoot, 'hooks', 'session-end-hook.mjs')], {
+    cwd: temporary, env: hookEnv, ordinaryInput: true,
+    input: { session_id: sessionId, cwd: temporary, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' },
+  });
+  assert.equal(ended.code, 0, ended.stderr || ended.stdout);
+  const freshSessionId = 'installed-fresh-session'; const freshTurnId = 'installed-fresh-turn';
+  const freshLifecycle = await runChild(process.execPath, [join(installedRoot, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: temporary, env: hookEnv, ordinaryInput: true,
+    input: { session_id: freshSessionId, cwd: temporary, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+  });
+  assert.equal(freshLifecycle.code, 0, freshLifecycle.stderr || freshLifecycle.stdout);
+  const freshPrompt = await runChild(process.execPath, [join(installedRoot, 'hooks', 'user-prompt-hook.mjs')], {
+    cwd: temporary, env: hookEnv, ordinaryInput: true,
+    input: { session_id: freshSessionId, turn_id: freshTurnId, cwd: temporary, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'Please verify that ZCode is set up correctly.' },
+  });
+  assert.equal(freshPrompt.code, 0, freshPrompt.stderr || freshPrompt.stdout);
+  const fresh = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'setup'], {
+    cwd: temporary,
+    env: {
+      ...env,
+      ZCODE_PATH: join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs'),
+      CODEX_APP_SERVER_PATH: process.execPath,
+      CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
+      FAKE_CODEX_RECORD: setupRecord,
+      FAKE_CODEX_HOOKS_RESULT: JSON.stringify({ data: [{ cwd: await realpath(temporary), errors: [], warnings: [], hooks: installedHooks }] }),
+      FAKE_ZCODE_RECORD: join(temporary, 'setup-zcode-requests.jsonl'),
+    },
+  });
+  assert.equal(fresh.code, 0, fresh.stderr || fresh.stdout);
+  assert.equal(JSON.parse(fresh.stdout).status, 'ready');
+  const roleStatus = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'role-status', 'rescue'], {
+    cwd: temporary,
+    env: {
+      ...env,
+      CODEX_THREAD_ID: freshSessionId,
+      CODEX_APP_SERVER_PATH: process.execPath,
+      CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
+      FAKE_CODEX_RECORD: setupRecord,
+    },
+  });
+  assert.equal(roleStatus.code, 0, roleStatus.stderr || roleStatus.stdout);
+  assert.deepEqual(JSON.parse(roleStatus.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.equal(roleStatus.internal, '');
   const workspaceEntries = await readdir(join(pluginData, 'workspaces'));
   assert.equal(workspaceEntries.length, 1);
   assert.equal(JSON.parse(await readFile(join(pluginData, 'workspaces', workspaceEntries[0], 'config', 'review-gate.json'), 'utf8')).setupReady, true);

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZCode Status"
+  short_description: "Inspect current and recent ZCode jobs"
+  default_prompt: "Use $zcode:status to show my recent ZCode jobs."
