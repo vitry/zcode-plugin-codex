@@ -179,16 +179,13 @@ export async function createExistingManagedZCodeClient(options) {
 export async function releaseManagedZCodeOwner(options) {
   if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !nonEmpty(options.ownerId) || options.ownerId.length < 16
     || options.cleanupBudgetMs !== undefined && (!Number.isSafeInteger(options.cleanupBudgetMs) || options.cleanupBudgetMs < 1 || options.cleanupBudgetMs > OWNER_CLEANUP_BUDGET_MS)) throw inputError();
-  const storage = await resolveWorkspaceStorage(options); const brokerDirectory = resolve(storage.directory, 'broker'); let names;
-  try { names = await readdir(brokerDirectory); } catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code === 'ENOENT') return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 }; throw error; }
-  const matchingNames = names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).sort(); const selectedNames = matchingNames.slice(0, 32); const truncatedProfileCount = matchingNames.length - selectedNames.length; const cleanupDeadline = Date.now() + (options.cleanupBudgetMs ?? OWNER_CLEANUP_BUDGET_MS); const requestTimeoutMs = options.requestTimeoutMs ?? 750;
-  const candidates = await Promise.all(selectedNames.map(async (identityName) => {
-    const identityPath = resolve(brokerDirectory, identityName); const expectedEndpoint = expectedBrokerEndpoint(options.dataRoot, storage.workspacePath, identityName); const inspected = await inspectBrokerIdentity(identityPath, { expectedEndpoint, healthProbe: async () => true });
-    if (inspected.status !== 'healthy') return { identity: null, identityName, status: inspected.status, unavailable: true, client: null, capabilities: null };
-    let client = null;
-    try { client = await createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: inspected.record.endpoint, brokerToken: inspected.record.brokerToken, ownerId: options.ownerId, requestTimeoutMs: requiredCleanupTimeout(cleanupDeadline, requestTimeoutMs) }); const capabilities = await verifyBrokerIdentity(client, inspected.record, cleanupDeadline, requestTimeoutMs); return { identity: inspected.record, identityName, status: 'healthy', unavailable: false, client, capabilities }; }
-    catch { await closeProtocolUntil(client, cleanupDeadline); return { identity: null, identityName, status: 'unhealthy', unavailable: true, client: null, capabilities: null }; }
-  }));
+  const storage = await resolveWorkspaceStorage(options); const cleanupDeadline = Date.now() + (options.cleanupBudgetMs ?? OWNER_CLEANUP_BUDGET_MS); const requestTimeoutMs = options.requestTimeoutMs ?? 750;
+  let discovery = await discoverOwnerReleaseProfiles(options, storage, cleanupDeadline, requestTimeoutMs);
+  if (discovery.rediscoverable && Date.now() < cleanupDeadline) {
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    discovery = await discoverOwnerReleaseProfiles(options, storage, cleanupDeadline, requestTimeoutMs);
+  }
+  const { candidates, truncatedProfileCount } = discovery;
   const unavailableProfiles = candidates.filter((profile) => profile.unavailable); const unavailableProfileCount = unavailableProfiles.length; const identityStatusCounts = boundedIdentityStatusCounts(unavailableProfiles.map((profile) => profile.status)); const profiles = candidates.filter((profile) => profile.identity);
   const outcomes = await Promise.all(profiles.map(async ({ identityName, client, capabilities }) => {
     const verifiedClient = /** @type {ZCodeClient} */ (client); const verifiedCapabilities = /** @type {{releaseOwnerExclusions:boolean}} */ (capabilities);
@@ -220,6 +217,23 @@ export async function releaseManagedZCodeOwner(options) {
   const released = outcomes.flatMap((outcome) => outcome.releasedSessionIds); const failed = outcomes.flatMap((outcome) => outcome.failedSessionIds); const deferredSessionCount = outcomes.reduce((total, outcome) => total + outcome.deferredSessionCount, 0);
   const errorOutcomes = outcomes.filter((outcome) => outcome.error); const releaseProofMissingProfileCount = outcomes.filter((outcome) => !outcome.releaseProof).length; const proofOnlyFailureCount = outcomes.filter((outcome) => !outcome.releaseProof && !outcome.error).length; const causeCodeCounts = boundedCauseCodeCounts(errorOutcomes.map((outcome) => outcome.error)); const resultTruncated = released.length > 1_000 || failed.length > 1_000; const failedProfileCount = unavailableProfileCount + errorOutcomes.length + proofOnlyFailureCount + truncatedProfileCount; if (failedProfileCount || resultTruncated) throw ownerReleaseIncomplete({ failedProfileCount, completedProfileCount: outcomes.length - errorOutcomes.length - proofOnlyFailureCount, releasedSessionCount: released.length, failedSessionCount: failed.length, deferredSessionCount, releaseProofMissingProfileCount, truncatedProfileCount, resultTruncated, identityStatusCounts, causeCodeCounts });
   return { releasedSessionIds: released.slice(0, 1_000), failedSessionIds: failed.slice(0, 1_000), deferredSessionCount };
+}
+
+/** Rediscover once when a first Windows directory/identity snapshot exposes no usable profile. @param {any} options @param {any} storage @param {number} cleanupDeadline @param {number} requestTimeoutMs */
+async function discoverOwnerReleaseProfiles(options, storage, cleanupDeadline, requestTimeoutMs) {
+  const brokerDirectory = resolve(storage.directory, 'broker');
+  /** @type {string[]} */
+  let names = [];
+  try { names = await readdir(brokerDirectory); } catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code === 'ENOENT') names = []; else throw error; }
+  const matchingNames = names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).sort(); const selectedNames = matchingNames.slice(0, 32); const truncatedProfileCount = matchingNames.length - selectedNames.length;
+  const candidates = await Promise.all(selectedNames.map(async (identityName) => {
+    const identityPath = resolve(brokerDirectory, identityName); const expectedEndpoint = expectedBrokerEndpoint(options.dataRoot, storage.workspacePath, identityName); const inspected = await inspectBrokerIdentity(identityPath, { expectedEndpoint, healthProbe: async () => true });
+    if (inspected.status !== 'healthy') return { identity: null, identityName, status: inspected.status, unavailable: true, client: null, capabilities: null, preflightUnavailable: true };
+    let client = null;
+    try { client = await createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: inspected.record.endpoint, brokerToken: inspected.record.brokerToken, ownerId: options.ownerId, requestTimeoutMs: requiredCleanupTimeout(cleanupDeadline, requestTimeoutMs) }); const capabilities = await verifyBrokerIdentity(client, inspected.record, cleanupDeadline, requestTimeoutMs); return { identity: inspected.record, identityName, status: 'healthy', unavailable: false, client, capabilities }; }
+    catch { await closeProtocolUntil(client, cleanupDeadline); return { identity: null, identityName, status: 'unhealthy', unavailable: true, client: null, capabilities: null, preflightUnavailable: false }; }
+  }));
+  return { candidates, truncatedProfileCount, rediscoverable: selectedNames.length === 0 || candidates.every((profile) => profile.preflightUnavailable) };
 }
 
 /** @param {ZCodeClient} client @param {string[]|undefined} excludeSessionIds @param {number} deadline @param {number} requestTimeoutMs */
