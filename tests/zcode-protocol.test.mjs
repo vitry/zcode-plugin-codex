@@ -78,9 +78,9 @@ test('broker connect bounds authentication and closes the socket when the peer n
 
 test('broker connect and authentication share one absolute timeout budget', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-protocol-shared-budget-')); const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\zcode-protocol-${randomUUID()}` : join(directory, 'broker.sock'); let peer; const server = net.createServer((socket) => { peer = socket; socket.resume(); }); await new Promise((resolvePromise, reject) => { server.once('error', reject); server.listen(endpoint, resolvePromise); });
-  const createConnection = net.createConnection; net.createConnection = (...args) => { const socket = createConnection(...args); socket.once('connect', () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 70)); return socket; };
-  try { const startedAt = Date.now(); let observed; await assert.rejects(connectZCodeBroker(endpoint, { brokerToken: 'a'.repeat(64), ownerId: 'protocol-shared-budget-owner', requestTimeoutMs: 200 }), (error) => { observed = error; return error?.code === 'ZCODE_REQUEST_TIMEOUT'; }); const elapsed = Date.now() - startedAt; assert.ok(observed.details.timeoutMs < 200, 'authentication must receive only the remaining connect budget'); assert.ok(elapsed < 400, `connect and auth exceeded one bounded budget with scheduling slack: ${elapsed}ms`); }
-  finally { net.createConnection = createConnection; peer?.destroy(); await new Promise((resolvePromise) => server.close(resolvePromise)); await rm(directory, { recursive: true, force: true }); }
+  const createConnection = net.createConnection; const now = Date.now; let currentTime = 1_000; Date.now = () => currentTime; net.createConnection = (...args) => { const socket = createConnection(...args); socket.once('connect', () => { currentTime = 1_070; }); return socket; };
+  try { let observed; await assert.rejects(connectZCodeBroker(endpoint, { brokerToken: 'a'.repeat(64), ownerId: 'protocol-shared-budget-owner', requestTimeoutMs: 200 }), (error) => { observed = error; return error?.code === 'ZCODE_REQUEST_TIMEOUT'; }); assert.equal(observed.details.timeoutMs, 130, 'authentication must receive only the remaining connect budget'); }
+  finally { Date.now = now; net.createConnection = createConnection; peer?.destroy(); await new Promise((resolvePromise) => server.close(resolvePromise)); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('deadline-aware protocol close returns while an uncooperative transport never exits', async () => {
