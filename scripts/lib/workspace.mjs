@@ -35,10 +35,11 @@ export async function resolveWorkspaceStorage({ dataRoot, workspace }) {
 
   const workspaceKey = createHash('sha256').update(workspacePath).digest('hex');
   const resolvedDataRoot = resolve(dataRoot);
-  const workspacesDirectory = join(resolvedDataRoot, 'workspaces');
-  const directory = join(workspacesDirectory, workspaceKey);
   await ensurePrivateDirectory(resolvedDataRoot);
+  const dataRootPath = await realpath(resolvedDataRoot);
+  const workspacesDirectory = join(dataRootPath, 'workspaces');
+  const directory = join(workspacesDirectory, workspaceKey);
   await ensurePrivateDirectory(workspacesDirectory);
   await ensurePrivateDirectory(directory);
-  return { directory, workspaceKey, workspacePath };
+  return { dataRootPath, directory, workspaceKey, workspacePath };
 }

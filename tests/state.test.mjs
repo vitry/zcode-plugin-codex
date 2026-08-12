@@ -7,6 +7,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
@@ -1104,7 +1105,8 @@ test('workspace storage hashes the real path and creates private directories', a
 
   assert.equal(first.workspaceKey, second.workspaceKey);
   assert.match(first.workspaceKey, /^[a-f0-9]{64}$/);
-  assert.equal(first.directory, join(dataRoot, 'workspaces', first.workspaceKey));
+  assert.equal(first.dataRootPath, await realpath(dataRoot));
+  assert.equal(first.directory, join(first.dataRootPath, 'workspaces', first.workspaceKey));
   const workspaceDirectory = await stat(first.directory); if (process.platform === 'win32') assert.equal(workspaceDirectory.isDirectory(), true); else assert.equal(workspaceDirectory.mode & 0o777, 0o700);
 });
 
