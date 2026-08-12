@@ -30,7 +30,18 @@ if (fsRecordPath || invalidBrokerIdentityReads > 0) {
       }
       if (method === 'readFile' && invalidBrokerIdentityReads > 0
         && /[\\/]broker[\\/]identity(?:-[a-f0-9]{16})?\.json$/.test(String(args[0])) && fsRecordPath) appendFileSync(fsRecordPath, 'identity-read:real\n');
-      try { return await operation.apply(this, args); }
+      try {
+        const result = await operation.apply(this, args);
+        if (method === 'readFile' && /[\\/]broker[\\/]identity(?:-[a-f0-9]{16})?\.json$/.test(String(args[0])) && fsRecordPath) {
+          let summary;
+          try {
+            const value = JSON.parse(Buffer.isBuffer(result) ? result.toString('utf8') : String(result));
+            summary = { json: true, version: value?.version, pidSafe: Number.isSafeInteger(value?.pid) && value.pid > 0, instanceLength: typeof value?.instanceId === 'string' ? value.instanceId.length : -1, tokenLength: typeof value?.brokerToken === 'string' ? value.brokerToken.length : -1, endpointLength: typeof value?.endpoint === 'string' ? value.endpoint.length : -1 };
+          } catch { summary = { json: false, bytes: Buffer.byteLength(Buffer.isBuffer(result) ? result : String(result)) }; }
+          appendFileSync(fsRecordPath, `identity-summary:${JSON.stringify(summary)}\n`);
+        }
+        return result;
+      }
       catch (error) { if (fsRecordPath) appendFileSync(fsRecordPath, `${method}:${error?.code ?? 'UNKNOWN'}\n`); throw error; }
     };
   }
