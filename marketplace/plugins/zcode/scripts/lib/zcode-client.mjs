@@ -180,11 +180,13 @@ export async function releaseManagedZCodeOwner(options) {
   if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !nonEmpty(options.ownerId) || options.ownerId.length < 16
     || options.cleanupBudgetMs !== undefined && (!Number.isSafeInteger(options.cleanupBudgetMs) || options.cleanupBudgetMs < 1 || options.cleanupBudgetMs > OWNER_CLEANUP_BUDGET_MS)) throw inputError();
   const storage = await resolveWorkspaceStorage(options); const cleanupDeadline = Date.now() + (options.cleanupBudgetMs ?? OWNER_CLEANUP_BUDGET_MS); const requestTimeoutMs = options.requestTimeoutMs ?? 750;
-  let discovery = await discoverOwnerReleaseProfiles(options, storage, cleanupDeadline, requestTimeoutMs);
-  if (discovery.rediscoverable && Date.now() < cleanupDeadline) {
-    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  let discovery;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     discovery = await discoverOwnerReleaseProfiles(options, storage, cleanupDeadline, requestTimeoutMs);
+    if (!discovery.rediscoverable || Date.now() >= cleanupDeadline || attempt === 3) break;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
   }
+  if (!discovery) throw ownerReleaseIncomplete({ releaseProofMissingProfileCount: 1 });
   const { candidates, truncatedProfileCount } = discovery;
   const unavailableProfiles = candidates.filter((profile) => profile.unavailable); const unavailableProfileCount = unavailableProfiles.length; const identityStatusCounts = boundedIdentityStatusCounts(unavailableProfiles.map((profile) => profile.status)); const profiles = candidates.filter((profile) => profile.identity);
   const outcomes = await Promise.all(profiles.map(async ({ identityName, client, capabilities }) => {
@@ -233,7 +235,7 @@ async function discoverOwnerReleaseProfiles(options, storage, cleanupDeadline, r
     try { client = await createZCodeClient({ workspace: storage.workspacePath, brokerEndpoint: inspected.record.endpoint, brokerToken: inspected.record.brokerToken, ownerId: options.ownerId, requestTimeoutMs: requiredCleanupTimeout(cleanupDeadline, requestTimeoutMs) }); const capabilities = await verifyBrokerIdentity(client, inspected.record, cleanupDeadline, requestTimeoutMs); return { identity: inspected.record, identityName, status: 'healthy', unavailable: false, client, capabilities }; }
     catch { await closeProtocolUntil(client, cleanupDeadline); return { identity: null, identityName, status: 'unhealthy', unavailable: true, client: null, capabilities: null, preflightUnavailable: false }; }
   }));
-  return { candidates, truncatedProfileCount, rediscoverable: selectedNames.length === 0 || candidates.every((profile) => profile.preflightUnavailable) };
+  return { candidates, truncatedProfileCount, rediscoverable: selectedNames.length > 0 && candidates.every((profile) => profile.preflightUnavailable && ['invalid', 'missing'].includes(profile.status)) };
 }
 
 /** @param {ZCodeClient} client @param {string[]|undefined} excludeSessionIds @param {number} deadline @param {number} requestTimeoutMs */
