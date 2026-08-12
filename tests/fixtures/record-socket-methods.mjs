@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { appendFileSync } from 'node:fs';
 import net from 'node:net';
 
