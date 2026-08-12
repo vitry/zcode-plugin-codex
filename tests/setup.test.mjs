@@ -37,7 +37,7 @@ async function context({ hooks = hookMetadata(root), features = { hooks: false }
   const writable = { sandbox_workspace_write: { writable_roots: [dataRoot] } };
   const configResult = { config: { features, unrelated: { preserved: true }, ...writable }, origins: {}, layers: [{ name: { type: 'user', file: join(dataRoot, 'config.toml') }, version: 'version-1', config: { unrelated: { preserved: true }, ...writable } }] };
   const hooksResult = { data: [{ cwd, errors: [], warnings: [], hooks }] };
-  return { cwd, dataRoot, record, zcodeRecord, options: { pluginRoot: root, dataRoot, cwd, reviewGate: undefined, sessionStartedAt: '2000-01-01T00:00:00.000Z', env: { ...process.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_CODEX_RECORD: record, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configResult), FAKE_CODEX_HOOKS_RESULT: JSON.stringify(hooksResult), ...zcodeEnv, ...codexEnv }, codex: { executable: process.execPath, args: [fakeCodex], timeoutMs: 1_000 } } };
+  return { cwd, dataRoot, record, zcodeRecord, options: { pluginRoot: root, dataRoot, cwd, reviewGate: undefined, sessionStartedAt: '2000-01-01T00:00:00.000Z', env: { ...process.env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: zcodeRecord, FAKE_CODEX_RECORD: record, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configResult), FAKE_CODEX_HOOKS_RESULT: JSON.stringify(hooksResult), ...zcodeEnv, ...codexEnv }, codex: { executable: process.execPath, args: [fakeCodex], timeoutMs: 5_000 } } };
 }
 
 async function recordSetupSession(ctx, sessionId, prompt) {

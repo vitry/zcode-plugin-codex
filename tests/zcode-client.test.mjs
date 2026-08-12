@@ -109,7 +109,12 @@ function retireTestSessionLease(broker, sessionId) {
   if (lease) broker.admission.finishSessionRequest(lease);
 }
 
+function canonicalTestWorkspace(workspacePath) {
+  try { return realpathSync.native(resolve(workspacePath)); } catch { return workspacePath; }
+}
+
 function brokerCreateSnapshot(sessionId, workspacePath = '/repo') {
+  workspacePath = canonicalTestWorkspace(workspacePath);
   workspacePath = realpathSync(resolve(workspacePath));
   const model = { providerId: 'fake', modelId: 'model' };
   return {
@@ -123,7 +128,7 @@ function brokerCreateSnapshot(sessionId, workspacePath = '/repo') {
 }
 
 function brokerCreateParams(workspacePath, sessionId) {
-  workspacePath = realpathSync(resolve(workspacePath));
+  workspacePath = canonicalTestWorkspace(workspacePath);
   return { workspace: { workspacePath, workspaceKey: workspacePath }, ...(sessionId === undefined ? {} : { sessionId }) };
 }
 
