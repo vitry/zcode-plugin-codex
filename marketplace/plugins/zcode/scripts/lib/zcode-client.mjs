@@ -172,13 +172,14 @@ export async function createExistingManagedZCodeClient(options) {
  * Releases an exact lifecycle owner from brokers that already exist. This
  * function never calls ensureZCodeBroker and therefore cannot start ZCode from
  * a SessionEnd hook.
- * @param {{dataRoot:string,workspace:string,ownerId:string,requestTimeoutMs?:number}} options
+ * @param {{dataRoot:string,workspace:string,ownerId:string,requestTimeoutMs?:number,cleanupBudgetMs?:number}} options
  */
 export async function releaseManagedZCodeOwner(options) {
-  if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !nonEmpty(options.ownerId) || options.ownerId.length < 16) throw inputError();
+  if (!plainObject(options) || !nonEmpty(options.dataRoot) || !nonEmpty(options.workspace) || !nonEmpty(options.ownerId) || options.ownerId.length < 16
+    || options.cleanupBudgetMs !== undefined && (!Number.isSafeInteger(options.cleanupBudgetMs) || options.cleanupBudgetMs < 1 || options.cleanupBudgetMs > OWNER_CLEANUP_BUDGET_MS)) throw inputError();
   const storage = await resolveWorkspaceStorage(options); const brokerDirectory = resolve(storage.directory, 'broker'); let names;
   try { names = await readdir(brokerDirectory); } catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code === 'ENOENT') return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 }; throw error; }
-  const matchingNames = names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).sort(); const selectedNames = matchingNames.slice(0, 32); const truncatedProfileCount = matchingNames.length - selectedNames.length; const cleanupDeadline = Date.now() + OWNER_CLEANUP_BUDGET_MS;
+  const matchingNames = names.filter((name) => /^identity(?:-[a-f0-9]{16})?\.json$/.test(name)).sort(); const selectedNames = matchingNames.slice(0, 32); const truncatedProfileCount = matchingNames.length - selectedNames.length; const cleanupDeadline = Date.now() + (options.cleanupBudgetMs ?? OWNER_CLEANUP_BUDGET_MS);
   const candidates = await Promise.all(selectedNames.map(async (identityName) => { const identityPath = resolve(brokerDirectory, identityName); const expectedEndpoint = expectedBrokerEndpoint(options.dataRoot, storage.workspacePath, identityName); const inspected = await inspectBrokerIdentity(identityPath, { expectedEndpoint }); return { identity: inspected.status === 'healthy' ? inspected.record : null, identityName, status: inspected.status, unavailable: inspected.status !== 'healthy' }; }));
   const unavailableProfiles = candidates.filter((profile) => profile.unavailable); const unavailableProfileCount = unavailableProfiles.length; const identityStatusCounts = boundedIdentityStatusCounts(unavailableProfiles.map((profile) => profile.status)); const profiles = candidates.filter((profile) => profile.identity);
   const outcomes = await Promise.all(profiles.map(async ({ identity, identityName }) => {
