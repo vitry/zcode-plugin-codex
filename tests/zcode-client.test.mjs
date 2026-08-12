@@ -132,7 +132,7 @@ async function createPersistedTestBroker({ dataRoot, workspace, tokenByte, insta
   return broker;
 }
 
-async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, healthResult, hangHealth = false, hangAuth = false, hangRelease = false, authDelayMs = 0, healthDelayMs = 0, onMethod = () => {} }) {
+async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, healthResult, hangHealth = false, hangAuth = false, hangRelease = false, deferRelease = false, authDelayMs = 0, healthDelayMs = 0, onMethod = () => {}, onReleaseReady = () => {} }) {
   const sockets = new Set();
   const server = net.createServer((socket) => {
     sockets.add(socket); socket.setEncoding('utf8'); let buffer = '';
@@ -145,7 +145,10 @@ async function createHealthOnlyServer(endpoint, { brokerToken, instanceId, healt
           if (healthDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, healthDelayMs);
           socket.write(`${JSON.stringify({ id: frame.id, result: healthResult ?? { ok: true, pid: process.pid, instanceId } })}\n`);
         }
-        else if (frame.method === 'broker/releaseOwner' && !hangRelease) socket.write(`${JSON.stringify({ id: frame.id, result: { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 } })}\n`);
+        else if (frame.method === 'broker/releaseOwner' && !hangRelease) {
+          const respond = () => socket.write(`${JSON.stringify({ id: frame.id, result: { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 } })}\n`);
+          if (deferRelease) { setImmediate(respond); onReleaseReady(); } else respond();
+        }
         else if (frame.method === 'broker/capabilities') socket.write(`${JSON.stringify({ id: frame.id, result: { releaseOwnerExclusions: false } })}\n`);
       }
     });
@@ -1606,6 +1609,17 @@ test('managed owner cleanup authenticates and verifies each broker once before r
     const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const record = { endpoint, pid: process.pid, instanceId: '3'.repeat(48), brokerToken: '4'.repeat(64) }; closeServer = await createHealthOnlyServer(endpoint, { ...record, onMethod: (method) => methods.push(method) }); await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), record);
     assert.deepEqual(await releaseManagedZCodeOwner({ dataRoot: directory, workspace: directory, ownerId: 'managed-release-single-probe-owner', requestTimeoutMs: 500 }), { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 });
     assert.deepEqual(methods, ['broker/auth', 'broker/health', 'broker/releaseOwner']);
+  } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('managed owner cleanup accepts a real-socket release proof already ready at its deadline', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-managed-release-ready-response-')); const methods = []; let closeServer; let markReleaseReady;
+  const releaseReady = new Promise((resolvePromise) => { markReleaseReady = resolvePromise; });
+  try {
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const record = { endpoint, pid: process.pid, instanceId: '8'.repeat(48), brokerToken: '9'.repeat(64) }; closeServer = await createHealthOnlyServer(endpoint, { ...record, deferRelease: true, onReleaseReady: markReleaseReady, onMethod: (method) => methods.push(method) }); await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), record);
+    const releasing = releaseManagedZCodeOwner({ dataRoot: directory, workspace: directory, ownerId: 'managed-release-ready-response-owner', requestTimeoutMs: 20, cleanupBudgetMs: 100 }); await releaseReady;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+    assert.deepEqual(await releasing, { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 }); assert.deepEqual(methods, ['broker/auth', 'broker/health', 'broker/releaseOwner']);
   } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
 });
 

@@ -5,9 +5,50 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { closeProtocolUntil, connectZCodeBroker, ZCodeProtocolClient } from '../scripts/lib/zcode-protocol.mjs';
+
+test('request accepts an already-scheduled response after its deadline timer becomes ready', async () => {
+  const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null; child.signalCode = null; child.kill = () => true;
+  const protocol = new ZCodeProtocolClient(child, { requestTimeoutMs: 100 });
+  child.stdin.once('data', (chunk) => {
+    const frame = JSON.parse(chunk.toString('utf8'));
+    setImmediate(() => child.stdout.write(`${JSON.stringify({ id: frame.id, result: { ok: true } })}\n`));
+  });
+  const response = protocol.request('broker/health', {}, 20);
+  await Promise.resolve();
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+  await assert.doesNotReject(response);
+});
+
+test('real socket response ready at the deadline wins before request timeout', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-protocol-ready-response-'));
+  const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\zcode-protocol-${randomUUID()}` : join(directory, 'broker.sock');
+  const brokerToken = 'b'.repeat(64); const ownerId = 'protocol-ready-response-owner'; let releaseResponse; let peer;
+  const releaseResponseReady = new Promise((resolvePromise) => { releaseResponse = resolvePromise; });
+  const server = net.createServer((socket) => {
+    peer = socket; socket.setEncoding('utf8'); let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk; let newline = buffer.indexOf('\n');
+      while (newline !== -1) {
+        const frame = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); newline = buffer.indexOf('\n');
+        if (frame.method === 'broker/auth') socket.write(`${JSON.stringify({ id: frame.id, result: { authenticated: true } })}\n`);
+        else { setImmediate(() => socket.write(`${JSON.stringify({ id: frame.id, result: { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 } })}\n`)); releaseResponse(); }
+      }
+    });
+  });
+  await new Promise((resolvePromise, reject) => { server.once('error', reject); server.listen(endpoint, resolvePromise); });
+  let protocol;
+  try {
+    protocol = await connectZCodeBroker(endpoint, { brokerToken, ownerId, requestTimeoutMs: 100 });
+    const releasing = protocol.request('broker/releaseOwner', {}, 20); await releaseResponseReady;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+    assert.deepEqual(await releasing, { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 });
+  } finally { peer?.destroy(); await protocol?.close(); await new Promise((resolvePromise) => server.close(resolvePromise)); await rm(directory, { recursive: true, force: true }); }
+});
 
 test('broker connect bounds authentication and closes the socket when the peer never answers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-protocol-auth-'));

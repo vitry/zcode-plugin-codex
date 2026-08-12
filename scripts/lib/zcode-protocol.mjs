@@ -59,11 +59,15 @@ export class ZCodeProtocolClient {
     const effectiveTimeoutMs = timeoutMs ?? this.requestTimeoutMs;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new PluginError('ZCODE_REQUEST_TIMEOUT', `ZCode request timed out: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method, timeoutMs: effectiveTimeoutMs } }));
+        setImmediate(() => {
+          if (this.pending.get(id) !== pending) return;
+          this.pending.delete(id);
+          reject(new PluginError('ZCODE_REQUEST_TIMEOUT', `ZCode request timed out: ${method}.`, { category: 'timeout', remedy: 'Retry the operation.', details: { method, timeoutMs: effectiveTimeoutMs } }));
+        });
       }, effectiveTimeoutMs);
       timer.unref?.();
-      this.pending.set(id, { resolve, reject, timer, method });
+      const pending = { resolve, reject, timer, method };
+      this.pending.set(id, pending);
       try { this.sendFrame({ id, method, params }); } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });
   }
