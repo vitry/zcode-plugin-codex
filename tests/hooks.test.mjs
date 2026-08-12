@@ -1,5 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, mkdir, readdir, rm, stat, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
@@ -298,7 +299,8 @@ test('SessionEnd releases only its broker owner sessions and lets the idle broke
     try { ownedJobsProbe = { count: (await createStateStore({ dataRoot: data }).listOwnedJobs(cwd, 'a')).length }; } catch (error) { ownedJobsProbe = { error: { code: error?.code ?? null, category: error?.category ?? null, details: error?.details ?? null } }; }
     const hookSocketMethods = (await readFile(socketMethods, 'utf8')).trim().split('\n').filter(Boolean); const retrySocketMethodsPath = join(data, 'retry-socket-methods.txt'); await writeFile(retrySocketMethodsPath, '');
     const retry = await runHook(ownerReleaseProbe, { dataRoot: data, workspace: cwd, ownerSessionId: 'a', ownerId: ownerIdForSession('a') }, { ...env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${socketMethodRecorder}`.trim(), ZCODE_TEST_SOCKET_METHOD_RECORD: retrySocketMethodsPath }, { absolute: true });
-    releaseDiagnostic = `release-stage ${JSON.stringify({ hookElapsedMs, stopObserved: callsAtFailure.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'), hookSocketMethods, hookFsErrors: (await readFile(fsErrors, 'utf8')).trim().split('\n').filter(Boolean), markerBeforeRetry, retrySocketMethods: (await readFile(retrySocketMethodsPath, 'utf8')).trim().split('\n').filter(Boolean), retry: retry.json ?? { code: retry.code, stderr: retry.stderr.trim() || null }, ownerStoreReplaced: ownershipAfter.ino !== ownershipBefore.ino || ownershipAfter.mtimeMs !== ownershipBefore.mtimeMs, healthyAfterFailure, childPidProbe, ownedJobsProbe, hookCode: ended.code, hookDiagnostic: ended.stderr.trim() || null })}`;
+    const expectedEndpoint = brokerEndpointFor({ dataRoot: data, workspace: storage.workspacePath }); const endpointDigest = (value) => createHash('sha256').update(value).digest('hex').slice(0, 12);
+    releaseDiagnostic = `release-stage ${JSON.stringify({ hookElapsedMs, stopObserved: callsAtFailure.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'), hookSocketMethods, hookFsErrors: (await readFile(fsErrors, 'utf8')).trim().split('\n').filter(Boolean), endpointMatch: identity.endpoint === expectedEndpoint, actualEndpointDigest: endpointDigest(identity.endpoint), expectedEndpointDigest: endpointDigest(expectedEndpoint), markerBeforeRetry, retrySocketMethods: (await readFile(retrySocketMethodsPath, 'utf8')).trim().split('\n').filter(Boolean), retry: retry.json ?? { code: retry.code, stderr: retry.stderr.trim() || null }, ownerStoreReplaced: ownershipAfter.ino !== ownershipBefore.ino || ownershipAfter.mtimeMs !== ownershipBefore.mtimeMs, healthyAfterFailure, childPidProbe, ownedJobsProbe, hookCode: ended.code, hookDiagnostic: ended.stderr.trim() || null })}`;
   }
   assert.deepEqual(owners.sessions, { 'zcode-b': ownerIdForSession('b') }, releaseDiagnostic);
   assert.deepEqual((await readFile(socketMethods, 'utf8')).trim().split('\n'), ['broker/auth', 'broker/health', 'broker/releaseOwner']);
