@@ -25,8 +25,11 @@ if (fsRecordPath || invalidateFirstBrokerIdentity) {
       if (method === 'readFile' && invalidateFirstBrokerIdentity && !invalidatedBrokerIdentity
         && /[\\/]broker[\\/]identity(?:-[a-f0-9]{16})?\.json$/.test(String(args[0]))) {
         invalidatedBrokerIdentity = true;
+        if (fsRecordPath) appendFileSync(fsRecordPath, 'identity-read:injected\n');
         return '{';
       }
+      if (method === 'readFile' && invalidateFirstBrokerIdentity
+        && /[\\/]broker[\\/]identity(?:-[a-f0-9]{16})?\.json$/.test(String(args[0])) && fsRecordPath) appendFileSync(fsRecordPath, 'identity-read:real\n');
       try { return await operation.apply(this, args); }
       catch (error) { if (fsRecordPath) appendFileSync(fsRecordPath, `${method}:${error?.code ?? 'UNKNOWN'}\n`); throw error; }
     };
