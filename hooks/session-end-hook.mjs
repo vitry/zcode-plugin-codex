@@ -14,6 +14,8 @@ import { readHookInput } from './lib/hook-input.mjs';
 
 const existingBrokerRequestTimeoutMs = process.platform === 'win32' ? 500 : 250;
 const ownerReleaseRequestTimeoutMs = process.platform === 'win32' ? 1_000 : 500;
+const ownerReleaseMaximumBudgetMs = 1_800;
+const sessionEndRemoteBudgetMs = 2_000;
 
 try {
   const input = await readHookInput('SessionEnd');
@@ -21,27 +23,42 @@ try {
   const ownerSessionId = input.session_id;
   const ownerId = ownerIdForSession(ownerSessionId);
   const store = createStateStore({ dataRoot });
-  let ownerReleaseSafe = false;
+  const remoteDeadline = Date.now() + sessionEndRemoteBudgetMs;
+  const remoteController = new AbortController();
+  const remoteTimer = setTimeout(() => remoteController.abort(new Error('SessionEnd remote cleanup reached its deadline.')), sessionEndRemoteBudgetMs);
+  remoteTimer.unref?.();
   try {
-    await settleEndedOwnerWritableJob({
-      store,
-      dataRoot,
-      workspace: input.cwd,
-      ownerSessionId,
-      requestTimeoutMs: existingBrokerRequestTimeoutMs,
-      lockTimeoutMs: 0,
-      createClient: (job, derivedOwnerId) => createExistingManagedZCodeClient({
+    let ownerReleaseSafe = false;
+    try {
+      await settleEndedOwnerWritableJob({
+        store,
         dataRoot,
         workspace: input.cwd,
-        ownerId: derivedOwnerId,
+        ownerSessionId,
         requestTimeoutMs: existingBrokerRequestTimeoutMs,
-      }),
-    });
-    const retainedWritableGuard = (await store.listOwnedJobs(input.cwd, ownerSessionId)).some((job) => job.command === 'rescue'
-      && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
-    ownerReleaseSafe = !retainedWritableGuard;
-  } catch { /* retain broker ownership unless durable state proves release safe */ }
-  if (ownerReleaseSafe) await releaseManagedZCodeOwner({ dataRoot, workspace: input.cwd, ownerId, requestTimeoutMs: ownerReleaseRequestTimeoutMs }).catch(() => null);
+        lockTimeoutMs: 0,
+        signal: remoteController.signal,
+        createClient: (job, derivedOwnerId) => createExistingManagedZCodeClient({
+          dataRoot,
+          workspace: input.cwd,
+          ownerId: derivedOwnerId,
+          requestTimeoutMs: existingBrokerRequestTimeoutMs,
+        }),
+      });
+      if (remoteController.signal.aborted) throw remoteController.signal.reason;
+      const retainedWritableGuard = (await store.listOwnedJobs(input.cwd, ownerSessionId)).some((job) => job.command === 'rescue'
+        && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
+      ownerReleaseSafe = !retainedWritableGuard;
+    } catch { /* retain broker ownership unless durable state proves release safe */ }
+    const remainingRemoteBudgetMs = remoteDeadline - Date.now();
+    if (ownerReleaseSafe && remainingRemoteBudgetMs > 0) await releaseManagedZCodeOwner({
+      dataRoot,
+      workspace: input.cwd,
+      ownerId,
+      requestTimeoutMs: Math.min(ownerReleaseRequestTimeoutMs, remainingRemoteBudgetMs),
+      cleanupBudgetMs: Math.min(ownerReleaseMaximumBudgetMs, remainingRemoteBudgetMs),
+    }).catch(() => null);
+  } finally { clearTimeout(remoteTimer); }
   await Promise.allSettled([
     cleanupSession(dataRoot, input.cwd, ownerSessionId),
     createIdentityStore({ dataRoot }).cleanupSession(input.cwd, ownerSessionId),

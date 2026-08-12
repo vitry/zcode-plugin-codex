@@ -1609,6 +1609,13 @@ test('managed owner cleanup cannot report success without one release proof befo
   } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test('managed owner cleanup honors a caller-shortened shared deadline', { timeout: 2_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-managed-release-short-budget-')); const methods = []; let closeServer;
+  try {
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory }); const endpoint = brokerEndpointFor({ dataRoot: directory, workspace: storage.workspacePath }); const record = { endpoint, pid: process.pid, instanceId: '4'.repeat(48), brokerToken: '5'.repeat(64) }; closeServer = await createHealthOnlyServer(endpoint, { ...record, hangCapabilities: true, onMethod: (method) => methods.push(method) }); await writeBrokerIdentity(join(storage.directory, 'broker', 'identity.json'), record); const started = Date.now(); await assert.rejects(releaseManagedZCodeOwner({ dataRoot: directory, workspace: directory, ownerId: 'managed-release-short-budget-owner', requestTimeoutMs: 1_800, cleanupBudgetMs: 200 }), (error) => error?.code === 'ZCODE_OWNER_RELEASE_INCOMPLETE' && error.details?.releaseProofMissingProfileCount === 1); assert.ok(Date.now() - started < 750, 'caller-shortened cleanup exceeded its shared deadline'); assert.equal(methods.filter((method) => method === 'broker/health').length, 2); assert.equal(methods.includes('broker/releaseOwner'), false);
+  } finally { await closeServer?.(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test('managed owner cleanup bounds connect authentication inside its shared deadline', { timeout: 4_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-managed-release-auth-budget-')); const methods = []; let closeServer; let cleanup;
   try {
