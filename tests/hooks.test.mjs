@@ -18,6 +18,7 @@ import { cleanupSession, resolveForwardingExecutor } from '../hooks/lib/hook-sta
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
 const socketMethodRecorder = new URL('./fixtures/record-socket-methods.mjs', import.meta.url).href;
+const ownerReleaseProbe = fileURLToPath(new URL('./fixtures/probe-owner-release.mjs', import.meta.url));
 const legacyBroker = join(root, 'tests/fixtures/legacy-zcode-broker-v1.mjs');
 const ownerStoreLockHolder = join(root, 'tests/fixtures/owner-store-lock-holder.mjs');
 // Parallel Windows runners can spend more than 750 ms scheduling a legacy
@@ -291,7 +292,13 @@ test('SessionEnd releases only its broker owner sessions and lets the idle broke
   assert.equal(ended.code, 0);
   const owners = JSON.parse(await readFile(ownershipPath, 'utf8'));
   let releaseDiagnostic = 'owner release succeeded without diagnostic collection';
-  if (JSON.stringify(owners.sessions) !== JSON.stringify({ 'zcode-b': ownerIdForSession('b') })) { const callsAtFailure = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)); const ownershipAfter = await stat(ownershipPath); const healthyAfterFailure = await probeBrokerHealth(identity, 250); const childPidProbe = await probePidFromChild(identity.pid); let ownedJobsProbe; try { ownedJobsProbe = { count: (await createStateStore({ dataRoot: data }).listOwnedJobs(cwd, 'a')).length }; } catch (error) { ownedJobsProbe = { error: { code: error?.code ?? null, category: error?.category ?? null, details: error?.details ?? null } }; } releaseDiagnostic = `release-stage ${JSON.stringify({ hookElapsedMs, stopObserved: callsAtFailure.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'), hookSocketMethods: (await readFile(socketMethods, 'utf8')).trim().split('\n').filter(Boolean), ownerStoreReplaced: ownershipAfter.ino !== ownershipBefore.ino || ownershipAfter.mtimeMs !== ownershipBefore.mtimeMs, healthyAfterFailure, childPidProbe, ownedJobsProbe, hookCode: ended.code, hookDiagnostic: ended.stderr.trim() || null })}`; }
+  if (JSON.stringify(owners.sessions) !== JSON.stringify({ 'zcode-b': ownerIdForSession('b') })) {
+    const callsAtFailure = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)); const ownershipAfter = await stat(ownershipPath); const healthyAfterFailure = await probeBrokerHealth(identity, 250); const childPidProbe = await probePidFromChild(identity.pid); let ownedJobsProbe;
+    try { ownedJobsProbe = { count: (await createStateStore({ dataRoot: data }).listOwnedJobs(cwd, 'a')).length }; } catch (error) { ownedJobsProbe = { error: { code: error?.code ?? null, category: error?.category ?? null, details: error?.details ?? null } }; }
+    const hookSocketMethods = (await readFile(socketMethods, 'utf8')).trim().split('\n').filter(Boolean); const retrySocketMethodsPath = join(data, 'retry-socket-methods.txt'); await writeFile(retrySocketMethodsPath, '');
+    const retry = await runHook(ownerReleaseProbe, { dataRoot: data, workspace: cwd, ownerSessionId: 'a', ownerId: ownerIdForSession('a') }, { ...env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${socketMethodRecorder}`.trim(), ZCODE_TEST_SOCKET_METHOD_RECORD: retrySocketMethodsPath }, { absolute: true });
+    releaseDiagnostic = `release-stage ${JSON.stringify({ hookElapsedMs, stopObserved: callsAtFailure.some((call) => call.method === 'session/stop' && call.params?.sessionId === 'zcode-a'), hookSocketMethods, retrySocketMethods: (await readFile(retrySocketMethodsPath, 'utf8')).trim().split('\n').filter(Boolean), retry: retry.json ?? { code: retry.code, stderr: retry.stderr.trim() || null }, ownerStoreReplaced: ownershipAfter.ino !== ownershipBefore.ino || ownershipAfter.mtimeMs !== ownershipBefore.mtimeMs, healthyAfterFailure, childPidProbe, ownedJobsProbe, hookCode: ended.code, hookDiagnostic: ended.stderr.trim() || null })}`;
+  }
   assert.deepEqual(owners.sessions, { 'zcode-b': ownerIdForSession('b') }, releaseDiagnostic);
   assert.deepEqual((await readFile(socketMethods, 'utf8')).trim().split('\n'), ['broker/auth', 'broker/health', 'broker/releaseOwner']);
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
