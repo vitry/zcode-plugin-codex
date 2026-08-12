@@ -91,6 +91,35 @@ async function settle(input, createClient, ownerSessionId = 'owner-a') {
   });
 }
 
+test('SessionEnd retries one transient owned-index validation before deciding owner release safety', async () => {
+  let calls = 0;
+  const store = {
+    listOwnedJobs: async () => {
+      calls += 1;
+      if (calls === 1) throw new PluginError('OWNED_JOB_INDEX_INVALID', 'transient post-publish validation', { category: 'storage', remedy: 'retry' });
+      return [];
+    },
+  };
+  const result = await settleEndedOwnerWritableJob({
+    store, dataRoot: '/unused', workspace: '/unused', ownerSessionId: 'owner-a',
+    createClient: async () => assert.fail('an empty owner list needs no client'),
+  });
+  assert.equal(result, null);
+  assert.equal(calls, 2);
+});
+
+test('SessionEnd keeps persistent index corruption and unrelated storage errors fail-closed', async () => {
+  for (const [code, expectedCalls] of [['OWNED_JOB_INDEX_INVALID', 2], ['OWNED_JOB_RECORD_INVALID', 1]]) {
+    let calls = 0; const failure = new PluginError(code, 'durable owner proof unavailable', { category: 'storage', remedy: 'repair' });
+    await assert.rejects(settleEndedOwnerWritableJob({
+      store: { listOwnedJobs: async () => { calls += 1; throw failure; } },
+      dataRoot: '/unused', workspace: '/unused', ownerSessionId: 'owner-a',
+      createClient: async () => assert.fail('a failed owner proof needs no client'),
+    }), (error) => error === failure);
+    assert.equal(calls, expectedCalls);
+  }
+});
+
 test('SessionEnd cancels an unclaimed queued reservation and prevents a later claim', async () => {
   const input = await fixture(); const value = await job(input, { claim: false, status: 'queued' }); let clients = 0;
   await settle(input, async () => { clients += 1; throw new Error('queued jobs need no client'); });
