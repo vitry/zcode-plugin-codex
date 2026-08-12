@@ -1514,12 +1514,20 @@ test('broker release returns at its hard deadline while its tracked continuation
   const retried = await broker.releaseOwner(socket, ownerId, []); assert.deepEqual(retried.releasedSessionIds, [sessionId]); assert.equal(stopCalls, 1); assert.equal(broker.sessionOwners.has(sessionId), false); await rm(directory, { recursive: true, force: true });
 });
 
-test('owner release caller normalizes a continuation that wins the race after an event-loop stall', { timeout: 3_000 }, async (t) => {
+test('owner release caller preserves a continuation that settles before its deadline check after an event-loop stall', { timeout: 3_000 }, async (t) => {
   for (const outcome of ['success', 'error']) await t.test(outcome, async () => {
     const directory = await mkdtemp(join(tmpdir(), `zcode-broker-release-late-${outcome}-`)); const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '8'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); const ownerId = `release-late-${outcome}-owner`; const socket = { destroyed: false }; const continuationError = new Error('late continuation error must not escape the absolute deadline');
     broker.releaseOwnerAdmitted = async () => { await new Promise((resolvePromise) => setImmediate(resolvePromise)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 620); if (outcome === 'error') throw continuationError; return { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 }; };
-    const started = Date.now(); await assert.rejects(broker.releaseOwner(socket, ownerId, []), { code: 'ZCODE_OWNER_RELEASE_TIMEOUT' }); const elapsed = Date.now() - started; assert.ok(elapsed >= 600 && elapsed < 850, `late ${outcome} was not normalized at the absolute deadline: ${elapsed}ms`); assert.equal(broker.admission.ownerStates.has(ownerId), false); assert.equal(broker.releaseTasks.size, 0); await rm(directory, { recursive: true, force: true });
+    const started = Date.now(); const releasing = broker.releaseOwner(socket, ownerId, []); if (outcome === 'error') await assert.rejects(releasing, (error) => error === continuationError); else assert.deepEqual(await releasing, { releasedSessionIds: [], failedSessionIds: [], deferredSessionCount: 0 }); const elapsed = Date.now() - started; assert.ok(elapsed >= 600 && elapsed < 850, `ready ${outcome} did not settle in the first deadline check phase: ${elapsed}ms`); assert.equal(broker.admission.ownerStates.has(ownerId), false); assert.equal(broker.releaseTasks.size, 0); await rm(directory, { recursive: true, force: true });
   });
+});
+
+test('owner release accepts an already-scheduled durable commit after its deadline timer becomes ready', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-release-ready-commit-')); const ownerId = 'release-ready-commit-owner'; const sessionId = 'release-ready-commit-session'; const socket = { destroyed: false }; const broker = newTestBroker({ endpoint: join(directory, 'broker.sock'), brokerToken: '7'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } }); broker.sessionOwners.set(sessionId, { ownerId, socket });
+  let commitScheduled; const scheduled = new Promise((resolvePromise) => { commitScheduled = resolvePromise; });
+  broker.releaseOwnerAdmitted = () => new Promise((resolvePromise) => { setImmediate(() => { broker.sessionOwners.delete(sessionId); resolvePromise({ releasedSessionIds: [sessionId], failedSessionIds: [], deferredSessionCount: 0 }); }); commitScheduled(); });
+  const started = Date.now(); const releasing = broker.releaseOwner(socket, ownerId, [], started + 20); await scheduled; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+  assert.deepEqual(await releasing, { releasedSessionIds: [sessionId], failedSessionIds: [], deferredSessionCount: 0 }); assert.equal(broker.sessionOwners.has(sessionId), false); await rm(directory, { recursive: true, force: true });
 });
 
 test('broker close awaits and reports a timed-out release continuation', { timeout: 3_000 }, async () => {
