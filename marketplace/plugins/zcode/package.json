@@ -36,9 +36,10 @@
     "test:integration": "node --test tests/integration/plugin-layout.test.mjs",
     "test:qualified": "node --test tests/e2e/codex-skills-e2e.test.mjs tests/e2e/real-zcode.test.mjs",
     "test:qualification-required": "node --require ./tests/helpers/require-qualified.cjs --test tests/e2e/codex-skills-e2e.test.mjs tests/e2e/real-zcode.test.mjs",
+    "check:line-endings": "node scripts/check-line-endings.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "check": "npm run lint && npm run typecheck && npm test && npm run test:qualified"
+    "check": "npm run check:line-endings && npm run lint && npm run typecheck && npm test && npm run test:qualified"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
