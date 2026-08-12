@@ -391,6 +391,7 @@ test('managed Rescue role rejects a symlinked lock directory without touching it
   const outside = await realpath(await mkdtemp(join(tmpdir(), 'zcode-lock-outside-')));
   const marker = join(outside, 'marker');
   await writeFile(marker, 'outside-safe', { mode: 0o644 });
+  const markerMode = (await stat(marker)).mode & 0o777;
   await mkdir(join(ctx.dataRoot, 'agent-roles'));
   await symlink(outside, ctx.paths.lockPath);
   assert.equal((await inspectManagedRescueRole(common(ctx, configState({})))).status, 'unsupported');
@@ -398,13 +399,14 @@ test('managed Rescue role rejects a symlinked lock directory without touching it
     ...common(ctx, configState({})), batchWrite: async () => ({}), readConfig: async () => configState({}),
   }), { code: 'MANAGED_ROLE_PATH_UNSAFE' });
   assert.equal(await readFile(marker, 'utf8'), 'outside-safe');
-  assert.equal((await stat(marker)).mode & 0o777, 0o644);
+  assert.equal((await stat(marker)).mode & 0o777, markerMode);
 });
 
 test('managed Rescue role rejects a symlinked advisory lock file without touching its target', async () => {
   const ctx = await fixture();
   const outside = join(await realpath(await mkdtemp(join(tmpdir(), 'zcode-lock-file-outside-'))), 'outside.lock');
   await writeFile(outside, 'outside-lock', { mode: 0o644 });
+  const outsideMode = (await stat(outside)).mode & 0o777;
   await mkdir(ctx.paths.lockPath, { recursive: true });
   await symlink(outside, join(ctx.paths.lockPath, 'advisory.lock'));
   assert.equal((await inspectManagedRescueRole(common(ctx, configState({})))).status, 'unsupported');
@@ -412,7 +414,7 @@ test('managed Rescue role rejects a symlinked advisory lock file without touchin
     ...common(ctx, configState({})), batchWrite: async () => ({}), readConfig: async () => configState({}),
   }), { code: 'MANAGED_ROLE_PATH_UNSAFE' });
   assert.equal(await readFile(outside, 'utf8'), 'outside-lock');
-  assert.equal((await stat(outside)).mode & 0o777, 0o644);
+  assert.equal((await stat(outside)).mode & 0o777, outsideMode);
 });
 
 test('file locking rejects a lock directory replaced by a symlink between validation and open', { skip: process.platform === 'win32' ? 'Windows cannot rename an open lock directory in this race fixture.' : false }, async () => {
@@ -441,6 +443,7 @@ test('file locking rejects an advisory file replaced by a symlink between valida
   const advisory = join(ctx.paths.lockPath, 'advisory.lock');
   const outside = join(await realpath(await mkdtemp(join(tmpdir(), 'zcode-advisory-race-outside-'))), 'outside.lock');
   await writeFile(outside, 'outside-safe', { mode: 0o644 });
+  const outsideMode = (await stat(outside)).mode & 0o777;
   let injected = false;
   await assert.rejects(withFileLock(ctx.paths.lockPath, async () => { throw new Error('must not enter'); }, {
     beforeLockOpen: async () => {
@@ -451,7 +454,7 @@ test('file locking rejects an advisory file replaced by a symlink between valida
   }), (error) => error?.code === 'LOCK_OPEN_FAILED' || error?.code === 'LOCK_PATH_UNSAFE');
   assert.equal(injected, true);
   assert.equal(await readFile(outside, 'utf8'), 'outside-safe');
-  assert.equal((await stat(outside)).mode & 0o777, 0o644);
+  assert.equal((await stat(outside)).mode & 0o777, outsideMode);
 });
 
 test('managed Rescue role rolls back owned file state on version races and leaves no ready receipt', async () => {

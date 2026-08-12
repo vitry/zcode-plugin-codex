@@ -143,9 +143,9 @@ test('runProcess captures a backpressured direct-child tail before natural exit'
 });
 
 test('runProcess flushes direct-child output without waiting for an inherited descendant pipe', { timeout: 2_000 }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'zcode-process-pipe-')); const pidFile = join(directory, 'descendant.pid');
-  const descendant = `const fs=require('node:fs');${ownedPidPublicationSource(pidFile)}setTimeout(()=>process.stdout.write('late-descendant\\n'),100);setInterval(()=>{},10000);`;
-  const source = `const {spawn}=require('node:child_process');process.stdout.write('direct-child\\n');spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit']}).unref();`;
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-process-pipe-')); const pidFile = join(directory, 'descendant.pid'); const readyFile = join(directory, 'descendant.ready');
+  const descendant = `const fs=require('node:fs');${ownedPidPublicationSource(pidFile, { readyFile })}setTimeout(()=>process.stdout.write('late-descendant\\n'),100);setInterval(()=>{},10000);`;
+  const source = `const {spawn}=require('node:child_process'),fs=require('node:fs');process.stdout.write('direct-child\\n');spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit']}).unref();const awaitReady=()=>fs.access(${JSON.stringify(readyFile)},fs.constants.F_OK,(error)=>{if(error)setImmediate(awaitReady);});awaitReady();`;
   try {
     const result = await runProcess({ command: process.execPath, args: ['-e', source], target: process.execPath }, { timeoutMs: 500 });
     assert.equal(result.code, 0);
