@@ -36,6 +36,18 @@ test('ships exactly the eight namespaced ZCode skills', () => {
   }
 });
 
+test('setup documents one-run Role reconciliation without owning host spawn metadata', () => {
+  const source = skill('setup');
+  assert.match(source, /one setup|one `?\$zcode:setup/i);
+  assert.match(source, /numeric-v1/i);
+  assert.match(source, /Codex host.{0,120}owns.{0,120}collaboration tool schema/is);
+  assert.match(source, /does not own.{0,120}hide_spawn_agent_metadata/is);
+  assert.match(source, /writable.{0,80}root.{0,160}restart-required/is);
+  assert.doesNotMatch(source, /Role install.{0,160}(?:restart|required)/is);
+  assert.equal(expected.includes('uninstall'), false);
+  assert.equal(existsSync(new URL('skills/uninstall/', root)), false);
+});
+
 test('skills resolve the installed plugin root and use constant direct companion commands', () => {
   for (const name of expected) {
     const source = skill(name);

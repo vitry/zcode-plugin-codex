@@ -4,6 +4,8 @@ All notable changes follow Semantic Versioning.
 
 ## Unreleased
 
+- Stopped writing the Codex host's `hide_spawn_agent_metadata` flag; one setup now reconciles the managed Role and safely removes only a legacy `false` proved by complete numeric-v1 ownership evidence.
+- Added a packaged bilingual manual-uninstall guide for receipt-gated Role/config cleanup while retaining durable jobs, results, progress, logs, and history by default.
 - Fixed `$zcode:setup` managed Role reconciliation with Codex 0.147 effective configuration, which normalizes an otherwise exact Role registration with `nickname_candidates = null`.
 - Fixed local cachebuster reinstallations so SemVer build metadata keeps the installed plugin's marketplace-qualified data root valid.
 - Fixed installed `$zcode:*` skills failing with `DATA_ROOT_REQUIRED` when Codex does not inject `PLUGIN_DATA` into ordinary skill commands.

@@ -266,7 +266,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
     assert.match(source, /ZCODE_REAL_MODEL.{0,120}deprecated|deprecated.{0,120}ZCODE_REAL_MODEL/is);
     assert.match(source, /conflict|冲突/i);
   }
-  assert.match(english, /restart Codex.{0,160}rerun `?\$zcode:setup/is);
+  assert.match(english, /writable.{0,80}root.{0,160}restart Codex.{0,160}rerun `?\$zcode:setup/is);
   assert.match(english, /collision.{0,200}(?:foreign|project|higher-precedence)/is);
   assert.match(english, /truncation.{0,120}not secret redaction/is);
   assert.match(english, /parent thread/i);
@@ -275,7 +275,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(english, /background semantics remain unchanged/i);
   assert.match(english, /Codex 0\.147/);
   assert.match(english, /unqualified/i);
-  assert.match(chinese, /重启 Codex.{0,160}(?:再次|重新)运行 `?\$zcode:setup/is);
+  assert.match(chinese, /writable root.{0,160}重启 Codex.{0,160}(?:再次|重新)运行 `?\$zcode:setup/is);
   assert.match(chinese, /冲突.{0,200}(?:外部|项目|高优先级|更高优先级)/is);
   assert.match(chinese, /截断.{0,120}不是秘密脱敏/is);
   assert.match(chinese, /父线程/);
@@ -299,7 +299,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
 
   const setup = read('skills/setup/SKILL.md');
   assert.match(setup, /stable plugin data/i);
-  assert.match(setup, /restart Codex/i);
+  assert.match(setup, /writable.{0,80}root.{0,160}restart Codex/is);
   assert.match(setup, /collision/i);
   const rescue = read('skills/rescue/SKILL.md');
   assert.match(rescue, /\/agent|\/subagents/);
@@ -319,6 +319,53 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(installedQualification, /codex-skills-observation/);
   assert.match(installedQualification, /Object\.hasOwn\(payload, 'qualified'\), false/);
   assert.match(read('tests/e2e/real-zcode.test.mjs'), /real-zcode-unqualified/);
+});
+
+test('release package ships receipt-gated manual uninstall guidance', () => {
+  const guidePath = 'docs/manual-uninstall.md';
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  const guide = read(guidePath);
+  const packageJson = JSON.parse(read('package.json'));
+
+  for (const source of [english, chinese]) assert.match(source, /\[.*(?:uninstall|卸载|清理).*\]\(docs\/manual-uninstall\.md\)/i);
+  assert.ok(packageJson.files.includes(guidePath));
+  assert.equal(packageJson.files.filter((entry) => entry === guidePath).length, 1);
+
+  assert.match(guide, /no plugin uninstall lifecycle hook/i);
+  assert.match(guide, /没有插件卸载生命周期 hook/i);
+  assert.match(guide, /settle or cancel.{0,120}active jobs/is);
+  assert.match(guide, /结束或取消.{0,120}活动任务/is);
+  assert.match(guide, /plugin\.identity.{0,160}configTarget\.filePath.{0,160}role\.path.{0,160}role\.sha256/is);
+  assert.match(guide, /agents\.zcode-rescue/);
+  assert.match(guide, /numeric-v1.{0,240}hide_spawn_agent_metadata\s*=\s*false/is);
+  assert.match(guide, /never (?:remove|delete).{0,160}(?:true|project layer|foreign|unproven)/is);
+  assert.match(guide, /绝不(?:移除|删除).{0,160}(?:true|项目层|外部|无法证明)/is);
+  for (const category of ['jobs/', 'job-owners/', 'job-specs/', 'prompts/', 'results/', 'progress', 'logs', 'history']) assert.match(guide, new RegExp(category.replace('/', '\\/'), 'i'));
+  assert.match(guide, /retained by default/i);
+  assert.match(guide, /默认保留/);
+  assert.match(guide, /replac(?:e|ing) the plugin source.{0,200}run `?\$zcode:setup`? once/is);
+  assert.match(guide, /替换插件源.{0,200}(?:运行|执行)一次 `?\$zcode:setup`?/is);
+  assert.match(guide, /writable-root bootstrap.{0,120}only separate restart/is);
+  assert.match(guide, /仅.{0,120}writable-root bootstrap.{0,120}重启/is);
+  assert.match(guide, /uninstalling the plugin files alone.{0,160}(?:leaves|does not remove)/is);
+});
+
+test('current docs assign spawn schema ownership to Codex and supersede the historical Role lifecycle', () => {
+  for (const path of ['README.md', 'README.zh-CN.md', 'skills/setup/SKILL.md']) {
+    const source = read(path);
+    assert.match(source, /Codex host.{0,120}(?:owns|管理|负责).{0,120}(?:collaboration tool schema|协作工具 schema)/is);
+    assert.match(source, /does not own|不拥有/i);
+    assert.match(source, /hide_spawn_agent_metadata/);
+    assert.match(source, /one setup|一次 setup|一次 `?\$zcode:setup/i);
+    assert.match(source, /numeric-v1/i);
+    assert.doesNotMatch(source, /Role install.{0,160}restart|Role 安装.{0,160}重启/is);
+  }
+  const design = read('docs/superpowers/specs/2026-08-09-rescue-native-subagent-progress-design.md');
+  assert.match(design, /superseded/i);
+  assert.match(design, /2026-08-13-remove-spawn-metadata-override-design\.md/);
+  assert.match(read('SECURITY.md'), /receipt.{0,200}fail closed.{0,200}(?:foreign|project)/is);
+  assert.match(read('CHANGELOG.md'), /hide_spawn_agent_metadata.{0,200}numeric-v1/is);
 });
 
 test('repository and CI enforce the LF line-ending constitution', () => {
