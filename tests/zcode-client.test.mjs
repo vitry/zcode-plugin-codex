@@ -14,7 +14,7 @@ import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker,
 import { atomicWriteJson, withFileLock } from '../scripts/lib/fs.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
-import { validCreateSnapshot, validSnapshot } from '../scripts/lib/zcode-schema.mjs';
+import { validCreateSnapshot, validSetupAuthProbeSnapshot, validSnapshot } from '../scripts/lib/zcode-schema.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 const brokerStartupFault = fileURLToPath(new URL('./fixtures/broker-startup-fault.cjs', import.meta.url));
@@ -276,13 +276,26 @@ test('the empty-create validator rejects every remaining non-empty or conflictin
     assert.equal(validSnapshot(empty, sessionId, workspace), false, 'fixture must enter the empty-create branch');
     const target = { sessionId, targetId: 'target-1', objective: 'not empty', summaryTitle: null, status: 'active', tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 };
     const permission = { requestId: 'request-1', toolCallId: 'tool-1', toolName: 'write', reason: 'not empty', riskLevel: 'low', options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }], requestedAt: 1 };
+    const verification = { passed: false, reason: 'not empty' };
     const cases = [
       ['non-idle session status', (value) => { value.session.status = 'running'; }, true],
       ['non-null session target', (value) => { value.session.target = target; }, true],
+      ['current projection turn', (value) => { value.projection.currentTurnId = 'turn-1'; }, true],
+      ['nonzero projection turn count', (value) => { value.projection.turnCount = 1; }, true],
+      ['nonzero projection token count', (value) => { value.projection.totalTokenCount = 1; }, true],
+      ['nonzero projection context use', (value) => { value.projection.contextUsed = 1; }, true],
       ['pending projection permission', (value) => { value.projection.pendingPermissions = [permission]; }, true],
       ['active projection tool call', (value) => { value.projection.activeToolCalls = [{ toolCallId: 'tool-1', toolName: 'write', status: 'pending' }]; }, true],
       ['background projection job', (value) => { value.projection.backgroundJobs = [{}]; }, true],
+      ['projection error', (value) => { value.projection.lastError = { type: 'runtime', message: 'not empty' }; }, true],
+      ['nonzero runtime revision', (value) => { value.runtime.stateRevision = 1; }, true],
+      ['active runtime turn ID', (value) => { value.runtime.activeTurnId = 'turn-1'; }, true],
+      ['active runtime turn kind', (value) => { value.runtime.activeTurnKind = 'regular'; }, true],
       ['pending runtime request', (value) => { value.runtime.pendingRequestIds = ['request-1']; }, true],
+      ['runtime API retry', (value) => { value.runtime.apiRetry = { kind: 'api_retry', attempt: 1, maxRetries: 2, retryDelayMs: 100, errorStatus: null, error: 'retrying' }; }, true],
+      ['runtime context usage', (value) => { value.runtime.contextUsage = { used: 1, size: 128000 }; }, true],
+      ['runtime goal verification', (value) => { value.runtime.goalVerifications = [verification]; }, true],
+      ['runtime goal verification timeline', (value) => { value.runtime.goalVerificationTimeline = [{ version: 1, kind: 'synthetic', type: 'goal_verification', display: 'separator', targetId: 'target-1', verificationId: 'verification-1', status: 'started' }]; }, true],
       ['wrong workspace path', (value) => { value.session.workspace.workspacePath = '/wrong-workspace'; }, false],
       ['wrong workspace key', (value) => { value.session.workspace.workspaceKey = '/wrong-workspace'; }, false],
     ];
@@ -290,11 +303,17 @@ test('the empty-create validator rejects every remaining non-empty or conflictin
       const candidate = structuredClone(empty); mutate(candidate);
       assert.equal(validSnapshot(candidate, sessionId, workspace), false, `${name}: strict branch must remain unavailable`);
       assert.equal(validCreateSnapshot(candidate, sessionId, workspace), false, `${name}: empty-create branch must reject the mutation`);
+      assert.equal(validSetupAuthProbeSnapshot(candidate, sessionId, workspace), false, `${name}: setup probe must reject the mutation`);
       if (strictCompatible) {
         candidate.projection.sessionId = sessionId;
         assert.equal(validSnapshot(candidate, sessionId, workspace), true, `${name}: mutation must otherwise retain a valid snapshot envelope`);
       }
     }
+    const explicitEmpty = structuredClone(empty);
+    explicitEmpty.session.target = null; explicitEmpty.projection.target = null; explicitEmpty.runtime.apiRetry = null;
+    explicitEmpty.runtime.goalVerifications = []; explicitEmpty.runtime.goalVerificationTimeline = [];
+    assert.equal(validCreateSnapshot(explicitEmpty, sessionId, workspace), true, 'explicit null and empty activity state must remain fresh');
+    assert.equal(validSetupAuthProbeSnapshot(explicitEmpty, sessionId, workspace), true, 'setup probe must accept explicit null and empty activity state');
   }, { FAKE_ZCODE_EMPTY_SESSION: '1' });
 });
 

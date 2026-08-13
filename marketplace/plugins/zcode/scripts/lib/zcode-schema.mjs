@@ -174,8 +174,18 @@ function validEmptyCreateSnapshot(value, sessionId, workspacePath) {
     && value.projection.sessionId === 'unknown' && value.projection.status === 'idle'
     && (value.session.target === undefined || value.session.target === null)
     && (value.projection.target === undefined || value.projection.target === null)
+    && value.projection.currentTurnId === undefined
+    && value.projection.turnCount === 0 && value.projection.totalTokenCount === 0 && value.projection.contextUsed === 0
     && value.projection.pendingPermissions.length === 0 && value.projection.activeToolCalls.length === 0 && value.projection.backgroundJobs.length === 0
-    && value.runtime.eventSeq === 0 && value.runtime.pendingRequestIds.length === 0 && value.messages.length === 0;
+    && value.projection.lastError === undefined
+    && value.runtime.eventSeq === 0 && value.runtime.stateRevision === 0
+    && value.runtime.activeTurnId === undefined && value.runtime.activeTurnKind === undefined
+    && value.runtime.pendingRequestIds.length === 0
+    && (value.runtime.apiRetry === undefined || value.runtime.apiRetry === null)
+    && value.runtime.contextUsage === undefined
+    && (value.runtime.goalVerifications === undefined || value.runtime.goalVerifications.length === 0)
+    && (value.runtime.goalVerificationTimeline === undefined || value.runtime.goalVerificationTimeline.length === 0)
+    && value.messages.length === 0;
 }
 
 export function validCreateSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId, /** @type {string} */ workspacePath) {
