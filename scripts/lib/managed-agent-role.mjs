@@ -130,7 +130,6 @@ export async function reconcileManagedRescueRole(input) {
         expectedVersion: activeInput.configTarget.expectedVersion,
         reloadUserConfig: true,
       });
-      configMutated = true;
       journal.phase = 'config-written';
       journal.configVersion = typeof writeResult?.version === 'string' && writeResult.version
         ? writeResult.version : activeInput.configTarget.expectedVersion;
@@ -149,11 +148,7 @@ export async function reconcileManagedRescueRole(input) {
       await unlink(prepared.paths.transactionPath);
       return { status: 'ready', changed: true, rolePath: prepared.paths.rolePath };
     } catch (cause) {
-      if (!configMutated && journal.phase === 'role-written') {
-        const detected = await detectAppliedConfig(activeInput, prepared, journal);
-        if (detected.state === 'incomplete') throw incompleteAppliedConfigError(prepared, activeInput);
-        configMutated = detected.state === 'applied-exact';
-      }
+      if (journal.phase !== 'prepared') configMutated = await classifyConfigMutation(activeInput, prepared, journal);
       const recovery = await rollback({ prepared, input: activeInput, journal, configMutated });
       if (!recovery.complete) {
         throw rollbackError(prepared, activeInput, [...recovery.remaining, prepared.paths.transactionPath], 'Managed Rescue Role reconciliation failed and rollback was incomplete.');
@@ -260,12 +255,7 @@ async function recoverInterruptedTransaction(prepared, input) {
   if (!roleBytesProven(currentRole, journal)) {
     throw rollbackError(prepared, input, [prepared.paths.rolePath, prepared.paths.transactionPath], 'The interrupted Role bytes are not proven to be owned.');
   }
-  let configMutated = ['config-written', 'receipt-prepared'].includes(journal.phase);
-  if (!configMutated && journal.phase === 'role-written') {
-    const detected = await detectAppliedConfig(input, prepared, journal);
-    if (detected.state === 'incomplete') throw incompleteAppliedConfigError(prepared, input);
-    configMutated = detected.state === 'applied-exact';
-  }
+  const configMutated = journal.phase === 'prepared' ? false : await classifyConfigMutation(input, prepared, journal);
   const recovery = await rollback({ prepared, input, journal, configMutated });
   if (!recovery.complete) throw rollbackError(prepared, input, [...recovery.remaining, prepared.paths.transactionPath], 'Could not recover the interrupted managed Role transaction.');
   return true;
@@ -323,6 +313,13 @@ async function detectAppliedConfig(input, prepared, journal) {
   }
   if (configLeavesMatchPrevious(currentConfig, input.configTarget.filePath, journal)) return { state: 'not-applied', expectedVersion: null };
   return { state: 'incomplete', expectedVersion: null };
+}
+
+/** @param {AnyRecord} input @param {AnyRecord} prepared @param {ManagedRoleJournal} journal */
+async function classifyConfigMutation(input, prepared, journal) {
+  const detected = await detectAppliedConfig(input, prepared, journal);
+  if (detected.state === 'incomplete') throw incompleteAppliedConfigError(prepared, input);
+  return detected.state === 'applied-exact';
 }
 
 /** @param {AnyRecord} config @param {string} filePath @param {ManagedRoleJournal} journal */
