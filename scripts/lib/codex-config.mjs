@@ -53,13 +53,13 @@ export async function runSetup(input) {
       readConfig: () => client.request('config/read', { cwd, includeLayers: true }),
     });
     if (role.status === 'restart-required') return reportAndPersist(input, discovery, auth, 'restart-required', 'managed-role-changed', false);
-    if (edits.length && !role.changed) {
-      const writeResult = await client.request('config/batchWrite', { edits, ...writeTarget, reloadUserConfig: true });
+    if (edits.length) {
+      const writeResult = role.changed ? null : await client.request('config/batchWrite', { edits, ...writeTarget, reloadUserConfig: true });
       const updated = await client.request('config/read', { cwd, includeLayers: true });
       const activatedHooks = await client.request('hooks/list', { cwds: [cwd] });
       const activated = await validateHooks(activatedHooks, cwd, pluginRoot, hooksPath);
       if (!validConfigRead(updated)
-        || !writeMatchesTargetVersion(writeResult, updated, writeTarget)
+        || !(role.changed ? hasTargetVersion(updated, writeTarget.filePath) : writeMatchesTargetVersion(writeResult, updated, writeTarget))
         || !editsAreEffective(updated.config, edits)
         || !editsAreEffective(targetLayerConfig(updated, writeTarget.filePath), edits)
         || !activated.ok
@@ -109,6 +109,7 @@ function configPostWriteInvalid() { return new PluginError('CODEX_CONFIG_POST_WR
 function validConfigRead(value) { return value && typeof value === 'object' && !Array.isArray(value) && value.config && typeof value.config === 'object' && !Array.isArray(value.config) && Array.isArray(value.layers) && (!Array.isArray(value.errors) || value.errors.length === 0) && !value.layers.some((layer) => Array.isArray(layer?.errors) && layer.errors.length); }
 function targetLayer(config, filePath) { return config.layers.find((layer) => layer?.name?.type === 'user' && (typeof layer.name.file === 'string' && layer.name.file ? layer.name.file : null) === filePath) ?? null; }
 function targetLayerConfig(config, filePath) { const layer = targetLayer(config, filePath); return layer?.config && typeof layer.config === 'object' && !Array.isArray(layer.config) ? layer.config : undefined; }
+function hasTargetVersion(config, filePath) { const version = targetLayer(config, filePath)?.version; return typeof version === 'string' && version.length > 0; }
 function writeMatchesTargetVersion(writeResult, config, writeTarget) { const layer = targetLayer(config, writeTarget.filePath); return typeof writeResult?.version === 'string' && writeResult.version.length > 0 && typeof layer?.version === 'string' && layer.version === writeResult.version && (writeTarget.filePath === null || typeof writeResult.filePath !== 'string' || writeResult.filePath === writeTarget.filePath); }
 function editsAreEffective(config, edits) { return edits.every((edit) => configValueContains(configLeaf(config, edit.keyPath), edit.value)); }
 function configLeaf(config, keyPath) { let value = config; for (const part of keyPath.split('.')) { if (!value || typeof value !== 'object' || !Object.hasOwn(value, part)) return undefined; value = value[part]; } return value; }

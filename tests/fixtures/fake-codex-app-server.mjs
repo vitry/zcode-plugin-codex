@@ -52,6 +52,7 @@ const configStatePath = process.env.FAKE_CODEX_CONFIG_STATE
 let currentConfig = JSON.parse(configStatePath && existsSync(configStatePath)
   ? readFileSync(configStatePath, 'utf8')
   : process.env.FAKE_CODEX_CONFIG_RESULT ?? '{"config":{},"origins":{},"layers":[]}');
+let currentHooks = JSON.parse(process.env.FAKE_CODEX_HOOKS_RESULT ?? '{"data":[]}');
 input.on('line', (line) => { inputQueue = inputQueue.then(() => handleLine(line)); });
 
 async function handleLine(line) {
@@ -87,15 +88,24 @@ async function handleLine(line) {
   }
   if (request.method === 'hooks/list') {
     const results = process.env.FAKE_CODEX_HOOKS_RESULTS_JSON ? JSON.parse(process.env.FAKE_CODEX_HOOKS_RESULTS_JSON) : null;
-    const result = Array.isArray(results) ? results[Math.min(hooksListIndex++, results.length - 1)] : JSON.parse(process.env.FAKE_CODEX_HOOKS_RESULT ?? '{"data":[]}');
+    const result = Array.isArray(results) ? results[Math.min(hooksListIndex++, results.length - 1)] : currentHooks;
     write({ id: request.id, result }); return;
   }
   if (request.method === 'config/batchWrite') {
     const configuredResults = process.env.FAKE_CODEX_CONFIG_RESULTS_JSON ? JSON.parse(process.env.FAKE_CODEX_CONFIG_RESULTS_JSON) : null;
     if (Array.isArray(configuredResults)) currentConfig = structuredClone(configuredResults[Math.min(configReadIndex, configuredResults.length - 1)]);
     else applyConfigEdits(request.params);
+    applyHookTrust(request.params);
     if (configStatePath) writeFileSync(configStatePath, JSON.stringify(currentConfig));
     write({ id: request.id, result: { filePath: process.env.FAKE_CODEX_CONFIG_PATH ?? request.params.filePath ?? '/tmp/config.toml', status: 'ok', version: process.env.FAKE_CODEX_BATCH_VERSION ?? 'version-2' } });
+  }
+}
+
+function applyHookTrust(params) {
+  const state = params.edits?.find((edit) => edit.keyPath === 'hooks.state')?.value;
+  if (!state || typeof state !== 'object') return;
+  for (const entry of currentHooks.data ?? []) for (const hook of entry.hooks ?? []) {
+    if (state[hook.key]?.trusted_hash === hook.currentHash) hook.trustStatus = 'trusted';
   }
 }
 
