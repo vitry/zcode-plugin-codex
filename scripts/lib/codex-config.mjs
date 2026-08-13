@@ -26,8 +26,7 @@ export async function runSetup(input) {
       await client.request('config/batchWrite', { edits: [{ keyPath: 'sandbox_workspace_write.writable_roots', value: rootBootstrap.roots, mergeStrategy: 'replace' }], ...writeTarget, reloadUserConfig: true });
       const updated = await client.request('config/read', { cwd, includeLayers: true });
       if (!await hasEffectiveWritableRoot(updated, input.dataRoot)) throw dataRootOverridden();
-      const enabled = await persistSetupGate({ ...input, cwd }, 'restart-required', false);
-      return { status: 'restart-required', reason: 'plugin-data-root-added', zcode: { path: null, version: null }, auth: { ready: false, status: 'deferred' }, hooks: { ready: false }, reviewGate: { enabled, deferred: true }, modelPolicy: { configured: false, aliases: [] } };
+      return { status: 'restart-required', reason: 'plugin-data-root-added', zcode: { path: null, version: null }, auth: { ready: false, status: 'deferred' }, hooks: { ready: false }, reviewGate: { enabled: false, deferred: true }, modelPolicy: { configured: false, aliases: [] } };
     }
     input = { ...input, modelPolicy: summarizeWorkspaceModelConfig(await persistSetupModelConfig({ dataRoot: input.dataRoot, workspace: cwd, env: input.env })) };
     let discovery;

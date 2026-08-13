@@ -416,7 +416,7 @@ test('setup accepts Codex sha256-prefixed hook hashes and persists their trust s
   }
 });
 
-test('setup bootstraps an absent writable plugin-data root before writing workspace state', async () => {
+test('writable-root bootstrap returns before creating any plugin-data or workspace state', async () => {
   const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
   const dataRoot = join(ctx.dataRoot, 'codex-home', 'plugins', 'data', 'zcode-vitry');
   const configResult = {
@@ -430,25 +430,23 @@ test('setup bootstraps an absent writable plugin-data root before writing worksp
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).filter((call) => call.method);
   const batch = calls.find((call) => call.method === 'config/batchWrite');
   assert.deepEqual(batch.params.edits, [{ keyPath: 'sandbox_workspace_write.writable_roots', value: [dataRoot], mergeStrategy: 'replace' }]);
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: ctx.cwd });
-  assert.deepEqual(JSON.parse(await readFile(join(storage.directory, 'config', 'review-gate.json'), 'utf8')), {
-    version: 1, enabled: false, setupReady: false, status: 'restart-required',
-  });
+  await assert.rejects(stat(dataRoot), { code: 'ENOENT' });
 });
 
-test('writable-root bootstrap invalidates a prior ready gate while preserving its enabled preference', async () => {
+test('writable-root bootstrap does not mutate a preexisting ready gate before restart', async () => {
   const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
   await mkdir(join(storage.directory, 'config'), { recursive: true });
-  await writeFile(join(storage.directory, 'config', 'review-gate.json'), `${JSON.stringify({ version: 1, enabled: true, setupReady: true, status: 'ready' })}\n`);
+  const gatePath = join(storage.directory, 'config', 'review-gate.json');
+  const priorGateBytes = Buffer.from(`${JSON.stringify({ version: 1, enabled: true, setupReady: true, status: 'ready' })}\n`);
+  await writeFile(gatePath, priorGateBytes);
   const configFile = join(ctx.dataRoot, 'config.toml');
   const before = { config: { sandbox_workspace_write: { writable_roots: [] } }, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: {} }] };
   const after = { config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } }, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-2', config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } } }] };
   const report = await runSetup({ ...ctx.options, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([before, after]) } });
   assert.equal(report.status, 'restart-required');
-  assert.deepEqual(JSON.parse(await readFile(join(storage.directory, 'config', 'review-gate.json'), 'utf8')), {
-    version: 1, enabled: true, setupReady: false, status: 'restart-required',
-  });
+  assert.equal(report.reason, 'plugin-data-root-added');
+  assert.deepEqual(await readFile(gatePath), priorGateBytes);
 });
 
 test('setup preserves user writable roots without globalizing effective project roots', async () => {
