@@ -10,6 +10,7 @@ import { atomicWritePrivateFile, withFileLock } from '../scripts/lib/fs.mjs';
 import {
   MANAGED_ROLE_DESCRIPTION,
   MANAGED_ROLE_NAME,
+  MANAGED_ROLE_RECEIPT_SCHEMA_VERSION,
   MANAGED_ROLE_SCHEMA_VERSION,
   inspectManagedRescueRole,
   managedRolePaths,
@@ -130,6 +131,7 @@ test('managed Rescue role exposes the fixed contract and stable non-cache paths'
   const ctx = await fixture();
   assert.equal(MANAGED_ROLE_NAME, 'zcode-rescue');
   assert.equal(MANAGED_ROLE_SCHEMA_VERSION, 1);
+  assert.equal(MANAGED_ROLE_RECEIPT_SCHEMA_VERSION, '1.0.0');
   assert.equal(MANAGED_ROLE_DESCRIPTION, 'Runs the fixed ZCode Rescue forwarder in an isolated Codex subagent.');
   assert.deepEqual(ctx.paths, {
     rolePath: join(ctx.dataRoot, 'agent-roles', 'zcode-rescue.toml'),
@@ -568,7 +570,12 @@ test('managed Rescue role migration rolls back exact numeric-v1 state after rece
       return { version: `v${writes.length + 1}` };
     },
     readConfig: async () => current,
-    beforeReceiptCommit: async () => { throw new Error('forced receipt commit failure'); },
+    beforeReceiptCommit: async () => {
+      const journal = JSON.parse(await readFile(ctx.paths.transactionPath, 'utf8'));
+      assert.equal(journal.deletesLegacyMetadata, true);
+      assert.deepEqual(journal.previousMetadata, { present: true, value: false });
+      throw new Error('forced receipt commit failure');
+    },
   }), { code: 'MANAGED_ROLE_RECONCILE_FAILED' });
   assert.equal(writes.length, 2);
   assert.deepEqual(writes[1].edits, [
@@ -603,6 +610,7 @@ test('managed Rescue role preserves evidence when role-written recovery finds un
   assert.equal(writes, 0);
   assert.equal((await stat(ctx.paths.rolePath)).isFile(), true);
   assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+  assert.equal(Object.hasOwn(JSON.parse(await readFile(ctx.paths.transactionPath, 'utf8')), 'deletesLegacyMetadata'), false);
 });
 
 test('managed Rescue role rejects unsafe symlink installation paths', async () => {
@@ -742,6 +750,9 @@ test('managed Rescue role preserves all recovery evidence for mixed config after
   assert.equal(current.config.agents[MANAGED_ROLE_NAME].description, 'foreign concurrent role');
   assert.equal((await stat(ctx.paths.rolePath)).isFile(), true);
   assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+  const journal = JSON.parse(await readFile(ctx.paths.transactionPath, 'utf8'));
+  assert.equal(journal.deletesLegacyMetadata, false);
+  assert.equal(Object.hasOwn(journal, 'previousMetadata'), false);
   assert.ok(error.details.remaining.includes(ctx.paths.rolePath));
   assert.ok(error.details.remaining.includes(ctx.paths.receiptPath));
   assert.ok(error.details.remaining.includes(ctx.configTarget.filePath));
@@ -877,6 +888,45 @@ test('managed Rescue role recovers numeric-v1 interrupted journal previousMetada
   ]);
   assert.deepEqual(await readFile(ctx.paths.rolePath), seeded.roleBytes);
   assert.deepEqual(await readFile(ctx.paths.receiptPath), seeded.receiptBytes);
+  await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
+});
+
+test('managed Rescue role refreshes config and CAS version after old-journal recovery before migration', async () => {
+  const ctx = await fixture();
+  const seeded = await writeOwnedReceipt(ctx, { priorSpawnMetadataValue: true });
+  await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
+    schemaVersion: 1,
+    phase: 'config-written',
+    rolePath: ctx.paths.rolePath,
+    roleExisted: true,
+    previousRoleBase64: seeded.roleBytes.toString('base64'),
+    receiptExisted: true,
+    previousReceiptBase64: seeded.receiptBytes.toString('base64'),
+    intendedSha256: createHash('sha256').update(seeded.roleBytes).digest('hex'),
+    previousRegistration: { present: true, value: roleConfig(ctx.paths.rolePath) },
+    previousMetadata: { present: true, value: false },
+    previousAdditional: [],
+    desiredAdditional: [],
+    configVersion: 'v2',
+  })}\n`);
+  let current = configState({ role: roleConfig(ctx.paths.rolePath), metadata: false, version: 'v2' });
+  const expectedVersions = [];
+  const result = await reconcileManagedRescueRole({
+    ...common(ctx, current),
+    batchWrite: async (params) => {
+      expectedVersions.push(params.expectedVersion);
+      if (expectedVersions.length === 1) {
+        current = configState({ role: roleConfig(ctx.paths.rolePath), metadata: false, version: 'v3' });
+        return { version: 'v3' };
+      }
+      current = configState({ role: roleConfig(ctx.paths.rolePath), version: 'v4' });
+      return { version: 'v4' };
+    },
+    readConfig: async () => current,
+  });
+  assert.deepEqual(expectedVersions, ['v2', 'v3']);
+  assert.deepEqual(result, { status: 'ready', changed: true, rolePath: ctx.paths.rolePath });
+  assert.equal(JSON.parse(await readFile(ctx.paths.receiptPath, 'utf8')).schemaVersion, '1.0.0');
   await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
 });
 
@@ -1061,6 +1111,34 @@ test('managed Rescue role reports precise recovery for a malformed transaction j
   assert.equal(error.details.transactionPath, ctx.paths.transactionPath);
   assert.deepEqual(error.details.remaining, [ctx.paths.transactionPath]);
   assert.match(error.remedy, /restore.*remove.*transaction.*\$zcode:setup/is);
+  assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+});
+
+test('managed Rescue role rejects a non-boolean metadata intent without touching recovery evidence', async () => {
+  const ctx = await fixture();
+  await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
+  await writeFile(ctx.paths.rolePath, 'partial');
+  await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
+    schemaVersion: 1,
+    phase: 'role-written',
+    rolePath: ctx.paths.rolePath,
+    roleExisted: false,
+    receiptExisted: false,
+    intendedSha256: createHash('sha256').update('partial').digest('hex'),
+    previousRegistration: { present: false },
+    deletesLegacyMetadata: 'true',
+    previousMetadata: { present: false },
+    previousAdditional: [],
+    desiredAdditional: [],
+  })}\n`);
+  let writes = 0;
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, configState({})),
+    batchWrite: async () => { writes += 1; return {}; },
+    readConfig: async () => configState({}),
+  }), { code: 'MANAGED_ROLE_ROLLBACK_INCOMPLETE' });
+  assert.equal(writes, 0);
+  assert.equal(await readFile(ctx.paths.rolePath, 'utf8'), 'partial');
   assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
 });
 
