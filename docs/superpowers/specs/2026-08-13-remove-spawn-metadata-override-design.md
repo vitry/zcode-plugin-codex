@@ -127,7 +127,9 @@ and preserves durable history. No `$zcode:uninstall` skill is introduced.
 
 ### Permanent uninstall documentation
 
-The English and Chinese READMEs link to a repository-owned manual cleanup guide.
+The English and Chinese source READMEs link to a packaged
+`docs/manual-uninstall.md` cleanup guide. The package file allowlist includes
+that guide so installed plugin source remains self-documenting.
 The guide explains that raw removal has no cleanup hook and tells users to
 settle active jobs first. It separates:
 
@@ -172,7 +174,7 @@ Tests must follow red-green-refactor and cover:
   bootstrap;
 - Rescue contracts still prefer named `agent_type` and preserve generic
   fallback;
-- English, Chinese, marketplace, and release-contract documentation stays in
+- English, Chinese, package-file, and release-contract documentation stays in
   sync;
 - no uninstall skill or command is added.
 
@@ -191,6 +193,8 @@ Implementation occurs on an isolated branch. Independent subagents review:
    lifecycle conventions.
 
 All critical and important findings are resolved and re-reviewed. The branch is
-pushed and a PR is created against `main`. Marketplace snapshot regeneration,
-local reinstall, release packaging, and merge are deliberately deferred until
-the user merges the PR and requests the next packaging step.
+pushed and a PR is created against `main`. The generated
+`marketplace/plugins/zcode/` tree is not edited in this implementation PR.
+Marketplace snapshot regeneration, local reinstall, release packaging, and
+merge are deliberately deferred until the user merges the PR and requests the
+next packaging step.
