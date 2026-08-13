@@ -52,8 +52,12 @@ export async function runSetup(input) {
       readConfig: () => client.request('config/read', { cwd, includeLayers: true }),
     });
     if (role.status === 'restart-required') return reportAndPersist(input, discovery, auth, 'restart-required', 'managed-role-changed', false);
-    let status = 'ready'; if (edits.length) { await client.request('config/batchWrite', { edits, ...writeTarget, reloadUserConfig: true }); status = 'restart-required'; }
-    return reportAndPersist(input, discovery, auth, status, null, true);
+    if (edits.length && !role.changed) {
+      await client.request('config/batchWrite', { edits, ...writeTarget, reloadUserConfig: true });
+      const updated = await client.request('config/read', { cwd, includeLayers: true });
+      if (!editsAreEffective(updated?.config, edits)) throw configPostWriteInvalid();
+    }
+    return reportAndPersist(input, discovery, auth, 'ready', null, true);
   } finally { await client?.close().catch(() => {}); }
 }
 
@@ -93,6 +97,14 @@ async function hasEffectiveWritableRoot(config, dataRoot) {
 }
 export function platformPathEqual(left, right, platform = process.platform) { return platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right; }
 function dataRootOverridden() { return new PluginError('PLUGIN_DATA_ROOT_OVERRIDDEN', 'The plugin data root is configured but overridden by a higher-precedence Codex layer.', { category: 'configuration', remedy: 'Add the ZCode plugin data root to the higher-precedence sandbox_workspace_write.writable_roots setting, restart Codex, and rerun $zcode:setup.' }); }
+function configPostWriteInvalid() { return new PluginError('CODEX_CONFIG_POST_WRITE_INVALID', 'Codex did not expose the requested setup configuration after reloading it.', { category: 'configuration', remedy: 'Resolve the Codex configuration override and rerun $zcode:setup.' }); }
+function editsAreEffective(config, edits) { return edits.every((edit) => configValueContains(configLeaf(config, edit.keyPath), edit.value)); }
+function configLeaf(config, keyPath) { let value = config; for (const part of keyPath.split('.')) { if (!value || typeof value !== 'object' || !Object.hasOwn(value, part)) return undefined; value = value[part]; } return value; }
+function configValueContains(actual, expected) {
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected)) return Object.is(actual, expected);
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual)) return false;
+  return Object.entries(expected).every(([key, value]) => Object.hasOwn(actual, key) && configValueContains(actual[key], value));
+}
 function selectWritableUserLayer(layers) {
   const users = Array.isArray(layers) ? layers.filter((layer) => layer?.name?.type === 'user') : [];
   return users.find((layer) => layer.name.profile != null && Array.isArray(layer?.config?.sandbox_workspace_write?.writable_roots))
