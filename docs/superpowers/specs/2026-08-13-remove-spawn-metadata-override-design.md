@@ -60,9 +60,10 @@ host schema to manufacture a route.
 New managed Role receipts use the SemVer string
 `schemaVersion: "1.0.0"` and contain only the data needed to prove Role
 ownership. The existing numeric `schemaVersion: 1` format is a legacy,
-pre-SemVer migration input. A valid numeric-v1 receipt with
-`priorSpawnMetadataValue` identifies the owned legacy metadata migration.
-Interrupted numeric-v1 transaction journals remain recoverable.
+pre-SemVer migration input and identifies the owned legacy metadata migration.
+Its optional `priorSpawnMetadataValue` field records history only; it is not
+required because the flag may have been absent before the legacy setup wrote
+`false`. Interrupted numeric-v1 transaction journals remain recoverable.
 
 The receipt keeps one stable path. Successful reconciliation atomically
 replaces the legacy receipt; it does not create a version-suffixed copy or
