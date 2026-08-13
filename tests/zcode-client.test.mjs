@@ -236,6 +236,38 @@ test('typed operations use real 0.16.1 method and parameter shapes', async () =>
   });
 });
 
+test('ordinary session/create accepts the bounded 0.16.1 initial empty-session snapshot', async () => {
+  await withClient(async (client) => {
+    const created = await client.createSession({ workspace: '/repo' });
+    assert.equal(created.session.sessionId, 'session-1');
+    assert.equal(created.projection.sessionId, 'unknown');
+    assert.deepEqual(created.messages, []);
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' });
+});
+
+test('ordinary session/create rejects conflicting or non-empty unknown-projection snapshots', async (t) => {
+  for (const variant of ['conflict', 'non-idle', 'event-seq', 'messages', 'target']) await t.test(variant, () => withClient(async (client) => {
+    await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' });
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1', FAKE_ZCODE_EMPTY_SESSION_VARIANT: variant }));
+});
+
+test('ordinary empty session/create retains explicit session ID binding', async () => {
+  await withClient(async (client) => {
+    await assert.rejects(client.createSession({ workspace: '/repo', sessionId: 'requested-session' }), { code: 'ZCODE_OUTPUT_INVALID' });
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1', FAKE_ZCODE_SESSION_ID: 'different-session' });
+});
+
+test('the unknown-projection exception remains confined to session/create', async (t) => {
+  for (const method of ['session/read', 'session/resume', 'session/setModel', 'session/setThoughtLevel']) await t.test(method, () => withClient(async (client) => {
+    const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
+    const operation = method === 'session/read' ? () => client.readSession(sessionId)
+      : method === 'session/resume' ? () => client.resumeSession(sessionId)
+        : method === 'session/setModel' ? () => client.setModel(sessionId, { providerId: 'fake2', modelId: 'other' })
+          : () => client.setThoughtLevel(sessionId, 'high');
+    await assert.rejects(operation(), { code: 'ZCODE_OUTPUT_INVALID' });
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
+});
+
 test('session/create answers runtime preference requests with the exact string ID', async () => {
   await withClient(async (client, record) => {
     const created = await client.createSession({ workspace: '/repo' });

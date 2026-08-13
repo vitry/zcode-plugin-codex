@@ -162,11 +162,11 @@ export function validSnapshot(/** @type {any} */ value, /** @type {string} */ se
 }
 
 /**
- * Setup-only compatibility validation for ZCode 0.16.1's empty projection.
- * The normal validSnapshot relation remains strict for all runtime paths.
+ * Compatibility validation for ZCode 0.16.1's initial empty projection.
+ * The normal validSnapshot relation remains strict for reads and updates.
  * @param {any} value @param {string} sessionId @param {string} workspacePath
  */
-export function validSetupAuthProbeSnapshot(value, sessionId, workspacePath) {
+function validEmptyCreateSnapshot(value, sessionId, workspacePath) {
   return validSnapshotEnvelope(value)
     && text(sessionId) && value.session.sessionId === sessionId
     && value.session.workspace.workspacePath === workspacePath && value.session.workspace.workspaceKey === workspacePath
@@ -176,4 +176,12 @@ export function validSetupAuthProbeSnapshot(value, sessionId, workspacePath) {
     && (value.projection.target === undefined || value.projection.target === null)
     && value.projection.pendingPermissions.length === 0 && value.projection.activeToolCalls.length === 0 && value.projection.backgroundJobs.length === 0
     && value.runtime.eventSeq === 0 && value.runtime.pendingRequestIds.length === 0 && value.messages.length === 0;
+}
+
+export function validCreateSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId, /** @type {string} */ workspacePath) {
+  return validSnapshot(value, sessionId, workspacePath) || validEmptyCreateSnapshot(value, sessionId, workspacePath);
+}
+
+export function validSetupAuthProbeSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId, /** @type {string} */ workspacePath) {
+  return validEmptyCreateSnapshot(value, sessionId, workspacePath);
 }
