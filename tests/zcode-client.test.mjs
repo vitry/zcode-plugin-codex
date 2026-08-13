@@ -14,6 +14,7 @@ import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker,
 import { atomicWriteJson, withFileLock } from '../scripts/lib/fs.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
+import { validCreateSnapshot, validSnapshot } from '../scripts/lib/zcode-schema.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 const brokerStartupFault = fileURLToPath(new URL('./fixtures/broker-startup-fault.cjs', import.meta.url));
@@ -266,6 +267,35 @@ test('the unknown-projection exception remains confined to session/create', asyn
           : () => client.setThoughtLevel(sessionId, 'high');
     await assert.rejects(operation(), { code: 'ZCODE_OUTPUT_INVALID' });
   }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
+});
+
+test('the empty-create validator rejects every remaining non-empty or conflicting relation', async () => {
+  await withClient(async (client) => {
+    const empty = await client.createSession({ workspace: '/repo' });
+    const sessionId = empty.session.sessionId; const workspace = resolve('/repo');
+    assert.equal(validSnapshot(empty, sessionId, workspace), false, 'fixture must enter the empty-create branch');
+    const target = { sessionId, targetId: 'target-1', objective: 'not empty', summaryTitle: null, status: 'active', tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 };
+    const permission = { requestId: 'request-1', toolCallId: 'tool-1', toolName: 'write', reason: 'not empty', riskLevel: 'low', options: [{ optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } }], requestedAt: 1 };
+    const cases = [
+      ['non-idle session status', (value) => { value.session.status = 'running'; }, true],
+      ['non-null session target', (value) => { value.session.target = target; }, true],
+      ['pending projection permission', (value) => { value.projection.pendingPermissions = [permission]; }, true],
+      ['active projection tool call', (value) => { value.projection.activeToolCalls = [{ toolCallId: 'tool-1', toolName: 'write', status: 'pending' }]; }, true],
+      ['background projection job', (value) => { value.projection.backgroundJobs = [{}]; }, true],
+      ['pending runtime request', (value) => { value.runtime.pendingRequestIds = ['request-1']; }, true],
+      ['wrong workspace path', (value) => { value.session.workspace.workspacePath = '/wrong-workspace'; }, false],
+      ['wrong workspace key', (value) => { value.session.workspace.workspaceKey = '/wrong-workspace'; }, false],
+    ];
+    for (const [name, mutate, strictCompatible] of cases) {
+      const candidate = structuredClone(empty); mutate(candidate);
+      assert.equal(validSnapshot(candidate, sessionId, workspace), false, `${name}: strict branch must remain unavailable`);
+      assert.equal(validCreateSnapshot(candidate, sessionId, workspace), false, `${name}: empty-create branch must reject the mutation`);
+      if (strictCompatible) {
+        candidate.projection.sessionId = sessionId;
+        assert.equal(validSnapshot(candidate, sessionId, workspace), true, `${name}: mutation must otherwise retain a valid snapshot envelope`);
+      }
+    }
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' });
 });
 
 test('session/create answers runtime preference requests with the exact string ID', async () => {
