@@ -51,6 +51,22 @@ function configState({ path, role, metadata, layers, errors = [], version = 'v1'
   };
 }
 
+function layeredMetadataState(ctx, { targetMetadata, effectiveMetadata, targetVersion = 'v1' }) {
+  const targetConfig = {
+    agents: { [MANAGED_ROLE_NAME]: roleConfig(ctx.paths.rolePath) },
+    features: { multi_agent_v2: {} },
+  };
+  if (targetMetadata !== undefined) targetConfig.features.multi_agent_v2.hide_spawn_agent_metadata = targetMetadata;
+  return configState({
+    role: roleConfig(ctx.paths.rolePath),
+    metadata: effectiveMetadata,
+    layers: [
+      { name: { type: 'user', file: '/config.toml' }, version: targetVersion, config: targetConfig },
+      { name: { type: 'project', file: '/repo/.codex/config.toml' }, version: 'p1', config: { features: { multi_agent_v2: { hide_spawn_agent_metadata: effectiveMetadata } } } },
+    ],
+  });
+}
+
 async function writeOwnedReceipt(ctx, {
   schemaVersion = 1,
   roleBytes = Buffer.from(renderManagedRescueRole({ template, pluginRoot: ctx.pluginRoot })),
@@ -59,6 +75,7 @@ async function writeOwnedReceipt(ctx, {
   pluginRoot = ctx.pluginRoot,
   roleDigest = createHash('sha256').update(roleBytes).digest('hex'),
   configFilePath = ctx.configTarget.filePath,
+  mutatedAt = '2025-01-01T00:00:00.000Z',
   priorSpawnMetadataValue,
 } = {}) {
   await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
@@ -69,7 +86,7 @@ async function writeOwnedReceipt(ctx, {
     plugin: { identity: pluginIdentity, version: pluginVersion, root: pluginRoot },
     configTarget: { filePath: configFilePath },
     role: { path: ctx.paths.rolePath, schemaVersion: MANAGED_ROLE_SCHEMA_VERSION, sha256: roleDigest },
-    mutatedAt: '2025-01-01T00:00:00.000Z',
+    mutatedAt,
     ...(priorSpawnMetadataValue === undefined ? {} : { priorSpawnMetadataValue }),
   };
   await writeFile(ctx.paths.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
@@ -298,6 +315,53 @@ test('managed Rescue role fails closed when numeric-v1 target metadata drifted t
   await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
 });
 
+test('managed Rescue role migration authorizes only the exact target-layer false leaf', async (t) => {
+  await t.test('target false and effective true deletes the target leaf', async () => {
+    const ctx = await fixture();
+    await writeOwnedReceipt(ctx, { priorSpawnMetadataValue: true });
+    let current = layeredMetadataState(ctx, { targetMetadata: false, effectiveMetadata: true });
+    assert.equal(current.layers[0].name.file, '/config.toml');
+    assert.equal(current.layers[0].config.features.multi_agent_v2.hide_spawn_agent_metadata, false);
+    assert.equal(current.layers[1].config.features.multi_agent_v2.hide_spawn_agent_metadata, true);
+    assert.equal(current.config.features.multi_agent_v2.hide_spawn_agent_metadata, true);
+    let writtenEdits;
+    const result = await reconcileManagedRescueRole({
+      ...common(ctx, current),
+      batchWrite: async (params) => {
+        writtenEdits = params.edits;
+        current = layeredMetadataState(ctx, { targetMetadata: undefined, effectiveMetadata: true, targetVersion: 'v2' });
+        return { version: 'v2' };
+      },
+      readConfig: async () => current,
+    });
+    assert.deepEqual(result, { status: 'ready', changed: true, rolePath: ctx.paths.rolePath });
+    assert.deepEqual(writtenEdits, [
+      { keyPath: 'features.multi_agent_v2.hide_spawn_agent_metadata', value: null, mergeStrategy: 'upsert' },
+      { keyPath: `agents.${MANAGED_ROLE_NAME}`, value: roleConfig(ctx.paths.rolePath), mergeStrategy: 'upsert' },
+    ]);
+  });
+
+  await t.test('target true and effective false fails closed', async () => {
+    const ctx = await fixture();
+    const before = await writeOwnedReceipt(ctx, { priorSpawnMetadataValue: false });
+    const current = layeredMetadataState(ctx, { targetMetadata: true, effectiveMetadata: false });
+    assert.equal(current.layers[0].name.file, '/config.toml');
+    assert.equal(current.layers[0].config.features.multi_agent_v2.hide_spawn_agent_metadata, true);
+    assert.equal(current.layers[1].config.features.multi_agent_v2.hide_spawn_agent_metadata, false);
+    assert.equal(current.config.features.multi_agent_v2.hide_spawn_agent_metadata, false);
+    let writes = 0;
+    await assert.rejects(reconcileManagedRescueRole({
+      ...common(ctx, current),
+      batchWrite: async () => { writes += 1; return {}; },
+      readConfig: async () => current,
+    }), { code: 'MANAGED_ROLE_CONFLICT' });
+    assert.equal(writes, 0);
+    assert.deepEqual(await readFile(ctx.paths.rolePath), before.roleBytes);
+    assert.deepEqual(await readFile(ctx.paths.receiptPath), before.receiptBytes);
+    await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
+  });
+});
+
 test('managed Rescue role fresh install never edits unrelated host metadata', async (t) => {
   for (const metadata of [false, true]) await t.test(String(metadata), async () => {
     const ctx = await fixture();
@@ -325,6 +389,22 @@ test('managed Rescue role current receipt is ready regardless of effective host 
       ...common(ctx, current), batchWrite: async () => { throw new Error('must not write'); }, readConfig: async () => current,
     });
     assert.deepEqual(result, { status: 'ready', changed: false, rolePath: ctx.paths.rolePath });
+  });
+});
+
+test('managed Rescue role current receipt ignores equal and later mutation watermarks', async (t) => {
+  const sessionStartedAt = '2025-01-01T00:00:00.000Z';
+  for (const mutatedAt of [sessionStartedAt, '2025-01-01T00:00:01.000Z']) await t.test(mutatedAt, async () => {
+    const ctx = await fixture();
+    await writeOwnedReceipt(ctx, { schemaVersion: '1.0.0', mutatedAt });
+    const current = configState({ role: roleConfig(ctx.paths.rolePath) });
+    const input = { ...common(ctx, current), sessionStartedAt };
+    assert.equal((await inspectManagedRescueRole(input)).status, 'ready');
+    assert.deepEqual(await reconcileManagedRescueRole({
+      ...input,
+      batchWrite: async () => { throw new Error('must not write'); },
+      readConfig: async () => current,
+    }), { status: 'ready', changed: false, rolePath: ctx.paths.rolePath });
   });
 });
 
@@ -358,11 +438,19 @@ test('managed Rescue role classifies a numeric-v1 owned receipt as upgrade-requi
   assert.equal((await inspectManagedRescueRole(common(ctx, current))).status, 'upgrade-required');
 });
 
-test('managed Rescue role rejects malformed and unknown receipt schemas', async (t) => {
+test('managed Rescue role rejects non-exact receipt schemas and legacy fields', async (t) => {
   const ctx = await fixture();
   const current = configState({ role: roleConfig(ctx.paths.rolePath), metadata: false });
-  for (const schemaVersion of [0, 2, '1', '1.0', '2.0.0']) await t.test(String(schemaVersion), async () => {
+  for (const schemaVersion of [0, 2, '1', '1.0', '1.0.1', '1.1.0', '2.0.0']) await t.test(`schema ${schemaVersion}`, async () => {
     await writeOwnedReceipt(ctx, { schemaVersion });
+    assert.equal((await inspectManagedRescueRole(common(ctx, current))).status, 'drift');
+  });
+  await t.test('current receipt with legacy prior metadata field', async () => {
+    await writeOwnedReceipt(ctx, { schemaVersion: '1.0.0', priorSpawnMetadataValue: false });
+    assert.equal((await inspectManagedRescueRole(common(ctx, current))).status, 'drift');
+  });
+  await t.test('numeric-v1 receipt with non-boolean prior metadata field', async () => {
+    await writeOwnedReceipt(ctx, { priorSpawnMetadataValue: 'false' });
     assert.equal((await inspectManagedRescueRole(common(ctx, current))).status, 'drift');
   });
 });
