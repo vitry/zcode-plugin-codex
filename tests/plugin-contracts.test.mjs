@@ -230,7 +230,7 @@ test('package metadata exposes Node 22.13 and the native lock dependency', () =>
 test('package test scripts do not depend on shell glob expansion', () => {
   const packageJson = readJson('package.json');
 
-  assert.equal(packageJson.scripts?.test, 'node --test && node --test tests/integration/marketplace-snapshot-build.mjs');
+  assert.equal(packageJson.scripts?.test, 'node --test --test-concurrency=1 && node --test tests/integration/marketplace-snapshot-build.mjs');
   assert.equal(
     packageJson.scripts?.['test:unit'],
     'node --test tests/plugin-contracts.test.mjs',

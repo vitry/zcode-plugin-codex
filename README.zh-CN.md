@@ -17,7 +17,7 @@ codex plugin marketplace add vitry/zcode-plugin-codex --ref marketplace
 codex plugin add zcode@vitry
 ```
 
-发布 workflow 会在该分支生成 `.agents/plugins/marketplace.json` 和带生产依赖的 `plugins/zcode/`。安装后重启 Codex，再在目标工作区运行 `$zcode:setup`。首次运行可能把 marketplace 专属的数据目录加入 Codex writable roots；若返回 `restart-required`，重启 Codex 后再次运行 setup。不要把 hooks 从插件缓存复制到别处。
+发布 workflow 会在该分支生成 `.agents/plugins/marketplace.json` 和带生产依赖的 `plugins/zcode/`。安装后重启 Codex 以加载插件，再在目标工作区运行 `$zcode:setup`。Setup 通常在这一次运行中完成受管 Role 协调。首次运行也可能先把 marketplace 专属的数据目录加入 Codex writable roots；这个 writable-root bootstrap 是唯一独立的 setup 重启情形，若返回 `restart-required`，重启 Codex 后再次运行 `$zcode:setup`。不要把 hooks 从插件缓存复制到别处。
 
 插件依次检查 `ZCODE_PATH`、`PATH` 中的 `zcode`、平台目录，以及 macOS 内置路径 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`。Setup 会报告缺失、版本过低、未配置、未认证或 hook 不可信，但不会下载 ZCode、配置 provider，也不会代替用户登录。
 
@@ -40,7 +40,7 @@ ZCode Desktop 与 ZCode CLI 分别保存 model provider 设置。运行 `$zcode:
 
 ## 隔离的 Rescue Role 与检查方式
 
-`$zcode:setup` 在稳定的 plugin data 根目录下管理一个带 digest 收据的 `zcode-rescue` Role，而不是把它写进带版本号的插件缓存。Setup 只写该 Role 所需的精确 user-config 注册项和 spawn-metadata 配置叶。首次安装或受管升级会返回 `restart-required`；请重启 Codex，并在新 session 中再次运行 `$zcode:setup` 后再使用 Rescue。Setup 不会接管或覆盖冲突：外部 `zcode-rescue` 注册、同名项目 Role、或更高优先级 override 都会 fail closed 并给出 setup 诊断。收据、Role 文件和有效注册必须精确一致。
+`$zcode:setup` 在稳定的 plugin data 根目录下管理一个带 digest 收据的 `zcode-rescue` Role，而不是把它写进带版本号的插件缓存。Setup 只写精确的 user-config Role 注册项，并在一次 setup 中完成首次安装或受管升级；具有完整所有权证据的 numeric-v1 收据也在同一次运行中迁移。ZCode 不拥有 `hide_spawn_agent_metadata`；Codex host 负责协作工具 schema，包括是否提供 `agent_type`。只有 numeric-v1 收据、Role 字节和精确注册能证明旧版 ZCode setup 写入了目标层 `false` 时，setup 才移除该旧配置叶。Setup 不会接管或覆盖冲突：外部 `zcode-rescue` 注册、同名项目 Role、或更高优先级 override 都会 fail closed 并给出 setup 诊断。收据、Role 文件和有效注册必须精确一致。
 
 前台 Rescue 只在一个原生子线程中运行常量 forwarder。host 支持 `agent_type` 时，Codex 选择具名 `zcode-rescue` Role。generic child 只是 host-only 兼容回退：仅当当前 spawn schema 缺少 `agent_type`，或能证明该字段在任何 child 启动前已被拒绝时才允许；Role 缺失、被 shadow、漂移或属于外部配置时绝不回退。父线程只运行只读 Role preflight、显示原生生命周期并返回 child 的最终公开 stdout；它不会 inline 执行 Rescue，也不会把 child stderr、工具输出、原始 conversation frame 或中间进度复制到父线程。
 
@@ -50,7 +50,7 @@ ZCode 支持时，child 会订阅 online conversation progress。allowlist 内�
 
 后台语义保持不变：child 只负责预留生产 background worker 并返回公开 job ID，一次性 capability 仍只经 production-owned protected descriptor 传输。持久恢复继续使用 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。普通 steering、等待超时或父/child 丢失都不授权替代执行。
 
-Codex 0.147 是本次发布唯一被固定并纳入原生 Rescue installed-host qualification suite 的版本线。只有严格认证套件完整成功的 build 才算 qualified；默认的机器可读 `unqualified` 结果不是兼容性证据。其他 Codex 版本在各自的 installed qualification 成功前不宣称兼容。uninstall 插件不会自动删除稳定私有数据、受管 Role 收据/文件、job 历史或精确 user-config 配置叶。请先结束或取消 owner job，再审查这些卸载残留，只移除能证明属于本插件的条目；绝不能删除有冲突的用户或项目 Role。
+Codex 0.147 是本次发布唯一被固定并纳入原生 Rescue installed-host qualification suite 的版本线。只有严格认证套件完整成功的 build 才算 qualified；默认的机器可读 `unqualified` 结果不是兼容性证据。其他 Codex 版本在各自的 installed qualification 成功前不宣称兼容。uninstall 插件不会自动删除稳定私有数据、受管 Role 收据/文件、job 历史或精确 user-config 配置叶。请先结束或取消 owner job，再按[手动卸载与残留状态清理指南](docs/manual-uninstall.md)审查并移除能证明属于本插件的条目；绝不能删除有冲突的用户或项目 Role。
 
 ## 模型
 

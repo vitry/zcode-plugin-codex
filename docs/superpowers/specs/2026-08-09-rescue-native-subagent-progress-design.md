@@ -89,6 +89,8 @@ The rejected alternatives are:
   relayed update enters the parent rollout and recreates bounded context
   pollution with additional orchestration and failure modes.
 
+> **Superseded lifecycle note (2026-08-13):** The Role/spawn-metadata ownership and restart sections below preserve the original design history but are superseded by [Remove the spawn-metadata override](2026-08-13-remove-spawn-metadata-override-design.md). Current setup does not own the host flag and reconciles the Role in one run; only writable-root bootstrap remains a separate restart case.
+
 ## Managed Agent Role
 
 ### Canonical artifact

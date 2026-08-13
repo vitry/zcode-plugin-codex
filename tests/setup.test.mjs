@@ -1,5 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, mkdir, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +11,7 @@ import { spawn } from 'node:child_process';
 import { parseArgs } from '../scripts/lib/args.mjs';
 import { diagnoseZCodeAuth, pluginRootFromModuleUrl, runSetup } from '../scripts/lib/codex-config.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
-import { MANAGED_ROLE_DESCRIPTION, managedRolePaths } from '../scripts/lib/managed-agent-role.mjs';
+import { MANAGED_ROLE_DESCRIPTION, MANAGED_ROLE_NAME, MANAGED_ROLE_SCHEMA_VERSION, managedRolePaths, renderManagedRescueRole } from '../scripts/lib/managed-agent-role.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { recordSession, resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
@@ -47,6 +48,138 @@ async function recordSetupSession(ctx, sessionId, prompt) {
   });
 }
 
+async function currentRoleFallbackFixture({ reviewGate } = {}) {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  assert.equal((await runSetup(ctx.options)).status, 'ready');
+  const paths = managedRolePaths(await realpath(ctx.dataRoot));
+  const configFile = join(ctx.dataRoot, 'config.toml');
+  const managed = { description: MANAGED_ROLE_DESCRIPTION, config_file: paths.rolePath };
+  const targetConfig = { features: { hooks: false }, agents: { [MANAGED_ROLE_NAME]: managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] }, unrelated: { preserved: true } };
+  const before = { config: structuredClone(targetConfig), origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-2', config: structuredClone(targetConfig) }] };
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
+  await writeFile(join(storage.directory, 'config/review-gate.json'), `${JSON.stringify({ version: 1, enabled: true, setupReady: true, status: 'ready' })}\n`);
+  await writeFile(ctx.record, '');
+  await writeFile(`${ctx.record}.config.json`, JSON.stringify(before));
+  const pendingHooks = hookMetadata(root, 'untrusted');
+  const trustedHooks = hookMetadata(root, 'trusted');
+  const options = {
+    ...ctx.options,
+    ...(reviewGate === undefined ? {} : { reviewGate }),
+    env: {
+      ...ctx.options.env,
+      FAKE_CODEX_CONFIG_RESULT: JSON.stringify(before),
+      FAKE_CODEX_HOOKS_RESULTS_JSON: JSON.stringify([
+        { data: [{ cwd: ctx.cwd, errors: [], warnings: [], hooks: pendingHooks }] },
+        { data: [{ cwd: ctx.cwd, errors: [], warnings: [], hooks: trustedHooks }] },
+      ]),
+    },
+  };
+  return { ctx, paths, configFile, managed, before, targetConfig, storage, options, pendingHooks, trustedHooks };
+}
+
+function configuredFallbackState(fixture, { targetConfig, effectiveConfig = targetConfig, version = 'version-3', extraLayers = [], errors } = {}) {
+  return {
+    config: structuredClone(effectiveConfig),
+    origins: {},
+    ...(errors === undefined ? {} : { errors }),
+    layers: [{ name: { type: 'user', file: fixture.configFile }, version, config: structuredClone(targetConfig) }, ...extraLayers],
+  };
+}
+
+async function assertGateConfiguring(fixture, enabled = true) {
+  assert.deepEqual(JSON.parse(await readFile(join(fixture.storage.directory, 'config/review-gate.json'), 'utf8')), {
+    version: 1, enabled, setupReady: false, status: 'configuring',
+  });
+}
+
+async function managedActivationFixture(kind, failure) {
+  const ctx = await context();
+  const paths = managedRolePaths(await realpath(ctx.dataRoot));
+  const configFile = join(ctx.dataRoot, 'config.toml');
+  const managed = { description: MANAGED_ROLE_DESCRIPTION, config_file: paths.rolePath };
+  const pendingHooks = hookMetadata(root, 'untrusted');
+  const trustedHooks = hookMetadata(root, 'trusted');
+  const trustState = Object.fromEntries(pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }]));
+  const beforeTarget = { unrelated: { preserved: true }, features: { hooks: false }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } };
+  let legacyRoleBytes = null;
+  let legacyReceiptBytes = null;
+  if (kind === 'migration') {
+    await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
+    const template = await readFile(join(root, 'agents/zcode-rescue.toml.template'), 'utf8');
+    legacyRoleBytes = Buffer.from(renderManagedRescueRole({ template, pluginRoot: await realpath(root) }));
+    await writeFile(paths.rolePath, legacyRoleBytes);
+    legacyReceiptBytes = Buffer.from(`${JSON.stringify({
+      schemaVersion: 1,
+      roleName: MANAGED_ROLE_NAME,
+      plugin: { identity: 'zcode@vitry', version: '0.1.0', root: await realpath(root) },
+      configTarget: { filePath: configFile },
+      role: { path: paths.rolePath, schemaVersion: MANAGED_ROLE_SCHEMA_VERSION, sha256: createHash('sha256').update(legacyRoleBytes).digest('hex') },
+      mutatedAt: '2025-01-01T00:00:00.000Z',
+      priorSpawnMetadataValue: true,
+    }, null, 2)}\n`);
+    await writeFile(paths.receiptPath, legacyReceiptBytes);
+    beforeTarget.agents = { [MANAGED_ROLE_NAME]: managed };
+    beforeTarget.features.multi_agent_v2 = { hide_spawn_agent_metadata: false };
+  }
+  const before = { config: structuredClone(beforeTarget), origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: structuredClone(beforeTarget) }] };
+  const afterTarget = structuredClone(beforeTarget);
+  afterTarget.features = { hooks: true, ...(kind === 'migration' ? { multi_agent_v2: {} } : {}) };
+  afterTarget.hooks = { state: trustState };
+  afterTarget.agents = { [MANAGED_ROLE_NAME]: managed };
+  const afterEffective = structuredClone(afterTarget);
+  const extraLayers = [];
+  if (failure === 'effective-override') {
+    afterEffective.features.hooks = false;
+    extraLayers.push({ name: { type: 'project', file: join(ctx.cwd, '.codex/config.toml') }, version: 'project-1', config: { features: { hooks: false } } });
+  }
+  const after = { config: afterEffective, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-2', config: afterTarget }, ...extraLayers] };
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
+  await mkdir(join(storage.directory, 'config'), { recursive: true });
+  await writeFile(join(storage.directory, 'config/review-gate.json'), `${JSON.stringify({ version: 1, enabled: true, setupReady: true, status: 'ready' })}\n`);
+  return {
+    kind, ctx, paths, configFile, managed, pendingHooks, trustedHooks, before, after, storage,
+    options: {
+      ...ctx.options,
+      env: {
+        ...ctx.options.env,
+        FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([before, after, after, after, before]),
+        FAKE_CODEX_BATCH_RESULTS_JSON: JSON.stringify([
+          { filePath: configFile, status: 'ok', version: 'version-2' },
+          { filePath: configFile, status: 'ok', version: 'version-1' },
+        ]),
+        FAKE_CODEX_HOOKS_RESULTS_JSON: JSON.stringify([
+          { data: [{ cwd: ctx.cwd, errors: [], warnings: [], hooks: pendingHooks }] },
+          { data: [{ cwd: ctx.cwd, errors: [], warnings: [], hooks: failure === 'runtime-untrusted' ? pendingHooks : trustedHooks }] },
+        ]),
+      },
+    }, legacyRoleBytes, legacyReceiptBytes,
+  };
+}
+
+async function retryManagedActivation(fixture) {
+  await writeFile(fixture.ctx.record, '');
+  await writeFile(`${fixture.ctx.record}.config.json`, JSON.stringify(fixture.before));
+  const report = await runSetup({
+    ...fixture.ctx.options,
+    env: {
+      ...fixture.ctx.options.env,
+      FAKE_CODEX_CONFIG_RESULTS_JSON: undefined,
+      FAKE_CODEX_BATCH_RESULTS_JSON: undefined,
+      FAKE_CODEX_BATCH_VERSION: 'version-2',
+      FAKE_CODEX_HOOKS_RESULTS_JSON: JSON.stringify([
+        { data: [{ cwd: fixture.ctx.cwd, errors: [], warnings: [], hooks: fixture.pendingHooks }] },
+        { data: [{ cwd: fixture.ctx.cwd, errors: [], warnings: [], hooks: fixture.trustedHooks }] },
+      ]),
+    },
+  });
+  assert.equal(report.status, 'ready', JSON.stringify(report));
+  const calls = (await readFile(fixture.ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const batches = calls.filter((call) => call.method === 'config/batchWrite');
+  assert.equal(batches.length, 1);
+  assert.ok(batches[0].params.edits.some((edit) => edit.keyPath === `agents.${MANAGED_ROLE_NAME}`));
+  assert.equal(batches[0].params.edits.some((edit) => edit.keyPath === 'features.multi_agent_v2.hide_spawn_agent_metadata'), fixture.kind === 'migration');
+}
+
 test('compact SessionStart preserves the original trusted session freshness and source', async () => {
   const ctx = await context();
   await recordSession(ctx.dataRoot, { session_id: 'compact-session', cwd: ctx.cwd, source: 'startup' });
@@ -59,54 +192,160 @@ test('compact SessionStart preserves the original trusted session freshness and 
 
 test('setup uses current config/read, hooks/list and one atomic exact trust/features batch write', async () => {
   const ctx = await context(); const report = await runSetup({ ...ctx.options, reviewGate: true });
-  assert.equal(report.status, 'restart-required', JSON.stringify(report)); assert.equal(report.zcode.version, '0.16.1'); assert.equal(report.auth.ready, true); assert.equal(report.reviewGate.enabled, true);
+  assert.equal(report.status, 'ready', JSON.stringify(report)); assert.equal(report.zcode.version, '0.16.1'); assert.equal(report.auth.ready, true); assert.equal(report.reviewGate.enabled, true);
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse).filter((call) => call.method);
-  assert.deepEqual(calls.map((call) => call.method), ['initialize', 'initialized', 'config/read', 'hooks/list', 'config/batchWrite', 'config/read']);
+  assert.deepEqual(calls.map((call) => call.method), ['initialize', 'initialized', 'config/read', 'hooks/list', 'config/batchWrite', 'config/read', 'hooks/list']);
   assert.deepEqual(calls[2].params, { cwd: ctx.cwd, includeLayers: true }); assert.deepEqual(calls[3].params, { cwds: [ctx.cwd] });
-  const params = calls[4].params; assert.equal(params.expectedVersion, 'version-1'); assert.equal(params.reloadUserConfig, true); assert.equal(params.edits.length, 4);
+  const params = calls[4].params; assert.equal(params.expectedVersion, 'version-1'); assert.equal(params.reloadUserConfig, true); assert.equal(params.edits.length, 3);
   assert.deepEqual(params.edits[0], { keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' });
   assert.equal(params.edits[1].keyPath, 'hooks.state'); assert.equal(params.edits[1].mergeStrategy, 'upsert');
   assert.deepEqual(Object.keys(params.edits[1].value), ['plugin-hook-0', 'plugin-hook-1', 'plugin-hook-2', 'plugin-hook-3', 'plugin-hook-4', 'plugin-hook-5']);
   assert.deepEqual(params.edits[1].value['plugin-hook-0'], { trusted_hash: '0'.repeat(64) });
   const rolePath = managedRolePaths(await realpath(ctx.dataRoot)).rolePath;
   assert.deepEqual(params.edits[2], { keyPath: 'agents.zcode-rescue', value: { description: MANAGED_ROLE_DESCRIPTION, config_file: rolePath }, mergeStrategy: 'upsert' });
-  assert.deepEqual(params.edits[3], { keyPath: 'features.multi_agent_v2.hide_spawn_agent_metadata', value: false, mergeStrategy: 'upsert' });
+  assert.ok(!params.edits.some((edit) => edit.keyPath === 'features.multi_agent_v2.hide_spawn_agent_metadata'));
   assert.doesNotMatch(JSON.stringify(params), /plugin_hooks/); assert.doesNotMatch(JSON.stringify(params), /unrelated/);
-  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd }); const gate = JSON.parse(await readFile(join(storage.directory, 'config/review-gate.json'), 'utf8')); assert.deepEqual(gate, { version: 1, enabled: true, setupReady: false, status: 'restart-required' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd }); const gate = JSON.parse(await readFile(join(storage.directory, 'config/review-gate.json'), 'utf8')); assert.deepEqual(gate, { version: 1, enabled: true, setupReady: true, status: 'ready' });
 });
 
-test('managed Rescue role requires a fresh setup rerun after installation before reporting ready', async () => {
+test('managed Rescue role reports ready in the same setup reconciliation', async () => {
   const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
-  const first = await runSetup(ctx.options);
-  assert.equal(first.status, 'restart-required');
+  const report = await runSetup(ctx.options);
+  assert.equal(report.status, 'ready');
   const paths = managedRolePaths(await realpath(ctx.dataRoot));
   assert.match(await readFile(paths.rolePath, 'utf8'), /invoke rescue/);
   const receipt = JSON.parse(await readFile(paths.receiptPath, 'utf8'));
   assert.equal(receipt.role.path, paths.rolePath);
-
-  const configFile = join(ctx.dataRoot, 'config.toml');
-  const managed = { description: MANAGED_ROLE_DESCRIPTION, config_file: paths.rolePath };
-  const configured = {
-    config: { features: { hooks: true, multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { 'zcode-rescue': managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } },
-    origins: {},
-    layers: [{ name: { type: 'user', file: configFile }, version: 'version-2', config: { features: { hooks: true, multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { 'zcode-rescue': managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } } }],
-  };
-  await writeFile(ctx.record, '');
-  const second = await runSetup({ ...ctx.options, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configured) } });
-  assert.equal(second.status, 'restart-required');
-  const fresh = await runSetup({ ...ctx.options, sessionStartedAt: '2999-01-01T00:00:00.000Z', env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(configured) } });
-  assert.equal(fresh.status, 'ready');
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
-  assert.ok(!calls.some((call) => call.method === 'config/batchWrite'));
+  assert.equal(calls.filter((call) => call.method === 'config/batchWrite').length, 1);
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
   assert.equal(JSON.parse(await readFile(join(storage.directory, 'config/review-gate.json'), 'utf8')).setupReady, true);
 });
 
+test('setup migrates a proven numeric-v1 Role and removes only the target legacy metadata leaf in one run', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  const paths = managedRolePaths(await realpath(ctx.dataRoot));
+  await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
+  const template = await readFile(join(root, 'agents/zcode-rescue.toml.template'), 'utf8');
+  const roleBytes = Buffer.from(renderManagedRescueRole({ template, pluginRoot: await realpath(root) }));
+  await writeFile(paths.rolePath, roleBytes);
+  const configFile = join(ctx.dataRoot, 'config.toml');
+  const managed = { description: MANAGED_ROLE_DESCRIPTION, config_file: paths.rolePath };
+  await writeFile(paths.receiptPath, `${JSON.stringify({
+    schemaVersion: 1,
+    roleName: MANAGED_ROLE_NAME,
+    plugin: { identity: 'zcode@vitry', version: '0.1.0', root: await realpath(root) },
+    configTarget: { filePath: configFile },
+    role: { path: paths.rolePath, schemaVersion: MANAGED_ROLE_SCHEMA_VERSION, sha256: createHash('sha256').update(roleBytes).digest('hex') },
+    mutatedAt: '2025-01-01T00:00:00.000Z',
+    priorSpawnMetadataValue: true,
+  }, null, 2)}\n`);
+  const beforeLayer = { unrelated: { preserved: true }, features: { hooks: true, multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { [MANAGED_ROLE_NAME]: managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } };
+  const before = { config: beforeLayer, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: beforeLayer }] };
+  const report = await runSetup({ ...ctx.options, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(before), FAKE_CODEX_CONFIG_RESULTS_JSON: undefined } });
+  assert.equal(report.status, 'ready', JSON.stringify(report));
+  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const batch = calls.find((call) => call.method === 'config/batchWrite');
+  assert.deepEqual(batch.params.edits, [
+    { keyPath: 'features.multi_agent_v2.hide_spawn_agent_metadata', value: null, mergeStrategy: 'upsert' },
+    { keyPath: `agents.${MANAGED_ROLE_NAME}`, value: managed, mergeStrategy: 'upsert' },
+  ]);
+  const persistedConfig = JSON.parse(await readFile(`${ctx.record}.config.json`, 'utf8'));
+  assert.deepEqual(persistedConfig.layers[0].config.unrelated, { preserved: true });
+  assert.equal(Object.hasOwn(persistedConfig.layers[0].config.features.multi_agent_v2, 'hide_spawn_agent_metadata'), false);
+  assert.equal(JSON.parse(await readFile(paths.receiptPath, 'utf8')).schemaVersion, '1.0.0');
+});
+
 test('already enabled and trusted hooks still install the managed Rescue role before readiness', async () => {
   const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runSetup(ctx.options);
-  assert.equal(report.status, 'restart-required'); const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse); const batch = calls.find((call) => call.method === 'config/batchWrite');
-  assert.deepEqual(batch.params.edits.map((edit) => edit.keyPath), ['agents.zcode-rescue', 'features.multi_agent_v2.hide_spawn_agent_metadata']);
+  assert.equal(report.status, 'ready'); const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse); const batch = calls.find((call) => call.method === 'config/batchWrite');
+  assert.deepEqual(batch.params.edits.map((edit) => edit.keyPath), ['agents.zcode-rescue']);
   const zcodeCalls = (await readFile(ctx.zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.deepEqual(zcodeCalls.map((call) => call.method), ['session/create', 'session/stop']);
+});
+
+test('current Role writes pending hooks and trust once, reloads them, and remains ready', async () => {
+  const fixture = await currentRoleFallbackFixture();
+  const desired = structuredClone(fixture.targetConfig);
+  desired.features.hooks = true;
+  desired.hooks = { state: Object.fromEntries(fixture.pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])) };
+  const after = configuredFallbackState(fixture, { targetConfig: desired });
+  const report = await runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, after]), FAKE_CODEX_BATCH_VERSION: 'version-3' } });
+  assert.equal(report.status, 'ready', JSON.stringify(report));
+  const calls = (await readFile(fixture.ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.deepEqual(calls.filter((call) => call.method).map((call) => call.method), ['initialize', 'initialized', 'config/read', 'hooks/list', 'config/batchWrite', 'config/read', 'hooks/list']);
+  assert.deepEqual(calls.find((call) => call.method === 'config/batchWrite').params.edits.map((edit) => edit.keyPath), ['features.hooks', 'hooks.state']);
+});
+
+test('hooks/trust-only fallback fails closed unless target config, CAS version, and runtime hook trust all activate', async (t) => {
+  await t.test('silent no-op', async () => {
+    const fixture = await currentRoleFallbackFixture();
+    await assert.rejects(runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, fixture.before]), FAKE_CODEX_BATCH_VERSION: 'version-2' } }), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
+    await assertGateConfiguring(fixture);
+  });
+
+  await t.test('effective config satisfied only by a higher layer', async () => {
+    const fixture = await currentRoleFallbackFixture();
+    const target = structuredClone(fixture.targetConfig);
+    const effective = structuredClone(target);
+    effective.features.hooks = true;
+    effective.hooks = { state: Object.fromEntries(fixture.pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])) };
+    const higher = { name: { type: 'project', file: join(fixture.ctx.cwd, '.codex/config.toml') }, version: 'project-1', config: { features: { hooks: true }, hooks: effective.hooks } };
+    const after = configuredFallbackState(fixture, { targetConfig: target, effectiveConfig: effective, extraLayers: [higher] });
+    await assert.rejects(runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, after]), FAKE_CODEX_BATCH_VERSION: 'version-3' } }), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
+    await assertGateConfiguring(fixture);
+  });
+
+  for (const [name, mutate] of [
+    ['malformed reload', (fixture) => ({ config: structuredClone(fixture.targetConfig), origins: {}, layers: null })],
+    ['top-level config errors', (fixture) => configuredFallbackState(fixture, { targetConfig: fixture.targetConfig, errors: [{ message: 'load failed' }] })],
+    ['target-layer config errors', (fixture) => { const state = configuredFallbackState(fixture, { targetConfig: fixture.targetConfig }); state.layers[0].errors = [{ message: 'layer failed' }]; return state; }],
+  ]) await t.test(name, async () => {
+    const fixture = await currentRoleFallbackFixture();
+    await assert.rejects(runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, mutate(fixture)]), FAKE_CODEX_BATCH_VERSION: 'version-3' } }), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
+    await assertGateConfiguring(fixture);
+  });
+
+  await t.test('stale batch result version preserves an explicit disabled gate preference', async () => {
+    const fixture = await currentRoleFallbackFixture({ reviewGate: false });
+    const desired = structuredClone(fixture.targetConfig); desired.features.hooks = true;
+    desired.hooks = { state: Object.fromEntries(fixture.pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])) };
+    const after = configuredFallbackState(fixture, { targetConfig: desired });
+    await assert.rejects(runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, after]), FAKE_CODEX_BATCH_VERSION: 'stale-version' } }), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
+    await assertGateConfiguring(fixture, false);
+  });
+
+  await t.test('runtime hooks remain untrusted after config reload', async () => {
+    const fixture = await currentRoleFallbackFixture();
+    const desired = structuredClone(fixture.targetConfig); desired.features.hooks = true;
+    desired.hooks = { state: Object.fromEntries(fixture.pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])) };
+    const after = configuredFallbackState(fixture, { targetConfig: desired });
+    const untrusted = { data: [{ cwd: fixture.ctx.cwd, errors: [], warnings: [], hooks: fixture.pendingHooks }] };
+    await assert.rejects(runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, after]), FAKE_CODEX_BATCH_VERSION: 'version-3', FAKE_CODEX_HOOKS_RESULTS_JSON: JSON.stringify([untrusted, untrusted]) } }), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
+    await assertGateConfiguring(fixture);
+  });
+});
+
+test('fresh and migrated Role activation failures roll back before receipt commit and permit retry', async (t) => {
+  for (const kind of ['fresh', 'migration']) for (const failure of ['effective-override', 'runtime-untrusted']) await t.test(`${kind}: ${failure}`, async () => {
+    const fixture = await managedActivationFixture(kind, failure);
+    await assert.rejects(runSetup(fixture.options), { code: 'MANAGED_ROLE_RECONCILE_FAILED' });
+    if (kind === 'fresh') {
+      await assert.rejects(readFile(fixture.paths.rolePath), { code: 'ENOENT' });
+      await assert.rejects(readFile(fixture.paths.receiptPath), { code: 'ENOENT' });
+    } else {
+      assert.deepEqual(await readFile(fixture.paths.rolePath), fixture.legacyRoleBytes);
+      assert.deepEqual(await readFile(fixture.paths.receiptPath), fixture.legacyReceiptBytes);
+      const restored = JSON.parse(await readFile(`${fixture.ctx.record}.config.json`, 'utf8'));
+      assert.equal(restored.layers[0].config.features.multi_agent_v2.hide_spawn_agent_metadata, false);
+    }
+    await assert.rejects(readFile(fixture.paths.transactionPath), { code: 'ENOENT' });
+    const calls = (await readFile(fixture.ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    const batches = calls.filter((call) => call.method === 'config/batchWrite');
+    assert.equal(batches.length, 2, 'managed reconciliation must own the activation rollback');
+    assert.ok(!batches[0].params.edits.some((edit) => edit.keyPath === 'features.multi_agent_v2.hide_spawn_agent_metadata' && edit.value === false));
+    assert.deepEqual(JSON.parse(await readFile(join(fixture.storage.directory, 'config/review-gate.json'), 'utf8')), { version: 1, enabled: true, setupReady: false, status: 'configuring' });
+    await retryManagedActivation(fixture);
+  });
 });
 
 test('setup accepts Codex normalized null Role defaults while preserving the exact managed layer', async () => {
@@ -116,7 +355,7 @@ test('setup accepts Codex normalized null Role defaults while preserving the exa
     codexEnv: { FAKE_CODEX_EFFECTIVE_ROLE_DEFAULTS_JSON: '{"nickname_candidates":null}' },
   });
   const report = await runSetup(ctx.options);
-  assert.equal(report.status, 'restart-required', JSON.stringify(report));
+  assert.equal(report.status, 'ready', JSON.stringify(report));
   const paths = managedRolePaths(await realpath(ctx.dataRoot));
   assert.equal((await stat(paths.rolePath)).isFile(), true);
   assert.equal((await stat(paths.receiptPath)).isFile(), true);
@@ -126,8 +365,8 @@ test('setup accepts Codex normalized null Role defaults while preserving the exa
     description: MANAGED_ROLE_DESCRIPTION,
     config_file: paths.rolePath,
   });
-  const fresh = await runSetup({ ...ctx.options, sessionStartedAt: '2999-01-01T00:00:00.000Z' });
-  assert.equal(fresh.status, 'ready', JSON.stringify(fresh));
+  const repeated = await runSetup(ctx.options);
+  assert.equal(repeated.status, 'ready', JSON.stringify(repeated));
   const allCalls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(allCalls.filter((call) => call.method === 'config/batchWrite').length, 1);
 });
@@ -153,7 +392,7 @@ test('setup accepts Codex sha256-prefixed hook hashes and persists their trust s
   const prefixed = hookMetadata(root).map((hook, index) => ({ ...hook, currentHash: `sha256:${index.toString(16).repeat(64)}` }));
   const ctx = await context({ hooks: prefixed });
   const report = await runSetup(ctx.options);
-  assert.equal(report.status, 'restart-required', JSON.stringify(report));
+  assert.equal(report.status, 'ready', JSON.stringify(report));
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse).filter((call) => call.method);
   const batch = calls.find((call) => call.method === 'config/batchWrite');
   const trust = batch.params.edits.find((edit) => edit.keyPath === 'hooks.state').value;
@@ -177,7 +416,7 @@ test('setup accepts Codex sha256-prefixed hook hashes and persists their trust s
   }
 });
 
-test('setup bootstraps an absent writable plugin-data root before writing workspace state', async () => {
+test('writable-root bootstrap returns before creating any plugin-data or workspace state', async () => {
   const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
   const dataRoot = join(ctx.dataRoot, 'codex-home', 'plugins', 'data', 'zcode-vitry');
   const configResult = {
@@ -191,8 +430,23 @@ test('setup bootstraps an absent writable plugin-data root before writing worksp
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).filter((call) => call.method);
   const batch = calls.find((call) => call.method === 'config/batchWrite');
   assert.deepEqual(batch.params.edits, [{ keyPath: 'sandbox_workspace_write.writable_roots', value: [dataRoot], mergeStrategy: 'replace' }]);
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: ctx.cwd });
-  await assert.rejects(readFile(join(storage.directory, 'config', 'review-gate.json')), { code: 'ENOENT' });
+  await assert.rejects(stat(dataRoot), { code: 'ENOENT' });
+});
+
+test('writable-root bootstrap does not mutate a preexisting ready gate before restart', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
+  await mkdir(join(storage.directory, 'config'), { recursive: true });
+  const gatePath = join(storage.directory, 'config', 'review-gate.json');
+  const priorGateBytes = Buffer.from(`${JSON.stringify({ version: 1, enabled: true, setupReady: true, status: 'ready' })}\n`);
+  await writeFile(gatePath, priorGateBytes);
+  const configFile = join(ctx.dataRoot, 'config.toml');
+  const before = { config: { sandbox_workspace_write: { writable_roots: [] } }, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: {} }] };
+  const after = { config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } }, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-2', config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } } }] };
+  const report = await runSetup({ ...ctx.options, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([before, after]) } });
+  assert.equal(report.status, 'restart-required');
+  assert.equal(report.reason, 'plugin-data-root-added');
+  assert.deepEqual(await readFile(gatePath), priorGateBytes);
 });
 
 test('setup preserves user writable roots without globalizing effective project roots', async () => {
@@ -250,7 +504,7 @@ test('setup persists model policy only from explicit setup environment variables
 });
 
 test('setup readiness ignores session/list and is proven by create plus cleanup', async () => {
-  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true }, zcodeEnv: { FAKE_ZCODE_ERROR: 'session/list' } }); const report = await runSetup(ctx.options); assert.equal(report.status, 'restart-required');
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true }, zcodeEnv: { FAKE_ZCODE_ERROR: 'session/list' } }); const report = await runSetup(ctx.options); assert.equal(report.status, 'ready');
   const calls = (await readFile(ctx.zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.ok(!calls.some((call) => call.method === 'session/list')); assert.ok(calls.some((call) => call.method === 'session/create')); assert.ok(calls.some((call) => call.method === 'session/stop'));
 });
 
@@ -382,7 +636,7 @@ test('setup selects only its qualified marketplace hooks from mixed hooks/list o
   const foreign = await mkdtemp(join(tmpdir(), 'foreign-hooks-')); await mkdir(join(foreign, 'hooks')); await writeFile(join(foreign, 'hooks/hooks.json'), '{}');
   const own = hookMetadata(root); const other = hookMetadata(foreign, 'untrusted', 'other-plugin@someone').map((hook, index) => ({ ...hook, key: `other-${index}` }));
   const user = { key: 'user-hook', currentHash: 'f'.repeat(64), displayOrder: 99, enabled: true, eventName: 'stop', handlerType: 'command', isManaged: false, source: 'user', timeoutSec: 5, trustStatus: 'untrusted', command: 'echo user' };
-  const ctx = await context({ hooks: [user, ...other, ...own] }); const report = await runSetup(ctx.options); assert.equal(report.status, 'restart-required', JSON.stringify(report));
+  const ctx = await context({ hooks: [user, ...other, ...own] }); const report = await runSetup(ctx.options); assert.equal(report.status, 'ready', JSON.stringify(report));
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse); const batch = calls.find((call) => call.method === 'config/batchWrite'); const trust = batch.params.edits.find((edit) => edit.keyPath === 'hooks.state').value;
   assert.deepEqual(Object.keys(trust).sort(), own.map((hook) => hook.key).sort()); assert.ok(!Object.hasOwn(trust, 'user-hook')); assert.ok(!Object.keys(trust).some((key) => key.startsWith('other-')));
 });
@@ -412,7 +666,7 @@ test('app-server failure cannot persist a ready gate and enable/disable touches 
   }
   const failedStorage = await resolveWorkspaceStorage({ dataRoot: failed.dataRoot, workspace: failed.cwd }); await assert.rejects(readFile(join(failedStorage.directory, 'config/review-gate.json'), 'utf8'), { code: 'ENOENT' });
   const disabled = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); const report = await runSetup({ ...disabled.options, reviewGate: false }); assert.equal(report.reviewGate.enabled, false);
-  const disabledStorage = await resolveWorkspaceStorage({ dataRoot: disabled.dataRoot, workspace: disabled.cwd }); const gate = JSON.parse(await readFile(join(disabledStorage.directory, 'config/review-gate.json'), 'utf8')); assert.equal(gate.enabled, false); assert.equal(gate.setupReady, false);
+  const disabledStorage = await resolveWorkspaceStorage({ dataRoot: disabled.dataRoot, workspace: disabled.cwd }); const gate = JSON.parse(await readFile(join(disabledStorage.directory, 'config/review-gate.json'), 'utf8')); assert.equal(gate.enabled, false); assert.equal(gate.setupReady, true);
 });
 
 test('review-gate toggles are isolated between workspaces sharing PLUGIN_DATA', async () => {
@@ -421,7 +675,7 @@ test('review-gate toggles are isolated between workspaces sharing PLUGIN_DATA', 
 });
 
 test('real companion setup is the only public command that needs no caller authorization', async () => {
-  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); await recordSetupSession(ctx, 'natural-setup-session', 'Please configure ZCode for this workspace.'); const report = await runCompanion(['setup', '--enable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) } }); assert.equal(report.status, 'restart-required'); assert.equal(report.reviewGate.enabled, true);
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); await recordSetupSession(ctx, 'natural-setup-session', 'Please configure ZCode for this workspace.'); const report = await runCompanion(['setup', '--enable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) } }); assert.equal(report.status, 'ready'); assert.equal(report.reviewGate.enabled, true);
   await assert.rejects(runCompanion(['status'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot } }), { code: 'INTERNAL_AUTHORIZATION_INVALID' });
 });
 
@@ -439,5 +693,5 @@ test('real companion setup fails closed when private active-session proof is mis
 });
 
 test('setup executable succeeds on ordinary stdio without protected fd3/fd4', async () => {
-  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); await recordSetupSession(ctx, 'stdio-setup-session', 'Could you get ZCode ready?'); const result = await new Promise((resolvePromise, reject) => { const child = spawn(process.execPath, [join(root, 'scripts/zcode-companion.mjs'), 'setup', '--disable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) }, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let stderr = ''; child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.once('error', reject); child.once('exit', (code) => resolvePromise({ code, stdout, stderr })); }); assert.equal(result.code, 0, result.stderr); assert.equal(JSON.parse(result.stdout).status, 'restart-required'); assert.doesNotMatch(`${result.stdout}${result.stderr}`, /INTERNAL_RESPONSE/);
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } }); await recordSetupSession(ctx, 'stdio-setup-session', 'Could you get ZCode ready?'); const result = await new Promise((resolvePromise, reject) => { const child = spawn(process.execPath, [join(root, 'scripts/zcode-companion.mjs'), 'setup', '--disable-review-gate'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]) }, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let stderr = ''; child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.once('error', reject); child.once('exit', (code) => resolvePromise({ code, stdout, stderr })); }); assert.equal(result.code, 0, result.stderr); assert.equal(JSON.parse(result.stdout).status, 'ready'); assert.doesNotMatch(`${result.stdout}${result.stderr}`, /INTERNAL_RESPONSE/);
 });

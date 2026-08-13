@@ -199,7 +199,7 @@ test('CI runs full and packed native suites on three platforms and Node 22.13', 
 
 test('required marketplace builder coverage runs explicitly after the default-discovered suite', () => {
   const packageJson = JSON.parse(read('package.json'));
-  assert.equal(packageJson.scripts.test, 'node --test && node --test tests/integration/marketplace-snapshot-build.mjs');
+  assert.equal(packageJson.scripts.test, 'node --test --test-concurrency=1 && node --test tests/integration/marketplace-snapshot-build.mjs');
   const lightweight = read('tests/marketplace-snapshot.test.mjs');
   const heavy = read('tests/integration/marketplace-snapshot-build.mjs');
   assert.doesNotMatch(lightweight, /cleanRepositoryClone|concurrent snapshot|break dependency lock/);
@@ -266,7 +266,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
     assert.match(source, /ZCODE_REAL_MODEL.{0,120}deprecated|deprecated.{0,120}ZCODE_REAL_MODEL/is);
     assert.match(source, /conflict|冲突/i);
   }
-  assert.match(english, /restart Codex.{0,160}rerun `?\$zcode:setup/is);
+  assert.match(english, /writable.{0,80}root.{0,160}restart Codex.{0,160}rerun `?\$zcode:setup/is);
   assert.match(english, /collision.{0,200}(?:foreign|project|higher-precedence)/is);
   assert.match(english, /truncation.{0,120}not secret redaction/is);
   assert.match(english, /parent thread/i);
@@ -275,7 +275,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(english, /background semantics remain unchanged/i);
   assert.match(english, /Codex 0\.147/);
   assert.match(english, /unqualified/i);
-  assert.match(chinese, /重启 Codex.{0,160}(?:再次|重新)运行 `?\$zcode:setup/is);
+  assert.match(chinese, /writable root.{0,160}重启 Codex.{0,160}(?:再次|重新)运行 `?\$zcode:setup/is);
   assert.match(chinese, /冲突.{0,200}(?:外部|项目|高优先级|更高优先级)/is);
   assert.match(chinese, /截断.{0,120}不是秘密脱敏/is);
   assert.match(chinese, /父线程/);
@@ -299,7 +299,7 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
 
   const setup = read('skills/setup/SKILL.md');
   assert.match(setup, /stable plugin data/i);
-  assert.match(setup, /restart Codex/i);
+  assert.match(setup, /writable.{0,80}root.{0,160}restart Codex/is);
   assert.match(setup, /collision/i);
   const rescue = read('skills/rescue/SKILL.md');
   assert.match(rescue, /\/agent|\/subagents/);
@@ -319,6 +319,120 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(installedQualification, /codex-skills-observation/);
   assert.match(installedQualification, /Object\.hasOwn\(payload, 'qualified'\), false/);
   assert.match(read('tests/e2e/real-zcode.test.mjs'), /real-zcode-unqualified/);
+});
+
+test('release package ships receipt-gated manual uninstall guidance', () => {
+  const guidePath = 'docs/manual-uninstall.md';
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  const guide = read(guidePath);
+  const [englishGuide, chineseGuide] = guide.split('\n---\n');
+  const packageJson = JSON.parse(read('package.json'));
+
+  for (const source of [english, chinese]) assert.match(source, /\[.*(?:uninstall|卸载|清理).*\]\(docs\/manual-uninstall\.md\)/i);
+  assert.ok(packageJson.files.includes(guidePath));
+  assert.equal(packageJson.files.filter((entry) => entry === guidePath).length, 1);
+
+  assert.match(guide, /no plugin uninstall lifecycle hook/i);
+  assert.match(guide, /没有插件卸载生命周期 hook/i);
+  assert.match(guide, /settle or cancel.{0,120}active jobs/is);
+  assert.match(guide, /结束或取消.{0,120}活动任务/is);
+  assert.match(guide, /plugin\.identity.{0,160}configTarget\.filePath.{0,160}role\.path.{0,160}role\.sha256/is);
+  assert.match(guide, /agents\.zcode-rescue/);
+  for (const section of [englishGuide, chineseGuide]) {
+    assert.match(section, /features\.multi_agent_v2\.hide_spawn_agent_metadata/);
+    assert.match(section, /features\.multi_agent_v2\.hide_spawn_agent_metadata\s*=\s*false/);
+    assert.match(section, /numeric-v1/i);
+    assert.doesNotMatch(section, /`features\.hide_spawn_agent_metadata`/);
+  }
+  assert.match(guide, /never (?:remove|delete).{0,160}(?:true|project layer|foreign|unproven)/is);
+  assert.match(guide, /绝不(?:移除|删除).{0,160}(?:true|项目层|外部|无法证明)/is);
+  for (const category of ['jobs/', 'job-owners/', 'job-specs/', 'prompts/', 'results/', 'progress', 'logs', 'history']) assert.match(guide, new RegExp(category.replace('/', '\\/'), 'i'));
+  assert.match(guide, /retained by default/i);
+  assert.match(guide, /默认保留/);
+  assert.match(guide, /replac(?:e|ing) the plugin source.{0,200}run `?\$zcode:setup`? once/is);
+  assert.match(guide, /替换插件源.{0,200}(?:运行|执行)一次 `?\$zcode:setup`?/is);
+  assert.match(guide, /writable-root bootstrap.{0,120}only separate restart/is);
+  assert.match(guide, /仅.{0,120}writable-root bootstrap.{0,120}重启/is);
+  assert.match(guide, /uninstalling the plugin files alone.{0,160}(?:leaves|does not remove)/is);
+});
+
+test('manual cleanup separates disposable runtime state from retained history', () => {
+  const guide = read('docs/manual-uninstall.md');
+  const [english, chinese] = guide.split('\n---\n');
+  for (const section of [english, chinese]) {
+    for (const path of [
+      'identity/', 'hook-state/', 'invocations/', 'broker/', 'gate-runs/',
+      'cancel-attempts/', 'cancel-attempt-locks/', 'cancel-locks/', 'worker-leases/',
+      '.state.lock', '.artifacts.lock', 'config/review-gate.json',
+    ]) assert.match(section, new RegExp(path.replaceAll('.', '\\.').replaceAll('/', '\\/')));
+    for (const path of ['jobs/', 'job-owners/', 'job-specs/', 'prompts/', 'results/']) {
+      assert.match(section, new RegExp(path.replace('/', '\\/')));
+    }
+    assert.match(section, /persisted progress|持久 progress/i);
+    assert.match(section, /logs?\/history|日志.{0,40}历史|logs?.{0,20}history/i);
+  }
+  assert.match(english, /after all jobs and (?:plugin )?processes have stopped.{0,120}selectively remove/is);
+  assert.match(english, /retain.{0,240}jobs\/.{0,240}job-specs\/.{0,240}prompts\/.{0,240}results\//is);
+  assert.match(english, /config\/review-gate\.json.{0,160}setup preference.{0,80}readiness.{0,80}not.{0,80}(?:lock|job history)/is);
+  assert.match(chinese, /所有任务和.{0,40}进程.{0,40}停止.{0,120}选择性移除/is);
+  assert.match(chinese, /保留.{0,240}jobs\/.{0,240}job-specs\/.{0,240}prompts\/.{0,240}results\//is);
+  assert.match(chinese, /config\/review-gate\.json.{0,160}setup.{0,80}(?:偏好|配置).{0,80}readiness.{0,80}不是.{0,80}(?:锁|job 历史)/is);
+});
+
+test('manual cleanup covers unreceipted shared setup configuration conservatively', () => {
+  const guide = read('docs/manual-uninstall.md');
+  const [english, chinese] = guide.split('\n---\n');
+  for (const section of [english, chinese]) {
+    assert.match(section, /sandbox_workspace_write\.writable_roots/);
+    assert.match(section, /features\.hooks/);
+    assert.match(section, /hooks\.state/);
+    assert.match(section, /current.{0,80}receipt|当前.{0,80}收据/is);
+    assert.match(section, /prior-value ownership|先前值.{0,40}所有权|原值.{0,40}所有权/i);
+    assert.match(section, /exact(?:ly)? match|精确匹配/i);
+    assert.match(section, /no other consumer|没有其他消费者|无其他消费者/i);
+  }
+  assert.match(english, /features\.hooks.{0,240}(?:leave|remain|keep|stays?).{0,120}unless.{0,160}independently determines?.{0,80}(?:hooks are )?unused/is);
+  assert.match(chinese, /features\.hooks.{0,240}(?:保留|保持).{0,120}除非.{0,160}独立确认.{0,80}(?:不再使用|未使用)/is);
+  assert.doesNotMatch(guide, /receipt (?:proves|authorizes).{0,160}(?:writable_roots|features\.hooks|hooks\.state)/is);
+});
+
+test('manual cleanup requires job settlement before uninstall and gives a safe recovery path', () => {
+  const guide = read('docs/manual-uninstall.md');
+  const [english, chinese] = guide.split('\n---\n');
+  assert.match(english, /before uninstalling.{0,200}(?:status|result|cancel)/is);
+  assert.match(english, /temporarily reinstall.{0,160}trusted.{0,80}version-compatible source/is);
+  assert.match(english, /same plugin identity/is);
+  assert.match(english, /resume the exact original owning Codex session.{0,160}canonical workspace/is);
+  assert.match(english, /new (?:Codex )?session.{0,80}(?:is|remains) insufficient/is);
+  assert.match(english, /original (?:owning )?session cannot be resumed.{0,200}only.{0,80}verified external ZCode control path/is);
+  assert.match(english, /retain.{0,120}uncertain recovery state/is);
+  assert.match(chinese, /卸载前.{0,200}(?:status|result|cancel)/is);
+  assert.match(chinese, /已经卸载|已经移除/);
+  assert.match(chinese, /临时重新安装/);
+  assert.match(chinese, /可信.{0,80}版本兼容的源/is);
+  assert.match(chinese, /相同插件 identity/);
+  assert.match(chinese, /恢复精确的原 owning Codex session.{0,160}canonical workspace/is);
+  assert.match(chinese, /新(?:的 )?Codex session.{0,80}(?:不足|不够)/is);
+  assert.match(chinese, /无法恢复原 owning session.{0,200}只能.{0,80}外部已验证的 ZCode 控制路径/is);
+  assert.match(chinese, /保留.{0,120}不确定的恢复状态/is);
+});
+
+test('current docs assign spawn schema ownership to Codex and supersede the historical Role lifecycle', () => {
+  for (const path of ['README.md', 'README.zh-CN.md', 'skills/setup/SKILL.md']) {
+    const source = read(path);
+    assert.match(source, /Codex host.{0,120}(?:owns|管理|负责).{0,120}(?:collaboration tool schema|协作工具 schema)/is);
+    assert.match(source, /does not own|不拥有/i);
+    assert.match(source, /hide_spawn_agent_metadata/);
+    assert.match(source, /one setup|一次 setup|一次 `?\$zcode:setup/i);
+    assert.match(source, /numeric-v1/i);
+    assert.doesNotMatch(source, /Role install.{0,160}restart|Role 安装.{0,160}重启/is);
+  }
+  const design = read('docs/superpowers/specs/2026-08-09-rescue-native-subagent-progress-design.md');
+  assert.match(design, /superseded/i);
+  assert.match(design, /2026-08-13-remove-spawn-metadata-override-design\.md/);
+  assert.match(read('SECURITY.md'), /receipt.{0,200}fail closed.{0,200}(?:foreign|project)/is);
+  assert.match(read('CHANGELOG.md'), /hide_spawn_agent_metadata.{0,200}numeric-v1/is);
 });
 
 test('repository and CI enforce the LF line-ending constitution', () => {

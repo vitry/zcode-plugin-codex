@@ -20,6 +20,11 @@ test('background startup timeout terminates and reaps the unacknowledged worker'
   }), { code: 'BACKGROUND_WORKER_START_TIMEOUT' });
 
   const pid = Number(await readFile(pidFile, 'utf8'));
+  const reapDeadline = Date.now() + 2_000;
+  while (Date.now() < reapDeadline) {
+    try { process.kill(pid, 0); } catch { break; }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
 });
 

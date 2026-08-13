@@ -237,7 +237,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     },
   });
   assert.equal(rerun.code, 0, rerun.stderr || rerun.stdout);
-  assert.equal(JSON.parse(rerun.stdout).status, 'restart-required');
+  assert.equal(JSON.parse(rerun.stdout).status, 'ready');
   const rolePath = join(pluginData, 'agent-roles', 'zcode-rescue.toml');
   assert.match(await readFile(rolePath, 'utf8'), /invoke rescue/);
   assert.equal(relative(pluginData, rolePath), join('agent-roles', 'zcode-rescue.toml'));
@@ -258,7 +258,17 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     input: { session_id: freshSessionId, turn_id: freshTurnId, cwd: temporary, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'Please verify that ZCode is set up correctly.' },
   });
   assert.equal(freshPrompt.code, 0, freshPrompt.stderr || freshPrompt.stdout);
-  const fresh = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'setup'], {
+  const receiptPath = join(pluginData, 'agent-roles', 'zcode-rescue.receipt.json');
+  const legacyReceipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+  legacyReceipt.schemaVersion = 1;
+  legacyReceipt.priorSpawnMetadataValue = true;
+  await writeFile(receiptPath, `${JSON.stringify(legacyReceipt, null, 2)}\n`);
+  const managed = { description: 'Runs the fixed ZCode Rescue forwarder in an isolated Codex subagent.', config_file: rolePath };
+  const legacyLayer = { features: { hooks: true, multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { 'zcode-rescue': managed }, sandbox_workspace_write: { writable_roots: [pluginData] } };
+  const migratedLayer = { features: { hooks: true, multi_agent_v2: {} }, agents: { 'zcode-rescue': managed }, sandbox_workspace_write: { writable_roots: [pluginData] } };
+  const legacyConfig = { config: legacyLayer, origins: {}, layers: [{ name: { type: 'user', file: join(codexHome, 'config.toml') }, version: 'version-2', config: legacyLayer }] };
+  const migratedConfig = { config: migratedLayer, origins: {}, layers: [{ name: { type: 'user', file: join(codexHome, 'config.toml') }, version: 'version-3', config: migratedLayer }] };
+  const migrated = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'setup'], {
     cwd: temporary,
     env: {
       ...env,
@@ -267,12 +277,22 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
       CODEX_APP_SERVER_PATH: process.execPath,
       CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
       FAKE_CODEX_RECORD: setupRecord,
+      FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([legacyConfig, migratedConfig]),
+      FAKE_CODEX_BATCH_VERSION: 'version-3',
       FAKE_CODEX_HOOKS_RESULT: JSON.stringify({ data: [{ cwd: await realpath(temporary), errors: [], warnings: [], hooks: installedHooks }] }),
       FAKE_ZCODE_RECORD: join(temporary, 'setup-zcode-requests.jsonl'),
     },
   });
-  assert.equal(fresh.code, 0, fresh.stderr || fresh.stdout);
-  assert.equal(JSON.parse(fresh.stdout).status, 'ready');
+  assert.equal(migrated.code, 0, migrated.stderr || migrated.stdout);
+  assert.equal(JSON.parse(migrated.stdout).status, 'ready');
+  const allSetupCalls = (await readFile(setupRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.ok(!allSetupCalls.some((call) => call.method === 'config/batchWrite' && call.params.edits.some((edit) => edit.keyPath === 'features.multi_agent_v2.hide_spawn_agent_metadata' && edit.value === false)));
+  const migrationBatch = allSetupCalls.filter((call) => call.method === 'config/batchWrite').at(-1);
+  assert.deepEqual(migrationBatch.params.edits, [
+    { keyPath: 'features.multi_agent_v2.hide_spawn_agent_metadata', value: null, mergeStrategy: 'upsert' },
+    { keyPath: 'agents.zcode-rescue', value: managed, mergeStrategy: 'upsert' },
+  ]);
+  assert.equal(JSON.parse(await readFile(receiptPath, 'utf8')).schemaVersion, '1.0.0');
   const roleStatus = await runChild(process.execPath, [join(installedRoot, 'scripts', 'zcode-companion.mjs'), 'role-status', 'rescue'], {
     cwd: temporary,
     env: {
