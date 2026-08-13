@@ -32,7 +32,7 @@
     "npm-shrinkwrap.json"
   ],
   "scripts": {
-    "test": "node --test --test-concurrency=2 && node --test tests/integration/marketplace-snapshot-build.mjs",
+    "test": "node --test --test-concurrency=1 && node --test tests/integration/marketplace-snapshot-build.mjs",
     "test:unit": "node --test tests/plugin-contracts.test.mjs",
     "test:integration": "node --test tests/integration/plugin-layout.test.mjs",
     "test:qualified": "node --test tests/e2e/codex-skills-e2e.test.mjs tests/e2e/real-zcode.test.mjs",
