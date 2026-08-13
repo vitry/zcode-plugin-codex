@@ -109,6 +109,46 @@ test('already enabled and trusted hooks still install the managed Rescue role be
   const zcodeCalls = (await readFile(ctx.zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); assert.deepEqual(zcodeCalls.map((call) => call.method), ['session/create', 'session/stop']);
 });
 
+test('setup accepts Codex normalized null Role defaults while preserving the exact managed layer', async () => {
+  const ctx = await context({
+    hooks: hookMetadata(root, 'trusted'),
+    features: { hooks: true },
+    codexEnv: { FAKE_CODEX_EFFECTIVE_ROLE_DEFAULTS_JSON: '{"nickname_candidates":null}' },
+  });
+  const report = await runSetup(ctx.options);
+  assert.equal(report.status, 'restart-required', JSON.stringify(report));
+  const paths = managedRolePaths(await realpath(ctx.dataRoot));
+  assert.equal((await stat(paths.rolePath)).isFile(), true);
+  assert.equal((await stat(paths.receiptPath)).isFile(), true);
+  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const batch = calls.find((call) => call.method === 'config/batchWrite');
+  assert.deepEqual(batch.params.edits.find((edit) => edit.keyPath === 'agents.zcode-rescue').value, {
+    description: MANAGED_ROLE_DESCRIPTION,
+    config_file: paths.rolePath,
+  });
+  const fresh = await runSetup({ ...ctx.options, sessionStartedAt: '2999-01-01T00:00:00.000Z' });
+  assert.equal(fresh.status, 'ready', JSON.stringify(fresh));
+  const allCalls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.equal(allCalls.filter((call) => call.method === 'config/batchWrite').length, 1);
+});
+
+test('setup rejects non-null or unknown effective Role defaults', async (t) => {
+  for (const [name, defaults] of [
+    ['non-null nickname candidates', { nickname_candidates: ['foreign'] }],
+    ['unknown normalized field', { foreign_default: null }],
+  ]) await t.test(name, async () => {
+    const ctx = await context({
+      hooks: hookMetadata(root, 'trusted'),
+      features: { hooks: true },
+      codexEnv: { FAKE_CODEX_EFFECTIVE_ROLE_DEFAULTS_JSON: JSON.stringify(defaults) },
+    });
+    await assert.rejects(runSetup(ctx.options), { code: 'MANAGED_ROLE_RECONCILE_FAILED' });
+    const paths = managedRolePaths(await realpath(ctx.dataRoot));
+    await assert.rejects(stat(paths.rolePath), { code: 'ENOENT' });
+    await assert.rejects(stat(paths.receiptPath), { code: 'ENOENT' });
+  });
+});
+
 test('setup accepts Codex sha256-prefixed hook hashes and persists their trust state', async (t) => {
   const prefixed = hookMetadata(root).map((hook, index) => ({ ...hook, currentHash: `sha256:${index.toString(16).repeat(64)}` }));
   const ctx = await context({ hooks: prefixed });

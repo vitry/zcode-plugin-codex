@@ -103,6 +103,9 @@ function applyConfigEdits(params) {
     setLeaf(copy.config, edit.keyPath, edit.value);
     if (layer) setLeaf(layer.config, edit.keyPath, edit.value);
   }
+  if (process.env.FAKE_CODEX_EFFECTIVE_ROLE_DEFAULTS_JSON && copy.config?.agents?.['zcode-rescue']) {
+    Object.assign(copy.config.agents['zcode-rescue'], JSON.parse(process.env.FAKE_CODEX_EFFECTIVE_ROLE_DEFAULTS_JSON));
+  }
   currentConfig = copy;
 }
 

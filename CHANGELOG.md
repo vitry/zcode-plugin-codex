@@ -4,6 +4,7 @@ All notable changes follow Semantic Versioning.
 
 ## Unreleased
 
+- Fixed `$zcode:setup` managed Role reconciliation with Codex 0.147 effective configuration, which normalizes an otherwise exact Role registration with `nickname_candidates = null`.
 - Fixed installed `$zcode:*` skills failing with `DATA_ROOT_REQUIRED` when Codex does not inject `PLUGIN_DATA` into ordinary skill commands.
 - Added marketplace-qualified plugin-data discovery and a restart-safe `$zcode:setup` bootstrap that configures the data directory as a writable root before persisting state.
 - Added ZCode CLI 0.16.1 compatibility for runtime-preference server requests with string IDs.

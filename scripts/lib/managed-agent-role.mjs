@@ -162,11 +162,11 @@ async function inspectPrepared(prepared, config) {
   const collision = nonTargetCollision(config, definitions, prepared.configTarget.filePath);
   if (collision !== null) return result(collision.status, prepared.paths.rolePath, undefined, collision.conflicts);
   if (receipt === null) {
-    if (sameRegistration(effective, prepared.paths.rolePath) || roleBytes !== null) return result('drift', prepared.paths.rolePath);
+    if (sameEffectiveRegistration(effective, prepared.paths.rolePath) || roleBytes !== null) return result('drift', prepared.paths.rolePath);
     return result('foreign-conflict', prepared.paths.rolePath);
   }
   if (!validReceiptBase(receipt, prepared.paths.rolePath, prepared.input.pluginIdentity)) return result('drift', prepared.paths.rolePath);
-  if (!sameRegistration(effective, prepared.paths.rolePath)) return result('drift', prepared.paths.rolePath);
+  if (!sameEffectiveRegistration(effective, prepared.paths.rolePath)) return result('drift', prepared.paths.rolePath);
   if (roleBytes === null || sha256(roleBytes) !== receipt.role.sha256) return result('drift', prepared.paths.rolePath);
   if (config.config?.features?.multi_agent_v2?.hide_spawn_agent_metadata !== false) return result('higher-precedence-conflict', prepared.paths.rolePath);
   if (receipt.schemaVersion !== 1
@@ -334,7 +334,7 @@ function selectedTargetVersion(config, filePath) {
 /** @param {AnyRecord} config @param {string} rolePath @param {string} targetFile */
 function verifyEffectiveConfig(config, rolePath, targetFile) {
   if (!validConfigRead(config)) return 'Codex returned Role configuration errors after installation.';
-  if (!sameRegistration(config.config?.agents?.[MANAGED_ROLE_NAME], rolePath)) return 'The managed Role registration is overridden after installation.';
+  if (!sameEffectiveRegistration(config.config?.agents?.[MANAGED_ROLE_NAME], rolePath)) return 'The managed Role registration is overridden after installation.';
   if (config.config?.features?.multi_agent_v2?.hide_spawn_agent_metadata !== false) return 'Spawn metadata remains hidden after installation.';
   const definitions = roleDefinitions(config);
   if (definitions.some((item) => item.type === 'project')) return 'A project Role shadows the managed Role.';
@@ -419,7 +419,7 @@ function targetLeaf(config, filePath, keyPath) {
 function configLeavesOwned(config, filePath, rolePath, desiredAdditional) {
   const registration = targetRegistration(config, filePath);
   const metadata = targetMetadata(config, filePath);
-  if (!registration.present || !sameRegistration(registration.value, rolePath) || !metadata.present || metadata.value !== false) return false;
+  if (!registration.present || !sameExactRegistration(registration.value, rolePath) || !metadata.present || metadata.value !== false) return false;
   return desiredAdditional.every((entry) => {
     const current = targetLeaf(config, filePath, entry.keyPath);
     return current.present && JSON.stringify(current.value) === JSON.stringify(entry.value);
@@ -532,7 +532,14 @@ function validReceiptBase(receipt, rolePath, identity) {
 /** @param {string} rolePath */
 function expectedRegistration(rolePath) { return { description: MANAGED_ROLE_DESCRIPTION, config_file: rolePath }; }
 /** @param {any} value @param {string} rolePath */
-function sameRegistration(value, rolePath) { return value?.description === MANAGED_ROLE_DESCRIPTION && value?.config_file === rolePath && Object.keys(value).length === 2; }
+function sameExactRegistration(value, rolePath) { return value?.description === MANAGED_ROLE_DESCRIPTION && value?.config_file === rolePath && Object.keys(value).length === 2; }
+/** Codex normalizes an effective Agent Role with this nullable default; the selected config layer remains exact. @param {any} value @param {string} rolePath */
+function sameEffectiveRegistration(value, rolePath) {
+  if (value?.description !== MANAGED_ROLE_DESCRIPTION || value?.config_file !== rolePath) return false;
+  const keys = Object.keys(value).sort();
+  return sameKeys(keys, ['config_file', 'description'])
+    || value.nickname_candidates === null && sameKeys(keys, ['config_file', 'description', 'nickname_candidates']);
+}
 /** @param {string} status @param {string} rolePath @param {string} [reason] @param {AnyRecord[]} [conflicts] */
 function result(status, rolePath, reason, conflicts) { return { status, rolePath, ...(reason ? { reason } : {}), ...(conflicts?.length ? { conflicts } : {}) }; }
 /** @param {string|Buffer} bytes */
