@@ -357,6 +357,62 @@ test('release package ships receipt-gated manual uninstall guidance', () => {
   assert.match(guide, /uninstalling the plugin files alone.{0,160}(?:leaves|does not remove)/is);
 });
 
+test('manual cleanup separates disposable runtime state from retained history', () => {
+  const guide = read('docs/manual-uninstall.md');
+  const [english, chinese] = guide.split('\n---\n');
+  for (const section of [english, chinese]) {
+    for (const path of [
+      'identity/', 'hook-state/', 'invocations/', 'broker/', 'gate-runs/',
+      'cancel-attempts/', 'cancel-attempt-locks/', 'cancel-locks/', 'worker-leases/',
+      '.state.lock', '.artifacts.lock', 'config/review-gate.json',
+    ]) assert.match(section, new RegExp(path.replaceAll('.', '\\.').replaceAll('/', '\\/')));
+    for (const path of ['jobs/', 'job-owners/', 'job-specs/', 'prompts/', 'results/']) {
+      assert.match(section, new RegExp(path.replace('/', '\\/')));
+    }
+    assert.match(section, /persisted progress|持久 progress/i);
+    assert.match(section, /logs?\/history|日志.{0,40}历史|logs?.{0,20}history/i);
+  }
+  assert.match(english, /after all jobs and (?:plugin )?processes have stopped.{0,120}selectively remove/is);
+  assert.match(english, /retain.{0,240}jobs\/.{0,240}job-specs\/.{0,240}prompts\/.{0,240}results\//is);
+  assert.match(english, /config\/review-gate\.json.{0,160}setup preference.{0,80}readiness.{0,80}not.{0,80}(?:lock|job history)/is);
+  assert.match(chinese, /所有任务和.{0,40}进程.{0,40}停止.{0,120}选择性移除/is);
+  assert.match(chinese, /保留.{0,240}jobs\/.{0,240}job-specs\/.{0,240}prompts\/.{0,240}results\//is);
+  assert.match(chinese, /config\/review-gate\.json.{0,160}setup.{0,80}(?:偏好|配置).{0,80}readiness.{0,80}不是.{0,80}(?:锁|job 历史)/is);
+});
+
+test('manual cleanup covers unreceipted shared setup configuration conservatively', () => {
+  const guide = read('docs/manual-uninstall.md');
+  const [english, chinese] = guide.split('\n---\n');
+  for (const section of [english, chinese]) {
+    assert.match(section, /sandbox_workspace_write\.writable_roots/);
+    assert.match(section, /features\.hooks/);
+    assert.match(section, /hooks\.state/);
+    assert.match(section, /current.{0,80}receipt|当前.{0,80}收据/is);
+    assert.match(section, /prior-value ownership|先前值.{0,40}所有权|原值.{0,40}所有权/i);
+    assert.match(section, /exact(?:ly)? match|精确匹配/i);
+    assert.match(section, /no other consumer|没有其他消费者|无其他消费者/i);
+  }
+  assert.match(english, /features\.hooks.{0,240}(?:leave|remain|keep|stays?).{0,120}unless.{0,160}independently determines?.{0,80}(?:hooks are )?unused/is);
+  assert.match(chinese, /features\.hooks.{0,240}(?:保留|保持).{0,120}除非.{0,160}独立确认.{0,80}(?:不再使用|未使用)/is);
+  assert.doesNotMatch(guide, /receipt (?:proves|authorizes).{0,160}(?:writable_roots|features\.hooks|hooks\.state)/is);
+});
+
+test('manual cleanup requires job settlement before uninstall and gives a safe recovery path', () => {
+  const guide = read('docs/manual-uninstall.md');
+  const [english, chinese] = guide.split('\n---\n');
+  assert.match(english, /before uninstalling.{0,200}(?:status|result|cancel)/is);
+  assert.match(english, /already (?:uninstalled|removed).{0,240}temporarily reinstall.{0,160}same plugin identity.{0,120}version-compatible source/is);
+  assert.match(english, /external verified ZCode control path/is);
+  assert.match(english, /do not delete.{0,120}activity.{0,80}uncertain/is);
+  assert.match(chinese, /卸载前.{0,200}(?:status|result|cancel)/is);
+  assert.match(chinese, /已经卸载|已经移除/);
+  assert.match(chinese, /临时重新安装/);
+  assert.match(chinese, /相同插件 identity/);
+  assert.match(chinese, /版本兼容的源/);
+  assert.match(chinese, /外部已验证的 ZCode 控制路径/is);
+  assert.match(chinese, /活动状态.{0,80}不确定.{0,120}不要删除/is);
+});
+
 test('current docs assign spawn schema ownership to Codex and supersede the historical Role lifecycle', () => {
   for (const path of ['README.md', 'README.zh-CN.md', 'skills/setup/SKILL.md']) {
     const source = read(path);

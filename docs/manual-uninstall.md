@@ -6,9 +6,11 @@ For a reinstall or upgrade, do not clean up first. Replace the plugin source, le
 
 ## Before permanent cleanup
 
-1. Use `$zcode:status --all` and the owner-scoped `$zcode:status`, `$zcode:result`, and `$zcode:cancel` commands to settle or cancel all active jobs. Removing state does not stop a remote ZCode session or a detached process.
+1. Before uninstalling the plugin, use `$zcode:status --all` and the owner-scoped `$zcode:status`, `$zcode:result`, and `$zcode:cancel` commands to settle or cancel all active jobs. Removing state does not stop a remote ZCode session or a detached process.
 2. Find the actual stable data root. An installed plugin normally uses `$CODEX_HOME/plugins/data/zcode-<marketplace>/` (for example, `zcode-vitry`); a source checkout normally uses `$CODEX_HOME/plugins/data/zcode/`. `ZCODE_DATA_ROOT` can override both.
 3. Back up the data root and selected Codex user configuration before editing either one.
+
+If the plugin was already uninstalled or removed before jobs were settled, temporarily reinstall the same plugin identity from a version-compatible source so `$zcode:status`, `$zcode:result`, and `$zcode:cancel` can use the existing state. The alternative is an external verified ZCode control path that can identify and settle the exact remote sessions. Do not delete any plugin state while activity remains uncertain.
 
 ## Prove ownership before deleting configuration or the Role
 
@@ -24,16 +26,39 @@ If every check succeeds, remove only the proven `agents.zcode-rescue` registrati
 
 ZCode does not own the Codex host setting `features.multi_agent_v2.hide_spawn_agent_metadata`. Remove an exact target-layer `features.multi_agent_v2.hide_spawn_agent_metadata = false` only when a valid numeric-v1 receipt plus the matching plugin identity, `configTarget.filePath`, Role path, Role SHA-256, and exact `agents.zcode-rescue` registration prove that this older ZCode setup wrote that leaf. Never remove `true`, a project-layer value, a foreign value, or any unproven value. A current `"1.0.0"` receipt is not legacy metadata ownership evidence.
 
+## Other setup configuration residuals
+
+Setup may also leave these values in the selected Codex user configuration:
+
+- the exact plugin-data-root entry inside `sandbox_workspace_write.writable_roots`;
+- the shared `features.hooks = true` switch; and
+- plugin hook trust entries beneath `hooks.state`.
+
+The current Role receipt has no prior-value ownership record for these shared leaves, so it does not prove their previous state and does not authorize automatic deletion. Consider removing only the plugin-specific writable-root entry or a plugin hook trust entry when its current value exactly matches this installation and no other consumer depends on it. If identity, value, or consumers cannot be proved, leave it unchanged. `features.hooks` stays enabled unless the user independently determines that hooks are unused by every plugin and other configuration consumer; ZCode ownership evidence alone is insufficient.
+
 ## Data retained by default
 
 Durable jobs and their history are retained by default so results and diagnostics remain inspectable after uninstall. This includes each `workspaces/<workspace-hash>/` tree and, where present:
 
 - `jobs/`, `job-owners/`, and `job-specs/` job records;
 - `prompts/` and `results/` artifacts;
-- persisted progress previews inside job records, plus diagnostic logs and history represented by those records and broker ownership state;
-- `config/models.json` and `config/review-gate.json` workspace settings.
+- persisted progress previews inside job records, plus diagnostic logs/history represented by those records and artifacts; and
+- `config/models.json` workspace model policy, if it should be retained for a later reinstall.
 
-For full data erasure, after jobs are settled and after making any required backup, you may additionally remove the proven plugin-owned workspace directories under `<plugin-data-root>/workspaces/`. That also removes ephemeral setup/runtime state such as `identity/`, `broker/`, `invocations/`, `cancel-attempts/`, `cancel-attempt-locks/`, `cancel-locks/`, `worker-leases/`, `.state.lock`, and `.artifacts.lock`. Removing a whole workspace directory permanently deletes its prompts, results, progress, logs/history, model policy, job ownership, and recovery evidence. Remove the plugin-data root itself only after proving it is the ZCode marketplace namespace and contains no data you want to retain.
+## Selective runtime-state cleanup while retaining history
+
+After all jobs and plugin processes have stopped, you may selectively remove the following workspace runtime state while retaining `jobs/`, `job-owners/`, `job-specs/`, `prompts/`, `results/`, persisted progress, and diagnostic logs/history:
+
+- `identity/` authorization records, `hook-state/` session/executor/notification records, and pending `invocations/`;
+- `broker/` process identity, endpoint, and session-ownership control state, only after proving no broker or ZCode process still uses it;
+- `gate-runs/` review-gate run/deduplication state;
+- `cancel-attempts/`, `cancel-attempt-locks/`, `cancel-locks/`, and `worker-leases/`;
+- `.state.lock`, `.artifacts.lock`, and the lock files inside the directories above; and
+- `config/review-gate.json`, which is the plugin's review-gate setup preference and readiness state, not a lock and not job history.
+
+Deleting these paths disables authorization, recovery, notification, broker control, and review-gate continuity represented by them. Perform this selective cleanup only after activity is conclusively settled.
+
+For full data erasure, after jobs are settled and after making any required backup, you may additionally remove the proven plugin-owned workspace directories under `<plugin-data-root>/workspaces/`. Removing a whole workspace directory permanently deletes its prompts, results, progress, logs/history, model policy, job ownership, and recovery evidence. Remove the plugin-data root itself only after proving it is the ZCode marketplace namespace and contains no data you want to retain.
 
 ---
 
@@ -45,9 +70,11 @@ ZCode 没有插件卸载生命周期 hook。只卸载插件文件会留下稳定
 
 ## 永久清理前
 
-1. 使用 `$zcode:status --all` 以及 owner-scoped 的 `$zcode:status`、`$zcode:result`、`$zcode:cancel` 结束或取消所有活动任务。删除本地状态不会停止远端 ZCode session 或 detached process。
+1. 卸载前，使用 `$zcode:status --all` 以及 owner-scoped 的 `$zcode:status`、`$zcode:result`、`$zcode:cancel` 结束或取消所有活动任务。删除本地状态不会停止远端 ZCode session 或 detached process。
 2. 找到实际稳定数据根目录。安装版通常使用 `$CODEX_HOME/plugins/data/zcode-<marketplace>/`（例如 `zcode-vitry`）；源码 checkout 通常使用 `$CODEX_HOME/plugins/data/zcode/`；`ZCODE_DATA_ROOT` 可以覆盖二者。
 3. 修改前备份数据根目录和目标 Codex user configuration。
+
+如果尚未结算任务就已经卸载或移除了插件，请从版本兼容的源临时重新安装具有相同插件 identity 的插件，让 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel` 使用现有状态。另一种选择是使用能够识别并结算精确远端 session 的外部已验证的 ZCode 控制路径。活动状态仍不确定时不要删除任何插件状态。
 
 ## 删除配置或 Role 前先证明所有权
 
@@ -63,13 +90,36 @@ ZCode 没有插件卸载生命周期 hook。只卸载插件文件会留下稳定
 
 ZCode 不拥有 Codex host 设置 `features.multi_agent_v2.hide_spawn_agent_metadata`。只有当有效 numeric-v1 收据连同匹配的插件 identity、`configTarget.filePath`、Role 路径、Role SHA-256 和精确 `agents.zcode-rescue` 注册证明旧版 ZCode setup 写入了该目标层配置叶时，才可移除精确的 `features.multi_agent_v2.hide_spawn_agent_metadata = false`。绝不删除 `true`、项目层值、外部值或任何无法证明归属的值。当前 `"1.0.0"` 收据不能作为旧 metadata 的所有权证据。
 
+## 其他 setup 配置残留
+
+Setup 还可能在选定的 Codex user configuration 中留下：
+
+- `sandbox_workspace_write.writable_roots` 内精确的 plugin-data-root 条目；
+- 共享开关 `features.hooks = true`；
+- `hooks.state` 下本插件的 hook trust 条目。
+
+当前 Role 收据没有记录这些共享配置叶的先前值所有权，因此无法证明其原值，也不授权自动删除。只有当前值与本次安装精确匹配且没有其他消费者依赖它时，才考虑移除插件专属的 writable-root 条目或 hook trust 条目。无法证明 identity、值或消费者情况时应保持不变。`features.hooks` 必须保留，除非用户独立确认所有插件和其他配置消费者都不再使用 hooks；仅凭 ZCode 所有权证据并不足够。
+
 ## 默认保留的数据
 
 持久 job 及其历史默认保留，便于卸载后继续检查结果和诊断信息。其中包括每个 `workspaces/<workspace-hash>/` 树，以及存在时的：
 
 - `jobs/`、`job-owners/` 和 `job-specs/` 任务记录；
 - `prompts/` 与 `results/` artifact；
-- job 记录中的持久 progress preview，以及这些记录和 broker ownership state 所代表的诊断 logs/history；
-- `config/models.json` 与 `config/review-gate.json` 工作区配置。
+- job 记录中的持久 progress preview，以及这些记录和 artifact 所代表的诊断 logs/history；
+- 如需供以后重新安装使用，可保留 `config/models.json` 工作区 model policy。
 
-如果需要彻底清除数据，请先结束任务并完成必要备份，然后可以额外移除 `<plugin-data-root>/workspaces/` 下已证明属于本插件的工作区目录。这也会移除 `identity/`、`broker/`、`invocations/`、`cancel-attempts/`、`cancel-attempt-locks/`、`cancel-locks/`、`worker-leases/`、`.state.lock`、`.artifacts.lock` 等临时 setup/runtime 状态。删除整个工作区目录会永久删除其中的 prompts、results、progress、logs/history、model policy、job ownership 与恢复证据。仅当确认整个 plugin-data root 是 ZCode 的 marketplace namespace，且其中没有需要保留的数据时，才移除该根目录。
+## 保留历史时选择性清理运行状态
+
+所有任务和插件进程都已停止后，可以选择性移除以下工作区运行状态，同时保留 `jobs/`、`job-owners/`、`job-specs/`、`prompts/`、`results/`、持久 progress 和诊断 logs/history：
+
+- `identity/` authorization 记录、`hook-state/` session/executor/notification 记录，以及待处理的 `invocations/`；
+- `broker/` process identity、endpoint 和 session-ownership 控制状态；必须先证明没有 broker 或 ZCode 进程仍在使用；
+- `gate-runs/` review-gate 运行/去重状态；
+- `cancel-attempts/`、`cancel-attempt-locks/`、`cancel-locks/` 和 `worker-leases/`；
+- `.state.lock`、`.artifacts.lock` 以及上述目录内的锁文件；
+- `config/review-gate.json`：这是本插件的 review-gate setup 偏好与 readiness 状态，不是锁，也不是 job 历史。
+
+删除这些路径会同时删除其代表的 authorization、恢复、通知、broker 控制和 review-gate 连续性。只有在活动已经明确结算后才执行这种选择性清理。
+
+如果需要彻底清除数据，请先结束任务并完成必要备份，然后可以额外移除 `<plugin-data-root>/workspaces/` 下已证明属于本插件的工作区目录。删除整个工作区目录会永久删除其中的 prompts、results、progress、logs/history、model policy、job ownership 与恢复证据。仅当确认整个 plugin-data root 是 ZCode 的 marketplace namespace，且其中没有需要保留的数据时，才移除该根目录。
