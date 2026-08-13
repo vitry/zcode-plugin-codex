@@ -199,7 +199,7 @@ test('CI runs full and packed native suites on three platforms and Node 22.13', 
 
 test('required marketplace builder coverage runs explicitly after the default-discovered suite', () => {
   const packageJson = JSON.parse(read('package.json'));
-  assert.equal(packageJson.scripts.test, 'node --test && node --test tests/integration/marketplace-snapshot-build.mjs');
+  assert.equal(packageJson.scripts.test, 'node --test --test-concurrency=2 && node --test tests/integration/marketplace-snapshot-build.mjs');
   const lightweight = read('tests/marketplace-snapshot.test.mjs');
   const heavy = read('tests/integration/marketplace-snapshot-build.mjs');
   assert.doesNotMatch(lightweight, /cleanRepositoryClone|concurrent snapshot|break dependency lock/);
