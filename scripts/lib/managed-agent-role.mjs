@@ -17,7 +17,7 @@ const MAX_ADDITIONAL_LEAVES = MANAGED_SETUP_LEAF_PATHS.size;
 /** @typedef {Record<string, any>} AnyRecord */
 /** @typedef {'prepared'|'role-written'|'config-written'|'receipt-prepared'} ManagedRoleJournalPhase */
 /** @typedef {{schemaVersion:'1.0.0',roleName:string,plugin:{identity:string,version:string,root:string},configTarget:{filePath:string},role:{path:string,schemaVersion:1,sha256:string},mutatedAt:string}} ManagedRoleReceipt */
-/** @typedef {{schemaVersion:1,phase:ManagedRoleJournalPhase,rolePath:string,intendedSha256:string,roleExisted:boolean,previousRoleBase64?:string,receiptExisted:boolean,previousReceiptBase64?:string,previousRegistration:AnyRecord,deletesLegacyMetadata?:boolean,previousMetadata?:AnyRecord,previousAdditional?:AnyRecord[],desiredAdditional?:AnyRecord[],configVersion?:string,intendedReceiptSha256?:string,intendedReceiptBase64?:string}} ManagedRoleJournal */
+/** @typedef {{schemaVersion:1|2,phase:ManagedRoleJournalPhase,rolePath:string,intendedSha256:string,roleExisted:boolean,previousRoleBase64?:string,receiptExisted:boolean,previousReceiptBase64?:string,previousRegistration:AnyRecord,deletesLegacyMetadata?:boolean,previousMetadata?:AnyRecord,previousAdditional?:AnyRecord[],desiredAdditional?:AnyRecord[],configVersion?:string,intendedReceiptSha256?:string,intendedReceiptBase64?:string}} ManagedRoleJournal */
 
 /** @param {string} dataRoot */
 export function managedRolePaths(dataRoot) {
@@ -99,7 +99,7 @@ export async function reconcileManagedRescueRole(input) {
     const previousAdditional = (activeInput.additionalEdits ?? []).map((/** @type {any} */ edit) => ({ keyPath: edit.keyPath, ...targetLeaf(activeInput.config, activeInput.configTarget.filePath, edit.keyPath) }));
     /** @type {ManagedRoleJournal} */
     const journal = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       phase: 'prepared',
       rolePath: prepared.paths.rolePath,
       intendedSha256: /** @type {string} */ (prepared.digest),
@@ -115,7 +115,6 @@ export async function reconcileManagedRescueRole(input) {
     };
     await atomicWriteJson(prepared.paths.transactionPath, journal);
     let configMutated = false;
-    let writeVersion = activeInput.configTarget.expectedVersion;
     try {
       await atomicWritePrivateFile(prepared.paths.rolePath, /** @type {Buffer} */ (prepared.bytes));
       journal.phase = 'role-written';
@@ -132,12 +131,12 @@ export async function reconcileManagedRescueRole(input) {
         reloadUserConfig: true,
       });
       configMutated = true;
-      if (typeof writeResult?.version === 'string' && writeResult.version) writeVersion = writeResult.version;
       journal.phase = 'config-written';
-      journal.configVersion = writeVersion;
+      journal.configVersion = typeof writeResult?.version === 'string' && writeResult.version
+        ? writeResult.version : activeInput.configTarget.expectedVersion;
       await atomicWriteJson(prepared.paths.transactionPath, journal);
       const current = await activeInput.readConfig();
-      const verification = verifyEffectiveConfig(current, prepared.paths.rolePath, activeInput.configTarget.filePath);
+      const verification = verifyPostWriteConfig(current, prepared.paths.rolePath, activeInput.configTarget.filePath, journal);
       if (verification !== null) throw roleError('MANAGED_ROLE_POST_WRITE_INVALID', verification);
       const intendedReceipt = makeReceipt(prepared, activeInput);
       const intendedReceiptBytes = Buffer.from(`${JSON.stringify(intendedReceipt, null, 2)}\n`);
@@ -154,9 +153,8 @@ export async function reconcileManagedRescueRole(input) {
         const detected = await detectAppliedConfig(activeInput, prepared, journal);
         if (detected.state === 'incomplete') throw incompleteAppliedConfigError(prepared, activeInput);
         configMutated = detected.state === 'applied-exact';
-        if (configMutated) writeVersion = detected.expectedVersion;
       }
-      const recovery = await rollback({ prepared, input: activeInput, journal, configMutated, expectedVersion: writeVersion });
+      const recovery = await rollback({ prepared, input: activeInput, journal, configMutated });
       if (!recovery.complete) {
         throw rollbackError(prepared, activeInput, [...recovery.remaining, prepared.paths.transactionPath], 'Managed Rescue Role reconciliation failed and rollback was incomplete.');
       }
@@ -255,7 +253,7 @@ async function pathSafety(dataRoot, paths) {
 async function recoverInterruptedTransaction(prepared, input) {
   const journal = await optionalJson(prepared.paths.transactionPath);
   if (journal === null) return false;
-  if (!isManagedRoleJournal(journal, prepared.paths.rolePath)) {
+  if (!isManagedRoleJournal(journal, prepared.paths.rolePath, input.pluginIdentity, input.configTarget.filePath)) {
     throw rollbackError(prepared, input, [prepared.paths.transactionPath], 'The managed Role transaction journal is invalid and cannot prove rollback ownership.');
   }
   const currentRole = await optionalBytes(prepared.paths.rolePath);
@@ -263,26 +261,25 @@ async function recoverInterruptedTransaction(prepared, input) {
     throw rollbackError(prepared, input, [prepared.paths.rolePath, prepared.paths.transactionPath], 'The interrupted Role bytes are not proven to be owned.');
   }
   let configMutated = ['config-written', 'receipt-prepared'].includes(journal.phase);
-  let recoveryVersion = journal.configVersion ?? input.configTarget.expectedVersion;
   if (!configMutated && journal.phase === 'role-written') {
     const detected = await detectAppliedConfig(input, prepared, journal);
     if (detected.state === 'incomplete') throw incompleteAppliedConfigError(prepared, input);
     configMutated = detected.state === 'applied-exact';
-    if (configMutated) recoveryVersion = detected.expectedVersion;
   }
-  const recovery = await rollback({ prepared, input, journal, configMutated, expectedVersion: recoveryVersion });
+  const recovery = await rollback({ prepared, input, journal, configMutated });
   if (!recovery.complete) throw rollbackError(prepared, input, [...recovery.remaining, prepared.paths.transactionPath], 'Could not recover the interrupted managed Role transaction.');
   return true;
 }
 
-/** @param {{prepared:AnyRecord,input:AnyRecord,journal:ManagedRoleJournal,configMutated:boolean,expectedVersion:string}} input */
-async function rollback({ prepared, input, journal, configMutated, expectedVersion }) {
+/** @param {{prepared:AnyRecord,input:AnyRecord,journal:ManagedRoleJournal,configMutated:boolean}} input */
+async function rollback({ prepared, input, journal, configMutated }) {
   const remaining = [];
   if (configMutated) {
     try {
-      if (typeof expectedVersion !== 'string' || !expectedVersion) throw new Error('current config version is unavailable');
       const currentConfig = await input.readConfig();
       if (!configLeavesOwned(currentConfig, input.configTarget.filePath, prepared.paths.rolePath, journal)) throw new Error('config leaves are not owned');
+      const expectedVersion = selectedTargetVersion(currentConfig, input.configTarget.filePath);
+      if (expectedVersion === null) throw new Error('current config version is unavailable');
       await input.batchWrite({
         edits: [
           ...(journal.previousAdditional ?? []).map((/** @type {any} */ entry) => ({ keyPath: entry.keyPath, value: entry.present ? entry.value : null, mergeStrategy: 'upsert' })),
@@ -366,6 +363,16 @@ function verifyEffectiveConfig(config, rolePath, targetFile) {
   const definitions = roleDefinitions(config);
   if (definitions.some((item) => item.type === 'project')) return 'A project Role shadows the managed Role.';
   if (definitions.some((item) => item.file !== targetFile)) return 'A higher-precedence Role overrides the managed Role.';
+  return null;
+}
+
+/** @param {AnyRecord} config @param {string} rolePath @param {string} targetFile @param {ManagedRoleJournal} journal */
+function verifyPostWriteConfig(config, rolePath, targetFile, journal) {
+  const effectiveError = verifyEffectiveConfig(config, rolePath, targetFile);
+  if (effectiveError !== null) return effectiveError;
+  if (!configLeavesOwned(config, targetFile, rolePath, journal)) {
+    return 'Codex did not persist every intended managed Role configuration leaf.';
+  }
   return null;
 }
 
@@ -473,26 +480,65 @@ function receiptBytesProven(current, journal) {
   return current.equals(Buffer.from(journal.previousReceiptBase64, 'base64'));
 }
 
-/** @param {unknown} value @param {string} rolePath @returns {value is ManagedRoleJournal} */
-function isManagedRoleJournal(value, rolePath) {
+/** @param {unknown} value @param {string} rolePath @param {string} pluginIdentity @param {string} configFilePath @returns {value is ManagedRoleJournal} */
+function isManagedRoleJournal(value, rolePath, pluginIdentity, configFilePath) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const journal = /** @type {AnyRecord} */ (value);
-  if (journal.schemaVersion !== 1 || !['prepared', 'role-written', 'config-written', 'receipt-prepared'].includes(journal.phase)
+  if (![1, 2].includes(journal.schemaVersion) || !['prepared', 'role-written', 'config-written', 'receipt-prepared'].includes(journal.phase)
     || journal.rolePath !== rolePath || !isSha256(journal.intendedSha256)
     || typeof journal.roleExisted !== 'boolean' || typeof journal.receiptExisted !== 'boolean'
     || journal.roleExisted && typeof journal.previousRoleBase64 !== 'string'
     || journal.receiptExisted && typeof journal.previousReceiptBase64 !== 'string'
     || !validLeafJournalEntry(journal.previousRegistration)
-    || Object.hasOwn(journal, 'deletesLegacyMetadata') && typeof journal.deletesLegacyMetadata !== 'boolean'
-    || journalOwnsMetadata(journal) && !validLeafJournalEntry(journal.previousMetadata)
-    || !journalOwnsMetadata(journal) && Object.hasOwn(journal, 'previousMetadata')
     || !validAdditionalJournalEntries(journal.previousAdditional, journal.desiredAdditional)) return false;
+  if (journal.schemaVersion === 1) {
+    if (Object.hasOwn(journal, 'deletesLegacyMetadata') || !validLeafJournalEntry(journal.previousMetadata)) return false;
+  } else {
+    if (typeof journal.deletesLegacyMetadata !== 'boolean') return false;
+    if (journal.deletesLegacyMetadata) {
+      if (!sameExactFalseLeaf(journal.previousMetadata)
+        || !validLegacyMetadataAuthority(journal, rolePath, pluginIdentity, configFilePath)) return false;
+    } else if (Object.hasOwn(journal, 'previousMetadata')) return false;
+  }
   if (['config-written', 'receipt-prepared'].includes(journal.phase) && (typeof journal.configVersion !== 'string' || !journal.configVersion)) return false;
   if (journal.phase === 'receipt-prepared') {
     if (!isSha256(journal.intendedReceiptSha256) || typeof journal.intendedReceiptBase64 !== 'string') return false;
     try { if (sha256(Buffer.from(journal.intendedReceiptBase64, 'base64')) !== journal.intendedReceiptSha256) return false; } catch { return false; }
   }
   return true;
+}
+
+/** @param {unknown} value */
+function sameExactFalseLeaf(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+    && sameKeys(Object.keys(/** @type {AnyRecord} */ (value)).sort(), ['present', 'value'])
+    && /** @type {AnyRecord} */ (value).present === true
+    && /** @type {AnyRecord} */ (value).value === false);
+}
+
+/** @param {AnyRecord} journal @param {string} rolePath @param {string} pluginIdentity @param {string} configFilePath */
+function validLegacyMetadataAuthority(journal, rolePath, pluginIdentity, configFilePath) {
+  if (!journal.roleExisted || !journal.receiptExisted
+    || typeof journal.previousRoleBase64 !== 'string' || typeof journal.previousReceiptBase64 !== 'string'
+    || !journal.previousRegistration?.present
+    || !sameExactRegistration(journal.previousRegistration.value, rolePath)) return false;
+  const previousRole = decodeBase64(journal.previousRoleBase64);
+  const previousReceiptBytes = decodeBase64(journal.previousReceiptBase64);
+  if (previousRole === null || previousReceiptBytes === null) return false;
+  let receipt;
+  try { receipt = JSON.parse(previousReceiptBytes.toString('utf8')); } catch { return false; }
+  return isLegacyReceipt(receipt)
+    && validReceiptBase(receipt, rolePath, pluginIdentity)
+    && receipt.configTarget.filePath === configFilePath
+    && receipt.role.sha256 === sha256(previousRole);
+}
+
+/** @param {string} value */
+function decodeBase64(value) {
+  try {
+    const bytes = Buffer.from(value, 'base64');
+    return bytes.toString('base64') === value ? bytes : null;
+  } catch { return null; }
 }
 
 /** @param {unknown} value */
@@ -582,9 +628,9 @@ function isLegacyReceipt(receipt) {
     && /** @type {AnyRecord} */ (receipt).schemaVersion === 1);
 }
 
-/** Old numeric-v1 journals omitted the intent because they always wrote metadata=false. @param {AnyRecord} journal */
+/** Numeric-v1 journals omitted the intent because they always wrote metadata=false. @param {AnyRecord} journal */
 function journalOwnsMetadata(journal) {
-  return Object.hasOwn(journal, 'deletesLegacyMetadata') ? journal.deletesLegacyMetadata === true : true;
+  return journal.schemaVersion === 1 || journal.deletesLegacyMetadata === true;
 }
 
 /** @param {string} rolePath */

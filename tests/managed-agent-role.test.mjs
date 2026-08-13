@@ -572,6 +572,7 @@ test('managed Rescue role migration rolls back exact numeric-v1 state after rece
     readConfig: async () => current,
     beforeReceiptCommit: async () => {
       const journal = JSON.parse(await readFile(ctx.paths.transactionPath, 'utf8'));
+      assert.equal(journal.schemaVersion, 2);
       assert.equal(journal.deletesLegacyMetadata, true);
       assert.deepEqual(journal.previousMetadata, { present: true, value: false });
       throw new Error('forced receipt commit failure');
@@ -585,6 +586,41 @@ test('managed Rescue role migration rolls back exact numeric-v1 state after rece
   assert.deepEqual(await readFile(ctx.paths.rolePath), beforeFiles.roleBytes);
   assert.deepEqual(await readFile(ctx.paths.receiptPath), beforeFiles.receiptBytes);
   await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
+});
+
+test('managed Rescue role does not commit a receipt when a successful batch omits intended selected-layer leaves', async (t) => {
+  await t.test('legacy metadata deletion', async () => {
+    const ctx = await fixture();
+    const before = await writeOwnedReceipt(ctx, { priorSpawnMetadataValue: true });
+    let current = configState({ role: roleConfig(ctx.paths.rolePath), metadata: false });
+    await assert.rejects(reconcileManagedRescueRole({
+      ...common(ctx, current),
+      batchWrite: async () => {
+        current = configState({ role: roleConfig(ctx.paths.rolePath), metadata: false, version: 'v2' });
+        return { version: 'v2' };
+      },
+      readConfig: async () => current,
+    }), { code: 'MANAGED_ROLE_ROLLBACK_INCOMPLETE' });
+    assert.equal(JSON.parse(await readFile(ctx.paths.receiptPath, 'utf8')).schemaVersion, 1);
+    assert.deepEqual(await readFile(ctx.paths.receiptPath), before.receiptBytes);
+    assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+  });
+
+  await t.test('additional setup leaf', async () => {
+    const ctx = await fixture();
+    let current = configState({});
+    await assert.rejects(reconcileManagedRescueRole({
+      ...common(ctx, current),
+      additionalEdits: [{ keyPath: 'hooks.state', value: { trusted: true }, mergeStrategy: 'upsert' }],
+      batchWrite: async () => {
+        current = configState({ role: roleConfig(ctx.paths.rolePath), version: 'v2' });
+        return { version: 'v2' };
+      },
+      readConfig: async () => current,
+    }), { code: 'MANAGED_ROLE_ROLLBACK_INCOMPLETE' });
+    await assert.rejects(readFile(ctx.paths.receiptPath), { code: 'ENOENT' });
+    assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+  });
 });
 
 test('managed Rescue role preserves evidence when role-written recovery finds unjournaled foreign config', async () => {
@@ -751,6 +787,7 @@ test('managed Rescue role preserves all recovery evidence for mixed config after
   assert.equal((await stat(ctx.paths.rolePath)).isFile(), true);
   assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
   const journal = JSON.parse(await readFile(ctx.paths.transactionPath, 'utf8'));
+  assert.equal(journal.schemaVersion, 2);
   assert.equal(journal.deletesLegacyMetadata, false);
   assert.equal(Object.hasOwn(journal, 'previousMetadata'), false);
   assert.ok(error.details.remaining.includes(ctx.paths.rolePath));
@@ -888,6 +925,82 @@ test('managed Rescue role recovers numeric-v1 interrupted journal previousMetada
   ]);
   assert.deepEqual(await readFile(ctx.paths.rolePath), seeded.roleBytes);
   assert.deepEqual(await readFile(ctx.paths.receiptPath), seeded.receiptBytes);
+  await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
+});
+
+test('managed Rescue role rolls back with the CAS version from the verified current snapshot', async () => {
+  const ctx = await fixture();
+  const seeded = await writeOwnedReceipt(ctx, { priorSpawnMetadataValue: true });
+  await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
+    schemaVersion: 1,
+    phase: 'config-written',
+    rolePath: ctx.paths.rolePath,
+    roleExisted: true,
+    previousRoleBase64: seeded.roleBytes.toString('base64'),
+    receiptExisted: true,
+    previousReceiptBase64: seeded.receiptBytes.toString('base64'),
+    intendedSha256: createHash('sha256').update(seeded.roleBytes).digest('hex'),
+    previousRegistration: { present: true, value: roleConfig(ctx.paths.rolePath) },
+    previousMetadata: { present: true, value: true },
+    previousAdditional: [],
+    desiredAdditional: [],
+    configVersion: 'v2',
+  })}\n`);
+  let current = configState({ role: roleConfig(ctx.paths.rolePath), metadata: false, version: 'v3' });
+  let rollback;
+  await assert.rejects(reconcileManagedRescueRole({
+    ...common(ctx, current),
+    batchWrite: async (params) => {
+      rollback = params;
+      current = configState({ role: roleConfig(ctx.paths.rolePath), metadata: true, version: 'v4' });
+      return { version: 'v4' };
+    },
+    readConfig: async () => current,
+  }), { code: 'MANAGED_ROLE_CONFLICT' });
+  assert.equal(rollback.expectedVersion, 'v3');
+  assert.deepEqual(await readFile(ctx.paths.rolePath), seeded.roleBytes);
+  assert.deepEqual(await readFile(ctx.paths.receiptPath), seeded.receiptBytes);
+  await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
+});
+
+test('managed Rescue role accepts a valid schema-v2 legacy-deletion journal and resumes migration', async () => {
+  const ctx = await fixture();
+  const seeded = await writeOwnedReceipt(ctx, { priorSpawnMetadataValue: true });
+  await writeFile(ctx.paths.transactionPath, `${JSON.stringify({
+    schemaVersion: 2,
+    phase: 'config-written',
+    rolePath: ctx.paths.rolePath,
+    roleExisted: true,
+    previousRoleBase64: seeded.roleBytes.toString('base64'),
+    receiptExisted: true,
+    previousReceiptBase64: seeded.receiptBytes.toString('base64'),
+    intendedSha256: createHash('sha256').update(seeded.roleBytes).digest('hex'),
+    previousRegistration: { present: true, value: roleConfig(ctx.paths.rolePath) },
+    deletesLegacyMetadata: true,
+    previousMetadata: { present: true, value: false },
+    previousAdditional: [],
+    desiredAdditional: [],
+    configVersion: 'v2',
+  })}\n`);
+  let current = configState({ role: roleConfig(ctx.paths.rolePath), version: 'v2' });
+  const writes = [];
+  const result = await reconcileManagedRescueRole({
+    ...common(ctx, current),
+    batchWrite: async (params) => {
+      writes.push(params);
+      current = writes.length === 1
+        ? configState({ role: roleConfig(ctx.paths.rolePath), metadata: false, version: 'v3' })
+        : configState({ role: roleConfig(ctx.paths.rolePath), version: 'v4' });
+      return { version: `v${writes.length + 2}` };
+    },
+    readConfig: async () => current,
+  });
+  assert.deepEqual(writes.map((write) => write.expectedVersion), ['v2', 'v3']);
+  assert.deepEqual(writes[0].edits.at(-1), {
+    keyPath: 'features.multi_agent_v2.hide_spawn_agent_metadata', value: false, mergeStrategy: 'upsert',
+  });
+  assert.deepEqual(result, { status: 'ready', changed: true, rolePath: ctx.paths.rolePath });
+  assert.equal(JSON.parse(await readFile(ctx.paths.receiptPath, 'utf8')).schemaVersion, '1.0.0');
   await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
 });
 
@@ -1114,7 +1227,7 @@ test('managed Rescue role reports precise recovery for a malformed transaction j
   assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
 });
 
-test('managed Rescue role rejects a non-boolean metadata intent without touching recovery evidence', async () => {
+test('managed Rescue role rejects a schema-v1 metadata intent without touching recovery evidence', async () => {
   const ctx = await fixture();
   await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
   await writeFile(ctx.paths.rolePath, 'partial');
@@ -1126,7 +1239,7 @@ test('managed Rescue role rejects a non-boolean metadata intent without touching
     receiptExisted: false,
     intendedSha256: createHash('sha256').update('partial').digest('hex'),
     previousRegistration: { present: false },
-    deletesLegacyMetadata: 'true',
+    deletesLegacyMetadata: true,
     previousMetadata: { present: false },
     previousAdditional: [],
     desiredAdditional: [],
@@ -1140,6 +1253,50 @@ test('managed Rescue role rejects a non-boolean metadata intent without touching
   assert.equal(writes, 0);
   assert.equal(await readFile(ctx.paths.rolePath, 'utf8'), 'partial');
   assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+});
+
+test('managed Rescue role rejects schema-v2 metadata authority that is not bound to exact numeric-v1 ownership', async (t) => {
+  const cases = [
+    { name: 'missing explicit intent', mutate: (journal) => { delete journal.deletesLegacyMetadata; } },
+    { name: 'false intent with previous metadata', mutate: (journal) => { journal.deletesLegacyMetadata = false; } },
+    { name: 'arbitrary restore value', mutate: (journal) => { journal.previousMetadata.value = true; } },
+    { name: 'foreign plugin receipt', mutate: (journal, receipt) => { receipt.plugin.identity = 'foreign@owner'; journal.previousReceiptBase64 = Buffer.from(`${JSON.stringify(receipt)}\n`).toString('base64'); } },
+    { name: 'different config target', mutate: (journal, receipt) => { receipt.configTarget.filePath = '/other.toml'; journal.previousReceiptBase64 = Buffer.from(`${JSON.stringify(receipt)}\n`).toString('base64'); } },
+    { name: 'different role digest', mutate: (journal, receipt) => { receipt.role.sha256 = '0'.repeat(64); journal.previousReceiptBase64 = Buffer.from(`${JSON.stringify(receipt)}\n`).toString('base64'); } },
+    { name: 'different previous role bytes', mutate: (journal) => { journal.previousRoleBase64 = Buffer.from('foreign role').toString('base64'); } },
+    { name: 'non-exact previous registration', mutate: (journal) => { journal.previousRegistration.value.description = 'foreign'; } },
+  ];
+  for (const entry of cases) await t.test(entry.name, async () => {
+    const ctx = await fixture();
+    const seeded = await writeOwnedReceipt(ctx, { priorSpawnMetadataValue: true });
+    const receipt = structuredClone(seeded.receipt);
+    const journal = {
+      schemaVersion: 2,
+      phase: 'role-written',
+      rolePath: ctx.paths.rolePath,
+      roleExisted: true,
+      previousRoleBase64: seeded.roleBytes.toString('base64'),
+      receiptExisted: true,
+      previousReceiptBase64: seeded.receiptBytes.toString('base64'),
+      intendedSha256: createHash('sha256').update(seeded.roleBytes).digest('hex'),
+      previousRegistration: { present: true, value: roleConfig(ctx.paths.rolePath) },
+      deletesLegacyMetadata: true,
+      previousMetadata: { present: true, value: false },
+      previousAdditional: [],
+      desiredAdditional: [],
+    };
+    entry.mutate(journal, receipt);
+    await writeFile(ctx.paths.transactionPath, `${JSON.stringify(journal)}\n`);
+    let writes = 0;
+    await assert.rejects(reconcileManagedRescueRole({
+      ...common(ctx, configState({ role: roleConfig(ctx.paths.rolePath), metadata: false })),
+      batchWrite: async () => { writes += 1; return {}; },
+      readConfig: async () => configState({ role: roleConfig(ctx.paths.rolePath), metadata: false }),
+    }), { code: 'MANAGED_ROLE_ROLLBACK_INCOMPLETE' });
+    assert.equal(writes, 0);
+    assert.deepEqual(await readFile(ctx.paths.rolePath), seeded.roleBytes);
+    assert.equal((await stat(ctx.paths.transactionPath)).isFile(), true);
+  });
 });
 
 test('managed Rescue role rejects malformed additional journal entries without touching recovery evidence', async (t) => {

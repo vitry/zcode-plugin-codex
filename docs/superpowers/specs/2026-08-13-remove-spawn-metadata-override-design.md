@@ -68,9 +68,11 @@ required because the flag may have been absent before the legacy setup wrote
 The receipt keeps one stable path. Successful reconciliation atomically
 replaces the legacy receipt; it does not create a version-suffixed copy or
 require manual deletion. The transaction journal temporarily preserves the old
-receipt bytes only for rollback and is deleted after commit. Future SemVer
-major versions denote incompatible ownership semantics, minor versions add
-backward-compatible optional data, and patch versions preserve the structure.
+receipt bytes only for rollback and is deleted after commit. This release
+accepts only the exact `"1.0.0"` string and fails closed for every other SemVer
+value. The three segments express compatibility intent, but future major,
+minor, or patch versions require explicit reader support and migration before
+they are accepted.
 
 ### Legacy migration
 
