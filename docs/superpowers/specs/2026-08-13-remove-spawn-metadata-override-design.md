@@ -57,14 +57,23 @@ host schema to manufacture a route.
 
 ### Receipt schema
 
-Managed Role receipt schema version 2 removes
-`priorSpawnMetadataValue`. New receipts contain only the data needed to prove
-Role ownership. Version-1 receipts remain readable solely as a migration input
-and interrupted version-1 transaction journals remain recoverable.
+New managed Role receipts use the SemVer string
+`schemaVersion: "1.0.0"` and contain only the data needed to prove Role
+ownership. The existing numeric `schemaVersion: 1` format is a legacy,
+pre-SemVer migration input. A valid numeric-v1 receipt with
+`priorSpawnMetadataValue` identifies the owned legacy metadata migration.
+Interrupted numeric-v1 transaction journals remain recoverable.
+
+The receipt keeps one stable path. Successful reconciliation atomically
+replaces the legacy receipt; it does not create a version-suffixed copy or
+require manual deletion. The transaction journal temporarily preserves the old
+receipt bytes only for rollback and is deleted after commit. Future SemVer
+major versions denote incompatible ownership semantics, minor versions add
+backward-compatible optional data, and patch versions preserve the structure.
 
 ### Legacy migration
 
-Inspection classifies an otherwise valid version-1 managed installation as
+Inspection classifies an otherwise valid numeric-v1 managed installation as
 `upgrade-required`. Reconciliation verifies all existing ownership evidence
 before mutation:
 
@@ -80,7 +89,7 @@ For that proven legacy state, one optimistic `config/batchWrite`:
 2. upserts the canonical `agents.zcode-rescue` registration; and
 3. applies unrelated setup-owned edits exactly as before.
 
-The Role file and version-2 receipt are written atomically. If any post-write
+The Role file and SemVer receipt are written atomically. If any post-write
 verification or receipt commit fails, rollback restores the exact pre-migration
 user-layer leaf, registration, Role bytes, and receipt. A fresh install never
 deletes or edits a pre-existing host flag because no legacy ZCode receipt proves
@@ -144,7 +153,7 @@ self-describing cleanup manifest after plugin removal.
 - Interrupted old and new transactions are recovered before new reconciliation.
 - A failed migration restores the legacy false value so setup never reports a
   half-migrated installation.
-- An externally supplied host flag without a valid version-1 ZCode receipt is
+- An externally supplied host flag without a valid numeric-v1 ZCode receipt is
   left untouched.
 
 ## Testing
@@ -152,13 +161,13 @@ self-describing cleanup manifest after plugin removal.
 Tests must follow red-green-refactor and cover:
 
 - fresh install writes the Role registration but no metadata edit;
-- valid version-1 upgrade deletes the exact user-layer leaf and emits a
-  version-2 receipt without `priorSpawnMetadataValue`;
+- valid numeric-v1 upgrade deletes the exact user-layer leaf and emits one
+  `"1.0.0"` receipt without `priorSpawnMetadataValue` or a legacy copy;
 - fresh or foreign state never deletes an unrelated host flag;
 - current Role readiness ignores absent, true, false, and higher-precedence
   metadata values;
 - migration rollback restores the exact prior leaf;
-- interrupted version-1 journals still recover;
+- interrupted numeric-v1 journals still recover;
 - setup requires only one successful reconciliation after the writable-root
   bootstrap;
 - Rescue contracts still prefer named `agent_type` and preserve generic
