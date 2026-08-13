@@ -401,16 +401,21 @@ test('manual cleanup requires job settlement before uninstall and gives a safe r
   const guide = read('docs/manual-uninstall.md');
   const [english, chinese] = guide.split('\n---\n');
   assert.match(english, /before uninstalling.{0,200}(?:status|result|cancel)/is);
-  assert.match(english, /already (?:uninstalled|removed).{0,240}temporarily reinstall.{0,160}same plugin identity.{0,120}version-compatible source/is);
-  assert.match(english, /external verified ZCode control path/is);
-  assert.match(english, /do not delete.{0,120}activity.{0,80}uncertain/is);
+  assert.match(english, /temporarily reinstall.{0,160}trusted.{0,80}version-compatible source/is);
+  assert.match(english, /same plugin identity/is);
+  assert.match(english, /resume the exact original owning Codex session.{0,160}canonical workspace/is);
+  assert.match(english, /new (?:Codex )?session.{0,80}(?:is|remains) insufficient/is);
+  assert.match(english, /original (?:owning )?session cannot be resumed.{0,200}only.{0,80}verified external ZCode control path/is);
+  assert.match(english, /retain.{0,120}uncertain recovery state/is);
   assert.match(chinese, /卸载前.{0,200}(?:status|result|cancel)/is);
   assert.match(chinese, /已经卸载|已经移除/);
   assert.match(chinese, /临时重新安装/);
+  assert.match(chinese, /可信.{0,80}版本兼容的源/is);
   assert.match(chinese, /相同插件 identity/);
-  assert.match(chinese, /版本兼容的源/);
-  assert.match(chinese, /外部已验证的 ZCode 控制路径/is);
-  assert.match(chinese, /活动状态.{0,80}不确定.{0,120}不要删除/is);
+  assert.match(chinese, /恢复精确的原 owning Codex session.{0,160}canonical workspace/is);
+  assert.match(chinese, /新(?:的 )?Codex session.{0,80}(?:不足|不够)/is);
+  assert.match(chinese, /无法恢复原 owning session.{0,200}只能.{0,80}外部已验证的 ZCode 控制路径/is);
+  assert.match(chinese, /保留.{0,120}不确定的恢复状态/is);
 });
 
 test('current docs assign spawn schema ownership to Codex and supersede the historical Role lifecycle', () => {

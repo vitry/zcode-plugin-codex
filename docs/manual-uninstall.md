@@ -10,7 +10,7 @@ For a reinstall or upgrade, do not clean up first. Replace the plugin source, le
 2. Find the actual stable data root. An installed plugin normally uses `$CODEX_HOME/plugins/data/zcode-<marketplace>/` (for example, `zcode-vitry`); a source checkout normally uses `$CODEX_HOME/plugins/data/zcode/`. `ZCODE_DATA_ROOT` can override both.
 3. Back up the data root and selected Codex user configuration before editing either one.
 
-If the plugin was already uninstalled or removed before jobs were settled, temporarily reinstall the same plugin identity from a version-compatible source so `$zcode:status`, `$zcode:result`, and `$zcode:cancel` can use the existing state. The alternative is an external verified ZCode control path that can identify and settle the exact remote sessions. Do not delete any plugin state while activity remains uncertain.
+If the plugin was already uninstalled or removed before jobs were settled, temporarily reinstall a trusted, version-compatible source with the same plugin identity. Then resume the exact original owning Codex session in the canonical workspace and use owner-scoped `$zcode:status`, `$zcode:result`, and `$zcode:cancel` from that resumed session. A new Codex session is insufficient because it does not own those jobs. If the original owning session cannot be resumed, use only a verified external ZCode control path that can identify and settle the exact remote sessions, and retain all uncertain recovery state. Do not delete plugin state while ownership or activity remains uncertain.
 
 ## Prove ownership before deleting configuration or the Role
 
@@ -74,7 +74,7 @@ ZCode 没有插件卸载生命周期 hook。只卸载插件文件会留下稳定
 2. 找到实际稳定数据根目录。安装版通常使用 `$CODEX_HOME/plugins/data/zcode-<marketplace>/`（例如 `zcode-vitry`）；源码 checkout 通常使用 `$CODEX_HOME/plugins/data/zcode/`；`ZCODE_DATA_ROOT` 可以覆盖二者。
 3. 修改前备份数据根目录和目标 Codex user configuration。
 
-如果尚未结算任务就已经卸载或移除了插件，请从版本兼容的源临时重新安装具有相同插件 identity 的插件，让 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel` 使用现有状态。另一种选择是使用能够识别并结算精确远端 session 的外部已验证的 ZCode 控制路径。活动状态仍不确定时不要删除任何插件状态。
+如果尚未结算任务就已经卸载或移除了插件，请从可信且版本兼容的源临时重新安装具有相同插件 identity 的插件。随后恢复精确的原 owning Codex session，并确认它位于同一个 canonical workspace；只能从这个已恢复 session 使用 owner-scoped 的 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。新的 Codex session 不足以处理这些任务，因为它不是任务 owner。如果无法恢复原 owning session，只能使用能够识别并结算精确远端 session 的外部已验证的 ZCode 控制路径，并保留所有不确定的恢复状态。ownership 或活动状态仍不确定时不要删除插件状态。
 
 ## 删除配置或 Role 前先证明所有权
 
