@@ -5,7 +5,7 @@ import { readdir, realpath } from 'node:fs/promises';
 import { PluginError } from './errors.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './identifier.mjs';
 import { closeProtocolUntil, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
-import { validSessionInfo, validSetupAuthProbeSnapshot, validSnapshot as snapshotValid } from './zcode-schema.mjs';
+import { validCreateSnapshot, validSessionInfo, validSetupAuthProbeSnapshot, validSnapshot as snapshotValid } from './zcode-schema.mjs';
 import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, inspectBrokerIdentity, MAX_BROKER_IDLE_TIMEOUT_MS, MIN_BROKER_IDLE_TIMEOUT_MS, prioritizeBrokerOwnership } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
@@ -22,7 +22,7 @@ export class ZCodeClient {
 
   /** @param {{workspace:string,sessionId?:string,model?:{providerId:string,modelId:string,variant?:string},importedHistory?:{title?:string,createdAt?:number,updatedAt?:number,messages:Array<{role:'user'|'assistant',content:string,timestamp?:number}>}}} input */
   async createSession(input) {
-    return this.createSessionValidated(input, snapshotValid);
+    return this.createSessionValidated(input, validCreateSnapshot);
   }
 
   /** @param {{workspace:string,sessionId?:string,model?:{providerId:string,modelId:string,variant?:string},importedHistory?:{title?:string,createdAt?:number,updatedAt?:number,messages:Array<{role:'user'|'assistant',content:string,timestamp?:number}>}}} input Setup-only compatibility probe; formal runtime callers must use createSession(). */
