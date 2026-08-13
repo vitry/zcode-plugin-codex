@@ -206,7 +206,6 @@ test('managed Rescue role fresh install writes only the Role registration and re
   let writtenEdits;
   const result = await reconcileManagedRescueRole({
     ...common(ctx, current),
-    additionalEdits: [{ keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' }],
     batchWrite: async (params) => {
       writtenEdits = params.edits;
       current = configState({ path: ctx.paths.rolePath, role: roleConfig(ctx.paths.rolePath), metadata: metadataAfterEdits(undefined, params.edits) });
@@ -216,7 +215,6 @@ test('managed Rescue role fresh install writes only the Role registration and re
   });
   assert.deepEqual(result, { status: 'ready', changed: true, rolePath: ctx.paths.rolePath });
   assert.deepEqual(writtenEdits, [
-    { keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' },
     { keyPath: `agents.${MANAGED_ROLE_NAME}`, value: roleConfig(ctx.paths.rolePath), mergeStrategy: 'upsert' },
   ]);
   assert.equal(await readFile(ctx.paths.rolePath, 'utf8'), renderManagedRescueRole({ template, pluginRoot: ctx.pluginRoot }));
@@ -249,8 +247,21 @@ test('managed Rescue role migrates an exact numeric-v1 legacy install and delete
     { keyPath: `agents.${MANAGED_ROLE_NAME}`, value: roleConfig(ctx.paths.rolePath), mergeStrategy: 'upsert' },
   ]);
   const receipt = JSON.parse(await readFile(ctx.paths.receiptPath, 'utf8'));
-  assert.equal(receipt.schemaVersion, '1.0.0');
-  assert.equal(Object.hasOwn(receipt, 'priorSpawnMetadataValue'), false);
+  const { mutatedAt, ...stableReceipt } = receipt;
+  assert.equal(typeof mutatedAt, 'string');
+  assert.equal(Number.isFinite(Date.parse(mutatedAt)), true);
+  assert.equal(new Date(mutatedAt).toISOString(), mutatedAt);
+  assert.deepEqual(stableReceipt, {
+    schemaVersion: '1.0.0',
+    roleName: MANAGED_ROLE_NAME,
+    plugin: { identity: 'zcode@vitry', version: '0.1.0', root: ctx.pluginRoot },
+    configTarget: { filePath: ctx.configTarget.filePath },
+    role: {
+      path: ctx.paths.rolePath,
+      schemaVersion: MANAGED_ROLE_SCHEMA_VERSION,
+      sha256: createHash('sha256').update(renderManagedRescueRole({ template, pluginRoot: ctx.pluginRoot })).digest('hex'),
+    },
+  });
   await assert.rejects(readFile(ctx.paths.transactionPath), { code: 'ENOENT' });
 });
 
