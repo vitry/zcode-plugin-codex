@@ -278,6 +278,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
       CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs')]),
       FAKE_CODEX_RECORD: setupRecord,
       FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([legacyConfig, migratedConfig]),
+      FAKE_CODEX_BATCH_VERSION: 'version-3',
       FAKE_CODEX_HOOKS_RESULT: JSON.stringify({ data: [{ cwd: await realpath(temporary), errors: [], warnings: [], hooks: installedHooks }] }),
       FAKE_ZCODE_RECORD: join(temporary, 'setup-zcode-requests.jsonl'),
     },

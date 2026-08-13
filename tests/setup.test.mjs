@@ -101,20 +101,23 @@ async function managedActivationFixture(kind, failure) {
   const trustedHooks = hookMetadata(root, 'trusted');
   const trustState = Object.fromEntries(pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }]));
   const beforeTarget = { unrelated: { preserved: true }, features: { hooks: false }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } };
+  let legacyRoleBytes = null;
+  let legacyReceiptBytes = null;
   if (kind === 'migration') {
     await mkdir(join(ctx.dataRoot, 'agent-roles'), { recursive: true });
     const template = await readFile(join(root, 'agents/zcode-rescue.toml.template'), 'utf8');
-    const roleBytes = Buffer.from(renderManagedRescueRole({ template, pluginRoot: await realpath(root) }));
-    await writeFile(paths.rolePath, roleBytes);
-    await writeFile(paths.receiptPath, `${JSON.stringify({
+    legacyRoleBytes = Buffer.from(renderManagedRescueRole({ template, pluginRoot: await realpath(root) }));
+    await writeFile(paths.rolePath, legacyRoleBytes);
+    legacyReceiptBytes = Buffer.from(`${JSON.stringify({
       schemaVersion: 1,
       roleName: MANAGED_ROLE_NAME,
       plugin: { identity: 'zcode@vitry', version: '0.1.0', root: await realpath(root) },
       configTarget: { filePath: configFile },
-      role: { path: paths.rolePath, schemaVersion: MANAGED_ROLE_SCHEMA_VERSION, sha256: createHash('sha256').update(roleBytes).digest('hex') },
+      role: { path: paths.rolePath, schemaVersion: MANAGED_ROLE_SCHEMA_VERSION, sha256: createHash('sha256').update(legacyRoleBytes).digest('hex') },
       mutatedAt: '2025-01-01T00:00:00.000Z',
       priorSpawnMetadataValue: true,
     }, null, 2)}\n`);
+    await writeFile(paths.receiptPath, legacyReceiptBytes);
     beforeTarget.agents = { [MANAGED_ROLE_NAME]: managed };
     beforeTarget.features.multi_agent_v2 = { hide_spawn_agent_metadata: false };
   }
@@ -134,36 +137,35 @@ async function managedActivationFixture(kind, failure) {
   await mkdir(join(storage.directory, 'config'), { recursive: true });
   await writeFile(join(storage.directory, 'config/review-gate.json'), `${JSON.stringify({ version: 1, enabled: true, setupReady: true, status: 'ready' })}\n`);
   return {
-    ctx, paths, configFile, managed, pendingHooks, trustedHooks, before, after, storage,
+    kind, ctx, paths, configFile, managed, pendingHooks, trustedHooks, before, after, storage,
     options: {
       ...ctx.options,
       env: {
         ...ctx.options.env,
-        FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([before, after]),
+        FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([before, after, after, after, before]),
+        FAKE_CODEX_BATCH_RESULTS_JSON: JSON.stringify([
+          { filePath: configFile, status: 'ok', version: 'version-2' },
+          { filePath: configFile, status: 'ok', version: 'version-1' },
+        ]),
         FAKE_CODEX_HOOKS_RESULTS_JSON: JSON.stringify([
           { data: [{ cwd: ctx.cwd, errors: [], warnings: [], hooks: pendingHooks }] },
           { data: [{ cwd: ctx.cwd, errors: [], warnings: [], hooks: failure === 'runtime-untrusted' ? pendingHooks : trustedHooks }] },
         ]),
       },
-    },
+    }, legacyRoleBytes, legacyReceiptBytes,
   };
 }
 
 async function retryManagedActivation(fixture) {
-  const retryTarget = { unrelated: { preserved: true }, features: { hooks: false }, agents: { [MANAGED_ROLE_NAME]: fixture.managed }, sandbox_workspace_write: { writable_roots: [fixture.ctx.dataRoot] } };
-  const retryBefore = { config: structuredClone(retryTarget), origins: {}, layers: [{ name: { type: 'user', file: fixture.configFile }, version: 'version-2', config: structuredClone(retryTarget) }] };
-  const retryAfterTarget = structuredClone(retryTarget);
-  retryAfterTarget.features.hooks = true;
-  retryAfterTarget.hooks = { state: Object.fromEntries(fixture.pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])) };
-  const retryAfter = { config: structuredClone(retryAfterTarget), origins: {}, layers: [{ name: { type: 'user', file: fixture.configFile }, version: 'version-3', config: retryAfterTarget }] };
   await writeFile(fixture.ctx.record, '');
-  await writeFile(`${fixture.ctx.record}.config.json`, JSON.stringify(retryBefore));
+  await writeFile(`${fixture.ctx.record}.config.json`, JSON.stringify(fixture.before));
   const report = await runSetup({
     ...fixture.ctx.options,
     env: {
       ...fixture.ctx.options.env,
-      FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([retryBefore, retryAfter]),
-      FAKE_CODEX_BATCH_VERSION: 'version-3',
+      FAKE_CODEX_CONFIG_RESULTS_JSON: undefined,
+      FAKE_CODEX_BATCH_RESULTS_JSON: undefined,
+      FAKE_CODEX_BATCH_VERSION: 'version-2',
       FAKE_CODEX_HOOKS_RESULTS_JSON: JSON.stringify([
         { data: [{ cwd: fixture.ctx.cwd, errors: [], warnings: [], hooks: fixture.pendingHooks }] },
         { data: [{ cwd: fixture.ctx.cwd, errors: [], warnings: [], hooks: fixture.trustedHooks }] },
@@ -174,8 +176,8 @@ async function retryManagedActivation(fixture) {
   const calls = (await readFile(fixture.ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   const batches = calls.filter((call) => call.method === 'config/batchWrite');
   assert.equal(batches.length, 1);
-  assert.deepEqual(batches[0].params.edits.map((edit) => edit.keyPath), ['features.hooks', 'hooks.state']);
-  assert.ok(!batches[0].params.edits.some((edit) => edit.keyPath === 'features.multi_agent_v2.hide_spawn_agent_metadata'));
+  assert.ok(batches[0].params.edits.some((edit) => edit.keyPath === `agents.${MANAGED_ROLE_NAME}`));
+  assert.equal(batches[0].params.edits.some((edit) => edit.keyPath === 'features.multi_agent_v2.hide_spawn_agent_metadata'), fixture.kind === 'migration');
 }
 
 test('compact SessionStart preserves the original trusted session freshness and source', async () => {
@@ -192,7 +194,7 @@ test('setup uses current config/read, hooks/list and one atomic exact trust/feat
   const ctx = await context(); const report = await runSetup({ ...ctx.options, reviewGate: true });
   assert.equal(report.status, 'ready', JSON.stringify(report)); assert.equal(report.zcode.version, '0.16.1'); assert.equal(report.auth.ready, true); assert.equal(report.reviewGate.enabled, true);
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').map(JSON.parse).filter((call) => call.method);
-  assert.deepEqual(calls.map((call) => call.method), ['initialize', 'initialized', 'config/read', 'hooks/list', 'config/batchWrite', 'config/read', 'config/read', 'hooks/list']);
+  assert.deepEqual(calls.map((call) => call.method), ['initialize', 'initialized', 'config/read', 'hooks/list', 'config/batchWrite', 'config/read', 'hooks/list']);
   assert.deepEqual(calls[2].params, { cwd: ctx.cwd, includeLayers: true }); assert.deepEqual(calls[3].params, { cwds: [ctx.cwd] });
   const params = calls[4].params; assert.equal(params.expectedVersion, 'version-1'); assert.equal(params.reloadUserConfig, true); assert.equal(params.edits.length, 3);
   assert.deepEqual(params.edits[0], { keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' });
@@ -239,10 +241,8 @@ test('setup migrates a proven numeric-v1 Role and removes only the target legacy
     priorSpawnMetadataValue: true,
   }, null, 2)}\n`);
   const beforeLayer = { unrelated: { preserved: true }, features: { hooks: true, multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { [MANAGED_ROLE_NAME]: managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } };
-  const afterLayer = { unrelated: { preserved: true }, features: { hooks: true, multi_agent_v2: {} }, agents: { [MANAGED_ROLE_NAME]: managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } };
   const before = { config: beforeLayer, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: beforeLayer }] };
-  const after = { config: afterLayer, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-2', config: afterLayer }] };
-  const report = await runSetup({ ...ctx.options, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([before, after]) } });
+  const report = await runSetup({ ...ctx.options, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(before), FAKE_CODEX_CONFIG_RESULTS_JSON: undefined } });
   assert.equal(report.status, 'ready', JSON.stringify(report));
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   const batch = calls.find((call) => call.method === 'config/batchWrite');
@@ -252,6 +252,7 @@ test('setup migrates a proven numeric-v1 Role and removes only the target legacy
   ]);
   const persistedConfig = JSON.parse(await readFile(`${ctx.record}.config.json`, 'utf8'));
   assert.deepEqual(persistedConfig.layers[0].config.unrelated, { preserved: true });
+  assert.equal(Object.hasOwn(persistedConfig.layers[0].config.features.multi_agent_v2, 'hide_spawn_agent_metadata'), false);
   assert.equal(JSON.parse(await readFile(paths.receiptPath, 'utf8')).schemaVersion, '1.0.0');
 });
 
@@ -324,14 +325,23 @@ test('hooks/trust-only fallback fails closed unless target config, CAS version, 
   });
 });
 
-test('fresh and migrated Role writes require effective config and runtime hook activation after receipt commit', async (t) => {
+test('fresh and migrated Role activation failures roll back before receipt commit and permit retry', async (t) => {
   for (const kind of ['fresh', 'migration']) for (const failure of ['effective-override', 'runtime-untrusted']) await t.test(`${kind}: ${failure}`, async () => {
     const fixture = await managedActivationFixture(kind, failure);
-    await assert.rejects(runSetup(fixture.options), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
-    assert.equal(JSON.parse(await readFile(fixture.paths.receiptPath, 'utf8')).schemaVersion, '1.0.0');
+    await assert.rejects(runSetup(fixture.options), { code: 'MANAGED_ROLE_RECONCILE_FAILED' });
+    if (kind === 'fresh') {
+      await assert.rejects(readFile(fixture.paths.rolePath), { code: 'ENOENT' });
+      await assert.rejects(readFile(fixture.paths.receiptPath), { code: 'ENOENT' });
+    } else {
+      assert.deepEqual(await readFile(fixture.paths.rolePath), fixture.legacyRoleBytes);
+      assert.deepEqual(await readFile(fixture.paths.receiptPath), fixture.legacyReceiptBytes);
+      const restored = JSON.parse(await readFile(`${fixture.ctx.record}.config.json`, 'utf8'));
+      assert.equal(restored.layers[0].config.features.multi_agent_v2.hide_spawn_agent_metadata, false);
+    }
+    await assert.rejects(readFile(fixture.paths.transactionPath), { code: 'ENOENT' });
     const calls = (await readFile(fixture.ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
     const batches = calls.filter((call) => call.method === 'config/batchWrite');
-    assert.equal(batches.length, 1, 'managed reconciliation must remain the only writer');
+    assert.equal(batches.length, 2, 'managed reconciliation must own the activation rollback');
     assert.ok(!batches[0].params.edits.some((edit) => edit.keyPath === 'features.multi_agent_v2.hide_spawn_agent_metadata' && edit.value === false));
     assert.deepEqual(JSON.parse(await readFile(join(fixture.storage.directory, 'config/review-gate.json'), 'utf8')), { version: 1, enabled: true, setupReady: false, status: 'configuring' });
     await retryManagedActivation(fixture);
@@ -421,7 +431,24 @@ test('setup bootstraps an absent writable plugin-data root before writing worksp
   const batch = calls.find((call) => call.method === 'config/batchWrite');
   assert.deepEqual(batch.params.edits, [{ keyPath: 'sandbox_workspace_write.writable_roots', value: [dataRoot], mergeStrategy: 'replace' }]);
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace: ctx.cwd });
-  await assert.rejects(readFile(join(storage.directory, 'config', 'review-gate.json')), { code: 'ENOENT' });
+  assert.deepEqual(JSON.parse(await readFile(join(storage.directory, 'config', 'review-gate.json'), 'utf8')), {
+    version: 1, enabled: false, setupReady: false, status: 'restart-required',
+  });
+});
+
+test('writable-root bootstrap invalidates a prior ready gate while preserving its enabled preference', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
+  await mkdir(join(storage.directory, 'config'), { recursive: true });
+  await writeFile(join(storage.directory, 'config', 'review-gate.json'), `${JSON.stringify({ version: 1, enabled: true, setupReady: true, status: 'ready' })}\n`);
+  const configFile = join(ctx.dataRoot, 'config.toml');
+  const before = { config: { sandbox_workspace_write: { writable_roots: [] } }, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: {} }] };
+  const after = { config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } }, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-2', config: { sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } } }] };
+  const report = await runSetup({ ...ctx.options, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([before, after]) } });
+  assert.equal(report.status, 'restart-required');
+  assert.deepEqual(JSON.parse(await readFile(join(storage.directory, 'config', 'review-gate.json'), 'utf8')), {
+    version: 1, enabled: true, setupReady: false, status: 'restart-required',
+  });
 });
 
 test('setup preserves user writable roots without globalizing effective project roots', async () => {

@@ -137,6 +137,14 @@ export async function reconcileManagedRescueRole(input) {
       const current = await activeInput.readConfig();
       const verification = verifyPostWriteConfig(current, prepared.paths.rolePath, activeInput.configTarget.filePath, journal);
       if (verification !== null) throw roleError('MANAGED_ROLE_POST_WRITE_INVALID', verification);
+      const selectedVersion = selectedTargetVersion(current, activeInput.configTarget.filePath);
+      await activeInput.activate?.({
+        config: current,
+        writeResult,
+        configTarget: activeInput.configTarget,
+        selectedVersion,
+        rolePath: prepared.paths.rolePath,
+      });
       const intendedReceipt = makeReceipt(prepared, activeInput);
       const intendedReceiptBytes = Buffer.from(`${JSON.stringify(intendedReceipt, null, 2)}\n`);
       journal.phase = 'receipt-prepared';
@@ -180,6 +188,8 @@ async function inspectPrepared(prepared, config) {
     return result('foreign-conflict', prepared.paths.rolePath);
   }
   if (!validReceiptBase(receipt, prepared.paths.rolePath, prepared.input.pluginIdentity)) return result('drift', prepared.paths.rolePath);
+  const selectedRegistration = targetRegistration(config, prepared.configTarget.filePath);
+  if (!selectedRegistration.present || !sameExactRegistration(selectedRegistration.value, prepared.paths.rolePath)) return result('drift', prepared.paths.rolePath);
   if (!sameEffectiveRegistration(effective, prepared.paths.rolePath)) return result('drift', prepared.paths.rolePath);
   if (roleBytes === null || sha256(roleBytes) !== receipt.role.sha256) return result('drift', prepared.paths.rolePath);
   if (isLegacyReceipt(receipt)) {
@@ -270,7 +280,7 @@ async function rollback({ prepared, input, journal, configMutated }) {
       if (!configLeavesOwned(currentConfig, input.configTarget.filePath, prepared.paths.rolePath, journal)) throw new Error('config leaves are not owned');
       const expectedVersion = selectedTargetVersion(currentConfig, input.configTarget.filePath);
       if (expectedVersion === null) throw new Error('current config version is unavailable');
-      await input.batchWrite({
+      const writeResult = await input.batchWrite({
         edits: [
           ...(journal.previousAdditional ?? []).map((/** @type {any} */ entry) => ({ keyPath: entry.keyPath, value: entry.present ? entry.value : null, mergeStrategy: 'upsert' })),
           { keyPath: `agents.${MANAGED_ROLE_NAME}`, value: journal.previousRegistration.present ? journal.previousRegistration.value : null, mergeStrategy: 'upsert' },
@@ -284,7 +294,18 @@ async function rollback({ prepared, input, journal, configMutated }) {
         expectedVersion,
         reloadUserConfig: true,
       });
-    } catch { remaining.push(input.configTarget.filePath); }
+      if (typeof writeResult?.version !== 'string' || !writeResult.version
+        || typeof writeResult.filePath === 'string' && writeResult.filePath !== input.configTarget.filePath) throw new Error('rollback result is invalid');
+      const restoredConfig = await input.readConfig();
+      if (!validConfigRead(restoredConfig)
+        || selectedTargetVersion(restoredConfig, input.configTarget.filePath) !== writeResult.version
+        || !configLeavesMatchPrevious(restoredConfig, input.configTarget.filePath, journal)) throw new Error('rollback state is unproven');
+    } catch {
+      return {
+        complete: false,
+        remaining: [input.configTarget.filePath, prepared.paths.rolePath, prepared.paths.receiptPath],
+      };
+    }
   }
   try {
     const current = await optionalBytes(prepared.paths.rolePath);
@@ -691,6 +712,7 @@ function rollbackError(prepared, input, remaining, message) {
 function validateReconcileInput(input) {
   validateCommonInput(input);
   if (typeof input.batchWrite !== 'function' || typeof input.readConfig !== 'function'
+    || input.activate !== undefined && typeof input.activate !== 'function'
     || input.additionalEdits !== undefined && !Array.isArray(input.additionalEdits)) {
     throw roleError('MANAGED_ROLE_INPUT_INVALID', 'Managed Rescue Role reconciliation dependencies are invalid.');
   }

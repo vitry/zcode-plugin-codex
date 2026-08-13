@@ -47,6 +47,7 @@ process.on('exit', () => { if (process.env.FAKE_CODEX_EXIT_MARKER) process.stder
 let inputQueue = Promise.resolve();
 let configReadIndex = 0;
 let hooksListIndex = 0;
+let batchWriteIndex = 0;
 const configStatePath = process.env.FAKE_CODEX_CONFIG_STATE
   ?? (process.env.FAKE_CODEX_RECORD ? `${process.env.FAKE_CODEX_RECORD}.config.json` : null);
 let currentConfig = JSON.parse(configStatePath && existsSync(configStatePath)
@@ -97,7 +98,11 @@ async function handleLine(line) {
     else applyConfigEdits(request.params);
     applyHookTrust(request.params);
     if (configStatePath) writeFileSync(configStatePath, JSON.stringify(currentConfig));
-    write({ id: request.id, result: { filePath: process.env.FAKE_CODEX_CONFIG_PATH ?? request.params.filePath ?? '/tmp/config.toml', status: 'ok', version: process.env.FAKE_CODEX_BATCH_VERSION ?? 'version-2' } });
+    const batchResults = process.env.FAKE_CODEX_BATCH_RESULTS_JSON ? JSON.parse(process.env.FAKE_CODEX_BATCH_RESULTS_JSON) : null;
+    const result = Array.isArray(batchResults)
+      ? batchResults[Math.min(batchWriteIndex++, batchResults.length - 1)]
+      : { filePath: process.env.FAKE_CODEX_CONFIG_PATH ?? request.params.filePath ?? '/tmp/config.toml', status: 'ok', version: process.env.FAKE_CODEX_BATCH_VERSION ?? 'version-2' };
+    write({ id: request.id, result });
   }
 }
 
@@ -127,6 +132,14 @@ function applyConfigEdits(params) {
 function setLeaf(target, keyPath, value) {
   const parts = keyPath.split('.');
   let cursor = target;
+  if (value === null) {
+    for (const part of parts.slice(0, -1)) {
+      if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor) || !Object.hasOwn(cursor, part)) return;
+      cursor = cursor[part];
+    }
+    if (cursor && typeof cursor === 'object' && !Array.isArray(cursor)) delete cursor[parts.at(-1)];
+    return;
+  }
   for (const part of parts.slice(0, -1)) {
     if (!cursor[part] || typeof cursor[part] !== 'object' || Array.isArray(cursor[part])) cursor[part] = {};
     cursor = cursor[part];
