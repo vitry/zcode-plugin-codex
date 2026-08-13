@@ -23,6 +23,14 @@ test('installed plugins derive a marketplace-qualified data root without injecte
   }), join(codexHome, 'plugins', 'data', 'zcode-vitry'));
 });
 
+test('installed plugins accept the Codex cachebuster build metadata used for local updates', () => {
+  const codexHome = resolve('codex-home-fixture');
+  assert.equal(resolvePluginDataRoot({
+    env: { CODEX_HOME: codexHome },
+    pluginRoot: join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0+codex.local-20260813-030655'),
+  }), join(codexHome, 'plugins', 'data', 'zcode-vitry'));
+});
+
 test('installed plugins accept only plugin-data injected for their active marketplace identity', () => {
   const codexHome = resolve('codex-home-fixture'); const pluginRoot = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0'); const expected = join(codexHome, 'plugins', 'data', 'zcode-vitry');
   assert.equal(resolvePluginDataRoot({ env: { CODEX_HOME: codexHome, PLUGIN_DATA: expected }, pluginRoot }), expected);
@@ -69,6 +77,9 @@ test('installed identity rejects malformed cache segments', () => {
     `${cache}${sep}..${sep}zcode${sep}0.1.0`,
     `${cache}${sep}vitry${sep}zcode${sep}..${sep}0.1.0`,
     join(cache, 'vitry', 'zcode', '0.1.0', 'unexpected'),
+    join(cache, 'vitry', 'zcode', '0.1.0++bad'),
+    join(cache, 'vitry', 'zcode', '+codex.local'),
+    join(cache, 'vitry', 'zcode', '0.1.0+'),
     `${join(cache, 'vitry', 'zcode', '0.1.0')}\u0000bad`,
   ]) assert.throws(() => resolvePluginDataRoot({ env: { CODEX_HOME: codexHome }, pluginRoot }), { code: 'PLUGIN_DATA_ROOT_INVALID' });
 });

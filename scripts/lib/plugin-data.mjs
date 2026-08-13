@@ -43,7 +43,8 @@ function installedIdentity(pluginRoot, codexHome) {
   const segments = relative(cache, canonical).split(sep);
   if (segments.length !== 3 || segments.some((segment) => !segment || segment === '.' || segment === '..' || hasControl(segment))) throw invalidRoot();
   const [marketplace, plugin, version] = segments;
-  if (!/^[A-Za-z0-9_-]+$/.test(marketplace) || plugin !== 'zcode' || !/^[A-Za-z0-9._-]+$/.test(version)) throw invalidRoot();
+  if (!/^[A-Za-z0-9_-]+$/.test(marketplace) || plugin !== 'zcode'
+    || !/^[A-Za-z0-9._-]+(?:\+[A-Za-z0-9._-]+)?$/.test(version)) throw invalidRoot();
   return { marketplace };
 }
 
