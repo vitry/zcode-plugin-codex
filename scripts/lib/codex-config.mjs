@@ -36,6 +36,7 @@ export async function runSetup(input) {
     if (!inspected.ok) return reportAndPersist(input, discovery, { ready: false }, 'untrusted', inspected.reason, false);
     const auth = await diagnoseZCodeAuth({ workspace: cwd, discovery, env: input.env }); if (!auth.ready) return reportAndPersist(input, discovery, auth, auth.status === 'incompatible' ? 'incompatible' : 'unauthenticated', auth.reason, false);
     const edits = []; if (config?.config?.features?.hooks !== true) edits.push({ keyPath: 'features.hooks', value: true, mergeStrategy: 'upsert' }); const trust = {}; for (const hook of inspected.hooks) if (!['trusted', 'managed'].includes(hook.trustStatus)) trust[hook.key] = { trusted_hash: hook.currentHash }; if (Object.keys(trust).length) edits.push({ keyPath: 'hooks.state', value: trust, mergeStrategy: 'upsert' });
+    await persistSetupGate(input, 'configuring', false);
     const packageJson = JSON.parse(await readFile(join(pluginRoot, 'package.json'), 'utf8'));
     const template = await readFile(join(pluginRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
     const role = await reconcileManagedRescueRole({
@@ -53,9 +54,16 @@ export async function runSetup(input) {
     });
     if (role.status === 'restart-required') return reportAndPersist(input, discovery, auth, 'restart-required', 'managed-role-changed', false);
     if (edits.length && !role.changed) {
-      await client.request('config/batchWrite', { edits, ...writeTarget, reloadUserConfig: true });
+      const writeResult = await client.request('config/batchWrite', { edits, ...writeTarget, reloadUserConfig: true });
       const updated = await client.request('config/read', { cwd, includeLayers: true });
-      if (!editsAreEffective(updated?.config, edits)) throw configPostWriteInvalid();
+      const activatedHooks = await client.request('hooks/list', { cwds: [cwd] });
+      const activated = await validateHooks(activatedHooks, cwd, pluginRoot, hooksPath);
+      if (!validConfigRead(updated)
+        || !writeMatchesTargetVersion(writeResult, updated, writeTarget)
+        || !editsAreEffective(updated.config, edits)
+        || !editsAreEffective(targetLayerConfig(updated, writeTarget.filePath), edits)
+        || !activated.ok
+        || !activated.hooks.every((hook) => ['trusted', 'managed'].includes(hook.trustStatus))) throw configPostWriteInvalid();
     }
     return reportAndPersist(input, discovery, auth, 'ready', null, true);
   } finally { await client?.close().catch(() => {}); }
@@ -98,6 +106,10 @@ async function hasEffectiveWritableRoot(config, dataRoot) {
 export function platformPathEqual(left, right, platform = process.platform) { return platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right; }
 function dataRootOverridden() { return new PluginError('PLUGIN_DATA_ROOT_OVERRIDDEN', 'The plugin data root is configured but overridden by a higher-precedence Codex layer.', { category: 'configuration', remedy: 'Add the ZCode plugin data root to the higher-precedence sandbox_workspace_write.writable_roots setting, restart Codex, and rerun $zcode:setup.' }); }
 function configPostWriteInvalid() { return new PluginError('CODEX_CONFIG_POST_WRITE_INVALID', 'Codex did not expose the requested setup configuration after reloading it.', { category: 'configuration', remedy: 'Resolve the Codex configuration override and rerun $zcode:setup.' }); }
+function validConfigRead(value) { return value && typeof value === 'object' && !Array.isArray(value) && value.config && typeof value.config === 'object' && !Array.isArray(value.config) && Array.isArray(value.layers) && (!Array.isArray(value.errors) || value.errors.length === 0) && !value.layers.some((layer) => Array.isArray(layer?.errors) && layer.errors.length); }
+function targetLayer(config, filePath) { return config.layers.find((layer) => layer?.name?.type === 'user' && (typeof layer.name.file === 'string' && layer.name.file ? layer.name.file : null) === filePath) ?? null; }
+function targetLayerConfig(config, filePath) { const layer = targetLayer(config, filePath); return layer?.config && typeof layer.config === 'object' && !Array.isArray(layer.config) ? layer.config : undefined; }
+function writeMatchesTargetVersion(writeResult, config, writeTarget) { const layer = targetLayer(config, writeTarget.filePath); return typeof writeResult?.version === 'string' && writeResult.version.length > 0 && typeof layer?.version === 'string' && layer.version === writeResult.version && (writeTarget.filePath === null || typeof writeResult.filePath !== 'string' || writeResult.filePath === writeTarget.filePath); }
 function editsAreEffective(config, edits) { return edits.every((edit) => configValueContains(configLeaf(config, edit.keyPath), edit.value)); }
 function configLeaf(config, keyPath) { let value = config; for (const part of keyPath.split('.')) { if (!value || typeof value !== 'object' || !Object.hasOwn(value, part)) return undefined; value = value[part]; } return value; }
 function configValueContains(actual, expected) {
@@ -130,9 +142,10 @@ async function persistSetupModelConfig(input) {
 }
 
 async function reportAndPersist(input, discovery, auth, status, reason, setupReady) {
-  const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.cwd }); const enabled = input.reviewGate ?? await priorGateEnabled(storage.directory); const gate = { version: 1, enabled, setupReady, status }; await atomicWriteJson(join(storage.directory, 'config', 'review-gate.json'), gate);
+  const enabled = await persistSetupGate(input, status, setupReady);
   return { status, ...(reason ? { reason } : {}), zcode: { path: discovery.path, version: discovery.version }, auth, hooks: { ready: setupReady }, reviewGate: { enabled }, modelPolicy: input.modelPolicy };
 }
+async function persistSetupGate(input, status, setupReady) { const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.cwd }); const enabled = input.reviewGate ?? await priorGateEnabled(storage.directory); await atomicWriteJson(join(storage.directory, 'config', 'review-gate.json'), { version: 1, enabled, setupReady, status }); return enabled; }
 async function priorGateEnabled(workspaceDirectory) { try { const { readJsonFile } = await import('./fs.mjs'); return (await readJsonFile(join(workspaceDirectory, 'config', 'review-gate.json'))).enabled === true; } catch { return false; } }
 
 export function pluginRootFromModuleUrl(moduleUrl) { return resolve(fileURLToPath(new URL('../..', moduleUrl))); }

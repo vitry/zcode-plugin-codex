@@ -46,6 +46,7 @@ process.on('exit', () => { if (process.env.FAKE_CODEX_EXIT_MARKER) process.stder
 
 let inputQueue = Promise.resolve();
 let configReadIndex = 0;
+let hooksListIndex = 0;
 const configStatePath = process.env.FAKE_CODEX_CONFIG_STATE
   ?? (process.env.FAKE_CODEX_RECORD ? `${process.env.FAKE_CODEX_RECORD}.config.json` : null);
 let currentConfig = JSON.parse(configStatePath && existsSync(configStatePath)
@@ -84,13 +85,17 @@ async function handleLine(line) {
     const result = Array.isArray(results) ? results[Math.min(configReadIndex++, results.length - 1)] : currentConfig;
     write({ id: request.id, result }); return;
   }
-  if (request.method === 'hooks/list') { write({ id: request.id, result: JSON.parse(process.env.FAKE_CODEX_HOOKS_RESULT ?? '{"data":[]}') }); return; }
+  if (request.method === 'hooks/list') {
+    const results = process.env.FAKE_CODEX_HOOKS_RESULTS_JSON ? JSON.parse(process.env.FAKE_CODEX_HOOKS_RESULTS_JSON) : null;
+    const result = Array.isArray(results) ? results[Math.min(hooksListIndex++, results.length - 1)] : JSON.parse(process.env.FAKE_CODEX_HOOKS_RESULT ?? '{"data":[]}');
+    write({ id: request.id, result }); return;
+  }
   if (request.method === 'config/batchWrite') {
     const configuredResults = process.env.FAKE_CODEX_CONFIG_RESULTS_JSON ? JSON.parse(process.env.FAKE_CODEX_CONFIG_RESULTS_JSON) : null;
     if (Array.isArray(configuredResults)) currentConfig = structuredClone(configuredResults[Math.min(configReadIndex, configuredResults.length - 1)]);
     else applyConfigEdits(request.params);
     if (configStatePath) writeFileSync(configStatePath, JSON.stringify(currentConfig));
-    write({ id: request.id, result: { filePath: process.env.FAKE_CODEX_CONFIG_PATH ?? request.params.filePath ?? '/tmp/config.toml', status: 'ok', version: 'version-2' } });
+    write({ id: request.id, result: { filePath: process.env.FAKE_CODEX_CONFIG_PATH ?? request.params.filePath ?? '/tmp/config.toml', status: 'ok', version: process.env.FAKE_CODEX_BATCH_VERSION ?? 'version-2' } });
   }
 }
 

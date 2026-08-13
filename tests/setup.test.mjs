@@ -48,6 +48,50 @@ async function recordSetupSession(ctx, sessionId, prompt) {
   });
 }
 
+async function currentRoleFallbackFixture({ reviewGate } = {}) {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  assert.equal((await runSetup(ctx.options)).status, 'ready');
+  const paths = managedRolePaths(await realpath(ctx.dataRoot));
+  const configFile = join(ctx.dataRoot, 'config.toml');
+  const managed = { description: MANAGED_ROLE_DESCRIPTION, config_file: paths.rolePath };
+  const targetConfig = { features: { hooks: false }, agents: { [MANAGED_ROLE_NAME]: managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] }, unrelated: { preserved: true } };
+  const before = { config: structuredClone(targetConfig), origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-2', config: structuredClone(targetConfig) }] };
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
+  await writeFile(join(storage.directory, 'config/review-gate.json'), `${JSON.stringify({ version: 1, enabled: true, setupReady: true, status: 'ready' })}\n`);
+  await writeFile(ctx.record, '');
+  await writeFile(`${ctx.record}.config.json`, JSON.stringify(before));
+  const pendingHooks = hookMetadata(root, 'untrusted');
+  const trustedHooks = hookMetadata(root, 'trusted');
+  const options = {
+    ...ctx.options,
+    ...(reviewGate === undefined ? {} : { reviewGate }),
+    env: {
+      ...ctx.options.env,
+      FAKE_CODEX_CONFIG_RESULT: JSON.stringify(before),
+      FAKE_CODEX_HOOKS_RESULTS_JSON: JSON.stringify([
+        { data: [{ cwd: ctx.cwd, errors: [], warnings: [], hooks: pendingHooks }] },
+        { data: [{ cwd: ctx.cwd, errors: [], warnings: [], hooks: trustedHooks }] },
+      ]),
+    },
+  };
+  return { ctx, paths, configFile, managed, before, targetConfig, storage, options, pendingHooks, trustedHooks };
+}
+
+function configuredFallbackState(fixture, { targetConfig, effectiveConfig = targetConfig, version = 'version-3', extraLayers = [], errors } = {}) {
+  return {
+    config: structuredClone(effectiveConfig),
+    origins: {},
+    ...(errors === undefined ? {} : { errors }),
+    layers: [{ name: { type: 'user', file: fixture.configFile }, version, config: structuredClone(targetConfig) }, ...extraLayers],
+  };
+}
+
+async function assertGateConfiguring(fixture, enabled = true) {
+  assert.deepEqual(JSON.parse(await readFile(join(fixture.storage.directory, 'config/review-gate.json'), 'utf8')), {
+    version: 1, enabled, setupReady: false, status: 'configuring',
+  });
+}
+
 test('compact SessionStart preserves the original trusted session freshness and source', async () => {
   const ctx = await context();
   await recordSession(ctx.dataRoot, { session_id: 'compact-session', cwd: ctx.cwd, source: 'startup' });
@@ -120,7 +164,8 @@ test('setup migrates a proven numeric-v1 Role and removes only the target legacy
     { keyPath: 'features.multi_agent_v2.hide_spawn_agent_metadata', value: null, mergeStrategy: 'upsert' },
     { keyPath: `agents.${MANAGED_ROLE_NAME}`, value: managed, mergeStrategy: 'upsert' },
   ]);
-  assert.deepEqual(after.layers[0].config.unrelated, { preserved: true });
+  const persistedConfig = JSON.parse(await readFile(`${ctx.record}.config.json`, 'utf8'));
+  assert.deepEqual(persistedConfig.layers[0].config.unrelated, { preserved: true });
   assert.equal(JSON.parse(await readFile(paths.receiptPath, 'utf8')).schemaVersion, '1.0.0');
 });
 
@@ -132,24 +177,65 @@ test('already enabled and trusted hooks still install the managed Rescue role be
 });
 
 test('current Role writes pending hooks and trust once, reloads them, and remains ready', async () => {
-  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
-  assert.equal((await runSetup(ctx.options)).status, 'ready');
-  const paths = managedRolePaths(await realpath(ctx.dataRoot));
-  const configFile = join(ctx.dataRoot, 'config.toml');
-  const managed = { description: MANAGED_ROLE_DESCRIPTION, config_file: paths.rolePath };
-  const current = {
-    config: { features: { hooks: false }, agents: { [MANAGED_ROLE_NAME]: managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } },
-    origins: {},
-    layers: [{ name: { type: 'user', file: configFile }, version: 'version-2', config: { features: { hooks: false }, agents: { [MANAGED_ROLE_NAME]: managed }, sandbox_workspace_write: { writable_roots: [ctx.dataRoot] } } }],
-  };
-  await writeFile(ctx.record, '');
-  await writeFile(`${ctx.record}.config.json`, JSON.stringify(current));
-  const pendingHooks = hookMetadata(root, 'untrusted');
-  const report = await runSetup({ ...ctx.options, env: { ...ctx.options.env, FAKE_CODEX_CONFIG_RESULT: JSON.stringify(current), FAKE_CODEX_HOOKS_RESULT: JSON.stringify({ data: [{ cwd: ctx.cwd, errors: [], warnings: [], hooks: pendingHooks }] }) } });
+  const fixture = await currentRoleFallbackFixture();
+  const desired = structuredClone(fixture.targetConfig);
+  desired.features.hooks = true;
+  desired.hooks = { state: Object.fromEntries(fixture.pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])) };
+  const after = configuredFallbackState(fixture, { targetConfig: desired });
+  const report = await runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, after]), FAKE_CODEX_BATCH_VERSION: 'version-3' } });
   assert.equal(report.status, 'ready', JSON.stringify(report));
-  const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
-  assert.deepEqual(calls.filter((call) => call.method).map((call) => call.method), ['initialize', 'initialized', 'config/read', 'hooks/list', 'config/batchWrite', 'config/read']);
+  const calls = (await readFile(fixture.ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.deepEqual(calls.filter((call) => call.method).map((call) => call.method), ['initialize', 'initialized', 'config/read', 'hooks/list', 'config/batchWrite', 'config/read', 'hooks/list']);
   assert.deepEqual(calls.find((call) => call.method === 'config/batchWrite').params.edits.map((edit) => edit.keyPath), ['features.hooks', 'hooks.state']);
+});
+
+test('hooks/trust-only fallback fails closed unless target config, CAS version, and runtime hook trust all activate', async (t) => {
+  await t.test('silent no-op', async () => {
+    const fixture = await currentRoleFallbackFixture();
+    await assert.rejects(runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, fixture.before]), FAKE_CODEX_BATCH_VERSION: 'version-2' } }), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
+    await assertGateConfiguring(fixture);
+  });
+
+  await t.test('effective config satisfied only by a higher layer', async () => {
+    const fixture = await currentRoleFallbackFixture();
+    const target = structuredClone(fixture.targetConfig);
+    const effective = structuredClone(target);
+    effective.features.hooks = true;
+    effective.hooks = { state: Object.fromEntries(fixture.pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])) };
+    const higher = { name: { type: 'project', file: join(fixture.ctx.cwd, '.codex/config.toml') }, version: 'project-1', config: { features: { hooks: true }, hooks: effective.hooks } };
+    const after = configuredFallbackState(fixture, { targetConfig: target, effectiveConfig: effective, extraLayers: [higher] });
+    await assert.rejects(runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, after]), FAKE_CODEX_BATCH_VERSION: 'version-3' } }), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
+    await assertGateConfiguring(fixture);
+  });
+
+  for (const [name, mutate] of [
+    ['malformed reload', (fixture) => ({ config: structuredClone(fixture.targetConfig), origins: {}, layers: null })],
+    ['top-level config errors', (fixture) => configuredFallbackState(fixture, { targetConfig: fixture.targetConfig, errors: [{ message: 'load failed' }] })],
+    ['target-layer config errors', (fixture) => { const state = configuredFallbackState(fixture, { targetConfig: fixture.targetConfig }); state.layers[0].errors = [{ message: 'layer failed' }]; return state; }],
+  ]) await t.test(name, async () => {
+    const fixture = await currentRoleFallbackFixture();
+    await assert.rejects(runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, mutate(fixture)]), FAKE_CODEX_BATCH_VERSION: 'version-3' } }), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
+    await assertGateConfiguring(fixture);
+  });
+
+  await t.test('stale batch result version preserves an explicit disabled gate preference', async () => {
+    const fixture = await currentRoleFallbackFixture({ reviewGate: false });
+    const desired = structuredClone(fixture.targetConfig); desired.features.hooks = true;
+    desired.hooks = { state: Object.fromEntries(fixture.pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])) };
+    const after = configuredFallbackState(fixture, { targetConfig: desired });
+    await assert.rejects(runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, after]), FAKE_CODEX_BATCH_VERSION: 'stale-version' } }), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
+    await assertGateConfiguring(fixture, false);
+  });
+
+  await t.test('runtime hooks remain untrusted after config reload', async () => {
+    const fixture = await currentRoleFallbackFixture();
+    const desired = structuredClone(fixture.targetConfig); desired.features.hooks = true;
+    desired.hooks = { state: Object.fromEntries(fixture.pendingHooks.map((hook) => [hook.key, { trusted_hash: hook.currentHash }])) };
+    const after = configuredFallbackState(fixture, { targetConfig: desired });
+    const untrusted = { data: [{ cwd: fixture.ctx.cwd, errors: [], warnings: [], hooks: fixture.pendingHooks }] };
+    await assert.rejects(runSetup({ ...fixture.options, env: { ...fixture.options.env, FAKE_CODEX_CONFIG_RESULTS_JSON: JSON.stringify([fixture.before, after]), FAKE_CODEX_BATCH_VERSION: 'version-3', FAKE_CODEX_HOOKS_RESULTS_JSON: JSON.stringify([untrusted, untrusted]) } }), { code: 'CODEX_CONFIG_POST_WRITE_INVALID' });
+    await assertGateConfiguring(fixture);
+  });
 });
 
 test('setup accepts Codex normalized null Role defaults while preserving the exact managed layer', async () => {
