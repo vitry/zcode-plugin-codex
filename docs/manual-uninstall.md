@@ -22,7 +22,7 @@ Inspect `<plugin-data-root>/agent-roles/zcode-rescue.receipt.json`. Stop if it i
 
 If every check succeeds, remove only the proven `agents.zcode-rescue` registration from `configTarget.filePath`, then remove the matching Role file and receipt. A stale `zcode-rescue.transaction.json` and `agent-roles/lock/` are transaction/lock state; remove them only after all jobs and setup processes have stopped and the same receipt, Role bytes, and registration establish ownership.
 
-ZCode does not own the Codex host setting `features.hide_spawn_agent_metadata`. Remove an exact target-layer `hide_spawn_agent_metadata = false` only when a valid numeric-v1 receipt plus the matching plugin identity, `configTarget.filePath`, Role path, Role SHA-256, and exact `agents.zcode-rescue` registration prove that this older ZCode setup wrote that leaf. Never remove `true`, a project-layer value, a foreign value, or any unproven value. A current `"1.0.0"` receipt is not legacy metadata ownership evidence.
+ZCode does not own the Codex host setting `features.multi_agent_v2.hide_spawn_agent_metadata`. Remove an exact target-layer `features.multi_agent_v2.hide_spawn_agent_metadata = false` only when a valid numeric-v1 receipt plus the matching plugin identity, `configTarget.filePath`, Role path, Role SHA-256, and exact `agents.zcode-rescue` registration prove that this older ZCode setup wrote that leaf. Never remove `true`, a project-layer value, a foreign value, or any unproven value. A current `"1.0.0"` receipt is not legacy metadata ownership evidence.
 
 ## Data retained by default
 
@@ -61,7 +61,7 @@ ZCode 没有插件卸载生命周期 hook。只卸载插件文件会留下稳定
 
 全部验证成功后，只移除 `configTarget.filePath` 中已证明归属的 `agents.zcode-rescue` 注册，再移除匹配的 Role 文件和收据。陈旧的 `zcode-rescue.transaction.json` 与 `agent-roles/lock/` 属于事务/锁状态；仅当所有任务和 setup 进程均已停止，且同一收据、Role 字节及注册能证明归属时才移除。
 
-ZCode 不拥有 Codex host 设置 `features.hide_spawn_agent_metadata`。只有当有效 numeric-v1 收据连同匹配的插件 identity、`configTarget.filePath`、Role 路径、Role SHA-256 和精确 `agents.zcode-rescue` 注册证明旧版 ZCode setup 写入了该目标层配置叶时，才可移除精确的 `hide_spawn_agent_metadata = false`。绝不删除 `true`、项目层值、外部值或任何无法证明归属的值。当前 `"1.0.0"` 收据不能作为旧 metadata 的所有权证据。
+ZCode 不拥有 Codex host 设置 `features.multi_agent_v2.hide_spawn_agent_metadata`。只有当有效 numeric-v1 收据连同匹配的插件 identity、`configTarget.filePath`、Role 路径、Role SHA-256 和精确 `agents.zcode-rescue` 注册证明旧版 ZCode setup 写入了该目标层配置叶时，才可移除精确的 `features.multi_agent_v2.hide_spawn_agent_metadata = false`。绝不删除 `true`、项目层值、外部值或任何无法证明归属的值。当前 `"1.0.0"` 收据不能作为旧 metadata 的所有权证据。
 
 ## 默认保留的数据
 

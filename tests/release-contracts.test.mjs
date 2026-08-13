@@ -326,6 +326,7 @@ test('release package ships receipt-gated manual uninstall guidance', () => {
   const english = read('README.md');
   const chinese = read('README.zh-CN.md');
   const guide = read(guidePath);
+  const [englishGuide, chineseGuide] = guide.split('\n---\n');
   const packageJson = JSON.parse(read('package.json'));
 
   for (const source of [english, chinese]) assert.match(source, /\[.*(?:uninstall|卸载|清理).*\]\(docs\/manual-uninstall\.md\)/i);
@@ -338,7 +339,12 @@ test('release package ships receipt-gated manual uninstall guidance', () => {
   assert.match(guide, /结束或取消.{0,120}活动任务/is);
   assert.match(guide, /plugin\.identity.{0,160}configTarget\.filePath.{0,160}role\.path.{0,160}role\.sha256/is);
   assert.match(guide, /agents\.zcode-rescue/);
-  assert.match(guide, /numeric-v1.{0,240}hide_spawn_agent_metadata\s*=\s*false/is);
+  for (const section of [englishGuide, chineseGuide]) {
+    assert.match(section, /features\.multi_agent_v2\.hide_spawn_agent_metadata/);
+    assert.match(section, /features\.multi_agent_v2\.hide_spawn_agent_metadata\s*=\s*false/);
+    assert.match(section, /numeric-v1/i);
+    assert.doesNotMatch(section, /`features\.hide_spawn_agent_metadata`/);
+  }
   assert.match(guide, /never (?:remove|delete).{0,160}(?:true|project layer|foreign|unproven)/is);
   assert.match(guide, /绝不(?:移除|删除).{0,160}(?:true|项目层|外部|无法证明)/is);
   for (const category of ['jobs/', 'job-owners/', 'job-specs/', 'prompts/', 'results/', 'progress', 'logs', 'history']) assert.match(guide, new RegExp(category.replace('/', '\\/'), 'i'));
