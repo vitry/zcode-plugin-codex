@@ -126,12 +126,26 @@ test('current-turn result follows a new user message when send input id differs 
   assert.equal(extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), 'current');
 });
 
+test('current-turn result keeps legacy distinct-id linkage without semantics or source', () => {
+  const snapshot = { messages: [user('legacy-user'), assistant([{ type: 'text', text: 'legacy result' }], undefined, undefined, 'legacy-assistant', 'legacy-user')] };
+  assert.equal(extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), 'legacy result');
+});
+
 test('current-turn result rejects ambiguous new real prompt roots instead of guessing the last one', () => {
   const snapshot = { messages: [
     user('user-first'),
     assistant([{ type: 'text', text: 'first' }], undefined, undefined, 'assistant-first', 'user-first'),
     user('user-second'),
     assistant([{ type: 'text', text: 'second' }], undefined, undefined, 'assistant-second', 'user-second'),
+  ] };
+  assert.throws(() => extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), { code: 'ZCODE_RESULT_MISSING' });
+});
+
+test('current-turn result rejects multiple new real prompt roots even when only one has a response', () => {
+  const snapshot = { messages: [
+    user('user-without-response'),
+    user('user-with-response'),
+    assistant([{ type: 'text', text: 'must not guess' }], undefined, undefined, 'assistant-current', 'user-with-response'),
   ] };
   assert.throws(() => extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), { code: 'ZCODE_RESULT_MISSING' });
 });
@@ -149,6 +163,14 @@ test('current-turn result excludes synthetic, model-only and background prompt r
     const response = assistant([{ type: 'text', text: 'unrelated' }], undefined, semantics('agent_runtime', 'assistant_response'), `assistant-${rootId}`, rootId);
     assert.throws(() => extractFinalResult({ messages: [root, response] }, 'rescue', boundary), { code: 'ZCODE_RESULT_MISSING' });
   }
+});
+
+test('current-turn result excludes legacy user messages with a background source', () => {
+  const snapshot = { messages: [
+    user('user-background-source', { source: 'background_task' }),
+    assistant([{ type: 'text', text: 'background' }], undefined, undefined, 'assistant-background', 'user-background-source'),
+  ] };
+  assert.throws(() => extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), { code: 'ZCODE_RESULT_MISSING' });
 });
 
 test('current-turn result rejects direct and indirect assistants with non-response semantics', () => {

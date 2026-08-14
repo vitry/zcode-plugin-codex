@@ -331,9 +331,9 @@ export function extractFinalResult(snapshot, command, turnBoundary = {}) {
   let assistant;
   if (directAssistants.length) assistant = directAssistants.at(-1);
   else if (turnBoundary.inputId) {
-    const rootedResponses = messages.filter((/** @type {any} */ message) => isCurrentUserRoot(message, beforeMessageIds)).map((/** @type {any} */ root) => newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === root.info.messageId)).filter((/** @type {any[]} */ responses) => responses.length > 0);
-    if (rootedResponses.length !== 1) throw missingResult();
-    assistant = rootedResponses[0].at(-1);
+    const currentUserRoots = messages.filter((/** @type {any} */ message) => isCurrentUserRoot(message, beforeMessageIds));
+    if (currentUserRoots.length !== 1) throw missingResult();
+    assistant = newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === currentUserRoots[0].info.messageId).at(-1);
   } else assistant = newAssistants.at(-1);
   if (['hidden', 'debug'].includes(assistant?.info?.semantics?.uiVisibility)) throw missingResult();
   const parts = assistant?.parts?.filter((/** @type {any} */ part) => part?.type === 'text' && part.ignored !== true && typeof part.text === 'string' && part.text.length > 0).map((/** @type {any} */ part) => part.text) ?? [];
@@ -356,7 +356,7 @@ function isAssistantResponse(message, beforeMessageIds) {
 /** @param {any} message @param {Set<string>} beforeMessageIds */
 function isCurrentUserRoot(message, beforeMessageIds) {
   const info = message?.info; const semantics = info?.semantics;
-  return info?.role === 'user' && typeof info.messageId === 'string' && !beforeMessageIds.has(info.messageId) && info.synthetic !== true && info.visibility !== 'model-only'
+  return info?.role === 'user' && typeof info.messageId === 'string' && !beforeMessageIds.has(info.messageId) && info.synthetic !== true && info.visibility !== 'model-only' && info.source === undefined
     && (semantics === undefined || semantics.origin === 'real_user' && semantics.kind === 'user_prompt' && semantics.uiVisibility === 'visible');
 }
 /** @param {any} snapshot */

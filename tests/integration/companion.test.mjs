@@ -1000,6 +1000,14 @@ test('resumed rescue rejects an unrelated-only new assistant result', async () =
   assert.equal(jobs.filter((/** @type {any} */ job) => job.status === 'failed').length, 1);
 });
 
+test('foreground rescue accepts a 0.16.3 result linked through a distinct user message id', async () => {
+  const context = await fixture(); const linkageRecord = join(context.directory, 'distinct-linkage.json');
+  const result = await companion(context, ['rescue', '--fresh', 'current distinct id'], { FAKE_ZCODE_VERSION: '0.16.3', FAKE_ZCODE_GATE_RESULT: 'distinct-id result', FAKE_ZCODE_LINKAGE_RECORD: linkageRecord });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.job.status, 'succeeded'); assert.equal(result.json.result, 'distinct-id result');
+  const linkage = JSON.parse(await readFile(linkageRecord, 'utf8'));
+  assert.notEqual(linkage.inputId, linkage.userMessageId); assert.equal(linkage.assistantParentMessageId, linkage.userMessageId);
+});
+
 test('foreground launch failure durably fails its reserved job', async () => {
   const context = await fixture();
   const failed = await companion(context, ['review'], { FAKE_ZCODE_VERSION: '0.1.0' });
