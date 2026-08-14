@@ -326,11 +326,15 @@ async function defaultSyncDirectory(path) {
 export function extractFinalResult(snapshot, command, turnBoundary = {}) {
   const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
   const beforeMessageIds = turnBoundary.beforeMessageIds ?? new Set();
-  const newAssistants = messages.filter((/** @type {any} */ message) => message?.info?.role === 'assistant' && typeof message.info.messageId === 'string' && !beforeMessageIds.has(message.info.messageId));
+  const newAssistants = messages.filter((/** @type {any} */ message) => isAssistantResponse(message, beforeMessageIds));
   const directAssistants = turnBoundary.inputId ? newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === turnBoundary.inputId) : [];
-  const newUserIds = new Set(messages.filter((/** @type {any} */ message) => message?.info?.role === 'user' && typeof message.info.messageId === 'string' && !beforeMessageIds.has(message.info.messageId)).map((/** @type {any} */ message) => message.info.messageId));
-  const linkedAssistants = directAssistants.length ? directAssistants : newAssistants.filter((/** @type {any} */ message) => newUserIds.has(message.info.parentMessageId));
-  const assistant = (turnBoundary.inputId ? linkedAssistants : newAssistants).at(-1);
+  let assistant;
+  if (directAssistants.length) assistant = directAssistants.at(-1);
+  else if (turnBoundary.inputId) {
+    const rootedResponses = messages.filter((/** @type {any} */ message) => isCurrentUserRoot(message, beforeMessageIds)).map((/** @type {any} */ root) => newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === root.info.messageId)).filter((/** @type {any[]} */ responses) => responses.length > 0);
+    if (rootedResponses.length !== 1) throw missingResult();
+    assistant = rootedResponses[0].at(-1);
+  } else assistant = newAssistants.at(-1);
   if (['hidden', 'debug'].includes(assistant?.info?.semantics?.uiVisibility)) throw missingResult();
   const parts = assistant?.parts?.filter((/** @type {any} */ part) => part?.type === 'text' && part.ignored !== true && typeof part.text === 'string' && part.text.length > 0).map((/** @type {any} */ part) => part.text) ?? [];
   if (!parts.length) throw missingResult();
@@ -342,6 +346,18 @@ export function extractFinalResult(snapshot, command, turnBoundary = {}) {
   }
   if (!validateJsonSchema(structured, REVIEW_OUTPUT_SCHEMA)) throw invalidReviewResult();
   return `${JSON.stringify(structured, null, 2)}\n`;
+}
+/** @param {any} message @param {Set<string>} beforeMessageIds */
+function isAssistantResponse(message, beforeMessageIds) {
+  const semantics = message?.info?.semantics;
+  return message?.info?.role === 'assistant' && typeof message.info.messageId === 'string' && !beforeMessageIds.has(message.info.messageId)
+    && (semantics === undefined || semantics.origin === 'agent_runtime' && semantics.kind === 'assistant_response');
+}
+/** @param {any} message @param {Set<string>} beforeMessageIds */
+function isCurrentUserRoot(message, beforeMessageIds) {
+  const info = message?.info; const semantics = info?.semantics;
+  return info?.role === 'user' && typeof info.messageId === 'string' && !beforeMessageIds.has(info.messageId) && info.synthetic !== true && info.visibility !== 'model-only'
+    && (semantics === undefined || semantics.origin === 'real_user' && semantics.kind === 'user_prompt' && semantics.uiVisibility === 'visible');
 }
 /** @param {any} snapshot */
 function snapshotMessageIds(snapshot) { return new Set((Array.isArray(snapshot?.messages) ? snapshot.messages : []).map((/** @type {any} */ message) => message?.info?.messageId).filter((/** @type {unknown} */ value) => typeof value === 'string')); }

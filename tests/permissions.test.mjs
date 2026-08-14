@@ -66,8 +66,11 @@ function assistant(parts, structured, semantics, messageId = 'assistant-current'
   return { info: { role: 'assistant', messageId, parentMessageId, ...(structured === undefined ? {} : { structured }), ...(semantics === undefined ? {} : { semantics }) }, parts };
 }
 
-/** @param {string} messageId */
-function user(messageId) { return { info: { role: 'user', messageId }, parts: [{ type: 'text', text: 'prompt' }] }; }
+/** @param {string} messageId @param {Record<string,unknown>} [info] */
+function user(messageId, info = {}) { return { info: { role: 'user', messageId, ...info }, parts: [{ type: 'text', text: 'prompt' }] }; }
+
+/** @param {string} origin @param {string} kind @param {string} [uiVisibility] */
+function semantics(origin, kind, uiVisibility = 'visible') { return { origin, kind, uiVisibility, providerVisibility: 'visible', transcriptVisibility: 'visible' }; }
 
 test('review result prefers valid structured findings anchored by visible final text', () => {
   const structured = { findings: [{ severity: 'high', file: 'src/a.js', line: 7, evidence: 'boom', fix: 'repair' }] };
@@ -116,11 +119,69 @@ test('current-turn result prefers assistant messages linked to the send input ov
 
 test('current-turn result follows a new user message when send input id differs from its message id', () => {
   const snapshot = { messages: [
-    user('user-current'),
-    assistant([{ type: 'text', text: 'current' }], undefined, undefined, 'assistant-current', 'user-current'),
+    user('user-current', { synthetic: false, visibility: 'user-visible', semantics: semantics('real_user', 'user_prompt') }),
+    assistant([{ type: 'text', text: 'current' }], undefined, semantics('agent_runtime', 'assistant_response'), 'assistant-current', 'user-current'),
     assistant([{ type: 'text', text: 'unrelated' }], undefined, undefined, 'assistant-other', 'user-other'),
   ] };
   assert.equal(extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), 'current');
+});
+
+test('current-turn result rejects ambiguous new real prompt roots instead of guessing the last one', () => {
+  const snapshot = { messages: [
+    user('user-first'),
+    assistant([{ type: 'text', text: 'first' }], undefined, undefined, 'assistant-first', 'user-first'),
+    user('user-second'),
+    assistant([{ type: 'text', text: 'second' }], undefined, undefined, 'assistant-second', 'user-second'),
+  ] };
+  assert.throws(() => extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), { code: 'ZCODE_RESULT_MISSING' });
+});
+
+test('current-turn result excludes synthetic, model-only and background prompt roots', () => {
+  const boundary = { beforeMessageIds: new Set(), inputId: 'input-current' };
+  const cases = [
+    user('user-synthetic', { synthetic: true }),
+    user('user-model-only', { visibility: 'model-only' }),
+    user('user-background', { semantics: semantics('agent_runtime', 'background_notification') }),
+    user('user-hidden-prompt', { semantics: semantics('real_user', 'user_prompt', 'hidden') }),
+  ];
+  for (const root of cases) {
+    const rootId = root.info.messageId;
+    const response = assistant([{ type: 'text', text: 'unrelated' }], undefined, semantics('agent_runtime', 'assistant_response'), `assistant-${rootId}`, rootId);
+    assert.throws(() => extractFinalResult({ messages: [root, response] }, 'rescue', boundary), { code: 'ZCODE_RESULT_MISSING' });
+  }
+});
+
+test('current-turn result rejects direct and indirect assistants with non-response semantics', () => {
+  const indirect = { messages: [
+    user('user-current', { semantics: semantics('real_user', 'user_prompt') }),
+    assistant([{ type: 'text', text: 'background' }], undefined, semantics('agent_runtime', 'background_notification'), 'assistant-background', 'user-current'),
+  ] };
+  const direct = { messages: [assistant([{ type: 'text', text: 'background' }], undefined, semantics('agent_runtime', 'background_notification'), 'assistant-background', 'input-current')] };
+  const boundary = { beforeMessageIds: new Set(), inputId: 'input-current' };
+  assert.throws(() => extractFinalResult(indirect, 'rescue', boundary), { code: 'ZCODE_RESULT_MISSING' });
+  assert.throws(() => extractFinalResult(direct, 'rescue', boundary), { code: 'ZCODE_RESULT_MISSING' });
+});
+
+test('direct input linkage locks hidden or empty results without falling back to an indirect root', () => {
+  const boundary = { beforeMessageIds: new Set(), inputId: 'input-current' };
+  for (const direct of [
+    assistant([{ type: 'text', text: 'hidden' }], undefined, semantics('agent_runtime', 'assistant_response', 'hidden'), 'assistant-direct-hidden', 'input-current'),
+    assistant([{ type: 'text', text: '' }], undefined, semantics('agent_runtime', 'assistant_response'), 'assistant-direct-empty', 'input-current'),
+  ]) {
+    const snapshot = { messages: [user('user-other'), assistant([{ type: 'text', text: 'fallback' }], undefined, undefined, 'assistant-other', 'user-other'), direct] };
+    assert.throws(() => extractFinalResult(snapshot, 'rescue', boundary), { code: 'ZCODE_RESULT_MISSING' });
+  }
+});
+
+test('the last response on the unique prompt root is locked even when hidden or empty', () => {
+  const boundary = { beforeMessageIds: new Set(), inputId: 'input-current' };
+  for (const last of [
+    assistant([{ type: 'text', text: 'hidden' }], undefined, semantics('agent_runtime', 'assistant_response', 'hidden'), 'assistant-last-hidden', 'user-current'),
+    assistant([{ type: 'text', text: '' }], undefined, semantics('agent_runtime', 'assistant_response'), 'assistant-last-empty', 'user-current'),
+  ]) {
+    const snapshot = { messages: [user('user-current'), assistant([{ type: 'text', text: 'stale visible' }], undefined, undefined, 'assistant-first', 'user-current'), last] };
+    assert.throws(() => extractFinalResult(snapshot, 'rescue', boundary), { code: 'ZCODE_RESULT_MISSING' });
+  }
 });
 
 test('current-turn result does not follow an assistant linked to a historical user message', () => {
