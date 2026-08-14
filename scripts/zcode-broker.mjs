@@ -12,7 +12,7 @@ import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, ensurePrivateDirectory, withFileLock } from './lib/fs.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './lib/identifier.mjs';
 import { spawnDaemon } from './lib/process.mjs';
-import { validSnapshot } from './lib/zcode-schema.mjs';
+import { validCreateSnapshot } from './lib/zcode-schema.mjs';
 import { BoundedWriter, closeProtocolUntil, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './lib/zcode-protocol.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 
@@ -374,7 +374,7 @@ export class ZCodeBroker {
           } catch (error) { if (frame.method === 'session/send') { protocol.abortTurn(frame.params.sessionId); this.settleTurnPermissions(frame.params.sessionId, sendToken); if (this.activeSessionSockets.get(frame.params.sessionId)?.token === sendToken) this.activeSessionSockets.delete(frame.params.sessionId); if (this.admittingSessions.get(frame.params.sessionId) === sendToken) this.admittingSessions.delete(frame.params.sessionId); this.activeSessions.delete(frame.params.sessionId); this.scheduleIdleShutdown(); } if (subscriptionToken && this.pendingConversationTopics.get(frame.params.topic)?.token === subscriptionToken) this.pendingConversationTopics.delete(frame.params.topic); throw error; }
           if (frame.method === 'session/create') {
             const createdSessionId = result?.session?.sessionId;
-            if (!isSafeIdentifier(createdSessionId) || typeof requestedSessionId === 'string' && createdSessionId !== requestedSessionId || !validSnapshot(result, createdSessionId, this.options.workspace)) { this.clearProtocolGeneration(protocol); throw invalidSessionCreateResult(); }
+            if (!isSafeIdentifier(createdSessionId) || typeof requestedSessionId === 'string' && createdSessionId !== requestedSessionId || !validCreateSnapshot(result, createdSessionId, this.options.workspace)) { this.clearProtocolGeneration(protocol); throw invalidSessionCreateResult(); }
             const anonymousCreate = typeof requestedSessionId !== 'string';
             if (anonymousCreate && this.sessionOwners.has(createdSessionId)) { this.clearProtocolGeneration(protocol); throw invalidSessionCreateResult(); }
             if (!this.admission.ownerRequestCurrent(ownerAdmission)) throw brokerInputError();

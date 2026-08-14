@@ -213,9 +213,20 @@ input.on('line', async (line) => {
         try { objectiveResult = `authorized:${JSON.parse(encoded)}`; } catch { objectiveResult = 'authorized-objective-missing'; }
       }
       const session = sessions.get(p.sessionId); if (session) {
-        const review = /ZCODE_REVIEW_OUTPUT_SCHEMA:\s*\{/i.test(trustedPrompt); const suffix = `turn-${sendCount}`; const inputId = /current unrelated/i.test(p.content) ? 'input-unrelated' : p.inputId;
+        const review = /ZCODE_REVIEW_OUTPUT_SCHEMA:\s*\{/i.test(trustedPrompt); const suffix = `turn-${sendCount}`;
+        const linkageMode = /current unrelated/i.test(p.content) ? 'orphan-assistant' : /current distinct id/i.test(p.content) ? 'distinct-user' : 'direct-input';
+        const inputId = linkageMode === 'direct-input' ? p.inputId : undefined;
         if (process.env.FAKE_ZCODE_RECOVERY_CONTROL) { session.messages.push(...messages(p.sessionId, session.settings.model.current)); session.pendingResult = { review, suffix, inputId }; }
-        else session.messages.push(...resultMessages(p.sessionId, session.settings.model.current, review, suffix, /current hidden/i.test(p.content) ? 'reasoning-only' : undefined, inputId, objectiveResult));
+        else {
+          let turnMessages = resultMessages(p.sessionId, session.settings.model.current, review, suffix, /current hidden/i.test(p.content) ? 'reasoning-only' : undefined, inputId, objectiveResult);
+          if (linkageMode === 'orphan-assistant') turnMessages = turnMessages.slice(1);
+          if (linkageMode === 'distinct-user') {
+            turnMessages[0].info.semantics = { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' };
+            turnMessages[1].info.semantics = { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'visible', providerVisibility: 'visible', transcriptVisibility: 'visible' };
+            if (process.env.FAKE_ZCODE_LINKAGE_RECORD) await writeFile(process.env.FAKE_ZCODE_LINKAGE_RECORD, JSON.stringify({ inputId: p.inputId, userMessageId: turnMessages[0].info.messageId, assistantParentMessageId: turnMessages[1].info.parentMessageId }));
+          }
+          session.messages.push(...turnMessages);
+        }
       }
       const stateRevision = process.env.FAKE_ZCODE_BARRIER === '1' ? 1000 : 1;
       if (session) session.stateRevision = stateRevision;

@@ -215,6 +215,24 @@ async function withClient(callback, env = {}, options = {}) {
   try { await callback(client, record); } finally { await client.close(); await rm(directory, { recursive: true, force: true }); }
 }
 
+async function withFreshManagedClient(callback, env = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-managed-client-'));
+  const launch = { command: process.execPath, args: [fixture], target: fixture };
+  const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory });
+  const identityPath = join(storage.directory, 'broker', 'identity.json');
+  let client; let identity;
+  try {
+    client = await createManagedZCodeClient({ dataRoot: directory, workspace: directory, launch, ownerId: 'fresh-managed-client-owner', env: { ...process.env, ...env } });
+    await callback(client, directory);
+  } finally {
+    try { identity = JSON.parse(await readFile(identityPath, 'utf8')); } catch { /* broker did not publish an identity */ }
+    await client?.close().catch(() => {});
+    if (identity?.pid && processAlive(identity.pid)) try { process.kill(identity.pid, 'SIGTERM'); } catch { /* already exited */ }
+    if (identity?.pid) await waitForProcessExit(identity.pid);
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 test('typed operations use real 0.16.1 method and parameter shapes', async () => {
   await withClient(async (client, record) => {
     const model = { providerId: 'zai', modelId: 'glm-5', variant: 'fast' };
@@ -244,6 +262,21 @@ test('ordinary session/create accepts the bounded 0.16.1 initial empty-session s
     assert.equal(created.projection.sessionId, 'unknown');
     assert.deepEqual(created.messages, []);
   }, { FAKE_ZCODE_EMPTY_SESSION: '1' });
+});
+
+test('fresh managed broker session/create accepts the bounded initial empty-session snapshot', async () => {
+  await withFreshManagedClient(async (client, directory) => {
+    const created = await client.createSession({ workspace: directory });
+    assert.equal(created.session.sessionId, 'session-1');
+    assert.equal(created.projection.sessionId, 'unknown');
+    assert.deepEqual(created.messages, []);
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' });
+});
+
+test('fresh managed broker session/create rejects conflicting or non-empty unknown-projection snapshots', async (t) => {
+  for (const variant of ['conflict', 'non-idle', 'event-seq', 'messages', 'target']) await t.test(variant, () => withFreshManagedClient(async (client, directory) => {
+    await assert.rejects(client.createSession({ workspace: directory }), { code: 'ZCODE_OUTPUT_INVALID' });
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1', FAKE_ZCODE_EMPTY_SESSION_VARIANT: variant }));
 });
 
 test('ordinary session/create rejects conflicting or non-empty unknown-projection snapshots', async (t) => {
@@ -904,6 +937,43 @@ test('broker validates snapshot workspace and every current-session ID before co
       assert.equal(broker.protocol, null);
       assert.ok(retiredProtocol);
     } finally { await client.close(); await broker.close(); await rm(directory, { recursive: true, force: true }); }
+  });
+});
+
+test('broker rejects invalid empty-create snapshots before ownership persistence or list exposure', async (t) => {
+  const variants = {
+    conflict: (snapshot) => { snapshot.projection.sessionId = 'other-session'; },
+    'non-idle': (snapshot) => { snapshot.projection.status = 'running'; },
+    'event-seq': (snapshot) => { snapshot.runtime.eventSeq = 1; },
+    messages: (snapshot, sessionId) => {
+      const messageId = 'non-empty-message';
+      snapshot.messages = [{ info: { messageId, sessionId, role: 'user', time: { created: 1 }, agent: 'build', model: snapshot.settings.model.current }, parts: [{ partId: 'non-empty-part', sessionId, messageId, type: 'text', text: 'not empty' }] }];
+    },
+    target: (snapshot, sessionId) => { snapshot.projection.target = { sessionId, targetId: 'non-empty-target', objective: 'not empty', summaryTitle: null, status: 'active', tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 }; },
+  };
+  for (const [variant, mutate] of Object.entries(variants)) await t.test(variant, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-empty-create-state-'));
+    const endpoint = join(directory, 'broker.sock'); const ownershipPath = join(directory, 'session-owners.json'); const sessionId = `invalid-empty-${variant}`; const ownerId = `invalid-empty-${variant}-owner`;
+    const writes = []; const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} };
+    const broker = newTestBroker({ endpoint, ownershipPath, brokerToken: '1'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+    broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId);
+    const invalid = brokerCreateSnapshot(sessionId, directory); invalid.projection.sessionId = 'unknown'; mutate(invalid, sessionId);
+    let persistCalls = 0; const persistOwnership = broker.persistOwnership.bind(broker);
+    broker.persistOwnership = async (...args) => { persistCalls += 1; return persistOwnership(...args); };
+    const rejectedProtocol = { request: async () => invalid, close: async () => {} }; broker.protocol = rejectedProtocol;
+    try {
+      await broker.handleLocal(socket, JSON.stringify({ id: 90, method: 'session/create', params: brokerCreateParams(directory) }));
+      assert.equal(writes.find((frame) => frame.id === 90)?.error?.data?.pluginError?.code, 'ZCODE_OUTPUT_INVALID');
+      assert.equal(persistCalls, 0, 'invalid create must be rejected before persistOwnership');
+      assert.equal(broker.sessionOwners.has(sessionId), false);
+      const durable = await readFile(ownershipPath, 'utf8').then((value) => JSON.parse(value).sessions, (error) => error.code === 'ENOENT' ? {} : Promise.reject(error));
+      assert.equal(Object.hasOwn(durable, sessionId), false);
+      assert.equal(broker.protocol, null, 'invalid create must clear its protocol generation');
+      for (let index = 0; index < 20 && broker.retiredProtocolGeneration; index += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+      const replacement = { request: async () => ({ sessions: [invalid.session] }), close: async () => {} }; broker.protocol = replacement;
+      await broker.handleLocal(socket, JSON.stringify({ id: 91, method: 'session/list', params: {} }));
+      assert.deepEqual(writes.find((frame) => frame.id === 91)?.result, { sessions: [] });
+    } finally { await broker.close(); await rm(directory, { recursive: true, force: true }); }
   });
 });
 
