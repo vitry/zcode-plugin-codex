@@ -940,6 +940,43 @@ test('broker validates snapshot workspace and every current-session ID before co
   });
 });
 
+test('broker rejects invalid empty-create snapshots before ownership persistence or list exposure', async (t) => {
+  const variants = {
+    conflict: (snapshot) => { snapshot.projection.sessionId = 'other-session'; },
+    'non-idle': (snapshot) => { snapshot.projection.status = 'running'; },
+    'event-seq': (snapshot) => { snapshot.runtime.eventSeq = 1; },
+    messages: (snapshot, sessionId) => {
+      const messageId = 'non-empty-message';
+      snapshot.messages = [{ info: { messageId, sessionId, role: 'user', time: { created: 1 }, agent: 'build', model: snapshot.settings.model.current }, parts: [{ partId: 'non-empty-part', sessionId, messageId, type: 'text', text: 'not empty' }] }];
+    },
+    target: (snapshot, sessionId) => { snapshot.projection.target = { sessionId, targetId: 'non-empty-target', objective: 'not empty', summaryTitle: null, status: 'active', tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 }; },
+  };
+  for (const [variant, mutate] of Object.entries(variants)) await t.test(variant, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'zcode-broker-empty-create-state-'));
+    const endpoint = join(directory, 'broker.sock'); const ownershipPath = join(directory, 'session-owners.json'); const sessionId = `invalid-empty-${variant}`; const ownerId = `invalid-empty-${variant}-owner`;
+    const writes = []; const socket = { writable: true, destroyed: false, zcodeWriter: { write: (line) => writes.push(JSON.parse(line)) }, destroy() {} };
+    const broker = newTestBroker({ endpoint, ownershipPath, brokerToken: '1'.repeat(64), workspace: directory, launch: { command: process.execPath, args: [fixture], target: fixture } });
+    broker.authenticated.add(socket); broker.socketOwnerIds.set(socket, ownerId);
+    const invalid = brokerCreateSnapshot(sessionId, directory); invalid.projection.sessionId = 'unknown'; mutate(invalid, sessionId);
+    let persistCalls = 0; const persistOwnership = broker.persistOwnership.bind(broker);
+    broker.persistOwnership = async (...args) => { persistCalls += 1; return persistOwnership(...args); };
+    const rejectedProtocol = { request: async () => invalid, close: async () => {} }; broker.protocol = rejectedProtocol;
+    try {
+      await broker.handleLocal(socket, JSON.stringify({ id: 90, method: 'session/create', params: brokerCreateParams(directory) }));
+      assert.equal(writes.find((frame) => frame.id === 90)?.error?.data?.pluginError?.code, 'ZCODE_OUTPUT_INVALID');
+      assert.equal(persistCalls, 0, 'invalid create must be rejected before persistOwnership');
+      assert.equal(broker.sessionOwners.has(sessionId), false);
+      const durable = await readFile(ownershipPath, 'utf8').then((value) => JSON.parse(value).sessions, (error) => error.code === 'ENOENT' ? {} : Promise.reject(error));
+      assert.equal(Object.hasOwn(durable, sessionId), false);
+      assert.equal(broker.protocol, null, 'invalid create must clear its protocol generation');
+      for (let index = 0; index < 20 && broker.retiredProtocolGeneration; index += 1) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+      const replacement = { request: async () => ({ sessions: [invalid.session] }), close: async () => {} }; broker.protocol = replacement;
+      await broker.handleLocal(socket, JSON.stringify({ id: 91, method: 'session/list', params: {} }));
+      assert.deepEqual(writes.find((frame) => frame.id === 91)?.result, { sessions: [] });
+    } finally { await broker.close(); await rm(directory, { recursive: true, force: true }); }
+  });
+});
+
 test('invented and malformed nested 0.16.1 response fields are rejected', async (t) => {
   for (const variant of ['invented-session-kind', 'invented-subagent-kind', 'bad-protocol', 'missing-model-label', 'string-message-model', 'bad-goal-stats', 'bad-permission-origin', 'bad-runtime-cache', 'bad-timeline-trigger', 'bad-provider-options']) await t.test(variant, () => withClient(async (client) => { await assert.rejects(client.createSession({ workspace: '/repo' }), { code: 'ZCODE_OUTPUT_INVALID' }); }, { FAKE_ZCODE_BAD_SNAPSHOT: variant }, process.platform === 'win32' ? { requestTimeoutMs: 2_000, completionTimeoutMs: 2_000 } : {}));
 });
