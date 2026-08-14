@@ -215,6 +215,24 @@ async function withClient(callback, env = {}, options = {}) {
   try { await callback(client, record); } finally { await client.close(); await rm(directory, { recursive: true, force: true }); }
 }
 
+async function withFreshManagedClient(callback, env = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-managed-client-'));
+  const launch = { command: process.execPath, args: [fixture], target: fixture };
+  const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory });
+  const identityPath = join(storage.directory, 'broker', 'identity.json');
+  let client; let identity;
+  try {
+    client = await createManagedZCodeClient({ dataRoot: directory, workspace: directory, launch, ownerId: 'fresh-managed-client-owner', env: { ...process.env, ...env } });
+    await callback(client, directory);
+  } finally {
+    try { identity = JSON.parse(await readFile(identityPath, 'utf8')); } catch { /* broker did not publish an identity */ }
+    await client?.close().catch(() => {});
+    if (identity?.pid && processAlive(identity.pid)) try { process.kill(identity.pid, 'SIGTERM'); } catch { /* already exited */ }
+    if (identity?.pid) await waitForProcessExit(identity.pid);
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 test('typed operations use real 0.16.1 method and parameter shapes', async () => {
   await withClient(async (client, record) => {
     const model = { providerId: 'zai', modelId: 'glm-5', variant: 'fast' };
@@ -244,6 +262,21 @@ test('ordinary session/create accepts the bounded 0.16.1 initial empty-session s
     assert.equal(created.projection.sessionId, 'unknown');
     assert.deepEqual(created.messages, []);
   }, { FAKE_ZCODE_EMPTY_SESSION: '1' });
+});
+
+test('fresh managed broker session/create accepts the bounded initial empty-session snapshot', async () => {
+  await withFreshManagedClient(async (client, directory) => {
+    const created = await client.createSession({ workspace: directory });
+    assert.equal(created.session.sessionId, 'session-1');
+    assert.equal(created.projection.sessionId, 'unknown');
+    assert.deepEqual(created.messages, []);
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' });
+});
+
+test('fresh managed broker session/create rejects conflicting or non-empty unknown-projection snapshots', async (t) => {
+  for (const variant of ['conflict', 'non-idle', 'event-seq', 'messages', 'target']) await t.test(variant, () => withFreshManagedClient(async (client, directory) => {
+    await assert.rejects(client.createSession({ workspace: directory }), { code: 'ZCODE_OUTPUT_INVALID' });
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1', FAKE_ZCODE_EMPTY_SESSION_VARIANT: variant }));
 });
 
 test('ordinary session/create rejects conflicting or non-empty unknown-projection snapshots', async (t) => {
