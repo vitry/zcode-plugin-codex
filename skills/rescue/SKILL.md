@@ -9,6 +9,16 @@ Invoke as `$zcode:rescue [--background | --wait] [--resume | --fresh] [--model <
 
 Require non-empty task text. Rescue may change the workspace and defaults to foreground. The native prompt hook has already recorded the exact arguments and task text. Never place user text, command arguments, job or session identity, permissions, credentials, or authorization material in a process command or agent message.
 
+## Single-hop Rescue routing
+
+The dedicated `zcode-rescue` child, or the fixed generic compatibility forwarder created by this Skill, is already the Rescue subagent.
+
+- `$zcode:rescue` must be invoked by the top-level user-facing Codex agent, not by an ordinary spawned subagent.
+- Always collapse `top-level Codex agent -> ordinary subagent -> Rescue subagent` into `top-level Codex agent -> Rescue subagent`.
+- The top-level agent may use ordinary subagents for work that does not invoke Rescue, but it must not ask or allow an ordinary subagent to invoke `$zcode:rescue`.
+- If you are already an ordinary spawned subagent and determine that ZCode Rescue would be useful, do not run the readiness preflight, do not spawn another child, and do not run any companion command. Complete the assigned task yourself using only your existing tools and authorization. In your final response, state exactly: `ZCode Rescue was not invoked because this task was already running in an ordinary subagent.` Never present your work or output as ZCode output.
+- The dedicated `zcode-rescue` child and the fixed generic compatibility forwarder are exempt from the ordinary-subagent rule and must follow their fixed forwarder instructions.
+
 Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. Before spawning anything, use the available terminal tool in the parent to run exactly `node "<plugin-root>/scripts/zcode-companion.mjs" role-status rescue` over ordinary stdio. This is the only companion command the parent may run. Accept only the fixed `role-status` object. If its status is not `ready`, present its status and exact `$zcode:setup` remedy, then stop without spawning.
 
 When the active `spawn_agent` tool schema exposes `agent_type`, prefer this exact named spawn with a fresh context:
