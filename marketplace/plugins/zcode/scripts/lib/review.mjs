@@ -327,7 +327,9 @@ export function extractFinalResult(snapshot, command, turnBoundary = {}) {
   const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
   const beforeMessageIds = turnBoundary.beforeMessageIds ?? new Set();
   const newAssistants = messages.filter((/** @type {any} */ message) => message?.info?.role === 'assistant' && typeof message.info.messageId === 'string' && !beforeMessageIds.has(message.info.messageId));
-  const linkedAssistants = turnBoundary.inputId ? newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === turnBoundary.inputId) : [];
+  const directAssistants = turnBoundary.inputId ? newAssistants.filter((/** @type {any} */ message) => message.info.parentMessageId === turnBoundary.inputId) : [];
+  const newUserIds = new Set(messages.filter((/** @type {any} */ message) => message?.info?.role === 'user' && typeof message.info.messageId === 'string' && !beforeMessageIds.has(message.info.messageId)).map((/** @type {any} */ message) => message.info.messageId));
+  const linkedAssistants = directAssistants.length ? directAssistants : newAssistants.filter((/** @type {any} */ message) => newUserIds.has(message.info.parentMessageId));
   const assistant = (turnBoundary.inputId ? linkedAssistants : newAssistants).at(-1);
   if (['hidden', 'debug'].includes(assistant?.info?.semantics?.uiVisibility)) throw missingResult();
   const parts = assistant?.parts?.filter((/** @type {any} */ part) => part?.type === 'text' && part.ignored !== true && typeof part.text === 'string' && part.text.length > 0).map((/** @type {any} */ part) => part.text) ?? [];

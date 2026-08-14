@@ -66,6 +66,9 @@ function assistant(parts, structured, semantics, messageId = 'assistant-current'
   return { info: { role: 'assistant', messageId, parentMessageId, ...(structured === undefined ? {} : { structured }), ...(semantics === undefined ? {} : { semantics }) }, parts };
 }
 
+/** @param {string} messageId */
+function user(messageId) { return { info: { role: 'user', messageId }, parts: [{ type: 'text', text: 'prompt' }] }; }
+
 test('review result prefers valid structured findings anchored by visible final text', () => {
   const structured = { findings: [{ severity: 'high', file: 'src/a.js', line: 7, evidence: 'boom', fix: 'repair' }] };
   const snapshot = { messages: [assistant([
@@ -107,8 +110,31 @@ test('current-turn result accepts a newly added visible structured assistant mes
 });
 
 test('current-turn result prefers assistant messages linked to the send input over unrelated new messages', () => {
-  const snapshot = { messages: [assistant([{ type: 'text', text: 'current' }], undefined, undefined, 'assistant-current', 'input-current'), assistant([{ type: 'text', text: 'unrelated' }], undefined, undefined, 'assistant-other', 'input-other')] };
+  const snapshot = { messages: [assistant([{ type: 'text', text: 'current' }], undefined, undefined, 'assistant-current', 'input-current'), user('user-other'), assistant([{ type: 'text', text: 'unrelated' }], undefined, undefined, 'assistant-other', 'user-other')] };
   assert.equal(extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), 'current');
+});
+
+test('current-turn result follows a new user message when send input id differs from its message id', () => {
+  const snapshot = { messages: [
+    user('user-current'),
+    assistant([{ type: 'text', text: 'current' }], undefined, undefined, 'assistant-current', 'user-current'),
+    assistant([{ type: 'text', text: 'unrelated' }], undefined, undefined, 'assistant-other', 'user-other'),
+  ] };
+  assert.equal(extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(), inputId: 'input-current' }), 'current');
+});
+
+test('current-turn result does not follow an assistant linked to a historical user message', () => {
+  const snapshot = { messages: [
+    user('user-historical'),
+    assistant([{ type: 'text', text: 'historical continuation' }], undefined, undefined, 'assistant-new', 'user-historical'),
+  ] };
+  assert.throws(() => extractFinalResult(snapshot, 'rescue', { beforeMessageIds: new Set(['user-historical']), inputId: 'input-current' }), { code: 'ZCODE_RESULT_MISSING' });
+});
+
+test('indirect current-turn linkage still rejects hidden and empty assistant results', () => {
+  const boundary = { beforeMessageIds: new Set(), inputId: 'input-current' };
+  assert.throws(() => extractFinalResult({ messages: [user('user-hidden'), assistant([{ type: 'text', text: 'hidden' }], undefined, { uiVisibility: 'hidden' }, 'assistant-hidden', 'user-hidden')] }, 'rescue', boundary), { code: 'ZCODE_RESULT_MISSING' });
+  assert.throws(() => extractFinalResult({ messages: [user('user-empty'), assistant([{ type: 'text', text: '' }], undefined, undefined, 'assistant-empty', 'user-empty')] }, 'rescue', boundary), { code: 'ZCODE_RESULT_MISSING' });
 });
 
 test('current-turn result rejects unrelated new assistants when input linkage is available', () => {
