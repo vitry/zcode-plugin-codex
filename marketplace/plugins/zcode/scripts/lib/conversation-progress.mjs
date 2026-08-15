@@ -16,7 +16,6 @@ const MAX_TRACKED_ROWS = 256;
 const MAX_PENDING_OBSERVATIONS = 4;
 const PATH_RESOLUTION_TIMEOUT_MS = 100;
 const CONVERSATION_WIRE_VERSION = 3;
-const SNAPSHOT_TOOL_NAMES = new Set(['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', 'WebSearch']);
 /** @typedef {{phase:string,message:string,observedAt:string}} PublicProgressEvent */
 /** @typedef {{disposition:'accepted',phase:'initial'|'online'|'recovery',events:PublicProgressEvent[]}|{disposition:'rejected'|'ignored',reason:string,events:PublicProgressEvent[]}} ObservationResult */
 /** @param {string} reason @returns {ObservationResult} */
@@ -293,11 +292,6 @@ async function describeTool(row, states, workspaceRoot, observedAt, resolvePath,
 /** @param {any} row @param {string} workspaceRoot @param {(value:unknown,root:string)=>Promise<string|null>} resolvePath @param {number} timeoutMs */
 export async function formatToolStartMessage(row, workspaceRoot, resolvePath = containedRelativePath, timeoutMs = PATH_RESOLUTION_TIMEOUT_MS, allowTextPreviews = true) {
   return formatToolStartMessageWithOptions(row, workspaceRoot, { resolvePath, timeoutMs, allowTextPreviews });
-}
-
-/** @param {any} row */
-export function formatSnapshotToolStartMessage(row) {
-  return SNAPSHOT_TOOL_NAMES.has(row?.toolName) ? `Running tool: ${row.toolName}.` : 'Running a tool.';
 }
 
 /** @param {any} row @param {string} workspaceRoot @param {{resolvePath:(value:unknown,root:string)=>Promise<string|null>,timeoutMs:number,allowTextPreviews:boolean}} options */

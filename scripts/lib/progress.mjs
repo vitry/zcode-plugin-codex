@@ -373,7 +373,10 @@ export function createProgressReporter({
         }
       }
       item.state = 'ready';
-    }).catch(() => { if (accepting && epoch === descriptorEpoch) { item.state = 'dropped'; diagnose('conversation-render-failed'); } }).then(() => {
+    }).catch(() => {
+      item.state = 'dropped';
+      if (accepting && epoch === descriptorEpoch) diagnose('conversation-render-failed');
+    }).then(() => {
       if (descriptorInFlight === tracked) descriptorInFlight = null;
       if (activeDescriptor === item) activeDescriptor = null;
       pumpLogical();

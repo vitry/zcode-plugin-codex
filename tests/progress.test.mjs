@@ -466,6 +466,43 @@ test('stopAccepting fences a held structural rejection from every progress mutat
   reporter.close();
 });
 
+test('stopAccepting silently settles a held descriptor rejection without retrying it', async () => {
+  const diagnostics = []; const probes = []; const lines = []; const persisted = []; let fallbackCalls = 0;
+  let rejectHeld = () => {}; let markHeldStarted = () => {};
+  const heldStarted = new Promise((resolve) => { markHeldStarted = resolve; });
+  const held = new Promise((_resolve, reject) => { rejectHeld = reject; });
+  let descriptions = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    describeNotification: () => {
+      descriptions += 1;
+      if (descriptions > 1) throw new Error('a rejected descriptor must never restart');
+      markHeldStarted(); return held;
+    },
+    activateSnapshotFallback: () => { fallbackCalls += 1; return false; },
+    persistProbe: async (probe) => probes.push(probe),
+    persist: async (event) => persisted.push(event),
+    write: (line) => lines.push(line),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame', index: 0 }); await heldStarted;
+  const beforeProbe = reporter.probeSnapshot(); const beforePersists = probes.length;
+
+  reporter.stopAccepting(); rejectHeld(new Error('PRIVATE_LATE_DESCRIPTOR_REJECTION'));
+  const started = Date.now(); await reporter.flush(Date.now() + 250);
+
+  assert.ok(Date.now() - started < 250);
+  assert.equal(descriptions, 1);
+  assert.deepEqual(reporter.probeSnapshot(), beforeProbe);
+  assert.equal(probes.length, beforePersists);
+  assert.equal(fallbackCalls, 0);
+  assert.deepEqual(diagnostics, []);
+  assert.deepEqual(lines, []); assert.deepEqual(persisted, []);
+  reporter.close();
+});
+
 test('falls back to lifecycle-only with one fixed diagnostic when no snapshot capability exists', async () => {
   const probes = []; const diagnostics = [];
   const reporter = progressModule.createProgressReporter({
