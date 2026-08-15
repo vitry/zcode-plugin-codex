@@ -143,6 +143,27 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'} scenario @param {{heartbeat?:boolean}} [options] */
+async function deterministicConversationScenario(context, scenario, options = {}) {
+  const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
+  const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
+  const output = await runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
+    cwd: context.workspace,
+    env: { ...context.env, FAKE_ZCODE_CONVERSATION_SCENARIO: scenario, FAKE_ZCODE_RECORD: record },
+    caller: owner,
+    progressWriter: (line) => lines.push(line),
+    ...(options.heartbeat ? { progressDependencies: {
+      now: () => new Date().toISOString(),
+      setInterval: (/** @type {()=>void} */ callback) => { queueMicrotask(callback); return { unref() {} }; },
+      clearInterval: () => {},
+    } } : {}),
+  });
+  const status = await runCompanion(['status', output.job.id], { cwd: context.workspace, env: context.env, caller: owner });
+  const stored = await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, output.job.id);
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  return { lines, output, requests, status, stored };
+}
+
 /** @param {()=>Promise<boolean>} predicate @param {string} message */
 async function waitFor(predicate, message) {
   const deadline = Date.now() + 5_000;
@@ -368,6 +389,40 @@ test('conversation online progress reaches stderr and preview while initial and 
   assert.equal(Object.hasOwn(status.json.job, 'progressProbe'), false);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   assert.equal(requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
+});
+
+test('initial-only conversation frames deterministically degrade on heartbeat without leaking frame material', async () => {
+  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'initial-only', { heartbeat: true });
+  const diagnostic = '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n';
+  assert.equal(scenario.lines.filter((line) => line === diagnostic).length, 1);
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
+  assert.equal(scenario.stored.progressProbe.state, 'lifecycle-only');
+  assert.equal(scenario.stored.progressProbe.acceptedInitial, 1); assert.equal(scenario.stored.progressProbe.acceptedOnline, 0);
+  assert.equal(Object.hasOwn(scenario.status.job, 'progressProbe'), false);
+  const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
+  assert.doesNotMatch(visible, /PRIVATE_INITIAL_(?:FRAME_ID|TURN_ID|TOOL_ID|COMMAND|REASONING)/);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
+});
+
+test('accepted zero-event online conversation frame prevents deterministic heartbeat fallback', async () => {
+  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'zero-online', { heartbeat: true });
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
+  assert.equal(scenario.stored.progressProbe.state, 'online'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
+  assert.doesNotMatch(scenario.lines.join(''), /ZCode (?:conversation frames were unavailable|semantic progress is unavailable)/);
+  assert.equal(Object.hasOwn(scenario.status.job, 'progressProbe'), false);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
+});
+
+test('malformed conversation rejection burst degrades once without leaking rejected payloads or changing completion', async () => {
+  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'rejection-burst');
+  const diagnostic = '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n';
+  assert.equal(scenario.lines.filter((line) => line === diagnostic).length, 1);
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
+  assert.equal(scenario.stored.progressProbe.state, 'lifecycle-only'); assert.equal(scenario.stored.progressProbe.rejected['row-shape'], 4);
+  assert.equal(Object.hasOwn(scenario.status.job, 'progressProbe'), false);
+  const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
+  assert.doesNotMatch(visible, /PRIVATE_REJECTED_(?:FRAME|ROW|COMMAND|REASONING)/);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
 });
 
 test('conversation online progress sent before the subscribe response is buffered until the subscription binds', async () => {

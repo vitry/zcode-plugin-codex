@@ -74,7 +74,26 @@ test('tracks bounded structural compatibility and activates fallback only at an 
   await reporter.flush();
   assert.equal(probes.at(-1).rejected['row-shape'], 1);
   assert.equal(probes.at(-1).acceptedOnline, 1);
-  assert.equal(probes.at(-1).state, 'snapshot-fallback', 'online remains observational after fallback');
+  assert.equal(probes.at(-1).state, 'online');
+  assert.equal(probes.at(-1).snapshotFallbackActive, false);
+  assert.equal(reporter.activateCompatibilityBoundary(), false);
+  assert.deepEqual(diagnostics, ['conversation-snapshot-fallback']);
+  reporter.close();
+});
+
+test('an accepted zero-event online frame recovers lifecycle-only without reactivating fallback', async () => {
+  const diagnostics = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => ({ disposition: 'accepted', phase: 'online', events: [] }),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+  });
+  assert.equal(reporter.activateCompatibilityBoundary(), true);
+  assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+  reporter.observe(conversationFrame({ deltas: [] })); await reporter.flush();
+  assert.equal(reporter.probeSnapshot().state, 'online');
+  assert.equal(reporter.probeSnapshot().snapshotFallbackUnavailable, false);
+  assert.equal(reporter.activateCompatibilityBoundary(), false);
+  assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
   reporter.close();
 });
 
@@ -139,6 +158,36 @@ test('coalesces probe persistence to one bounded pending snapshot under a frame 
   releaseFirst(); await new Promise((resolve) => setImmediate(resolve));
   assert.equal(probes.length, 2);
   assert.equal(probes[1].framesReceived, 20);
+  reporter.close();
+});
+
+test('reporter saturates received accepted and every structural rejection counter', async () => {
+  let result = { disposition: 'accepted', phase: 'initial', events: [] };
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => result, now: () => observedAt,
+  });
+  const observeUntilSaturated = async (nextResult) => {
+    result = nextResult;
+    for (let index = 0; index <= progressModule.MAX_PROGRESS_PROBE_COUNT; index += 1) {
+      reporter.observe({ method: 'v4/conversation/frame' });
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  for (const phase of ['initial', 'online', 'recovery']) {
+    await observeUntilSaturated({ disposition: 'accepted', phase, events: [] });
+  }
+  for (const reason of ['wire-version', 'envelope-shape', 'sequence', 'topic', 'row-kind', 'row-shape']) {
+    await observeUntilSaturated({ disposition: 'rejected', reason, events: [] });
+  }
+  await reporter.flush();
+  assert.deepEqual(reporter.probeSnapshot(), {
+    state: 'online', subscriptionAcknowledged: false, framesReceived: progressModule.MAX_PROGRESS_PROBE_COUNT,
+    acceptedInitial: progressModule.MAX_PROGRESS_PROBE_COUNT,
+    acceptedOnline: progressModule.MAX_PROGRESS_PROBE_COUNT,
+    acceptedRecovery: progressModule.MAX_PROGRESS_PROBE_COUNT,
+    rejected: Object.fromEntries(['wire-version', 'envelope-shape', 'sequence', 'topic', 'row-kind', 'row-shape'].map((reason) => [reason, progressModule.MAX_PROGRESS_PROBE_COUNT])),
+    snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
+  });
   reporter.close();
 });
 

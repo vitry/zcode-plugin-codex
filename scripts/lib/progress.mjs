@@ -189,7 +189,9 @@ export function createProgressReporter({
     if (result.disposition === 'accepted' && ['initial', 'online', 'recovery'].includes(result.phase)) {
       const field = result.phase === 'initial' ? 'acceptedInitial' : result.phase === 'online' ? 'acceptedOnline' : 'acceptedRecovery';
       progressProbe[field] = saturatingIncrement(progressProbe[field]);
-      if (result.phase === 'online' && progressProbe.state === 'probing') progressProbe.state = 'online';
+      if (result.phase === 'online') {
+        progressProbe.state = 'online'; progressProbe.snapshotFallbackActive = false; progressProbe.snapshotFallbackUnavailable = false;
+      }
       persistProbeSnapshot(); return result.events;
     }
     if (result.disposition === 'rejected' && PROBE_REJECTION_REASONS.includes(result.reason)) {
