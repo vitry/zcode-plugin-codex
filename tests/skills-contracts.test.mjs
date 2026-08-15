@@ -95,6 +95,31 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   assert.doesNotMatch(source, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
 });
 
+test('Rescue routing stays single-hop and ordinary subagents fall back transparently', () => {
+  const source = skill('rescue');
+  const marketplaceSource = readFileSync(new URL('marketplace/plugins/zcode/skills/rescue/SKILL.md', root), 'utf8');
+  const ordinaryGuard = source.indexOf('If you are already an ordinary spawned subagent');
+  const readinessPreflight = source.indexOf('role-status rescue');
+  const namedSpawn = source.indexOf('spawn_agent({');
+  const genericSpawn = source.indexOf('then call `spawn_agent`');
+  const ordinaryFallbackRule = source.split('\n').find((line) => line.startsWith('- If you are already an ordinary spawned subagent')) ?? '';
+  assert.match(source, /must be invoked by the top-level user-facing Codex agent, not by an ordinary spawned subagent/i);
+  assert.match(source, /always collapse `top-level Codex agent -> ordinary subagent -> Rescue subagent` into `top-level Codex agent -> Rescue subagent`/i);
+  assert.match(source, /already an ordinary spawned subagent[\s\S]+do not run the readiness preflight[\s\S]+do not spawn another child[\s\S]+do not run any companion command/i);
+  assert.match(source, /complete the assigned task yourself using only your existing tools and authorization/i);
+  assert.match(source, /final response[\s\S]+ZCode Rescue was not invoked because this task was already running in an ordinary subagent\./i);
+  assert.match(ordinaryFallbackRule, /final response[\s\S]+ZCode Rescue was not invoked because this task was already running in an ordinary subagent\.[\s\S]+Parent\/top-level agent:[\s\S]+relay[\s\S]+user-facing final response[\s\S]+verbatim/i);
+  assert.match(source, /ordinary subagent reports that exact sentence[\s\S]+top-level agent[\s\S]+user-facing final response[\s\S]+verbatim/i);
+  assert.match(source, /never present your work or output as ZCode output/i);
+  assert.match(source, /dedicated `zcode-rescue` child[\s\S]+fixed generic compatibility forwarder[\s\S]+exempt from the ordinary-subagent rule/i);
+  assert.ok(ordinaryGuard >= 0, 'ordinary-subagent guard must exist');
+  for (const [label, position] of [['readiness preflight', readinessPreflight], ['named spawn', namedSpawn], ['generic spawn', genericSpawn]]) {
+    assert.ok(position >= 0, `${label} instruction must exist`);
+    assert.ok(ordinaryGuard < position, `ordinary-subagent guard must precede ${label}`);
+  }
+  assert.equal(marketplaceSource, source, 'marketplace Rescue Skill must be byte-identical to source');
+});
+
 test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task or authorization material', () => {
   const source = skill('rescue');
   assert.match(source, /Only after the preflight returned `ready`/);
