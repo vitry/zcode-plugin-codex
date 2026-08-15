@@ -46,7 +46,9 @@ ZCode Desktop 与 ZCode CLI 分别保存 model provider 设置。运行 `$zcode:
 
 使用 `/agent` 或 `/subagents` 选择 Rescue child 并查看它的 transcript。`/ps` 含义不同：它只列出当前活动线程拥有的后台 terminal，所以若一个耗时 child terminal 已 yield，应先切换到 child；短命令可能在出现在列表前就已结束。操作系统的 `ps` 只能显示进程和 argv，不能显示 Codex 模型活动或线程 transcript。非交互 qualification harness 不暴露这些 TUI event，因此会输出机器可读的作用域观测 `{ "observed": false, "code": "tui-evidence-not-exposed", "qualificationScope": "tui" }`。该观测不是资格结果，也不会声称 UI 已通过或失败。
 
-ZCode 支持时，child 会订阅 online conversation progress。allowlist 内的工具活动可以带一行、去控制字符、最长 96 字符的命令或搜索 query 预览。截断不是秘密脱敏：如果秘密本来就在命令或 query 中，它仍可能出现在 child transcript 和持久 status 预览里。原始输出、文件内容、推理、assistant draft、环境值和授权材料都不是进度字段。subscription 或可选进度 sink 失败时，Rescue 会降级到生命周期消息与 20 秒心跳；带 revision guard 的终态结果仍是权威结果。
+ZCode 支持时，child 会订阅 online conversation progress，并用结构化结果探测该 subscription 是否真的持续提供可用的 online frame。allowlist 内的 online 工具活动可以带一行、去控制字符、最长 96 字符的命令或搜索 query 预览。截断不是秘密脱敏：如果秘密本来就在 online 命令或 query 中，它仍可能出现在 child transcript 和持久 status 预览里。
+
+若已接受的 online frame 始终不可用，Rescue 可以按不高于心跳的频率回退读取已经通过 schema 校验的 session snapshot。该回退严格限定在已持久确认的当前 turn，只输出 allowlist 内的工具状态，不输出命令或 query。它绝不读取原始 ZCode 日志，也不输出 assistant 正文或推理、任意工具输入/输出、错误或 metadata、原始路径、文件或 patch 内容、标识符、环境值或授权材料。进度观测不具权威性：失败只会一次性降级为 lifecycle-only 更新，不改变 job 的成功结果。companion 完成后的独立、带 revision guard 的 session read 仍是权威终态结果。
 
 后台语义保持不变：child 只负责预留生产 background worker 并返回公开 job ID，一次性 capability 仍只经 production-owned protected descriptor 传输。持久恢复继续使用 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。普通 steering、等待超时或父/child 丢失都不授权替代执行。
 

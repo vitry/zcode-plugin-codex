@@ -241,11 +241,12 @@ test('package test scripts do not depend on shell glob expansion', () => {
   );
 });
 
-test('conversation compatibility progress does not implement snapshot session reads', () => {
-  for (const relativePath of ['scripts/lib/progress.mjs', 'scripts/lib/conversation-progress.mjs']) {
+test('conversation compatibility progress never parses raw session logs or synthesizes conversation frames', () => {
+  for (const relativePath of ['scripts/lib/progress.mjs', 'scripts/lib/conversation-progress.mjs', 'scripts/lib/session-progress.mjs']) {
     const source = readFileSync(new URL(relativePath, root), 'utf8');
-    assert.doesNotMatch(source, /session\/read|readSession/, `${relativePath} must leave snapshot fallback to Task 4`);
+    assert.doesNotMatch(source, /(?:readFile|createReadStream).*zcode/si, `${relativePath} must not parse raw ZCode logs`);
   }
+  assert.doesNotMatch(readFileSync(new URL('scripts/lib/session-progress.mjs', root), 'utf8'), /v4\/conversation\/frame/, 'session fallback must not synthesize conversation frames');
 });
 
 test('marketplace runtime mirrors the progress compatibility implementation byte for byte', () => {
@@ -254,6 +255,7 @@ test('marketplace runtime mirrors the progress compatibility implementation byte
     'scripts/lib/progress.mjs',
     'scripts/lib/render.mjs',
     'scripts/lib/review.mjs',
+    'scripts/lib/session-progress.mjs',
     'scripts/lib/state.mjs',
     'scripts/zcode-companion.mjs',
   ]) {

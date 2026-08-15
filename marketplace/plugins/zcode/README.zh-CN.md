@@ -17,7 +17,7 @@ codex plugin marketplace add vitry/zcode-plugin-codex --ref marketplace
 codex plugin add zcode@vitry
 ```
 
-发布 workflow 会在该分支生成 `.agents/plugins/marketplace.json` 和带生产依赖的 `plugins/zcode/`。安装后重启 Codex，再在目标工作区运行 `$zcode:setup`。首次运行可能把 marketplace 专属的数据目录加入 Codex writable roots；若返回 `restart-required`，重启 Codex 后再次运行 setup。不要把 hooks 从插件缓存复制到别处。
+发布 workflow 会在该分支生成 `.agents/plugins/marketplace.json` 和带生产依赖的 `plugins/zcode/`。安装后重启 Codex 以加载插件，再在目标工作区运行 `$zcode:setup`。Setup 通常在这一次运行中完成受管 Role 协调。首次运行也可能先把 marketplace 专属的数据目录加入 Codex writable roots；这个 writable-root bootstrap 是唯一独立的 setup 重启情形，若返回 `restart-required`，重启 Codex 后再次运行 `$zcode:setup`。不要把 hooks 从插件缓存复制到别处。
 
 插件依次检查 `ZCODE_PATH`、`PATH` 中的 `zcode`、平台目录，以及 macOS 内置路径 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`。Setup 会报告缺失、版本过低、未配置、未认证或 hook 不可信，但不会下载 ZCode、配置 provider，也不会代替用户登录。
 
@@ -40,17 +40,19 @@ ZCode Desktop 与 ZCode CLI 分别保存 model provider 设置。运行 `$zcode:
 
 ## 隔离的 Rescue Role 与检查方式
 
-`$zcode:setup` 在稳定的 plugin data 根目录下管理一个带 digest 收据的 `zcode-rescue` Role，而不是把它写进带版本号的插件缓存。Setup 只写该 Role 所需的精确 user-config 注册项和 spawn-metadata 配置叶。首次安装或受管升级会返回 `restart-required`；请重启 Codex，并在新 session 中再次运行 `$zcode:setup` 后再使用 Rescue。Setup 不会接管或覆盖冲突：外部 `zcode-rescue` 注册、同名项目 Role、或更高优先级 override 都会 fail closed 并给出 setup 诊断。收据、Role 文件和有效注册必须精确一致。
+`$zcode:setup` 在稳定的 plugin data 根目录下管理一个带 digest 收据的 `zcode-rescue` Role，而不是把它写进带版本号的插件缓存。Setup 只写精确的 user-config Role 注册项，并在一次 setup 中完成首次安装或受管升级；具有完整所有权证据的 numeric-v1 收据也在同一次运行中迁移。ZCode 不拥有 `hide_spawn_agent_metadata`；Codex host 负责协作工具 schema，包括是否提供 `agent_type`。只有 numeric-v1 收据、Role 字节和精确注册能证明旧版 ZCode setup 写入了目标层 `false` 时，setup 才移除该旧配置叶。Setup 不会接管或覆盖冲突：外部 `zcode-rescue` 注册、同名项目 Role、或更高优先级 override 都会 fail closed 并给出 setup 诊断。收据、Role 文件和有效注册必须精确一致。
 
 前台 Rescue 只在一个原生子线程中运行常量 forwarder。host 支持 `agent_type` 时，Codex 选择具名 `zcode-rescue` Role。generic child 只是 host-only 兼容回退：仅当当前 spawn schema 缺少 `agent_type`，或能证明该字段在任何 child 启动前已被拒绝时才允许；Role 缺失、被 shadow、漂移或属于外部配置时绝不回退。父线程只运行只读 Role preflight、显示原生生命周期并返回 child 的最终公开 stdout；它不会 inline 执行 Rescue，也不会把 child stderr、工具输出、原始 conversation frame 或中间进度复制到父线程。
 
 使用 `/agent` 或 `/subagents` 选择 Rescue child 并查看它的 transcript。`/ps` 含义不同：它只列出当前活动线程拥有的后台 terminal，所以若一个耗时 child terminal 已 yield，应先切换到 child；短命令可能在出现在列表前就已结束。操作系统的 `ps` 只能显示进程和 argv，不能显示 Codex 模型活动或线程 transcript。非交互 qualification harness 不暴露这些 TUI event，因此会输出机器可读的作用域观测 `{ "observed": false, "code": "tui-evidence-not-exposed", "qualificationScope": "tui" }`。该观测不是资格结果，也不会声称 UI 已通过或失败。
 
-ZCode 支持时，child 会订阅 online conversation progress。allowlist 内的工具活动可以带一行、去控制字符、最长 96 字符的命令或搜索 query 预览。截断不是秘密脱敏：如果秘密本来就在命令或 query 中，它仍可能出现在 child transcript 和持久 status 预览里。原始输出、文件内容、推理、assistant draft、环境值和授权材料都不是进度字段。subscription 或可选进度 sink 失败时，Rescue 会降级到生命周期消息与 20 秒心跳；带 revision guard 的终态结果仍是权威结果。
+ZCode 支持时，child 会订阅 online conversation progress，并用结构化结果探测该 subscription 是否真的持续提供可用的 online frame。allowlist 内的 online 工具活动可以带一行、去控制字符、最长 96 字符的命令或搜索 query 预览。截断不是秘密脱敏：如果秘密本来就在 online 命令或 query 中，它仍可能出现在 child transcript 和持久 status 预览里。
+
+若已接受的 online frame 始终不可用，Rescue 可以按不高于心跳的频率回退读取已经通过 schema 校验的 session snapshot。该回退严格限定在已持久确认的当前 turn，只输出 allowlist 内的工具状态，不输出命令或 query。它绝不读取原始 ZCode 日志，也不输出 assistant 正文或推理、任意工具输入/输出、错误或 metadata、原始路径、文件或 patch 内容、标识符、环境值或授权材料。进度观测不具权威性：失败只会一次性降级为 lifecycle-only 更新，不改变 job 的成功结果。companion 完成后的独立、带 revision guard 的 session read 仍是权威终态结果。
 
 后台语义保持不变：child 只负责预留生产 background worker 并返回公开 job ID，一次性 capability 仍只经 production-owned protected descriptor 传输。持久恢复继续使用 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。普通 steering、等待超时或父/child 丢失都不授权替代执行。
 
-Codex 0.147 是本次发布唯一被固定并纳入原生 Rescue installed-host qualification suite 的版本线。只有严格认证套件完整成功的 build 才算 qualified；默认的机器可读 `unqualified` 结果不是兼容性证据。其他 Codex 版本在各自的 installed qualification 成功前不宣称兼容。uninstall 插件不会自动删除稳定私有数据、受管 Role 收据/文件、job 历史或精确 user-config 配置叶。请先结束或取消 owner job，再审查这些卸载残留，只移除能证明属于本插件的条目；绝不能删除有冲突的用户或项目 Role。
+Codex 0.147 是本次发布唯一被固定并纳入原生 Rescue installed-host qualification suite 的版本线。只有严格认证套件完整成功的 build 才算 qualified；默认的机器可读 `unqualified` 结果不是兼容性证据。其他 Codex 版本在各自的 installed qualification 成功前不宣称兼容。uninstall 插件不会自动删除稳定私有数据、受管 Role 收据/文件、job 历史或精确 user-config 配置叶。请先结束或取消 owner job，再按[手动卸载与残留状态清理指南](docs/manual-uninstall.md)审查并移除能证明属于本插件的条目；绝不能删除有冲突的用户或项目 Role。
 
 ## 模型
 

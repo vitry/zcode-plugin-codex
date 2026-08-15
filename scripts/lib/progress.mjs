@@ -72,7 +72,7 @@ export function createProgressReporter({
   write,
   persist,
   persistProbe,
-  activateSnapshotFallback,
+  activateSnapshotFallback: configuredSnapshotFallback,
   describeNotification,
   onDescriptorOverflow,
   onDiagnostic,
@@ -112,7 +112,13 @@ export function createProgressReporter({
     snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
   };
   let compatibilityBoundaryActivated = false;
+  let acceptedBoundaryActivated = typeof configuredSnapshotFallback === 'function';
+  /** @type {undefined|(()=>false|(()=>unknown))} */ let activateSnapshotFallback = configuredSnapshotFallback;
   /** @type {null|(()=>unknown)} */ let snapshotFallbackCleanup = null;
+  /** @type {null|(()=>Promise<unknown>)} */ let snapshotRead = null;
+  /** @type {null|{observe:(snapshot:unknown,observedAt:string)=>unknown|Promise<unknown>}} */ let snapshotDescriber = null;
+  /** @type {Promise<void>|null} */ let snapshotReadInFlight = null;
+  let snapshotEpoch = 0;
   const cleanupSnapshotFallback = () => {
     const cleanup = snapshotFallbackCleanup; snapshotFallbackCleanup = null;
     if (cleanup === null) return false;
@@ -165,7 +171,8 @@ export function createProgressReporter({
   const startTimer = () => {
     if (timer !== null || typeof write !== 'function' && typeof persistProbe !== 'function' && typeof activateSnapshotFallback !== 'function') return;
     timer = setIntervalFn(() => {
-      activateCompatibilityBoundary();
+      activateCompatibilityBoundary(true);
+      if (progressProbe.state === 'snapshot-fallback') startSnapshotRead();
       const currentTime = now();
       if (!validTimestamp(currentTime) || !validTimestamp(lastActivityAt)) return;
       const elapsedMs = Date.parse(currentTime) - Date.parse(lastActivityAt);
@@ -176,8 +183,9 @@ export function createProgressReporter({
     }, PROGRESS_HEARTBEAT_MS);
     timer?.unref?.();
   };
-  const activateCompatibilityBoundary = () => {
-    if (closed || compatibilityBoundaryActivated || progressProbe.state !== 'probing' || progressProbe.acceptedOnline > 0) return false;
+  /** @param {boolean} requireAcceptedBoundary */
+  const activateCompatibilityBoundary = (requireAcceptedBoundary = false) => {
+    if (closed || requireAcceptedBoundary && !acceptedBoundaryActivated || compatibilityBoundaryActivated || progressProbe.state !== 'probing' || progressProbe.acceptedOnline > 0) return false;
     compatibilityBoundaryActivated = true;
     /** @type {unknown} */ let activation = false;
     try { activation = typeof activateSnapshotFallback === 'function' ? activateSnapshotFallback() : false; } catch { activation = false; }
@@ -185,6 +193,7 @@ export function createProgressReporter({
       snapshotFallbackCleanup = /** @type {()=>unknown} */ (activation);
       progressProbe.state = 'snapshot-fallback'; progressProbe.snapshotFallbackActive = true;
       diagnose('conversation-snapshot-fallback');
+      startSnapshotRead();
     } else {
       try { if (activation !== null && typeof activation === 'object') Promise.resolve(activation).catch(() => {}); }
       catch { /* fallback activation failures are observational */ }
@@ -192,6 +201,35 @@ export function createProgressReporter({
       diagnose('conversation-lifecycle-only');
     }
     persistProbeSnapshot(); return true;
+  };
+  const startSnapshotRead = () => {
+    if (closed || !accepting || progressProbe.state !== 'snapshot-fallback' || snapshotReadInFlight !== null
+      || snapshotRead === null || snapshotDescriber === null) return false;
+    const epoch = snapshotEpoch;
+    const read = snapshotRead; const describer = snapshotDescriber;
+    let operation;
+    try { operation = Promise.resolve().then(() => read()); }
+    catch { operation = Promise.reject(new Error('snapshot progress read failed')); }
+    const tracked = operation.then(async (snapshot) => {
+      if (closed || !accepting || epoch !== snapshotEpoch || progressProbe.state !== 'snapshot-fallback') return;
+      const observedAt = now(); if (!validTimestamp(observedAt)) throw new Error('snapshot progress timestamp invalid');
+      const events = await describer.observe(snapshot, observedAt);
+      if (closed || !accepting || epoch !== snapshotEpoch || progressProbe.state !== 'snapshot-fallback') return;
+      if (!Array.isArray(events)) throw new Error('snapshot progress description invalid');
+      const boundedEvents = events.slice(0, MAX_PROGRESS_PENDING_EVENTS);
+      if (!boundedEvents.every(validPublicEvent)) throw new Error('snapshot progress event invalid');
+      for (const event of boundedEvents) {
+        const sequence = observationSequence; observationSequence += 1;
+        enqueueLogical({ kind: 'event', event, sequence });
+      }
+    }).catch(() => {
+      if (closed || epoch !== snapshotEpoch || progressProbe.state !== 'snapshot-fallback') return;
+      cleanupSnapshotFallback();
+      progressProbe.state = 'lifecycle-only'; progressProbe.snapshotFallbackActive = false; progressProbe.snapshotFallbackUnavailable = true;
+      diagnose('conversation-lifecycle-only'); persistProbeSnapshot();
+    }).then(() => { if (snapshotReadInFlight === tracked) snapshotReadInFlight = null; });
+    snapshotReadInFlight = tracked;
+    return true;
   };
   /** @param {unknown} result */
   const recordDescriptionResult = (result) => {
@@ -209,7 +247,7 @@ export function createProgressReporter({
       progressProbe.rejected[result.reason] = saturatingIncrement(progressProbe.rejected[result.reason]);
       persistProbeSnapshot();
       const total = PROBE_REJECTION_REASONS.reduce((sum, reason) => sum + progressProbe.rejected[reason], 0);
-      if (total >= PROGRESS_PROBE_REJECTION_THRESHOLD) activateCompatibilityBoundary();
+      if (total >= PROGRESS_PROBE_REJECTION_THRESHOLD) activateCompatibilityBoundary(true);
     }
     return [];
   };
@@ -372,7 +410,30 @@ export function createProgressReporter({
       if (closed || !accepting || progressProbe.subscriptionAcknowledged) return false;
       progressProbe.subscriptionAcknowledged = true; persistProbeSnapshot(); return true;
     },
-    activateCompatibilityBoundary,
+    activateCompatibilityBoundary: () => activateCompatibilityBoundary(false),
+    /** @param {{readSnapshot:()=>Promise<unknown>,describer:{observe:(snapshot:unknown,observedAt:string)=>unknown|Promise<unknown>}}} boundary */
+    activateAcceptedBoundary(boundary) {
+      if (closed || acceptedBoundaryActivated) return false;
+      acceptedBoundaryActivated = true;
+      if (typeof boundary?.readSnapshot === 'function' && typeof boundary?.describer?.observe === 'function') {
+        snapshotRead = boundary.readSnapshot; snapshotDescriber = boundary.describer;
+        activateSnapshotFallback = () => {
+          if (closed || snapshotRead === null || snapshotDescriber === null) return false;
+          const epoch = snapshotEpoch + 1; snapshotEpoch = epoch;
+          startSnapshotRead();
+          let cleaned = false;
+          return () => {
+            if (cleaned) return;
+            cleaned = true;
+            if (snapshotEpoch === epoch) snapshotEpoch += 1;
+            snapshotReadInFlight = null;
+          };
+        };
+      }
+      const rejectedTotal = PROBE_REJECTION_REASONS.reduce((sum, reason) => sum + progressProbe.rejected[reason], 0);
+      if (rejectedTotal >= PROGRESS_PROBE_REJECTION_THRESHOLD) activateCompatibilityBoundary(true);
+      return true;
+    },
     probeSnapshot,
     /** @param {unknown} notification */
     observe(notification) {

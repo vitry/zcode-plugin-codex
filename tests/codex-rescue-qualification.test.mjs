@@ -26,6 +26,7 @@ const expectedPublicOutput = 'done';
 const expectedSemanticProgress = Object.freeze({
   start: '[zcode] Running command: npm test.',
   terminal: '[zcode] Command completed: npm test (25ms).',
+  degraded: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.',
 });
 const backgroundJobId = 'b'.repeat(64);
 const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
@@ -134,6 +135,22 @@ test('foreground qualification fails closed unless child transcript contains exa
       missing,
     );
   }
+});
+
+test('foreground qualification accepts one exact degraded diagnostic while retaining yielded child exit proof', () => {
+  const input = yieldedFixture();
+  childPollOutputs(input).at(-1).payload.output = capturedResult({
+    output: `${expectedSemanticProgress.degraded}\n${expectedPublicOutput}\n`, exit_code: 0,
+  });
+  const evidence = qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true }));
+  assert.equal(evidence.semanticProgressChecked, true);
+  assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
+
+  childPollOutputs(input).at(-1).payload.output = capturedResult({ output: `[zcode] ZCode started the delegated turn.\n${expectedPublicOutput}\n`, exit_code: 0 });
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'semantic-progress-missing',
+  );
 });
 
 test('qualifies named and generic background Rescue with one linked queued output and no capability leak', () => {

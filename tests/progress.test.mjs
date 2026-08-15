@@ -42,6 +42,91 @@ test('exports fixed progress bounds and phases', () => {
   assert.equal(progressModule.MAX_PROGRESS_DIAGNOSTIC_KINDS, 8);
 });
 
+test('snapshot reads cannot start before accepted-boundary activation and begin on the first heartbeat', async () => {
+  const lines = []; let heartbeat = () => {}; let reads = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', deferred: true, write: (line) => lines.push(line), now: () => observedAt,
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.activate(notification('prompt_started'));
+  heartbeat(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 0); assert.equal(reporter.probeSnapshot().state, 'probing');
+
+  reporter.activateAcceptedBoundary({
+    readSnapshot: async () => { reads += 1; return { runtime: { stateRevision: 1 }, messages: [] }; },
+    describer: { observe: async (_snapshot, seenAt) => [{ phase: 'running', message: 'Running tool: Bash.', observedAt: seenAt }] },
+  });
+  heartbeat(); await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.equal(reads, 1); assert.equal(reporter.probeSnapshot().state, 'snapshot-fallback');
+  assert.deepEqual(lines, [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n',
+    '[zcode] Running tool: Bash.\n',
+  ]);
+  reporter.close();
+});
+
+test('keeps one snapshot read in flight and accepted online recovery discards its late result', async () => {
+  const lines = []; let heartbeat = () => {}; let reads = 0; let resolveRead = () => {};
+  const delayedRead = new Promise((resolve) => { resolveRead = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt,
+    describeNotification: async () => ({ disposition: 'accepted', phase: 'online', events: [] }),
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.activateAcceptedBoundary({
+    readSnapshot: () => { reads += 1; return delayedRead; },
+    describer: { observe: async (_snapshot, seenAt) => [{ phase: 'running', message: 'LATE_PRIVATE_PROGRESS', observedAt: seenAt }] },
+  });
+  reporter.activateCompatibilityBoundary(); heartbeat(); heartbeat();
+  await Promise.resolve();
+  assert.equal(reads, 1);
+
+  reporter.observe(conversationFrame({ deltas: [] })); await reporter.flush();
+  assert.equal(reporter.probeSnapshot().state, 'online');
+  resolveRead({ runtime: { stateRevision: 1 }, messages: [] });
+  await new Promise((resolve) => setImmediate(resolve)); heartbeat(); await reporter.flush();
+
+  assert.equal(reads, 1);
+  assert.doesNotMatch(lines.join(''), /LATE_PRIVATE_PROGRESS/);
+  reporter.close();
+});
+
+test('snapshot read failure degrades exactly once without exposing its rejection', async () => {
+  const lines = []; const diagnostics = []; let reads = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt,
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+  });
+  reporter.activateAcceptedBoundary({
+    readSnapshot: async () => { reads += 1; throw new Error('PRIVATE_READ_REJECTION'); },
+    describer: { observe: async () => [] },
+  });
+  reporter.activateCompatibilityBoundary();
+  await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.equal(reads, 1); assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+  assert.deepEqual(diagnostics, ['conversation-snapshot-fallback', 'conversation-lifecycle-only']);
+  assert.equal(lines.filter((line) => /semantic progress is unavailable/.test(line)).length, 1);
+  assert.doesNotMatch(lines.join(''), /PRIVATE_READ_REJECTION/);
+  reporter.close();
+});
+
+test('invalid snapshot normalization degrades once instead of silently accepting unsafe events', async () => {
+  const lines = [];
+  const reporter = progressModule.createProgressReporter({ sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt });
+  reporter.activateAcceptedBoundary({
+    readSnapshot: async () => ({ runtime: { stateRevision: 1 }, messages: [] }),
+    describer: { observe: async () => [{ phase: 'running', message: 'PRIVATE\nUNSAFE', observedAt }] },
+  });
+  reporter.activateCompatibilityBoundary(); await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+  assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+  assert.equal(lines.filter((line) => /semantic progress is unavailable/.test(line)).length, 1);
+  assert.doesNotMatch(lines.join(''), /PRIVATE|UNSAFE/);
+  reporter.close();
+});
+
 test('tracks bounded structural compatibility and activates fallback only at an explicit boundary', async () => {
   const probes = []; const diagnostics = []; const lines = []; let heartbeat;
   const results = [
@@ -253,6 +338,7 @@ test('the fixed fourth structural rejection activates lifecycle-only exactly onc
   const reasons = ['wire-version', 'envelope-shape', 'sequence', 'topic'];
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a', describeNotification: async () => ({ disposition: 'rejected', reason: reasons.shift(), events: [] }),
+    activateSnapshotFallback: () => false,
     onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
   });
   for (let index = 0; index < 4; index += 1) reporter.observe({ method: 'v4/conversation/frame', index });
@@ -520,6 +606,7 @@ test('duplicate activity refreshes the heartbeat clock without repeating output 
   let currentTime = observedAt;
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a',
+    activateSnapshotFallback: () => false,
     write: (line) => lines.push(line),
     persist: async (event) => persisted.push(event),
     now: () => currentTime,
@@ -1022,6 +1109,7 @@ test('persistence-only probes reach the first-heartbeat compatibility boundary',
   const probes = []; const diagnostics = []; let heartbeat; let intervalCalls = 0;
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a', persistProbe: (probe) => probes.push(probe),
+    activateSnapshotFallback: () => false,
     onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
     setInterval: (callback) => { intervalCalls += 1; heartbeat = callback; return { unref() {} }; },
     clearInterval: () => {},

@@ -269,33 +269,34 @@ async function describeTool(row, states, workspaceRoot, observedAt, resolvePath,
   const status = row.status;
   if (START_STATUSES.has(status)) {
     if (prior.started || !states.has(key) && states.size >= MAX_TRACKED_ROWS) return null;
-    const message = fitProgressMessage(await startMessage(row, workspaceRoot, resolvePath, timeoutMs));
+    const message = fitProgressMessage(await formatToolStartMessage(row, workspaceRoot, resolvePath, timeoutMs));
     if (isTerminal()) return null;
     states.set(key, { started: true, terminal: false, message });
     return { phase: status === 'pendingApproval' ? 'waiting' : 'running', message, observedAt };
   }
   if (!SUCCESS_STATUSES.has(status) && !FAILURE_STATUSES.has(status)) return null;
   if (!states.has(key) && states.size >= MAX_TRACKED_ROWS) return null;
-  const startMessageValue = prior.message ?? await startMessage(row, workspaceRoot, resolvePath, timeoutMs);
+  const startMessageValue = prior.message ?? await formatToolStartMessage(row, workspaceRoot, resolvePath, timeoutMs);
   if (isTerminal()) return null;
   states.set(key, { started: prior.started, terminal: true, message: startMessageValue });
   const duration = durationSuffix(row.startedAt, row.endedAt);
-  return { phase: 'running', message: fitProgressMessage(terminalMessage(row, startMessageValue, SUCCESS_STATUSES.has(status), duration)), observedAt };
+  return { phase: 'running', message: fitProgressMessage(formatToolTerminalMessage(row, startMessageValue, SUCCESS_STATUSES.has(status), duration)), observedAt };
 }
 
 /** @param {any} row @param {string} workspaceRoot @param {(value:unknown,root:string)=>Promise<string|null>} resolvePath @param {number} timeoutMs */
-async function startMessage(row, workspaceRoot, resolvePath, timeoutMs) {
+export async function formatToolStartMessage(row, workspaceRoot, resolvePath = containedRelativePath, timeoutMs = PATH_RESOLUTION_TIMEOUT_MS, allowTextPreviews = true) {
   const toolName = normalizePreview(row.toolName, 64);
   const input = plainObject(row.input) ? row.input : {};
-  if (toolName === 'Bash') { const preview = normalizePreview(input.command); return preview ? `Running command: ${preview}.` : 'Running tool: Bash.'; }
+  if (!toolName) return 'Running a tool.';
+  if (toolName === 'Bash') { const preview = allowTextPreviews ? normalizePreview(input.command) : ''; return preview ? `Running command: ${preview}.` : 'Running tool: Bash.'; }
   if (['Read', 'Edit', 'Write'].includes(toolName)) {
     const path = await boundedPath(resolvePath, input.file_path, workspaceRoot, timeoutMs);
     if (!path) return `Running tool: ${toolName}.`;
     return `${toolName === 'Read' ? 'Reading' : toolName === 'Edit' ? 'Editing' : 'Writing'}: ${path}.`;
   }
-  if (toolName === 'Grep') { const preview = normalizePreview(input.pattern); return preview ? `Searching files: ${preview}.` : 'Running tool: Grep.'; }
-  if (toolName === 'Glob') { const preview = normalizePreview(input.pattern); return preview ? `Finding files: ${preview}.` : 'Running tool: Glob.'; }
-  if (toolName === 'WebSearch') { const preview = normalizePreview(input.query); return preview ? `Searching the web: ${preview}.` : 'Running tool: WebSearch.'; }
+  if (toolName === 'Grep') { const preview = allowTextPreviews ? normalizePreview(input.pattern) : ''; return preview ? `Searching files: ${preview}.` : 'Running tool: Grep.'; }
+  if (toolName === 'Glob') { const preview = allowTextPreviews ? normalizePreview(input.pattern) : ''; return preview ? `Finding files: ${preview}.` : 'Running tool: Glob.'; }
+  if (toolName === 'WebSearch') { const preview = allowTextPreviews ? normalizePreview(input.query) : ''; return preview ? `Searching the web: ${preview}.` : 'Running tool: WebSearch.'; }
   return `Running tool: ${toolName}.`;
 }
 
@@ -309,13 +310,14 @@ async function boundedPath(resolvePath, value, root, timeoutMs) {
 }
 
 /** @param {any} row @param {string} started @param {boolean} succeeded @param {string} duration */
-function terminalMessage(row, started, succeeded, duration) {
+export function formatToolTerminalMessage(row, started, succeeded, duration = durationSuffix(row.startedAt, row.endedAt)) {
   const state = succeeded ? 'completed' : 'failed';
   if (started.startsWith('Running command: ')) {
     const value = started.slice(17); const command = value.endsWith('.') ? value.slice(0, -1) : value;
     return `Command ${state}: ${command}${duration}.`;
   }
-  return `${normalizePreview(row.toolName, 64)} ${state}${duration}.`;
+  const toolName = normalizePreview(row.toolName, 64);
+  return `${toolName || 'Tool'} ${state}${duration}.`;
 }
 
 /** @param {unknown} startedAt @param {unknown} endedAt */
@@ -326,7 +328,7 @@ function durationSuffix(startedAt, endedAt) {
 }
 
 /** @param {string} message */
-function fitProgressMessage(message) {
+export function fitProgressMessage(message) {
   if (Buffer.byteLength(message) <= MAX_PUBLIC_MESSAGE_BYTES) return message;
   let output = '';
   for (const character of message) {

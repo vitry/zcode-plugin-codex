@@ -29,6 +29,8 @@ let pendingConcurrentStopResponse;
 const pendingCompletionTimers = new Map();
 const conversationSubscriptions = new Map();
 const conversationSubscriptionCounts = new Map();
+const sessionReadCounts = new Map();
+const sessionProgressRecoveryCompleted = new Set();
 
 const defaultModel = { providerId: 'fake', modelId: 'model' };
 function settings(model = defaultModel) { return { appliedProviderRevision: 'provider-revision-1', model: { current: model, available: [{ ref: model, label: 'Fixture model', reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, label: 'Other model', reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' }, permission: { mode: 'build', rulesRevision: 1 } }; }
@@ -77,6 +79,23 @@ function snapshotForMethod(method, sessionId, value = sessions.get(sessionId)) {
   return result;
 }
 
+function addSessionProgress(result, mode) {
+  const assistant = result.messages.findLast((message) => message?.info?.role === 'assistant');
+  if (!assistant) return result;
+  const partBase = { sessionId: assistant.info.sessionId, messageId: assistant.info.messageId };
+  const state = mode === 'terminal'
+    ? { status: 'completed', input: { command: 'PRIVATE_SNAPSHOT_COMMAND', capability: 'PRIVATE_SNAPSHOT_CAPABILITY' }, output: 'PRIVATE_SNAPSHOT_OUTPUT', title: 'PRIVATE_SNAPSHOT_METADATA', metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' }, startedAt: 10, completedAt: 20 }
+    : { status: 'running', input: { command: 'PRIVATE_SNAPSHOT_COMMAND', capability: 'PRIVATE_SNAPSHOT_CAPABILITY' }, startedAt: 10, metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' } };
+  assistant.parts.push(
+    { ...partBase, partId: 'snapshot-private-prose', type: 'text', text: 'PRIVATE_SNAPSHOT_PROSE' },
+    { ...partBase, partId: 'snapshot-private-reasoning', type: 'reasoning', text: 'PRIVATE_SNAPSHOT_REASONING' },
+    { ...partBase, partId: 'snapshot-private-file', type: 'file', mime: 'text/plain', url: 'PRIVATE_SNAPSHOT_FILE' },
+    { ...partBase, partId: 'snapshot-private-patch', type: 'patch', hash: 'PRIVATE_SNAPSHOT_PATCH', files: ['PRIVATE_SNAPSHOT_FILE'] },
+    { ...partBase, partId: 'snapshot-tool', type: 'tool', callId: 'PRIVATE_SNAPSHOT_CALL', tool: 'Bash', state, metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' } },
+  );
+  return result;
+}
+
 async function recoveryMode() { if (!process.env.FAKE_ZCODE_RECOVERY_CONTROL) return null; try { const value = JSON.parse(await readFile(process.env.FAKE_ZCODE_RECOVERY_CONTROL, 'utf8')); return ['active', 'completed', 'stopped', 'missing'].includes(value.mode) ? value.mode : 'active'; } catch { return 'active'; } }
 function applyRecoveryMode(session, mode) {
   if (!session || !mode) return;
@@ -104,13 +123,20 @@ async function scheduleCompletion(sessionId, completion) {
   /** @type {NodeJS.Timeout} */ let timer;
   const deliver = async () => {
     if (pendingCompletionTimers.get(sessionId) !== timer) return;
+    if (process.env.FAKE_ZCODE_WAIT_FOR_PROGRESS_READ === '1' && (sessionReadCounts.get(sessionId) ?? 0) < 1) {
+      timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return;
+    }
+    if (process.env.FAKE_ZCODE_SESSION_PROGRESS_RECOVERY === '1' && !sessionProgressRecoveryCompleted.has(sessionId)) {
+      timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return;
+    }
     if (process.env.FAKE_ZCODE_COMPLETION_GATE) {
       const state = await readFile(process.env.FAKE_ZCODE_COMPLETION_GATE, 'utf8').catch(() => '');
       if (state.trim() !== 'release') { timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return; }
     }
     pendingCompletionTimers.delete(sessionId); send(completion);
   };
-  timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer);
+  const completionDelayMs = Number(process.env.FAKE_ZCODE_COMPLETION_DELAY_MS ?? 5);
+  timer = setTimeout(() => { void deliver(); }, Number.isSafeInteger(completionDelayMs) && completionDelayMs >= 0 ? completionDelayMs : 5); pendingCompletionTimers.set(sessionId, timer);
 }
 function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
 function flushConcurrentCreateSubscribe() {
@@ -312,7 +338,24 @@ input.on('line', async (line) => {
       break;
     case 'session/read': {
       const session = sessions.get(p.sessionId); applyRecoveryMode(session, await recoveryMode());
-      send({ id: message.id, result: snapshotForMethod('session/read', p.sessionId, session) });
+      const readCount = (sessionReadCounts.get(p.sessionId) ?? 0) + 1; sessionReadCounts.set(p.sessionId, readCount);
+      if (readCount === 1 && process.env.FAKE_ZCODE_SESSION_PROGRESS_READ_FAIL === '1') {
+        send({ id: message.id, error: { code: -32099, message: 'PRIVATE_SNAPSHOT_READ_REJECTION' } }); break;
+      }
+      let result = snapshotForMethod('session/read', p.sessionId, session);
+      if (readCount === 1 && process.env.FAKE_ZCODE_SESSION_PROGRESS_RECOVERY === '1') {
+        result = structuredClone(result); addSessionProgress(result, 'running');
+        const tool = result.messages.flatMap((entry) => entry.parts).find((part) => part.type === 'tool');
+        if (tool) tool.state.input.command = 'PRIVATE_LATE_SNAPSHOT';
+        const subscriptionId = conversationSubscriptions.get(p.sessionId);
+        if (subscriptionId) send(conversationNotification({ sessionId: p.sessionId, subscriptionId, deliveryKind: 'online', ordinal: 2, deltas: [] }));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      if (readCount === 1 && ['running', 'terminal'].includes(process.env.FAKE_ZCODE_SESSION_PROGRESS)) {
+        result = structuredClone(result); addSessionProgress(result, process.env.FAKE_ZCODE_SESSION_PROGRESS);
+      }
+      send({ id: message.id, result });
+      if (readCount === 1 && process.env.FAKE_ZCODE_SESSION_PROGRESS_RECOVERY === '1') sessionProgressRecoveryCompleted.add(p.sessionId);
       break;
     }
     case 'session/resume':

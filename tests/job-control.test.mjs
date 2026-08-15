@@ -587,6 +587,69 @@ test('executor persists the accepted turn boundary and worker identity before st
   const persisted = await store.readJob(workspace, job.id); assert.equal(persisted.status, 'failed'); assert.equal(persisted.inputId, 'input-boundary'); assert.equal(persisted.childPid, 4321); assert.equal(persisted.workerLeaseId, workerLeaseId);
 });
 
+test('executor activates bounded snapshot progress only after the exact accepted boundary is durable and keeps final read authoritative', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {string[]} */
+  const lines = [];
+  /** @type {string[]} */
+  const readKinds = [];
+  let heartbeatAssigned = false;
+  /** @type {()=>void} */
+  let heartbeat = () => { throw new Error('heartbeat was not assigned'); };
+  let releaseCompletion = () => {};
+  const completion = new Promise((resolve) => { releaseCompletion = () => resolve(undefined); });
+  let boundaryPersisted = false; let signalBoundary = () => {};
+  const boundaryReady = new Promise((resolve) => { signalBoundary = () => resolve(undefined); });
+  const client = {
+    createSession: async () => ({
+      session: { sessionId: 'zs-snapshot-boundary' },
+      settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } },
+      messages: [{ info: { messageId: 'historical' } }],
+    }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'accepted-input', stateRevision: 7 }),
+    waitForCompletion: async () => completion,
+    readSession: async () => {
+      assert.equal(boundaryPersisted, true, 'no session read may precede durable boundary persistence');
+      if (readKinds.length === 0) {
+        readKinds.push('progress');
+        return {
+          runtime: { stateRevision: 8 },
+          messages: [
+            { info: { role: 'user', messageId: 'accepted-input' }, parts: [] },
+            { info: { role: 'assistant', messageId: 'assistant-progress', parentMessageId: 'accepted-input' }, parts: [
+              { type: 'tool', callId: 'safe-call', tool: 'Bash', state: { status: 'running', input: { command: 'PRIVATE_COMMAND' }, startedAt: 1 } },
+            ] },
+          ],
+        };
+      }
+      readKinds.push('final');
+      return { messages: [{ info: { role: 'assistant', messageId: 'assistant-final', parentMessageId: 'accepted-input' }, parts: [{ type: 'text', text: 'authoritative result' }] }] };
+    },
+    close: async () => {},
+  };
+  const execution = executeJob({
+    job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', progressWriter: (line) => lines.push(line),
+    onBoundaryPersisted: async (running) => {
+      assert.equal(running.inputId, 'accepted-input'); assert.equal(running.startRevision, 7); assert.deepEqual(running.beforeMessageIds, ['historical']);
+      boundaryPersisted = true; signalBoundary();
+    },
+    progressDependencies: {
+      now: () => '2026-08-15T00:00:00.000Z',
+      setInterval: (callback) => { heartbeat = callback; heartbeatAssigned = true; return { unref() {} }; }, clearInterval: () => {},
+    },
+  });
+  await boundaryReady;
+  for (let turns = 0; turns < 4 && !heartbeatAssigned; turns += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(heartbeatAssigned, true); heartbeat();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(readKinds, ['progress']);
+  assert.match(lines.join(''), /Running tool: Bash\./); assert.doesNotMatch(lines.join(''), /PRIVATE_COMMAND/);
+
+  releaseCompletion(); const output = await execution;
+  assert.equal(output.result, 'authoritative result'); assert.deepEqual(readKinds, ['progress', 'final']);
+});
+
 test('executor surfaces terminal storage failure instead of silently leaving active state', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); const storageError = new PluginError('JSON_WRITE_FAILED', 'terminal write failed', { category: 'storage', remedy: 'retry recovery' });
   const wrapped = { ...store, finishJob: async () => { throw storageError; } };

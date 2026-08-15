@@ -319,10 +319,12 @@ test('installed Rescue uses one isolated native child for initial and choice con
         expectedSemanticProgress: {
           start: '[zcode] Running command: npm test.',
           terminal: '[zcode] Command completed: npm test (25ms).',
+          degraded: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.',
         },
         forbiddenParentText: [
           'Running command: npm test.',
           'Command completed: npm test (25ms).',
+          'ZCode semantic progress is unavailable; lifecycle updates will continue.',
           'raw output must stay private',
           'reasoning must stay private',
           'capability must stay private',
@@ -387,6 +389,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
           includeExecutionFacts: true,
           forbiddenParentText: [
             'Running command: npm test.', 'Command completed: npm test (25ms).', 'raw output must stay private',
+            'ZCode semantic progress is unavailable; lifecycle updates will continue.',
             'reasoning must stay private', 'capability must stay private', 'v4/conversation/frame',
           ],
         },
@@ -442,7 +445,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
           expectedCommand, expectedPreflightCommand, expectedNamedSpawnMessage, expectedGenericSpawnMessage,
           privateExecutionCapability: privateCapability,
           publicLogs: [background.stdout, background.stderr],
-          forbiddenParentText: ['Running command: npm test.', 'Command completed: npm test (25ms).', 'raw output must stay private', 'reasoning must stay private', 'capability must stay private', 'v4/conversation/frame'],
+          forbiddenParentText: ['Running command: npm test.', 'Command completed: npm test (25ms).', 'ZCode semantic progress is unavailable; lifecycle updates will continue.', 'raw output must stay private', 'reasoning must stay private', 'capability must stay private', 'v4/conversation/frame'],
         },
       );
       assert.equal(evidence.jobId, backgroundJobId); assert.equal(evidence.capabilityChecked, true); assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route));

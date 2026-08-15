@@ -599,15 +599,17 @@ function assertTerminalSentinel(output, sentinel) {
 
 function assertSemanticProgress(output, expected) {
   if (expected === undefined) return;
-  assertExactKeys(expected, ['start', 'terminal'], 'semantic-progress-contract');
-  const start = boundedString(expected.start); const terminal = boundedString(expected.terminal);
-  if (!start || !terminal || !start.startsWith('[zcode] ') || !terminal.startsWith('[zcode] ')) mismatch('semantic-progress-contract', 'Semantic progress expectations must be exact bounded allowlisted ZCode lines.');
+  assertExactKeys(expected, ['start', 'terminal', 'degraded'], 'semantic-progress-contract');
+  const start = boundedString(expected.start); const terminal = boundedString(expected.terminal); const degraded = boundedString(expected.degraded);
+  if (!start || !terminal || !degraded || !start.startsWith('[zcode] ') || !terminal.startsWith('[zcode] ') || !degraded.startsWith('[zcode] ')) mismatch('semantic-progress-contract', 'Semantic progress expectations must be exact bounded allowlisted ZCode lines.');
   terminalOutputText(output, 'semantic-progress-missing');
   const lines = output.flatMap((item) => item.text.split('\n'));
   const startIndexes = lines.map((line, index) => line === start ? index : -1).filter((index) => index >= 0);
   const terminalIndexes = lines.map((line, index) => line === terminal ? index : -1).filter((index) => index >= 0);
-  if (startIndexes.length !== 1 || terminalIndexes.length !== 1 || startIndexes[0] >= terminalIndexes[0]) {
-    mismatch('semantic-progress-missing', 'The child transcript lacks one ordered exact semantic progress start and terminal line.');
+  const degradedIndexes = lines.map((line, index) => line === degraded ? index : -1).filter((index) => index >= 0);
+  const hasSemanticPair = startIndexes.length === 1 && terminalIndexes.length === 1 && startIndexes[0] < terminalIndexes[0];
+  if (!hasSemanticPair && degradedIndexes.length !== 1) {
+    mismatch('semantic-progress-missing', 'The child transcript lacks one ordered safe semantic progress pair or one exact degraded diagnostic.');
   }
 }
 

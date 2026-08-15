@@ -11,6 +11,7 @@ import { createJobController, withJobCancellationLock } from './job-control.mjs'
 import { isBoundedPublicIdentifier } from './identifier.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { createDeferredConversationProgressObserver } from './conversation-progress.mjs';
+import { createSessionProgressDescriber } from './session-progress.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -128,10 +129,14 @@ export async function executeJob(input) {
     });
     input.signal?.throwIfAborted();
     const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
-    reporter.activate({ method: 'state.updated', params: { scope: 'session', sessionId: activeSessionId, reason: 'prompt_started' } });
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
+    try {
+      const sessionDescriber = await createSessionProgressDescriber({ workspace, turnBoundary });
+      reporter.activateAcceptedBoundary({ readSnapshot: () => client.readSession(activeSessionId), describer: sessionDescriber });
+    } catch { reporter.activateAcceptedBoundary({}); }
+    reporter.activate({ method: 'state.updated', params: { scope: 'session', sessionId: activeSessionId, reason: 'prompt_started' } });
     await waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
     await cleanupProgress();
     const finalSnapshot = await client.readSession(activeSessionId);
