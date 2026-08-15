@@ -20,6 +20,7 @@ import {
   qualifyCodexRescueChoiceEvidence,
   qualifyCodexRescueEvidence,
 } from '../helpers/codex-rescue-qualification.mjs';
+import * as rescueQualification from '../helpers/codex-rescue-qualification.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
@@ -79,29 +80,17 @@ test('installed Rescue qualification declares its supported Codex line and a sco
   t.diagnostic(diagnostic);
 });
 
-test('deterministic installed Rescue contract stays attached to one long process through exit without orphaning', async (t) => {
-  const temporary = await mkdtemp(join(tmpdir(), 'zcode-rescue-long-process-')); t.after(() => rm(temporary, { recursive: true, force: true }));
+test('deterministic installed named and generic forwarders poll one yielded handle through exit without orphaning', async () => {
   const role = await readFile(join(root, 'marketplace', 'plugins', 'zcode', 'agents', 'zcode-rescue.toml.template'), 'utf8');
-  assert.match(role, /poll only that same handle with the host continuation tool until it reports an exit code/i);
-  assert.match(role, /Never[^.]*second `exec_command`/i);
-  const gate = join(temporary, 'release.gate'); const started = join(temporary, 'started.json'); const exited = join(temporary, 'exited');
-  const program = [
-    "const { readFile, writeFile } = require('node:fs/promises');",
-    "const [gate, started, exited] = process.argv.slice(1);",
-    "void (async () => { await writeFile(started, JSON.stringify({ pid: process.pid }));",
-    "while ((await readFile(gate, 'utf8').catch(() => '')) !== 'release') await new Promise((resolve) => setTimeout(resolve, 10));",
-    "await writeFile(exited, 'exited'); })();",
-  ].join(' ');
-  const companion = spawn(process.execPath, ['-e', program, gate, started, exited], { stdio: 'ignore' });
-  const terminal = new Promise((resolvePromise, reject) => { companion.once('exit', (code, signal) => code === 0 ? resolvePromise(undefined) : reject(new Error(`long fixture exited ${code ?? signal}`))); companion.once('error', reject); });
-  await waitUntil(async () => Boolean(await readFile(started, 'utf8').catch(() => '')), 2_000, 'long fixture did not expose its original process handle');
-  const original = JSON.parse(await readFile(started, 'utf8'));
-  assert.equal(original.pid, companion.pid); assert.equal(processAlive(original.pid), true);
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  assert.equal(processAlive(original.pid), true, 'partial waiting must not be treated as terminal child completion');
-  assert.equal(await readFile(exited, 'utf8').catch(() => ''), '');
-  await writeFile(gate, 'release'); await terminal;
-  assert.equal(await readFile(exited, 'utf8'), 'exited'); assert.equal(processAlive(original.pid), false, 'terminal child completion must leave no companion orphan');
+  const skill = await readFile(join(root, 'marketplace', 'plugins', 'zcode', 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(skill)?.[1]; assert.ok(generic);
+  for (const [route, instructions] of [['named', role], ['generic', generic]]) {
+    const evidence = await rescueQualification.runHermeticInstalledForwarder({ instructions, route });
+    assert.equal(evidence.execCommandCount, 1); assert.ok(evidence.pollCount >= 1);
+    assert.deepEqual(new Set(evidence.pollHandles), new Set([evidence.originalHandle]));
+    assert.equal(evidence.terminalExitCode, 0); assert.equal(evidence.finalizedAfterExit, true); assert.equal(evidence.orphanAlive, false);
+    assert.ok(evidence.wrappers.every((wrapper) => /tools\.(?:exec_command|write_stdin)\(/.test(wrapper)));
+  }
 });
 
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {

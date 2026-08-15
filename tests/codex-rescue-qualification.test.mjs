@@ -167,6 +167,32 @@ test('qualifies exact resume and fresh follow-ups against one existing child ID'
   }
 });
 
+test('choice qualification permits yielded polling in the initial turn, continuation turn, or both', () => {
+  for (const turns of [['initial'], ['continuation'], ['initial', 'continuation']]) {
+    const input = choiceFixture('resume');
+    for (const turn of turns) yieldChoiceTurn(input, turn);
+    retimestampChoice(input);
+    assert.equal(qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')).choice, 'resume', turns.join('+'));
+  }
+});
+
+test('choice yielded executions reject changed handles, nonempty input, missing exit, and polling after terminal', () => {
+  const cases = [
+    { code: 'choice-initial-handle-mismatch', turn: 'initial', mutate: (events) => { events.poll.payload.input = structuredPoll(52, events.poll.payload.call_id).payload.input; } },
+    { code: 'choice-initial-poll-input', turn: 'initial', mutate: (events) => { events.poll.payload.input = structuredPoll(51, events.poll.payload.call_id, 'x').payload.input; } },
+    { code: 'choice-initial-terminal-exit-missing', turn: 'initial', mutate: (events) => { events.terminal.payload.output = capturedResult({ output: events.terminalText, session_id: 51 }); } },
+    { code: 'choice-initial-poll-after-terminal', turn: 'initial', mutate: (events, input) => { input.rollouts[1].splice(input.rollouts[1].indexOf(events.final), 0, structuredPoll(51, 'choice-initial-late-poll'), capturedResultEvent('choice-initial-late-poll', { output: '', exit_code: 0 })); } },
+    { code: 'choice-continuation-handle-mismatch', turn: 'continuation', mutate: (events) => { events.poll.payload.input = structuredPoll(62, events.poll.payload.call_id).payload.input; } },
+    { code: 'choice-continuation-poll-input', turn: 'continuation', mutate: (events) => { events.poll.payload.input = structuredPoll(61, events.poll.payload.call_id, 'x').payload.input; } },
+    { code: 'choice-continuation-terminal-exit-missing', turn: 'continuation', mutate: (events) => { events.terminal.payload.output = capturedResult({ output: events.terminalText, session_id: 61 }); } },
+    { code: 'choice-continuation-poll-after-terminal', turn: 'continuation', mutate: (events, input) => { input.rollouts[1].splice(input.rollouts[1].indexOf(events.final), 0, structuredPoll(61, 'choice-late-poll'), capturedResultEvent('choice-late-poll', { output: '', exit_code: 0 })); } },
+  ];
+  for (const { code, turn, mutate } of cases) {
+    const input = choiceFixture('resume'); const events = yieldChoiceTurn(input, turn); mutate(events, input); retimestampChoice(input);
+    assert.throws(() => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
+  }
+});
+
 test('needs-choice is terminal only with exit code 3 before same-child continuation', () => {
   const valid = choiceFixture('resume');
   assert.equal(qualifyCodexRescueChoiceEvidence(valid, choiceOptions('resume')).choice, 'resume');
@@ -537,6 +563,24 @@ test('requires exact child, parent rollout, and exec terminal public output', ()
   );
 });
 
+test('rejects parent child-return and final timestamps that precede the child terminal exit', () => {
+  const input = fixture();
+  childReturnEvent(input).timestamp = '2026-08-10T00:00:00.000004Z';
+  input.rollouts[0].find((event) => event?.payload?.phase === 'final_answer').timestamp = '2026-08-10T00:00:00.000005Z';
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-terminal-timeline',
+  );
+});
+
+test('fails closed when cross-rollout terminal causality lacks a trusted timestamp', () => {
+  const input = fixture(); delete childReturnEvent(input).timestamp;
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-terminal-timeline',
+  );
+});
+
 test('accepts bounded commentary agent messages before one exact final sentinel and terminal turn', () => {
   const input = fixture();
   input.execFrames.splice(-2, 0,
@@ -629,7 +673,9 @@ function fixture(publicOutput = expectedPublicOutput) {
       structuredExec(expectedCommand),
       toolOutput('exec-1', `${expectedSemanticProgress.start}\n${expectedSemanticProgress.terminal}\n${publicOutput}\n`),
       { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
-    ];
+  ];
+  child[2].timestamp = '2026-08-10T00:00:00.000006Z'; child[3].timestamp = '2026-08-10T00:00:00.000007Z';
+  parent[5].timestamp = '2026-08-10T00:00:00.000008Z'; parent[6].timestamp = '2026-08-10T00:00:00.000009Z';
   return { execFrames, rollouts: [parent, child] };
 }
 
@@ -642,6 +688,11 @@ function yieldedFixture() {
     capturedResultEvent('poll-1', { output: 'still running\n', session_id: 41 }),
     structuredPoll(41, 'poll-2'),
     capturedResultEvent('poll-2', { output: `${expectedSemanticProgress.terminal}\n${expectedPublicOutput}\n`, exit_code: 0 }));
+  const child = input.rollouts[1]; const parent = input.rollouts[0];
+  child.find((event) => event?.payload?.call_id === 'poll-2' && event.payload.type === 'custom_tool_call_output').timestamp = '2026-08-10T00:00:00.000006Z';
+  child.find((event) => event?.payload?.phase === 'final_answer').timestamp = '2026-08-10T00:00:00.000007Z';
+  parent.find((event) => event?.payload?.author === agentPath).timestamp = '2026-08-10T00:00:00.000008Z';
+  parent.find((event) => event?.payload?.phase === 'final_answer').timestamp = '2026-08-10T00:00:00.000009Z';
   return input;
 }
 
@@ -699,6 +750,31 @@ function choiceFixture(choice) {
   at(child[1], 4); at(child[2], 5); at(child[3], 6); at(parent[7], 7); at(parent[8], 8);
   at(parent[9], 9); at(parent[10], 10); at(child[4], 11); at(child[5], 12); at(child[6], 13); at(parent[13], 14); at(parent[14], 15);
   return { rollouts: [parent, child] };
+}
+
+function yieldChoiceTurn(input, turn) {
+  const child = input.rollouts[1]; const finals = child.filter((event) => event?.payload?.phase === 'final_answer');
+  const final = finals[turn === 'initial' ? 0 : 1]; const start = turn === 'initial' ? 1 : child.indexOf(finals[0]) + 1;
+  const call = child[start]; const output = child[start + 1]; const handle = turn === 'initial' ? 51 : 61;
+  const terminalText = turn === 'initial' ? JSON.parse(output.payload.output[1].text).output : expectedPublicOutput + '\n';
+  const terminalExit = turn === 'initial' ? 3 : 0; const prefix = turn === 'initial' ? 'choice-initial' : 'choice-continuation';
+  call.payload.input = structuredExecResult(turn === 'initial' ? expectedCommand : choiceOptions('resume').expectedChoiceCommand, call.payload.call_id).payload.input;
+  output.payload.output = capturedResult({ output: 'partial\n', session_id: handle });
+  const poll = structuredPoll(handle, `${prefix}-poll`); const pollOutput = capturedResultEvent(`${prefix}-poll`, { output: 'heartbeat\n', session_id: handle });
+  const terminalPoll = structuredPoll(handle, `${prefix}-terminal`); const terminal = capturedResultEvent(`${prefix}-terminal`, { output: terminalText, exit_code: terminalExit });
+  child.splice(start + 2, 0, poll, pollOutput, terminalPoll, terminal);
+  return { call, output, poll, pollOutput, terminalPoll, terminal, final, terminalText };
+}
+
+function retimestampChoice(input) {
+  const parent = input.rollouts[0]; const child = input.rollouts[1]; const childFinals = child.filter((event) => event?.payload?.phase === 'final_answer');
+  const returns = parent.filter((event) => event?.payload?.author === agentPath); const parentFinals = parent.filter((event) => event?.payload?.phase === 'final_answer');
+  const followup = choiceFollowup(input); const followupResultEvent = followupResult(input); let offset = 4;
+  const stamp = (event) => { event.timestamp = new Date(Date.parse('2026-08-10T00:00:00.000Z') + offset++).toISOString(); };
+  for (const event of child.slice(1, child.indexOf(childFinals[0]) + 1)) stamp(event);
+  stamp(returns[0]); stamp(parentFinals[0]); stamp(followup); stamp(followupResultEvent);
+  for (const event of child.slice(child.indexOf(childFinals[0]) + 1, child.indexOf(childFinals[1]) + 1)) stamp(event);
+  stamp(returns[1]); stamp(parentFinals[1]);
 }
 
 function timeoutFixture() {

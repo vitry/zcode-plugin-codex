@@ -1,4 +1,9 @@
 // @ts-nocheck
+import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 const MAX_EXEC_FRAMES = 2_048;
 const MAX_ROLLOUTS = 64;
 const MAX_EVENTS_PER_ROLLOUT = 8_192;
@@ -32,6 +37,59 @@ export function parseCodexRolloutJsonl(value) {
 export function qualifyCodexRescueEvidence(input, options) {
   return qualifyCodexRescueEvidenceCore(input, options, false);
 }
+
+export async function runHermeticInstalledForwarder({ instructions, route }) {
+  const source = boundedString(instructions);
+  if (!source || !['named', 'generic'].includes(route)
+    || !/exactly one `exec_command` companion process/i.test(source)
+    || !/poll only that same handle with the host continuation tool until it reports an exit code/i.test(source)
+    || !/(?:Never start|start a) second `exec_command`/i.test(source)) {
+    mismatch('hermetic-forwarder-contract', 'Installed forwarder instructions do not encode the yielded-execution contract.');
+  }
+  const directory = await mkdtemp(join(tmpdir(), `zcode-installed-${route}-forwarder-`));
+  const program = "process.stdout.write('[zcode] started\\n'); setTimeout(() => process.stdout.write('hermetic-result\\n'), 75);";
+  const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(program)}`;
+  const wrappers = []; const pollHandles = []; let execCommandCount = 0; let pollCount = 0; let output = ''; let drained = ''; let exited = false; let terminalExitCode;
+  let child;
+  try {
+    execCommandCount += 1;
+    wrappers.push(`const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: directory })}); text(JSON.stringify(r))\n`);
+    const initialHost = parseCapturedHostCall(wrappers.at(-1));
+    if (initialHost.kind !== 'exec_command' || initialHost.legacy) mismatch('hermetic-forwarder-wrapper', 'The deterministic exec_command wrapper differs from the captured host contract.');
+    assertExecEnvelope(initialHost.envelope, command, directory, 'hermetic-forwarder-wrapper');
+    child = spawn(process.execPath, ['-e', program], { cwd: directory, stdio: ['ignore', 'pipe', 'ignore'] });
+    const closed = new Promise((resolvePromise, reject) => { child.once('close', resolvePromise); child.once('error', reject); });
+    child.stdout.setEncoding('utf8'); child.stdout.on('data', (chunk) => { output += chunk; });
+    child.once('exit', (code) => { terminalExitCode = code; exited = true; });
+    await delay(15);
+    drained = output; output = '';
+    if (exited) mismatch('hermetic-forwarder-did-not-yield', 'The deterministic companion exited before exposing a running handle.');
+    const originalHandle = child.pid;
+    if (!Number.isSafeInteger(originalHandle) || originalHandle <= 0) mismatch('hermetic-forwarder-handle', 'The deterministic companion omitted a safe running handle.');
+    while (!exited) {
+      if (pollCount >= MAX_CHILD_POLLS) mismatch('hermetic-forwarder-poll-count', 'The deterministic forwarder exceeded its poll bound.');
+      pollCount += 1; pollHandles.push(originalHandle);
+      wrappers.push(`const r = await tools.write_stdin(${JSON.stringify({ session_id: originalHandle, chars: '' })}); text(JSON.stringify(r))\n`);
+      const pollHost = parseCapturedHostCall(wrappers.at(-1));
+      if (pollHost.kind !== 'write_stdin' || pollHost.legacy) mismatch('hermetic-forwarder-wrapper', 'The deterministic continuation wrapper differs from the captured host contract.');
+      assertPollEnvelope(pollHost.envelope, originalHandle, () => 'hermetic-forwarder-wrapper');
+      await delay(15); drained += output; output = '';
+    }
+    drained += output;
+    await closed;
+    const orphanAlive = processAliveForQualification(originalHandle);
+    return {
+      execCommandCount, finalizedAfterExit: exited && drained.endsWith('hermetic-result\n'), orphanAlive, originalHandle,
+      pollCount, pollHandles, terminalExitCode, wrappers,
+    };
+  } finally {
+    if (child && !exited) child.kill('SIGKILL');
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+function delay(milliseconds) { return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)); }
+function processAliveForQualification(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 
 function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqualified) {
   const execFrames = boundedArray(input?.execFrames, MAX_EXEC_FRAMES, 'exec-frames');
@@ -141,6 +199,10 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   const childReturnIndex = parent.findIndex((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath && event.payload.recipient === '/root');
   const parentFinalIndex = parent.findIndex((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
   if (childReturnIndex < startIndex || parentFinalIndex <= childReturnIndex) mismatch('parent-terminal-order', 'The linked child return and parent final message are out of order.');
+  const terminalTimeline = [execution.terminalEvent, child[childFinalIndex], parent[childReturnIndex], parent[parentFinalIndex]].map(eventTimestamp);
+  if (terminalTimeline.some((value) => value === undefined) || terminalTimeline.some((value, index) => index > 0 && value <= terminalTimeline[index - 1])) {
+    mismatch('parent-terminal-timeline', 'Trusted timestamps do not prove child exit before child final, parent return, and parent final.');
+  }
 
   const childFinal = finalRolloutMessage(child, 'child-terminal-unavailable');
   const childReturn = childReturnPayload(parent, agentPath);
@@ -159,67 +221,72 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   return evidence;
 }
 
-function validateChildExecution(child, calls, outputs, expectedCommand, expectedWorkspace) {
+function validateChildExecution(child, calls, outputs, expectedCommand, expectedWorkspace, options = {}) {
+  const code = (suffix) => options.codePrefix ? `${options.codePrefix}-${suffix}` : `child-${suffix}`;
+  const commandCountCode = options.commandCountCode ?? code('command-count');
   if (calls.length === 0 || calls.length > MAX_CHILD_POLLS + 1 || calls.length !== child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call').length) {
-    mismatch('child-command-count', 'The child must use one exec_command and only bounded continuation polls.');
+    mismatch(commandCountCode, 'The child must use one exec_command and only bounded continuation polls.');
   }
   const parsedCalls = calls.map((call) => parseCapturedHostCall(call.payload.input));
-  if (parsedCalls.filter((call) => call.kind === 'exec_command').length !== 1) mismatch('child-command-count', 'The child started more than one companion process.');
-  if (outputs.length !== calls.length) mismatch('child-output-count', 'Every child host call must have exactly one linked structured output.');
+  if (parsedCalls.filter((call) => call.kind === 'exec_command').length !== 1) mismatch(commandCountCode, 'The child started more than one companion process.');
+  if (outputs.length !== calls.length) mismatch(code('output-count'), 'Every child host call must have exactly one linked structured output.');
   let execCount = 0; let handle; let terminalEventIndex = -1; let terminalCount = 0; const normalized = [];
   for (let index = 0; index < calls.length; index += 1) {
     const call = calls[index];
     const linked = outputs.filter((event) => event.payload.call_id === call.payload.call_id);
-    if (linked.length !== 1) mismatch('child-output-link', 'Every child host call must have exactly one linked output.');
+    if (linked.length !== 1) mismatch(code('output-link'), 'Every child host call must have exactly one linked output.');
     const outputEvent = linked[0];
     const callIndex = child.indexOf(call); const outputIndex = child.indexOf(outputEvent);
-    if (callIndex >= outputIndex) mismatch('child-output-order', 'A linked child host output must follow its call.');
+    if (callIndex >= outputIndex) mismatch(code('output-order'), 'A linked child host output must follow its call.');
     if (index > 0) {
       const previousOutput = outputs.find((event) => event.payload.call_id === calls[index - 1].payload.call_id);
-      if (child.indexOf(previousOutput) >= callIndex) mismatch('child-output-order', 'Each continuation call must follow the preceding host result.');
+      if (child.indexOf(previousOutput) >= callIndex) mismatch(code('output-order'), 'Each continuation call must follow the preceding host result.');
     }
-    if (terminalCount > 0) mismatch('child-poll-after-terminal', 'The child polled after the companion process exited.');
+    if (terminalCount > 0) mismatch(code('poll-after-terminal'), 'The child polled after the companion process exited.');
     const host = parsedCalls[index];
     if (host.kind === 'exec_command') {
       execCount += 1;
-      if (execCount !== 1 || index !== 0) mismatch('child-command-count', 'The child started more than one companion process.');
-      assertExecEnvelope(host.envelope, expectedCommand, expectedWorkspace, 'child-exec-envelope-mismatch');
+      if (execCount !== 1 || index !== 0) mismatch(commandCountCode, 'The child started more than one companion process.');
+      if (options.commandMismatchCode && host.envelope.get('cmd') !== expectedCommand) mismatch(options.commandMismatchCode, 'The child continuation command differs from the selected constant command.');
+      assertExecEnvelope(host.envelope, expectedCommand, expectedWorkspace, code('exec-envelope-mismatch'));
     } else {
-      if (execCount !== 1 || handle === undefined) mismatch('child-handle-mismatch', 'A continuation poll did not follow the original running handle.');
-      assertPollEnvelope(host.envelope, handle);
+      if (execCount !== 1 || handle === undefined) mismatch(code('handle-mismatch'), 'A continuation poll did not follow the original running handle.');
+      assertPollEnvelope(host.envelope, handle, code);
     }
     if (host.legacy) {
-      if (calls.length !== 1) mismatch('child-terminal-exit-missing', 'A multi-call child execution must expose structured host results.');
+      if (calls.length !== 1) mismatch(code('terminal-exit-missing'), 'A multi-call child execution must expose structured host results.');
       if (!Array.isArray(outputEvent.payload.output) || outputEvent.payload.output.length < 1 || outputEvent.payload.output.length > 8
-        || outputEvent.payload.output.some((item) => item?.type !== 'input_text' || boundedString(item.text) === undefined)) mismatch('child-terminal-exit-missing', 'The one-shot captured result is not terminal.');
+        || outputEvent.payload.output.some((item) => item?.type !== 'input_text' || boundedString(item.text) === undefined)) mismatch(code('terminal-exit-missing'), 'The one-shot captured result is not terminal.');
       normalized.push(...outputEvent.payload.output); terminalCount += 1; terminalEventIndex = outputIndex;
       continue;
     }
     const result = parseCapturedHostResult(outputEvent.payload.output);
     normalized.push({ type: 'input_text', text: result.output });
     const hasHandle = Object.hasOwn(result, 'session_id'); const hasExit = Object.hasOwn(result, 'exit_code');
-    if (hasHandle === hasExit) mismatch('child-terminal-exit-missing', 'A captured host result must expose either one running handle or one exit code.');
+    if (hasHandle === hasExit) mismatch(code('terminal-exit-missing'), 'A captured host result must expose either one running handle or one exit code.');
     if (hasHandle) {
-      if (!Number.isSafeInteger(result.session_id) || result.session_id <= 0) mismatch('child-handle-invalid', 'The running execution handle is not a positive safe integer.');
+      if (!Number.isSafeInteger(result.session_id) || result.session_id <= 0) mismatch(code('handle-invalid'), 'The running execution handle is not a positive safe integer.');
       if (handle === undefined) handle = result.session_id;
-      else if (result.session_id !== handle) mismatch('child-handle-mismatch', 'A continuation result changed the original running handle.');
+      else if (result.session_id !== handle) mismatch(code('handle-mismatch'), 'A continuation result changed the original running handle.');
     } else {
-      if (!Number.isSafeInteger(result.exit_code)) mismatch('child-terminal-exit-invalid', 'The terminal exit code is not a safe integer.');
+      if (!Number.isSafeInteger(result.exit_code)) mismatch(code('terminal-exit-invalid'), 'The terminal exit code is not a safe integer.');
       terminalCount += 1; terminalEventIndex = outputIndex;
+      if (options.expectedExitCode !== undefined && result.exit_code !== options.expectedExitCode) mismatch(options.expectedExitCodeMismatchCode ?? code('terminal-exit-invalid'), 'The terminal exit code differs from the required child-turn contract.');
     }
   }
-  if (execCount !== 1) mismatch('child-command-count', 'The child must start exactly one companion process.');
-  if (terminalCount !== 1 || terminalEventIndex < 0) mismatch('child-terminal-exit-missing', 'The original companion process has no unique terminal exit code.');
-  return { output: normalized, terminalEventIndex };
+  if (execCount !== 1) mismatch(commandCountCode, 'The child must start exactly one companion process.');
+  if (terminalCount !== 1 || terminalEventIndex < 0) mismatch(code('terminal-exit-missing'), 'The original companion process has no unique terminal exit code.');
+  if (options.expectedExitCode !== undefined && parsedCalls[0].legacy) mismatch(code('terminal-exit-missing'), 'This child turn requires an observed terminal exit code.');
+  return { output: normalized, terminalEventIndex, terminalEvent: child[terminalEventIndex], execEvent: calls[0] };
 }
 
-function assertPollEnvelope(envelope, expectedHandle) {
+function assertPollEnvelope(envelope, expectedHandle, code = (suffix) => `child-${suffix}`) {
   const keys = [...envelope.keys()];
-  if (keys.some((key) => !['chars', 'max_output_tokens', 'session_id', 'yield_time_ms'].includes(key))) mismatch('child-poll-envelope', 'The continuation poll contains a forbidden field.');
-  if (envelope.get('session_id') !== expectedHandle) mismatch('child-handle-mismatch', 'The continuation poll changed the original running handle.');
-  if (envelope.get('chars') !== '') mismatch('child-poll-input', 'The continuation poll supplied nonempty input.');
-  if (envelope.has('yield_time_ms') && (!Number.isInteger(envelope.get('yield_time_ms')) || envelope.get('yield_time_ms') < 250 || envelope.get('yield_time_ms') > 300_000)) mismatch('child-poll-envelope', 'The continuation yield bound is unsafe.');
-  if (envelope.has('max_output_tokens') && (!Number.isInteger(envelope.get('max_output_tokens')) || envelope.get('max_output_tokens') < 1 || envelope.get('max_output_tokens') > 100_000)) mismatch('child-poll-envelope', 'The continuation output bound is unsafe.');
+  if (keys.some((key) => !['chars', 'max_output_tokens', 'session_id', 'yield_time_ms'].includes(key))) mismatch(code('poll-envelope'), 'The continuation poll contains a forbidden field.');
+  if (envelope.get('session_id') !== expectedHandle) mismatch(code('handle-mismatch'), 'The continuation poll changed the original running handle.');
+  if (envelope.get('chars') !== '') mismatch(code('poll-input'), 'The continuation poll supplied nonempty input.');
+  if (envelope.has('yield_time_ms') && (!Number.isInteger(envelope.get('yield_time_ms')) || envelope.get('yield_time_ms') < 250 || envelope.get('yield_time_ms') > 300_000)) mismatch(code('poll-envelope'), 'The continuation yield bound is unsafe.');
+  if (envelope.has('max_output_tokens') && (!Number.isInteger(envelope.get('max_output_tokens')) || envelope.get('max_output_tokens') < 1 || envelope.get('max_output_tokens') > 100_000)) mismatch(code('poll-envelope'), 'The continuation output bound is unsafe.');
 }
 
 function parseCapturedHostResult(output) {
@@ -355,30 +422,15 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     if (!(timedOutWaitIndexes[0] < parent.indexOf(lists[0]) && parent.indexOf(linked[0]) < nextWaitIndex && nextWaitIndex < firstReturnIndex)) mismatch('choice-child-state-order', 'Timeout recovery state inspection is out of order.');
   }
 
-  const childCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
-  const childExecs = childCalls.filter((event) => event.payload.name === 'exec');
-  if (childCalls.length !== 2 || childExecs.length !== 2) mismatch('choice-command-count', 'The retained child must run exactly the initial and selected continuation commands.');
-  const initialHost = parseCapturedHostCall(childExecs[0].payload.input);
-  const choiceHost = parseCapturedHostCall(childExecs[1].payload.input);
-  if (initialHost.kind !== 'exec_command' || choiceHost.kind !== 'exec_command') mismatch('choice-command-count', 'Each child turn must start exactly one companion process.');
-  assertExecEnvelope(initialHost.envelope, options.expectedInitialCommand, options.expectedWorkspace, 'choice-initial-envelope');
-  const choiceEnvelope = choiceHost.envelope;
-  if (choiceEnvelope.get('cmd') !== options.expectedChoiceCommand) mismatch('choice-command-mismatch', 'The child continuation command differs from the selected constant command.');
-  assertExecEnvelope(choiceEnvelope, options.expectedChoiceCommand, options.expectedWorkspace, 'choice-command-envelope');
-  if (child.indexOf(childExecs[0]) >= child.indexOf(childExecs[1])) mismatch('choice-command-order', 'The continuation command must follow the initial command in the same child.');
-
-  const outputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
-  if (outputs.length !== 2) mismatch('choice-output-count', 'The same-child flow must expose exactly two linked command outputs.');
-  for (let index = 0; index < 2; index += 1) {
-    if (outputs[index].payload.call_id !== childExecs[index].payload.call_id || child.indexOf(childExecs[index]) >= child.indexOf(outputs[index])) {
-      mismatch('choice-output-link', 'A choice output is not linked after its command.');
-    }
-  }
-  const initialResult = initialHost.legacy ? null : parseCapturedHostResult(outputs[0].payload.output);
-  const continuationResult = choiceHost.legacy ? null : parseCapturedHostResult(outputs[1].payload.output);
-  if (initialResult && initialResult.exit_code !== 3) mismatch('choice-needs-choice-exit', 'A needs-choice response is terminal only with exit code 3.');
-  if (continuationResult && !Number.isSafeInteger(continuationResult.exit_code)) mismatch('choice-terminal-exit', 'The selected continuation lacks a terminal exit code.');
-  const needsChoiceText = initialResult?.output ?? terminalOutputText(outputs[0].payload.output, 'choice-needs-choice-output');
+  const childFinals = child.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
+  if (childFinals.length !== 2) mismatch('choice-child-terminal-sequence', 'The retained child must finalize exactly two turns.');
+  const firstFinalIndex = child.indexOf(childFinals[0]); const secondFinalIndex = child.indexOf(childFinals[1]);
+  const initialEvents = child.slice(1, firstFinalIndex); const continuationEvents = child.slice(firstFinalIndex + 1, secondFinalIndex);
+  const callsIn = (events) => events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
+  const outputsIn = (events) => events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
+  const initialExecution = validateChildExecution(initialEvents, callsIn(initialEvents), outputsIn(initialEvents), options.expectedInitialCommand, options.expectedWorkspace, { codePrefix: 'choice-initial', commandCountCode: 'choice-command-count', expectedExitCode: 3, expectedExitCodeMismatchCode: 'choice-needs-choice-exit' });
+  const continuationExecution = validateChildExecution(continuationEvents, callsIn(continuationEvents), outputsIn(continuationEvents), options.expectedChoiceCommand, options.expectedWorkspace, { codePrefix: 'choice-continuation', commandCountCode: 'choice-command-count', commandMismatchCode: 'choice-command-mismatch' });
+  const needsChoiceText = terminalOutputText(initialExecution.output, 'choice-needs-choice-output');
   let needsChoice;
   try { needsChoice = JSON.parse(needsChoiceText); } catch { mismatch('choice-needs-choice-output', 'The first child output is not exact needs-choice JSON.'); }
   assertExactKeys(needsChoice, ['candidate', 'choices', 'type'], 'choice-needs-choice-output');
@@ -386,11 +438,10 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     mismatch('choice-needs-choice-output', 'The first child output is not the fixed needs-choice response.');
   }
   boundedJson(needsChoice.candidate);
-  assertTerminalSentinel(continuationResult ? [{ type: 'input_text', text: continuationResult.output }] : outputs[1].payload.output, options.expectedPublicOutput);
-  const childFinals = child.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
+  assertTerminalSentinel(continuationExecution.output, options.expectedPublicOutput);
   if (childFinals.length !== 2 || childFinals[0].payload.message !== needsChoiceText || childFinals[1].payload.message !== options.expectedPublicOutput
-    || child.indexOf(outputs[0]) >= child.indexOf(childFinals[0]) || child.indexOf(childFinals[0]) >= child.indexOf(childExecs[1])
-    || child.indexOf(outputs[1]) >= child.indexOf(childFinals[1])) mismatch('choice-child-terminal-sequence', 'The same child must finalize each exact stdout after its linked command output.');
+    || child.indexOf(initialExecution.terminalEvent) >= firstFinalIndex || firstFinalIndex >= child.indexOf(continuationExecution.execEvent)
+    || child.indexOf(continuationExecution.terminalEvent) >= secondFinalIndex) mismatch('choice-child-terminal-sequence', 'The same child must finalize each exact stdout after its linked command output.');
 
   const returns = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath && event.payload.recipient === '/root');
   if (returns.length !== 2) mismatch('choice-child-return-count', 'The parent must receive needs-choice and terminal results from the same child.');
@@ -415,7 +466,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     mismatch('choice-wait-order', 'Wait evidence does not bracket the two same-child turns.');
   }
 
-  const timeline = [childExecs[0], outputs[0], childFinals[0], returns[0], parentFinals[0], followups[0], followupOutputs[0], childExecs[1], outputs[1], childFinals[1], returns[1], parentFinals[1]].map(eventTimestamp);
+  const timeline = [initialExecution.execEvent, initialExecution.terminalEvent, childFinals[0], returns[0], parentFinals[0], followups[0], followupOutputs[0], continuationExecution.execEvent, continuationExecution.terminalEvent, childFinals[1], returns[1], parentFinals[1]].map(eventTimestamp);
   if (timeline.some((value) => value === undefined) || timeline.some((value, index) => index > 0 && value <= timeline[index - 1])) {
     mismatch('choice-terminal-timeline', 'The observable timestamps do not prove the complete initial-exec through terminal-parent sequence.');
   }
