@@ -232,7 +232,7 @@ test('contract fixtures are rooted in this checkout', () => {
   assert.equal(existsSync(new URL('package.json', root)), true);
 });
 
-test('opt-in installed Rescue E2E requires real yielded execution and process cleanup evidence', () => {
+test('opt-in installed Rescue E2E requires real yielded execution and privacy-safe facts', () => {
   const source = readFileSync(new URL('tests/e2e/codex-skills-e2e.test.mjs', root), 'utf8');
   const installed = /test\('installed Rescue uses one isolated native child[\s\S]+?\n\}\);/.exec(source)?.[0];
   assert.ok(installed, 'opt-in installed native Rescue test must exist');
@@ -242,9 +242,9 @@ test('opt-in installed Rescue E2E requires real yielded execution and process cl
   assert.match(installed, /requireYieldedExecution:\s*true/);
   assert.match(installed, /yieldedExecution\.execCommandCount/);
   assert.match(installed, /yieldedExecution\.pollCount/);
-  assert.match(installed, /yieldedExecution\.pollHandles/);
+  assert.match(installed, /yieldedExecution\.sameHandleChecked/);
+  assert.doesNotMatch(installed, /yieldedExecution\.(?:pollHandles|originalHandle)/);
   assert.match(installed, /yieldedExecution\.terminalExitCode/);
   assert.match(installed, /executions\.initial\.execCommandCount/);
   assert.match(installed, /executions\.continuation\.execCommandCount/);
-  assert.match(installed, /processAlive/);
 });

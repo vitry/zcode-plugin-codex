@@ -120,7 +120,6 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   assertParentPreflight(parent, spawnIndex, startIndex, options);
 
   const childCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
-  const childExecCalls = childCalls.filter((event) => event.payload.name === 'exec');
   if (childCalls.length === 0) {
     const unsupportedCalls = child.filter((event) => event?.type === 'response_item'
       && event.payload?.type === 'function_call'
@@ -130,7 +129,9 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   }
   const childOutputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
   if (childOutputs.length === 0) mismatch('child-output-count', 'The child rollout has no structured exec output.');
-  const execution = validateChildExecution(child, childExecCalls, childOutputs, options.expectedCommand, options.expectedWorkspace);
+  const execution = validateChildExecution(child, childCalls, childOutputs, options.expectedCommand, options.expectedWorkspace, {
+    expectedExitCode: 0, allowLegacyWithoutExit: true,
+  });
   assertSemanticProgress(execution.output, options.expectedSemanticProgress);
   assertTerminalSentinel(execution.output, options.expectedPublicOutput);
   const childFinalIndex = child.findIndex((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
@@ -159,8 +160,8 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   const evidence = { parentThreadId, childThreadId, agentPath, taskName: spawnArgs.task_name, agentType, route, publicOutput: execFinal,
     ...(options.expectedSemanticProgress === undefined ? {} : { semanticProgressChecked: true }),
     ...(options.requireYieldedExecution ? { yieldedExecution: {
-      execCommandCount: execution.execCommandCount, originalHandle: execution.originalHandle, pollCount: execution.pollCount,
-      pollHandles: execution.pollHandles, terminalExitCode: execution.terminalExitCode,
+      execCommandCount: execution.execCommandCount, pollCount: execution.pollCount,
+      sameHandleChecked: true, terminalExitCode: execution.terminalExitCode,
     } } : {}) };
   if (!spawnMessage) mismatch('spawn-message-unavailable', 'The structured spawn metadata does not expose a bounded message field.');
   const spawnMessageEncrypted = encrypted(spawnMessage);
@@ -176,9 +177,11 @@ function validateChildExecution(child, calls, outputs, expectedCommand, expected
   if (calls.length === 0 || calls.length > MAX_CHILD_POLLS + 1 || calls.length !== child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call').length) {
     mismatch(commandCountCode, 'The child must use one exec_command and only bounded continuation polls.');
   }
+  if (calls.some((call) => call.payload.name !== 'exec')) mismatch(code('tool-name'), 'Every captured child host wrapper must use the exact exec tool name.');
   const parsedCalls = calls.map((call) => parseCapturedHostCall(call.payload.input));
   if (parsedCalls.filter((call) => call.kind === 'exec_command').length !== 1) mismatch(commandCountCode, 'The child started more than one companion process.');
   if (outputs.length !== calls.length) mismatch(code('output-count'), 'Every child host call must have exactly one linked structured output.');
+  const callIds = validateCallOutputOwnership(calls, outputs, code('call-id'));
   let execCount = 0; let handle; let terminalEventIndex = -1; let terminalCount = 0; let terminalExitCode; const normalized = []; const pollHandles = [];
   for (let index = 0; index < calls.length; index += 1) {
     const call = calls[index];
@@ -226,11 +229,22 @@ function validateChildExecution(child, calls, outputs, expectedCommand, expected
   }
   if (execCount !== 1) mismatch(commandCountCode, 'The child must start exactly one companion process.');
   if (terminalCount !== 1 || terminalEventIndex < 0) mismatch(code('terminal-exit-missing'), 'The original companion process has no unique terminal exit code.');
-  if (options.expectedExitCode !== undefined && parsedCalls[0].legacy) mismatch(code('terminal-exit-missing'), 'This child turn requires an observed terminal exit code.');
+  if (options.expectedExitCode !== undefined && parsedCalls[0].legacy && !options.allowLegacyWithoutExit) mismatch(code('terminal-exit-missing'), 'This child turn requires an observed terminal exit code.');
   return {
-    execCommandCount: execCount, execEvent: calls[0], originalHandle: handle, output: normalized, pollCount: pollHandles.length,
+    callIds, execCommandCount: execCount, execEvent: calls[0], originalHandle: handle, output: normalized, pollCount: pollHandles.length,
     pollHandles, terminalEventIndex, terminalEvent: child[terminalEventIndex], terminalExitCode,
   };
+}
+
+function validateCallOutputOwnership(calls, outputs, errorCode) {
+  const callIds = calls.map((event) => boundedString(event?.payload?.call_id));
+  const outputIds = outputs.map((event) => boundedString(event?.payload?.call_id));
+  if (callIds.some((id) => !id) || outputIds.some((id) => !id)
+    || new Set(callIds).size !== callIds.length || new Set(outputIds).size !== outputIds.length
+    || callIds.length !== outputIds.length || callIds.some((id) => !outputIds.includes(id))) {
+    mismatch(errorCode, 'Host calls and outputs require nonempty, bounded, globally unique, one-to-one call IDs.');
+  }
+  return callIds;
 }
 
 function assertPollEnvelope(envelope, expectedHandle, code = (suffix) => `child-${suffix}`) {
@@ -290,6 +304,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (parentCandidates.length !== 1) mismatch('choice-parent-count', 'Choice evidence must contain exactly one parent rollout.');
   const parent = parentCandidates[0];
   const parentMeta = sessionMeta(parent);
+  validateChoiceParentCallOwnership(parent);
   const spawns = namedCalls(parent, 'spawn_agent');
   if (spawns.length !== 1) mismatch('choice-spawn-count', 'Choice continuation must retain exactly one initial spawn.');
   const spawnArgs = parseObject(spawns[0].payload.arguments, 'choice-spawn-arguments');
@@ -326,6 +341,8 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (childCandidates.length !== 1) mismatch('choice-child-count', 'Choice evidence must contain exactly one rollout for the retained child ID.');
   const child = childCandidates[0];
   const meta = sessionMeta(child);
+  const childSessionMeta = child.filter((event) => event?.type === 'session_meta');
+  if (childSessionMeta.length !== 1 || child.indexOf(childSessionMeta[0]) !== 0) mismatch('choice-child-execution-boundary', 'The child rollout must begin with exactly one session_meta record.');
   const spawnMeta = meta?.source?.subagent?.thread_spawn;
   validateParentChildRoute({ parentMeta, parentThreadId: options.expectedParentThreadId, start: start.payload, childMeta: meta, childThreadId, agentPath, codePrefix: 'choice-' });
   if (Object.hasOwn(spawnArgs, 'agent_type') ? spawnMeta.agent_role !== options.expectedAgentType : spawnMeta.agent_role !== null) {
@@ -378,11 +395,15 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   const childFinals = child.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
   if (childFinals.length !== 2) mismatch('choice-child-terminal-sequence', 'The retained child must finalize exactly two turns.');
   const firstFinalIndex = child.indexOf(childFinals[0]); const secondFinalIndex = child.indexOf(childFinals[1]);
+  const outsideHostEvents = child.filter((event, index) => isChildHostEvent(event)
+    && !(index > 0 && index < firstFinalIndex || index > firstFinalIndex && index < secondFinalIndex));
+  if (outsideHostEvents.length > 0) mismatch('choice-child-execution-boundary', 'Every child host call and output must belong to exactly one logical execution before its final.');
   const initialEvents = child.slice(1, firstFinalIndex); const continuationEvents = child.slice(firstFinalIndex + 1, secondFinalIndex);
   const callsIn = (events) => events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
   const outputsIn = (events) => events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
   const initialExecution = validateChildExecution(initialEvents, callsIn(initialEvents), outputsIn(initialEvents), options.expectedInitialCommand, options.expectedWorkspace, { codePrefix: 'choice-initial', commandCountCode: 'choice-command-count', expectedExitCode: 3, expectedExitCodeMismatchCode: 'choice-needs-choice-exit' });
-  const continuationExecution = validateChildExecution(continuationEvents, callsIn(continuationEvents), outputsIn(continuationEvents), options.expectedChoiceCommand, options.expectedWorkspace, { codePrefix: 'choice-continuation', commandCountCode: 'choice-command-count', commandMismatchCode: 'choice-command-mismatch' });
+  const continuationExecution = validateChildExecution(continuationEvents, callsIn(continuationEvents), outputsIn(continuationEvents), options.expectedChoiceCommand, options.expectedWorkspace, { codePrefix: 'choice-continuation', commandCountCode: 'choice-command-count', commandMismatchCode: 'choice-command-mismatch', expectedExitCode: 0 });
+  if (initialExecution.callIds.some((id) => continuationExecution.callIds.includes(id))) mismatch('choice-child-call-id-reused', 'The two logical executions reused a host call ID.');
   const needsChoiceText = terminalOutputText(initialExecution.output, 'choice-needs-choice-output');
   let needsChoice;
   try { needsChoice = JSON.parse(needsChoiceText); } catch { mismatch('choice-needs-choice-output', 'The first child output is not exact needs-choice JSON.'); }
@@ -437,6 +458,26 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   return evidence;
 }
 
+function isChildHostEvent(event) {
+  return event?.type === 'response_item' && ['custom_tool_call', 'custom_tool_call_output'].includes(event.payload?.type);
+}
+
+function validateChoiceParentCallOwnership(parent) {
+  const calls = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call');
+  const outputs = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output');
+  const callIds = calls.map((event) => boundedString(event.payload.call_id));
+  const outputIds = outputs.map((event) => boundedString(event.payload.call_id));
+  if (callIds.some((id) => !id) || outputIds.some((id) => !id) || new Set(callIds).size !== callIds.length || new Set(outputIds).size !== outputIds.length) {
+    mismatch('choice-parent-call-id', 'Parent calls and outputs require nonempty bounded unique call IDs.');
+  }
+  const outputOwningCalls = calls.filter((event) => event.payload.name !== 'spawn_agent');
+  if (outputOwningCalls.length !== outputs.length
+    || outputOwningCalls.some((event) => !outputIds.includes(event.payload.call_id))
+    || outputs.some((event) => !outputOwningCalls.some((call) => call.payload.call_id === event.payload.call_id))) {
+    mismatch('choice-parent-call-id', 'Every parent host output must belong one-to-one to one non-spawn call.');
+  }
+}
+
 function validateParentChildRoute({ parentMeta, parentThreadId, start, childMeta, childThreadId, agentPath, codePrefix }) {
   const code = codePrefix ? 'choice-child-link' : 'child-link-mismatch';
   if (parentMeta?.session_id !== parentThreadId || parentMeta?.id !== parentThreadId
@@ -459,10 +500,21 @@ function namedCalls(events, name) {
 
 function eventTimestamp(event) {
   const value = boundedString(event?.timestamp);
-  const match = value === undefined ? null : /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/u.exec(value);
+  const match = value === undefined ? null : /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$/u.exec(value);
   if (!match) return undefined;
-  const seconds = Date.parse(`${match[1]}Z`); if (!Number.isFinite(seconds)) return undefined;
-  return BigInt(seconds) * 1_000_000n + BigInt((match[2] ?? '').padEnd(9, '0'));
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+  const offsetHour = match[10] === undefined ? 0 : Number(match[10]); const offsetMinute = match[11] === undefined ? 0 : Number(match[11]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]
+    || hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) return undefined;
+  const adjustedYear = year - (month <= 2 ? 1 : 0); const era = Math.floor(adjustedYear / 400); const yearOfEra = adjustedYear - era * 400;
+  const adjustedMonth = month + (month > 2 ? -3 : 9); const dayOfYear = Math.floor((153 * adjustedMonth + 2) / 5) + day - 1;
+  const dayOfEra = yearOfEra * 365 + Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100) + dayOfYear;
+  const epochDays = era * 146097 + dayOfEra - 719468;
+  const offsetSeconds = (offsetHour * 60 + offsetMinute) * 60 * (match[9] === '-' ? -1 : 1);
+  const epochSeconds = BigInt(epochDays * 86_400 + hour * 3_600 + minute * 60 + second - offsetSeconds);
+  return epochSeconds * 1_000_000_000n + BigInt((match[7] ?? '').padEnd(9, '0'));
 }
 
 function childReturnText(event, agentPath) {

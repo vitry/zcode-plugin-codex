@@ -28,6 +28,45 @@ const qualificationRequired = process.env.ZCODE_REQUIRE_QUALIFIED === '1';
 const optInSkip = process.env.ZCODE_CODEX_SKILLS_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_SKILLS_E2E=1 to spend authenticated Codex credits.');
 const rescueOptInSkip = process.env.ZCODE_CODEX_RESCUE_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_RESCUE_E2E=1 to qualify the runtime-observed native Rescue route.');
 
+test('foreground Rescue gate lifecycle releases and cleans exact processes on gate discovery timeout', async () => {
+  const events = []; let rejectCodex; let alive = true;
+  const result = new Promise((_, reject) => { rejectCodex = reject; });
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json',
+    launch: () => ({ result, terminate: async () => { events.push('terminate-codex'); rejectCodex(new Error('terminated exact Codex')); throw new Error('Codex termination reported failure'); } }),
+    waitForGate: async () => { throw new Error('gate discovery timeout'); },
+    readIdentity: async () => ({ pid: 48123 }), releaseGate: async (path) => { events.push(`release:${path}`); },
+    isAlive: () => alive, terminatePid: async (pid) => { events.push(`terminate-pid:${pid}`); alive = false; },
+    waitForPidExit: async (pid) => { events.push(`wait-pid:${pid}`); }, holdMs: 0,
+  }), /gate discovery timeout/);
+  assert.deepEqual(events, ['release:/exact/gate', 'terminate-codex', 'terminate-pid:48123', 'wait-pid:48123']);
+});
+
+test('foreground Rescue gate lifecycle consumes Codex failure and releases the exact gate', async () => {
+  const events = []; let alive = true;
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json',
+    launch: () => ({ result: Promise.reject(new Error('Codex failed')), terminate: async () => { events.push('terminate-codex'); } }),
+    waitForGate: () => new Promise(() => {}), readIdentity: async () => ({ pid: 59123 }),
+    releaseGate: async (path) => { events.push(`release:${path}`); }, isAlive: () => alive,
+    terminatePid: async (pid) => { events.push(`terminate-pid:${pid}`); alive = false; }, waitForPidExit: async (pid) => { events.push(`wait-pid:${pid}`); }, holdMs: 0,
+  }), /Codex failed/);
+  assert.deepEqual(events, ['release:/exact/gate', 'terminate-codex', 'terminate-pid:59123', 'wait-pid:59123']);
+});
+
+test('foreground Rescue gate lifecycle cleans an exact fake child that does not exit naturally', async () => {
+  const events = []; let gateReleased = false; let alive = true; let resolveCodex;
+  const result = new Promise((resolvePromise) => { resolveCodex = resolvePromise; });
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', launch: () => ({ result }),
+    waitForGate: async () => {}, readIdentity: async () => ({ pid: 60123 }), releaseGate: async () => { gateReleased = true; events.push('release'); resolveCodex({ code: 0, stdout: '', stderr: '' }); },
+    sleep: async () => {}, isAlive: () => alive,
+    waitForPidExit: async (pid, phase) => { events.push(`wait-${phase}:${pid}`); if (phase === 'natural') throw new Error('fake child did not exit'); },
+    terminatePid: async (pid) => { assert.equal(gateReleased, true); events.push(`terminate-pid:${pid}`); alive = false; }, holdMs: 0,
+  }), /fake child did not exit/);
+  assert.deepEqual(events, ['release', 'wait-natural:60123', 'terminate-pid:60123', 'wait-cleanup:60123']);
+});
+
 test('preserved installed evidence scrubs isolated credential copies on normal, thrown, and timed-out cleanup', async (t) => {
   for (const mode of ['normal', 'sync-throw', 'timeout']) await t.test(mode, async () => {
     const temporary = await mkdtemp(join(tmpdir(), 'zcode-installed-evidence-cleanup-')); t.after(() => rm(temporary, { recursive: true, force: true }));
@@ -136,30 +175,20 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const foregroundGate = join(temporary, 'foreground-long-completion.gate'); const foregroundGateReached = join(temporary, 'foreground-long-completion.reached'); const foregroundProcess = join(temporary, 'foreground-long-process.json');
   await Promise.all([writeFile(zcodeRecord, ''), writeFile(foregroundGate, 'hold'), writeFile(foregroundGateReached, ''), writeFile(foregroundProcess, '')]);
   const longEnv = { ...env, FAKE_ZCODE_COMPLETION_GATE: foregroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: foregroundGateReached, FAKE_ZCODE_PROCESS_FILE: foregroundProcess };
-  const rescuePromise = codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result.'], workspace, longEnv, 300_000);
-  let earlyRescue;
-  const foregroundBoundary = await Promise.race([
-    waitUntil(async () => await readFile(foregroundGateReached, 'utf8').catch(() => '') === 'blocked', 60_000, 'installed foreground Rescue never reached the held fake-ZCode completion boundary').then(() => 'held'),
-    rescuePromise.then((result) => { earlyRescue = result; return 'ended'; }),
-  ]);
-  if (foregroundBoundary === 'ended') {
-    if (skipExternalFailure(t, earlyRescue)) return;
-    assert.fail(`installed foreground Rescue ended before the long completion boundary\n${earlyRescue.stdout}\n${earlyRescue.stderr}`);
+  const foreground = await runHeldForegroundRescue({
+    gatePath: foregroundGate, processPath: foregroundProcess,
+    launch: () => controlledCodex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result.'], workspace, longEnv, 300_000),
+    waitForGate: () => waitUntil(async () => await readFile(foregroundGateReached, 'utf8').catch(() => '') === 'blocked', 60_000, 'installed foreground Rescue never reached the held fake-ZCode completion boundary'),
+    holdMs: 35_000,
+  });
+  if (foreground.endedBeforeGate) {
+    if (skipExternalFailure(t, foreground.rescue)) return;
+    assert.fail(`installed foreground Rescue ended before the long completion boundary\n${foreground.rescue.stdout}\n${foreground.rescue.stderr}`);
   }
-  let foregroundIdentity; let processAliveWhileHeld = false;
-  try {
-    foregroundIdentity = JSON.parse(await readFile(foregroundProcess, 'utf8'));
-    assert.ok(Number.isSafeInteger(foregroundIdentity.pid) && foregroundIdentity.pid > 0, 'the fake-ZCode process marker must contain one positive safe PID');
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 35_000));
-    processAliveWhileHeld = processAlive(foregroundIdentity.pid);
-  } finally {
-    await writeFile(foregroundGate, 'release');
-  }
-  const rescue = await rescuePromise;
+  const { rescue, processAliveWhileHeld } = foreground;
   if (skipExternalFailure(t, rescue)) return;
   assert.equal(rescue.code, 0, `codex Rescue failed\n${rescue.stdout}\n${rescue.stderr}`);
   assert.equal(processAliveWhileHeld, true, 'the exact fake-ZCode process must remain alive beyond the maximum initial host yield');
-  await waitUntil(() => !processAlive(foregroundIdentity.pid), 10_000, 'the exact fake-ZCode process remained alive after native child completion');
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const expectedCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke rescue`;
   const expectedPreflightCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" role-status rescue`;
@@ -200,7 +229,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
     assert.equal(evidence.semanticProgressChecked, true);
     assert.equal(evidence.yieldedExecution.execCommandCount, 1);
     assert.ok(evidence.yieldedExecution.pollCount >= 1);
-    assert.deepEqual(new Set(evidence.yieldedExecution.pollHandles), new Set([evidence.yieldedExecution.originalHandle]));
+    assert.equal(evidence.yieldedExecution.sameHandleChecked, true);
     assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
     t.diagnostic(`qualified native Rescue route: ${evidence.route}`);
   } catch (error) {
@@ -208,7 +237,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
       assert.ok(['named', 'generic-schema-hidden'].includes(error.evidence?.route), 'encrypted-message evidence must record the automatically observed native route');
       assert.equal(error.evidence.yieldedExecution.execCommandCount, 1);
       assert.ok(error.evidence.yieldedExecution.pollCount >= 1);
-      assert.deepEqual(new Set(error.evidence.yieldedExecution.pollHandles), new Set([error.evidence.yieldedExecution.originalHandle]));
+      assert.equal(error.evidence.yieldedExecution.sameHandleChecked, true);
       assert.equal(error.evidence.yieldedExecution.terminalExitCode, 0);
       const detail = `Observed route ${error.evidence.route}. ${error.message}`;
       markUnqualified(t, unqualified(error.code, detail)); return;
@@ -571,6 +600,74 @@ async function installPrivateCapabilityObserver(installedPluginRoot, temporary) 
 }
 
 async function codex(args, cwd, env, timeoutMs = 60_000) { return runProcess(codexLaunch(args, { root, env }), { cwd, env, timeoutMs, maxOutputBytes: 16 * 1024 * 1024 }); }
+function controlledCodex(args, cwd, env, timeoutMs = 60_000) {
+  const controller = new AbortController();
+  const result = runProcess(codexLaunch(args, { root, env }), { cwd, env, timeoutMs, maxOutputBytes: 16 * 1024 * 1024, signal: controller.signal });
+  return { result, terminate: async () => { controller.abort(); await result.catch(() => {}); } };
+}
+
+async function runHeldForegroundRescue(input) {
+  const readIdentity = input.readIdentity ?? (async () => JSON.parse(await readFile(input.processPath, 'utf8')));
+  const releaseGate = input.releaseGate ?? ((path) => writeFile(path, 'release'));
+  const isAlive = input.isAlive ?? processAlive;
+  const sleep = input.sleep ?? ((duration) => new Promise((resolvePromise) => setTimeout(resolvePromise, duration)));
+  const waitForPidExit = input.waitForPidExit ?? ((pid, phase) => waitUntil(() => !processAlive(pid), phase === 'natural' ? 10_000 : 5_000, `the exact fake-ZCode process remained alive during ${phase}`));
+  const terminatePid = input.terminatePid ?? terminateExactPid;
+  const control = await input.launch();
+  const resultOutcome = Promise.resolve(control.result).then(
+    (value) => ({ kind: 'result', value }),
+    (error) => ({ kind: 'error', error }),
+  );
+  let identity; let gateReleased = false; let completed = false; let answer; let failure;
+  try {
+    const gateOutcome = Promise.resolve().then(input.waitForGate).then(
+      () => ({ kind: 'held' }),
+      (error) => ({ kind: 'gate-error', error }),
+    );
+    const boundary = await Promise.race([gateOutcome, resultOutcome]);
+    if (boundary.kind === 'gate-error') throw boundary.error;
+    if (boundary.kind === 'error') throw boundary.error;
+    if (boundary.kind === 'result') {
+      answer = { endedBeforeGate: true, rescue: boundary.value };
+    } else {
+      identity = await readIdentity();
+      if (!Number.isSafeInteger(identity?.pid) || identity.pid <= 0) throw new Error('the fake-ZCode process marker must contain one positive safe PID');
+      await sleep(input.holdMs ?? 35_000);
+      const processAliveWhileHeld = isAlive(identity.pid);
+      await releaseGate(input.gatePath); gateReleased = true;
+      const outcome = await resultOutcome;
+      if (outcome.kind === 'error') throw outcome.error;
+      await waitForPidExit(identity.pid, 'natural');
+      answer = { endedBeforeGate: false, identity, processAliveWhileHeld, rescue: outcome.value };
+      completed = true;
+    }
+  } catch (error) { failure = error; }
+  const cleanupErrors = [];
+  if (!gateReleased) {
+    try { await releaseGate(input.gatePath); gateReleased = true; } catch (error) { cleanupErrors.push(error); }
+  }
+  if (!completed) {
+    if (typeof control.terminate === 'function') { try { await control.terminate(); } catch (error) { cleanupErrors.push(error); } }
+    if (!identity) { try { identity = await readIdentity(); } catch { /* marker was never recorded */ } }
+    if (Number.isSafeInteger(identity?.pid) && identity.pid > 0 && isAlive(identity.pid)) {
+      try { await terminatePid(identity.pid); } catch (error) { cleanupErrors.push(error); }
+      try { await waitForPidExit(identity.pid, 'cleanup'); } catch (error) { cleanupErrors.push(error); }
+    }
+  }
+  if (cleanupErrors.length > 0) {
+    if (!failure) failure = cleanupErrors.length === 1 ? cleanupErrors[0] : new AggregateError(cleanupErrors, 'foreground Rescue cleanup failed');
+    else failure = new AggregateError([failure, ...cleanupErrors], failure.message);
+  }
+  if (failure) throw failure;
+  return answer;
+}
+
+async function terminateExactPid(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('exact fake-ZCode PID is invalid');
+  try { process.kill(pid, 'SIGTERM'); } catch { return; }
+  try { await waitUntil(() => !processAlive(pid), 1_000, 'exact fake-ZCode PID ignored SIGTERM'); return; } catch { /* escalate only this PID */ }
+  try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
+}
 async function git(args, cwd) { const result = await runProcess({ command: 'git', args, options: { shell: false } }, { cwd, timeoutMs: 30_000 }); assert.equal(result.code, 0, result.stderr); return result; }
 async function initializeGitWorkspace(workspace) { await mkdir(workspace, { recursive: true }); await git(['init', '-q'], workspace); await writeFile(join(workspace, 'tracked.txt'), 'base\n'); await git(['add', 'tracked.txt'], workspace); await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], workspace); }
 async function waitUntil(predicate, timeoutMs, message) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { if (await predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } assert.fail(message); }
