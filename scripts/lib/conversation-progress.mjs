@@ -16,6 +16,7 @@ const MAX_TRACKED_ROWS = 256;
 const MAX_PENDING_OBSERVATIONS = 4;
 const PATH_RESOLUTION_TIMEOUT_MS = 100;
 const CONVERSATION_WIRE_VERSION = 3;
+const SNAPSHOT_TOOL_NAMES = new Set(['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', 'WebSearch']);
 /** @typedef {{phase:string,message:string,observedAt:string}} PublicProgressEvent */
 /** @typedef {{disposition:'accepted',phase:'initial'|'online'|'recovery',events:PublicProgressEvent[]}|{disposition:'rejected'|'ignored',reason:string,events:PublicProgressEvent[]}} ObservationResult */
 /** @param {string} reason @returns {ObservationResult} */
@@ -93,13 +94,19 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     const frame = validated.value;
     if (frame.deliveryKind === 'initial') return accepted('initial');
     if (frame.deliveryKind === 'recovery') {
-      if (lastOrdinal !== undefined && (frame.ordinal <= lastOrdinal || frame.toSeq <= /** @type {number} */ (lastSeq))) return ignored('stale');
-      if (!needsRecovery && lastOrdinal !== undefined && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== /** @type {number} */ (lastSeq) + 1)) return ignored('sequence-gap');
+      if (lastOrdinal !== undefined && (frame.ordinal <= lastOrdinal || frame.toSeq <= /** @type {number} */ (lastSeq))) {
+        needsRecovery = true; return rejected('sequence');
+      }
+      if (!needsRecovery && lastOrdinal !== undefined && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== /** @type {number} */ (lastSeq) + 1)) {
+        needsRecovery = true; return rejected('sequence');
+      }
       lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false;
       absorbRecovery(frame.deltas); return accepted('recovery');
     }
+    if (lastOrdinal !== undefined && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== /** @type {number} */ (lastSeq) + 1)) {
+      needsRecovery = true; return rejected('sequence');
+    }
     if (needsRecovery) return ignored('recovery-required');
-    if (lastOrdinal !== undefined && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== /** @type {number} */ (lastSeq) + 1)) return ignored('sequence-gap');
     const staged = [];
     for (const delta of frame.deltas) {
       if (!delta.row) continue;
@@ -288,13 +295,9 @@ export async function formatToolStartMessage(row, workspaceRoot, resolvePath = c
   return formatToolStartMessageWithOptions(row, workspaceRoot, { resolvePath, timeoutMs, allowTextPreviews });
 }
 
-/** @param {any} row @param {string} workspaceRoot */
-export async function formatSnapshotToolStartMessage(row, workspaceRoot) {
-  return formatToolStartMessageWithOptions(row, workspaceRoot, {
-    resolvePath: containedRelativePath,
-    timeoutMs: PATH_RESOLUTION_TIMEOUT_MS,
-    allowTextPreviews: false,
-  });
+/** @param {any} row */
+export function formatSnapshotToolStartMessage(row) {
+  return SNAPSHOT_TOOL_NAMES.has(row?.toolName) ? `Running tool: ${row.toolName}.` : 'Running a tool.';
 }
 
 /** @param {any} row @param {string} workspaceRoot @param {{resolvePath:(value:unknown,root:string)=>Promise<string|null>,timeoutMs:number,allowTextPreviews:boolean}} options */

@@ -8,8 +8,10 @@ if (process.argv.includes('--version')) {
   process.stdout.write(`${process.env.FAKE_ZCODE_VERSION ?? '0.16.1'}\n`);
   process.exit(0);
 }
+const processNonce = process.env.FAKE_ZCODE_PROCESS_NONCE;
+if (processNonce !== undefined && !/^[a-f0-9]{64}$/u.test(processNonce)) throw new Error('fake process nonce must be 256 bits');
 if (process.env.FAKE_ZCODE_PROCESS_FILE) await writeFile(process.env.FAKE_ZCODE_PROCESS_FILE, JSON.stringify({
-  pid: process.pid, ppid: process.ppid, ...(process.env.FAKE_ZCODE_PROCESS_NONCE ? { nonce: process.env.FAKE_ZCODE_PROCESS_NONCE } : {}),
+  pid: process.pid, ppid: process.ppid, ...(processNonce ? { nonce: processNonce } : {}),
 }));
 if (process.env.FAKE_ZCODE_STDERR_BYTES) process.stderr.write((process.env.FAKE_ZCODE_STDERR_TEXT ?? 'sensitive-stderr').repeat(Math.ceil(Number(process.env.FAKE_ZCODE_STDERR_BYTES) / (process.env.FAKE_ZCODE_STDERR_TEXT ?? 'sensitive-stderr').length)));
 
@@ -83,15 +85,19 @@ function addSessionProgress(result, mode) {
   const assistant = result.messages.findLast((message) => message?.info?.role === 'assistant');
   if (!assistant) return result;
   const partBase = { sessionId: assistant.info.sessionId, messageId: assistant.info.messageId };
+  const tool = process.env.FAKE_ZCODE_SESSION_PROGRESS_TOOL ?? 'Bash';
+  const input = tool === 'Read'
+    ? { file_path: process.env.FAKE_ZCODE_SESSION_PROGRESS_PATH ?? 'PRIVATE_SNAPSHOT_PATH' }
+    : { command: 'PRIVATE_SNAPSHOT_COMMAND', capability: 'PRIVATE_SNAPSHOT_CAPABILITY' };
   const state = mode === 'terminal'
-    ? { status: 'completed', input: { command: 'PRIVATE_SNAPSHOT_COMMAND', capability: 'PRIVATE_SNAPSHOT_CAPABILITY' }, output: 'PRIVATE_SNAPSHOT_OUTPUT', title: 'PRIVATE_SNAPSHOT_METADATA', metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' }, startedAt: 10, completedAt: 20 }
-    : { status: 'running', input: { command: 'PRIVATE_SNAPSHOT_COMMAND', capability: 'PRIVATE_SNAPSHOT_CAPABILITY' }, startedAt: 10, metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' } };
+    ? { status: 'completed', input, output: 'PRIVATE_SNAPSHOT_OUTPUT', title: 'PRIVATE_SNAPSHOT_METADATA', metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' }, startedAt: 10, completedAt: 20 }
+    : { status: 'running', input, startedAt: 10, metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' } };
   assistant.parts.push(
     { ...partBase, partId: 'snapshot-private-prose', type: 'text', text: 'PRIVATE_SNAPSHOT_PROSE' },
     { ...partBase, partId: 'snapshot-private-reasoning', type: 'reasoning', text: 'PRIVATE_SNAPSHOT_REASONING' },
     { ...partBase, partId: 'snapshot-private-file', type: 'file', mime: 'text/plain', url: 'PRIVATE_SNAPSHOT_FILE' },
     { ...partBase, partId: 'snapshot-private-patch', type: 'patch', hash: 'PRIVATE_SNAPSHOT_PATCH', files: ['PRIVATE_SNAPSHOT_FILE'] },
-    { ...partBase, partId: 'snapshot-tool', type: 'tool', callId: 'PRIVATE_SNAPSHOT_CALL', tool: 'Bash', state, metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' } },
+    { ...partBase, partId: 'snapshot-tool', type: 'tool', callId: 'PRIVATE_SNAPSHOT_CALL', tool, state, metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' } },
   );
   return result;
 }
@@ -326,6 +332,12 @@ input.on('line', async (line) => {
             deltas: [{ op: 'row.upserted', row: { rowId: 44 + index, kind: 'toolCall', privateIdentifier: `PRIVATE_REJECTED_ROW_${index}`, inputText: '{"command":"PRIVATE_REJECTED_COMMAND"}', input: { command: 'PRIVATE_REJECTED_COMMAND', reasoning: 'PRIVATE_REJECTED_REASONING' } } }],
           }));
         }
+      }
+      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'sequence-gap') {
+        send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'recovery', ordinal: 1, deltas: [] }));
+        for (const ordinal of [3, 4, 5, 6]) send(conversationNotification({
+          sessionId, subscriptionId, deliveryKind: 'online', ordinal, logicalFrameId: `PRIVATE_SEQUENCE_FRAME_${ordinal}`, deltas: [],
+        }));
       }
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 40, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: 1_786_233_600_000 } }] }));
       break;

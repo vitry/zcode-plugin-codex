@@ -62,7 +62,8 @@ test('snapshot tool starts expose a preview-free formatter by construction', asy
   const workspaceRoot = await realpath(workspace);
   assert.equal(await formatSnapshotToolStartMessage({ toolName: 'Bash', input: { command: 'PRIVATE_COMMAND' } }, workspaceRoot), 'Running tool: Bash.');
   assert.equal(await formatSnapshotToolStartMessage({ toolName: 'Grep', input: { pattern: 'PRIVATE_PATTERN' } }, workspaceRoot), 'Running tool: Grep.');
-  assert.equal(await formatSnapshotToolStartMessage({ toolName: 'Read', input: { file_path: join(workspace, 'safe.txt') } }, workspaceRoot), 'Reading: safe.txt.');
+  assert.equal(await formatSnapshotToolStartMessage({ toolName: 'Read', input: { file_path: join(workspace, 'safe.txt') } }, workspaceRoot), 'Running tool: Read.');
+  assert.equal(await formatSnapshotToolStartMessage({ toolName: 'PRIVATE_PATH_SENTINEL', input: { file_path: join(workspace, 'safe.txt') } }, workspaceRoot), 'Running a tool.');
 });
 
 test('describes only allowlisted online tool and turn lifecycle fields', async () => {
@@ -208,20 +209,20 @@ test('fails closed on every missing extra mistyped controlled or unverified capt
   assert.deepEqual(await turnDescriber.observe(hostileTurn, observedAt), []);
 });
 
-test('uses continuous captured sequence and ordinal watermarks without invalid frames poisoning them', async () => {
+test('rejects received discontinuities without poisoning watermarks and requires a newer recovery baseline', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
-  const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
   const frame = (ordinal, fromSeq, toSeq, rowId) => conversationFrame({ ordinal, fromSeq, toSeq, deltas: [toolRow({ rowId, input: { command: `echo ${rowId}` } })] });
-  assert.equal((await describer.observe(frame(7, 10, 10, 1), observedAt)).length, 1);
-  assert.deepEqual(await describer.observe(frame(8, 1, 11, 2), observedAt), []);
-  assert.deepEqual(await describer.observe(frame(8, 12, 12, 2), observedAt), []);
-  assert.deepEqual(await describer.observe(frame(8, 11, 10, 2), observedAt), []);
+  assert.equal((await describer.observe(frame(7, 10, 10, 1), observedAt)).events.length, 1);
+  assert.deepEqual(await describer.observe(frame(8, 1, 11, 2), observedAt), { disposition: 'rejected', reason: 'sequence', events: [] });
+  assert.deepEqual(await describer.observe(frame(8, 11, 11, 2), observedAt), { disposition: 'ignored', reason: 'recovery-required', events: [] });
   const invalid = frame(8, 11, 11, 2); invalid.params.frame.payload.deltas[0].row.extra = true;
-  assert.deepEqual(await describer.observe(invalid, observedAt), []);
-  assert.equal((await describer.observe(frame(8, 11, 11, 2), observedAt)).length, 1);
-  assert.deepEqual(await describer.observe(frame(8, 11, 11, 3), observedAt), []);
-  assert.deepEqual(await describer.observe(frame(10, 12, 12, 3), observedAt), []);
-  assert.equal((await describer.observe(frame(9, 12, 12, 3), observedAt)).length, 1);
+  assert.deepEqual(await describer.observe(invalid, observedAt), { disposition: 'rejected', reason: 'row-shape', events: [] });
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 8, fromSeq: 11, toSeq: 11, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
+  assert.deepEqual(await describer.observe(frame(8, 11, 11, 3), observedAt), { disposition: 'rejected', reason: 'sequence', events: [] });
+  assert.deepEqual(await describer.observe(frame(10, 12, 12, 3), observedAt), { disposition: 'rejected', reason: 'sequence', events: [] });
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 9, fromSeq: 12, toSeq: 12, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
+  assert.equal((await describer.observe(frame(10, 13, 13, 3), observedAt)).events.length, 1);
 });
 
 test('recognizes only captured tool failure statuses and turn failure terminal states', async () => {
@@ -338,6 +339,25 @@ test('recovery silently folds bounded tool states without path resolution and de
   assert.equal(terminal.length, 1); assert.doesNotMatch(JSON.stringify(terminal), /RECOVERY_PATH_SECRET/);
 });
 
+test('received sequence gaps reject visibly until a newer recovery baseline restores flow', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 1, deliveryKind: 'recovery', deltas: [] }), observedAt), {
+    disposition: 'accepted', phase: 'recovery', events: [],
+  });
+  for (const ordinal of [3, 4, 5, 6]) {
+    assert.deepEqual(await describer.observe(conversationFrame({ ordinal, deltas: [] }), observedAt), {
+      disposition: 'rejected', reason: 'sequence', events: [],
+    });
+  }
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 7, deliveryKind: 'recovery', deltas: [] }), observedAt), {
+    disposition: 'accepted', phase: 'recovery', events: [],
+  });
+  const resumed = await describer.observe(conversationFrame({ ordinal: 8, deltas: [toolRow({ rowId: 8 })] }), observedAt);
+  assert.equal(resumed.disposition, 'accepted'); assert.equal(resumed.phase, 'online'); assert.equal(resumed.events.length, 1);
+  assert.doesNotMatch(JSON.stringify(resumed), /frame-|tool-8|turn-1/);
+});
+
 test('accepts bounded captured multiline tool errors without rendering raw error content', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
@@ -370,7 +390,8 @@ test('prebind overflow requires and accepts a newer recovery baseline', async ()
   const buffered = Array.from({ length: 4 }, (_, index) => deferred.observe(conversationFrame({ ordinal: index + 1, deltas: [toolRow({ rowId: index + 1 })] }), observedAt));
   assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 5, deltas: [toolRow({ rowId: 5 })] }), observedAt), { disposition: 'ignored', reason: 'overflow', events: [] });
   await deferred.bind('sub-1'); await Promise.all(buffered);
-  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 6, deltas: [toolRow({ rowId: 6 })] }), observedAt), { disposition: 'ignored', reason: 'recovery-required', events: [] });
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 5, deltas: [toolRow({ rowId: 5 })] }), observedAt), { disposition: 'ignored', reason: 'recovery-required', events: [] });
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 6, deltas: [toolRow({ rowId: 6 })] }), observedAt), { disposition: 'rejected', reason: 'sequence', events: [] });
   assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 7, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
   const resumed = await deferred.observe(conversationFrame({ ordinal: 8, deltas: [toolRow({ rowId: 8 })] }), observedAt);
   assert.equal(resumed.disposition, 'accepted'); assert.equal(resumed.phase, 'online'); assert.equal(resumed.events.length, 1);

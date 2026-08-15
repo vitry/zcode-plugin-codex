@@ -189,7 +189,7 @@ export function createProgressReporter({
   };
   /** @param {boolean} requireAcceptedBoundary */
   const activateCompatibilityBoundary = (requireAcceptedBoundary = false) => {
-    if (closed || requireAcceptedBoundary && !acceptedBoundaryActivated || compatibilityBoundaryActivated || progressProbe.state !== 'probing' || progressProbe.acceptedOnline > 0) return false;
+    if (closed || !accepting || requireAcceptedBoundary && !acceptedBoundaryActivated || compatibilityBoundaryActivated || progressProbe.state !== 'probing' || progressProbe.acceptedOnline > 0) return false;
     compatibilityBoundaryActivated = true;
     /** @type {unknown} */ let activation = false;
     try { activation = typeof activateSnapshotFallback === 'function' ? activateSnapshotFallback() : false; } catch { activation = false; }
@@ -237,8 +237,9 @@ export function createProgressReporter({
     if (claimAdjacentHeartbeat) adjacentHeartbeatClaimed = true;
     return true;
   };
-  /** @param {unknown} result */
-  const recordDescriptionResult = (result) => {
+  /** @param {unknown} result @param {number} epoch */
+  const recordDescriptionResult = (result, epoch) => {
+    if (!accepting || epoch !== descriptorEpoch) return [];
     if (!plainObject(result) || !Array.isArray(result.events)) return [];
     if (result.disposition === 'accepted' && ['initial', 'online', 'recovery'].includes(result.phase)) {
       const field = result.phase === 'initial' ? 'acceptedInitial' : result.phase === 'online' ? 'acceptedOnline' : 'acceptedRecovery';
@@ -355,13 +356,16 @@ export function createProgressReporter({
     let described;
     try { described = Promise.resolve(describeNotification(item.notification, item.observedAt)); }
     catch { diagnose('conversation-render-failed'); described = Promise.resolve([]); }
-    descriptorInFlight = described.then((description) => {
-      if (epoch !== descriptorEpoch || closed) return;
-      const events = Array.isArray(description) ? description : recordDescriptionResult(description);
+    const tracked = described.then((description) => {
+      if (closed) return;
+      const current = accepting && epoch === descriptorEpoch;
+      const events = current
+        ? Array.isArray(description) ? description : recordDescriptionResult(description, epoch)
+        : Array.isArray(description) ? description : plainObject(description) && description.disposition === 'accepted' && Array.isArray(description.events) ? description.events : [];
       if (!Array.isArray(events)) return;
-      item.events = events.slice(0, MAX_PROGRESS_PENDING_EVENTS).filter(validPublicEvent);
+      item.events = events.slice(0, MAX_PROGRESS_PENDING_EVENTS).filter((event) => validPublicEvent(event) && (current || event.phase !== 'finalizing'));
       for (const describedEvent of item.events) {
-        if (describedEvent.phase === 'finalizing') {
+        if (current && describedEvent.phase === 'finalizing') {
           terminalSequence = terminalSequence === null ? item.sequence : Math.min(terminalSequence, item.sequence);
           for (const later of logicalPending) if (later.sequence > terminalSequence) {
             if (later.kind === 'descriptor') later.state = 'dropped';
@@ -369,10 +373,12 @@ export function createProgressReporter({
         }
       }
       item.state = 'ready';
-    }).catch(() => { if (epoch === descriptorEpoch) { item.state = 'dropped'; diagnose('conversation-render-failed'); } }).then(() => {
-      if (epoch !== descriptorEpoch) return;
-      descriptorInFlight = null; activeDescriptor = null; pumpLogical();
+    }).catch(() => { if (accepting && epoch === descriptorEpoch) { item.state = 'dropped'; diagnose('conversation-render-failed'); } }).then(() => {
+      if (descriptorInFlight === tracked) descriptorInFlight = null;
+      if (activeDescriptor === item) activeDescriptor = null;
+      pumpLogical();
     });
+    descriptorInFlight = tracked;
   };
   /** @param {{notification:unknown,observedAt:string,sequence:number}} item */
   const enqueueDescribe = (item) => {
@@ -469,7 +475,12 @@ export function createProgressReporter({
     },
     /** @param {string} kind */
     diagnose(kind) { return diagnose(kind); },
-    stopAccepting() { accepting = false; },
+    stopAccepting() {
+      if (!accepting) return;
+      accepting = false; descriptorEpoch += 1;
+      for (const item of logicalPending) if (item.kind === 'descriptor' && item.state === 'pending' && item !== activeDescriptor) item.state = 'dropped';
+      descriptorOverflowed = false; pumpLogical();
+    },
     async flush(absoluteDeadline = Date.now() + PROGRESS_FLUSH_TIMEOUT_MS) {
       const deadline = Math.min(absoluteDeadline, Date.now() + PROGRESS_FLUSH_TIMEOUT_MS);
       await Promise.resolve();

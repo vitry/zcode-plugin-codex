@@ -430,6 +430,42 @@ test('the fixed fourth structural rejection activates lifecycle-only exactly onc
   reporter.close();
 });
 
+test('stopAccepting fences a held structural rejection from every progress mutation', async () => {
+  const diagnostics = []; const probes = []; let fallbackCalls = 0;
+  let releaseHeld = () => {}; let markHeldStarted = () => {};
+  const heldStarted = new Promise((resolve) => { markHeldStarted = resolve; });
+  const held = new Promise((resolve) => { releaseHeld = () => resolve({ disposition: 'rejected', reason: 'sequence', events: [] }); });
+  let descriptions = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    describeNotification: async () => {
+      descriptions += 1;
+      if (descriptions < 4) return { disposition: 'rejected', reason: 'sequence', events: [] };
+      markHeldStarted(); return held;
+    },
+    activateSnapshotFallback: () => { fallbackCalls += 1; return false; },
+    persistProbe: async (probe) => probes.push(probe),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => observedAt,
+  });
+  for (let index = 0; index < 3; index += 1) {
+    reporter.observe({ method: 'v4/conversation/frame', index });
+    await reporter.flush();
+  }
+  reporter.observe({ method: 'v4/conversation/frame', index: 3 });
+  await heldStarted;
+  const beforeProbe = reporter.probeSnapshot(); const beforePersists = probes.length;
+
+  reporter.stopAccepting(); releaseHeld();
+  await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.deepEqual(reporter.probeSnapshot(), beforeProbe);
+  assert.equal(probes.length, beforePersists);
+  assert.equal(fallbackCalls, 0);
+  assert.deepEqual(diagnostics, []);
+  reporter.close();
+});
+
 test('falls back to lifecycle-only with one fixed diagnostic when no snapshot capability exists', async () => {
   const probes = []; const diagnostics = [];
   const reporter = progressModule.createProgressReporter({

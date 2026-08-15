@@ -143,7 +143,7 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
@@ -386,7 +386,8 @@ test('conversation online progress reaches stderr and preview while initial and 
   const status = await companion(context, ['status', result.json.job.id]);
   assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: npm test/);
   assert.doesNotMatch(JSON.stringify(status.json.job.progressPreview), /INITIAL_SECRET|FOREIGN_SECRET/);
-  assert.equal(Object.hasOwn(status.json.job, 'progressProbe'), false);
+  assert.equal(status.json.job.progressProbe.state, 'online');
+  assert.equal(status.json.job.progressProbe.acceptedOnline, 2);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   assert.equal(requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
 });
@@ -398,7 +399,7 @@ test('initial-only conversation frames deterministically degrade on heartbeat wi
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
   assert.equal(scenario.stored.progressProbe.state, 'snapshot-fallback');
   assert.equal(scenario.stored.progressProbe.acceptedInitial, 1); assert.equal(scenario.stored.progressProbe.acceptedOnline, 0);
-  assert.equal(Object.hasOwn(scenario.status.job, 'progressProbe'), false);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
   assert.doesNotMatch(visible, /PRIVATE_INITIAL_(?:FRAME_ID|TURN_ID|TOOL_ID|COMMAND|REASONING)/);
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one progress read remains separate from the final authoritative read');
@@ -406,12 +407,18 @@ test('initial-only conversation frames deterministically degrade on heartbeat wi
 
 test('initial-only frames fall back to safe current-turn session tool progress without changing the final result', async () => {
   const context = await fixture();
+  const pathSentinel = 'CONTAINED_SNAPSHOT_PATH_SENTINEL.txt';
   const scenario = await deterministicConversationScenario(context, 'initial-only', {
-    heartbeat: true, env: { FAKE_ZCODE_SESSION_PROGRESS: 'running', FAKE_ZCODE_WAIT_FOR_PROGRESS_READ: '1' },
+    heartbeat: true, env: {
+      FAKE_ZCODE_SESSION_PROGRESS: 'running', FAKE_ZCODE_WAIT_FOR_PROGRESS_READ: '1',
+      FAKE_ZCODE_SESSION_PROGRESS_TOOL: 'Read', FAKE_ZCODE_SESSION_PROGRESS_PATH: join(context.workspace, pathSentinel),
+    },
   });
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
   assert.match(visible, /ZCode conversation frames were unavailable; using bounded session progress\./);
-  assert.match(visible, /Running tool: Bash\./);
+  assert.match(visible, /Running tool: Read\./);
+  assert.doesNotMatch(scenario.lines.join(''), new RegExp(pathSentinel));
+  assert.doesNotMatch(JSON.stringify(scenario.status.job.progressPreview), new RegExp(pathSentinel));
   assert.doesNotMatch(visible, /PRIVATE_SNAPSHOT_(?:PROSE|REASONING|COMMAND|OUTPUT|ERROR|METADATA|FILE|PATCH|CALL|CAPABILITY)/);
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2);
@@ -460,7 +467,7 @@ test('accepted zero-event online conversation frame prevents deterministic heart
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
   assert.equal(scenario.stored.progressProbe.state, 'online'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
   assert.doesNotMatch(scenario.lines.join(''), /ZCode (?:conversation frames were unavailable|semantic progress is unavailable)/);
-  assert.equal(Object.hasOwn(scenario.status.job, 'progressProbe'), false);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
 });
 
@@ -470,10 +477,20 @@ test('malformed conversation rejection burst degrades once without leaking rejec
   assert.equal(scenario.lines.filter((line) => line === diagnostic).length, 1);
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
   assert.equal(scenario.stored.progressProbe.state, 'snapshot-fallback'); assert.equal(scenario.stored.progressProbe.rejected['row-shape'], 4);
-  assert.equal(Object.hasOwn(scenario.status.job, 'progressProbe'), false);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
   assert.doesNotMatch(visible, /PRIVATE_REJECTED_(?:FRAME|ROW|COMMAND|REASONING)/);
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one progress read remains separate from the final authoritative read');
+});
+
+test('repeated sequence gaps reach the owner-visible rejection threshold and activate fallback', async () => {
+  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'sequence-gap');
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.stored.progressProbe.rejected.sequence, 4);
+  assert.equal(scenario.stored.progressProbe.state, 'snapshot-fallback');
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
+  assert.equal(scenario.lines.filter((line) => /conversation frames were unavailable/.test(line)).length, 1);
+  const visible = `${scenario.lines.join('')}${JSON.stringify(scenario.status)}`;
+  assert.doesNotMatch(visible, /PRIVATE_SEQUENCE_FRAME|logicalFrame|ordinal|fromSeq|toSeq/);
 });
 
 test('conversation online progress sent before the subscribe response is buffered until the subscription binds', async () => {
@@ -957,12 +974,13 @@ test('status --all preserves same-owner detail but allowlists foreign job metada
   const mine = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-a', ownerTurnId: 'owner-a-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'read-only' } });
   const startedAt = new Date().toISOString();
   await store.transitionJob(context.workspace, mine.id, ['queued'], 'running', { startedAt });
-  await store.updateJobProgressProbe(context.workspace, mine.id, {
+  const probe = {
     state: 'online', subscriptionAcknowledged: true, framesReceived: 1,
     acceptedInitial: 0, acceptedOnline: 1, acceptedRecovery: 0,
     rejected: { 'wire-version': 0, 'envelope-shape': 0, sequence: 0, topic: 0, 'row-kind': 0, 'row-shape': 0 },
     snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
-  });
+  };
+  await store.updateJobProgressProbe(context.workspace, mine.id, probe);
   await store.finishJob(context.workspace, mine.id, ['running'], 'failed', { error: { message: 'fixture terminal' }, exitCode: 1 });
   const foreignQueued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-b-secret-session', ownerTurnId: 'owner-b-secret-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'bypassPermissions', secret: 'permission-secret' } });
   const foreignStartedAt = new Date().toISOString();
@@ -985,7 +1003,8 @@ test('status --all preserves same-owner detail but allowlists foreign job metada
   assert.doesNotMatch(`${JSON.stringify(otherOwner)}\n${rendered}`, /owner-b|secret|xhigh|424242|latest=|result|internal/i);
 
   const detailed = await runCompanion(['status', mine.id], { cwd: context.workspace, env: context.env, caller: caller('owner-a') });
-  assert.equal(Object.hasOwn(detailed.job, 'progressProbe'), false);
+  assert.deepEqual(detailed.job.progressProbe, probe);
+  assert.doesNotMatch(renderOutput(detailed), /progressProbe|framesReceived|acceptedOnline/);
 
   await assert.rejects(runCompanion(['status', foreign.id], { cwd: context.workspace, env: context.env, caller: caller('owner-a') }), { code: 'OWNED_JOB_NOT_FOUND' });
 });

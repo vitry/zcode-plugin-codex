@@ -703,7 +703,7 @@ const PROGRESS_PROBE_STATES = new Set(['probing', 'online', 'snapshot-fallback',
 const PROGRESS_PROBE_REJECTIONS = ['wire-version', 'envelope-shape', 'sequence', 'topic', 'row-kind', 'row-shape'];
 
 /** @param {unknown} value */
-function validProgressProbe(value) {
+export function validProgressProbe(value) {
   if (!isPlainJsonObject(value)
     || Object.keys(value).sort().join(',') !== 'acceptedInitial,acceptedOnline,acceptedRecovery,framesReceived,rejected,snapshotFallbackActive,snapshotFallbackUnavailable,state,subscriptionAcknowledged'
     || !PROGRESS_PROBE_STATES.has(value.state)

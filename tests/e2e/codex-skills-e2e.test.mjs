@@ -24,6 +24,8 @@ import {
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
+const TEST_PROCESS_NONCE = 'a'.repeat(64);
+const STALE_PROCESS_NONCE = 'b'.repeat(64);
 const SUPPORTED_CODEX_LINES = Object.freeze(['0.147']);
 const qualificationRequired = process.env.ZCODE_REQUIRE_QUALIFIED === '1';
 const optInSkip = process.env.ZCODE_CODEX_SKILLS_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_SKILLS_E2E=1 to spend authenticated Codex credits.');
@@ -33,10 +35,10 @@ test('foreground Rescue gate lifecycle releases and cleans exact processes on ga
   const events = []; let rejectCodex; let alive = true;
   const result = new Promise((_, reject) => { rejectCodex = reject; });
   await assert.rejects(runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
     launch: () => ({ result, terminate: async () => { events.push('terminate-codex'); rejectCodex(new Error('terminated exact Codex')); throw new Error('Codex termination reported failure'); } }),
     waitForGate: async () => { throw new Error('gate discovery timeout'); },
-    readProcessMarker: async () => ({ pid: 48123, ppid: 71, nonce: 'run-nonce' }), inspectProcessIdentity: async () => alive ? ({ pid: 48123, ppid: 71, startIdentity: 'start-a' }) : undefined,
+    readProcessMarker: async () => ({ pid: 48123, ppid: 71, nonce: TEST_PROCESS_NONCE }), inspectProcessIdentity: async () => alive ? ({ pid: 48123, ppid: 71, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }) : undefined,
     releaseGate: async (path) => { events.push(`release:${path}`); }, terminateExactProcess: async (identity) => { events.push(`terminate-pid:${identity.pid}`); alive = false; },
     waitForProcessExit: async (identity) => { events.push(`wait-pid:${identity.pid}`); }, holdMs: 0,
   }), /gate discovery timeout/);
@@ -46,10 +48,10 @@ test('foreground Rescue gate lifecycle releases and cleans exact processes on ga
 test('foreground Rescue gate lifecycle consumes Codex failure and releases the exact gate', async () => {
   const events = []; let alive = true;
   await assert.rejects(runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
     launch: () => ({ result: Promise.reject(new Error('Codex failed')), terminate: async () => { events.push('terminate-codex'); } }),
     waitForGate: (signal) => new Promise((resolvePromise) => signal.addEventListener('abort', resolvePromise, { once: true })),
-    readProcessMarker: async () => ({ pid: 59123, ppid: 72, nonce: 'run-nonce' }), inspectProcessIdentity: async () => alive ? ({ pid: 59123, ppid: 72, startIdentity: 'start-a' }) : undefined,
+    readProcessMarker: async () => ({ pid: 59123, ppid: 72, nonce: TEST_PROCESS_NONCE }), inspectProcessIdentity: async () => alive ? ({ pid: 59123, ppid: 72, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }) : undefined,
     releaseGate: async (path) => { events.push(`release:${path}`); }, terminateExactProcess: async (identity) => { events.push(`terminate-pid:${identity.pid}`); alive = false; },
     waitForProcessExit: async (identity) => { events.push(`wait-pid:${identity.pid}`); }, holdMs: 0,
   }), /Codex failed/);
@@ -60,8 +62,8 @@ test('foreground Rescue gate lifecycle cleans an exact fake child that does not 
   const events = []; let gateReleased = false; let alive = true; let resolveCodex;
   const result = new Promise((resolvePromise) => { resolveCodex = resolvePromise; });
   await assert.rejects(runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce', launch: () => ({ result }),
-    waitForGate: async () => {}, readProcessMarker: async () => ({ pid: 60123, ppid: 73, nonce: 'run-nonce' }), inspectProcessIdentity: async () => alive ? ({ pid: 60123, ppid: 73, startIdentity: 'start-a' }) : undefined,
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE, launch: () => ({ result }),
+    waitForGate: async () => {}, readProcessMarker: async () => ({ pid: 60123, ppid: 73, nonce: TEST_PROCESS_NONCE }), inspectProcessIdentity: async () => alive ? ({ pid: 60123, ppid: 73, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }) : undefined,
     releaseGate: async () => { gateReleased = true; events.push('release'); resolveCodex({ code: 0, stdout: '', stderr: '' }); }, sleep: async () => {},
     waitForProcessExit: async (identity, phase) => { events.push(`wait-${phase}:${identity.pid}`); if (phase === 'natural') throw new Error('fake child did not exit'); },
     terminateExactProcess: async (identity) => { assert.equal(gateReleased, true); events.push(`terminate-pid:${identity.pid}`); alive = false; }, holdMs: 0,
@@ -72,7 +74,7 @@ test('foreground Rescue gate lifecycle cleans an exact fake child that does not 
 test('foreground Rescue gate lifecycle releases the exact gate when launch throws synchronously', async () => {
   const released = [];
   await assert.rejects(runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
     launch: () => { throw new Error('synchronous launch failure'); },
     waitForGate: async () => { assert.fail('gate wait must not start before launch succeeds'); },
     releaseGate: async (path) => { released.push(path); }, holdMs: 0,
@@ -83,7 +85,7 @@ test('foreground Rescue gate lifecycle releases the exact gate when launch throw
 test('foreground Rescue early Codex result aborts and awaits the losing gate wait', async () => {
   let aborted = false; let awaited = false; const events = [];
   const foreground = await runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
     launch: () => ({ result: Promise.resolve({ code: 0, stdout: '', stderr: '' }), terminate: async () => { events.push('terminate'); } }),
     waitForGate: (signal) => new Promise((resolvePromise) => signal.addEventListener('abort', () => {
       aborted = true; queueMicrotask(() => { awaited = true; resolvePromise(); });
@@ -98,26 +100,28 @@ test('foreground Rescue early Codex result aborts and awaits the losing gate wai
 test('foreground Rescue refuses to signal stale, nonce-mismatched, or reparented process identities', async (t) => {
   const cases = [
     {
-      name: 'nonce mismatch', marker: { pid: 61123, ppid: 71, nonce: 'stale-nonce' },
-      inspect: async () => ({ pid: 61123, ppid: 71, startIdentity: 'start-a' }), pattern: /nonce changed|nonce mismatch/i,
+      name: 'stale marker nonce', marker: { pid: 61123, ppid: 71, nonce: STALE_PROCESS_NONCE },
+      inspect: async () => ({ pid: 61123, ppid: 71, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }), pattern: /nonce changed|nonce mismatch/i,
     },
     {
-      name: 'parent mismatch', marker: { pid: 61124, ppid: 72, nonce: 'run-nonce' },
-      inspect: async () => ({ pid: 61124, ppid: 73, startIdentity: 'start-a' }), pattern: /parent identity changed|parent.*mismatch/i,
+      name: 'reparented process', marker: { pid: 61124, ppid: 72, nonce: TEST_PROCESS_NONCE },
+      inspect: async () => ({ pid: 61124, ppid: 73, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }), pattern: /parent identity changed|parent.*mismatch/i,
     },
     {
-      name: 'PID reuse', marker: { pid: 61125, ppid: 74, nonce: 'run-nonce' },
-      inspect: (() => { let reads = 0; return async () => ({ pid: 61125, ppid: 74, startIdentity: reads++ === 0 ? 'start-a' : 'start-b' }); })(), pattern: /process identity changed/i,
+      name: 'same-second PID reuse', marker: { pid: 61125, ppid: 74, nonce: TEST_PROCESS_NONCE },
+      inspect: (() => { let reads = 0; return async () => ({ pid: 61125, ppid: 74, startIdentity: 'same-second', processNonce: reads++ === 0 ? TEST_PROCESS_NONCE : STALE_PROCESS_NONCE }); })(),
+      failAfterCapture: true, pattern: /process identity changed/i,
     },
   ];
   for (const scenario of cases) await t.test(scenario.name, async () => {
     let terminated = false; let codexTerminated = false; let rejectCodex;
     const result = new Promise((_, reject) => { rejectCodex = reject; });
     await assert.rejects(runHeldForegroundRescue({
-      gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+      gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
       launch: () => ({ result, terminate: async () => { codexTerminated = true; rejectCodex(new Error('terminated exact Codex')); } }), waitForGate: async () => {},
       readProcessMarker: async () => scenario.marker, inspectProcessIdentity: scenario.inspect,
-      releaseGate: async () => {}, sleep: async () => {}, terminateExactProcess: async () => { terminated = true; }, holdMs: 0,
+      releaseGate: async () => {}, sleep: async () => { if (scenario.failAfterCapture) throw new Error('verify cleanup identity'); },
+      terminateExactProcess: async () => { terminated = true; }, waitForProcessExit: async () => {}, holdMs: 0,
     }), scenario.pattern);
     assert.equal(terminated, false, 'identity mismatch must never signal an unrelated PID');
     assert.equal(codexTerminated, true, 'identity mismatch must not prevent exact Codex termination');
@@ -128,10 +132,10 @@ test('foreground Rescue reports cleanup identity change without signaling the re
   let reads = 0; let terminated = false; let rejectCodex;
   const result = new Promise((_, reject) => { rejectCodex = reject; });
   await assert.rejects(runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
     launch: () => ({ result, terminate: async () => { rejectCodex(new Error('terminated exact Codex')); } }), waitForGate: async () => {},
-    readProcessMarker: async () => ({ pid: 62123, ppid: 81, nonce: 'run-nonce' }),
-    inspectProcessIdentity: async () => ({ pid: 62123, ppid: 81, startIdentity: reads++ === 0 ? 'start-a' : 'start-b' }),
+    readProcessMarker: async () => ({ pid: 62123, ppid: 81, nonce: TEST_PROCESS_NONCE }),
+    inspectProcessIdentity: async () => ({ pid: 62123, ppid: 81, startIdentity: reads++ === 0 ? 'start-a' : 'start-b', processNonce: TEST_PROCESS_NONCE }),
     releaseGate: async () => {}, sleep: async () => { throw new Error('held verification failed'); },
     terminateExactProcess: async () => { terminated = true; }, holdMs: 0,
   }), /process identity changed during cleanup/i);
@@ -142,11 +146,11 @@ test('foreground Rescue cleans the exact fake child before Codex termination can
   const events = []; let alive = true; let reparented = false; let rejectCodex;
   const result = new Promise((_, reject) => { rejectCodex = reject; });
   await assert.rejects(runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
     launch: () => ({ result, terminate: async () => { events.push('terminate-codex'); reparented = true; rejectCodex(new Error('terminated exact Codex')); } }),
     waitForGate: async () => {},
-    readProcessMarker: async () => ({ pid: 63123, ppid: 91, nonce: 'run-nonce' }),
-    inspectProcessIdentity: async () => alive ? ({ pid: 63123, ppid: reparented ? 1 : 91, startIdentity: 'start-a' }) : undefined,
+    readProcessMarker: async () => ({ pid: 63123, ppid: 91, nonce: TEST_PROCESS_NONCE }),
+    inspectProcessIdentity: async () => alive ? ({ pid: 63123, ppid: reparented ? 1 : 91, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }) : undefined,
     releaseGate: async () => { events.push('release'); },
     terminateExactProcess: async () => { events.push('terminate-child'); alive = false; },
     waitForProcessExit: async (_identity, phase) => { events.push(`wait-child:${phase}`); assert.equal(alive, false); },
@@ -160,11 +164,11 @@ test('foreground Rescue still terminates Codex after exact child cleanup fails',
   const events = []; let rejectCodex;
   const result = new Promise((_, reject) => { rejectCodex = reject; });
   await assert.rejects(runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
     launch: () => ({ result, terminate: async () => { events.push('terminate-codex'); rejectCodex(new Error('terminated exact Codex')); } }),
     waitForGate: async () => {},
-    readProcessMarker: async () => ({ pid: 63124, ppid: 92, nonce: 'run-nonce' }),
-    inspectProcessIdentity: async () => ({ pid: 63124, ppid: 92, startIdentity: 'start-a' }), releaseGate: async () => { events.push('release'); },
+    readProcessMarker: async () => ({ pid: 63124, ppid: 92, nonce: TEST_PROCESS_NONCE }),
+    inspectProcessIdentity: async () => ({ pid: 63124, ppid: 92, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }), releaseGate: async () => { events.push('release'); },
     terminateExactProcess: async () => { events.push('terminate-child'); throw new Error('exact child cleanup failed'); },
     waitForProcessExit: async () => { events.push('wait-child'); throw new Error('exact child remained alive'); },
     sleep: async () => { throw new Error('held verification failed'); }, holdMs: 0,
@@ -587,11 +591,13 @@ test('installed Rescue uses one isolated native child for initial and choice con
   await writeFile(zcodeRecord, '');
   const lossWorkspace = join(temporary, 'loss-workspace'); await initializeGitWorkspace(lossWorkspace); const lossCanonicalWorkspace = await realpath(lossWorkspace);
   const lossGate = join(temporary, 'loss-completion.gate'); const lossGateReached = join(temporary, 'loss-completion.reached');
+  const lossProcessNonce = randomBytes(32).toString('hex');
   const lossStorage = await resolveWorkspaceStorage({ dataRoot: installedDataRoot, workspace: lossCanonicalWorkspace }); const lossJobsDirectory = join(lossStorage.directory, 'jobs');
   const lossBaseline = await canonicalJobIds(lossJobsDirectory);
   await Promise.all([writeFile(lossGate, 'hold'), writeFile(recoveryControl, JSON.stringify({ mode: 'active' }))]); let lossIdentity; let lossJobId; let lossJobPath; let lossThreadId; let lossVerified = false;
   const lossApp = await createInstalledCodexAppServer(lossWorkspace, {
     ...env,
+    ZCODE_E2E_PROCESS_NONCE: lossProcessNonce,
     FAKE_ZCODE_COMPLETION_GATE: lossGate,
     FAKE_ZCODE_COMPLETION_GATE_REACHED: lossGateReached,
     FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100',
@@ -615,11 +621,12 @@ test('installed Rescue uses one isolated native child for initial and choice con
     const lossRoute = await waitForValue(async () => nativeRouteEvidence(await loadCodexRollouts(codexHome).catch(() => []), lossThreadId), 30_000, 'installed loss turn exposed no native child identity');
     assert.equal(lossRoute.spawnCount, 1); assert.equal(lossRoute.startCount, 1);
 
+    const lossWorkerProcess = await captureExactPidIdentity(lossIdentity.pid, lossProcessNonce, 'ZCODE_E2E_PROCESS_NONCE');
+    await signalExactProcess(lossWorkerProcess, (expected) => readExactPidIdentity(expected), 'SIGKILL');
+    await waitUntil(() => !processAlive(lossIdentity.pid), 5_000, 'the exact accepted foreground worker survived simulated native child loss');
     const lostCodexPid = lossApp.pid;
     await lossApp.close('SIGKILL');
     assert.equal(processAlive(lostCodexPid), false, 'the exact installed Codex parent process must be gone before recovery');
-    if (processAlive(lossIdentity.pid)) process.kill(lossIdentity.pid, 'SIGKILL');
-    await waitUntil(() => !processAlive(lossIdentity.pid), 5_000, 'the exact accepted foreground worker survived simulated native child loss');
     await writeFile(recoveryControl, JSON.stringify({ mode: 'completed' }));
     await writeFile(lossGate, 'release');
     const recovered = await codex([
@@ -723,7 +730,7 @@ async function runHeldForegroundRescue(input) {
   const readProcessMarker = input.readProcessMarker ?? (async () => JSON.parse(await readFile(input.processPath, 'utf8')));
   const inspectProcessIdentity = input.inspectProcessIdentity ?? inspectExactProcessIdentity;
   const captureProcessIdentity = input.captureProcessIdentity ?? (async () => captureExactProcessIdentity(await readProcessMarker(), input.processNonce, inspectProcessIdentity));
-  const readProcessIdentity = input.readProcessIdentity ?? ((expected) => readExactProcessIdentity(expected, inspectProcessIdentity));
+  const readProcessIdentity = input.readProcessIdentity ?? ((expected) => readExactProcessIdentity(expected, readProcessMarker, inspectProcessIdentity));
   const waitForProcessExit = input.waitForProcessExit ?? ((expected, phase) => waitForExactProcessExit(expected, readProcessIdentity, phase));
   const terminateExactProcess = input.terminateExactProcess ?? ((expected) => terminateVerifiedProcess(expected, readProcessIdentity));
   const gateController = new AbortController();
@@ -789,40 +796,97 @@ async function runHeldForegroundRescue(input) {
 }
 
 async function captureExactProcessIdentity(marker, expectedNonce, inspect) {
-  if (!marker || !Number.isSafeInteger(marker.pid) || marker.pid <= 0 || !Number.isSafeInteger(marker.ppid) || marker.ppid <= 0) throw new Error('exact fake-ZCode process marker identity is invalid');
-  if (typeof marker.nonce !== 'string' || marker.nonce.length === 0 || marker.nonce.length > 256 || marker.nonce !== expectedNonce) throw new Error('exact fake-ZCode process nonce mismatch');
-  const observed = await inspect(marker.pid);
+  validateProcessNonce(expectedNonce); validateProcessMarker(marker, expectedNonce);
+  const observed = await inspect(marker.pid, expectedNonce, 'FAKE_ZCODE_PROCESS_NONCE');
   if (!observed) throw new Error('exact fake-ZCode process exited before identity capture');
-  if (observed.pid !== marker.pid || observed.ppid !== marker.ppid) throw new Error('exact fake-ZCode parent identity mismatch');
-  if (typeof observed.startIdentity !== 'string' || observed.startIdentity.length === 0 || observed.startIdentity.length > 256) throw new Error('exact fake-ZCode process start identity is unavailable');
-  return { pid: marker.pid, ppid: marker.ppid, nonce: marker.nonce, startIdentity: observed.startIdentity };
+  validateObservedProcess(observed, marker.pid, expectedNonce);
+  if (observed.ppid !== marker.ppid) throw new Error('exact fake-ZCode parent identity mismatch');
+  return { pid: marker.pid, ppid: marker.ppid, nonce: expectedNonce, nonceVariable: 'FAKE_ZCODE_PROCESS_NONCE', startIdentity: observed.startIdentity };
+}
+
+async function captureExactPidIdentity(pid, expectedNonce, nonceVariable) {
+  validateProcessNonce(expectedNonce);
+  const observed = await inspectExactProcessIdentity(pid, expectedNonce, nonceVariable);
+  if (!observed) throw new Error('exact installed process exited before identity capture');
+  validateObservedProcess(observed, pid, expectedNonce);
+  return { pid, ppid: observed.ppid, nonce: expectedNonce, nonceVariable, startIdentity: observed.startIdentity };
 }
 
 function processMarkerUnavailable(error) { return error?.code === 'ENOENT' || error instanceof SyntaxError; }
 
-async function readExactProcessIdentity(expected, inspect) {
-  const observed = await inspect(expected.pid);
+async function readExactProcessIdentity(expected, readMarker, inspect) {
+  const marker = await readMarker(); validateProcessMarker(marker, expected.nonce);
+  if (marker.pid !== expected.pid || marker.ppid !== expected.ppid) throw new Error('exact fake-ZCode process identity changed');
+  const observed = await inspect(expected.pid, expected.nonce, expected.nonceVariable);
   if (!observed) return undefined;
-  if (observed.pid !== expected.pid || observed.ppid !== expected.ppid || observed.startIdentity !== expected.startIdentity) throw new Error('exact fake-ZCode process identity changed');
+  validateObservedProcess(observed, expected.pid, expected.nonce);
+  if (observed.ppid !== expected.ppid || observed.startIdentity !== expected.startIdentity) throw new Error('exact fake-ZCode process identity changed');
   return observed;
 }
 
-async function inspectExactProcessIdentity(pid) {
+async function readExactPidIdentity(expected) {
+  const observed = await inspectExactProcessIdentity(expected.pid, expected.nonce, expected.nonceVariable);
+  if (!observed) return undefined;
+  validateObservedProcess(observed, expected.pid, expected.nonce);
+  if (observed.ppid !== expected.ppid || observed.startIdentity !== expected.startIdentity) throw new Error('exact installed process identity changed');
+  return observed;
+}
+
+function validateProcessNonce(nonce) {
+  if (typeof nonce !== 'string' || !/^[a-f0-9]{64}$/u.test(nonce)) throw new Error('exact fake-ZCode process nonce mismatch');
+}
+
+function validateProcessMarker(marker, expectedNonce) {
+  validateProcessNonce(expectedNonce);
+  if (!marker || !Number.isSafeInteger(marker.pid) || marker.pid <= 0 || !Number.isSafeInteger(marker.ppid) || marker.ppid <= 0) throw new Error('exact fake-ZCode process marker identity is invalid');
+  if (marker.nonce !== expectedNonce) throw new Error('exact fake-ZCode process nonce mismatch');
+}
+
+function validateObservedProcess(observed, expectedPid, expectedNonce) {
+  if (observed.pid !== expectedPid || !Number.isSafeInteger(observed.ppid) || observed.ppid <= 0) throw new Error('exact fake-ZCode process identity changed');
+  if (typeof observed.startIdentity !== 'string' || observed.startIdentity.length === 0 || observed.startIdentity.length > 256) throw new Error('exact fake-ZCode process start identity is unavailable');
+  if (observed.processNonce !== expectedNonce) throw new Error('exact fake-ZCode process identity changed');
+}
+
+async function inspectExactProcessIdentity(pid, expectedNonce, nonceVariable = 'FAKE_ZCODE_PROCESS_NONCE') {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('exact fake-ZCode PID is invalid');
+  validateProcessNonce(expectedNonce);
+  if (typeof nonceVariable !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/u.test(nonceVariable)) throw new Error('exact fake-ZCode process nonce marker is invalid');
   if (process.platform === 'win32') throw new Error('stable fake-ZCode process identity is unavailable on this platform');
   if (process.platform === 'linux') {
-    let statText;
-    try { statText = await readFile(`/proc/${pid}/stat`, 'utf8'); } catch (error) { if (error?.code === 'ENOENT') return undefined; throw error; }
-    const close = statText.lastIndexOf(')'); const fields = close < 0 ? [] : statText.slice(close + 2).trim().split(/\s+/u);
-    const observedPid = Number(statText.slice(0, statText.indexOf(' '))); const ppid = Number(fields[1]); const startTicks = fields[19];
-    if (observedPid !== pid || !Number.isSafeInteger(ppid) || ppid <= 0 || !/^\d+$/u.test(startTicks ?? '')) throw new Error('stable fake-ZCode process identity could not be parsed');
-    return { pid: observedPid, ppid, startIdentity: `proc:${startTicks}` };
+    const before = await readLinuxProcessStart(pid); if (!before) return undefined;
+    let environ;
+    try { environ = await readFile(`/proc/${pid}/environ`, 'utf8'); } catch (error) { if (error?.code === 'ENOENT') return undefined; throw error; }
+    const after = await readLinuxProcessStart(pid); if (!after) return undefined;
+    if (before.ppid !== after.ppid || before.startIdentity !== after.startIdentity) throw new Error('exact fake-ZCode process identity changed');
+    if (!environ.split('\0').includes(`${nonceVariable}=${expectedNonce}`)) throw new Error('exact fake-ZCode process identity changed');
+    return { ...after, processNonce: expectedNonce };
   }
+  const before = await readPsProcessStart(pid); if (!before) return undefined;
+  const command = await runProcess({ command: 'ps', args: ['eww', '-o', 'command=', '-p', String(pid)] }, { timeoutMs: 2_000, maxOutputBytes: 64 * 1024 });
+  if (command.code !== 0 || !command.stdout.trim()) return undefined;
+  const after = await readPsProcessStart(pid); if (!after) return undefined;
+  if (before.ppid !== after.ppid || before.startIdentity !== after.startIdentity) throw new Error('exact fake-ZCode process identity changed');
+  const nonceMarker = `${nonceVariable}=${expectedNonce}`;
+  if (!command.stdout.split(/\s+/u).includes(nonceMarker)) throw new Error('exact fake-ZCode process identity changed');
+  return { ...after, processNonce: expectedNonce };
+}
+
+async function readLinuxProcessStart(pid) {
+  let statText;
+  try { statText = await readFile(`/proc/${pid}/stat`, 'utf8'); } catch (error) { if (error?.code === 'ENOENT') return undefined; throw error; }
+  const close = statText.lastIndexOf(')'); const fields = close < 0 ? [] : statText.slice(close + 2).trim().split(/\s+/u);
+  const observedPid = Number(statText.slice(0, statText.indexOf(' '))); const ppid = Number(fields[1]); const startTicks = fields[19];
+  if (observedPid !== pid || !Number.isSafeInteger(ppid) || ppid <= 0 || !/^\d+$/u.test(startTicks ?? '')) throw new Error('stable fake-ZCode process identity could not be parsed');
+  return { pid: observedPid, ppid, startIdentity: `proc:${startTicks}` };
+}
+
+async function readPsProcessStart(pid) {
   const result = await runProcess({ command: 'ps', args: ['-o', 'pid=', '-o', 'ppid=', '-o', 'lstart=', '-p', String(pid)] }, { timeoutMs: 2_000, maxOutputBytes: 4 * 1024 });
   if (result.code !== 0 || !result.stdout.trim()) return undefined;
   const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/u.exec(result.stdout);
-  if (!match) throw new Error('stable fake-ZCode process identity could not be parsed');
-  return { pid: Number(match[1]), ppid: Number(match[2]), startIdentity: match[3] };
+  if (!match || Number(match[1]) !== pid || !Number.isSafeInteger(Number(match[2])) || Number(match[2]) <= 0) throw new Error('stable fake-ZCode process identity could not be parsed');
+  return { pid, ppid: Number(match[2]), startIdentity: match[3] };
 }
 
 async function terminateVerifiedProcess(expected, readIdentity) {
@@ -831,6 +895,12 @@ async function terminateVerifiedProcess(expected, readIdentity) {
   try { await waitForExactProcessExit(expected, readIdentity, 'terminate'); return; } catch { /* escalate only the still-matching PID */ }
   if (!await readIdentity(expected)) return;
   try { process.kill(expected.pid, 'SIGKILL'); } catch { /* already exited */ }
+}
+
+async function signalExactProcess(expected, readIdentity, signal) {
+  if (!['SIGTERM', 'SIGKILL'].includes(signal)) throw new Error('exact installed process signal is invalid');
+  if (!await readIdentity(expected)) return false;
+  try { process.kill(expected.pid, signal); return true; } catch { return false; }
 }
 
 async function waitForExactProcessExit(expected, readIdentity, phase) {

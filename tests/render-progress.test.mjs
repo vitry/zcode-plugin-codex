@@ -115,18 +115,33 @@ test('compact legacy and queued jobs show explicit missing progress placeholders
   }), `${id} queued review same-owner phase=— activity=—\n`);
 });
 
-test('JSON output remains structurally unchanged and redacted', () => {
+test('JSON exposes only a valid exact-owner single-job probe while every other view redacts it', () => {
+  const progressProbe = {
+    state: 'online', subscriptionAcknowledged: true, framesReceived: 1,
+    acceptedInitial: 0, acceptedOnline: 1, acceptedRecovery: 0,
+    rejected: { 'wire-version': 0, 'envelope-shape': 0, sequence: 0, topic: 0, 'row-kind': 0, 'row-shape': 0 },
+    snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
+  };
   const value = {
     job: {
-      id, status: 'running', phase: 'running', progressPreview: ['safe'],
-      progressProbe: { state: 'online', subscriptionAcknowledged: true, framesReceived: 1, marker: 'PROBE_INTERNAL' },
+      id, status: 'running', phase: 'running', progressPreview: ['safe'], owned: true, owner: 'same-owner', progressProbe,
     },
     permissionSnapshot: { mode: 'workspace-write' },
     nested: { executionCapability: 'secret', visible: true },
   };
   assert.deepEqual(JSON.parse(renderOutput(value, { json: true })), {
-    job: { id, status: 'running', phase: 'running', progressPreview: ['safe'] },
+    job: { id, status: 'running', phase: 'running', progressPreview: ['safe'], owned: true, owner: 'same-owner', progressProbe },
     nested: { visible: true },
   });
-  assert.doesNotMatch(renderOutput(value), /progressProbe|PROBE_INTERNAL|subscriptionAcknowledged|framesReceived/);
+  assert.doesNotMatch(renderOutput(value), /progressProbe|subscriptionAcknowledged|framesReceived/);
+
+  const invalid = { ...value, job: { ...value.job, progressProbe: { ...progressProbe, marker: 'PROBE_INTERNAL' } } };
+  assert.equal(Object.hasOwn(JSON.parse(renderOutput(invalid, { json: true })).job, 'progressProbe'), false);
+  assert.doesNotMatch(renderOutput(invalid, { json: true }), /PROBE_INTERNAL/);
+
+  for (const hidden of [
+    { job: { ...value.job, owned: undefined, owner: undefined } },
+    { jobs: [value.job] },
+    { job: { ...value.job, owned: undefined, owner: undefined, hasOwner: true } },
+  ]) assert.equal(Object.hasOwn((JSON.parse(renderOutput(hidden, { json: true })).job ?? JSON.parse(renderOutput(hidden, { json: true })).jobs[0]), 'progressProbe'), false);
 });

@@ -1,4 +1,5 @@
 import { PluginError } from './errors.mjs';
+import { validProgressProbe } from './state.mjs';
 
 /** @param {unknown} error */
 export function errorEnvelope(error) {
@@ -8,7 +9,7 @@ export function errorEnvelope(error) {
 
 /** @param {any} value @param {{json?:boolean}} [options] */
 export function renderOutput(value, options = {}) {
-  if (options.json) return `${JSON.stringify(redact(value))}\n`;
+  if (options.json) return `${JSON.stringify(redact(value, exactOwnerJob(value)))}\n`;
   if (value?.type === 'transfer' && typeof value.result === 'string') return value.result.endsWith('\n') ? value.result : `${value.result}\n`;
   if (value?.type === 'background') return `Reserved background job ${value.job.id}.\n`;
   if (value?.jobs) return `${value.jobs.map(renderCompactJob).join('\n')}\n${renderModelPolicy(value.modelPolicy)}`;
@@ -143,14 +144,23 @@ function renderModelPolicy(policy) { return policy ? `Model policy: default=${po
 /** Internal machine transport. Never use for user-facing rendering. @param {unknown} value */
 export function renderInternalOutput(value) { return `${JSON.stringify(value)}\n`; }
 
-/** @param {any} value @returns {any} */
-function redact(value) {
-  if (Array.isArray(value)) return value.map(redact);
+/** @param {any} value @returns {any|null} */
+function exactOwnerJob(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'jobs')
+    && value.job && typeof value.job === 'object' && !Array.isArray(value.job)
+    && value.job.owned === true && value.job.owner === 'same-owner' && validProgressProbe(value.job.progressProbe)
+    ? value.job : null;
+}
+
+/** @param {any} value @param {any|null} [progressProbeOwner] @returns {any} */
+function redact(value, progressProbeOwner = null) {
+  if (Array.isArray(value)) return value.map((entry) => redact(entry, progressProbeOwner));
   if (!value || typeof value !== 'object') return value;
   /** @type {Record<string,any>} */ const result = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (/token|capability|permissionSnapshot|privateInvocation|progressProbe/i.test(key)) continue;
-    result[key] = redact(entry);
+    if (/token|capability|permissionSnapshot|privateInvocation/i.test(key)) continue;
+    if (/progressProbe/i.test(key) && (value !== progressProbeOwner || key !== 'progressProbe' || !validProgressProbe(entry))) continue;
+    result[key] = redact(entry, progressProbeOwner);
   }
   return result;
 }

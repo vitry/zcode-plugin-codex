@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -99,6 +99,7 @@ test('does not render unallowlisted tool or capability names from a session snap
 
 test('uses exactly one visible non-synthetic current user root only when the accepted input root is absent', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-session-progress-'));
+  const pathSentinel = 'CONTAINED_SNAPSHOT_PATH_SENTINEL.txt';
   const boundary = { inputId: 'accepted-input', stateRevision: 7, beforeMessageIds: new Set(['old-user']) };
   const describer = await createSessionProgressDescriber({ workspace, turnBoundary: boundary });
   const safe = await describer.observe(snapshot([
@@ -106,15 +107,21 @@ test('uses exactly one visible non-synthetic current user root only when the acc
     userMessage('current-user', { semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }),
     assistantMessage('hidden', 'current-user', [toolPart('hidden-call', 'Bash', 'running')], { semantics: { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'hidden' } }),
     assistantMessage('sibling', 'different-user', [toolPart('sibling-call', 'Bash', 'running')]),
-    assistantMessage('linked', 'current-user', [toolPart('safe-call', 'Read', 'running', { file_path: 'safe.txt' })]),
+    assistantMessage('linked', 'current-user', [toolPart('safe-call', 'Read', 'running', { file_path: join(workspace, pathSentinel) })]),
   ]), observedAt);
-  assert.deepEqual(safe, [{ phase: 'running', message: 'Reading: safe.txt.', observedAt }]);
+  assert.deepEqual(safe, [{ phase: 'running', message: 'Running tool: Read.', observedAt }]);
+  assert.doesNotMatch(JSON.stringify(safe), new RegExp(pathSentinel));
 
   const ambiguous = await createSessionProgressDescriber({ workspace, turnBoundary: boundary });
   assert.deepEqual(await ambiguous.observe(snapshot([
     userMessage('first-current'), userMessage('second-current'),
     assistantMessage('assistant', 'first-current', [toolPart('call', 'Bash', 'running')]),
   ]), observedAt), []);
+});
+
+test('snapshot source never inspects or serializes tool input paths', async () => {
+  const source = await readFile(new URL('../scripts/lib/session-progress.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /state\.input|file_path|formatSnapshotToolStartMessage/);
 });
 
 test('rejects snapshots older than the accepted revision and emits terminal-first without a synthetic start', async () => {

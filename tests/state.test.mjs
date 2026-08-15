@@ -382,6 +382,7 @@ test('persisted jobs are schema-validated before use', async () => {
     { ...job, resultArtifact: 'artifacts/result.json' },
     { ...job, status: 'running', error: 'too early' },
     { ...job, status: 'failed', resultArtifact: 'artifacts/result.json' },
+    { ...job, progressProbe: { state: 'online', framesReceived: 1, raw: 'must-fail-closed' } },
   ]) {
     await atomicWriteJson(path, invalidJob);
     await assert.rejects(

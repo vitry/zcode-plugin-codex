@@ -1,7 +1,4 @@
-import { realpath } from 'node:fs/promises';
-import { resolve } from 'node:path';
-
-import { fitProgressMessage, formatSnapshotToolStartMessage, formatToolTerminalMessage } from './conversation-progress.mjs';
+import { fitProgressMessage, formatToolTerminalMessage } from './conversation-progress.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
 
 const START_STATUSES = new Set(['pending', 'running']);
@@ -14,8 +11,7 @@ const MAX_SNAPSHOT_MESSAGES = 4_096;
  * Describe only schema-validated session snapshots for the accepted turn.
  * @param {{workspace:string,turnBoundary:{inputId:string,stateRevision:number,beforeMessageIds:Set<string>}}} options
  */
-export async function createSessionProgressDescriber({ workspace, turnBoundary }) {
-  const workspaceRoot = await realpath(resolve(workspace));
+export async function createSessionProgressDescriber({ turnBoundary }) {
   const beforeMessageIds = turnBoundary.beforeMessageIds;
   const inputId = turnBoundary.inputId;
   const boundaryRevision = turnBoundary.stateRevision;
@@ -35,7 +31,7 @@ export async function createSessionProgressDescriber({ workspace, turnBoundary }
         if (!Array.isArray(assistant.parts)) return [];
         for (const part of assistant.parts) {
           if (part?.type !== 'tool') continue;
-          const event = await describePart(part, observedAt, workspaceRoot, calls);
+          const event = describePart(part, observedAt, calls);
           if (event) events.push(event);
         }
       }
@@ -80,8 +76,8 @@ function isLinkedAssistant(message, rootId, beforeMessageIds) {
     && (semantics === undefined || semantics.origin === 'agent_runtime' && semantics.kind === 'assistant_response');
 }
 
-/** @param {any} part @param {string} observedAt @param {string} workspaceRoot @param {Map<string,{started:boolean,terminal:boolean,message:string}>} calls */
-async function describePart(part, observedAt, workspaceRoot, calls) {
+/** @param {any} part @param {string} observedAt @param {Map<string,{started:boolean,terminal:boolean,message:string}>} calls */
+function describePart(part, observedAt, calls) {
   const callId = part.callId; const state = part.state;
   if (!isSafeIdentifier(callId) || !state || typeof state !== 'object') return null;
   const toolName = SAFE_TOOL_NAMES.has(part.tool) ? part.tool : '';
@@ -89,12 +85,12 @@ async function describePart(part, observedAt, workspaceRoot, calls) {
   if (prior?.terminal) return null;
   if (START_STATUSES.has(state.status)) {
     if (prior?.started || !prior && calls.size >= MAX_TRACKED_CALLS) return null;
-    const message = fitProgressMessage(await formatSnapshotToolStartMessage({ toolName, input: state.input }, workspaceRoot));
+    const message = fitProgressMessage(snapshotToolStartMessage(toolName));
     calls.set(callId, { started: true, terminal: false, message });
     return { phase: state.status === 'pending' ? 'waiting' : 'running', message, observedAt };
   }
   if (!TERMINAL_STATUSES.has(state.status) || !prior && calls.size >= MAX_TRACKED_CALLS) return null;
-  const startMessage = prior?.message ?? fitProgressMessage(await formatSnapshotToolStartMessage({ toolName, input: state.input }, workspaceRoot));
+  const startMessage = prior?.message ?? fitProgressMessage(snapshotToolStartMessage(toolName));
   calls.set(callId, { started: prior?.started === true, terminal: true, message: startMessage });
   return {
     phase: 'running',
@@ -106,6 +102,9 @@ async function describePart(part, observedAt, workspaceRoot, calls) {
     observedAt,
   };
 }
+
+/** @param {string} toolName */
+function snapshotToolStartMessage(toolName) { return toolName ? `Running tool: ${toolName}.` : 'Running a tool.'; }
 
 /** @param {unknown} value */
 function validTimestamp(value) {
