@@ -463,17 +463,18 @@ function isChildHostEvent(event) {
 }
 
 function validateChoiceParentCallOwnership(parent) {
-  const calls = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call');
-  const outputs = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output');
+  const calls = parent.filter((event) => event?.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(event.payload?.type));
+  const outputs = parent.filter((event) => event?.type === 'response_item' && ['function_call_output', 'custom_tool_call_output'].includes(event.payload?.type));
   const callIds = calls.map((event) => boundedString(event.payload.call_id));
   const outputIds = outputs.map((event) => boundedString(event.payload.call_id));
   if (callIds.some((id) => !id) || outputIds.some((id) => !id) || new Set(callIds).size !== callIds.length || new Set(outputIds).size !== outputIds.length) {
     mismatch('choice-parent-call-id', 'Parent calls and outputs require nonempty bounded unique call IDs.');
   }
-  const outputOwningCalls = calls.filter((event) => event.payload.name !== 'spawn_agent');
-  if (outputOwningCalls.length !== outputs.length
-    || outputOwningCalls.some((event) => !outputIds.includes(event.payload.call_id))
-    || outputs.some((event) => !outputOwningCalls.some((call) => call.payload.call_id === event.payload.call_id))) {
+  const outputOwningCalls = calls.filter((event) => !(event.payload.type === 'function_call' && event.payload.name === 'spawn_agent'));
+  const linkedOutput = (call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id
+    && output.payload.type === (call.payload.type === 'custom_tool_call' ? 'custom_tool_call_output' : 'function_call_output'));
+  if (outputOwningCalls.length !== outputs.length || outputOwningCalls.some((call) => linkedOutput(call).length !== 1)
+    || outputs.some((output) => !outputOwningCalls.some((call) => linkedOutput(call).includes(output)))) {
     mismatch('choice-parent-call-id', 'Every parent host output must belong one-to-one to one non-spawn call.');
   }
 }

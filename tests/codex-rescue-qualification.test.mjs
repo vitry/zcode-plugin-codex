@@ -252,6 +252,25 @@ test('choice host and parent evidence has globally unique one-to-one call IDs', 
   }
 });
 
+test('choice parent call IDs are globally owned across custom preflight and function tools', () => {
+  const cases = [
+    { mutate: (input) => { delete preflightEvent(input).payload.call_id; } },
+    { mutate: (input) => { delete preflightOutput(input).payload.call_id; } },
+    { mutate: (input) => { preflightEvent(input).payload.call_id = 'spawn-1'; preflightOutput(input).payload.call_id = 'spawn-1'; } },
+    { mutate: (input) => { preflightEvent(input).payload.call_id = 'wait-1'; preflightOutput(input).payload.call_id = 'wait-1'; } },
+    { mutate: (input) => { preflightEvent(input).payload.call_id = 'followup-1'; preflightOutput(input).payload.call_id = 'followup-1'; } },
+    { mutate: (input) => { const wait = waitResult(input, 'wait-1'); [preflightOutput(input).payload.call_id, wait.payload.call_id] = [wait.payload.call_id, preflightOutput(input).payload.call_id]; } },
+    { mutate: (input) => { input.rollouts[0].push(toolOutput('orphan-preflight', 'orphan')); } },
+  ];
+  for (const { mutate } of cases) {
+    const input = choiceFixture('resume'); mutate(input);
+    assert.throws(
+      () => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-parent-call-id',
+    );
+  }
+});
+
 test('choice yielded executions reject changed handles, nonempty input, missing exit, and polling after terminal', () => {
   const cases = [
     { code: 'choice-initial-handle-mismatch', turn: 'initial', mutate: (events) => { events.poll.payload.input = structuredPoll(52, events.poll.payload.call_id).payload.input; } },

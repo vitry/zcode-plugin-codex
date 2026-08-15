@@ -1,6 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -32,12 +33,12 @@ test('foreground Rescue gate lifecycle releases and cleans exact processes on ga
   const events = []; let rejectCodex; let alive = true;
   const result = new Promise((_, reject) => { rejectCodex = reject; });
   await assert.rejects(runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json',
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
     launch: () => ({ result, terminate: async () => { events.push('terminate-codex'); rejectCodex(new Error('terminated exact Codex')); throw new Error('Codex termination reported failure'); } }),
     waitForGate: async () => { throw new Error('gate discovery timeout'); },
-    readIdentity: async () => ({ pid: 48123 }), releaseGate: async (path) => { events.push(`release:${path}`); },
-    isAlive: () => alive, terminatePid: async (pid) => { events.push(`terminate-pid:${pid}`); alive = false; },
-    waitForPidExit: async (pid) => { events.push(`wait-pid:${pid}`); }, holdMs: 0,
+    readProcessMarker: async () => ({ pid: 48123, ppid: 71, nonce: 'run-nonce' }), inspectProcessIdentity: async () => alive ? ({ pid: 48123, ppid: 71, startIdentity: 'start-a' }) : undefined,
+    releaseGate: async (path) => { events.push(`release:${path}`); }, terminateExactProcess: async (identity) => { events.push(`terminate-pid:${identity.pid}`); alive = false; },
+    waitForProcessExit: async (identity) => { events.push(`wait-pid:${identity.pid}`); }, holdMs: 0,
   }), /gate discovery timeout/);
   assert.deepEqual(events, ['release:/exact/gate', 'terminate-codex', 'terminate-pid:48123', 'wait-pid:48123']);
 });
@@ -45,11 +46,12 @@ test('foreground Rescue gate lifecycle releases and cleans exact processes on ga
 test('foreground Rescue gate lifecycle consumes Codex failure and releases the exact gate', async () => {
   const events = []; let alive = true;
   await assert.rejects(runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json',
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
     launch: () => ({ result: Promise.reject(new Error('Codex failed')), terminate: async () => { events.push('terminate-codex'); } }),
-    waitForGate: () => new Promise(() => {}), readIdentity: async () => ({ pid: 59123 }),
-    releaseGate: async (path) => { events.push(`release:${path}`); }, isAlive: () => alive,
-    terminatePid: async (pid) => { events.push(`terminate-pid:${pid}`); alive = false; }, waitForPidExit: async (pid) => { events.push(`wait-pid:${pid}`); }, holdMs: 0,
+    waitForGate: (signal) => new Promise((resolvePromise) => signal.addEventListener('abort', resolvePromise, { once: true })),
+    readProcessMarker: async () => ({ pid: 59123, ppid: 72, nonce: 'run-nonce' }), inspectProcessIdentity: async () => alive ? ({ pid: 59123, ppid: 72, startIdentity: 'start-a' }) : undefined,
+    releaseGate: async (path) => { events.push(`release:${path}`); }, terminateExactProcess: async (identity) => { events.push(`terminate-pid:${identity.pid}`); alive = false; },
+    waitForProcessExit: async (identity) => { events.push(`wait-pid:${identity.pid}`); }, holdMs: 0,
   }), /Codex failed/);
   assert.deepEqual(events, ['release:/exact/gate', 'terminate-codex', 'terminate-pid:59123', 'wait-pid:59123']);
 });
@@ -58,13 +60,81 @@ test('foreground Rescue gate lifecycle cleans an exact fake child that does not 
   const events = []; let gateReleased = false; let alive = true; let resolveCodex;
   const result = new Promise((resolvePromise) => { resolveCodex = resolvePromise; });
   await assert.rejects(runHeldForegroundRescue({
-    gatePath: '/exact/gate', processPath: '/exact/process.json', launch: () => ({ result }),
-    waitForGate: async () => {}, readIdentity: async () => ({ pid: 60123 }), releaseGate: async () => { gateReleased = true; events.push('release'); resolveCodex({ code: 0, stdout: '', stderr: '' }); },
-    sleep: async () => {}, isAlive: () => alive,
-    waitForPidExit: async (pid, phase) => { events.push(`wait-${phase}:${pid}`); if (phase === 'natural') throw new Error('fake child did not exit'); },
-    terminatePid: async (pid) => { assert.equal(gateReleased, true); events.push(`terminate-pid:${pid}`); alive = false; }, holdMs: 0,
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce', launch: () => ({ result }),
+    waitForGate: async () => {}, readProcessMarker: async () => ({ pid: 60123, ppid: 73, nonce: 'run-nonce' }), inspectProcessIdentity: async () => alive ? ({ pid: 60123, ppid: 73, startIdentity: 'start-a' }) : undefined,
+    releaseGate: async () => { gateReleased = true; events.push('release'); resolveCodex({ code: 0, stdout: '', stderr: '' }); }, sleep: async () => {},
+    waitForProcessExit: async (identity, phase) => { events.push(`wait-${phase}:${identity.pid}`); if (phase === 'natural') throw new Error('fake child did not exit'); },
+    terminateExactProcess: async (identity) => { assert.equal(gateReleased, true); events.push(`terminate-pid:${identity.pid}`); alive = false; }, holdMs: 0,
   }), /fake child did not exit/);
   assert.deepEqual(events, ['release', 'wait-natural:60123', 'terminate-pid:60123', 'wait-cleanup:60123']);
+});
+
+test('foreground Rescue gate lifecycle releases the exact gate when launch throws synchronously', async () => {
+  const released = [];
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    launch: () => { throw new Error('synchronous launch failure'); },
+    waitForGate: async () => { assert.fail('gate wait must not start before launch succeeds'); },
+    releaseGate: async (path) => { released.push(path); }, holdMs: 0,
+  }), /synchronous launch failure/);
+  assert.deepEqual(released, ['/exact/gate']);
+});
+
+test('foreground Rescue early Codex result aborts and awaits the losing gate wait', async () => {
+  let aborted = false; let awaited = false; const events = [];
+  const foreground = await runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    launch: () => ({ result: Promise.resolve({ code: 0, stdout: '', stderr: '' }), terminate: async () => { events.push('terminate'); } }),
+    waitForGate: (signal) => new Promise((resolvePromise) => signal.addEventListener('abort', () => {
+      aborted = true; queueMicrotask(() => { awaited = true; resolvePromise(); });
+    }, { once: true })),
+    readProcessMarker: async () => { const error = new Error('marker absent'); error.code = 'ENOENT'; throw error; }, releaseGate: async () => { events.push('release'); }, holdMs: 0,
+  });
+  assert.equal(foreground.endedBeforeGate, true);
+  assert.equal(aborted, true); assert.equal(awaited, true);
+  assert.deepEqual(events, ['release', 'terminate']);
+});
+
+test('foreground Rescue refuses to signal stale, nonce-mismatched, or reparented process identities', async (t) => {
+  const cases = [
+    {
+      name: 'nonce mismatch', marker: { pid: 61123, ppid: 71, nonce: 'stale-nonce' },
+      inspect: async () => ({ pid: 61123, ppid: 71, startIdentity: 'start-a' }), pattern: /nonce changed|nonce mismatch/i,
+    },
+    {
+      name: 'parent mismatch', marker: { pid: 61124, ppid: 72, nonce: 'run-nonce' },
+      inspect: async () => ({ pid: 61124, ppid: 73, startIdentity: 'start-a' }), pattern: /parent identity changed|parent.*mismatch/i,
+    },
+    {
+      name: 'PID reuse', marker: { pid: 61125, ppid: 74, nonce: 'run-nonce' },
+      inspect: (() => { let reads = 0; return async () => ({ pid: 61125, ppid: 74, startIdentity: reads++ === 0 ? 'start-a' : 'start-b' }); })(), pattern: /process identity changed/i,
+    },
+  ];
+  for (const scenario of cases) await t.test(scenario.name, async () => {
+    let terminated = false; let rejectCodex;
+    const result = new Promise((_, reject) => { rejectCodex = reject; });
+    await assert.rejects(runHeldForegroundRescue({
+      gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+      launch: () => ({ result, terminate: async () => { rejectCodex(new Error('terminated exact Codex')); } }), waitForGate: async () => {},
+      readProcessMarker: async () => scenario.marker, inspectProcessIdentity: scenario.inspect,
+      releaseGate: async () => {}, sleep: async () => {}, terminateExactProcess: async () => { terminated = true; }, holdMs: 0,
+    }), scenario.pattern);
+    assert.equal(terminated, false, 'identity mismatch must never signal an unrelated PID');
+  });
+});
+
+test('foreground Rescue reports cleanup identity change without signaling the reused PID', async () => {
+  let reads = 0; let terminated = false; let rejectCodex;
+  const result = new Promise((_, reject) => { rejectCodex = reject; });
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    launch: () => ({ result, terminate: async () => { rejectCodex(new Error('terminated exact Codex')); } }), waitForGate: async () => {},
+    readProcessMarker: async () => ({ pid: 62123, ppid: 81, nonce: 'run-nonce' }),
+    inspectProcessIdentity: async () => ({ pid: 62123, ppid: 81, startIdentity: reads++ === 0 ? 'start-a' : 'start-b' }),
+    releaseGate: async () => {}, sleep: async () => { throw new Error('held verification failed'); },
+    terminateExactProcess: async () => { terminated = true; }, holdMs: 0,
+  }), /process identity changed during cleanup/i);
+  assert.equal(terminated, false);
 });
 
 test('preserved installed evidence scrubs isolated credential copies on normal, thrown, and timed-out cleanup', async (t) => {
@@ -172,13 +242,13 @@ test('installed Rescue uses one isolated native child for initial and choice con
   }
   assert.equal(setupReady, true, 'four successful setup turns did not establish a fresh-session ready Rescue Role');
   await qualifyInstalledIdentityFailures({ installedPluginRoot, installedDataRoot: join(codexHome, 'plugins', 'data', 'zcode-vitry'), temporary, env, zcodeRecord });
-  const foregroundGate = join(temporary, 'foreground-long-completion.gate'); const foregroundGateReached = join(temporary, 'foreground-long-completion.reached'); const foregroundProcess = join(temporary, 'foreground-long-process.json');
+  const foregroundGate = join(temporary, 'foreground-long-completion.gate'); const foregroundGateReached = join(temporary, 'foreground-long-completion.reached'); const foregroundProcess = join(temporary, 'foreground-long-process.json'); const foregroundNonce = randomBytes(32).toString('hex');
   await Promise.all([writeFile(zcodeRecord, ''), writeFile(foregroundGate, 'hold'), writeFile(foregroundGateReached, ''), writeFile(foregroundProcess, '')]);
-  const longEnv = { ...env, FAKE_ZCODE_COMPLETION_GATE: foregroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: foregroundGateReached, FAKE_ZCODE_PROCESS_FILE: foregroundProcess };
+  const longEnv = { ...env, FAKE_ZCODE_COMPLETION_GATE: foregroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: foregroundGateReached, FAKE_ZCODE_PROCESS_FILE: foregroundProcess, FAKE_ZCODE_PROCESS_NONCE: foregroundNonce };
   const foreground = await runHeldForegroundRescue({
-    gatePath: foregroundGate, processPath: foregroundProcess,
+    gatePath: foregroundGate, processPath: foregroundProcess, processNonce: foregroundNonce,
     launch: () => controlledCodex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result.'], workspace, longEnv, 300_000),
-    waitForGate: () => waitUntil(async () => await readFile(foregroundGateReached, 'utf8').catch(() => '') === 'blocked', 60_000, 'installed foreground Rescue never reached the held fake-ZCode completion boundary'),
+    waitForGate: (signal) => waitUntil(async () => await readFile(foregroundGateReached, 'utf8').catch(() => '') === 'blocked', 60_000, 'installed foreground Rescue never reached the held fake-ZCode completion boundary', signal),
     holdMs: 35_000,
   });
   if (foreground.endedBeforeGate) {
@@ -607,20 +677,23 @@ function controlledCodex(args, cwd, env, timeoutMs = 60_000) {
 }
 
 async function runHeldForegroundRescue(input) {
-  const readIdentity = input.readIdentity ?? (async () => JSON.parse(await readFile(input.processPath, 'utf8')));
   const releaseGate = input.releaseGate ?? ((path) => writeFile(path, 'release'));
-  const isAlive = input.isAlive ?? processAlive;
   const sleep = input.sleep ?? ((duration) => new Promise((resolvePromise) => setTimeout(resolvePromise, duration)));
-  const waitForPidExit = input.waitForPidExit ?? ((pid, phase) => waitUntil(() => !processAlive(pid), phase === 'natural' ? 10_000 : 5_000, `the exact fake-ZCode process remained alive during ${phase}`));
-  const terminatePid = input.terminatePid ?? terminateExactPid;
-  const control = await input.launch();
-  const resultOutcome = Promise.resolve(control.result).then(
-    (value) => ({ kind: 'result', value }),
-    (error) => ({ kind: 'error', error }),
-  );
-  let identity; let gateReleased = false; let completed = false; let answer; let failure;
+  const readProcessMarker = input.readProcessMarker ?? (async () => JSON.parse(await readFile(input.processPath, 'utf8')));
+  const inspectProcessIdentity = input.inspectProcessIdentity ?? inspectExactProcessIdentity;
+  const captureProcessIdentity = input.captureProcessIdentity ?? (async () => captureExactProcessIdentity(await readProcessMarker(), input.processNonce, inspectProcessIdentity));
+  const readProcessIdentity = input.readProcessIdentity ?? ((expected) => readExactProcessIdentity(expected, inspectProcessIdentity));
+  const waitForProcessExit = input.waitForProcessExit ?? ((expected, phase) => waitForExactProcessExit(expected, readProcessIdentity, phase));
+  const terminateExactProcess = input.terminateExactProcess ?? ((expected) => terminateVerifiedProcess(expected, readProcessIdentity));
+  const gateController = new AbortController();
+  let control; let resultOutcome; let gateOutcome; let identity; let gateReleased = false; let completed = false; let answer; let failure;
   try {
-    const gateOutcome = Promise.resolve().then(input.waitForGate).then(
+    control = await input.launch();
+    resultOutcome = Promise.resolve(control.result).then(
+      (value) => ({ kind: 'result', value }),
+      (error) => ({ kind: 'error', error }),
+    );
+    gateOutcome = Promise.resolve().then(() => input.waitForGate(gateController.signal)).then(
       () => ({ kind: 'held' }),
       (error) => ({ kind: 'gate-error', error }),
     );
@@ -628,49 +701,106 @@ async function runHeldForegroundRescue(input) {
     if (boundary.kind === 'gate-error') throw boundary.error;
     if (boundary.kind === 'error') throw boundary.error;
     if (boundary.kind === 'result') {
+      gateController.abort(); await gateOutcome;
       answer = { endedBeforeGate: true, rescue: boundary.value };
     } else {
-      identity = await readIdentity();
-      if (!Number.isSafeInteger(identity?.pid) || identity.pid <= 0) throw new Error('the fake-ZCode process marker must contain one positive safe PID');
+      identity = await captureProcessIdentity();
       await sleep(input.holdMs ?? 35_000);
-      const processAliveWhileHeld = isAlive(identity.pid);
+      const processAliveWhileHeld = await readProcessIdentity(identity) !== undefined;
       await releaseGate(input.gatePath); gateReleased = true;
       const outcome = await resultOutcome;
       if (outcome.kind === 'error') throw outcome.error;
-      await waitForPidExit(identity.pid, 'natural');
+      await waitForProcessExit(identity, 'natural');
       answer = { endedBeforeGate: false, identity, processAliveWhileHeld, rescue: outcome.value };
       completed = true;
     }
   } catch (error) { failure = error; }
   const cleanupErrors = [];
+  gateController.abort();
+  if (gateOutcome) { try { await gateOutcome; } catch (error) { cleanupErrors.push(error); } }
   if (!gateReleased) {
     try { await releaseGate(input.gatePath); gateReleased = true; } catch (error) { cleanupErrors.push(error); }
   }
   if (!completed) {
-    if (typeof control.terminate === 'function') { try { await control.terminate(); } catch (error) { cleanupErrors.push(error); } }
-    if (!identity) { try { identity = await readIdentity(); } catch { /* marker was never recorded */ } }
-    if (Number.isSafeInteger(identity?.pid) && identity.pid > 0 && isAlive(identity.pid)) {
-      try { await terminatePid(identity.pid); } catch (error) { cleanupErrors.push(error); }
-      try { await waitForPidExit(identity.pid, 'cleanup'); } catch (error) { cleanupErrors.push(error); }
+    if (typeof control?.terminate === 'function') { try { await control.terminate(); } catch (error) { cleanupErrors.push(error); } }
+    if (!identity) {
+      try { identity = await captureProcessIdentity(); }
+      catch (error) { if (!processMarkerUnavailable(error)) cleanupErrors.push(error); }
+    }
+    if (identity) {
+      let current;
+      try { current = await readProcessIdentity(identity); } catch (error) { cleanupErrors.push(error); }
+      if (current) {
+        try { await terminateExactProcess(identity); } catch (error) { cleanupErrors.push(error); }
+        try { await waitForProcessExit(identity, 'cleanup'); } catch (error) { cleanupErrors.push(error); }
+      }
     }
   }
   if (cleanupErrors.length > 0) {
     if (!failure) failure = cleanupErrors.length === 1 ? cleanupErrors[0] : new AggregateError(cleanupErrors, 'foreground Rescue cleanup failed');
-    else failure = new AggregateError([failure, ...cleanupErrors], failure.message);
+    else {
+      const identityChanged = cleanupErrors.some((error) => /exact fake-ZCode process identity changed/iu.test(error?.message ?? ''));
+      failure = new AggregateError([failure, ...cleanupErrors], identityChanged ? `${failure.message}; exact fake-ZCode process identity changed during cleanup` : failure.message);
+    }
   }
   if (failure) throw failure;
   return answer;
 }
 
-async function terminateExactPid(pid) {
+async function captureExactProcessIdentity(marker, expectedNonce, inspect) {
+  if (!marker || !Number.isSafeInteger(marker.pid) || marker.pid <= 0 || !Number.isSafeInteger(marker.ppid) || marker.ppid <= 0) throw new Error('exact fake-ZCode process marker identity is invalid');
+  if (typeof marker.nonce !== 'string' || marker.nonce.length === 0 || marker.nonce.length > 256 || marker.nonce !== expectedNonce) throw new Error('exact fake-ZCode process nonce mismatch');
+  const observed = await inspect(marker.pid);
+  if (!observed) throw new Error('exact fake-ZCode process exited before identity capture');
+  if (observed.pid !== marker.pid || observed.ppid !== marker.ppid) throw new Error('exact fake-ZCode parent identity mismatch');
+  if (typeof observed.startIdentity !== 'string' || observed.startIdentity.length === 0 || observed.startIdentity.length > 256) throw new Error('exact fake-ZCode process start identity is unavailable');
+  return { pid: marker.pid, ppid: marker.ppid, nonce: marker.nonce, startIdentity: observed.startIdentity };
+}
+
+function processMarkerUnavailable(error) { return error?.code === 'ENOENT' || error instanceof SyntaxError; }
+
+async function readExactProcessIdentity(expected, inspect) {
+  const observed = await inspect(expected.pid);
+  if (!observed) return undefined;
+  if (observed.pid !== expected.pid || observed.ppid !== expected.ppid || observed.startIdentity !== expected.startIdentity) throw new Error('exact fake-ZCode process identity changed');
+  return observed;
+}
+
+async function inspectExactProcessIdentity(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('exact fake-ZCode PID is invalid');
-  try { process.kill(pid, 'SIGTERM'); } catch { return; }
-  try { await waitUntil(() => !processAlive(pid), 1_000, 'exact fake-ZCode PID ignored SIGTERM'); return; } catch { /* escalate only this PID */ }
-  try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
+  if (process.platform === 'win32') throw new Error('stable fake-ZCode process identity is unavailable on this platform');
+  if (process.platform === 'linux') {
+    let statText;
+    try { statText = await readFile(`/proc/${pid}/stat`, 'utf8'); } catch (error) { if (error?.code === 'ENOENT') return undefined; throw error; }
+    const close = statText.lastIndexOf(')'); const fields = close < 0 ? [] : statText.slice(close + 2).trim().split(/\s+/u);
+    const observedPid = Number(statText.slice(0, statText.indexOf(' '))); const ppid = Number(fields[1]); const startTicks = fields[19];
+    if (observedPid !== pid || !Number.isSafeInteger(ppid) || ppid <= 0 || !/^\d+$/u.test(startTicks ?? '')) throw new Error('stable fake-ZCode process identity could not be parsed');
+    return { pid: observedPid, ppid, startIdentity: `proc:${startTicks}` };
+  }
+  const result = await runProcess({ command: 'ps', args: ['-o', 'pid=', '-o', 'ppid=', '-o', 'lstart=', '-p', String(pid)] }, { timeoutMs: 2_000, maxOutputBytes: 4 * 1024 });
+  if (result.code !== 0 || !result.stdout.trim()) return undefined;
+  const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/u.exec(result.stdout);
+  if (!match) throw new Error('stable fake-ZCode process identity could not be parsed');
+  return { pid: Number(match[1]), ppid: Number(match[2]), startIdentity: match[3] };
+}
+
+async function terminateVerifiedProcess(expected, readIdentity) {
+  if (!await readIdentity(expected)) return;
+  try { process.kill(expected.pid, 'SIGTERM'); } catch { return; }
+  try { await waitForExactProcessExit(expected, readIdentity, 'terminate'); return; } catch { /* escalate only the still-matching PID */ }
+  if (!await readIdentity(expected)) return;
+  try { process.kill(expected.pid, 'SIGKILL'); } catch { /* already exited */ }
+}
+
+async function waitForExactProcessExit(expected, readIdentity, phase) {
+  const timeoutMs = phase === 'natural' ? 10_000 : phase === 'terminate' ? 1_000 : 5_000;
+  await waitUntil(async () => await readIdentity(expected) === undefined, timeoutMs, `the exact fake-ZCode process remained alive during ${phase}`);
 }
 async function git(args, cwd) { const result = await runProcess({ command: 'git', args, options: { shell: false } }, { cwd, timeoutMs: 30_000 }); assert.equal(result.code, 0, result.stderr); return result; }
 async function initializeGitWorkspace(workspace) { await mkdir(workspace, { recursive: true }); await git(['init', '-q'], workspace); await writeFile(join(workspace, 'tracked.txt'), 'base\n'); await git(['add', 'tracked.txt'], workspace); await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], workspace); }
-async function waitUntil(predicate, timeoutMs, message) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { if (await predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } assert.fail(message); }
+async function waitUntil(predicate, timeoutMs, message, signal) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { if (signal?.aborted) throw abortError(); if (await predicate()) return; await abortableDelay(50, signal); } assert.fail(message); }
+function abortableDelay(timeoutMs, signal) { return new Promise((resolvePromise, reject) => { if (signal?.aborted) { reject(abortError()); return; } const timer = setTimeout(finish, timeoutMs); const cancel = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); reject(abortError()); }; function finish() { signal?.removeEventListener('abort', cancel); resolvePromise(); } signal?.addEventListener('abort', cancel, { once: true }); }); }
+function abortError() { const error = new Error('foreground gate wait aborted'); error.name = 'AbortError'; return error; }
 async function waitForValue(read, timeoutMs, message) { let value; await waitUntil(async () => { value = await read(); return value !== undefined; }, timeoutMs, message); return value; }
 async function startInstalledTurn(app, threadId, text) { const result = await app.request('turn/start', { approvalPolicy: 'never', input: [{ type: 'text', text }], sandboxPolicy: { type: 'dangerFullAccess' }, threadId }, 30_000); assert.ok(result.turn?.id, 'installed turn/start omitted its turn ID'); return result.turn.id; }
 async function waitForCodexTurn(app, threadId, turnId, timeoutMs) {
