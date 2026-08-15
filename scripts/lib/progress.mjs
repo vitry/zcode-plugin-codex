@@ -119,6 +119,7 @@ export function createProgressReporter({
   /** @type {null|{observe:(snapshot:unknown,observedAt:string)=>unknown|Promise<unknown>}} */ let snapshotDescriber = null;
   /** @type {Promise<void>|null} */ let snapshotReadInFlight = null;
   let snapshotEpoch = 0;
+  let adjacentHeartbeatClaimed = false;
   const cleanupSnapshotFallback = () => {
     const cleanup = snapshotFallbackCleanup; snapshotFallbackCleanup = null;
     if (cleanup === null) return false;
@@ -172,7 +173,10 @@ export function createProgressReporter({
     if (timer !== null || typeof write !== 'function' && typeof persistProbe !== 'function' && typeof activateSnapshotFallback !== 'function') return;
     timer = setIntervalFn(() => {
       activateCompatibilityBoundary(true);
-      if (progressProbe.state === 'snapshot-fallback') startSnapshotRead();
+      if (progressProbe.state === 'snapshot-fallback') {
+        if (adjacentHeartbeatClaimed) adjacentHeartbeatClaimed = false;
+        else startSnapshotRead(false);
+      }
       const currentTime = now();
       if (!validTimestamp(currentTime) || !validTimestamp(lastActivityAt)) return;
       const elapsedMs = Date.parse(currentTime) - Date.parse(lastActivityAt);
@@ -202,7 +206,8 @@ export function createProgressReporter({
     }
     persistProbeSnapshot(); return true;
   };
-  const startSnapshotRead = () => {
+  /** @param {boolean} claimAdjacentHeartbeat */
+  const startSnapshotRead = (claimAdjacentHeartbeat = true) => {
     if (closed || !accepting || progressProbe.state !== 'snapshot-fallback' || snapshotReadInFlight !== null
       || snapshotRead === null || snapshotDescriber === null) return false;
     const epoch = snapshotEpoch;
@@ -229,6 +234,7 @@ export function createProgressReporter({
       diagnose('conversation-lifecycle-only'); persistProbeSnapshot();
     }).then(() => { if (snapshotReadInFlight === tracked) snapshotReadInFlight = null; });
     snapshotReadInFlight = tracked;
+    if (claimAdjacentHeartbeat) adjacentHeartbeatClaimed = true;
     return true;
   };
   /** @param {unknown} result */

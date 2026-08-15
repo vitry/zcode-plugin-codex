@@ -93,6 +93,33 @@ test('keeps one snapshot read in flight and accepted online recovery discards it
   reporter.close();
 });
 
+test('an early rejection-triggered snapshot read claims the adjacent heartbeat window', async () => {
+  let heartbeat = () => {}; let reads = 0;
+  const reasons = ['wire-version', 'envelope-shape', 'sequence', 'topic'];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: () => {}, now: () => observedAt,
+    describeNotification: async () => ({ disposition: 'rejected', reason: reasons.shift(), events: [] }),
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.activateAcceptedBoundary({
+    readSnapshot: async () => { reads += 1; return { runtime: { stateRevision: 1 }, messages: [] }; },
+    describer: { observe: async () => [] },
+  });
+  reporter.activate(notification('prompt_started'));
+  for (let index = 0; index < 4; index += 1) reporter.observe({ method: 'v4/conversation/frame', index });
+  await reporter.flush(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1);
+
+  heartbeat(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1);
+  reporter.observe(notification('tool_started'));
+  heartbeat(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 2);
+  heartbeat(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 3);
+  reporter.close();
+});
+
 test('snapshot read failure degrades exactly once without exposing its rejection', async () => {
   const lines = []; const diagnostics = []; let reads = 0;
   const reporter = progressModule.createProgressReporter({

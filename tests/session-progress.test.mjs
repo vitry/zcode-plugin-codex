@@ -156,3 +156,52 @@ test('deduplicates starts and terminals by call id and caps tracked identities a
     userMessage('accepted-input'), assistantMessage('assistant', 'accepted-input', terminals),
   ], 10), observedAt), []);
 });
+
+test('ignores an oversized multibyte call id without consuming bounded dedupe capacity', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-session-progress-'));
+  const describer = await createSessionProgressDescriber({
+    workspace,
+    turnBoundary: { inputId: 'accepted-input', stateRevision: 7, beforeMessageIds: new Set() },
+  });
+  const oversizedCallId = '界'.repeat(700_000);
+  const safeParts = Array.from({ length: 256 }, (_, index) => toolPart(`safe-call-${index}`, 'Bash', 'running'));
+  const events = await describer.observe(snapshot([
+    userMessage('accepted-input'),
+    assistantMessage('assistant', 'accepted-input', [toolPart(oversizedCallId, 'PRIVATE_TOOL', 'running'), ...safeParts]),
+  ]), observedAt);
+
+  assert.equal(events.length, 256);
+  assert.deepEqual(new Set(events.map((event) => event.message)), new Set(['Running tool: Bash.']));
+});
+
+test('fails closed on oversized snapshot message relationship ids', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-session-progress-'));
+  const oversizedMessageId = '界'.repeat(700_000);
+  const direct = await createSessionProgressDescriber({
+    workspace,
+    turnBoundary: { inputId: 'accepted-input', stateRevision: 7, beforeMessageIds: new Set() },
+  });
+  assert.deepEqual(await direct.observe(snapshot([
+    userMessage('accepted-input'),
+    assistantMessage(oversizedMessageId, 'accepted-input', [toolPart('safe-call', 'Bash', 'running')]),
+  ]), observedAt), []);
+
+  const indirect = await createSessionProgressDescriber({
+    workspace,
+    turnBoundary: { inputId: 'accepted-input', stateRevision: 7, beforeMessageIds: new Set() },
+  });
+  assert.deepEqual(await indirect.observe(snapshot([
+    userMessage(oversizedMessageId),
+    assistantMessage('assistant', oversizedMessageId, [toolPart('safe-call', 'Bash', 'running')]),
+  ]), observedAt), []);
+
+  const malformedSibling = await createSessionProgressDescriber({
+    workspace,
+    turnBoundary: { inputId: 'accepted-input', stateRevision: 7, beforeMessageIds: new Set() },
+  });
+  assert.deepEqual(await malformedSibling.observe(snapshot([
+    userMessage('accepted-input'),
+    assistantMessage('malformed-sibling', oversizedMessageId, []),
+    assistantMessage('linked-assistant', 'accepted-input', [toolPart('safe-call', 'Bash', 'running')]),
+  ]), observedAt), []);
+});

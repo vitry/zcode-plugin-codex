@@ -2,6 +2,7 @@ import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { fitProgressMessage, formatToolStartMessage, formatToolTerminalMessage } from './conversation-progress.mjs';
+import { isSafeIdentifier } from './identifier.mjs';
 
 const START_STATUSES = new Set(['pending', 'running']);
 const TERMINAL_STATUSES = new Set(['completed', 'error']);
@@ -25,7 +26,7 @@ export async function createSessionProgressDescriber({ workspace, turnBoundary }
     async observe(snapshot, observedAt) {
       if (!validTimestamp(observedAt) || !Number.isSafeInteger(snapshot?.runtime?.stateRevision)
         || snapshot.runtime.stateRevision < boundaryRevision || !Array.isArray(snapshot?.messages)
-        || snapshot.messages.length > MAX_SNAPSHOT_MESSAGES || hasDuplicateMessageIds(snapshot.messages)) return [];
+        || snapshot.messages.length > MAX_SNAPSHOT_MESSAGES || hasUnsafeOrDuplicateMessageRelationships(snapshot.messages)) return [];
       const root = selectRoot(snapshot.messages, inputId, beforeMessageIds);
       if (!root) return [];
       const assistants = snapshot.messages.filter((/** @type {any} */ message) => isLinkedAssistant(message, root.info.messageId, beforeMessageIds));
@@ -44,11 +45,11 @@ export async function createSessionProgressDescriber({ workspace, turnBoundary }
 }
 
 /** @param {any[]} messages */
-function hasDuplicateMessageIds(messages) {
+function hasUnsafeOrDuplicateMessageRelationships(messages) {
   const seen = new Set();
   for (const message of messages) {
     const id = message?.info?.messageId;
-    if (typeof id !== 'string' || seen.has(id)) return true;
+    if (!isSafeIdentifier(id) || message?.info?.role === 'assistant' && !isSafeIdentifier(message.info.parentMessageId) || seen.has(id)) return true;
     seen.add(id);
   }
   return false;
@@ -66,7 +67,7 @@ function selectRoot(messages, inputId, beforeMessageIds) {
 /** @param {any} message @param {Set<string>} beforeMessageIds */
 function isVisibleUserRoot(message, beforeMessageIds) {
   const info = message?.info; const semantics = info?.semantics;
-  return info?.role === 'user' && typeof info.messageId === 'string' && !beforeMessageIds.has(info.messageId)
+  return info?.role === 'user' && isSafeIdentifier(info.messageId) && !beforeMessageIds.has(info.messageId)
     && info.synthetic !== true && info.visibility !== 'model-only' && info.source === undefined
     && (semantics === undefined || semantics.origin === 'real_user' && semantics.kind === 'user_prompt' && semantics.uiVisibility === 'visible');
 }
@@ -74,15 +75,15 @@ function isVisibleUserRoot(message, beforeMessageIds) {
 /** @param {any} message @param {string} rootId @param {Set<string>} beforeMessageIds */
 function isLinkedAssistant(message, rootId, beforeMessageIds) {
   const info = message?.info; const semantics = info?.semantics;
-  return info?.role === 'assistant' && typeof info.messageId === 'string' && !beforeMessageIds.has(info.messageId)
-    && info.parentMessageId === rootId && !['hidden', 'debug'].includes(semantics?.uiVisibility)
+  return info?.role === 'assistant' && isSafeIdentifier(info.messageId) && !beforeMessageIds.has(info.messageId)
+    && isSafeIdentifier(info.parentMessageId) && info.parentMessageId === rootId && !['hidden', 'debug'].includes(semantics?.uiVisibility)
     && (semantics === undefined || semantics.origin === 'agent_runtime' && semantics.kind === 'assistant_response');
 }
 
 /** @param {any} part @param {string} observedAt @param {string} workspaceRoot @param {Map<string,{started:boolean,terminal:boolean,message:string}>} calls */
 async function describePart(part, observedAt, workspaceRoot, calls) {
   const callId = part.callId; const state = part.state;
-  if (typeof callId !== 'string' || !state || typeof state !== 'object') return null;
+  if (!isSafeIdentifier(callId) || !state || typeof state !== 'object') return null;
   const toolName = SAFE_TOOL_NAMES.has(part.tool) ? part.tool : '';
   const prior = calls.get(callId);
   if (prior?.terminal) return null;
