@@ -1,9 +1,4 @@
 // @ts-nocheck
-import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 const MAX_EXEC_FRAMES = 2_048;
 const MAX_ROLLOUTS = 64;
 const MAX_EVENTS_PER_ROLLOUT = 8_192;
@@ -37,59 +32,6 @@ export function parseCodexRolloutJsonl(value) {
 export function qualifyCodexRescueEvidence(input, options) {
   return qualifyCodexRescueEvidenceCore(input, options, false);
 }
-
-export async function runHermeticInstalledForwarder({ instructions, route }) {
-  const source = boundedString(instructions);
-  if (!source || !['named', 'generic'].includes(route)
-    || !/exactly one `exec_command` companion process/i.test(source)
-    || !/poll only that same handle with the host continuation tool until it reports an exit code/i.test(source)
-    || !/(?:Never start|start a) second `exec_command`/i.test(source)) {
-    mismatch('hermetic-forwarder-contract', 'Installed forwarder instructions do not encode the yielded-execution contract.');
-  }
-  const directory = await mkdtemp(join(tmpdir(), `zcode-installed-${route}-forwarder-`));
-  const program = "process.stdout.write('[zcode] started\\n'); setTimeout(() => process.stdout.write('hermetic-result\\n'), 75);";
-  const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(program)}`;
-  const wrappers = []; const pollHandles = []; let execCommandCount = 0; let pollCount = 0; let output = ''; let drained = ''; let exited = false; let terminalExitCode;
-  let child;
-  try {
-    execCommandCount += 1;
-    wrappers.push(`const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: directory })}); text(JSON.stringify(r))\n`);
-    const initialHost = parseCapturedHostCall(wrappers.at(-1));
-    if (initialHost.kind !== 'exec_command' || initialHost.legacy) mismatch('hermetic-forwarder-wrapper', 'The deterministic exec_command wrapper differs from the captured host contract.');
-    assertExecEnvelope(initialHost.envelope, command, directory, 'hermetic-forwarder-wrapper');
-    child = spawn(process.execPath, ['-e', program], { cwd: directory, stdio: ['ignore', 'pipe', 'ignore'] });
-    const closed = new Promise((resolvePromise, reject) => { child.once('close', resolvePromise); child.once('error', reject); });
-    child.stdout.setEncoding('utf8'); child.stdout.on('data', (chunk) => { output += chunk; });
-    child.once('exit', (code) => { terminalExitCode = code; exited = true; });
-    await delay(15);
-    drained = output; output = '';
-    if (exited) mismatch('hermetic-forwarder-did-not-yield', 'The deterministic companion exited before exposing a running handle.');
-    const originalHandle = child.pid;
-    if (!Number.isSafeInteger(originalHandle) || originalHandle <= 0) mismatch('hermetic-forwarder-handle', 'The deterministic companion omitted a safe running handle.');
-    while (!exited) {
-      if (pollCount >= MAX_CHILD_POLLS) mismatch('hermetic-forwarder-poll-count', 'The deterministic forwarder exceeded its poll bound.');
-      pollCount += 1; pollHandles.push(originalHandle);
-      wrappers.push(`const r = await tools.write_stdin(${JSON.stringify({ session_id: originalHandle, chars: '' })}); text(JSON.stringify(r))\n`);
-      const pollHost = parseCapturedHostCall(wrappers.at(-1));
-      if (pollHost.kind !== 'write_stdin' || pollHost.legacy) mismatch('hermetic-forwarder-wrapper', 'The deterministic continuation wrapper differs from the captured host contract.');
-      assertPollEnvelope(pollHost.envelope, originalHandle, () => 'hermetic-forwarder-wrapper');
-      await delay(15); drained += output; output = '';
-    }
-    drained += output;
-    await closed;
-    const orphanAlive = processAliveForQualification(originalHandle);
-    return {
-      execCommandCount, finalizedAfterExit: exited && drained.endsWith('hermetic-result\n'), orphanAlive, originalHandle,
-      pollCount, pollHandles, terminalExitCode, wrappers,
-    };
-  } finally {
-    if (child && !exited) child.kill('SIGKILL');
-    await rm(directory, { recursive: true, force: true });
-  }
-}
-
-function delay(milliseconds) { return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)); }
-function processAliveForQualification(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 
 function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqualified) {
   const execFrames = boundedArray(input?.execFrames, MAX_EXEC_FRAMES, 'exec-frames');
@@ -211,8 +153,15 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   for (const actual of [childFinal, childReturn, parentFinal, execFinal]) {
     if (actual !== options.expectedPublicOutput) mismatch('public-output-mismatch', 'Child and parent terminal public output must equal the expected sentinel byte-for-byte.');
   }
+  if (options.requireYieldedExecution && (execution.originalHandle === undefined || execution.pollCount < 1 || !Number.isSafeInteger(execution.terminalExitCode))) {
+    mismatch('child-yielded-execution-required', 'Required native evidence does not contain a running handle, same-handle poll, and terminal exit code.');
+  }
   const evidence = { parentThreadId, childThreadId, agentPath, taskName: spawnArgs.task_name, agentType, route, publicOutput: execFinal,
-    ...(options.expectedSemanticProgress === undefined ? {} : { semanticProgressChecked: true }) };
+    ...(options.expectedSemanticProgress === undefined ? {} : { semanticProgressChecked: true }),
+    ...(options.requireYieldedExecution ? { yieldedExecution: {
+      execCommandCount: execution.execCommandCount, originalHandle: execution.originalHandle, pollCount: execution.pollCount,
+      pollHandles: execution.pollHandles, terminalExitCode: execution.terminalExitCode,
+    } } : {}) };
   if (!spawnMessage) mismatch('spawn-message-unavailable', 'The structured spawn metadata does not expose a bounded message field.');
   const spawnMessageEncrypted = encrypted(spawnMessage);
   if (!spawnMessageEncrypted && spawnMessage !== expectedSpawnMessage) mismatch('spawn-message-mismatch', 'The runtime spawn message differs from the fixed Rescue forwarder contract.');
@@ -230,7 +179,7 @@ function validateChildExecution(child, calls, outputs, expectedCommand, expected
   const parsedCalls = calls.map((call) => parseCapturedHostCall(call.payload.input));
   if (parsedCalls.filter((call) => call.kind === 'exec_command').length !== 1) mismatch(commandCountCode, 'The child started more than one companion process.');
   if (outputs.length !== calls.length) mismatch(code('output-count'), 'Every child host call must have exactly one linked structured output.');
-  let execCount = 0; let handle; let terminalEventIndex = -1; let terminalCount = 0; const normalized = [];
+  let execCount = 0; let handle; let terminalEventIndex = -1; let terminalCount = 0; let terminalExitCode; const normalized = []; const pollHandles = [];
   for (let index = 0; index < calls.length; index += 1) {
     const call = calls[index];
     const linked = outputs.filter((event) => event.payload.call_id === call.payload.call_id);
@@ -252,6 +201,7 @@ function validateChildExecution(child, calls, outputs, expectedCommand, expected
     } else {
       if (execCount !== 1 || handle === undefined) mismatch(code('handle-mismatch'), 'A continuation poll did not follow the original running handle.');
       assertPollEnvelope(host.envelope, handle, code);
+      pollHandles.push(host.envelope.get('session_id'));
     }
     if (host.legacy) {
       if (calls.length !== 1) mismatch(code('terminal-exit-missing'), 'A multi-call child execution must expose structured host results.');
@@ -270,14 +220,17 @@ function validateChildExecution(child, calls, outputs, expectedCommand, expected
       else if (result.session_id !== handle) mismatch(code('handle-mismatch'), 'A continuation result changed the original running handle.');
     } else {
       if (!Number.isSafeInteger(result.exit_code)) mismatch(code('terminal-exit-invalid'), 'The terminal exit code is not a safe integer.');
-      terminalCount += 1; terminalEventIndex = outputIndex;
+      terminalCount += 1; terminalEventIndex = outputIndex; terminalExitCode = result.exit_code;
       if (options.expectedExitCode !== undefined && result.exit_code !== options.expectedExitCode) mismatch(options.expectedExitCodeMismatchCode ?? code('terminal-exit-invalid'), 'The terminal exit code differs from the required child-turn contract.');
     }
   }
   if (execCount !== 1) mismatch(commandCountCode, 'The child must start exactly one companion process.');
   if (terminalCount !== 1 || terminalEventIndex < 0) mismatch(code('terminal-exit-missing'), 'The original companion process has no unique terminal exit code.');
   if (options.expectedExitCode !== undefined && parsedCalls[0].legacy) mismatch(code('terminal-exit-missing'), 'This child turn requires an observed terminal exit code.');
-  return { output: normalized, terminalEventIndex, terminalEvent: child[terminalEventIndex], execEvent: calls[0] };
+  return {
+    execCommandCount: execCount, execEvent: calls[0], originalHandle: handle, output: normalized, pollCount: pollHandles.length,
+    pollHandles, terminalEventIndex, terminalEvent: child[terminalEventIndex], terminalExitCode,
+  };
 }
 
 function assertPollEnvelope(envelope, expectedHandle, code = (suffix) => `child-${suffix}`) {
@@ -472,7 +425,13 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   }
 
   assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
-  const evidence = { parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, choice: options.expectedChoice };
+  const evidence = {
+    parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, choice: options.expectedChoice,
+    ...(options.includeExecutionFacts ? { executions: {
+      initial: { execCommandCount: initialExecution.execCommandCount },
+      continuation: { execCommandCount: continuationExecution.execCommandCount },
+    } } : {}),
+  };
   if (spawnMessageEncrypted) unqualified('choice-spawn-encrypted', 'Codex encrypted only the spawn message field, so its exact runtime value cannot be qualified.', evidence);
   if (followupMessageEncrypted) unqualified('choice-followup-encrypted', 'Codex encrypted only the continuation message field, so its exact runtime value cannot be qualified.', evidence);
   return evidence;

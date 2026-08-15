@@ -57,6 +57,17 @@ test('qualifies named and generic Rescue only after the original yielded executi
   }
 });
 
+test('required yielded qualification exposes the original handle, polls, and terminal exit facts', () => {
+  const evidence = qualifyCodexRescueEvidence(yieldedFixture(), options({ requireYieldedExecution: true }));
+  assert.deepEqual(evidence.yieldedExecution, {
+    execCommandCount: 1,
+    originalHandle: 41,
+    pollCount: 2,
+    pollHandles: [41, 41],
+    terminalExitCode: 0,
+  });
+});
+
 test('yielded Rescue qualification rejects process replacement, handle drift, input, missing exit, and terminal-order violations', () => {
   const cases = [
     { code: 'child-command-count', mutate: (input) => input.rollouts[1].splice(3, 0, structuredExecResult(expectedCommand, 'exec-2'), capturedResultEvent('exec-2', { output: '', session_id: 42 })) },

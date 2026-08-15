@@ -20,7 +20,6 @@ import {
   qualifyCodexRescueChoiceEvidence,
   qualifyCodexRescueEvidence,
 } from '../helpers/codex-rescue-qualification.mjs';
-import * as rescueQualification from '../helpers/codex-rescue-qualification.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
@@ -80,19 +79,6 @@ test('installed Rescue qualification declares its supported Codex line and a sco
   t.diagnostic(diagnostic);
 });
 
-test('deterministic installed named and generic forwarders poll one yielded handle through exit without orphaning', async () => {
-  const role = await readFile(join(root, 'marketplace', 'plugins', 'zcode', 'agents', 'zcode-rescue.toml.template'), 'utf8');
-  const skill = await readFile(join(root, 'marketplace', 'plugins', 'zcode', 'skills', 'rescue', 'SKILL.md'), 'utf8');
-  const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(skill)?.[1]; assert.ok(generic);
-  for (const [route, instructions] of [['named', role], ['generic', generic]]) {
-    const evidence = await rescueQualification.runHermeticInstalledForwarder({ instructions, route });
-    assert.equal(evidence.execCommandCount, 1); assert.ok(evidence.pollCount >= 1);
-    assert.deepEqual(new Set(evidence.pollHandles), new Set([evidence.originalHandle]));
-    assert.equal(evidence.terminalExitCode, 0); assert.equal(evidence.finalizedAfterExit, true); assert.equal(evidence.orphanAlive, false);
-    assert.ok(evidence.wrappers.every((wrapper) => /tools\.(?:exec_command|write_stdin)\(/.test(wrapper)));
-  }
-});
-
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
   if (process.env.ZCODE_CODEX_SKILLS_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_SKILLS_E2E=1.'));
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-skills-e2e-'));
@@ -147,10 +133,33 @@ test('installed Rescue uses one isolated native child for initial and choice con
   }
   assert.equal(setupReady, true, 'four successful setup turns did not establish a fresh-session ready Rescue Role');
   await qualifyInstalledIdentityFailures({ installedPluginRoot, installedDataRoot: join(codexHome, 'plugins', 'data', 'zcode-vitry'), temporary, env, zcodeRecord });
-  await writeFile(zcodeRecord, '');
-  const rescue = await codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result.'], workspace, env, 240_000);
+  const foregroundGate = join(temporary, 'foreground-long-completion.gate'); const foregroundGateReached = join(temporary, 'foreground-long-completion.reached'); const foregroundProcess = join(temporary, 'foreground-long-process.json');
+  await Promise.all([writeFile(zcodeRecord, ''), writeFile(foregroundGate, 'hold'), writeFile(foregroundGateReached, ''), writeFile(foregroundProcess, '')]);
+  const longEnv = { ...env, FAKE_ZCODE_COMPLETION_GATE: foregroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: foregroundGateReached, FAKE_ZCODE_PROCESS_FILE: foregroundProcess };
+  const rescuePromise = codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result.'], workspace, longEnv, 300_000);
+  let earlyRescue;
+  const foregroundBoundary = await Promise.race([
+    waitUntil(async () => await readFile(foregroundGateReached, 'utf8').catch(() => '') === 'blocked', 60_000, 'installed foreground Rescue never reached the held fake-ZCode completion boundary').then(() => 'held'),
+    rescuePromise.then((result) => { earlyRescue = result; return 'ended'; }),
+  ]);
+  if (foregroundBoundary === 'ended') {
+    if (skipExternalFailure(t, earlyRescue)) return;
+    assert.fail(`installed foreground Rescue ended before the long completion boundary\n${earlyRescue.stdout}\n${earlyRescue.stderr}`);
+  }
+  let foregroundIdentity; let processAliveWhileHeld = false;
+  try {
+    foregroundIdentity = JSON.parse(await readFile(foregroundProcess, 'utf8'));
+    assert.ok(Number.isSafeInteger(foregroundIdentity.pid) && foregroundIdentity.pid > 0, 'the fake-ZCode process marker must contain one positive safe PID');
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 35_000));
+    processAliveWhileHeld = processAlive(foregroundIdentity.pid);
+  } finally {
+    await writeFile(foregroundGate, 'release');
+  }
+  const rescue = await rescuePromise;
   if (skipExternalFailure(t, rescue)) return;
   assert.equal(rescue.code, 0, `codex Rescue failed\n${rescue.stdout}\n${rescue.stderr}`);
+  assert.equal(processAliveWhileHeld, true, 'the exact fake-ZCode process must remain alive beyond the maximum initial host yield');
+  await waitUntil(() => !processAlive(foregroundIdentity.pid), 10_000, 'the exact fake-ZCode process remained alive after native child completion');
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const expectedCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke rescue`;
   const expectedPreflightCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" role-status rescue`;
@@ -172,6 +181,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
         expectedNamedSpawnMessage,
         expectedGenericSpawnMessage,
         expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
+        requireYieldedExecution: true,
         expectedSemanticProgress: {
           start: '[zcode] Running command: npm test.',
           terminal: '[zcode] Command completed: npm test (25ms).',
@@ -188,10 +198,18 @@ test('installed Rescue uses one isolated native child for initial and choice con
     );
     assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route), 'qualification must record an automatically observed native route');
     assert.equal(evidence.semanticProgressChecked, true);
+    assert.equal(evidence.yieldedExecution.execCommandCount, 1);
+    assert.ok(evidence.yieldedExecution.pollCount >= 1);
+    assert.deepEqual(new Set(evidence.yieldedExecution.pollHandles), new Set([evidence.yieldedExecution.originalHandle]));
+    assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
     t.diagnostic(`qualified native Rescue route: ${evidence.route}`);
   } catch (error) {
     if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
       assert.ok(['named', 'generic-schema-hidden'].includes(error.evidence?.route), 'encrypted-message evidence must record the automatically observed native route');
+      assert.equal(error.evidence.yieldedExecution.execCommandCount, 1);
+      assert.ok(error.evidence.yieldedExecution.pollCount >= 1);
+      assert.deepEqual(new Set(error.evidence.yieldedExecution.pollHandles), new Set([error.evidence.yieldedExecution.originalHandle]));
+      assert.equal(error.evidence.yieldedExecution.terminalExitCode, 0);
       const detail = `Observed route ${error.evidence.route}. ${error.message}`;
       markUnqualified(t, unqualified(error.code, detail)); return;
     }
@@ -232,6 +250,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
           expectedFollowupMessage: followupMessage,
           expectedPreflightCommand,
           expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
+          includeExecutionFacts: true,
           forbiddenParentText: [
             'Running command: npm test.', 'Command completed: npm test (25ms).', 'raw output must stay private',
             'reasoning must stay private', 'capability must stay private', 'v4/conversation/frame',
@@ -239,9 +258,13 @@ test('installed Rescue uses one isolated native child for initial and choice con
         },
       );
       assert.equal(evidence.choice, choice);
+      assert.equal(evidence.executions.initial.execCommandCount, 1);
+      assert.equal(evidence.executions.continuation.execCommandCount, 1);
       t.diagnostic(`qualified same-child Rescue ${choice}: ${evidence.childThreadId}`);
     } catch (error) {
       if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {
+        assert.equal(error.evidence.executions.initial.execCommandCount, 1);
+        assert.equal(error.evidence.executions.continuation.execCommandCount, 1);
         markUnqualified(t, unqualified(error.code, error.message)); return;
       }
       throw error;
