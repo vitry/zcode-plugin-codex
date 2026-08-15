@@ -4,6 +4,8 @@ export const MAX_PROGRESS_PENDING_EVENTS = 4;
 export const MAX_PROGRESS_MESSAGE_BYTES = 256;
 export const PROGRESS_HEARTBEAT_MS = 20_000;
 export const MAX_PROGRESS_DIAGNOSTIC_KINDS = 8;
+export const MAX_PROGRESS_PROBE_COUNT = 255;
+export const PROGRESS_PROBE_REJECTION_THRESHOLD = 4;
 const PROGRESS_FLUSH_TIMEOUT_MS = 250;
 const PROGRESS_SEMANTIC_GRACE_MS = 125;
 
@@ -15,7 +17,11 @@ const PROGRESS_DIAGNOSTICS = new Map([
   ['writer-disabled', 'ZCode progress output was disabled.'],
   ['preview-disabled', 'ZCode progress preview was disabled.'],
   ['progress-flush-timeout', 'ZCode progress cleanup reached its time limit.'],
+  ['conversation-snapshot-fallback', 'ZCode conversation frames were unavailable; using bounded session progress.'],
+  ['conversation-lifecycle-only', 'ZCode semantic progress is unavailable; lifecycle updates will continue.'],
 ]);
+
+const PROBE_REJECTION_REASONS = Object.freeze(['wire-version', 'envelope-shape', 'sequence', 'topic', 'row-kind', 'row-shape']);
 
 /** @template T @param {Promise<T>} completion @param {AbortSignal|undefined} signal @returns {Promise<T>} */
 export async function waitForCompletionOrAbort(completion, signal) {
@@ -58,13 +64,15 @@ export function normalizeZCodeProgress(notification, sessionId, observedAt) {
 }
 
 /**
- * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,describeNotification?:(notification:unknown,observedAt:string)=>Array<{phase:string,message:string,observedAt:string}>|Promise<Array<{phase:string,message:string,observedAt:string}>>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
+ * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>boolean,describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
  */
 export function createProgressReporter({
   sessionId,
   deferred = false,
   write,
   persist,
+  persistProbe,
+  activateSnapshotFallback,
   describeNotification,
   onDescriptorOverflow,
   onDiagnostic,
@@ -97,6 +105,37 @@ export function createProgressReporter({
   let observationSequence = 0;
   /** @type {number|null} */ let terminalSequence = null;
   let terminalDispatched = false;
+  const progressProbe = {
+    state: 'probing', subscriptionAcknowledged: false, framesReceived: 0,
+    acceptedInitial: 0, acceptedOnline: 0, acceptedRecovery: 0,
+    rejected: Object.fromEntries(PROBE_REJECTION_REASONS.map((reason) => [reason, 0])),
+    snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
+  };
+  let compatibilityBoundaryActivated = false;
+  const probeSnapshot = () => ({ ...progressProbe, rejected: { ...progressProbe.rejected } });
+  /** @type {Promise<void>|null} */ let probePersistInFlight = null;
+  /** @type {any|null} */ let probePersistPending = null;
+  /** @param {any} snapshot */
+  const startProbePersist = (snapshot) => {
+    let operation;
+    try { operation = Promise.resolve(/** @type {(probe:any)=>Promise<void>|void} */ (persistProbe)(snapshot)); }
+    catch { operation = Promise.reject(new Error('progress probe persistence failed')); }
+    const tracked = operation.catch(() => {}).then(() => {
+      if (probePersistInFlight !== tracked) return;
+      probePersistInFlight = null;
+      if (closed || probePersistPending === null) { probePersistPending = null; return; }
+      const next = probePersistPending; probePersistPending = null; startProbePersist(next);
+    });
+    probePersistInFlight = tracked;
+  };
+  const persistProbeSnapshot = () => {
+    if (closed || typeof persistProbe !== 'function') return;
+    const snapshot = probeSnapshot();
+    if (probePersistInFlight === null) startProbePersist(snapshot);
+    else probePersistPending = snapshot;
+  };
+  /** @param {number} value */
+  const saturatingIncrement = (value) => Math.min(MAX_PROGRESS_PROBE_COUNT, value + 1);
   const diagnosedKinds = new Set();
   /** @param {string} kind */
   const diagnose = (kind) => {
@@ -117,17 +156,49 @@ export function createProgressReporter({
   /** @type {any} */
   let timer = null;
   const startTimer = () => {
-    if (timer !== null || typeof write !== 'function') return;
+    if (timer !== null || typeof write !== 'function' && typeof persistProbe !== 'function' && typeof activateSnapshotFallback !== 'function') return;
     timer = setIntervalFn(() => {
+      activateCompatibilityBoundary();
       const currentTime = now();
       if (!validTimestamp(currentTime) || !validTimestamp(lastActivityAt)) return;
       const elapsedMs = Date.parse(currentTime) - Date.parse(lastActivityAt);
       if (elapsedMs < PROGRESS_HEARTBEAT_MS) return;
       const seconds = Math.floor(elapsedMs / 1_000);
-      try { if (!writerDisabled) write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`); }
+      try { if (!writerDisabled && typeof write === 'function') write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`); }
       catch { writerDisabled = true; diagnose('writer-disabled'); }
     }, PROGRESS_HEARTBEAT_MS);
     timer?.unref?.();
+  };
+  const activateCompatibilityBoundary = () => {
+    if (closed || compatibilityBoundaryActivated || progressProbe.state !== 'probing' || progressProbe.acceptedOnline > 0) return false;
+    compatibilityBoundaryActivated = true;
+    let activated = false;
+    try { activated = typeof activateSnapshotFallback === 'function' && activateSnapshotFallback() === true; } catch { activated = false; }
+    if (activated) {
+      progressProbe.state = 'snapshot-fallback'; progressProbe.snapshotFallbackActive = true;
+      diagnose('conversation-snapshot-fallback');
+    } else {
+      progressProbe.state = 'lifecycle-only'; progressProbe.snapshotFallbackUnavailable = true;
+      diagnose('conversation-lifecycle-only');
+    }
+    persistProbeSnapshot(); return true;
+  };
+  /** @param {unknown} result */
+  const recordDescriptionResult = (result) => {
+    if (!plainObject(result) || !Array.isArray(result.events)) return [];
+    if (result.disposition === 'accepted' && ['initial', 'online', 'recovery'].includes(result.phase)) {
+      const field = result.phase === 'initial' ? 'acceptedInitial' : result.phase === 'online' ? 'acceptedOnline' : 'acceptedRecovery';
+      progressProbe[field] = saturatingIncrement(progressProbe[field]);
+      if (result.phase === 'online' && progressProbe.state === 'probing') progressProbe.state = 'online';
+      persistProbeSnapshot(); return result.events;
+    }
+    if (result.disposition === 'rejected' && PROBE_REJECTION_REASONS.includes(result.reason)) {
+      progressProbe.rejected[result.reason] = saturatingIncrement(progressProbe.rejected[result.reason]);
+      persistProbeSnapshot();
+      const total = PROBE_REJECTION_REASONS.reduce((sum, reason) => sum + progressProbe.rejected[reason], 0);
+      if (total >= PROGRESS_PROBE_REJECTION_THRESHOLD) activateCompatibilityBoundary();
+    }
+    return [];
   };
   /** @param {{event:{phase:string,message:string,observedAt:string},sequence:number}} entry */
   const startWriter = (entry) => {
@@ -227,8 +298,10 @@ export function createProgressReporter({
     let described;
     try { described = Promise.resolve(describeNotification(item.notification, item.observedAt)); }
     catch { diagnose('conversation-render-failed'); described = Promise.resolve([]); }
-    descriptorInFlight = described.then((events) => {
-      if (epoch !== descriptorEpoch || !Array.isArray(events) || closed) return;
+    descriptorInFlight = described.then((description) => {
+      if (epoch !== descriptorEpoch || closed) return;
+      const events = Array.isArray(description) ? description : recordDescriptionResult(description);
+      if (!Array.isArray(events)) return;
       item.events = events.slice(0, MAX_PROGRESS_PENDING_EVENTS).filter(validPublicEvent);
       for (const describedEvent of item.events) {
         if (describedEvent.phase === 'finalizing') {
@@ -282,6 +355,12 @@ export function createProgressReporter({
   if (active) startTimer();
 
   return {
+    markConversationSubscribed() {
+      if (closed || !accepting || progressProbe.subscriptionAcknowledged) return false;
+      progressProbe.subscriptionAcknowledged = true; persistProbeSnapshot(); return true;
+    },
+    activateCompatibilityBoundary,
+    probeSnapshot,
     /** @param {unknown} notification */
     observe(notification) {
       if (closed || !accepting) return null;
@@ -290,6 +369,7 @@ export function createProgressReporter({
       const observedAt = now();
       const event = normalizeZCodeProgress(notification, sessionId, observedAt);
       if (event === null && typeof describeNotification === 'function' && plainObject(notification) && notification.method === 'v4/conversation/frame') {
+        progressProbe.framesReceived = saturatingIncrement(progressProbe.framesReceived); persistProbeSnapshot();
         enqueueDescribe({ notification, observedAt, sequence }); return null;
       }
       if (event === null) return null;
@@ -301,6 +381,7 @@ export function createProgressReporter({
     activate(initialNotification) {
       if (active || closed) return false;
       const activatedAt = now(); active = true; lastActivityAt = activatedAt; startTimer();
+      persistProbeSnapshot();
       const initial = normalizeZCodeProgress(initialNotification, sessionId, activatedAt);
       if (initial) dispatch(initial, -1);
       for (const { event, sequence } of buffered.sort((left, right) => left.sequence - right.sequence)) dispatch({ ...event, observedAt: activatedAt }, sequence);
@@ -321,23 +402,26 @@ export function createProgressReporter({
         diagnose('progress-flush-timeout'); await Promise.resolve();
       }
       const sinkBudget = remaining(deadline);
-      const [writerDrained, persistenceDrained] = await Promise.all([
-        waitWithin(drainWriter(), sinkBudget), waitWithin(drainPersistence(), sinkBudget),
+      const [writerDrained, persistenceDrained, probePersistenceDrained] = await Promise.all([
+        waitWithin(drainWriter(), sinkBudget), waitWithin(drainPersistence(), sinkBudget), waitWithin(drainProbePersistence(), sinkBudget),
       ]);
-      if (!writerDrained || !persistenceDrained) {
+      if (!writerDrained || !persistenceDrained || !probePersistenceDrained) {
         diagnose('progress-flush-timeout'); await Promise.resolve();
         if (!writerDrained) disableWriter();
         if (!persistenceDrained) disablePersist();
+        if (!probePersistenceDrained) disableProbePersist();
         const finalBudget = remaining(deadline);
         await Promise.all([
           writerDisabled ? Promise.resolve() : waitWithin(drainWriter(), finalBudget),
           persistDisabled ? Promise.resolve() : waitWithin(drainPersistence(), finalBudget),
+          probePersistInFlight === null ? Promise.resolve() : waitWithin(drainProbePersistence(), finalBudget),
         ]);
       }
       return true;
     },
     close() {
       accepting = false; closed = true; buffered.length = 0; bufferedKeys.clear();
+      disableProbePersist();
       descriptorEpoch += 1;
       for (const item of logicalPending) if (item.kind === 'descriptor') item.state = 'dropped';
       activeDescriptor = null; descriptorInFlight = null; pumpLogical(); logicalPending.length = 0;
@@ -367,10 +451,15 @@ export function createProgressReporter({
     while (persistInFlight !== null) await persistInFlight;
   }
 
+  async function drainProbePersistence() {
+    while (probePersistInFlight !== null) await probePersistInFlight;
+  }
+
   async function drainWriter() { while (writerInFlight !== null) await writerInFlight; }
 
   function disableWriter() { writerEpoch += 1; writerDisabled = true; writerInFlight = null; writerPending.length = 0; }
   function disablePersist() { persistEpoch += 1; persistDisabled = true; persistInFlight = null; persistPending.length = 0; }
+  function disableProbePersist() { probePersistInFlight = null; probePersistPending = null; }
 }
 
 /** @param {Promise<void>} operation @param {number} milliseconds */

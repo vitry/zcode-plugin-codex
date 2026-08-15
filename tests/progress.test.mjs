@@ -42,6 +42,123 @@ test('exports fixed progress bounds and phases', () => {
   assert.equal(progressModule.MAX_PROGRESS_DIAGNOSTIC_KINDS, 8);
 });
 
+test('tracks bounded structural compatibility and activates fallback only at an explicit boundary', async () => {
+  const probes = []; const diagnostics = []; const lines = []; let heartbeat;
+  const results = [
+    { disposition: 'accepted', phase: 'initial', events: [] },
+    { disposition: 'rejected', reason: 'row-shape', events: [] },
+    { disposition: 'accepted', phase: 'online', events: [] },
+  ];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line),
+    describeNotification: async () => results.shift(),
+    persistProbe: async (probe) => probes.push(probe),
+    activateSnapshotFallback: () => true,
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => observedAt,
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.markConversationSubscribed();
+  reporter.observe(conversationFrame({ deliveryKind: 'initial', deltas: [] }));
+  await reporter.flush();
+  assert.equal(probes.at(-1).state, 'probing');
+  assert.equal(probes.at(-1).acceptedInitial, 1);
+  assert.equal(probes.at(-1).subscriptionAcknowledged, true);
+  heartbeat(); await reporter.flush();
+  assert.equal(probes.at(-1).state, 'snapshot-fallback');
+  assert.equal(probes.at(-1).snapshotFallbackActive, true);
+  assert.deepEqual(diagnostics, ['conversation-snapshot-fallback']);
+  assert.deepEqual(lines, ['[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n']);
+  reporter.observe(conversationFrame({ deltas: [toolRow()] }));
+  reporter.observe(conversationFrame({ ordinal: 2, deltas: [] }));
+  await reporter.flush();
+  assert.equal(probes.at(-1).rejected['row-shape'], 1);
+  assert.equal(probes.at(-1).acceptedOnline, 1);
+  assert.equal(probes.at(-1).state, 'snapshot-fallback', 'online remains observational after fallback');
+  reporter.close();
+});
+
+test('an accepted zero-event online frame marks the probe online and blocks fallback', async () => {
+  const diagnostics = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => ({ disposition: 'accepted', phase: 'online', events: [] }),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+  });
+  reporter.observe(conversationFrame({ deltas: [] })); await reporter.flush();
+  assert.deepEqual(reporter.probeSnapshot(), {
+    state: 'online', subscriptionAcknowledged: false, framesReceived: 1,
+    acceptedInitial: 0, acceptedOnline: 1, acceptedRecovery: 0,
+    rejected: { 'wire-version': 0, 'envelope-shape': 0, sequence: 0, topic: 0, 'row-kind': 0, 'row-shape': 0 },
+    snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
+  });
+  assert.equal(reporter.activateCompatibilityBoundary(), false);
+  assert.deepEqual(diagnostics, []);
+  reporter.close();
+});
+
+test('the fixed fourth structural rejection activates lifecycle-only exactly once', async () => {
+  const diagnostics = [];
+  const reasons = ['wire-version', 'envelope-shape', 'sequence', 'topic'];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => ({ disposition: 'rejected', reason: reasons.shift(), events: [] }),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+  });
+  for (let index = 0; index < 4; index += 1) reporter.observe({ method: 'v4/conversation/frame', index });
+  await reporter.flush();
+  assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+  assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
+  reporter.close();
+});
+
+test('falls back to lifecycle-only with one fixed diagnostic when no snapshot capability exists', async () => {
+  const probes = []; const diagnostics = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => ({ disposition: 'rejected', reason: 'topic', events: [] }),
+    persistProbe: (probe) => probes.push(probe), onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+  });
+  reporter.markConversationSubscribed();
+  reporter.activateCompatibilityBoundary(); reporter.activateCompatibilityBoundary();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(probes.at(-1).state, 'lifecycle-only');
+  assert.equal(probes.at(-1).snapshotFallbackUnavailable, true);
+  assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
+  reporter.close();
+});
+
+test('coalesces probe persistence to one bounded pending snapshot under a frame flood', async () => {
+  const probes = []; let releaseFirst;
+  const first = new Promise((resolve) => { releaseFirst = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: () => new Promise(() => {}),
+    persistProbe: (probe) => { probes.push(probe); return probes.length === 1 ? first : undefined; },
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.markConversationSubscribed();
+  for (let index = 0; index < 20; index += 1) reporter.observe({ method: 'v4/conversation/frame', index });
+  assert.equal(probes.length, 1);
+  releaseFirst(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(probes.length, 2);
+  assert.equal(probes[1].framesReceived, 20);
+  reporter.close();
+});
+
+test('flush boundedly drains the latest coalesced probe snapshot before cleanup', async () => {
+  const probes = []; let releaseFirst;
+  const first = new Promise((resolve) => { releaseFirst = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', persistProbe: (probe) => { probes.push(probe); return probes.length === 1 ? first : undefined; },
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.markConversationSubscribed(); reporter.activateCompatibilityBoundary();
+  let flushed = false; const flushing = reporter.flush().then(() => { flushed = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(flushed, false);
+  releaseFirst(); await flushing;
+  assert.equal(probes.length, 2);
+  assert.equal(probes[1].state, 'lifecycle-only');
+  reporter.close();
+});
+
 test('normalizes known same-session activity to fixed public messages', () => {
   const cases = [
     ['prompt_started', 'starting', 'ZCode started the delegated turn.'],
@@ -235,8 +352,14 @@ test('duplicate activity refreshes the heartbeat clock without repeating output 
   intervalCallback();
   await reporter.flush();
 
-  assert.deepEqual(lines, ['[zcode] ZCode tool work is still running.\n']);
-  assert.deepEqual(persisted, [{ phase: 'running', message: 'ZCode tool work is still running.', observedAt }]);
+  assert.deepEqual(lines, [
+    '[zcode] ZCode tool work is still running.\n',
+    '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n',
+  ]);
+  assert.deepEqual(persisted, [
+    { phase: 'running', message: 'ZCode tool work is still running.', observedAt },
+    { phase: 'waiting', message: 'ZCode semantic progress is unavailable; lifecycle updates will continue.', observedAt: currentTime },
+  ]);
   reporter.close();
 });
 
@@ -710,6 +833,21 @@ test('does not create a heartbeat interval without a writer', () => {
     clearInterval: () => {},
   });
   assert.equal(intervalCalls, 0);
+  reporter.close();
+});
+
+test('persistence-only probes reach the first-heartbeat compatibility boundary', async () => {
+  const probes = []; const diagnostics = []; let heartbeat; let intervalCalls = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', persistProbe: (probe) => probes.push(probe),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+    setInterval: (callback) => { intervalCalls += 1; heartbeat = callback; return { unref() {} }; },
+    clearInterval: () => {},
+  });
+  assert.equal(intervalCalls, 1);
+  heartbeat(); await Promise.resolve();
+  assert.equal(probes.at(-1).state, 'lifecycle-only');
+  assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
   reporter.close();
 });
 

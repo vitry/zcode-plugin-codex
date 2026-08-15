@@ -784,6 +784,31 @@ test('preview persistence failure stays observational while writer and exact res
   assert.match(lines.join(''), /ZCode started the delegated turn/);
 });
 
+test('subscription acknowledgement waits for a structurally valid public identifier', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  /** @type {any[]} */ const probes = [];
+  const wrapped = {
+    ...store,
+    updateJobProgressProbe: async (/** @type {string} */ workspaceArg, /** @type {string} */ jobId, /** @type {any} */ probe) => {
+      probes.push(probe); return store.updateJobProgressProbe(workspaceArg, jobId, probe);
+    },
+  };
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-bad-conversation-ack' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }),
+    subscribeConversation: async () => ({ subscriptionId: 'subscription-\u0085-secret', unsubscribe: async () => {} }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-bad-conversation-ack', stateRevision: 1 }), waitForCompletion: async () => {},
+    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-bad-conversation-ack', parentMessageId: 'input-bad-conversation-ack' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
+  };
+  const result = await executeJob({
+    job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task',
+    progressDependencies: { setInterval: () => ({ unref() {} }), clearInterval: () => {} },
+  });
+  assert.equal(result.result, 'done');
+  assert.ok(probes.length > 0);
+  assert.equal(probes.some((probe) => probe.subscriptionAcknowledged), false);
+});
+
 test('a never-settling conversation unsubscribe cannot block authoritative success', { timeout: 10_000 }, async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   /** @type {(value:any)=>void} */ let signalAuthoritativeSuccess = () => {};

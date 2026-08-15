@@ -8,6 +8,7 @@ import { resolveModel } from './args.mjs';
 import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
 import { createJobController, withJobCancellationLock } from './job-control.mjs';
+import { isBoundedPublicIdentifier } from './identifier.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { createDeferredConversationProgressObserver } from './conversation-progress.mjs';
 import { buildPrompt } from './prompts.mjs';
@@ -98,6 +99,7 @@ export async function executeJob(input) {
       deferred: true,
       ...(input.progressWriter ? { write: input.progressWriter } : {}),
       persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
+      persistProbe: (probe) => input.store.updateJobProgressProbe(workspace, job.id, probe),
       describeNotification: conversationObserver.observe,
       onDescriptorOverflow: conversationObserver.markGap,
       ...input.progressDependencies,
@@ -106,8 +108,10 @@ export async function executeJob(input) {
     if (typeof client.subscribeConversation === 'function') {
       try {
         const conversationSubscription = await client.subscribeConversation(activeSessionId, { connectionId: `companion-${randomBytes(12).toString('hex')}`, clientMode: 'desktop-continuous' });
+        if (!conversationSubscription || !isBoundedPublicIdentifier(conversationSubscription.subscriptionId) || typeof conversationSubscription.unsubscribe !== 'function') throw new Error('invalid conversation subscription');
         // Register cleanup before binding can perform any asynchronous work.
         unsubscribeConversation = conversationSubscription.unsubscribe;
+        reporter.markConversationSubscribed();
         await conversationObserver.bind(conversationSubscription.subscriptionId);
       } catch { conversationObserver.fail(); reporter.diagnose('conversation-subscribe-failed'); }
     } else conversationObserver.fail();

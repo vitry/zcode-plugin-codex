@@ -149,7 +149,7 @@ function redact(value) {
   if (!value || typeof value !== 'object') return value;
   /** @type {Record<string,any>} */ const result = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (/token|capability|permissionSnapshot|privateInvocation/i.test(key)) continue;
+    if (/token|capability|permissionSnapshot|privateInvocation|progressProbe/i.test(key)) continue;
     result[key] = redact(entry);
   }
   return result;

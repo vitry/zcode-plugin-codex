@@ -117,7 +117,10 @@ test('compact legacy and queued jobs show explicit missing progress placeholders
 
 test('JSON output remains structurally unchanged and redacted', () => {
   const value = {
-    job: { id, status: 'running', phase: 'running', progressPreview: ['safe'] },
+    job: {
+      id, status: 'running', phase: 'running', progressPreview: ['safe'],
+      progressProbe: { state: 'online', subscriptionAcknowledged: true, framesReceived: 1, marker: 'PROBE_INTERNAL' },
+    },
     permissionSnapshot: { mode: 'workspace-write' },
     nested: { executionCapability: 'secret', visible: true },
   };
@@ -125,4 +128,5 @@ test('JSON output remains structurally unchanged and redacted', () => {
     job: { id, status: 'running', phase: 'running', progressPreview: ['safe'] },
     nested: { visible: true },
   });
+  assert.doesNotMatch(renderOutput(value), /progressProbe|PROBE_INTERNAL|subscriptionAcknowledged|framesReceived/);
 });

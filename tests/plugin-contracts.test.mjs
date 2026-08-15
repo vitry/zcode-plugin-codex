@@ -240,3 +240,25 @@ test('package test scripts do not depend on shell glob expansion', () => {
     'node --test tests/integration/plugin-layout.test.mjs',
   );
 });
+
+test('conversation compatibility progress does not implement snapshot session reads', () => {
+  for (const relativePath of ['scripts/lib/progress.mjs', 'scripts/lib/conversation-progress.mjs']) {
+    const source = readFileSync(new URL(relativePath, root), 'utf8');
+    assert.doesNotMatch(source, /session\/read|readSession/, `${relativePath} must leave snapshot fallback to Task 4`);
+  }
+});
+
+test('marketplace runtime mirrors the progress compatibility implementation byte for byte', () => {
+  for (const relativePath of [
+    'scripts/lib/conversation-progress.mjs',
+    'scripts/lib/progress.mjs',
+    'scripts/lib/render.mjs',
+    'scripts/lib/review.mjs',
+    'scripts/lib/state.mjs',
+    'scripts/zcode-companion.mjs',
+  ]) {
+    const source = readFileSync(new URL(relativePath, root));
+    const marketplace = readFileSync(new URL(`marketplace/plugins/zcode/${relativePath}`, root));
+    assert.deepEqual(marketplace, source, `${relativePath} marketplace runtime must be byte-identical to source`);
+  }
+});

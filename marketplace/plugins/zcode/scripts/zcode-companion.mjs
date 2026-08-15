@@ -71,7 +71,7 @@ export async function runCompanion(argv, runtime = {}) {
     if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId)), modelPolicy };
     let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
     if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs, runtime.signal);
-    return { job, modelPolicy };
+    return { job: publicJob(job, caller.sessionId), modelPolicy };
   }
   if (parsed.command === 'result') {
     const job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'result');
@@ -289,7 +289,7 @@ function publicJob(job, ownerSessionId) {
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot;
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe;
   return { ...visible, owned: true, owner: 'same-owner' };
 }
 /** @param {Record<string,any>} source @param {string[]} fields */

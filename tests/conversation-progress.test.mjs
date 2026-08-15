@@ -5,10 +5,47 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { createConversationProgressDescriber, createDeferredConversationProgressObserver, normalizePreview } from '../scripts/lib/conversation-progress.mjs';
+import { createConversationProgressDescriber as createStructuralDescriber, createDeferredConversationProgressObserver as createStructuralDeferredObserver, normalizePreview } from '../scripts/lib/conversation-progress.mjs';
 import { conversationFrame, toolRow, turnRow } from './fixtures/conversation-progress-frames.mjs';
 
 const observedAt = '2026-08-09T00:00:01.000Z';
+
+async function createConversationProgressDescriber(...args) {
+  const describer = await createStructuralDescriber(...args);
+  return { ...describer, observe: async (...observeArgs) => (await describer.observe(...observeArgs)).events };
+}
+
+function createDeferredConversationProgressObserver(...args) {
+  const observer = createStructuralDeferredObserver(...args);
+  return { ...observer, observe: async (...observeArgs) => (await observer.observe(...observeArgs)).events };
+}
+
+test('returns fixed structural compatibility outcomes without retaining rejected frame data', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const fresh = () => createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const acceptedInitial = await (await fresh()).observe(conversationFrame({ deliveryKind: 'initial', deltas: [] }), observedAt);
+  assert.deepEqual(acceptedInitial, { disposition: 'accepted', phase: 'initial', events: [] });
+  const acceptedOnline = await (await fresh()).observe(conversationFrame({ deliveryKind: 'online', deltas: [] }), observedAt);
+  assert.deepEqual(acceptedOnline, { disposition: 'accepted', phase: 'online', events: [] });
+  const recoveryDescriber = await fresh(); recoveryDescriber.markGap();
+  const acceptedRecovery = await recoveryDescriber.observe(conversationFrame({ deliveryKind: 'recovery', deltas: [] }), observedAt);
+  assert.deepEqual(acceptedRecovery, { disposition: 'accepted', phase: 'recovery', events: [] });
+
+  const cases = [
+    ['wire-version', (frame) => { frame.params.wireVersion = 99; }],
+    ['envelope-shape', (frame) => { frame.params.hostile = 'ENVELOPE_SECRET'; }],
+    ['sequence', (frame) => { frame.params.frame.fromSeq = -1; }],
+    ['topic', (frame) => { frame.params.topic = 'conversation/TOPIC_SECRET'; }],
+    ['row-kind', (frame) => { frame.params.frame.payload.deltas[0].row.kind = 'SECRET_KIND'; }],
+    ['row-shape', (frame) => { frame.params.frame.payload.deltas[0].row.hostile = 'ROW_SECRET'; }],
+  ];
+  for (const [reason, mutate] of cases) {
+    const frame = conversationFrame({ deltas: [toolRow({ input: { command: 'COMMAND_SECRET' } })] }); mutate(frame);
+    const result = await (await fresh()).observe(frame, observedAt);
+    assert.deepEqual(result, { disposition: 'rejected', reason, events: [] });
+    assert.doesNotMatch(JSON.stringify(result), /SECRET/);
+  }
+});
 
 test('normalizes previews by removing controls, collapsing whitespace, and truncating by Unicode code point', () => {
   assert.equal(normalizePreview(' a\r\n\tb\u0000\u0085  c ', 96), 'a b c');

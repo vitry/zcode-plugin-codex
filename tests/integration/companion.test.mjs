@@ -356,8 +356,8 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
 });
 
 test('conversation online progress reaches stderr and preview while initial and foreign frames stay private', async () => {
-  const context = await fixture();
-  const result = await companion(context, ['rescue', '--fresh', 'surface conversation progress'], { FAKE_ZCODE_CONVERSATION_PROGRESS: '1' });
+  const context = await fixture(); const record = join(context.directory, 'conversation-progress-requests.jsonl');
+  const result = await companion(context, ['rescue', '--fresh', 'surface conversation progress'], { FAKE_ZCODE_CONVERSATION_PROGRESS: '1', FAKE_ZCODE_RECORD: record });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.result, 'done');
   assert.match(result.stderr, /\[zcode\] Running command: npm test\./);
   assert.match(result.stderr, /\[zcode\] Command completed: npm test \(25ms\)\./);
@@ -365,6 +365,9 @@ test('conversation online progress reaches stderr and preview while initial and 
   const status = await companion(context, ['status', result.json.job.id]);
   assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: npm test/);
   assert.doesNotMatch(JSON.stringify(status.json.job.progressPreview), /INITIAL_SECRET|FOREIGN_SECRET/);
+  assert.equal(Object.hasOwn(status.json.job, 'progressProbe'), false);
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
 });
 
 test('conversation online progress sent before the subscribe response is buffered until the subscription binds', async () => {
@@ -846,24 +849,37 @@ test('status --all reports a scavenged foreign job only through redacted other-o
 test('status --all preserves same-owner detail but allowlists foreign job metadata', async () => {
   const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
   const mine = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-a', ownerTurnId: 'owner-a-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'read-only' } });
-  const foreignQueued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-b-secret-session', ownerTurnId: 'owner-b-secret-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'bypassPermissions', secret: 'permission-secret' } });
   const startedAt = new Date().toISOString();
+  await store.transitionJob(context.workspace, mine.id, ['queued'], 'running', { startedAt });
+  await store.updateJobProgressProbe(context.workspace, mine.id, {
+    state: 'online', subscriptionAcknowledged: true, framesReceived: 1,
+    acceptedInitial: 0, acceptedOnline: 1, acceptedRecovery: 0,
+    rejected: { 'wire-version': 0, 'envelope-shape': 0, sequence: 0, topic: 0, 'row-kind': 0, 'row-shape': 0 },
+    snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
+  });
+  await store.finishJob(context.workspace, mine.id, ['running'], 'failed', { error: { message: 'fixture terminal' }, exitCode: 1 });
+  const foreignQueued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-b-secret-session', ownerTurnId: 'owner-b-secret-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'bypassPermissions', secret: 'permission-secret' } });
+  const foreignStartedAt = new Date().toISOString();
   const foreign = await store.transitionJob(context.workspace, foreignQueued.id, ['queued'], 'running', {
     childPid: 424242, workerLeaseId: 'a'.repeat(64), effort: 'xhigh',
     model: { providerId: 'secret-provider', modelId: 'secret-model' },
-    promptArtifact: 'artifacts/secret-prompt.json', startedAt, zcodeSessionId: 'secret-zcode-session',
+    promptArtifact: 'artifacts/secret-prompt.json', startedAt: foreignStartedAt, zcodeSessionId: 'secret-zcode-session',
   });
   await store.transitionJob(context.workspace, foreign.id, ['running'], 'running', { inputId: 'secret-input', startRevision: 42, beforeMessageIds: ['secret-message'] });
-  await store.updateJobProgress(context.workspace, foreign.id, { phase: 'running', message: 'foreign preview secret', observedAt: startedAt });
+  await store.updateJobProgress(context.workspace, foreign.id, { phase: 'running', message: 'foreign preview secret', observedAt: foreignStartedAt });
 
   const listed = await runCompanion(['status', '--all'], { cwd: context.workspace, env: context.env, caller: caller('owner-a') });
   const sameOwner = listed.jobs.find((/** @type {any} */ job) => job.id === mine.id);
   const otherOwner = listed.jobs.find((/** @type {any} */ job) => job.id === foreign.id);
   assert.equal(sameOwner.command, 'review'); assert.equal(sameOwner.readOnly, true); assert.equal(sameOwner.owner, 'same-owner');
+  assert.equal(Object.hasOwn(sameOwner, 'progressProbe'), false);
   assert.deepEqual(Object.keys(otherOwner).sort(), ['createdAt', 'hasOwner', 'id', 'lastActivityAt', 'startedAt', 'status'].sort());
   assert.equal(otherOwner.hasOwner, true);
   const rendered = renderOutput(listed);
   assert.doesNotMatch(`${JSON.stringify(otherOwner)}\n${rendered}`, /owner-b|secret|xhigh|424242|latest=|result|internal/i);
+
+  const detailed = await runCompanion(['status', mine.id], { cwd: context.workspace, env: context.env, caller: caller('owner-a') });
+  assert.equal(Object.hasOwn(detailed.job, 'progressProbe'), false);
 
   await assert.rejects(runCompanion(['status', foreign.id], { cwd: context.workspace, env: context.env, caller: caller('owner-a') }), { code: 'OWNED_JOB_NOT_FOUND' });
 });
