@@ -79,6 +79,31 @@ test('installed Rescue qualification declares its supported Codex line and a sco
   t.diagnostic(diagnostic);
 });
 
+test('deterministic installed Rescue contract stays attached to one long process through exit without orphaning', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-rescue-long-process-')); t.after(() => rm(temporary, { recursive: true, force: true }));
+  const role = await readFile(join(root, 'marketplace', 'plugins', 'zcode', 'agents', 'zcode-rescue.toml.template'), 'utf8');
+  assert.match(role, /poll only that same handle with the host continuation tool until it reports an exit code/i);
+  assert.match(role, /Never[^.]*second `exec_command`/i);
+  const gate = join(temporary, 'release.gate'); const started = join(temporary, 'started.json'); const exited = join(temporary, 'exited');
+  const program = [
+    "const { readFile, writeFile } = require('node:fs/promises');",
+    "const [gate, started, exited] = process.argv.slice(1);",
+    "void (async () => { await writeFile(started, JSON.stringify({ pid: process.pid }));",
+    "while ((await readFile(gate, 'utf8').catch(() => '')) !== 'release') await new Promise((resolve) => setTimeout(resolve, 10));",
+    "await writeFile(exited, 'exited'); })();",
+  ].join(' ');
+  const companion = spawn(process.execPath, ['-e', program, gate, started, exited], { stdio: 'ignore' });
+  const terminal = new Promise((resolvePromise, reject) => { companion.once('exit', (code, signal) => code === 0 ? resolvePromise(undefined) : reject(new Error(`long fixture exited ${code ?? signal}`))); companion.once('error', reject); });
+  await waitUntil(async () => Boolean(await readFile(started, 'utf8').catch(() => '')), 2_000, 'long fixture did not expose its original process handle');
+  const original = JSON.parse(await readFile(started, 'utf8'));
+  assert.equal(original.pid, companion.pid); assert.equal(processAlive(original.pid), true);
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  assert.equal(processAlive(original.pid), true, 'partial waiting must not be treated as terminal child completion');
+  assert.equal(await readFile(exited, 'utf8').catch(() => ''), '');
+  await writeFile(gate, 'release'); await terminal;
+  assert.equal(await readFile(exited, 'utf8'), 'exited'); assert.equal(processAlive(original.pid), false, 'terminal child completion must leave no companion orphan');
+});
+
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
   if (process.env.ZCODE_CODEX_SKILLS_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_SKILLS_E2E=1.'));
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-skills-e2e-'));
@@ -141,7 +166,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const expectedCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke rescue`;
   const expectedPreflightCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" role-status rescue`;
   const expectedNamedSpawnMessage = 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.';
-  const expectedGenericSpawnMessage = `Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:\n${expectedCommand}\nPreserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request/print/persist authorization material.\nIf that command returned a needs-choice response, stop. Only after the parent sends exactly \`Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.\` run exactly:\nnode "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue resume\nOnly after the parent sends exactly \`Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.\` run exactly:\nnode "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue fresh`;
+  const expectedGenericSpawnMessage = `Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:\n${expectedCommand}\nPreserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request/print/persist authorization material.\nHere exactly one command means exactly one \`exec_command\` companion process; continuation calls only observe its original running handle. Never start a second \`exec_command\`. A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.\nIf that command returned a needs-choice response, stop. Only after the parent sends exactly \`Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.\` run exactly:\nnode "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue resume\nOnly after the parent sends exactly \`Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.\` run exactly:\nnode "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue fresh`;
   const canonicalWorkspace = await realpath(workspace);
   const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(zcodeCalls.filter((call) => call.method === 'session/send').length, 1, 'one ZCode send after one native child spawn');

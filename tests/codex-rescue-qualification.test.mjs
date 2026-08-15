@@ -45,6 +45,38 @@ test('qualifies named Rescue from linked parent and child rollout metadata', () 
   });
 });
 
+test('qualifies named and generic Rescue only after the original yielded execution exits', () => {
+  for (const route of ['named', 'generic']) {
+    const input = yieldedFixture();
+    if (route === 'generic') {
+      const args = JSON.parse(spawnEvent(input).payload.arguments); delete args.agent_type; args.message = 'fixed generic forwarder';
+      spawnEvent(input).payload.arguments = JSON.stringify(args);
+      childMeta(input).payload.source.subagent.thread_spawn.agent_role = null;
+    }
+    assert.equal(qualifyCodexRescueEvidence(input, options()).route, route === 'named' ? 'named' : 'generic-schema-hidden');
+  }
+});
+
+test('yielded Rescue qualification rejects process replacement, handle drift, input, missing exit, and terminal-order violations', () => {
+  const cases = [
+    { code: 'child-command-count', mutate: (input) => input.rollouts[1].splice(3, 0, structuredExecResult(expectedCommand, 'exec-2'), capturedResultEvent('exec-2', { output: '', session_id: 42 })) },
+    { code: 'child-handle-mismatch', mutate: (input) => { childPolls(input)[0].payload.input = structuredPoll(42, 'poll-1', '').payload.input; } },
+    { code: 'child-poll-input', mutate: (input) => { childPolls(input)[0].payload.input = structuredPoll(41, 'poll-1', 'x').payload.input; } },
+    { code: 'child-terminal-exit-missing', mutate: (input) => { childPollOutputs(input).at(-1).payload.output = capturedResult({ output: `${expectedPublicOutput}\n`, session_id: 41 }); } },
+    { code: 'child-terminal-order', mutate: (input) => { const final = input.rollouts[1].pop(); input.rollouts[1].splice(4, 0, final); } },
+    { code: 'parent-terminal-order', mutate: (input) => { const final = input.rollouts[0].pop(); input.rollouts[0].splice(5, 0, final); } },
+    { code: 'child-poll-after-terminal', mutate: (input) => input.rollouts[1].splice(-1, 0, structuredPoll(41, 'poll-3'), capturedResultEvent('poll-3', { output: '', exit_code: 0 })) },
+  ];
+  for (const { code, mutate } of cases) {
+    const input = yieldedFixture(); mutate(input);
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
+      code,
+    );
+  }
+});
+
 test('foreground qualification fails closed unless child transcript contains exact semantic start and terminal progress', () => {
   for (const missing of ['start', 'terminal']) {
     const input = fixture();
@@ -133,6 +165,17 @@ test('qualifies exact resume and fresh follow-ups against one existing child ID'
       choice,
     });
   }
+});
+
+test('needs-choice is terminal only with exit code 3 before same-child continuation', () => {
+  const valid = choiceFixture('resume');
+  assert.equal(qualifyCodexRescueChoiceEvidence(valid, choiceOptions('resume')).choice, 'resume');
+  const wrong = choiceFixture('resume');
+  wrong.rollouts[1][2].payload.output = capturedResult({ output: `${JSON.stringify({ type: 'needs-choice', candidate: { sessionId: 'resumable-session' }, choices: ['--resume', '--fresh'] })}\n`, exit_code: 0 });
+  assert.throws(
+    () => qualifyCodexRescueChoiceEvidence(wrong, choiceOptions('resume')),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-needs-choice-exit',
+  );
 });
 
 test('shared parent-child route validation fails every trusted metadata field closed', () => {
@@ -590,6 +633,18 @@ function fixture(publicOutput = expectedPublicOutput) {
   return { execFrames, rollouts: [parent, child] };
 }
 
+function yieldedFixture() {
+  const input = fixture();
+  input.rollouts[1].splice(1, 2,
+    structuredExecResult(expectedCommand, 'exec-1'),
+    capturedResultEvent('exec-1', { output: `${expectedSemanticProgress.start}\n`, session_id: 41 }),
+    structuredPoll(41, 'poll-1'),
+    capturedResultEvent('poll-1', { output: 'still running\n', session_id: 41 }),
+    structuredPoll(41, 'poll-2'),
+    capturedResultEvent('poll-2', { output: `${expectedSemanticProgress.terminal}\n${expectedPublicOutput}\n`, exit_code: 0 }));
+  return input;
+}
+
 function backgroundFixture() { const input = fixture(backgroundPublicOutput); childOutput(input).payload.output = [{ type: 'input_text', text: `${backgroundPublicOutput}\n` }]; return input; }
 
 function choiceOptions(choice) {
@@ -633,11 +688,11 @@ function choiceFixture(choice) {
   ];
   const child = [
     { type: 'session_meta', payload: { session_id: parentId, id: childId, parent_thread_id: parentId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_path: agentPath, agent_nickname: 'Ada', agent_role: 'zcode-rescue' } } } } },
-    structuredExec(expectedCommand, 'exec-1'),
-    toolOutput('exec-1', needsChoice),
+    structuredExecResult(expectedCommand, 'exec-1'),
+    capturedResultEvent('exec-1', { output: needsChoice, exit_code: 3 }),
     { type: 'event_msg', payload: { type: 'agent_message', message: needsChoice, phase: 'final_answer' } },
-    structuredExec(choiceOptions(choice).expectedChoiceCommand, 'exec-2'),
-    toolOutput('exec-2', `${expectedPublicOutput}\n`),
+    structuredExecResult(choiceOptions(choice).expectedChoiceCommand, 'exec-2'),
+    capturedResultEvent('exec-2', { output: `${expectedPublicOutput}\n`, exit_code: 0 }),
     { type: 'event_msg', payload: { type: 'agent_message', message: expectedPublicOutput, phase: 'final_answer' } },
   ];
   const at = (event, offset) => { event.timestamp = new Date(Date.parse('2026-08-10T00:00:00.000Z') + offset).toISOString(); };
@@ -674,6 +729,25 @@ function listOutput(callId) { return { type: 'response_item', payload: { type: '
 function structuredExec(command, callId = 'exec-1', fields = {}) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace, ...fields })});\ntext(r.output);\n` } };
 }
+
+function structuredExecResult(command, callId) {
+  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace })}); text(JSON.stringify(r))\n` } };
+}
+
+function structuredPoll(sessionId, callId, chars = '') {
+  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars })}); text(JSON.stringify(r))\n` } };
+}
+
+function capturedResult(result) {
+  return [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+}
+
+function capturedResultEvent(callId, result) {
+  return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: capturedResult(result) } };
+}
+
+function childPolls(input) { return input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call').slice(1); }
+function childPollOutputs(input) { return input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call_output').slice(1); }
 
 function structuredExecUnquoted(command) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-1', input: `const r = await tools.exec_command({cmd:${JSON.stringify(command)},workdir:"/repo"});\ntext(r.output);\n` } };

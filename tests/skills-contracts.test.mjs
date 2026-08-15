@@ -126,7 +126,7 @@ test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task
   assert.match(source, /Act only as the installed ZCode Rescue forwarder\./);
   assert.match(source, /node "<canonical-plugin-root>\/scripts\/zcode-companion\.mjs" invoke rescue/);
   assert.match(source, /Preserve stderr and return public stdout verbatim\./);
-  assert.match(source, /Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request\/print\/persist authorization material\./);
+  assert.match(source, /Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request\/print\/persist authorization material\./);
   assert.match(source, /never issue a second spawn/i);
   assert.match(source, /unknown\/unrecognized\/unsupported\/reserved (?:field\/key\/parameter|field, key, or parameter) `agent_type`/i);
   assert.match(source, /no agent ID, start event, or activity/i);
@@ -150,6 +150,27 @@ test('managed Rescue role is a fixed TOML forwarder without capability or task m
   assert.match(source, /return public stdout verbatim/i);
   assert.match(source, /preserve stderr/i);
   assert.match(source, /(?:Do not|Never) inspect or modify code independently/i);
+});
+
+test('named and generic Rescue forwarders keep yielded executions attached through a real exit code', () => {
+  const role = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
+  const source = skill('rescue');
+  const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source)?.[1];
+  assert.ok(generic, 'generic forwarder fixture must be present');
+  for (const forwarder of [role, generic]) {
+    assert.match(forwarder, /result containing an exit code is terminal/i);
+    assert.match(forwarder, /running execution or session handle is nonterminal/i);
+    assert.match(forwarder, /poll only that same handle with the host continuation tool until it reports an exit code/i);
+    assert.match(forwarder, /Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal/i);
+    assert.match(forwarder, /needs-choice response with exit code 3 is terminal for the current child turn/i);
+    assert.match(forwarder, /exactly one `exec_command` companion process/i);
+    assert.match(forwarder, /continuation calls only observe its original running handle/i);
+    assert.match(forwarder, /(?:do not|never)[^.]*second `exec_command`/i);
+    assert.match(forwarder, /(?:do not|never)[^.]*retry/i);
+    assert.match(forwarder, /(?:do not|never)[^.]*cancel/i);
+    assert.match(forwarder, /(?:do not|never)[^.]*choose/i);
+    assert.match(forwarder, /(?:do not|never)[^.]*inspect or modify code independently/i);
+  }
 });
 
 test('native Rescue forwarders request explicit background through the same capability-free constant invocation', () => {
