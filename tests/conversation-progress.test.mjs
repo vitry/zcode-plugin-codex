@@ -355,6 +355,28 @@ test('bounds the prebind subscribe-response buffer to four notifications and dra
   assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 5, deltas: [toolRow({ rowId: 5 })] }), observedAt), []);
 });
 
+test('prebind overflow requires and accepts a newer recovery baseline', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const deferred = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  const buffered = Array.from({ length: 4 }, (_, index) => deferred.observe(conversationFrame({ ordinal: index + 1, deltas: [toolRow({ rowId: index + 1 })] }), observedAt));
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 5, deltas: [toolRow({ rowId: 5 })] }), observedAt), { disposition: 'ignored', reason: 'overflow', events: [] });
+  await deferred.bind('sub-1'); await Promise.all(buffered);
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 6, deltas: [toolRow({ rowId: 6 })] }), observedAt), { disposition: 'ignored', reason: 'recovery-required', events: [] });
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 7, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
+  const resumed = await deferred.observe(conversationFrame({ ordinal: 8, deltas: [toolRow({ rowId: 8 })] }), observedAt);
+  assert.equal(resumed.disposition, 'accepted'); assert.equal(resumed.phase, 'online'); assert.equal(resumed.events.length, 1);
+});
+
+test('prebind markGap resolves buffered observations as recovery-required', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const deferred = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  const buffered = deferred.observe(conversationFrame({ deltas: [toolRow()] }), observedAt);
+  deferred.markGap();
+  assert.deepEqual(await buffered, { disposition: 'ignored', reason: 'recovery-required', events: [] });
+  await deferred.bind('sub-1');
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 2, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
+});
+
 test('deferred observer can fence and recover more than one post-bind overflow episode', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const deferred = createDeferredConversationProgressObserver({ sessionId: 'session-1', workspace }); await deferred.bind('sub-1');

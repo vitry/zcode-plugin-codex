@@ -64,7 +64,7 @@ export function normalizeZCodeProgress(notification, sessionId, observedAt) {
 }
 
 /**
- * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>boolean,describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
+ * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>boolean|(()=>unknown),describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
  */
 export function createProgressReporter({
   sessionId,
@@ -112,6 +112,13 @@ export function createProgressReporter({
     snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
   };
   let compatibilityBoundaryActivated = false;
+  /** @type {null|(()=>unknown)} */ let snapshotFallbackCleanup = null;
+  const cleanupSnapshotFallback = () => {
+    const cleanup = snapshotFallbackCleanup; snapshotFallbackCleanup = null;
+    if (cleanup === null) return false;
+    try { Promise.resolve(cleanup()).catch(() => {}); } catch { /* fallback cleanup is observational */ }
+    return true;
+  };
   const probeSnapshot = () => ({ ...progressProbe, rejected: { ...progressProbe.rejected } });
   /** @type {Promise<void>|null} */ let probePersistInFlight = null;
   /** @type {any|null} */ let probePersistPending = null;
@@ -172,9 +179,11 @@ export function createProgressReporter({
   const activateCompatibilityBoundary = () => {
     if (closed || compatibilityBoundaryActivated || progressProbe.state !== 'probing' || progressProbe.acceptedOnline > 0) return false;
     compatibilityBoundaryActivated = true;
-    let activated = false;
-    try { activated = typeof activateSnapshotFallback === 'function' && activateSnapshotFallback() === true; } catch { activated = false; }
+    /** @type {boolean|(()=>unknown)} */ let activation = false;
+    try { activation = typeof activateSnapshotFallback === 'function' ? activateSnapshotFallback() : false; } catch { activation = false; }
+    const activated = activation === true || typeof activation === 'function';
     if (activated) {
+      if (typeof activation === 'function') snapshotFallbackCleanup = activation;
       progressProbe.state = 'snapshot-fallback'; progressProbe.snapshotFallbackActive = true;
       diagnose('conversation-snapshot-fallback');
     } else {
@@ -190,6 +199,7 @@ export function createProgressReporter({
       const field = result.phase === 'initial' ? 'acceptedInitial' : result.phase === 'online' ? 'acceptedOnline' : 'acceptedRecovery';
       progressProbe[field] = saturatingIncrement(progressProbe[field]);
       if (result.phase === 'online') {
+        cleanupSnapshotFallback();
         progressProbe.state = 'online'; progressProbe.snapshotFallbackActive = false; progressProbe.snapshotFallbackUnavailable = false;
       }
       persistProbeSnapshot(); return result.events;
@@ -422,6 +432,7 @@ export function createProgressReporter({
       return true;
     },
     close() {
+      cleanupSnapshotFallback();
       accepting = false; closed = true; buffered.length = 0; bufferedKeys.clear();
       disableProbePersist();
       descriptorEpoch += 1;

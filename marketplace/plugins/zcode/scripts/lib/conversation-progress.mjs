@@ -155,12 +155,13 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
   /** @type {Awaited<ReturnType<typeof createConversationProgressDescriber>>|undefined} */ let describer;
   /** @type {Array<{notification:unknown,observedAt:string,resolve:(result:ObservationResult)=>void}>} */ const buffered = [];
   let binding = false; let disabled = false; let terminal = false; let prebindGap = false;
-  const resolveBufferedEmpty = () => { while (buffered.length > 0) buffered.shift()?.resolve(ignored(terminal ? 'terminal' : 'disabled')); };
+  /** @param {string} [reason] */
+  const resolveBufferedEmpty = (reason = terminal ? 'terminal' : 'disabled') => { while (buffered.length > 0) buffered.shift()?.resolve(ignored(reason)); };
   return /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,bind:(subscriptionId:string)=>Promise<void>,fail:()=>void,markGap:()=>void,markTerminal:()=>void}} */ ({
     observe(notification, observedAt) {
       if (terminal || disabled) return Promise.resolve(ignored(terminal ? 'terminal' : 'disabled'));
       if (describer && !binding) return describer.observe(notification, observedAt);
-      if (buffered.length >= MAX_PENDING_OBSERVATIONS) return Promise.resolve(ignored('overflow'));
+      if (buffered.length >= MAX_PENDING_OBSERVATIONS) { prebindGap = true; return Promise.resolve(ignored('overflow')); }
       return new Promise((resolveResult) => buffered.push({ notification, observedAt, resolve: resolveResult }));
     },
     async bind(subscriptionId) {
@@ -168,11 +169,11 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
       binding = true;
       try {
         describer = await createConversationProgressDescriber({ sessionId, subscriptionId, workspace });
-        if (prebindGap) describer.markGap();
         while (!terminal && !disabled && buffered.length > 0) {
           const item = buffered.shift(); if (!item) break;
           item.resolve(await describer.observe(item.notification, item.observedAt));
         }
+        if (prebindGap) describer.markGap();
       } catch (error) {
         disabled = true; resolveBufferedEmpty(); throw error;
       } finally { binding = false; if (terminal || disabled) resolveBufferedEmpty(); }
@@ -183,7 +184,7 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
       if (describer) describer.markGap();
       else if (prebindGap) return;
       else prebindGap = true;
-      resolveBufferedEmpty();
+      resolveBufferedEmpty('recovery-required');
     },
     markTerminal() { terminal = true; describer?.markTerminal(); resolveBufferedEmpty(); },
   });

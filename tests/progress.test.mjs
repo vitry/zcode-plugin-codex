@@ -97,6 +97,54 @@ test('an accepted zero-event online frame recovers lifecycle-only without reacti
   reporter.close();
 });
 
+test('accepted online recovery invokes an activated snapshot fallback cleanup once', async () => {
+  let cleanupCalls = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    activateSnapshotFallback: () => () => { cleanupCalls += 1; },
+    describeNotification: async () => ({ disposition: 'accepted', phase: 'online', events: [] }),
+    now: () => observedAt,
+  });
+  assert.equal(reporter.activateCompatibilityBoundary(), true);
+  assert.equal(reporter.probeSnapshot().state, 'snapshot-fallback');
+  reporter.observe(conversationFrame({ deltas: [] })); await reporter.flush();
+  assert.equal(reporter.probeSnapshot().state, 'online'); assert.equal(cleanupCalls, 1);
+  reporter.close(); assert.equal(cleanupCalls, 1);
+});
+
+test('close invokes an activated snapshot fallback cleanup once', () => {
+  let cleanupCalls = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', activateSnapshotFallback: () => () => { cleanupCalls += 1; }, now: () => observedAt,
+  });
+  assert.equal(reporter.activateCompatibilityBoundary(), true);
+  reporter.close(); reporter.close();
+  assert.equal(cleanupCalls, 1);
+});
+
+test('throwing and non-settling fallback cleanup stay observational and bounded', async () => {
+  let throwingCalls = 0;
+  const throwing = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    activateSnapshotFallback: () => () => { throwingCalls += 1; throw new Error('private fallback cleanup failure'); },
+    describeNotification: async () => ({ disposition: 'accepted', phase: 'online', events: [] }), now: () => observedAt,
+  });
+  throwing.activateCompatibilityBoundary(); throwing.observe(conversationFrame({ deltas: [] }));
+  await throwing.flush();
+  assert.equal(throwing.probeSnapshot().state, 'online'); assert.equal(throwingCalls, 1);
+  throwing.close();
+
+  let nonSettlingCalls = 0;
+  const nonSettling = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    activateSnapshotFallback: () => () => { nonSettlingCalls += 1; return new Promise(() => {}); },
+    now: () => observedAt,
+  });
+  nonSettling.activateCompatibilityBoundary();
+  const started = Date.now(); nonSettling.close();
+  assert.ok(Date.now() - started < 100); assert.equal(nonSettlingCalls, 1);
+});
+
 test('an accepted zero-event online frame marks the probe online and blocks fallback', async () => {
   const diagnostics = [];
   const reporter = progressModule.createProgressReporter({
