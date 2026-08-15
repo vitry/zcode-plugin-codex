@@ -186,6 +186,8 @@ export function createProgressReporter({
       progressProbe.state = 'snapshot-fallback'; progressProbe.snapshotFallbackActive = true;
       diagnose('conversation-snapshot-fallback');
     } else {
+      try { if (activation !== null && typeof activation === 'object') Promise.resolve(activation).catch(() => {}); }
+      catch { /* fallback activation failures are observational */ }
       progressProbe.state = 'lifecycle-only'; progressProbe.snapshotFallbackUnavailable = true;
       diagnose('conversation-lifecycle-only');
     }

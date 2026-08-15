@@ -116,6 +116,72 @@ test('fallback activation requires a cleanup callback', async () => {
   }
 });
 
+test('rejected fallback activation is observed while degrading to lifecycle-only', async () => {
+  const unhandled = []; const diagnostics = []; const lines = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', activateSnapshotFallback: () => Promise.reject(new Error('PRIVATE_ACTIVATION_REJECTION')),
+    write: (line) => lines.push(line), onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  try {
+    assert.equal(reporter.activateCompatibilityBoundary(), true);
+    await reporter.flush(); await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+    assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+    assert.equal(reporter.probeSnapshot().snapshotFallbackActive, false);
+    assert.equal(reporter.probeSnapshot().snapshotFallbackUnavailable, true);
+    assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
+    assert.deepEqual(lines, ['[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n']);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+    reporter.close();
+  }
+});
+
+test('never-settling Promise fallback activation is detached from bounded flush and close', async () => {
+  const lines = []; const activation = new Promise(() => {});
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', activateSnapshotFallback: () => activation,
+    write: (line) => lines.push(line), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  assert.equal(reporter.activateCompatibilityBoundary(), true);
+  const outcome = await Promise.race([
+    reporter.flush(Date.now() + 25).then(() => 'flushed'),
+    new Promise((resolve) => { const timer = setTimeout(() => resolve('timed-out'), 100); timer.unref?.(); }),
+  ]);
+  assert.equal(outcome, 'flushed');
+  assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+  assert.deepEqual(lines, ['[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n']);
+  assert.doesNotThrow(() => reporter.close());
+});
+
+test('hostile fallback activation then access stays observational', async () => {
+  let thenReads = 0; let catchReads = 0; const unhandled = [];
+  const activation = {};
+  Object.defineProperties(activation, {
+    then: { get() { thenReads += 1; throw new Error('PRIVATE_HOSTILE_THEN'); } },
+    catch: { get() { catchReads += 1; throw new Error('PRIVATE_HOSTILE_CATCH'); } },
+  });
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', activateSnapshotFallback: () => activation, now: () => observedAt,
+  });
+  try {
+    assert.equal(reporter.activateCompatibilityBoundary(), true);
+    await reporter.flush(); await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(thenReads, 1); assert.equal(catchReads, 0); assert.deepEqual(unhandled, []);
+    assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+    assert.equal(reporter.probeSnapshot().snapshotFallbackUnavailable, true);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+    reporter.close();
+  }
+});
+
 test('accepted online recovery invokes an activated snapshot fallback cleanup once', async () => {
   let cleanupCalls = 0;
   const reporter = progressModule.createProgressReporter({
