@@ -64,7 +64,7 @@ export function normalizeZCodeProgress(notification, sessionId, observedAt) {
 }
 
 /**
- * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>boolean|(()=>unknown),describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
+ * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>false|(()=>unknown),describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
  */
 export function createProgressReporter({
   sessionId,
@@ -179,11 +179,10 @@ export function createProgressReporter({
   const activateCompatibilityBoundary = () => {
     if (closed || compatibilityBoundaryActivated || progressProbe.state !== 'probing' || progressProbe.acceptedOnline > 0) return false;
     compatibilityBoundaryActivated = true;
-    /** @type {boolean|(()=>unknown)} */ let activation = false;
+    /** @type {unknown} */ let activation = false;
     try { activation = typeof activateSnapshotFallback === 'function' ? activateSnapshotFallback() : false; } catch { activation = false; }
-    const activated = activation === true || typeof activation === 'function';
-    if (activated) {
-      if (typeof activation === 'function') snapshotFallbackCleanup = activation;
+    if (typeof activation === 'function') {
+      snapshotFallbackCleanup = /** @type {()=>unknown} */ (activation);
       progressProbe.state = 'snapshot-fallback'; progressProbe.snapshotFallbackActive = true;
       diagnose('conversation-snapshot-fallback');
     } else {

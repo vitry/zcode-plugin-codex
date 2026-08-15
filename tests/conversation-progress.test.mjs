@@ -367,6 +367,26 @@ test('prebind overflow requires and accepts a newer recovery baseline', async ()
   assert.equal(resumed.disposition, 'accepted'); assert.equal(resumed.phase, 'online'); assert.equal(resumed.events.length, 1);
 });
 
+test('overflow during bind latches recovery before a newly buffered recovery frame drains', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const deferred = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });
+  const buffered = Array.from({ length: 4 }, (_, index) => deferred.observe(conversationFrame({ ordinal: index + 1, deltas: [toolRow({ rowId: index + 1 })] }), observedAt));
+  let overflow; let recovery;
+  const injectOverflow = buffered[0].then(() => {
+    const capacityGate = deferred.observe(conversationFrame({ ordinal: 5, deltas: [toolRow({ rowId: 5 })] }), observedAt);
+    deferred.observe(conversationFrame({ ordinal: 6, deltas: [toolRow({ rowId: 6 })] }), observedAt);
+    overflow = deferred.observe(conversationFrame({ ordinal: 7, deltas: [toolRow({ rowId: 7, input: { command: 'PRIVATE_BIND_OVERFLOW' } })] }), observedAt);
+    return capacityGate.then(() => { recovery = deferred.observe(conversationFrame({ ordinal: 8, deliveryKind: 'recovery', deltas: [] }), observedAt); });
+  });
+  await deferred.bind('sub-1'); await injectOverflow;
+  const overflowResult = await overflow;
+  assert.deepEqual(overflowResult, { disposition: 'ignored', reason: 'overflow', events: [] });
+  assert.doesNotMatch(JSON.stringify(overflowResult), /PRIVATE_BIND_OVERFLOW/);
+  assert.deepEqual(await recovery, { disposition: 'accepted', phase: 'recovery', events: [] });
+  const resumed = await deferred.observe(conversationFrame({ ordinal: 9, deltas: [toolRow({ rowId: 9 })] }), observedAt);
+  assert.equal(resumed.disposition, 'accepted'); assert.equal(resumed.phase, 'online'); assert.equal(resumed.events.length, 1);
+});
+
 test('prebind markGap resolves buffered observations as recovery-required', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const deferred = createStructuralDeferredObserver({ sessionId: 'session-1', workspace });

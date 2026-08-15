@@ -53,7 +53,7 @@ test('tracks bounded structural compatibility and activates fallback only at an 
     sessionId: 'session-a', write: (line) => lines.push(line),
     describeNotification: async () => results.shift(),
     persistProbe: async (probe) => probes.push(probe),
-    activateSnapshotFallback: () => true,
+    activateSnapshotFallback: () => () => {},
     onDiagnostic: ({ kind }) => diagnostics.push(kind),
     now: () => observedAt,
     setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
@@ -95,6 +95,25 @@ test('an accepted zero-event online frame recovers lifecycle-only without reacti
   assert.equal(reporter.activateCompatibilityBoundary(), false);
   assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
   reporter.close();
+});
+
+test('fallback activation requires a cleanup callback', async () => {
+  for (const activation of [true, undefined, { cleanup() {} }]) {
+    const diagnostics = []; const lines = [];
+    const reporter = progressModule.createProgressReporter({
+      sessionId: 'session-a', activateSnapshotFallback: () => activation,
+      write: (line) => lines.push(line), onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+      setInterval: () => ({ unref() {} }), clearInterval: () => {},
+    });
+    assert.equal(reporter.activateCompatibilityBoundary(), true);
+    await reporter.flush();
+    assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+    assert.equal(reporter.probeSnapshot().snapshotFallbackActive, false);
+    assert.equal(reporter.probeSnapshot().snapshotFallbackUnavailable, true);
+    assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
+    assert.deepEqual(lines, ['[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n']);
+    reporter.close();
+  }
 });
 
 test('accepted online recovery invokes an activated snapshot fallback cleanup once', async () => {

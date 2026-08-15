@@ -161,7 +161,10 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
     observe(notification, observedAt) {
       if (terminal || disabled) return Promise.resolve(ignored(terminal ? 'terminal' : 'disabled'));
       if (describer && !binding) return describer.observe(notification, observedAt);
-      if (buffered.length >= MAX_PENDING_OBSERVATIONS) { prebindGap = true; return Promise.resolve(ignored('overflow')); }
+      if (buffered.length >= MAX_PENDING_OBSERVATIONS) {
+        if (describer) describer.markGap(); else prebindGap = true;
+        return Promise.resolve(ignored('overflow'));
+      }
       return new Promise((resolveResult) => buffered.push({ notification, observedAt, resolve: resolveResult }));
     },
     async bind(subscriptionId) {
