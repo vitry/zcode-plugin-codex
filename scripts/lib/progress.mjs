@@ -228,7 +228,7 @@ export function createProgressReporter({
         enqueueLogical({ kind: 'event', event, sequence });
       }
     }).catch(() => {
-      if (closed || epoch !== snapshotEpoch || progressProbe.state !== 'snapshot-fallback') return;
+      if (closed || !accepting || epoch !== snapshotEpoch || progressProbe.state !== 'snapshot-fallback') return;
       cleanupSnapshotFallback();
       progressProbe.state = 'lifecycle-only'; progressProbe.snapshotFallbackActive = false; progressProbe.snapshotFallbackUnavailable = true;
       diagnose('conversation-lifecycle-only'); persistProbeSnapshot();

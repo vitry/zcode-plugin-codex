@@ -285,6 +285,20 @@ async function describeTool(row, states, workspaceRoot, observedAt, resolvePath,
 
 /** @param {any} row @param {string} workspaceRoot @param {(value:unknown,root:string)=>Promise<string|null>} resolvePath @param {number} timeoutMs */
 export async function formatToolStartMessage(row, workspaceRoot, resolvePath = containedRelativePath, timeoutMs = PATH_RESOLUTION_TIMEOUT_MS, allowTextPreviews = true) {
+  return formatToolStartMessageWithOptions(row, workspaceRoot, { resolvePath, timeoutMs, allowTextPreviews });
+}
+
+/** @param {any} row @param {string} workspaceRoot */
+export async function formatSnapshotToolStartMessage(row, workspaceRoot) {
+  return formatToolStartMessageWithOptions(row, workspaceRoot, {
+    resolvePath: containedRelativePath,
+    timeoutMs: PATH_RESOLUTION_TIMEOUT_MS,
+    allowTextPreviews: false,
+  });
+}
+
+/** @param {any} row @param {string} workspaceRoot @param {{resolvePath:(value:unknown,root:string)=>Promise<string|null>,timeoutMs:number,allowTextPreviews:boolean}} options */
+async function formatToolStartMessageWithOptions(row, workspaceRoot, { resolvePath, timeoutMs, allowTextPreviews }) {
   const toolName = normalizePreview(row.toolName, 64);
   const input = plainObject(row.input) ? row.input : {};
   if (!toolName) return 'Running a tool.';

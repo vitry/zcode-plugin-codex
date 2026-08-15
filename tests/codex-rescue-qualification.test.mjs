@@ -26,7 +26,8 @@ const expectedPublicOutput = 'done';
 const expectedSemanticProgress = Object.freeze({
   start: '[zcode] Running command: npm test.',
   terminal: '[zcode] Command completed: npm test (25ms).',
-  degraded: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.',
+  snapshotFallback: '[zcode] ZCode conversation frames were unavailable; using bounded session progress.',
+  lifecycleOnly: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.',
 });
 const backgroundJobId = 'b'.repeat(64);
 const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
@@ -137,18 +138,21 @@ test('foreground qualification fails closed unless child transcript contains exa
   }
 });
 
-test('foreground qualification accepts one exact degraded diagnostic while retaining yielded child exit proof', () => {
-  const input = yieldedFixture();
-  childPollOutputs(input).at(-1).payload.output = capturedResult({
-    output: `${expectedSemanticProgress.degraded}\n${expectedPublicOutput}\n`, exit_code: 0,
-  });
-  const evidence = qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true }));
-  assert.equal(evidence.semanticProgressChecked, true);
-  assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
+test('foreground qualification accepts either exact compatibility diagnostic while retaining yielded child exit proof', () => {
+  for (const diagnostic of ['snapshotFallback', 'lifecycleOnly']) {
+    const input = yieldedFixture();
+    childPollOutputs(input).at(-1).payload.output = capturedResult({
+      output: `${expectedSemanticProgress[diagnostic]}\n${expectedPublicOutput}\n`, exit_code: 0,
+    });
+    const evidence = qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true }));
+    assert.equal(evidence.semanticProgressChecked, true, diagnostic);
+    assert.equal(evidence.yieldedExecution.terminalExitCode, 0, diagnostic);
+  }
 
-  childPollOutputs(input).at(-1).payload.output = capturedResult({ output: `[zcode] ZCode started the delegated turn.\n${expectedPublicOutput}\n`, exit_code: 0 });
+  const startupOnly = yieldedFixture();
+  childPollOutputs(startupOnly).at(-1).payload.output = capturedResult({ output: `[zcode] ZCode started the delegated turn.\n${expectedPublicOutput}\n`, exit_code: 0 });
   assert.throws(
-    () => qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true })),
+    () => qualifyCodexRescueEvidence(startupOnly, options({ requireYieldedExecution: true })),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'semantic-progress-missing',
   );
 });
@@ -656,13 +660,16 @@ test('fails an observed but unsupported function_call exec_command shape', () =>
   );
 });
 
-test('fails when child-only stderr or raw progress enters a parent public event', () => {
-  const input = fixture();
-  input.rollouts[0].splice(-2, 0, { type: 'event_msg', payload: { type: 'agent_message', message: 'raw output must stay private', phase: 'commentary' } });
-  assert.throws(
-    () => qualifyCodexRescueEvidence(input, options()),
-    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-isolation-breach',
-  );
+test('fails when child-only stderr or either compatibility diagnostic enters a parent public event', () => {
+  for (const forbidden of ['raw output must stay private', expectedSemanticProgress.snapshotFallback, expectedSemanticProgress.lifecycleOnly]) {
+    const input = fixture();
+    input.rollouts[0].splice(-2, 0, { type: 'event_msg', payload: { type: 'agent_message', message: forbidden, phase: 'commentary' } });
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-isolation-breach',
+      forbidden,
+    );
+  }
 });
 
 test('fails when the parent executes the constant Rescue command inline', () => {
@@ -781,7 +788,10 @@ function options(overrides = {}) {
     expectedSemanticProgress,
     expectedNamedSpawnMessage: 'fixed named forwarder',
     expectedGenericSpawnMessage: 'fixed generic forwarder',
-    forbiddenParentText: ['Running command: npm test', 'raw output must stay private', 'reasoning must stay private'],
+    forbiddenParentText: [
+      'Running command: npm test', expectedSemanticProgress.snapshotFallback, expectedSemanticProgress.lifecycleOnly,
+      'raw output must stay private', 'reasoning must stay private',
+    ],
     ...overrides,
   };
   return value;

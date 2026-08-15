@@ -247,4 +247,12 @@ test('opt-in installed Rescue E2E requires real yielded execution and privacy-sa
   assert.match(installed, /yieldedExecution\.terminalExitCode/);
   assert.match(installed, /executions\.initial\.execCommandCount/);
   assert.match(installed, /executions\.continuation\.execCommandCount/);
+  assert.match(installed, /snapshotFallback:\s*'\[zcode\] ZCode conversation frames were unavailable; using bounded session progress\.'/);
+  assert.match(installed, /lifecycleOnly:\s*'\[zcode\] ZCode semantic progress is unavailable; lifecycle updates will continue\.'/);
+  const forbiddenBlocks = [...installed.matchAll(/forbiddenParentText:\s*\[([\s\S]*?)\]/g)].map((match) => match[1]);
+  assert.ok(forbiddenBlocks.length >= 3, 'installed Rescue must check foreground, choice, and background parent isolation');
+  for (const block of forbiddenBlocks) {
+    assert.match(block, /ZCode conversation frames were unavailable; using bounded session progress\./);
+    assert.match(block, /ZCode semantic progress is unavailable; lifecycle updates will continue\./);
+  }
 });

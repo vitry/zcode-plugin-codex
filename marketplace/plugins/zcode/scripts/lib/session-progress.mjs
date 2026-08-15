@@ -1,7 +1,7 @@
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import { fitProgressMessage, formatToolStartMessage, formatToolTerminalMessage } from './conversation-progress.mjs';
+import { fitProgressMessage, formatSnapshotToolStartMessage, formatToolTerminalMessage } from './conversation-progress.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
 
 const START_STATUSES = new Set(['pending', 'running']);
@@ -89,12 +89,12 @@ async function describePart(part, observedAt, workspaceRoot, calls) {
   if (prior?.terminal) return null;
   if (START_STATUSES.has(state.status)) {
     if (prior?.started || !prior && calls.size >= MAX_TRACKED_CALLS) return null;
-    const message = fitProgressMessage(await formatToolStartMessage({ toolName, input: state.input }, workspaceRoot, undefined, undefined, false));
+    const message = fitProgressMessage(await formatSnapshotToolStartMessage({ toolName, input: state.input }, workspaceRoot));
     calls.set(callId, { started: true, terminal: false, message });
     return { phase: state.status === 'pending' ? 'waiting' : 'running', message, observedAt };
   }
   if (!TERMINAL_STATUSES.has(state.status) || !prior && calls.size >= MAX_TRACKED_CALLS) return null;
-  const startMessage = prior?.message ?? fitProgressMessage(await formatToolStartMessage({ toolName, input: state.input }, workspaceRoot, undefined, undefined, false));
+  const startMessage = prior?.message ?? fitProgressMessage(await formatSnapshotToolStartMessage({ toolName, input: state.input }, workspaceRoot));
   calls.set(callId, { started: prior?.started === true, terminal: true, message: startMessage });
   return {
     phase: 'running',

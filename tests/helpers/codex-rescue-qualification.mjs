@@ -599,16 +599,19 @@ function assertTerminalSentinel(output, sentinel) {
 
 function assertSemanticProgress(output, expected) {
   if (expected === undefined) return;
-  assertExactKeys(expected, ['start', 'terminal', 'degraded'], 'semantic-progress-contract');
-  const start = boundedString(expected.start); const terminal = boundedString(expected.terminal); const degraded = boundedString(expected.degraded);
-  if (!start || !terminal || !degraded || !start.startsWith('[zcode] ') || !terminal.startsWith('[zcode] ') || !degraded.startsWith('[zcode] ')) mismatch('semantic-progress-contract', 'Semantic progress expectations must be exact bounded allowlisted ZCode lines.');
+  assertExactKeys(expected, ['start', 'terminal', 'snapshotFallback', 'lifecycleOnly'], 'semantic-progress-contract');
+  const start = boundedString(expected.start); const terminal = boundedString(expected.terminal);
+  const snapshotFallback = boundedString(expected.snapshotFallback); const lifecycleOnly = boundedString(expected.lifecycleOnly);
+  if (!start || !terminal || !snapshotFallback || !lifecycleOnly
+    || ![start, terminal, snapshotFallback, lifecycleOnly].every((line) => line.startsWith('[zcode] '))) mismatch('semantic-progress-contract', 'Semantic progress expectations must be exact bounded allowlisted ZCode lines.');
   terminalOutputText(output, 'semantic-progress-missing');
   const lines = output.flatMap((item) => item.text.split('\n'));
   const startIndexes = lines.map((line, index) => line === start ? index : -1).filter((index) => index >= 0);
   const terminalIndexes = lines.map((line, index) => line === terminal ? index : -1).filter((index) => index >= 0);
-  const degradedIndexes = lines.map((line, index) => line === degraded ? index : -1).filter((index) => index >= 0);
+  const diagnosticCounts = [snapshotFallback, lifecycleOnly].map((diagnostic) => lines.filter((line) => line === diagnostic).length);
   const hasSemanticPair = startIndexes.length === 1 && terminalIndexes.length === 1 && startIndexes[0] < terminalIndexes[0];
-  if (!hasSemanticPair && degradedIndexes.length !== 1) {
+  const hasExactCompatibilityDiagnostic = diagnosticCounts.some((count) => count === 1) && diagnosticCounts.every((count) => count <= 1);
+  if (!hasSemanticPair && !hasExactCompatibilityDiagnostic) {
     mismatch('semantic-progress-missing', 'The child transcript lacks one ordered safe semantic progress pair or one exact degraded diagnostic.');
   }
 }

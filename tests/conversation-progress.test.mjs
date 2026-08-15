@@ -1,11 +1,11 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { createConversationProgressDescriber as createStructuralDescriber, createDeferredConversationProgressObserver as createStructuralDeferredObserver, normalizePreview } from '../scripts/lib/conversation-progress.mjs';
+import { createConversationProgressDescriber as createStructuralDescriber, createDeferredConversationProgressObserver as createStructuralDeferredObserver, formatSnapshotToolStartMessage, normalizePreview } from '../scripts/lib/conversation-progress.mjs';
 import { conversationFrame, toolRow, turnRow } from './fixtures/conversation-progress-frames.mjs';
 
 const observedAt = '2026-08-09T00:00:01.000Z';
@@ -54,6 +54,15 @@ test('normalizes previews by removing controls, collapsing whitespace, and trunc
   assert.equal([...result].length, 96);
   assert.equal(result, `${'😀'.repeat(95)}…`);
   assert.equal(normalizePreview('x'.repeat(1_000_000), 96), `${'x'.repeat(95)}…`);
+});
+
+test('snapshot tool starts expose a preview-free formatter by construction', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  await writeFile(join(workspace, 'safe.txt'), 'safe');
+  const workspaceRoot = await realpath(workspace);
+  assert.equal(await formatSnapshotToolStartMessage({ toolName: 'Bash', input: { command: 'PRIVATE_COMMAND' } }, workspaceRoot), 'Running tool: Bash.');
+  assert.equal(await formatSnapshotToolStartMessage({ toolName: 'Grep', input: { pattern: 'PRIVATE_PATTERN' } }, workspaceRoot), 'Running tool: Grep.');
+  assert.equal(await formatSnapshotToolStartMessage({ toolName: 'Read', input: { file_path: join(workspace, 'safe.txt') } }, workspaceRoot), 'Reading: safe.txt.');
 });
 
 test('describes only allowlisted online tool and turn lifecycle fields', async () => {

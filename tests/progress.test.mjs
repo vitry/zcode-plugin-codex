@@ -140,6 +140,61 @@ test('snapshot read failure degrades exactly once without exposing its rejection
   reporter.close();
 });
 
+test('stopAccepting fences a late snapshot read rejection without a cleanup diagnostic', async () => {
+  const lines = []; const diagnostics = []; let rejectRead = () => {};
+  const pendingRead = new Promise((_resolve, reject) => { rejectRead = reject; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt,
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+  });
+  reporter.activateAcceptedBoundary({
+    readSnapshot: () => pendingRead,
+    describer: { observe: async () => [] },
+  });
+  reporter.activate(notification('prompt_started'));
+  reporter.activateCompatibilityBoundary(); await Promise.resolve();
+  assert.equal(reporter.probeSnapshot().state, 'snapshot-fallback');
+
+  reporter.stopAccepting(); rejectRead(new Error('PRIVATE_LATE_READ_REJECTION'));
+  await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.equal(reporter.probeSnapshot().state, 'snapshot-fallback');
+  assert.deepEqual(diagnostics, ['conversation-snapshot-fallback']);
+  assert.doesNotMatch(lines.join(''), /semantic progress is unavailable|PRIVATE_LATE_READ_REJECTION/);
+  reporter.close();
+});
+
+test('stopAccepting fences late snapshot description and normalization failures', async () => {
+  for (const mode of ['rejection', 'invalid-normalization']) {
+    const lines = []; const diagnostics = []; let settleDescription = () => {};
+    let markDescriptionStarted = () => {};
+    const descriptionStarted = new Promise((resolve) => { markDescriptionStarted = resolve; });
+    const description = new Promise((resolve, reject) => {
+      settleDescription = () => mode === 'rejection'
+        ? reject(new Error('PRIVATE_LATE_DESCRIPTION_REJECTION'))
+        : resolve([{ phase: 'running', message: 'PRIVATE\nINVALID', observedAt }]);
+    });
+    const reporter = progressModule.createProgressReporter({
+      sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt,
+      onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    });
+    reporter.activateAcceptedBoundary({
+      readSnapshot: async () => ({ runtime: { stateRevision: 1 }, messages: [] }),
+      describer: { observe: () => { markDescriptionStarted(); return description; } },
+    });
+    reporter.activate(notification('prompt_started'));
+    reporter.activateCompatibilityBoundary(); await descriptionStarted;
+
+    reporter.stopAccepting(); settleDescription();
+    await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+    assert.equal(reporter.probeSnapshot().state, 'snapshot-fallback', mode);
+    assert.deepEqual(diagnostics, ['conversation-snapshot-fallback'], mode);
+    assert.doesNotMatch(lines.join(''), /semantic progress is unavailable|PRIVATE/, mode);
+    reporter.close();
+  }
+});
+
 test('invalid snapshot normalization degrades once instead of silently accepting unsafe events', async () => {
   const lines = [];
   const reporter = progressModule.createProgressReporter({ sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt });
