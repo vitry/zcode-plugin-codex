@@ -40,7 +40,7 @@ test('foreground Rescue gate lifecycle releases and cleans exact processes on ga
     releaseGate: async (path) => { events.push(`release:${path}`); }, terminateExactProcess: async (identity) => { events.push(`terminate-pid:${identity.pid}`); alive = false; },
     waitForProcessExit: async (identity) => { events.push(`wait-pid:${identity.pid}`); }, holdMs: 0,
   }), /gate discovery timeout/);
-  assert.deepEqual(events, ['release:/exact/gate', 'terminate-codex', 'terminate-pid:48123', 'wait-pid:48123']);
+  assert.deepEqual(events, ['release:/exact/gate', 'terminate-pid:48123', 'wait-pid:48123', 'terminate-codex']);
 });
 
 test('foreground Rescue gate lifecycle consumes Codex failure and releases the exact gate', async () => {
@@ -53,7 +53,7 @@ test('foreground Rescue gate lifecycle consumes Codex failure and releases the e
     releaseGate: async (path) => { events.push(`release:${path}`); }, terminateExactProcess: async (identity) => { events.push(`terminate-pid:${identity.pid}`); alive = false; },
     waitForProcessExit: async (identity) => { events.push(`wait-pid:${identity.pid}`); }, holdMs: 0,
   }), /Codex failed/);
-  assert.deepEqual(events, ['release:/exact/gate', 'terminate-codex', 'terminate-pid:59123', 'wait-pid:59123']);
+  assert.deepEqual(events, ['release:/exact/gate', 'terminate-pid:59123', 'wait-pid:59123', 'terminate-codex']);
 });
 
 test('foreground Rescue gate lifecycle cleans an exact fake child that does not exit naturally', async () => {
@@ -111,15 +111,16 @@ test('foreground Rescue refuses to signal stale, nonce-mismatched, or reparented
     },
   ];
   for (const scenario of cases) await t.test(scenario.name, async () => {
-    let terminated = false; let rejectCodex;
+    let terminated = false; let codexTerminated = false; let rejectCodex;
     const result = new Promise((_, reject) => { rejectCodex = reject; });
     await assert.rejects(runHeldForegroundRescue({
       gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
-      launch: () => ({ result, terminate: async () => { rejectCodex(new Error('terminated exact Codex')); } }), waitForGate: async () => {},
+      launch: () => ({ result, terminate: async () => { codexTerminated = true; rejectCodex(new Error('terminated exact Codex')); } }), waitForGate: async () => {},
       readProcessMarker: async () => scenario.marker, inspectProcessIdentity: scenario.inspect,
       releaseGate: async () => {}, sleep: async () => {}, terminateExactProcess: async () => { terminated = true; }, holdMs: 0,
     }), scenario.pattern);
     assert.equal(terminated, false, 'identity mismatch must never signal an unrelated PID');
+    assert.equal(codexTerminated, true, 'identity mismatch must not prevent exact Codex termination');
   });
 });
 
@@ -135,6 +136,40 @@ test('foreground Rescue reports cleanup identity change without signaling the re
     terminateExactProcess: async () => { terminated = true; }, holdMs: 0,
   }), /process identity changed during cleanup/i);
   assert.equal(terminated, false);
+});
+
+test('foreground Rescue cleans the exact fake child before Codex termination can reparent it', async () => {
+  const events = []; let alive = true; let reparented = false; let rejectCodex;
+  const result = new Promise((_, reject) => { rejectCodex = reject; });
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    launch: () => ({ result, terminate: async () => { events.push('terminate-codex'); reparented = true; rejectCodex(new Error('terminated exact Codex')); } }),
+    waitForGate: async () => {},
+    readProcessMarker: async () => ({ pid: 63123, ppid: 91, nonce: 'run-nonce' }),
+    inspectProcessIdentity: async () => alive ? ({ pid: 63123, ppid: reparented ? 1 : 91, startIdentity: 'start-a' }) : undefined,
+    releaseGate: async () => { events.push('release'); },
+    terminateExactProcess: async () => { events.push('terminate-child'); alive = false; },
+    waitForProcessExit: async (_identity, phase) => { events.push(`wait-child:${phase}`); assert.equal(alive, false); },
+    sleep: async () => { throw new Error('held verification failed'); }, holdMs: 0,
+  }), /held verification failed/);
+  assert.deepEqual(events, ['release', 'terminate-child', 'wait-child:cleanup', 'terminate-codex']);
+  assert.equal(alive, false);
+});
+
+test('foreground Rescue still terminates Codex after exact child cleanup fails', async () => {
+  const events = []; let rejectCodex;
+  const result = new Promise((_, reject) => { rejectCodex = reject; });
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: 'run-nonce',
+    launch: () => ({ result, terminate: async () => { events.push('terminate-codex'); rejectCodex(new Error('terminated exact Codex')); } }),
+    waitForGate: async () => {},
+    readProcessMarker: async () => ({ pid: 63124, ppid: 92, nonce: 'run-nonce' }),
+    inspectProcessIdentity: async () => ({ pid: 63124, ppid: 92, startIdentity: 'start-a' }), releaseGate: async () => { events.push('release'); },
+    terminateExactProcess: async () => { events.push('terminate-child'); throw new Error('exact child cleanup failed'); },
+    waitForProcessExit: async () => { events.push('wait-child'); throw new Error('exact child remained alive'); },
+    sleep: async () => { throw new Error('held verification failed'); }, holdMs: 0,
+  }), /held verification failed/);
+  assert.deepEqual(events, ['release', 'terminate-child', 'wait-child', 'terminate-codex']);
 });
 
 test('preserved installed evidence scrubs isolated credential copies on normal, thrown, and timed-out cleanup', async (t) => {
@@ -722,7 +757,6 @@ async function runHeldForegroundRescue(input) {
     try { await releaseGate(input.gatePath); gateReleased = true; } catch (error) { cleanupErrors.push(error); }
   }
   if (!completed) {
-    if (typeof control?.terminate === 'function') { try { await control.terminate(); } catch (error) { cleanupErrors.push(error); } }
     if (!identity) {
       try { identity = await captureProcessIdentity(); }
       catch (error) { if (!processMarkerUnavailable(error)) cleanupErrors.push(error); }
@@ -735,6 +769,7 @@ async function runHeldForegroundRescue(input) {
         try { await waitForProcessExit(identity, 'cleanup'); } catch (error) { cleanupErrors.push(error); }
       }
     }
+    if (typeof control?.terminate === 'function') { try { await control.terminate(); } catch (error) { cleanupErrors.push(error); } }
   }
   if (cleanupErrors.length > 0) {
     if (!failure) failure = cleanupErrors.length === 1 ? cleanupErrors[0] : new AggregateError(cleanupErrors, 'foreground Rescue cleanup failed');
