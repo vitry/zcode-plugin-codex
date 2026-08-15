@@ -10,6 +10,11 @@ if (process.argv.includes('--version')) {
 }
 const processNonce = process.env.FAKE_ZCODE_PROCESS_NONCE;
 if (processNonce !== undefined && !/^[a-f0-9]{64}$/u.test(processNonce)) throw new Error('fake process nonce must be 256 bits');
+const progressDispatchGate = process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE;
+const progressDispatchGateNonce = process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE_NONCE;
+if ((progressDispatchGate === undefined) !== (progressDispatchGateNonce === undefined)
+  || progressDispatchGateNonce !== undefined && !/^[a-f0-9]{64}$/u.test(progressDispatchGateNonce)) throw new Error('fake progress-dispatch gate identity is invalid');
+let progressDispatchGateChecks = 0;
 if (process.env.FAKE_ZCODE_PROCESS_FILE) await writeFile(process.env.FAKE_ZCODE_PROCESS_FILE, JSON.stringify({
   pid: process.pid, ppid: process.ppid, ...(processNonce ? { nonce: processNonce } : {}),
 }));
@@ -122,6 +127,16 @@ async function record(message) {
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
+async function progressDispatchReleased() {
+  if (!progressDispatchGate || !progressDispatchGateNonce) return true;
+  const value = await readFile(progressDispatchGate, 'utf8').then(JSON.parse).catch(() => null);
+  if (value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'nonce,state,version'
+    && value.version === 1 && value.nonce === progressDispatchGateNonce && value.state === 'release') return true;
+  progressDispatchGateChecks += 1;
+  if (process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE_REACHED) await writeFile(process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE_REACHED, JSON.stringify({ version: 1, nonce: progressDispatchGateNonce, checks: progressDispatchGateChecks }));
+  return false;
+}
 async function scheduleCompletion(sessionId, completion) {
   const reachedDelayMs = Number(process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS ?? 0);
   if (Number.isSafeInteger(reachedDelayMs) && reachedDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, reachedDelayMs));
@@ -133,6 +148,9 @@ async function scheduleCompletion(sessionId, completion) {
       timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return;
     }
     if (process.env.FAKE_ZCODE_SESSION_PROGRESS_RECOVERY === '1' && !sessionProgressRecoveryCompleted.has(sessionId)) {
+      timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return;
+    }
+    if (!await progressDispatchReleased()) {
       timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return;
     }
     if (process.env.FAKE_ZCODE_COMPLETION_GATE) {

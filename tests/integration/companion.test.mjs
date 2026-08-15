@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -143,21 +144,48 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
-  const output = await runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
-    cwd: context.workspace,
-    env: { ...context.env, ...options.env, FAKE_ZCODE_CONVERSATION_SCENARIO: scenario, FAKE_ZCODE_RECORD: record },
-    caller: owner,
-    progressWriter: (line) => lines.push(line),
-    ...(options.heartbeat ? { progressDependencies: {
-      now: () => new Date().toISOString(),
-      setInterval: (/** @type {()=>void} */ callback) => { queueMicrotask(callback); return { unref() {} }; },
-      clearInterval: () => {},
-    } } : {}),
-  });
+  const gateNonce = options.completionAfterProgressLine ? randomBytes(32).toString('hex') : undefined;
+  const gatePath = gateNonce ? join(context.directory, `${scenario}-${gateNonce}-progress-dispatch-gate.json`) : undefined;
+  let gateTimedOut = false; let gateWriteError; let observedExpectedLine = false; let gateDeadline;
+  const releaseGate = async () => {
+    if (!gatePath || !gateNonce) return;
+    try { await writeFile(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'release' }), { mode: 0o600 }); }
+    catch (error) { gateWriteError ??= error; }
+  };
+  if (gatePath && gateNonce) await writeFile(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'held' }), { mode: 0o600 });
+  let output;
+  try {
+    if (gatePath) {
+      gateDeadline = setTimeout(() => { gateTimedOut = true; void releaseGate(); }, 5_000);
+      gateDeadline.unref?.();
+    }
+    output = await runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
+      cwd: context.workspace,
+      env: {
+        ...context.env, ...options.env, FAKE_ZCODE_CONVERSATION_SCENARIO: scenario, FAKE_ZCODE_RECORD: record,
+        ...(gatePath && gateNonce ? { FAKE_ZCODE_PROGRESS_DISPATCH_GATE: gatePath, FAKE_ZCODE_PROGRESS_DISPATCH_GATE_NONCE: gateNonce } : {}),
+      },
+      caller: owner,
+      progressWriter: (line) => {
+        lines.push(line);
+        if (line === options.completionAfterProgressLine) { observedExpectedLine = true; void releaseGate(); }
+      },
+      ...(options.heartbeat ? { progressDependencies: {
+        now: () => new Date().toISOString(),
+        setInterval: (/** @type {()=>void} */ callback) => { queueMicrotask(callback); return { unref() {} }; },
+        clearInterval: () => {},
+      } } : {}),
+    });
+  } finally {
+    if (gateDeadline) clearTimeout(gateDeadline);
+    await releaseGate();
+  }
+  if (gateTimedOut || !observedExpectedLine && options.completionAfterProgressLine) throw new Error(`expected public progress line was not dispatched: ${options.completionAfterProgressLine}`);
+  if (gateWriteError) throw gateWriteError;
   const status = await runCompanion(['status', output.job.id], { cwd: context.workspace, env: context.env, caller: owner });
   const stored = await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, output.job.id);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
@@ -409,8 +437,8 @@ test('initial-only frames fall back to safe current-turn session tool progress w
   const context = await fixture();
   const pathSentinel = 'CONTAINED_SNAPSHOT_PATH_SENTINEL.txt';
   const scenario = await deterministicConversationScenario(context, 'initial-only', {
-    heartbeat: true, env: {
-      FAKE_ZCODE_SESSION_PROGRESS: 'running', FAKE_ZCODE_WAIT_FOR_PROGRESS_READ: '1',
+    heartbeat: true, completionAfterProgressLine: '[zcode] Running tool: Read.\n', env: {
+      FAKE_ZCODE_SESSION_PROGRESS: 'running',
       FAKE_ZCODE_SESSION_PROGRESS_TOOL: 'Read', FAKE_ZCODE_SESSION_PROGRESS_PATH: join(context.workspace, pathSentinel),
     },
   });
@@ -427,7 +455,8 @@ test('initial-only frames fall back to safe current-turn session tool progress w
 test('snapshot fallback emits a terminal-only safe event when the call first appears terminal', async () => {
   const context = await fixture();
   const scenario = await deterministicConversationScenario(context, 'initial-only', {
-    heartbeat: true, env: { FAKE_ZCODE_SESSION_PROGRESS: 'terminal', FAKE_ZCODE_WAIT_FOR_PROGRESS_READ: '1' },
+    heartbeat: true, completionAfterProgressLine: '[zcode] Bash completed (10ms).\n',
+    env: { FAKE_ZCODE_SESSION_PROGRESS: 'terminal' },
   });
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
   assert.match(visible, /Bash completed \(10ms\)\./); assert.doesNotMatch(visible, /Running tool: Bash\./);
@@ -438,7 +467,8 @@ test('snapshot fallback emits a terminal-only safe event when the call first app
 test('snapshot read rejection degrades once to lifecycle-only and preserves authoritative completion', async () => {
   const context = await fixture();
   const scenario = await deterministicConversationScenario(context, 'initial-only', {
-    heartbeat: true, env: { FAKE_ZCODE_SESSION_PROGRESS_READ_FAIL: '1', FAKE_ZCODE_WAIT_FOR_PROGRESS_READ: '1' },
+    heartbeat: true, completionAfterProgressLine: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n',
+    env: { FAKE_ZCODE_SESSION_PROGRESS_READ_FAIL: '1' },
   });
   const fallback = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
   const degraded = '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n';
