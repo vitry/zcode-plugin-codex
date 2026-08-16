@@ -90,6 +90,7 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   assert.equal(source.match(/task_name:\s*rescueTaskName/g)?.length, 2);
   assert.match(source, /safe fallback[^\n]+`zcode_rescue_task`/i);
   assert.match(source, /occupied sibling[^\n]+smallest available ordinal[^\n]+2[^\n]+9999/i);
+  assert.match(source, /ordinal[^\n]+2[^\n]+9999[^\n]+without leading zeros/i);
   assert.match(source, /complete name[^\n]+64 UTF-8 bytes/i);
   assert.match(source, /1[–-]3 lowercase ASCII semantic words/i);
   assert.match(source, /each[^\n]+begins?[^\n]+letter[^\n]+(?:at most|max(?:imum)?) 16[^\n]+lowercase letters or digits/i);
