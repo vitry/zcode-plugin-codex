@@ -454,6 +454,7 @@ async function failQueuedJob(store, workspace, jobId, error) {
 
 async function main() {
   let output; const entry = process.argv[2]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = entry === 'invoke' || entry === 'invoke-choice' || entry === 'invoke-status'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
+  const boundStatusDirect = process.argv.length === 4 && entry === 'invoke-status' && process.argv[3] === 'rescue';
   const rescueDirect = direct && process.argv[3] === 'rescue';
   const signalController = !setup && !worker ? createForegroundSignalController({ process }) : null;
   try {
@@ -474,7 +475,7 @@ async function main() {
       if (typeof error.details.exitCode === 'number') process.exitCode = error.details.exitCode;
       return;
     }
-    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = entry !== 'setup' && entry !== 'role-status' && entry !== 'invoke' && entry !== 'invoke-choice' && entry !== 'invoke-status' && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
+    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = entry !== 'setup' && entry !== 'role-status' && entry !== 'invoke' && entry !== 'invoke-choice' && entry !== 'invoke-status' && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1' && !boundStatusDirect) process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
   }
   finally { signalController?.cleanup(); }
 }

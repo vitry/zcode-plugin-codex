@@ -155,6 +155,9 @@ test('bound Rescue status sidecar exposes only safe fixed fields and starts no Z
     assert.notEqual(rejected.code, 0, argv.join(' '));
   }
   await assert.rejects(readFile(protocolRecord, 'utf8'), { code: 'ENOENT' });
+  const debugNearMiss = await runChild(process.execPath, [cli, 'invoke-status', 'rescue', '--all'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'status-child', ZCODE_DEBUG: '1' } });
+  assert.notEqual(debugNearMiss.code, 0);
+  assert.match(debugNearMiss.stderr, /PluginError: The direct companion command is invalid\./);
 });
 
 test('bound Rescue status maps corrupt durable state to one metadata-free error', async (t) => {
@@ -166,17 +169,21 @@ test('bound Rescue status maps corrupt durable state to one metadata-free error'
   await writeFile(join(storage.directory, 'jobs', `${job.id}.json`), JSON.stringify({ ...job, workspace: 'PRIVATE_CORRUPT_WORKSPACE' }));
   const protocolRecord = join(ctx.directory, 'corrupt-status-protocol.jsonl');
 
-  const corrupt = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'corrupt-child', FAKE_ZCODE_RECORD: protocolRecord } });
+  const corrupt = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'corrupt-child', FAKE_ZCODE_RECORD: protocolRecord, ZCODE_DEBUG: '1' } });
   assert.notEqual(corrupt.code, 0);
   assert.match(corrupt.stdout, /BOUND_RESCUE_STATUS_UNAVAILABLE/);
   assert.doesNotMatch(`${corrupt.stdout}${corrupt.stderr}`, new RegExp(`${job.id}|PRIVATE_CORRUPT_WORKSPACE|${ctx.workspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.equal(corrupt.stderr, '');
+  assert.doesNotMatch(corrupt.stdout, /\n\s*at |PluginError:|zcode-companion\.mjs:/);
   await assert.rejects(readFile(protocolRecord, 'utf8'), { code: 'ENOENT' });
 });
 
 test('bound Rescue status sidecar rejects missing, sibling, stale-turn and ambiguous bindings', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
-  const missing = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'missing-child' } });
+  const missing = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'missing-child', ZCODE_DEBUG: '1' } });
   assert.notEqual(missing.code, 0); assert.match(missing.stdout, /EXECUTOR_IDENTITY_NOT_FOUND/);
+  assert.equal(missing.stderr, '');
+  assert.doesNotMatch(missing.stdout, /\n\s*at |PluginError:|zcode-companion\.mjs:|hooks\/lib\/hook-state/);
 
   await identity.beginCallerTurn({ sessionId: 'side-parent', turnId: 'bound-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
   await startRescueChild(ctx, 'side-parent', 'bound-child', 'bound-child-turn');
