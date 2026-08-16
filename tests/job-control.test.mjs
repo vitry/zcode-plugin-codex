@@ -83,6 +83,10 @@ test('bound Rescue status fails closed unless exactly one workspace and turn mat
   }
   await assert.rejects(readBoundRescueStatus({ store: {}, workspace: '/repo', executor }), { code: 'BOUND_RESCUE_STATUS_INPUT_INVALID' });
   await assert.rejects(readBoundRescueStatus({ store: { listOwnedJobs: async () => [matching] }, workspace: '/repo', executor: /** @type {any} */ ({}) }), { code: 'BOUND_RESCUE_STATUS_INPUT_INVALID' });
+  await assert.rejects(
+    readBoundRescueStatus({ store: { listOwnedJobs: async () => { throw new PluginError('PRIVATE_STATE_FAILURE', 'PRIVATE_JOB_ID'); } }, workspace: '/repo', executor }),
+    (/** @type {any} */ error) => error?.code === 'BOUND_RESCUE_STATUS_UNAVAILABLE' && error.message === 'Bound Rescue status is unavailable.' && Object.keys(error.details).length === 0,
+  );
 });
 
 test('latest selection is canonical-workspace and owner confined', async () => {

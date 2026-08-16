@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ import { createInvocationStore } from '../../scripts/lib/invocation.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
+import { runDirectInvocation } from '../../scripts/zcode-companion.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -140,12 +141,35 @@ test('bound Rescue status sidecar exposes only safe fixed fields and starts no Z
   assert.deepEqual(await store.readJob(ctx.workspace, job.id), beforeStatus);
   await assert.rejects(readFile(protocolRecord, 'utf8'), { code: 'ENOENT' });
 
+  const workspaceLink = join(ctx.directory, 'workspace-link');
+  await symlink(ctx.workspace, workspaceLink, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.deepEqual(await runDirectInvocation(['invoke-status', 'rescue'], {
+    cwd: workspaceLink, env: { ...ctx.env, CODEX_THREAD_ID: 'status-child', FAKE_ZCODE_RECORD: protocolRecord },
+  }), status);
+  await assert.rejects(readFile(protocolRecord, 'utf8'), { code: 'ENOENT' });
+
   for (const argv of [
     ['invoke-status'], ['invoke-status', 'rescue', '--all'], ['invoke-status', 'rescue', 'job-id'], ['invoke-status', 'review'],
   ]) {
     const rejected = await runChild(process.execPath, [cli, ...argv], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'status-child', FAKE_ZCODE_RECORD: protocolRecord } });
     assert.notEqual(rejected.code, 0, argv.join(' '));
   }
+  await assert.rejects(readFile(protocolRecord, 'utf8'), { code: 'ENOENT' });
+});
+
+test('bound Rescue status maps corrupt durable state to one metadata-free error', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
+  await identity.beginCallerTurn({ sessionId: 'corrupt-parent', turnId: 'corrupt-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
+  await startRescueChild(ctx, 'corrupt-parent', 'corrupt-child', 'corrupt-child-turn');
+  const job = await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'corrupt-parent', ownerTurnId: 'corrupt-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  await writeFile(join(storage.directory, 'jobs', `${job.id}.json`), JSON.stringify({ ...job, workspace: 'PRIVATE_CORRUPT_WORKSPACE' }));
+  const protocolRecord = join(ctx.directory, 'corrupt-status-protocol.jsonl');
+
+  const corrupt = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'corrupt-child', FAKE_ZCODE_RECORD: protocolRecord } });
+  assert.notEqual(corrupt.code, 0);
+  assert.match(corrupt.stdout, /BOUND_RESCUE_STATUS_UNAVAILABLE/);
+  assert.doesNotMatch(`${corrupt.stdout}${corrupt.stderr}`, new RegExp(`${job.id}|PRIVATE_CORRUPT_WORKSPACE|${ctx.workspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   await assert.rejects(readFile(protocolRecord, 'utf8'), { code: 'ENOENT' });
 });
 

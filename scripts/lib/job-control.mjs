@@ -24,7 +24,10 @@ export async function readBoundRescueStatus(input) {
       category: 'authorization', remedy: 'Invoke status only from the active Rescue child.',
     });
   }
-  const jobs = await input.store.listOwnedJobs(input.workspace, input.executor.parentSessionId);
+  let jobs;
+  try { jobs = await input.store.listOwnedJobs(input.workspace, input.executor.parentSessionId); }
+  catch { throw boundRescueStatusUnavailable(); }
+  if (!Array.isArray(jobs)) throw boundRescueStatusUnavailable();
   const matches = jobs.filter((/** @type {any} */ job) => job.workspace === input.workspace
     && job.ownerSessionId === input.executor.parentSessionId
     && job.ownerTurnId === input.executor.parentTurnId
@@ -46,6 +49,12 @@ export async function readBoundRescueStatus(input) {
     progressPreview: [...progressPreview],
     terminal: TERMINAL.has(job.status),
   };
+}
+
+function boundRescueStatusUnavailable() {
+  return new PluginError('BOUND_RESCUE_STATUS_UNAVAILABLE', 'Bound Rescue status is unavailable.', {
+    category: 'state', remedy: 'Continue waiting on the original Rescue foreground execution.',
+  });
 }
 
 /**
