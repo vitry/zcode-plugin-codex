@@ -84,7 +84,21 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   const source = skill('rescue');
   assert.match(source, /defaults? to foreground/i);
   assert.match(source, /role-status rescue/);
-  assert.match(source, /task_name:\s*['"]zcode_rescue['"]/);
+  assert.match(source, /`rescueTaskName`/);
+  assert.match(source, /`zcode_rescue_<semantic_slug>\[_<ordinal>\]`/);
+  assert.match(source, /task_name:\s*rescueTaskName/g);
+  assert.equal(source.match(/task_name:\s*rescueTaskName/g)?.length, 2);
+  assert.match(source, /safe fallback[^\n]+`zcode_rescue_task`/i);
+  assert.match(source, /occupied sibling[^\n]+smallest available ordinal[^\n]+2[^\n]+9999/i);
+  assert.match(source, /complete name[^\n]+64 UTF-8 bytes/i);
+  assert.match(source, /1[–-]3 lowercase ASCII semantic words/i);
+  assert.match(source, /each[^\n]+begins?[^\n]+letter[^\n]+(?:at most|max(?:imum)?) 16[^\n]+lowercase letters or digits/i);
+  assert.match(source, /generic objective description[^\n]+never cop(?:y|ies)[^\n]+mechanically transform[^\n]+task text/i);
+  assert.match(source, /prompt fragments[^\n]+repo(?:sitory)? or filesystem paths[^\n]+personal names[^\n]+issue, job, or session IDs[^\n]+hashes[^\n]+credentials[^\n]+capabilities[^\n]+authorization material/i);
+  assert.match(source, /task_name[^\n]+agent_path[^\n]+presentation metadata[^\n]+neither sufficient nor necessary[^\n]+Rescue (?:identity|evidence)/i);
+  assert.match(source, /(?:do not|never)[^\n]+classify[^\n]+authorize[^\n]+route[^\n]+reject[^\n]+downgrade[^\n]+recover Rescue[^\n]+name or path/i);
+  assert.match(source, /trusted routing facts[^\n]+named Role[^\n]+exact returned child ID[^\n]+parent-child linkage[^\n]+fixed forwarder contract[^\n]+hook-bound executor state/i);
+  assert.doesNotMatch(source, /task_name:\s*['"]zcode_rescue['"]/);
   assert.match(source, /fork_turns:\s*['"]none['"]/);
   assert.match(source, /agent_type:\s*['"]zcode-rescue['"]/);
   assert.match(source, /Run the installed ZCode Rescue forwarder now\. Return its public stdout verbatim\./);
@@ -118,6 +132,16 @@ test('Rescue routing stays single-hop and ordinary subagents fall back transpare
     assert.ok(ordinaryGuard < position, `ordinary-subagent guard must precede ${label}`);
   }
   assert.equal(marketplaceSource, source, 'marketplace Rescue Skill must be byte-identical to source');
+});
+
+test('Rescue chooses its presentation name after readiness and before spawning', () => {
+  const source = skill('rescue');
+  const readiness = source.indexOf('If its status is not `ready`');
+  const naming = source.indexOf('choose `rescueTaskName` exactly once');
+  const namedSpawn = source.indexOf('spawn_agent({');
+  assert.ok(readiness >= 0, 'readiness preflight outcome must exist');
+  assert.ok(naming > readiness, 'presentation naming must follow successful readiness preflight');
+  assert.ok(namedSpawn > naming, 'presentation naming must precede route selection and spawn');
 });
 
 test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task or authorization material', () => {

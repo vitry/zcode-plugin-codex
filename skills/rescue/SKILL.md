@@ -22,11 +22,17 @@ The dedicated `zcode-rescue` child, or the fixed generic compatibility forwarder
 
 Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. Before spawning anything, use the available terminal tool in the parent to run exactly `node "<plugin-root>/scripts/zcode-companion.mjs" role-status rescue` over ordinary stdio. This is the only companion command the parent may run. Accept only the fixed `role-status` object. If its status is not `ready`, present its status and exact `$zcode:setup` remedy, then stop without spawning.
 
+After the readiness preflight succeeds and before route selection or any spawn, choose `rescueTaskName` exactly once as display metadata.
+
+Use the exact written form `zcode_rescue_<semantic_slug>[_<ordinal>]`; the complete name must be no more than 64 UTF-8 bytes. The semantic slug must contain 1–3 lowercase ASCII semantic words separated by underscores; each word begins with a lowercase ASCII letter and contains at most 16 lowercase letters or digits. The slug is a generic objective description and never copies or mechanically transforms task text. It must not contain prompt fragments, repository or filesystem paths, personal names, issue, job, or session IDs, hashes, credentials, capabilities, or authorization material. Use the safe fallback `zcode_rescue_task` when no compliant private-safe semantic slug is available. Start with the unsuffixed name; if it collides with an occupied sibling task name, use the smallest available ordinal from 2 through 9999. Determine that collision before the one spawn; collision handling never authorizes a second spawn.
+
+Both `task_name` and `agent_path` are presentation metadata, and convention matching is neither sufficient nor necessary Rescue identity evidence. Never classify, authorize, route, reject, downgrade, or recover Rescue based on any name or path. Trusted routing facts remain the named Role where available, exact returned child ID, parent-child linkage, fixed forwarder contract, and hook-bound executor state.
+
 When the active `spawn_agent` tool schema exposes `agent_type`, prefer this exact named spawn with a fresh context:
 
 ```text
 spawn_agent({
-  task_name: 'zcode_rescue',
+  task_name: rescueTaskName,
   fork_turns: 'none',
   agent_type: 'zcode-rescue',
   message: 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.',
@@ -44,7 +50,7 @@ Only after the preflight returned `ready`, classify routing exactly as follows:
 
 Do not infer field incompatibility merely from the words `unknown`, `invalid`, or `unsupported`: the error must identify the `agent_type` field/key/parameter rather than its `zcode-rescue` value. Only a proven pre-child schema rejection guarantees that no child ran the companion and therefore no queued job or authorization artifact exists.
 
-For the generic route, substitute only the preflight-verified absolute canonical plugin root in this fixed message, then call `spawn_agent` with `task_name: 'zcode_rescue'`, `fork_turns: 'none'`, no `agent_type`, and exactly that message:
+For the generic route, substitute only the preflight-verified absolute canonical plugin root in this fixed message, then call `spawn_agent` with `task_name: rescueTaskName`, `fork_turns: 'none'`, no `agent_type`, and exactly that message:
 
 ```text
 Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:
