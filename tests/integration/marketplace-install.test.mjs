@@ -57,10 +57,12 @@ function installedRescueSections(source) {
   assert.ok(namedRouteStart > namingStart, 'installed Rescue named-route marker must follow the naming section');
   assert.ok(namedSpawnMarker > namedRouteStart && namedSpawnEnd > namedSpawnStart, 'installed Rescue named-spawn block markers must exist');
   assert.ok(namedRouteEnd > namedSpawnEnd, 'installed Rescue named-route boundary must follow the named spawn');
+  assert.match(source.slice(namedSpawnEnd + '\n```'.length, namedRouteEnd), /^\s*$/, 'installed named route must contain no content after its spawn fence');
   assert.ok(genericRouteStart > namedRouteEnd, 'installed Rescue generic-route marker must follow the named route');
   assert.ok(genericMessageMarker > genericRouteStart, 'installed Rescue generic-route instruction boundary must exist');
   assert.ok(genericMessageEnd > genericMessageStart, 'installed Rescue generic-message block markers must exist');
   assert.ok(genericRouteEnd > genericMessageEnd, 'installed Rescue generic-route boundary must follow the child message');
+  assert.match(source.slice(genericMessageEnd + '\n```'.length, genericRouteEnd), /^\s*$/, 'installed generic route must contain no content after its message fence');
 
   return {
     naming: { start: namingStart, end: namedRouteStart, text: source.slice(namingStart, namedRouteStart) },
@@ -230,7 +232,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     );
   assert.throws(
     () => assertInstalledRescueRoutingContract(namedDecoyMutation),
-    /installed named spawn must preserve the exact dynamic Rescue object/,
+    /installed named (?:spawn must preserve the exact dynamic Rescue object|route must contain no content after its spawn fence)/,
     'installed named-route assertion must reject a decoy dynamic fence before the real worker-named spawn',
   );
   const genericDecoyMutation = installedRescue
@@ -238,8 +240,33 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     .replace('\n\n```text\nAct only as the installed ZCode Rescue forwarder.', '\n\nUnrelated example: `task_name: rescueTaskName`.\n\n```text\nAct only as the installed ZCode Rescue forwarder.');
   assert.throws(
     () => assertInstalledRescueRoutingContract(genericDecoyMutation),
-    /installed generic call sentence must preserve the exact dynamic Rescue arguments/,
+    /installed generic (?:call sentence must preserve the exact dynamic Rescue arguments|route must contain no content after its message fence)/,
     'installed generic-route assertion must reject unrelated dynamic prose when the real call sentence uses a worker name',
+  );
+  const namedFullDecoyMutation = installedRescue
+    .replace('task_name: rescueTaskName', "task_name: 'worker'")
+    .replace(
+      `${expectedInstalledNamedInstruction}\n\n\`\`\`text\n`,
+      `${expectedInstalledNamedInstruction}\n\n\`\`\`text\n${expectedInstalledNamedSpawn}\n\`\`\`\n\n\`\`\`text\n`,
+    );
+  assert.throws(
+    () => assertInstalledRescueRoutingContract(namedFullDecoyMutation),
+    /installed named route must contain no content after its spawn fence/,
+    'installed named route must reject a complete legal decoy spawn hiding the later worker-named spawn',
+  );
+  const badGenericInstruction = expectedInstalledGenericInstruction.replace('task_name: rescueTaskName', "task_name: 'worker'");
+  const badGenericMessage = expectedInstalledGenericMessage.replace('Act only as the installed ZCode Rescue forwarder.', 'Act independently from the installed ZCode Rescue forwarder.');
+  const genericFullDecoyMutation = installedRescue
+    .replace(expectedInstalledGenericInstruction, badGenericInstruction)
+    .replace(expectedInstalledGenericMessage, badGenericMessage)
+    .replace(
+      badGenericInstruction,
+      `${expectedInstalledGenericInstruction}\n\n\`\`\`text\n${expectedInstalledGenericMessage}\n\`\`\`\n\n${badGenericInstruction}`,
+    );
+  assert.throws(
+    () => assertInstalledRescueRoutingContract(genericFullDecoyMutation),
+    /installed generic route must contain no content after its message fence/,
+    'installed generic route must reject a complete legal decoy hiding the later broken call and message',
   );
   assert.match(installedRescue, /agent_type:\s*'zcode-rescue'/);
   assert.match(installedRescue, /fork_turns:\s*'none'/);
