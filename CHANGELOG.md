@@ -4,6 +4,7 @@ All notable changes follow Semantic Versioning.
 
 ## Unreleased
 
+- Added dynamic task-specific Rescue child display names with bounded sibling-collision ordinals. Display identity remains a navigation-only invariant and does not grant, prove, or remove Rescue authorization.
 - Added #24 neutral forwarding hooks, #25 attached-yield continuation on the same running handle, and #26 fixed-shape structural progress probes with detailed status limited to the exact owner.
 - Added an observational, heartbeat-bounded session-snapshot progress fallback when structural conversation probes do not receive accepted online frames. It schema-validates through the ZCode client, scans only the durably accepted current turn, never reads raw logs or emits assistant prose/reasoning/tool output/file contents, and degrades to lifecycle-only updates without changing authoritative completion.
 - Stopped writing the Codex host's `hide_spawn_agent_metadata` flag; one setup now reconciles the managed Role and safely removes only a legacy `false` proved by complete numeric-v1 ownership evidence.

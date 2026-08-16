@@ -14,6 +14,7 @@ import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import {
+  assertCodexRescueDisplayName,
   CodexRescueEvidenceMismatchError,
   CodexRescueUnqualifiedError,
   parseCodexRolloutJsonl,
@@ -27,9 +28,20 @@ const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import
 const TEST_PROCESS_NONCE = 'a'.repeat(64);
 const STALE_PROCESS_NONCE = 'b'.repeat(64);
 const SUPPORTED_CODEX_LINES = Object.freeze(['0.147']);
+const RESCUE_DISPLAY_PRIVATE_SENTINELS = Object.freeze([
+  'npm', 'test', 'fixture', 'workspace', 'session', 'thread', 'job', 'capability', 'public', 'sentinel',
+  'invoke', 'choice', 'fresh', 'wait', 'background', 'zcode_companion', 'plugins_data',
+]);
 const qualificationRequired = process.env.ZCODE_REQUIRE_QUALIFIED === '1';
 const optInSkip = process.env.ZCODE_CODEX_SKILLS_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_SKILLS_E2E=1 to spend authenticated Codex credits.');
 const rescueOptInSkip = process.env.ZCODE_CODEX_RESCUE_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_RESCUE_E2E=1 to qualify the runtime-observed native Rescue route.');
+
+function assertRescueDisplayOmitsPrivateSentinels(display) {
+  const identity = `${display.taskName}\n${display.agentPath}`.toLowerCase();
+  for (const sentinel of RESCUE_DISPLAY_PRIVATE_SENTINELS) {
+    assert.equal(identity.includes(sentinel), false, `Rescue display identity copied private installed sentinel: ${sentinel}`);
+  }
+}
 
 test('foreground Rescue gate lifecycle releases and cleans exact processes on gate discovery timeout', async () => {
   const events = []; let rejectCodex; let alive = true;
@@ -227,6 +239,21 @@ test('installed Rescue qualification declares its supported Codex line and a sco
   t.diagnostic(diagnostic);
 });
 
+test('installed Rescue qualification source checks every dynamic display identity independently', async () => {
+  const source = await readFile(fileURLToPath(import.meta.url), 'utf8');
+  const installedTestName = ['installed Rescue uses one isolated native child', 'for initial and choice continuations'].join(' ');
+  const installedQualification = source.slice(source.indexOf(`test('${installedTestName}'`));
+  assert.ok(installedQualification.length > 0, 'installed Rescue qualification source must remain discoverable');
+  assert.doesNotMatch(installedQualification, /expected(?:TaskName|AgentPath)\s*:/u, 'installed qualification must not pin model-selected display identity');
+  for (const qualifier of ['qualifyCodexRescueEvidence', 'qualifyCodexRescueChoiceEvidence', 'qualifyCodexRescueBackgroundEvidence']) {
+    assert.equal(installedQualification.match(new RegExp(`\\b${qualifier}\\(`, 'gu'))?.length, 1, `${qualifier} must have one installed call site`);
+  }
+  assert.equal(installedQualification.match(/const display = assertCodexRescueDisplayName\(evidence\);/gu)?.length, 3, 'foreground, choice, and background evidence must each check display identity');
+  assert.equal(installedQualification.match(/const encryptedDisplay = assertCodexRescueDisplayName\(error\.evidence\);/gu)?.length, 3, 'every encrypted-message evidence branch must check display identity before becoming unqualified');
+  assert.equal(installedQualification.match(/assertRescueDisplayOmitsPrivateSentinels\((?:display|encryptedDisplay)\);/gu)?.length, 6, 'every successful and encrypted display check must reject installed private sentinels');
+  assert.match(installedQualification, /assert\.equal\(followupArgs\.target, evidence\.childThreadId/u, 'choice continuation must explicitly retain the original child target');
+});
+
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
   if (process.env.ZCODE_CODEX_SKILLS_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_SKILLS_E2E=1.'));
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-skills-e2e-'));
@@ -310,8 +337,6 @@ test('installed Rescue uses one isolated native child for initial and choice con
     const evidence = qualifyCodexRescueEvidence(
       { execFrames: frames, rollouts: await loadCodexRollouts(codexHome) },
       {
-        expectedTaskName: 'zcode_rescue',
-        expectedAgentPath: '/root/zcode_rescue',
         expectedAgentType: 'zcode-rescue',
         expectedWorkspace: canonicalWorkspace,
         expectedCommand,
@@ -338,6 +363,11 @@ test('installed Rescue uses one isolated native child for initial and choice con
         ],
       },
     );
+    const display = assertCodexRescueDisplayName(evidence);
+    assert.equal(display.displayNameConforms, true);
+    assert.match(display.taskName, /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u);
+    assert.equal(display.agentPath, `/root/${display.taskName}`);
+    assertRescueDisplayOmitsPrivateSentinels(display);
     assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route), 'qualification must record an automatically observed native route');
     assert.equal(evidence.semanticProgressChecked, true);
     assert.equal(evidence.yieldedExecution.execCommandCount, 1);
@@ -347,6 +377,11 @@ test('installed Rescue uses one isolated native child for initial and choice con
     t.diagnostic(`qualified native Rescue route: ${evidence.route}`);
   } catch (error) {
     if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
+      const encryptedDisplay = assertCodexRescueDisplayName(error.evidence);
+      assert.equal(encryptedDisplay.displayNameConforms, true);
+      assert.match(encryptedDisplay.taskName, /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u);
+      assert.equal(encryptedDisplay.agentPath, `/root/${encryptedDisplay.taskName}`);
+      assertRescueDisplayOmitsPrivateSentinels(encryptedDisplay);
       assert.ok(['named', 'generic-schema-hidden'].includes(error.evidence?.route), 'encrypted-message evidence must record the automatically observed native route');
       assert.equal(error.evidence.yieldedExecution.execCommandCount, 1);
       assert.ok(error.evidence.yieldedExecution.pollCount >= 1);
@@ -375,19 +410,18 @@ test('installed Rescue uses one isolated native child for initial and choice con
     assert.equal(answer.code, 0, `codex ${choice} continuation failed\n${answer.stdout}\n${answer.stderr}`);
     const choiceCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`;
     const followupMessage = `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`;
+    const choiceRollouts = await loadCodexRollouts(codexHome);
     try {
       const evidence = qualifyCodexRescueChoiceEvidence(
-        { rollouts: await loadCodexRollouts(codexHome) },
+        { rollouts: choiceRollouts },
         {
           expectedChoice: choice,
           expectedParentThreadId: parentIds[0],
-          expectedAgentPath: '/root/zcode_rescue',
           expectedAgentType: 'zcode-rescue',
           expectedWorkspace: canonicalWorkspace,
           expectedInitialCommand: expectedCommand,
           expectedNamedSpawnMessage,
           expectedGenericSpawnMessage,
-          expectedTaskName: 'zcode_rescue',
           expectedChoiceCommand: choiceCommand,
           expectedFollowupMessage: followupMessage,
           expectedPreflightCommand,
@@ -401,12 +435,37 @@ test('installed Rescue uses one isolated native child for initial and choice con
           ],
         },
       );
+      const display = assertCodexRescueDisplayName(evidence);
+      assert.equal(display.displayNameConforms, true);
+      assert.match(display.taskName, /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u);
+      assert.equal(display.agentPath, `/root/${display.taskName}`);
+      assertRescueDisplayOmitsPrivateSentinels(display);
+      const parentRollout = choiceRollouts.find((events) => events.some((event) => event?.type === 'session_meta' && event.payload?.id === parentIds[0]));
+      const spawnCall = parentRollout?.find((event) => event?.payload?.type === 'function_call' && event.payload?.name === 'spawn_agent');
+      const startEvent = parentRollout?.find((event) => event?.payload?.type === 'sub_agent_activity' && event.payload?.kind === 'started');
+      const followupCall = parentRollout?.find((event) => event?.payload?.type === 'function_call' && event.payload?.name === 'followup_task');
+      assert.ok(spawnCall && startEvent && followupCall, 'choice evidence must expose the original spawn, child start, and one continuation');
+      const spawnArgs = JSON.parse(spawnCall.payload.arguments);
+      const followupArgs = JSON.parse(followupCall.payload.arguments);
+      assert.equal(spawnArgs.task_name, display.taskName, 'choice continuation must retain the original display task name');
+      assert.equal(startEvent.payload.agent_path, display.agentPath, 'choice continuation must retain the original display agent path');
+      assert.equal(startEvent.payload.agent_thread_id, evidence.childThreadId, 'choice continuation must retain the original child ID');
+      assert.equal(followupArgs.target, evidence.childThreadId, 'choice continuation must target the original child ID');
+      const childRollout = choiceRollouts.find((events) => events.some((event) => event?.type === 'session_meta' && event.payload?.id === evidence.childThreadId));
+      const childMeta = childRollout?.find((event) => event?.type === 'session_meta')?.payload;
+      assert.equal(childMeta?.source?.subagent?.thread_spawn?.agent_path, display.agentPath);
+      assert.equal(childMeta?.id, evidence.childThreadId);
       assert.equal(evidence.choice, choice);
       assert.equal(evidence.executions.initial.execCommandCount, 1);
       assert.equal(evidence.executions.continuation.execCommandCount, 1);
       t.diagnostic(`qualified same-child Rescue ${choice}: ${evidence.childThreadId}`);
     } catch (error) {
       if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {
+        const encryptedDisplay = assertCodexRescueDisplayName(error.evidence);
+        assert.equal(encryptedDisplay.displayNameConforms, true);
+        assert.match(encryptedDisplay.taskName, /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u);
+        assert.equal(encryptedDisplay.agentPath, `/root/${encryptedDisplay.taskName}`);
+        assertRescueDisplayOmitsPrivateSentinels(encryptedDisplay);
         assert.equal(error.evidence.executions.initial.execCommandCount, 1);
         assert.equal(error.evidence.executions.continuation.execCommandCount, 1);
         markUnqualified(t, unqualified(error.code, error.message)); return;
@@ -448,17 +507,32 @@ test('installed Rescue uses one isolated native child for initial and choice con
         { execFrames: backgroundFrames, rollouts: await loadCodexRollouts(codexHome) },
         {
           expectedJobId: backgroundJobId,
-          expectedTaskName: 'zcode_rescue', expectedAgentPath: '/root/zcode_rescue', expectedAgentType: 'zcode-rescue', expectedWorkspace: backgroundCanonicalWorkspace,
+          expectedAgentType: 'zcode-rescue', expectedWorkspace: backgroundCanonicalWorkspace,
           expectedCommand, expectedPreflightCommand, expectedNamedSpawnMessage, expectedGenericSpawnMessage,
           privateExecutionCapability: privateCapability,
           publicLogs: [background.stdout, background.stderr],
           forbiddenParentText: ['Running command: npm test.', 'Command completed: npm test (25ms).', 'ZCode conversation frames were unavailable; using bounded session progress.', 'ZCode semantic progress is unavailable; lifecycle updates will continue.', 'raw output must stay private', 'reasoning must stay private', 'capability must stay private', 'v4/conversation/frame'],
         },
       );
+      const display = assertCodexRescueDisplayName(evidence);
+      assert.equal(display.displayNameConforms, true);
+      assert.match(display.taskName, /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u);
+      assert.equal(display.agentPath, `/root/${display.taskName}`);
+      assertRescueDisplayOmitsPrivateSentinels(display);
       assert.equal(evidence.jobId, backgroundJobId); assert.equal(evidence.capabilityChecked, true); assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route));
       if (`${background.stdout}${background.stderr}${JSON.stringify(job)}`.includes(privateCapability)) assert.fail('production capability entered public background diagnostics');
     } catch (error) {
-      if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') { markUnqualified(t, unqualified(error.code, error.message)); return; }
+      if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
+        const encryptedDisplay = assertCodexRescueDisplayName(error.evidence);
+        assert.equal(encryptedDisplay.displayNameConforms, true);
+        assert.match(encryptedDisplay.taskName, /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u);
+        assert.equal(encryptedDisplay.agentPath, `/root/${encryptedDisplay.taskName}`);
+        assertRescueDisplayOmitsPrivateSentinels(encryptedDisplay);
+        assert.equal(error.evidence.jobId, backgroundJobId);
+        assert.equal(error.evidence.capabilityChecked, true);
+        assert.ok(['named', 'generic-schema-hidden'].includes(error.evidence.route));
+        markUnqualified(t, unqualified(error.code, error.message)); return;
+      }
       throw error;
     }
     await writeFile(backgroundGate, 'release');
