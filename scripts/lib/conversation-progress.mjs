@@ -16,6 +16,14 @@ const MAX_TRACKED_ROWS = 256;
 const MAX_PENDING_OBSERVATIONS = 4;
 const PATH_RESOLUTION_TIMEOUT_MS = 100;
 const CONVERSATION_WIRE_VERSION = 3;
+/** @typedef {{phase:string,message:string,observedAt:string}} PublicProgressEvent */
+/** @typedef {{disposition:'accepted',phase:'initial'|'online'|'recovery',events:PublicProgressEvent[]}|{disposition:'rejected'|'ignored',reason:string,events:PublicProgressEvent[]}} ObservationResult */
+/** @param {string} reason @returns {ObservationResult} */
+const rejected = (reason) => ({ disposition: 'rejected', reason, events: [] });
+/** @param {string} reason @returns {ObservationResult} */
+const ignored = (reason) => ({ disposition: 'ignored', reason, events: [] });
+/** @param {'initial'|'online'|'recovery'} phase @param {PublicProgressEvent[]} [events] @returns {ObservationResult} */
+const accepted = (phase, events = []) => ({ disposition: 'accepted', phase, events });
 
 /** @param {unknown} value @param {number} [limit] */
 export function normalizePreview(value, limit = PREVIEW_LIMIT) {
@@ -31,7 +39,7 @@ export function normalizePreview(value, limit = PREVIEW_LIMIT) {
 /**
  * @param {{sessionId:string,subscriptionId:string,workspace:string}} options
  * @param {{resolvePath?:(value:unknown,workspaceRoot:string)=>Promise<string|null>,pathTimeoutMs?:number}} [dependencies]
- * @returns {Promise<{observe:(notification:unknown,observedAt:string)=>Promise<Array<{phase:string,message:string,observedAt:string}>>,markGap:()=>void,markTerminal:()=>void}>}
+ * @returns {Promise<{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,markGap:()=>void,markTerminal:()=>void}>}
  */
 export async function createConversationProgressDescriber({ sessionId, subscriptionId, workspace }, dependencies = {}) {
   const workspaceRoot = await realpath(resolve(workspace));
@@ -41,7 +49,7 @@ export async function createConversationProgressDescriber({ sessionId, subscript
   const pathTimeoutMs = Number.isSafeInteger(requestedPathTimeout) && /** @type {number} */ (requestedPathTimeout) >= 1 ? /** @type {number} */ (requestedPathTimeout) : PATH_RESOLUTION_TIMEOUT_MS;
   const toolStates = new Map();
   const rowStates = new Map();
-  /** @type {Array<{notification:unknown,observedAt:string,resolve:(events:any[])=>void}>} */
+  /** @type {Array<{notification:unknown,observedAt:string,resolve:(result:ObservationResult)=>void}>} */
   const pending = [];
   let active = false;
   /** @type {number|undefined} */
@@ -50,12 +58,12 @@ export async function createConversationProgressDescriber({ sessionId, subscript
   let lastSeq;
   let terminal = false; let needsRecovery = false;
 
-  /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<Array<{phase:string,message:string,observedAt:string}>>,markGap:()=>void,markTerminal:()=>void}} */
+  /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,markGap:()=>void,markTerminal:()=>void}} */
   const api = {
     observe(notification, observedAt) {
-      if (terminal) return Promise.resolve([]);
+      if (terminal) return Promise.resolve(ignored('terminal'));
       return new Promise((resolveResult) => {
-        if (active && pending.length >= MAX_PENDING_OBSERVATIONS) { markGap(); resolveResult([]); return; }
+        if (active && pending.length >= MAX_PENDING_OBSERVATIONS) { markGap(); resolveResult(ignored('overflow')); return; }
         pending.push({ notification, observedAt, resolve: resolveResult });
         drain();
       });
@@ -66,51 +74,61 @@ export async function createConversationProgressDescriber({ sessionId, subscript
   return api;
 
   function markGap() { if (!terminal) needsRecovery = true; }
-  function latchTerminal() { terminal = true; while (pending.length > 0) pending.shift()?.resolve([]); }
+  function latchTerminal() { terminal = true; while (pending.length > 0) pending.shift()?.resolve(ignored('terminal')); }
 
   function drain() {
     if (active || pending.length === 0) return;
     const item = pending.shift(); if (!item) return;
     active = true;
-    Promise.resolve().then(() => observeFrame(item.notification, item.observedAt)).catch(() => []).then((events) => item.resolve(events)).finally(() => { active = false; drain(); });
+    Promise.resolve().then(() => observeFrame(item.notification, item.observedAt)).catch(() => rejected('row-shape')).then((result) => item.resolve(result)).finally(() => { active = false; drain(); });
   }
 
-  /** @param {unknown} notification @param {unknown} observedAt */
+  /** @param {unknown} notification @param {unknown} observedAt @returns {Promise<ObservationResult>} */
   async function observeFrame(notification, observedAt) {
-    if (terminal || !validObservedAt(observedAt)) return [];
+    if (terminal) return ignored('terminal');
+    if (!validObservedAt(observedAt)) return rejected('envelope-shape');
+    const publicObservedAt = /** @type {string} */ (observedAt);
     const validated = validateNotification(notification, topic, subscriptionId);
-    if (!validated || validated.deliveryKind === 'initial') return [];
-    if (validated.deliveryKind === 'recovery') {
-      if (lastOrdinal !== undefined && (validated.ordinal <= lastOrdinal || validated.toSeq <= /** @type {number} */ (lastSeq))) return [];
-      if (!needsRecovery && lastOrdinal !== undefined && (validated.ordinal !== lastOrdinal + 1 || validated.fromSeq !== /** @type {number} */ (lastSeq) + 1)) return [];
-      lastOrdinal = validated.ordinal; lastSeq = validated.toSeq; needsRecovery = false;
-      absorbRecovery(validated.deltas); return [];
+    if (!validated.ok) return rejected(validated.reason);
+    const frame = validated.value;
+    if (frame.deliveryKind === 'initial') return accepted('initial');
+    if (frame.deliveryKind === 'recovery') {
+      if (lastOrdinal !== undefined && (frame.ordinal <= lastOrdinal || frame.toSeq <= /** @type {number} */ (lastSeq))) {
+        needsRecovery = true; return rejected('sequence');
+      }
+      if (!needsRecovery && lastOrdinal !== undefined && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== /** @type {number} */ (lastSeq) + 1)) {
+        needsRecovery = true; return rejected('sequence');
+      }
+      lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false;
+      absorbRecovery(frame.deltas); return accepted('recovery');
     }
-    if (needsRecovery) return [];
-    if (lastOrdinal !== undefined && (validated.ordinal !== lastOrdinal + 1 || validated.fromSeq !== /** @type {number} */ (lastSeq) + 1)) return [];
+    if (lastOrdinal !== undefined && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== /** @type {number} */ (lastSeq) + 1)) {
+      needsRecovery = true; return rejected('sequence');
+    }
+    if (needsRecovery) return ignored('recovery-required');
     const staged = [];
-    for (const delta of validated.deltas) {
+    for (const delta of frame.deltas) {
       if (!delta.row) continue;
       if (delta.row.kind === 'toolCall') {
-        const event = await describeTool(delta.row, toolStates, workspaceRoot, /** @type {string} */ (observedAt), resolvePath, pathTimeoutMs, () => terminal || needsRecovery);
-        if (terminal || needsRecovery) return [];
+        const event = await describeTool(delta.row, toolStates, workspaceRoot, publicObservedAt, resolvePath, pathTimeoutMs, () => terminal || needsRecovery);
+        if (terminal || needsRecovery) return ignored(terminal ? 'terminal' : 'recovery-required');
         if (event) staged.push(event);
       } else {
         const row = delta.row;
         const previous = rowStates.get(row.rowId);
         if (row.state === 'completedSuccess' || row.state === 'failed' || row.state === 'completedInterrupted') {
           if (previous !== undefined || rowStates.size < MAX_TRACKED_ROWS) rowStates.set(row.rowId, row.state);
-          staged.push({ phase: 'finalizing', message: row.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt });
+          staged.push({ phase: 'finalizing', message: row.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
           latchTerminal(); break;
         }
         if (previous === undefined && rowStates.size >= MAX_TRACKED_ROWS) continue;
         rowStates.set(row.rowId, row.state);
         if (previous === row.state) continue;
-        if (row.state === 'running' && previous === undefined) staged.push({ phase: 'starting', message: 'ZCode turn started.', observedAt });
+        if (row.state === 'running' && previous === undefined) staged.push({ phase: 'starting', message: 'ZCode turn started.', observedAt: publicObservedAt });
       }
     }
-    lastOrdinal = validated.ordinal; lastSeq = validated.toSeq;
-    return staged;
+    lastOrdinal = frame.ordinal; lastSeq = frame.toSeq;
+    return accepted('online', staged);
   }
 
   /** @param {Array<{op:string,row?:any}>} deltas */
@@ -141,14 +159,18 @@ export async function createConversationProgressDescriber({ sessionId, subscript
  */
 export function createDeferredConversationProgressObserver({ sessionId, workspace }) {
   /** @type {Awaited<ReturnType<typeof createConversationProgressDescriber>>|undefined} */ let describer;
-  /** @type {Array<{notification:unknown,observedAt:string,resolve:(events:any[])=>void}>} */ const buffered = [];
+  /** @type {Array<{notification:unknown,observedAt:string,resolve:(result:ObservationResult)=>void}>} */ const buffered = [];
   let binding = false; let disabled = false; let terminal = false; let prebindGap = false;
-  const resolveBufferedEmpty = () => { while (buffered.length > 0) buffered.shift()?.resolve([]); };
-  return /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<any[]>,bind:(subscriptionId:string)=>Promise<void>,fail:()=>void,markGap:()=>void,markTerminal:()=>void}} */ ({
+  /** @param {string} [reason] */
+  const resolveBufferedEmpty = (reason = terminal ? 'terminal' : 'disabled') => { while (buffered.length > 0) buffered.shift()?.resolve(ignored(reason)); };
+  return /** @type {{observe:(notification:unknown,observedAt:string)=>Promise<ObservationResult>,bind:(subscriptionId:string)=>Promise<void>,fail:()=>void,markGap:()=>void,markTerminal:()=>void}} */ ({
     observe(notification, observedAt) {
-      if (terminal || disabled) return Promise.resolve([]);
+      if (terminal || disabled) return Promise.resolve(ignored(terminal ? 'terminal' : 'disabled'));
       if (describer && !binding) return describer.observe(notification, observedAt);
-      if (buffered.length >= MAX_PENDING_OBSERVATIONS) return Promise.resolve([]);
+      if (buffered.length >= MAX_PENDING_OBSERVATIONS) {
+        if (describer) describer.markGap(); else prebindGap = true;
+        return Promise.resolve(ignored('overflow'));
+      }
       return new Promise((resolveResult) => buffered.push({ notification, observedAt, resolve: resolveResult }));
     },
     async bind(subscriptionId) {
@@ -156,11 +178,11 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
       binding = true;
       try {
         describer = await createConversationProgressDescriber({ sessionId, subscriptionId, workspace });
-        if (prebindGap) describer.markGap();
         while (!terminal && !disabled && buffered.length > 0) {
           const item = buffered.shift(); if (!item) break;
           item.resolve(await describer.observe(item.notification, item.observedAt));
         }
+        if (prebindGap) describer.markGap();
       } catch (error) {
         disabled = true; resolveBufferedEmpty(); throw error;
       } finally { binding = false; if (terminal || disabled) resolveBufferedEmpty(); }
@@ -171,43 +193,46 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
       if (describer) describer.markGap();
       else if (prebindGap) return;
       else prebindGap = true;
-      resolveBufferedEmpty();
+      resolveBufferedEmpty('recovery-required');
     },
     markTerminal() { terminal = true; describer?.markTerminal(); resolveBufferedEmpty(); },
   });
 }
 
-/** @param {unknown} notification @param {string} topic @param {string} subscriptionId @returns {{deliveryKind:string,ordinal:number,fromSeq:number,toSeq:number,deltas:Array<{op:string,row?:any}>}|null} */
+/** @param {unknown} notification @param {string} topic @param {string} subscriptionId @returns {{ok:true,value:{deliveryKind:'initial'|'online'|'recovery',ordinal:number,fromSeq:number,toSeq:number,deltas:Array<{op:string,row:Record<string,any>}>}}|{ok:false,reason:string}} */
 function validateNotification(notification, topic, subscriptionId) {
-  if (!plainObject(notification) || notification.method !== 'v4/conversation/frame' || !plainObject(notification.params)) return null;
+  if (!plainObject(notification) || notification.method !== 'v4/conversation/frame' || !plainObject(notification.params)) return { ok: false, reason: 'envelope-shape' };
   const wire = notification.params;
-  if (!exactKeys(wire, ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameId', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame'])
-    || wire.wireVersion !== CONVERSATION_WIRE_VERSION || wire.kind !== 'complete'
+  if (!exactKeys(wire, ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameId', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame'])) return { ok: false, reason: 'envelope-shape' };
+  if (wire.wireVersion !== CONVERSATION_WIRE_VERSION) return { ok: false, reason: 'wire-version' };
+  if (wire.topic !== topic || wire.subscriptionId !== subscriptionId) return { ok: false, reason: 'topic' };
+  if (wire.kind !== 'complete'
     || !['initial', 'online', 'recovery'].includes(wire.deliveryKind)
-    || !boundedIdentifier(wire.logicalFrameId, 256) || !positiveInteger(wire.logicalFrameOrdinal)
-    || wire.topic !== topic || wire.subscriptionId !== subscriptionId || !plainObject(wire.frame)) return null;
+    || !boundedIdentifier(wire.logicalFrameId, 256) || !plainObject(wire.frame)) return { ok: false, reason: 'envelope-shape' };
+  if (!positiveInteger(wire.logicalFrameOrdinal)) return { ok: false, reason: 'sequence' };
   const frame = wire.frame;
-  if (!exactKeys(frame, ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'sentAt', 'payload'])
-    || frame.topic !== topic || frame.subscriptionId !== subscriptionId
-    || !nonnegativeInteger(frame.fromSeq) || !nonnegativeInteger(frame.toSeq) || frame.toSeq < frame.fromSeq
-    || !wireTimestamp(frame.sentAt) || !plainObject(frame.payload)
+  if (!exactKeys(frame, ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'sentAt', 'payload'])) return { ok: false, reason: 'envelope-shape' };
+  if (frame.topic !== topic || frame.subscriptionId !== subscriptionId) return { ok: false, reason: 'topic' };
+  if (!nonnegativeInteger(frame.fromSeq) || !nonnegativeInteger(frame.toSeq) || frame.toSeq < frame.fromSeq) return { ok: false, reason: 'sequence' };
+  if (!wireTimestamp(frame.sentAt) || !plainObject(frame.payload)
     || !exactKeys(frame.payload, ['kind', 'deltas']) || frame.payload.kind !== 'deltas'
-    || !Array.isArray(frame.payload.deltas) || frame.payload.deltas.length > MAX_DELTAS_PER_FRAME) return null;
+    || !Array.isArray(frame.payload.deltas) || frame.payload.deltas.length > MAX_DELTAS_PER_FRAME) return { ok: false, reason: 'envelope-shape' };
   const deltas = [];
   for (const value of frame.payload.deltas) {
-    const delta = validateDelta(value); if (!delta) return null; deltas.push(delta);
+    const delta = validateDelta(value); if (!delta.ok) return delta; deltas.push(delta.value);
   }
-  return { deliveryKind: wire.deliveryKind, ordinal: wire.logicalFrameOrdinal, fromSeq: frame.fromSeq, toSeq: frame.toSeq, deltas };
+  return { ok: true, value: { deliveryKind: wire.deliveryKind, ordinal: wire.logicalFrameOrdinal, fromSeq: frame.fromSeq, toSeq: frame.toSeq, deltas } };
 }
 
-/** @param {unknown} value */
+/** @param {unknown} value @returns {{ok:true,value:{op:string,row:Record<string,any>}}|{ok:false,reason:string}} */
 function validateDelta(value) {
-  if (!plainObject(value) || typeof value.op !== 'string') return null;
+  if (!plainObject(value) || typeof value.op !== 'string') return { ok: false, reason: 'row-shape' };
   if (value.op === 'row.appended' || value.op === 'row.upserted') {
-    if (!exactKeys(value, ['op', 'row']) || !plainObject(value.row)) return null;
-    const row = validateRow(value.row); return row ? { op: value.op, row } : null;
+    if (!exactKeys(value, ['op', 'row']) || !plainObject(value.row)) return { ok: false, reason: 'row-shape' };
+    if (!['toolCall', 'turnHeader'].includes(value.row.kind)) return { ok: false, reason: 'row-kind' };
+    const row = validateRow(value.row); return row ? { ok: true, value: { op: value.op, row } } : { ok: false, reason: 'row-shape' };
   }
-  return null;
+  return { ok: false, reason: 'row-kind' };
 }
 
 /** @param {Record<string,any>} row */
@@ -250,33 +275,39 @@ async function describeTool(row, states, workspaceRoot, observedAt, resolvePath,
   const status = row.status;
   if (START_STATUSES.has(status)) {
     if (prior.started || !states.has(key) && states.size >= MAX_TRACKED_ROWS) return null;
-    const message = fitProgressMessage(await startMessage(row, workspaceRoot, resolvePath, timeoutMs));
+    const message = fitProgressMessage(await formatToolStartMessage(row, workspaceRoot, resolvePath, timeoutMs));
     if (isTerminal()) return null;
     states.set(key, { started: true, terminal: false, message });
     return { phase: status === 'pendingApproval' ? 'waiting' : 'running', message, observedAt };
   }
   if (!SUCCESS_STATUSES.has(status) && !FAILURE_STATUSES.has(status)) return null;
   if (!states.has(key) && states.size >= MAX_TRACKED_ROWS) return null;
-  const startMessageValue = prior.message ?? await startMessage(row, workspaceRoot, resolvePath, timeoutMs);
+  const startMessageValue = prior.message ?? await formatToolStartMessage(row, workspaceRoot, resolvePath, timeoutMs);
   if (isTerminal()) return null;
   states.set(key, { started: prior.started, terminal: true, message: startMessageValue });
   const duration = durationSuffix(row.startedAt, row.endedAt);
-  return { phase: 'running', message: fitProgressMessage(terminalMessage(row, startMessageValue, SUCCESS_STATUSES.has(status), duration)), observedAt };
+  return { phase: 'running', message: fitProgressMessage(formatToolTerminalMessage(row, startMessageValue, SUCCESS_STATUSES.has(status), duration)), observedAt };
 }
 
 /** @param {any} row @param {string} workspaceRoot @param {(value:unknown,root:string)=>Promise<string|null>} resolvePath @param {number} timeoutMs */
-async function startMessage(row, workspaceRoot, resolvePath, timeoutMs) {
+export async function formatToolStartMessage(row, workspaceRoot, resolvePath = containedRelativePath, timeoutMs = PATH_RESOLUTION_TIMEOUT_MS, allowTextPreviews = true) {
+  return formatToolStartMessageWithOptions(row, workspaceRoot, { resolvePath, timeoutMs, allowTextPreviews });
+}
+
+/** @param {any} row @param {string} workspaceRoot @param {{resolvePath:(value:unknown,root:string)=>Promise<string|null>,timeoutMs:number,allowTextPreviews:boolean}} options */
+async function formatToolStartMessageWithOptions(row, workspaceRoot, { resolvePath, timeoutMs, allowTextPreviews }) {
   const toolName = normalizePreview(row.toolName, 64);
   const input = plainObject(row.input) ? row.input : {};
-  if (toolName === 'Bash') { const preview = normalizePreview(input.command); return preview ? `Running command: ${preview}.` : 'Running tool: Bash.'; }
+  if (!toolName) return 'Running a tool.';
+  if (toolName === 'Bash') { const preview = allowTextPreviews ? normalizePreview(input.command) : ''; return preview ? `Running command: ${preview}.` : 'Running tool: Bash.'; }
   if (['Read', 'Edit', 'Write'].includes(toolName)) {
     const path = await boundedPath(resolvePath, input.file_path, workspaceRoot, timeoutMs);
     if (!path) return `Running tool: ${toolName}.`;
     return `${toolName === 'Read' ? 'Reading' : toolName === 'Edit' ? 'Editing' : 'Writing'}: ${path}.`;
   }
-  if (toolName === 'Grep') { const preview = normalizePreview(input.pattern); return preview ? `Searching files: ${preview}.` : 'Running tool: Grep.'; }
-  if (toolName === 'Glob') { const preview = normalizePreview(input.pattern); return preview ? `Finding files: ${preview}.` : 'Running tool: Glob.'; }
-  if (toolName === 'WebSearch') { const preview = normalizePreview(input.query); return preview ? `Searching the web: ${preview}.` : 'Running tool: WebSearch.'; }
+  if (toolName === 'Grep') { const preview = allowTextPreviews ? normalizePreview(input.pattern) : ''; return preview ? `Searching files: ${preview}.` : 'Running tool: Grep.'; }
+  if (toolName === 'Glob') { const preview = allowTextPreviews ? normalizePreview(input.pattern) : ''; return preview ? `Finding files: ${preview}.` : 'Running tool: Glob.'; }
+  if (toolName === 'WebSearch') { const preview = allowTextPreviews ? normalizePreview(input.query) : ''; return preview ? `Searching the web: ${preview}.` : 'Running tool: WebSearch.'; }
   return `Running tool: ${toolName}.`;
 }
 
@@ -290,13 +321,14 @@ async function boundedPath(resolvePath, value, root, timeoutMs) {
 }
 
 /** @param {any} row @param {string} started @param {boolean} succeeded @param {string} duration */
-function terminalMessage(row, started, succeeded, duration) {
+export function formatToolTerminalMessage(row, started, succeeded, duration = durationSuffix(row.startedAt, row.endedAt)) {
   const state = succeeded ? 'completed' : 'failed';
   if (started.startsWith('Running command: ')) {
     const value = started.slice(17); const command = value.endsWith('.') ? value.slice(0, -1) : value;
     return `Command ${state}: ${command}${duration}.`;
   }
-  return `${normalizePreview(row.toolName, 64)} ${state}${duration}.`;
+  const toolName = normalizePreview(row.toolName, 64);
+  return `${toolName || 'Tool'} ${state}${duration}.`;
 }
 
 /** @param {unknown} startedAt @param {unknown} endedAt */
@@ -307,7 +339,7 @@ function durationSuffix(startedAt, endedAt) {
 }
 
 /** @param {string} message */
-function fitProgressMessage(message) {
+export function fitProgressMessage(message) {
   if (Buffer.byteLength(message) <= MAX_PUBLIC_MESSAGE_BYTES) return message;
   let output = '';
   for (const character of message) {

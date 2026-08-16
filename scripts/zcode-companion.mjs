@@ -22,7 +22,7 @@ import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
-import { createStateStore } from './lib/state.mjs';
+import { createStateStore, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
 import { executeTransfer, resolveTransferSource, TRANSFER_WIRE_LIMITS } from './lib/transfer.mjs';
@@ -71,7 +71,7 @@ export async function runCompanion(argv, runtime = {}) {
     if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId)), modelPolicy };
     let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
     if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs, runtime.signal);
-    return { job, modelPolicy };
+    return { job: publicJob(job, caller.sessionId, true), modelPolicy };
   }
   if (parsed.command === 'result') {
     const job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'result');
@@ -278,8 +278,8 @@ function requireAuthorization(value, keys) {
   return value;
 }
 function authorizationInputError() { return new PluginError('INTERNAL_AUTHORIZATION_INVALID', 'The internal authorization envelope is invalid.', { category: 'authorization', remedy: 'Invoke this command through its installed skill using the protected internal channel.' }); }
-/** @param {any} job @param {string} ownerSessionId */
-function publicJob(job, ownerSessionId) {
+/** @param {any} job @param {string} ownerSessionId @param {boolean} [includeProgressProbe] */
+function publicJob(job, ownerSessionId, includeProgressProbe = false) {
   if (job.ownerSessionId !== ownerSessionId) {
     return {
       id: job.id,
@@ -289,7 +289,8 @@ function publicJob(job, ownerSessionId) {
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot;
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe;
+  if (includeProgressProbe && validProgressProbe(job.progressProbe)) visible.progressProbe = { ...job.progressProbe, rejected: { ...job.progressProbe.rejected } };
   return { ...visible, owned: true, owner: 'same-owner' };
 }
 /** @param {Record<string,any>} source @param {string[]} fields */

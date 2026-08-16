@@ -348,6 +348,25 @@ test('installed Rescue instructions keep needs-choice and every wait continuatio
   assert.match(role, /For the exact fresh continuation above, run only:[\s\S]+invoke-choice rescue fresh/);
 });
 
+test('installed named and generic Rescue forwarders define terminal yielded-execution handling identically', async () => {
+  const source = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const role = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+  const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source)?.[1];
+  assert.ok(generic);
+  const semantics = [
+    /result containing an exit code is terminal/i,
+    /running execution or session handle is nonterminal/i,
+    /poll only that same handle with the host continuation tool until it reports an exit code/i,
+    /Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal/i,
+    /needs-choice response with exit code 3 is terminal for the current child turn/i,
+    /exactly one `exec_command` companion process/i,
+    /continuation calls only observe its original running handle/i,
+  ];
+  for (const forwarder of [role, generic]) for (const contract of semantics) assert.match(forwarder, contract);
+  assert.equal((role.match(/invoke rescue/g) ?? []).length, 1);
+  assert.equal((generic.match(/invoke rescue/g) ?? []).length, 1);
+});
+
 test('invoke-choice executes with the originating permission snapshot in both directions', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.env.PLUGIN_DATA }); const record = join(ctx.workspace, 'permission-record.jsonl');
   const env = { ...ctx.env, FAKE_ZCODE_PERMISSION: '1', FAKE_ZCODE_PERMISSION_RISK: 'high', FAKE_ZCODE_RECORD: record };

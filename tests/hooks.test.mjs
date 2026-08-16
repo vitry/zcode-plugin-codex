@@ -139,6 +139,44 @@ test('two sessions in one workspace get isolated caller capabilities, permission
   assert.doesNotMatch(allStored, /ZCODE_CALLER_CONTEXT/);
 });
 
+test('forwarding-child prompt hooks are accepted neutrally and malformed child identities fail closed', async () => {
+  const { cwd, data, env } = await workspace();
+  const identity = createIdentityStore({ dataRoot: data });
+  const store = createStateStore({ dataRoot: data });
+  await runHook('session-lifecycle-hook.mjs', { session_id: 'parent', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+  await runHook('user-prompt-hook.mjs', { session_id: 'parent', turn_id: 'parent-turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'plan', prompt: 'parent prompt' }, env);
+  const job = await store.reserveJob({ workspace: cwd, ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'plan' } });
+  await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { code: 'TEST_FAILURE', message: 'seed unread completion' }, exitCode: 1 });
+  const beforeTurn = await identity.resolveActiveTurn({ sessionId: 'parent', workspace: cwd });
+  const snapshot = async () => Object.fromEntries(await Promise.all((await jsonFiles(data)).sort().map(async (path) => [path, await readFile(path, 'utf8')])));
+  const beforeState = await snapshot();
+  const childPrompt = {
+    session_id: 'parent', turn_id: 'child-turn', cwd,
+    hook_event_name: 'UserPromptSubmit', transcript_path: null,
+    model: 'gpt', permission_mode: 'bypassPermissions', prompt: 'forward',
+    agent_id: 'rescue-child', agent_type: 'zcode-rescue',
+  };
+
+  const accepted = await runHook('user-prompt-hook.mjs', childPrompt, env);
+  assert.equal(accepted.code, 0); assert.equal(accepted.stdout, '{}'); assert.deepEqual(accepted.json, {});
+  assert.deepEqual(await identity.resolveActiveTurn({ sessionId: 'parent', workspace: cwd }), beforeTurn, 'forwarded prompt must not replace the parent caller turn or permission/prompt snapshot');
+  assert.deepEqual(await snapshot(), beforeState, 'forwarded prompt must not create a child caller, gate baseline, or unread-job marker');
+
+  const invalidInputs = [
+    { name: 'agent_id only', input: { ...childPrompt, agent_type: undefined } },
+    { name: 'agent_type only', input: { ...childPrompt, agent_id: undefined } },
+    { name: 'empty identity', input: { ...childPrompt, agent_id: '' } },
+    { name: 'control-bearing identity', input: { ...childPrompt, agent_id: 'rescue\0child' } },
+    { name: 'oversized identity', input: { ...childPrompt, agent_id: 'x'.repeat(513) } },
+    { name: 'unknown field', input: { ...childPrompt, extra: true } },
+  ];
+  for (const { name, input } of invalidInputs) {
+    const result = await runHook('user-prompt-hook.mjs', input, env);
+    assert.notEqual(result.code, 0, name); assert.equal(result.stdout, '', name);
+    assert.deepEqual(await snapshot(), beforeState, `${name} must fail before durable state changes`);
+  }
+});
+
 test('caller authorization survives non-Git workspaces while gate baseline stays unavailable', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'zpc-nongit-')); const data = await mkdtemp(join(tmpdir(), 'zpc-hooks-data-')); const env = { PLUGIN_DATA: data };
   await runHook('session-lifecycle-hook.mjs', { session_id: 'nongit', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);

@@ -26,6 +26,8 @@ const expectedPublicOutput = 'done';
 const expectedSemanticProgress = Object.freeze({
   start: '[zcode] Running command: npm test.',
   terminal: '[zcode] Command completed: npm test (25ms).',
+  snapshotFallback: '[zcode] ZCode conversation frames were unavailable; using bounded session progress.',
+  lifecycleOnly: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.',
 });
 const backgroundJobId = 'b'.repeat(64);
 const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
@@ -45,6 +47,84 @@ test('qualifies named Rescue from linked parent and child rollout metadata', () 
   });
 });
 
+test('qualifies named and generic Rescue only after the original yielded execution exits', () => {
+  for (const route of ['named', 'generic']) {
+    const input = yieldedFixture();
+    if (route === 'generic') {
+      const args = JSON.parse(spawnEvent(input).payload.arguments); delete args.agent_type; args.message = 'fixed generic forwarder';
+      spawnEvent(input).payload.arguments = JSON.stringify(args);
+      childMeta(input).payload.source.subagent.thread_spawn.agent_role = null;
+    }
+    assert.equal(qualifyCodexRescueEvidence(input, options()).route, route === 'named' ? 'named' : 'generic-schema-hidden');
+  }
+});
+
+test('required yielded qualification exposes only non-sensitive execution facts', () => {
+  const input = yieldedFixture(); setYieldedHandle(input, 987654321);
+  const evidence = qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true }));
+  assert.deepEqual(evidence.yieldedExecution, {
+    execCommandCount: 1,
+    pollCount: 2,
+    sameHandleChecked: true,
+    terminalExitCode: 0,
+  });
+  const serialized = JSON.stringify(evidence);
+  assert.equal(serialized.includes('987654321'), false);
+  assert.equal(serialized.includes('qualification-capability-sentinel-private'), false);
+
+  const encrypted = yieldedFixture();
+  setYieldedHandle(encrypted, 987654321);
+  const args = JSON.parse(spawnEvent(encrypted).payload.arguments); args.message = `gAAAA${'A'.repeat(64)}`; spawnEvent(encrypted).payload.arguments = JSON.stringify(args);
+  assert.throws(
+    () => qualifyCodexRescueEvidence(encrypted, options({ requireYieldedExecution: true })),
+    (error) => error instanceof CodexRescueUnqualifiedError
+      && !JSON.stringify(error.evidence).includes('987654321')
+      && !JSON.stringify(error.evidence).includes('qualification-capability-sentinel-private'),
+  );
+});
+
+test('yielded Rescue qualification rejects process replacement, handle drift, input, missing exit, and terminal-order violations', () => {
+  const cases = [
+    { code: 'child-command-count', mutate: (input) => input.rollouts[1].splice(3, 0, structuredExecResult(expectedCommand, 'exec-2'), capturedResultEvent('exec-2', { output: '', session_id: 42 })) },
+    { code: 'child-handle-mismatch', mutate: (input) => { childPolls(input)[0].payload.input = structuredPoll(42, 'poll-1', '').payload.input; } },
+    { code: 'child-poll-input', mutate: (input) => { childPolls(input)[0].payload.input = structuredPoll(41, 'poll-1', 'x').payload.input; } },
+    { code: 'child-terminal-exit-missing', mutate: (input) => { childPollOutputs(input).at(-1).payload.output = capturedResult({ output: `${expectedPublicOutput}\n`, session_id: 41 }); } },
+    { code: 'child-terminal-order', mutate: (input) => { const final = input.rollouts[1].pop(); input.rollouts[1].splice(4, 0, final); } },
+    { code: 'parent-terminal-order', mutate: (input) => { const final = input.rollouts[0].pop(); input.rollouts[0].splice(5, 0, final); } },
+    { code: 'child-poll-after-terminal', mutate: (input) => input.rollouts[1].splice(-1, 0, structuredPoll(41, 'poll-3'), capturedResultEvent('poll-3', { output: '', exit_code: 0 })) },
+  ];
+  for (const { code, mutate } of cases) {
+    const input = yieldedFixture(); mutate(input);
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
+      code,
+    );
+  }
+});
+
+test('foreground structured execution requires an exact zero exit code', () => {
+  for (const exitCode of [1, 130]) {
+    const input = yieldedFixture(); childPollOutputs(input).at(-1).payload.output = capturedResult({ output: `${expectedSemanticProgress.terminal}\n${expectedPublicOutput}\n`, exit_code: exitCode });
+    assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-terminal-exit-invalid', String(exitCode));
+  }
+});
+
+test('child host evidence requires exact exec tool names and one-to-one unique call IDs', () => {
+  const cases = [
+    { code: 'child-tool-name', mutate: (input) => { childExec(input).payload.name = 'other'; } },
+    { code: 'child-call-id', mutate: (input) => { delete childExec(input).payload.call_id; } },
+    { code: 'child-call-id', mutate: (input) => { childPolls(input)[1].payload.call_id = 'poll-1'; } },
+    { code: 'child-call-id', mutate: (input) => { delete childPollOutputs(input)[0].payload.call_id; } },
+    { code: 'child-call-id', mutate: (input) => { childPollOutputs(input)[1].payload.call_id = 'poll-1'; } },
+    { code: 'child-call-id', mutate: (input) => { childPollOutputs(input)[1].payload.call_id = 'orphan-output'; } },
+  ];
+  for (const { code, mutate } of cases) {
+    const input = yieldedFixture(); mutate(input);
+    assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
+  }
+});
+
 test('foreground qualification fails closed unless child transcript contains exact semantic start and terminal progress', () => {
   for (const missing of ['start', 'terminal']) {
     const input = fixture();
@@ -56,6 +136,25 @@ test('foreground qualification fails closed unless child transcript contains exa
       missing,
     );
   }
+});
+
+test('foreground qualification accepts either exact compatibility diagnostic while retaining yielded child exit proof', () => {
+  for (const diagnostic of ['snapshotFallback', 'lifecycleOnly']) {
+    const input = yieldedFixture();
+    childPollOutputs(input).at(-1).payload.output = capturedResult({
+      output: `${expectedSemanticProgress[diagnostic]}\n${expectedPublicOutput}\n`, exit_code: 0,
+    });
+    const evidence = qualifyCodexRescueEvidence(input, options({ requireYieldedExecution: true }));
+    assert.equal(evidence.semanticProgressChecked, true, diagnostic);
+    assert.equal(evidence.yieldedExecution.terminalExitCode, 0, diagnostic);
+  }
+
+  const startupOnly = yieldedFixture();
+  childPollOutputs(startupOnly).at(-1).payload.output = capturedResult({ output: `[zcode] ZCode started the delegated turn.\n${expectedPublicOutput}\n`, exit_code: 0 });
+  assert.throws(
+    () => qualifyCodexRescueEvidence(startupOnly, options({ requireYieldedExecution: true })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'semantic-progress-missing',
+  );
 });
 
 test('qualifies named and generic background Rescue with one linked queued output and no capability leak', () => {
@@ -84,7 +183,7 @@ test('background qualification fails closed on inline, self-printed, wrong-child
     { code: 'background-child-stdout', mutate: (input) => { childOutput(input).payload.output.unshift({ type: 'input_text', text: 'noisy progress\n' }); } },
     { code: 'child-rollout-id-mismatch', mutate: (input) => { startEvent(input).payload.agent_thread_id = 'wrong-child'; } },
     { code: 'spawn-count', mutate: (input) => input.rollouts[0].splice(4, 0, structuredSpawn('spawn-2')) },
-    { code: 'child-output-link', mutate: (input) => { childOutput(input).payload.call_id = 'unlinked-output'; } },
+    { code: 'child-call-id', mutate: (input) => { childOutput(input).payload.call_id = 'unlinked-output'; } },
     { code: 'background-capability-leak', mutate: (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.message = `${args.message} ${executionCapability}`; spawnEvent(input).payload.arguments = JSON.stringify(args); } },
     { code: 'background-capability-leak', mutate: (input) => { input.rollouts[0].splice(-1, 0, { type: 'event_msg', payload: { type: 'agent_message', message: executionCapability, phase: 'commentary' } }); } },
     { code: 'background-capability-leak', mutate: (input) => { childOutput(input).payload.output[0].text += executionCapability; } },
@@ -135,6 +234,99 @@ test('qualifies exact resume and fresh follow-ups against one existing child ID'
   }
 });
 
+test('choice qualification permits yielded polling in the initial turn, continuation turn, or both', () => {
+  for (const turns of [['initial'], ['continuation'], ['initial', 'continuation']]) {
+    const input = choiceFixture('resume');
+    for (const turn of turns) yieldChoiceTurn(input, turn);
+    retimestampChoice(input);
+    assert.equal(qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')).choice, 'resume', turns.join('+'));
+  }
+});
+
+test('choice child rollout accounts for every host event and exact exec tool name', () => {
+  const extraCall = () => structuredPoll(77, 'outside'); const extraOutput = () => capturedResultEvent('outside', { output: '', exit_code: 0 });
+  const cases = [
+    { mutate: (input) => input.rollouts[1].unshift(extraCall(), extraOutput()) },
+    { mutate: (input) => input.rollouts[1].push(extraCall(), extraOutput()) },
+    { mutate: (input) => input.rollouts[1].push(extraOutput()) },
+    { code: 'choice-initial-tool-name', mutate: (input) => { input.rollouts[1][1].payload.name = 'other'; } },
+    { code: 'choice-continuation-tool-name', mutate: (input) => { input.rollouts[1][4].payload.name = 'other'; } },
+  ];
+  for (const { code = 'choice-child-execution-boundary', mutate } of cases) {
+    const input = choiceFixture('resume'); mutate(input); retimestampChoice(input);
+    assert.throws(() => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
+  }
+});
+
+test('choice host and parent evidence has globally unique one-to-one call IDs', () => {
+  const cases = [
+    { code: 'choice-initial-call-id', mutate: (input) => { delete input.rollouts[1][1].payload.call_id; } },
+    { code: 'choice-continuation-call-id', mutate: (input) => { delete input.rollouts[1][5].payload.call_id; } },
+    { code: 'choice-child-call-id-reused', mutate: (input) => { input.rollouts[1][4].payload.call_id = 'exec-1'; input.rollouts[1][5].payload.call_id = 'exec-1'; } },
+    { code: 'choice-parent-call-id', mutate: (input) => { delete choiceFollowup(input).payload.call_id; } },
+    { code: 'choice-parent-call-id', mutate: (input) => { const waits = input.rollouts[0].filter((event) => event.payload?.name === 'wait_agent'); waits[1].payload.call_id = 'wait-1'; input.rollouts[0].findLast((event) => event.payload?.type === 'function_call_output').payload.call_id = 'wait-1'; } },
+    { code: 'choice-parent-call-id', mutate: (input) => input.rollouts[0].push(followupOutput('orphan-parent')) },
+  ];
+  for (const { code, mutate } of cases) {
+    const input = choiceFixture('resume'); mutate(input);
+    assert.throws(() => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
+  }
+});
+
+test('choice parent call IDs are globally owned across custom preflight and function tools', () => {
+  const cases = [
+    { mutate: (input) => { delete preflightEvent(input).payload.call_id; } },
+    { mutate: (input) => { delete preflightOutput(input).payload.call_id; } },
+    { mutate: (input) => { preflightEvent(input).payload.call_id = 'spawn-1'; preflightOutput(input).payload.call_id = 'spawn-1'; } },
+    { mutate: (input) => { preflightEvent(input).payload.call_id = 'wait-1'; preflightOutput(input).payload.call_id = 'wait-1'; } },
+    { mutate: (input) => { preflightEvent(input).payload.call_id = 'followup-1'; preflightOutput(input).payload.call_id = 'followup-1'; } },
+    { mutate: (input) => { const wait = waitResult(input, 'wait-1'); [preflightOutput(input).payload.call_id, wait.payload.call_id] = [wait.payload.call_id, preflightOutput(input).payload.call_id]; } },
+    { mutate: (input) => { input.rollouts[0].push(toolOutput('orphan-preflight', 'orphan')); } },
+  ];
+  for (const { mutate } of cases) {
+    const input = choiceFixture('resume'); mutate(input);
+    assert.throws(
+      () => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-parent-call-id',
+    );
+  }
+});
+
+test('choice yielded executions reject changed handles, nonempty input, missing exit, and polling after terminal', () => {
+  const cases = [
+    { code: 'choice-initial-handle-mismatch', turn: 'initial', mutate: (events) => { events.poll.payload.input = structuredPoll(52, events.poll.payload.call_id).payload.input; } },
+    { code: 'choice-initial-poll-input', turn: 'initial', mutate: (events) => { events.poll.payload.input = structuredPoll(51, events.poll.payload.call_id, 'x').payload.input; } },
+    { code: 'choice-initial-terminal-exit-missing', turn: 'initial', mutate: (events) => { events.terminal.payload.output = capturedResult({ output: events.terminalText, session_id: 51 }); } },
+    { code: 'choice-initial-poll-after-terminal', turn: 'initial', mutate: (events, input) => { input.rollouts[1].splice(input.rollouts[1].indexOf(events.final), 0, structuredPoll(51, 'choice-initial-late-poll'), capturedResultEvent('choice-initial-late-poll', { output: '', exit_code: 0 })); } },
+    { code: 'choice-continuation-handle-mismatch', turn: 'continuation', mutate: (events) => { events.poll.payload.input = structuredPoll(62, events.poll.payload.call_id).payload.input; } },
+    { code: 'choice-continuation-poll-input', turn: 'continuation', mutate: (events) => { events.poll.payload.input = structuredPoll(61, events.poll.payload.call_id, 'x').payload.input; } },
+    { code: 'choice-continuation-terminal-exit-missing', turn: 'continuation', mutate: (events) => { events.terminal.payload.output = capturedResult({ output: events.terminalText, session_id: 61 }); } },
+    { code: 'choice-continuation-poll-after-terminal', turn: 'continuation', mutate: (events, input) => { input.rollouts[1].splice(input.rollouts[1].indexOf(events.final), 0, structuredPoll(61, 'choice-late-poll'), capturedResultEvent('choice-late-poll', { output: '', exit_code: 0 })); } },
+  ];
+  for (const { code, turn, mutate } of cases) {
+    const input = choiceFixture('resume'); const events = yieldChoiceTurn(input, turn); mutate(events, input); retimestampChoice(input);
+    assert.throws(() => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
+  }
+});
+
+test('needs-choice is terminal only with exit code 3 before same-child continuation', () => {
+  const valid = choiceFixture('resume');
+  assert.equal(qualifyCodexRescueChoiceEvidence(valid, choiceOptions('resume')).choice, 'resume');
+  const wrong = choiceFixture('resume');
+  wrong.rollouts[1][2].payload.output = capturedResult({ output: `${JSON.stringify({ type: 'needs-choice', candidate: { sessionId: 'resumable-session' }, choices: ['--resume', '--fresh'] })}\n`, exit_code: 0 });
+  assert.throws(
+    () => qualifyCodexRescueChoiceEvidence(wrong, choiceOptions('resume')),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-needs-choice-exit',
+  );
+});
+
+test('selected choice continuation requires an exact zero exit code', () => {
+  for (const exitCode of [1, 130]) {
+    const input = choiceFixture('resume'); input.rollouts[1][5].payload.output = capturedResult({ output: `${expectedPublicOutput}\n`, exit_code: exitCode });
+    assert.throws(() => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-continuation-terminal-exit-invalid', String(exitCode));
+  }
+});
+
 test('shared parent-child route validation fails every trusted metadata field closed', () => {
   const cases = [
     (input) => { parentMeta(input).payload.session_id = 'wrong'; },
@@ -175,13 +367,13 @@ test('choice qualification fails closed on duplicate execution, identity drift, 
     { code: 'choice-spawn-count', mutate: (input) => input.rollouts[0].splice(4, 0, structuredSpawn('spawn-2')) },
     { code: 'choice-spawn-keys', mutate: (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.task = 'leak'; spawnEvent(input).payload.arguments = JSON.stringify(args); } },
     { code: 'choice-agent-role', mutate: (input) => { childMeta(input).payload.source.subagent.thread_spawn.agent_role = null; } },
-    { code: 'choice-followup-count', mutate: (input) => input.rollouts[0].splice(-1, 0, structuredFollowup('followup-2', 'resume')) },
+    { code: 'choice-followup-count', mutate: (input) => input.rollouts[0].splice(-1, 0, structuredFollowup('followup-2', 'resume'), followupOutput('followup-2')) },
     { code: 'choice-followup-target', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: 'sibling-child', message: choiceOptions('resume').expectedFollowupMessage }); } },
     { code: 'choice-followup-message', mutate: (input) => { choiceFollowup(input).payload.arguments = JSON.stringify({ target: childId, message: `${choiceOptions('resume').expectedFollowupMessage} task text` }); } },
-    { code: 'choice-followup-output-link', mutate: (input) => { followupResult(input).payload.call_id = 'foreign'; } },
+    { code: 'choice-parent-call-id', mutate: (input) => { followupResult(input).payload.call_id = 'foreign'; } },
     { code: 'choice-followup-output-order', mutate: (input) => { const output = input.rollouts[0].splice(input.rollouts[0].indexOf(followupResult(input)), 1)[0]; input.rollouts[0].splice(input.rollouts[0].indexOf(choiceFollowup(input)), 0, output); } },
-    { code: 'choice-wait-count', mutate: (input) => { input.rollouts[0] = input.rollouts[0].filter((event) => event?.payload?.name !== 'wait_agent'); } },
-    { code: 'choice-wait-output-link', mutate: (input) => { input.rollouts[0] = input.rollouts[0].filter((event) => event?.payload?.call_id !== 'wait-1' || event?.payload?.type !== 'function_call_output'); } },
+    { code: 'choice-wait-count', mutate: (input) => { const waitIds = new Set(input.rollouts[0].filter((event) => event?.payload?.name === 'wait_agent').map((event) => event.payload.call_id)); input.rollouts[0] = input.rollouts[0].filter((event) => !waitIds.has(event?.payload?.call_id)); } },
+    { code: 'choice-parent-call-id', mutate: (input) => { input.rollouts[0] = input.rollouts[0].filter((event) => event?.payload?.call_id !== 'wait-1' || event?.payload?.type !== 'function_call_output'); } },
     { code: 'choice-wait-output-shape', mutate: (input) => { waitResult(input, 'wait-1').payload.output = JSON.stringify({ message: 'Wait completed.', timed_out: true }); } },
     { code: 'choice-wait-return-order', mutate: (input) => { const output = waitResult(input, 'wait-2'); input.rollouts[0].splice(input.rollouts[0].indexOf(output), 1); input.rollouts[0].push(output); } },
     { code: 'choice-command-count', mutate: (input) => input.rollouts[1].splice(-1, 0, structuredExec(expectedCommand, 'exec-3')) },
@@ -195,6 +387,7 @@ test('choice qualification fails closed on duplicate execution, identity drift, 
     assert.throws(
       () => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
+      code,
     );
   }
 });
@@ -228,8 +421,8 @@ test('choice qualification marks only explicitly encrypted continuation argument
   const observableMismatch = choiceFixture('resume');
   choiceFollowup(observableMismatch).payload.arguments = JSON.stringify({ target: childId, message: `gAAAA${'A'.repeat(80)}=` });
   waitResult(observableMismatch, 'wait-1').payload.call_id = 'wrong';
-  assert.throws(() => qualifyCodexRescueChoiceEvidence(observableMismatch, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-wait-output-link');
-  const missing = choiceFixture('resume'); missing.rollouts[0] = missing.rollouts[0].filter((event) => event !== choiceFollowup(missing));
+  assert.throws(() => qualifyCodexRescueChoiceEvidence(observableMismatch, choiceOptions('resume')), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-parent-call-id');
+  const missing = choiceFixture('resume'); const missingCall = choiceFollowup(missing); const missingOutput = followupResult(missing); missing.rollouts[0] = missing.rollouts[0].filter((event) => event !== missingCall && event !== missingOutput);
   assert.throws(
     () => qualifyCodexRescueChoiceEvidence(missing, choiceOptions('resume')),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-followup-count',
@@ -281,7 +474,7 @@ test('binds child stdout to the unique exec call and terminal sentinel', () => {
   const cases = [
     { code: 'child-output-count', mutate: (input) => input.rollouts[1].splice(2, 1) },
     { code: 'child-output-count', mutate: (input) => input.rollouts[1].splice(3, 0, toolOutput('exec-1', `${expectedPublicOutput}\n`)) },
-    { code: 'child-output-link', mutate: (input) => { childOutput(input).payload.call_id = 'wrong-call'; } },
+    { code: 'child-call-id', mutate: (input) => { childOutput(input).payload.call_id = 'wrong-call'; } },
     { code: 'child-output-mismatch', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', semanticText('not-done\n')).payload.output; } },
     { code: 'child-output-mismatch', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', semanticText(`${expectedPublicOutput}\nprogress-after\n`)).payload.output; } },
     { code: 'child-output-mismatch', mutate: (input) => { childOutput(input).payload.output = toolOutput('exec-1', semanticText(`${expectedPublicOutput}\n${expectedPublicOutput}\n`)).payload.output; } },
@@ -467,13 +660,16 @@ test('fails an observed but unsupported function_call exec_command shape', () =>
   );
 });
 
-test('fails when child-only stderr or raw progress enters a parent public event', () => {
-  const input = fixture();
-  input.rollouts[0].splice(-2, 0, { type: 'event_msg', payload: { type: 'agent_message', message: 'raw output must stay private', phase: 'commentary' } });
-  assert.throws(
-    () => qualifyCodexRescueEvidence(input, options()),
-    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-isolation-breach',
-  );
+test('fails when child-only stderr or either compatibility diagnostic enters a parent public event', () => {
+  for (const forbidden of ['raw output must stay private', expectedSemanticProgress.snapshotFallback, expectedSemanticProgress.lifecycleOnly]) {
+    const input = fixture();
+    input.rollouts[0].splice(-2, 0, { type: 'event_msg', payload: { type: 'agent_message', message: forbidden, phase: 'commentary' } });
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-isolation-breach',
+      forbidden,
+    );
+  }
 });
 
 test('fails when the parent executes the constant Rescue command inline', () => {
@@ -492,6 +688,44 @@ test('requires exact child, parent rollout, and exec terminal public output', ()
     () => qualifyCodexRescueEvidence(input, options()),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'exec-public-output-mismatch',
   );
+});
+
+test('rejects parent child-return and final timestamps that precede the child terminal exit', () => {
+  const input = fixture();
+  childReturnEvent(input).timestamp = '2026-08-10T00:00:00.000004Z';
+  input.rollouts[0].find((event) => event?.payload?.phase === 'final_answer').timestamp = '2026-08-10T00:00:00.000005Z';
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-terminal-timeline',
+  );
+});
+
+test('fails closed when cross-rollout terminal causality lacks a trusted timestamp', () => {
+  const input = fixture(); delete childReturnEvent(input).timestamp;
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-terminal-timeline',
+  );
+});
+
+test('terminal causality rejects impossible RFC3339 calendar, clock, and offset fields', () => {
+  for (const timestamp of [
+    '2025-02-29T00:00:00Z', '2024-02-30T00:00:00Z', '2024-04-31T00:00:00Z', '2024-13-01T00:00:00Z',
+    '2024-01-01T24:00:00Z', '2024-01-01T00:60:00Z', '2024-01-01T00:00:60Z',
+    '2024-01-01T00:00:00+24:00', '2024-01-01T00:00:00+00:60',
+  ]) {
+    const input = fixture(); childOutput(input).timestamp = timestamp;
+    assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-terminal-timeline', timestamp);
+  }
+});
+
+test('terminal causality accepts valid leap day, timezone offsets, and exact nanoseconds', () => {
+  const input = fixture();
+  childOutput(input).timestamp = '2024-02-29T23:59:59.123456786+00:00';
+  input.rollouts[1].find((event) => event?.payload?.phase === 'final_answer').timestamp = '2024-02-29T23:59:59.123456787Z';
+  childReturnEvent(input).timestamp = '2024-03-01T07:59:59.123456788+08:00';
+  input.rollouts[0].find((event) => event?.payload?.phase === 'final_answer').timestamp = '2024-03-01T00:00:00.000000000Z';
+  assert.equal(qualifyCodexRescueEvidence(input, options()).publicOutput, expectedPublicOutput);
 });
 
 test('accepts bounded commentary agent messages before one exact final sentinel and terminal turn', () => {
@@ -554,7 +788,10 @@ function options(overrides = {}) {
     expectedSemanticProgress,
     expectedNamedSpawnMessage: 'fixed named forwarder',
     expectedGenericSpawnMessage: 'fixed generic forwarder',
-    forbiddenParentText: ['Running command: npm test', 'raw output must stay private', 'reasoning must stay private'],
+    forbiddenParentText: [
+      'Running command: npm test', expectedSemanticProgress.snapshotFallback, expectedSemanticProgress.lifecycleOnly,
+      'raw output must stay private', 'reasoning must stay private',
+    ],
     ...overrides,
   };
   return value;
@@ -586,8 +823,35 @@ function fixture(publicOutput = expectedPublicOutput) {
       structuredExec(expectedCommand),
       toolOutput('exec-1', `${expectedSemanticProgress.start}\n${expectedSemanticProgress.terminal}\n${publicOutput}\n`),
       { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
-    ];
+  ];
+  child[2].timestamp = '2026-08-10T00:00:00.000006Z'; child[3].timestamp = '2026-08-10T00:00:00.000007Z';
+  parent[5].timestamp = '2026-08-10T00:00:00.000008Z'; parent[6].timestamp = '2026-08-10T00:00:00.000009Z';
   return { execFrames, rollouts: [parent, child] };
+}
+
+function yieldedFixture() {
+  const input = fixture();
+  input.rollouts[1].splice(1, 2,
+    structuredExecResult(expectedCommand, 'exec-1'),
+    capturedResultEvent('exec-1', { output: `${expectedSemanticProgress.start}\n`, session_id: 41 }),
+    structuredPoll(41, 'poll-1'),
+    capturedResultEvent('poll-1', { output: 'still running\n', session_id: 41 }),
+    structuredPoll(41, 'poll-2'),
+    capturedResultEvent('poll-2', { output: `${expectedSemanticProgress.terminal}\n${expectedPublicOutput}\n`, exit_code: 0 }));
+  const child = input.rollouts[1]; const parent = input.rollouts[0];
+  child.find((event) => event?.payload?.call_id === 'poll-2' && event.payload.type === 'custom_tool_call_output').timestamp = '2026-08-10T00:00:00.000006Z';
+  child.find((event) => event?.payload?.phase === 'final_answer').timestamp = '2026-08-10T00:00:00.000007Z';
+  parent.find((event) => event?.payload?.author === agentPath).timestamp = '2026-08-10T00:00:00.000008Z';
+  parent.find((event) => event?.payload?.phase === 'final_answer').timestamp = '2026-08-10T00:00:00.000009Z';
+  return input;
+}
+
+function setYieldedHandle(input, handle) {
+  const calls = childPolls(input); const outputs = input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call_output');
+  outputs[0].payload.output = capturedResult({ output: `${expectedSemanticProgress.start}\n`, session_id: handle });
+  outputs[1].payload.output = capturedResult({ output: 'still running\n', session_id: handle });
+  calls[0].payload.input = structuredPoll(handle, calls[0].payload.call_id).payload.input;
+  calls[1].payload.input = structuredPoll(handle, calls[1].payload.call_id).payload.input;
 }
 
 function backgroundFixture() { const input = fixture(backgroundPublicOutput); childOutput(input).payload.output = [{ type: 'input_text', text: `${backgroundPublicOutput}\n` }]; return input; }
@@ -633,17 +897,42 @@ function choiceFixture(choice) {
   ];
   const child = [
     { type: 'session_meta', payload: { session_id: parentId, id: childId, parent_thread_id: parentId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_path: agentPath, agent_nickname: 'Ada', agent_role: 'zcode-rescue' } } } } },
-    structuredExec(expectedCommand, 'exec-1'),
-    toolOutput('exec-1', needsChoice),
+    structuredExecResult(expectedCommand, 'exec-1'),
+    capturedResultEvent('exec-1', { output: needsChoice, exit_code: 3 }),
     { type: 'event_msg', payload: { type: 'agent_message', message: needsChoice, phase: 'final_answer' } },
-    structuredExec(choiceOptions(choice).expectedChoiceCommand, 'exec-2'),
-    toolOutput('exec-2', `${expectedPublicOutput}\n`),
+    structuredExecResult(choiceOptions(choice).expectedChoiceCommand, 'exec-2'),
+    capturedResultEvent('exec-2', { output: `${expectedPublicOutput}\n`, exit_code: 0 }),
     { type: 'event_msg', payload: { type: 'agent_message', message: expectedPublicOutput, phase: 'final_answer' } },
   ];
   const at = (event, offset) => { event.timestamp = new Date(Date.parse('2026-08-10T00:00:00.000Z') + offset).toISOString(); };
   at(child[1], 4); at(child[2], 5); at(child[3], 6); at(parent[7], 7); at(parent[8], 8);
   at(parent[9], 9); at(parent[10], 10); at(child[4], 11); at(child[5], 12); at(child[6], 13); at(parent[13], 14); at(parent[14], 15);
   return { rollouts: [parent, child] };
+}
+
+function yieldChoiceTurn(input, turn) {
+  const child = input.rollouts[1]; const finals = child.filter((event) => event?.payload?.phase === 'final_answer');
+  const final = finals[turn === 'initial' ? 0 : 1]; const start = turn === 'initial' ? 1 : child.indexOf(finals[0]) + 1;
+  const call = child[start]; const output = child[start + 1]; const handle = turn === 'initial' ? 51 : 61;
+  const terminalText = turn === 'initial' ? JSON.parse(output.payload.output[1].text).output : expectedPublicOutput + '\n';
+  const terminalExit = turn === 'initial' ? 3 : 0; const prefix = turn === 'initial' ? 'choice-initial' : 'choice-continuation';
+  call.payload.input = structuredExecResult(turn === 'initial' ? expectedCommand : choiceOptions('resume').expectedChoiceCommand, call.payload.call_id).payload.input;
+  output.payload.output = capturedResult({ output: 'partial\n', session_id: handle });
+  const poll = structuredPoll(handle, `${prefix}-poll`); const pollOutput = capturedResultEvent(`${prefix}-poll`, { output: 'heartbeat\n', session_id: handle });
+  const terminalPoll = structuredPoll(handle, `${prefix}-terminal`); const terminal = capturedResultEvent(`${prefix}-terminal`, { output: terminalText, exit_code: terminalExit });
+  child.splice(start + 2, 0, poll, pollOutput, terminalPoll, terminal);
+  return { call, output, poll, pollOutput, terminalPoll, terminal, final, terminalText };
+}
+
+function retimestampChoice(input) {
+  const parent = input.rollouts[0]; const child = input.rollouts[1]; const childFinals = child.filter((event) => event?.payload?.phase === 'final_answer');
+  const returns = parent.filter((event) => event?.payload?.author === agentPath); const parentFinals = parent.filter((event) => event?.payload?.phase === 'final_answer');
+  const followup = choiceFollowup(input); const followupResultEvent = followupResult(input); let offset = 4;
+  const stamp = (event) => { event.timestamp = new Date(Date.parse('2026-08-10T00:00:00.000Z') + offset++).toISOString(); };
+  for (const event of child.slice(1, child.indexOf(childFinals[0]) + 1)) stamp(event);
+  stamp(returns[0]); stamp(parentFinals[0]); stamp(followup); stamp(followupResultEvent);
+  for (const event of child.slice(child.indexOf(childFinals[0]) + 1, child.indexOf(childFinals[1]) + 1)) stamp(event);
+  stamp(returns[1]); stamp(parentFinals[1]);
 }
 
 function timeoutFixture() {
@@ -674,6 +963,25 @@ function listOutput(callId) { return { type: 'response_item', payload: { type: '
 function structuredExec(command, callId = 'exec-1', fields = {}) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace, ...fields })});\ntext(r.output);\n` } };
 }
+
+function structuredExecResult(command, callId) {
+  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace })}); text(JSON.stringify(r))\n` } };
+}
+
+function structuredPoll(sessionId, callId, chars = '') {
+  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars })}); text(JSON.stringify(r))\n` } };
+}
+
+function capturedResult(result) {
+  return [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text: JSON.stringify(result) }];
+}
+
+function capturedResultEvent(callId, result) {
+  return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: capturedResult(result) } };
+}
+
+function childPolls(input) { return input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call').slice(1); }
+function childPollOutputs(input) { return input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call_output').slice(1); }
 
 function structuredExecUnquoted(command) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-1', input: `const r = await tools.exec_command({cmd:${JSON.stringify(command)},workdir:"/repo"});\ntext(r.output);\n` } };

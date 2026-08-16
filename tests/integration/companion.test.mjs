@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -141,6 +142,54 @@ async function cleanupChildLossProcesses(input) {
 async function companion(context, args, extraEnv = {}, authorization = { callerContext: context.caller }) {
   const result = await run(process.execPath, [cli, ...args], { cwd: context.workspace, env: { ...context.env, ...extraEnv }, input: authorization });
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
+}
+
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
+async function deterministicConversationScenario(context, scenario, options = {}) {
+  const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
+  const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
+  const gateNonce = options.completionAfterProgressLine ? randomBytes(32).toString('hex') : undefined;
+  const gatePath = gateNonce ? join(context.directory, `${scenario}-${gateNonce}-progress-dispatch-gate.json`) : undefined;
+  let gateTimedOut = false; let gateWriteError; let observedExpectedLine = false; let gateDeadline;
+  const releaseGate = async () => {
+    if (!gatePath || !gateNonce) return;
+    try { await writeFile(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'release' }), { mode: 0o600 }); }
+    catch (error) { gateWriteError ??= error; }
+  };
+  if (gatePath && gateNonce) await writeFile(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'held' }), { mode: 0o600 });
+  let output;
+  try {
+    if (gatePath) {
+      gateDeadline = setTimeout(() => { gateTimedOut = true; void releaseGate(); }, 5_000);
+      gateDeadline.unref?.();
+    }
+    output = await runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
+      cwd: context.workspace,
+      env: {
+        ...context.env, ...options.env, FAKE_ZCODE_CONVERSATION_SCENARIO: scenario, FAKE_ZCODE_RECORD: record,
+        ...(gatePath && gateNonce ? { FAKE_ZCODE_PROGRESS_DISPATCH_GATE: gatePath, FAKE_ZCODE_PROGRESS_DISPATCH_GATE_NONCE: gateNonce } : {}),
+      },
+      caller: owner,
+      progressWriter: (line) => {
+        lines.push(line);
+        if (line === options.completionAfterProgressLine) { observedExpectedLine = true; void releaseGate(); }
+      },
+      ...(options.heartbeat ? { progressDependencies: {
+        now: () => new Date().toISOString(),
+        setInterval: (/** @type {()=>void} */ callback) => { queueMicrotask(callback); return { unref() {} }; },
+        clearInterval: () => {},
+      } } : {}),
+    });
+  } finally {
+    if (gateDeadline) clearTimeout(gateDeadline);
+    await releaseGate();
+  }
+  if (gateTimedOut || !observedExpectedLine && options.completionAfterProgressLine) throw new Error(`expected public progress line was not dispatched: ${options.completionAfterProgressLine}`);
+  if (gateWriteError) throw gateWriteError;
+  const status = await runCompanion(['status', output.job.id], { cwd: context.workspace, env: context.env, caller: owner });
+  const stored = await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, output.job.id);
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  return { lines, output, requests, status, stored };
 }
 
 /** @param {()=>Promise<boolean>} predicate @param {string} message */
@@ -356,8 +405,8 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
 });
 
 test('conversation online progress reaches stderr and preview while initial and foreign frames stay private', async () => {
-  const context = await fixture();
-  const result = await companion(context, ['rescue', '--fresh', 'surface conversation progress'], { FAKE_ZCODE_CONVERSATION_PROGRESS: '1' });
+  const context = await fixture(); const record = join(context.directory, 'conversation-progress-requests.jsonl');
+  const result = await companion(context, ['rescue', '--fresh', 'surface conversation progress'], { FAKE_ZCODE_CONVERSATION_PROGRESS: '1', FAKE_ZCODE_RECORD: record });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.result, 'done');
   assert.match(result.stderr, /\[zcode\] Running command: npm test\./);
   assert.match(result.stderr, /\[zcode\] Command completed: npm test \(25ms\)\./);
@@ -365,6 +414,113 @@ test('conversation online progress reaches stderr and preview while initial and 
   const status = await companion(context, ['status', result.json.job.id]);
   assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: npm test/);
   assert.doesNotMatch(JSON.stringify(status.json.job.progressPreview), /INITIAL_SECRET|FOREIGN_SECRET/);
+  assert.equal(status.json.job.progressProbe.state, 'online');
+  assert.equal(status.json.job.progressProbe.acceptedOnline, 2);
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
+});
+
+test('initial-only conversation frames deterministically degrade on heartbeat without leaking frame material', async () => {
+  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'initial-only', { heartbeat: true });
+  const diagnostic = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
+  assert.equal(scenario.lines.filter((line) => line === diagnostic).length, 1);
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
+  assert.equal(scenario.stored.progressProbe.state, 'snapshot-fallback');
+  assert.equal(scenario.stored.progressProbe.acceptedInitial, 1); assert.equal(scenario.stored.progressProbe.acceptedOnline, 0);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
+  const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
+  assert.doesNotMatch(visible, /PRIVATE_INITIAL_(?:FRAME_ID|TURN_ID|TOOL_ID|COMMAND|REASONING)/);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one progress read remains separate from the final authoritative read');
+});
+
+test('initial-only frames fall back to safe current-turn session tool progress without changing the final result', async () => {
+  const context = await fixture();
+  const pathSentinel = 'CONTAINED_SNAPSHOT_PATH_SENTINEL.txt';
+  const scenario = await deterministicConversationScenario(context, 'initial-only', {
+    heartbeat: true, completionAfterProgressLine: '[zcode] Running tool: Read.\n', env: {
+      FAKE_ZCODE_SESSION_PROGRESS: 'running',
+      FAKE_ZCODE_SESSION_PROGRESS_TOOL: 'Read', FAKE_ZCODE_SESSION_PROGRESS_PATH: join(context.workspace, pathSentinel),
+    },
+  });
+  const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
+  assert.match(visible, /ZCode conversation frames were unavailable; using bounded session progress\./);
+  assert.match(visible, /Running tool: Read\./);
+  assert.doesNotMatch(scenario.lines.join(''), new RegExp(pathSentinel));
+  assert.doesNotMatch(JSON.stringify(scenario.status.job.progressPreview), new RegExp(pathSentinel));
+  assert.doesNotMatch(visible, /PRIVATE_SNAPSHOT_(?:PROSE|REASONING|COMMAND|OUTPUT|ERROR|METADATA|FILE|PATCH|CALL|CAPABILITY)/);
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2);
+});
+
+test('snapshot fallback emits a terminal-only safe event when the call first appears terminal', async () => {
+  const context = await fixture();
+  const scenario = await deterministicConversationScenario(context, 'initial-only', {
+    heartbeat: true, completionAfterProgressLine: '[zcode] Bash completed (10ms).\n',
+    env: { FAKE_ZCODE_SESSION_PROGRESS: 'terminal' },
+  });
+  const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
+  assert.match(visible, /Bash completed \(10ms\)\./); assert.doesNotMatch(visible, /Running tool: Bash\./);
+  assert.doesNotMatch(visible, /PRIVATE_SNAPSHOT_/);
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2);
+});
+
+test('snapshot read rejection degrades once to lifecycle-only and preserves authoritative completion', async () => {
+  const context = await fixture();
+  const scenario = await deterministicConversationScenario(context, 'initial-only', {
+    heartbeat: true, completionAfterProgressLine: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n',
+    env: { FAKE_ZCODE_SESSION_PROGRESS_READ_FAIL: '1' },
+  });
+  const fallback = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
+  const degraded = '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n';
+  assert.equal(scenario.lines.filter((line) => line === fallback).length, 1);
+  assert.equal(scenario.lines.filter((line) => line === degraded).length, 1);
+  assert.equal(scenario.stored.progressProbe.state, 'lifecycle-only');
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
+  assert.doesNotMatch(scenario.lines.join(''), /PRIVATE_SNAPSHOT_READ_REJECTION/);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2);
+});
+
+test('later accepted online recovery stops snapshot reads and discards a delayed old result', async () => {
+  const context = await fixture();
+  const scenario = await deterministicConversationScenario(context, 'initial-only', {
+    heartbeat: true, env: { FAKE_ZCODE_SESSION_PROGRESS_RECOVERY: '1', FAKE_ZCODE_WAIT_FOR_PROGRESS_READ: '1' },
+  });
+  const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
+  assert.equal(scenario.stored.progressProbe.state, 'online'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
+  assert.doesNotMatch(visible, /PRIVATE_LATE_SNAPSHOT|Running tool: Bash\./);
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one late progress read plus one final authoritative read');
+});
+
+test('accepted zero-event online conversation frame prevents deterministic heartbeat fallback', async () => {
+  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'zero-online', { heartbeat: true });
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
+  assert.equal(scenario.stored.progressProbe.state, 'online'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
+  assert.doesNotMatch(scenario.lines.join(''), /ZCode (?:conversation frames were unavailable|semantic progress is unavailable)/);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
+});
+
+test('malformed conversation rejection burst degrades once without leaking rejected payloads or changing completion', async () => {
+  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'rejection-burst');
+  const diagnostic = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
+  assert.equal(scenario.lines.filter((line) => line === diagnostic).length, 1);
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
+  assert.equal(scenario.stored.progressProbe.state, 'snapshot-fallback'); assert.equal(scenario.stored.progressProbe.rejected['row-shape'], 4);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
+  const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
+  assert.doesNotMatch(visible, /PRIVATE_REJECTED_(?:FRAME|ROW|COMMAND|REASONING)/);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one progress read remains separate from the final authoritative read');
+});
+
+test('repeated sequence gaps reach the owner-visible rejection threshold and activate fallback', async () => {
+  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'sequence-gap');
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.stored.progressProbe.rejected.sequence, 4);
+  assert.equal(scenario.stored.progressProbe.state, 'snapshot-fallback');
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
+  assert.equal(scenario.lines.filter((line) => /conversation frames were unavailable/.test(line)).length, 1);
+  const visible = `${scenario.lines.join('')}${JSON.stringify(scenario.status)}`;
+  assert.doesNotMatch(visible, /PRIVATE_SEQUENCE_FRAME|logicalFrame|ordinal|fromSeq|toSeq/);
 });
 
 test('conversation online progress sent before the subscribe response is buffered until the subscription binds', async () => {
@@ -846,24 +1002,39 @@ test('status --all reports a scavenged foreign job only through redacted other-o
 test('status --all preserves same-owner detail but allowlists foreign job metadata', async () => {
   const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
   const mine = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-a', ownerTurnId: 'owner-a-turn', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'read-only' } });
-  const foreignQueued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-b-secret-session', ownerTurnId: 'owner-b-secret-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'bypassPermissions', secret: 'permission-secret' } });
   const startedAt = new Date().toISOString();
+  await store.transitionJob(context.workspace, mine.id, ['queued'], 'running', { startedAt });
+  const probe = {
+    state: 'online', subscriptionAcknowledged: true, framesReceived: 1,
+    acceptedInitial: 0, acceptedOnline: 1, acceptedRecovery: 0,
+    rejected: { 'wire-version': 0, 'envelope-shape': 0, sequence: 0, topic: 0, 'row-kind': 0, 'row-shape': 0 },
+    snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
+  };
+  await store.updateJobProgressProbe(context.workspace, mine.id, probe);
+  await store.finishJob(context.workspace, mine.id, ['running'], 'failed', { error: { message: 'fixture terminal' }, exitCode: 1 });
+  const foreignQueued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'owner-b-secret-session', ownerTurnId: 'owner-b-secret-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'bypassPermissions', secret: 'permission-secret' } });
+  const foreignStartedAt = new Date().toISOString();
   const foreign = await store.transitionJob(context.workspace, foreignQueued.id, ['queued'], 'running', {
     childPid: 424242, workerLeaseId: 'a'.repeat(64), effort: 'xhigh',
     model: { providerId: 'secret-provider', modelId: 'secret-model' },
-    promptArtifact: 'artifacts/secret-prompt.json', startedAt, zcodeSessionId: 'secret-zcode-session',
+    promptArtifact: 'artifacts/secret-prompt.json', startedAt: foreignStartedAt, zcodeSessionId: 'secret-zcode-session',
   });
   await store.transitionJob(context.workspace, foreign.id, ['running'], 'running', { inputId: 'secret-input', startRevision: 42, beforeMessageIds: ['secret-message'] });
-  await store.updateJobProgress(context.workspace, foreign.id, { phase: 'running', message: 'foreign preview secret', observedAt: startedAt });
+  await store.updateJobProgress(context.workspace, foreign.id, { phase: 'running', message: 'foreign preview secret', observedAt: foreignStartedAt });
 
   const listed = await runCompanion(['status', '--all'], { cwd: context.workspace, env: context.env, caller: caller('owner-a') });
   const sameOwner = listed.jobs.find((/** @type {any} */ job) => job.id === mine.id);
   const otherOwner = listed.jobs.find((/** @type {any} */ job) => job.id === foreign.id);
   assert.equal(sameOwner.command, 'review'); assert.equal(sameOwner.readOnly, true); assert.equal(sameOwner.owner, 'same-owner');
+  assert.equal(Object.hasOwn(sameOwner, 'progressProbe'), false);
   assert.deepEqual(Object.keys(otherOwner).sort(), ['createdAt', 'hasOwner', 'id', 'lastActivityAt', 'startedAt', 'status'].sort());
   assert.equal(otherOwner.hasOwner, true);
   const rendered = renderOutput(listed);
   assert.doesNotMatch(`${JSON.stringify(otherOwner)}\n${rendered}`, /owner-b|secret|xhigh|424242|latest=|result|internal/i);
+
+  const detailed = await runCompanion(['status', mine.id], { cwd: context.workspace, env: context.env, caller: caller('owner-a') });
+  assert.deepEqual(detailed.job.progressProbe, probe);
+  assert.doesNotMatch(renderOutput(detailed), /progressProbe|framesReceived|acceptedOnline/);
 
   await assert.rejects(runCompanion(['status', foreign.id], { cwd: context.workspace, env: context.env, caller: caller('owner-a') }), { code: 'OWNED_JOB_NOT_FOUND' });
 });

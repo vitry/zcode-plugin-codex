@@ -49,7 +49,8 @@ For the generic route, substitute only the preflight-verified absolute canonical
 ```text
 Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:
 node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke rescue
-Preserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request/print/persist authorization material.
+Preserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request/print/persist authorization material.
+Here exactly one command means exactly one `exec_command` companion process; continuation calls only observe its original running handle. Never start a second `exec_command`. A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.
 If that command returned a needs-choice response, stop. Only after the parent sends exactly `Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.` run exactly:
 node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-choice rescue resume
 Only after the parent sends exactly `Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.` run exactly:

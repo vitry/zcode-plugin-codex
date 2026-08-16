@@ -4,6 +4,8 @@ All notable changes follow Semantic Versioning.
 
 ## Unreleased
 
+- Added #24 neutral forwarding hooks, #25 attached-yield continuation on the same running handle, and #26 fixed-shape structural progress probes with detailed status limited to the exact owner.
+- Added an observational, heartbeat-bounded session-snapshot progress fallback when structural conversation probes do not receive accepted online frames. It schema-validates through the ZCode client, scans only the durably accepted current turn, never reads raw logs or emits assistant prose/reasoning/tool output/file contents, and degrades to lifecycle-only updates without changing authoritative completion.
 - Stopped writing the Codex host's `hide_spawn_agent_metadata` flag; one setup now reconciles the managed Role and safely removes only a legacy `false` proved by complete numeric-v1 ownership evidence.
 - Added a packaged bilingual manual-uninstall guide for receipt-gated Role/config cleanup while retaining durable jobs, results, progress, logs, and history by default.
 - Fixed `$zcode:setup` managed Role reconciliation with Codex 0.147 effective configuration, which normalizes an otherwise exact Role registration with `nickname_candidates = null`.

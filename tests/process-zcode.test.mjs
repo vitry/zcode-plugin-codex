@@ -319,3 +319,47 @@ test('fake peer stop cancels the pending completion before acknowledging stop', 
   assert.deepEqual(frames.map((frame) => frame.id), [1, 2]);
   assert.equal(frames.some((frame) => frame.method === 'state.updated'), false);
 });
+
+test('fake peer completion waits for the exact progress-dispatch gate nonce', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-progress-dispatch-gate-'));
+  const gate = join(directory, 'gate.json'); const reached = join(directory, 'reached.json');
+  const nonce = 'a'.repeat(64); const staleNonce = 'b'.repeat(64);
+  await writeFile(gate, JSON.stringify({ version: 1, nonce, state: 'held' }));
+  const peer = spawn(process.execPath, [fakeFixture], {
+    env: { ...process.env, FAKE_ZCODE_PROGRESS_DISPATCH_GATE: gate, FAKE_ZCODE_PROGRESS_DISPATCH_GATE_NONCE: nonce, FAKE_ZCODE_PROGRESS_DISPATCH_GATE_REACHED: reached, FAKE_ZCODE_COMPLETION_DELAY_MS: '0' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = ''; let stderr = '';
+  peer.stdout.setEncoding('utf8'); peer.stdout.on('data', (chunk) => { stdout += chunk; });
+  peer.stderr.setEncoding('utf8'); peer.stderr.on('data', (chunk) => { stderr += chunk; });
+  const waitForGateChecks = async (minimum) => {
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const value = await readFile(reached, 'utf8').then(JSON.parse).catch(() => null);
+      if (value?.version === 1 && value.nonce === nonce && value.checks >= minimum) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.fail(`fake progress gate did not reach check ${minimum}`);
+  };
+  const waitForCompletion = async () => {
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      if (stdout.includes('"method":"state.updated"')) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.fail('fake progress gate never released completion');
+  };
+  try {
+    await new Promise((resolve, reject) => { peer.once('spawn', resolve); peer.once('error', reject); });
+    peer.stdin.write(`${JSON.stringify({ id: 1, method: 'session/send', params: { sessionId: 'progress-gate-session', inputId: 'input-1' } })}\n`);
+    await waitForGateChecks(1); assert.equal(stdout.includes('"method":"state.updated"'), false);
+    await writeFile(gate, JSON.stringify({ version: 1, nonce: staleNonce, state: 'release' }));
+    await waitForGateChecks(2); assert.equal(stdout.includes('"method":"state.updated"'), false);
+    await writeFile(gate, JSON.stringify({ version: 1, nonce, state: 'release' }));
+    await waitForCompletion(); peer.stdin.end();
+    assert.equal(await new Promise((resolve) => peer.once('exit', resolve)), 0, stderr);
+  } finally {
+    if (peer.exitCode === null && peer.signalCode === null) peer.kill('SIGKILL');
+    await rm(directory, { recursive: true, force: true });
+  }
+});

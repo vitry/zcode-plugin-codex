@@ -10,7 +10,7 @@ const COMMON = ['session_id', 'transcript_path', 'cwd', 'hook_event_name'];
 const WITH_MODEL = [...COMMON, 'model'];
 const EVENTS = Object.freeze({
   SessionStart: { fields: [...WITH_MODEL, 'permission_mode', 'source'], required: ['session_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'source'] },
-  UserPromptSubmit: { fields: [...WITH_MODEL, 'turn_id', 'permission_mode', 'prompt'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'prompt'] },
+  UserPromptSubmit: { fields: [...WITH_MODEL, 'turn_id', 'permission_mode', 'prompt', 'agent_id', 'agent_type'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'prompt'] },
   SubagentStart: { fields: [...WITH_MODEL, 'turn_id', 'permission_mode', 'agent_id', 'agent_type'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'agent_id', 'agent_type'] },
   SubagentStop: { fields: [...WITH_MODEL, 'turn_id', 'permission_mode', 'agent_id', 'agent_type', 'agent_transcript_path', 'stop_hook_active', 'last_assistant_message'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'agent_id', 'agent_type', 'stop_hook_active'] },
   Stop: { fields: [...WITH_MODEL, 'turn_id', 'permission_mode', 'stop_hook_active', 'last_assistant_message'], required: ['session_id', 'turn_id', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'stop_hook_active'] },
@@ -31,6 +31,7 @@ export async function readHookInput(expectedEvent, options = {}) {
   for (const key of ['transcript_path', 'agent_transcript_path']) if (input[key] !== undefined && input[key] !== null && !boundedString(input[key], 4096)) throw inputError();
   if (!boundedString(input.cwd, 4096) || !isAbsolute(input.cwd) || input.permission_mode !== undefined && !PERMISSIONS.has(input.permission_mode)) throw inputError();
   if (input.stop_hook_active !== undefined && typeof input.stop_hook_active !== 'boolean') throw inputError();
+  if (actualEvent === 'UserPromptSubmit' && Object.hasOwn(input, 'agent_id') !== Object.hasOwn(input, 'agent_type')) throw inputError();
   if (actualEvent === 'SessionStart' && !['startup', 'resume', 'clear', 'compact'].includes(input.source)) throw inputError();
   if (actualEvent === 'SessionEnd' && input.reason !== 'other') throw inputError();
   input.cwd = await realpath(input.cwd).catch(() => { throw inputError(); });
