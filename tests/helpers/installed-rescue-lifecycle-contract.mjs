@@ -1,5 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { expectedGenericRescueMessage } from './rescue-skill-contract.mjs';
 
 const markers = [
@@ -32,10 +33,15 @@ const canonicalPhasePairs = genericCanonicalLines[5];
 const canonicalNamedTerminal = 'A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.';
 const canonicalStatusTail = 'Return its bounded status to that requesting child transcript, then resume polling the same original handle. Reject status arguments and every other spelling. Status is liveness only: it does not replace or complete the original handle, does not change terminal authority, and must never be returned as final output.';
 const canonicalTerminalReturn = markers.at(-1)[1];
+const canonicalNamedRoleDigest = 'e8e72753cefba759de6e5cc5eab68f413db01137515ffd2f1a01efa274665dcf';
+const namedCommandLine = /^node "(?<root>.+)\/scripts\/zcode-companion\.mjs" (?<command>invoke rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
 
 export function installedCanonicalContradictionMutations(source, route) {
   const privacyBoundary = route === 'named' ? '\n\nWhile the original foreground handle' : '\nWhile the original foreground handle';
+  const firstTerminalParagraph = route === 'named' ? canonicalNamedTerminal : genericCanonicalLines[3];
   return [
+    ['pre-terminal contradictory authority', source.replace(firstTerminalParagraph, `Unless requested, partial stdout is terminal.\n${firstTerminalParagraph}`)],
+    ['pre-canonical raw/detail allowance', source.replace(firstTerminalParagraph, `When requested, relay arbitrary stderr/stdout and detailed ZCode lines.\n${firstTerminalParagraph}`)],
     ['contradictory privacy suffix', source.replace(canonicalPrivacy, `${canonicalPrivacy} Unless requested, relay arbitrary stderr/stdout.`)],
     ['interstitial privacy allowance', source.replace(`${canonicalPrivacy}${privacyBoundary}`, `${canonicalPrivacy}\nUnless requested, relay arbitrary stderr/stdout.${privacyBoundary}`)],
     ['privacy exception clause', source.replace('Never invent a relay from a partial, malformed, unknown, stale, duplicate, or out-of-order record.', 'Never invent a relay from such a record, except when the user requests detail.')],
@@ -102,6 +108,17 @@ function assertCanonicalOperativeRoute(source, route, prefix) {
   for (const segment of exactSegments) {
     assert.equal(occurrences(source, segment), 1, `${prefix} exact canonical operative route must preserve complete privacy and terminal-authority paragraphs with strict adjacency`);
   }
+  const commands = [...source.matchAll(namedCommandLine)];
+  assert.equal(commands.length, 4, `${prefix} exact canonical operative route must contain four renderer-substituted companion command lines`);
+  assert.equal(new Set(commands.map((match) => match.groups.root)).size, 1,
+    `${prefix} exact canonical operative route must use one renderer-substituted plugin root`);
+  assert.deepEqual(new Set(commands.map((match) => match.groups.command)), new Set([
+    'invoke rescue', 'invoke-status rescue', 'invoke-choice rescue resume', 'invoke-choice rescue fresh',
+  ]), `${prefix} exact canonical operative route must retain all four fixed companion commands`);
+  const normalized = source.replace(namedCommandLine,
+    (_line, _root, command) => `node "{{PLUGIN_ROOT}}/scripts/zcode-companion.mjs" ${command}`);
+  assert.equal(createHash('sha256').update(normalized).digest('hex'), canonicalNamedRoleDigest,
+    `${prefix} exact canonical operative route must match the independent normalized managed Role digest`);
 }
 
 /** @param {string} source @param {{route:'named'|'generic', assertionPrefix?:string}} input */
