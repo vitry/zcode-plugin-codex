@@ -24,6 +24,7 @@ import {
   qualifyCodexRescueEvidence,
 } from '../helpers/codex-rescue-qualification.mjs';
 import {
+  assertRescueRouteContract,
   expectedGenericRescueMessage,
   expectedNamedRescueMessage,
 } from '../helpers/rescue-skill-contract.mjs';
@@ -129,10 +130,22 @@ function assertInstalledRescueQualificationSource(source) {
   assertInstalledSourceBranch(foreground, 'foreground', false);
   assertInstalledSourceBranch(choice, 'choice', true);
   assertInstalledSourceBranch(background, 'background', false);
+  const choiceLinkage = exactSourceRegion(installedQualification,
+    '  function assertInstalledRescueChoiceLinkage(', '\n\n  if (process.env.ZCODE_CODEX_RESCUE_E2E', 'choice yielded linkage');
+  assertSourceOrder(choiceLinkage, [
+    'installedChoiceYieldFacts(rollouts, evidence.childThreadId, commands);',
+    'assert.deepEqual(yielded, {',
+    'initial: { execCommandCount: 1, pollCount: yielded.initial.pollCount, sameHandleChecked: true, terminalExitCode: 3 }',
+    'continuation: { execCommandCount: 1, pollCount: yielded.continuation.pollCount, sameHandleChecked: true, terminalExitCode: 0 }',
+  ], 'choice yielded linkage');
+  assert.match(installedQualification, /const pendingSegment = await runHeldChoiceSegment\(`\$\{choice\}-initial`, expectedCommand,/u,
+    'choice initial segment must use the held yielded-process gate');
+  assert.match(installedQualification, /const answerSegment = await runHeldChoiceSegment\(`\$\{choice\}-continuation`, choiceCommand,/u,
+    'choice continuation segment must use the held yielded-process gate');
   assertSourceOrder(installedQualification, [
     'const pendingFrames =',
     'const pendingIdentity = captureInstalledRescueChoiceIdentity(pendingRollouts, parentIds[0]);',
-    'const answer = await codex([',
+    'const answerSegment = await runHeldChoiceSegment(',
     'qualifyCodexRescueChoiceEvidence(',
   ], 'choice pending snapshot');
 }
@@ -153,11 +166,14 @@ function assertInstalledSourceBranch(region, label, requireChoiceLinkage) {
   assertSourceOrder(success, [
     `qualifyCodexRescue${label === 'foreground' ? '' : label === 'choice' ? 'Choice' : 'Background'}Evidence(`,
     'assertInstalledRescueDisplay(evidence);',
-    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity);'] : []),
+    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });'] : []),
   ], `${label} display${requireChoiceLinkage ? ' and linkage' : ''}`);
   if (label !== 'background') {
-    assert.match(success, /requireProgressRelay:\s*true/u, `${label} qualification must require a fixed parent relay`);
-    assert.match(success, /expectedStatusCommand/u, `${label} qualification must validate any optional bound status sidecar`);
+    const callEnd = success.indexOf(label === 'choice' ? '\n      );' : '\n    );');
+    assert.ok(callEnd > 0, `${label} qualification call must have an exact bounded region`);
+    const qualifierCall = success.slice(0, callEnd);
+    assert.match(qualifierCall, /requireProgressRelay:\s*true/u, `${label} qualification must require a fixed parent relay`);
+    assert.match(qualifierCall, /expectedStatusCommand/u, `${label} qualification must validate any optional bound status sidecar`);
     assert.match(success, /progressRelayChecked/u, `${label} qualification must assert the fixed parent relay result`);
   }
   const guardMarker = label === 'choice'
@@ -172,7 +188,7 @@ function assertInstalledSourceBranch(region, label, requireChoiceLinkage) {
   assertSourceOrder(guarded, [
     guardMarker,
     'assertInstalledRescueDisplay(error.evidence);',
-    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);'] : []),
+    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });'] : []),
     'markUnqualified(',
     'return;',
   ], `${label} encrypted guard display${requireChoiceLinkage ? ' and linkage' : ''}`);
@@ -429,7 +445,7 @@ test('installed Rescue source contract rejects moved, unreachable, and missing b
   const movedAfterReturn = source.replace(encryptedDisplay, '').replace(foregroundMark, `${foregroundMark}\n${encryptedDisplay}`);
   assert.throws(() => assertInstalledRescueQualificationSource(movedAfterReturn), /foreground encrypted guard display/u);
 
-  const missingChoiceLinkage = source.replace('        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);\n', '');
+  const missingChoiceLinkage = source.replace('        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });\n', '');
   assert.throws(() => assertInstalledRescueQualificationSource(missingChoiceLinkage), /choice encrypted guard display and linkage/u);
 
   const foregroundCatch = '  } catch (error) {\n';
@@ -437,7 +453,7 @@ test('installed Rescue source contract rejects moved, unreachable, and missing b
   const movedDisplayAboveGuard = source.replace(encryptedDisplay, '').replace(foregroundCatch + foregroundPredicate, foregroundCatch + encryptedDisplay + foregroundPredicate);
   assert.throws(() => assertInstalledRescueQualificationSource(movedDisplayAboveGuard), /foreground encrypted guard/u);
 
-  const choiceEncryptedChecks = '        assertInstalledRescueDisplay(error.evidence);\n        assert.equal(error.evidence.progressRelayChecked, true);\n        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);\n';
+  const choiceEncryptedChecks = '        assertInstalledRescueDisplay(error.evidence);\n        assert.equal(error.evidence.progressRelayChecked, true);\n        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });\n';
   const choiceCatch = '    } catch (error) {\n';
   const choicePredicate = "      if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {\n";
   const movedChoiceChecksAboveGuard = source.replace(choiceEncryptedChecks, '').replace(choiceCatch + choicePredicate, choiceCatch + choiceEncryptedChecks + choicePredicate);
@@ -447,6 +463,47 @@ test('installed Rescue source contract rejects moved, unreachable, and missing b
   assert.throws(() => assertInstalledRescueQualificationSource(missingForegroundRelayRequirement), /foreground qualification must require a fixed parent relay/u);
   const missingChoiceStatusContract = source.replace('          expectedStatusCommand,\n', '');
   assert.throws(() => assertInstalledRescueQualificationSource(missingChoiceStatusContract), /choice qualification must validate any optional bound status sidecar/u);
+  const missingChoiceYieldedEvidence = source.replace('    const yielded = installedChoiceYieldFacts(rollouts, evidence.childThreadId, commands);\n', '');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingChoiceYieldedEvidence), /choice yielded linkage/u);
+  const missingInitialHeldGate = source.replace('\n    const pendingSegment = await runHeldChoiceSegment(', '\n    const pendingSegment = await unheldChoiceSegment(');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingInitialHeldGate), /choice initial segment must use the held yielded-process gate/u);
+  const missingContinuationHeldGate = source.replace('\n    const answerSegment = await runHeldChoiceSegment(', '\n    const answerSegment = await unheldChoiceSegment(');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingContinuationHeldGate), /choice continuation segment must use the held yielded-process gate/u);
+});
+
+test('installed named and generic foreground and choice policies independently bind relay status and terminal order', async () => {
+  const role = extractInstalledRoleInstructions(await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
+  const skill = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const generic = assertRescueRouteContract(skill).genericMessage.text;
+  for (const [route, source] of [['named', role], ['generic', generic]]) {
+    assertInstalledForwarderLifecycleContract(source, route);
+    assert.throws(() => assertInstalledForwarderLifecycleContract(moveInstalledRelayAfterTerminal(source), route), new RegExp(`${route} relay validation must precede terminal return`));
+    assert.throws(
+      () => assertInstalledForwarderLifecycleContract(source.replace('Never relay detailed `[zcode]` lines, arbitrary stderr', 'Relay detailed `[zcode]` lines and arbitrary stderr'), route),
+      new RegExp(`${route} raw progress prohibition must remain in the relay region`),
+    );
+  }
+});
+
+test('installed choice qualification requires yielded same-handle terminal evidence in both logical segments', () => {
+  const fixture = installedChoiceYieldFixture();
+  assert.deepEqual(installedChoiceYieldFacts(fixture.rollouts, fixture.childThreadId, fixture.commands), {
+    initial: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 3 },
+    continuation: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 0 },
+  });
+  for (const [label, mutate] of [
+    ['initial missing yield', (input) => {
+      input.rollouts[0].find((event) => event?.payload?.call_id === 'initial-exec' && event.payload.type === 'custom_tool_call_output').payload.output = installedHostOutput({ output: 'needs choice\n', exit_code: 3 });
+      input.rollouts[0] = input.rollouts[0].filter((event) => !['initial-poll', 'initial-terminal'].includes(event?.payload?.call_id));
+    }],
+    ['initial handle drift', (input) => { input.rollouts[0].find((event) => event?.payload?.call_id === 'initial-terminal').payload.input = installedPollInput(999); }],
+    ['continuation missing terminal exit', (input) => { input.rollouts[0].find((event) => event?.payload?.call_id === 'continuation-terminal' && event.payload.type === 'custom_tool_call_output').payload.output = installedHostOutput({ output: '', session_id: 61 }); }],
+    ['status command substitution', (input) => { input.rollouts[0].find((event) => event?.payload?.call_id === 'initial-status').payload.input = installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" invoke-status review'); }],
+    ['status arguments', (input) => { input.rollouts[0].find((event) => event?.payload?.call_id === 'initial-status').payload.input = installedExecInput(`${input.commands.status} --detail`); }],
+  ]) {
+    const input = installedChoiceYieldFixture(); mutate(input);
+    assert.throws(() => installedChoiceYieldFacts(input.rollouts, input.childThreadId, input.commands), /yielded same-handle terminal evidence/u, label);
+  }
 });
 
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
@@ -477,10 +534,37 @@ test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode
 });
 
 test('installed Rescue uses one isolated native child for initial and choice continuations', { skip: rescueOptInSkip, timeout: 1_200_000 }, async (t) => {
-  function assertInstalledRescueChoiceLinkage(rollouts, parentThreadId, evidence, pendingIdentity) {
-    assert.equal(evidence.executions.initial.execCommandCount, 1, 'choice initial turn must execute exactly once');
-    assert.equal(evidence.executions.continuation.execCommandCount, 1, 'choice continuation must execute exactly once');
+  function assertInstalledRescueChoiceLinkage(rollouts, parentThreadId, evidence, pendingIdentity, commands) {
+    const yielded = installedChoiceYieldFacts(rollouts, evidence.childThreadId, commands);
+    assert.equal(evidence.executions.initial.execCommandCount, 1);
+    assert.equal(evidence.executions.continuation.execCommandCount, 1);
+    assert.deepEqual(yielded, {
+      initial: { execCommandCount: 1, pollCount: yielded.initial.pollCount, sameHandleChecked: true, terminalExitCode: 3 },
+      continuation: { execCommandCount: 1, pollCount: yielded.continuation.pollCount, sameHandleChecked: true, terminalExitCode: 0 },
+    });
+    assert.ok(yielded.initial.pollCount >= 1, 'choice initial turn must survive an initial yield and poll its original handle');
+    assert.ok(yielded.continuation.pollCount >= 1, 'choice continuation must survive an initial yield and poll its original handle');
     assertInstalledRescueChoiceIdentityLinkage(rollouts, parentThreadId, evidence, pendingIdentity);
+  }
+
+  async function runHeldChoiceSegment(label, command, launch) {
+    const gatePath = join(temporary, `${label}.completion.gate`);
+    const gateReachedPath = join(temporary, `${label}.completion.reached`);
+    const processPath = join(temporary, `${label}.process.json`);
+    const processNonce = randomBytes(32).toString('hex');
+    const observedBefore = installedYieldedCommandPairs(await loadCodexRollouts(codexHome).catch(() => []), command);
+    await Promise.all([writeFile(gatePath, 'hold'), writeFile(gateReachedPath, ''), writeFile(processPath, '')]);
+    const held = await runHeldForegroundRescue({
+      gatePath, processPath, processNonce,
+      launch: () => launch({ ...env, FAKE_ZCODE_COMPLETION_GATE: gatePath, FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReachedPath, FAKE_ZCODE_PROCESS_FILE: processPath, FAKE_ZCODE_PROCESS_NONCE: processNonce }),
+      waitForGate: (signal) => waitUntil(async () => await readFile(gateReachedPath, 'utf8').catch(() => '') === 'blocked', 60_000, `${label} never reached the held fake-ZCode completion boundary`, signal),
+      waitForObservation: (signal) => waitUntil(async () => {
+        const observed = installedYieldedCommandPairs(await loadCodexRollouts(codexHome).catch(() => []), command);
+        return [...observed].some((pair) => !observedBefore.has(pair));
+      }, 60_000, `${label} never polled its original yielded handle`, signal),
+      holdMs: 0,
+    });
+    return held;
   }
 
   if (process.env.ZCODE_CODEX_RESCUE_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_RESCUE_E2E=1.'));
@@ -595,22 +679,30 @@ test('installed Rescue uses one isolated native child for initial and choice con
 
   for (const choice of ['resume', 'fresh']) {
     await writeFile(zcodeRecord, '');
-    const pending = await codex([...commonArgs, 'Use the installed $zcode:rescue --wait continue repairing the fixture skill exactly once now. If its child returns needs-choice, follow the installed skill, ask once, and stop without choosing.'], workspace, env, 240_000);
+    const pendingSegment = await runHeldChoiceSegment(`${choice}-initial`, expectedCommand,
+      (segmentEnv) => controlledCodex([...commonArgs, 'Use the installed $zcode:rescue --wait continue repairing the fixture skill exactly once now. If its child returns needs-choice, follow the installed skill, ask once, and stop without choosing.'], workspace, segmentEnv, 240_000));
+    const pending = pendingSegment.rescue;
     if (skipExternalFailure(t, pending)) return;
+    assert.equal(pendingSegment.endedBeforeGate, false, `choice ${choice} initial segment ended before its held completion boundary`);
+    assert.equal(pendingSegment.processAliveWhileHeld, true, `choice ${choice} initial exact process must remain alive through the observed same-handle poll`);
     assert.equal(pending.code, 0, `codex pending Rescue failed\n${pending.stdout}\n${pending.stderr}`);
     const pendingFrames = pending.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
     const parentIds = [...new Set(pendingFrames.filter((frame) => frame?.type === 'thread.started').map((frame) => frame.thread_id))];
     assert.equal(parentIds.length, 1, 'pending Rescue must expose exactly one resumable parent thread ID');
     const pendingRollouts = await loadCodexRollouts(codexHome);
     const pendingIdentity = captureInstalledRescueChoiceIdentity(pendingRollouts, parentIds[0]);
-    const answer = await codex([
-      'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
-      '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all',
-      parentIds[0], choice,
-    ], workspace, env, 240_000);
-    if (skipExternalFailure(t, answer)) return;
-    assert.equal(answer.code, 0, `codex ${choice} continuation failed\n${answer.stdout}\n${answer.stderr}`);
     const choiceCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`;
+    const answerSegment = await runHeldChoiceSegment(`${choice}-continuation`, choiceCommand,
+      (segmentEnv) => controlledCodex([
+        'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+        '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all',
+        parentIds[0], choice,
+      ], workspace, segmentEnv, 240_000));
+    const answer = answerSegment.rescue;
+    if (skipExternalFailure(t, answer)) return;
+    assert.equal(answerSegment.endedBeforeGate, false, `choice ${choice} continuation ended before its held completion boundary`);
+    assert.equal(answerSegment.processAliveWhileHeld, true, `choice ${choice} continuation exact process must remain alive through the observed same-handle poll`);
+    assert.equal(answer.code, 0, `codex ${choice} continuation failed\n${answer.stdout}\n${answer.stderr}`);
     const followupMessage = `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`;
     const choiceRollouts = await loadCodexRollouts(codexHome);
     try {
@@ -641,7 +733,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
         },
       );
       assertInstalledRescueDisplay(evidence);
-      assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity);
+      assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });
       assert.equal(evidence.choice, choice);
       assert.equal(evidence.progressRelayChecked, true);
       t.diagnostic(`qualified same-child Rescue ${choice}: ${evidence.childThreadId}`);
@@ -649,7 +741,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
       if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {
         assertInstalledRescueDisplay(error.evidence);
         assert.equal(error.evidence.progressRelayChecked, true);
-        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);
+        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });
         markUnqualified(t, unqualified(error.code, error.message)); return;
       }
       throw error;
@@ -1403,4 +1495,150 @@ function installedRelayObserved(rollouts) {
     }
   }
   return [...observedMessages].some((message) => sentMessages.has(message));
+}
+
+function installedYieldedCommandPairs(rollouts, command) {
+  const pairs = new Set();
+  for (const events of rollouts) {
+    const threadId = events?.[0]?.payload?.id;
+    if (typeof threadId !== 'string') continue;
+    const outputs = new Map(events.filter((event) => event?.payload?.type === 'custom_tool_call_output')
+      .map((event) => [event.payload.call_id, event.payload.output]));
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index];
+      if (event?.payload?.type !== 'custom_tool_call') continue;
+      try {
+        const call = parseInstalledToolInput(event.payload.input);
+        if (call.kind !== 'exec_command' || call.value.cmd !== command) continue;
+        const result = parseInstalledHostOutput(outputs.get(event.payload.call_id));
+        if (!Number.isSafeInteger(result.session_id) || result.session_id <= 0) continue;
+        for (const later of events.slice(index + 1)) {
+          if (later?.payload?.type !== 'custom_tool_call') continue;
+          const poll = parseInstalledToolInput(later.payload.input);
+          if (poll.kind === 'write_stdin' && poll.value.session_id === result.session_id && poll.value.chars === '') {
+            pairs.add(`${threadId}:${event.payload.call_id}:${later.payload.call_id}`);
+          }
+        }
+      } catch { /* ignore unrelated or partially persisted calls */ }
+    }
+  }
+  return pairs;
+}
+
+function extractInstalledRoleInstructions(source) {
+  const match = /^developer_instructions = """\n(?<body>[\s\S]*?)\n"""\s*$/u.exec(source);
+  assert.ok(match?.groups?.body, 'installed named Role must contain one exact developer-instructions body');
+  return match.groups.body;
+}
+
+function assertInstalledForwarderLifecycleContract(source, route) {
+  const originalHandle = source.indexOf('Exactly one `exec_command` companion process may own the foreground Rescue execution');
+  const terminalRule = source.indexOf('A companion result containing an exit code is terminal.');
+  const relayStart = source.indexOf('For every result yielded by the original foreground handle');
+  const relayValidation = source.indexOf('Before relay, require JSON with exact keys', relayStart);
+  const relayForward = source.indexOf('use `send_message` only to `/root` with the fixed mapped message', relayValidation);
+  const rawProhibition = source.indexOf('Never relay detailed `[zcode]` lines, arbitrary stderr', relayStart);
+  const sameHandlePoll = source.indexOf('continue only with same-handle `write_stdin` polling', rawProhibition);
+  const statusStart = source.indexOf('While the original foreground handle is live and only between polls', sameHandlePoll);
+  const statusCommand = source.indexOf('invoke-status rescue', statusStart);
+  const statusArguments = source.indexOf('Reject status arguments and every other spelling.', statusCommand);
+  const terminalReturn = source.indexOf("Return only the original foreground execution's terminal public stdout.", statusArguments);
+  assert.ok(originalHandle >= 0 && terminalRule > originalHandle, `${route} same-handle terminal contract must precede relay handling`);
+  assert.ok(relayStart > terminalRule && relayValidation > relayStart && relayForward > relayValidation && relayForward < terminalReturn, `${route} relay validation must precede terminal return`);
+  assert.ok(rawProhibition > relayForward && rawProhibition < statusStart, `${route} raw progress prohibition must remain in the relay region`);
+  assert.ok(sameHandlePoll > rawProhibition && statusStart > sameHandlePoll && statusCommand > statusStart && statusArguments > statusCommand, `${route} bound status must remain observational between same-handle polls`);
+  assert.ok(terminalReturn > statusArguments, `${route} relay validation must precede terminal return`);
+  for (const command of ['invoke rescue', 'invoke-choice rescue resume', 'invoke-choice rescue fresh']) {
+    assert.ok(source.indexOf(command) >= 0, `${route} foreground and both choice commands must share the lifecycle contract`);
+  }
+  return true;
+}
+
+function moveInstalledRelayAfterTerminal(source) {
+  const start = source.indexOf('For every result yielded by the original foreground handle');
+  const end = source.indexOf('While the original foreground handle is live and only between polls', start);
+  const terminal = source.indexOf("Return only the original foreground execution's terminal public stdout.", end);
+  assert.ok(start >= 0 && end > start && terminal > end, 'relay mutation requires exact bounded source regions');
+  const relay = source.slice(start, end);
+  return `${source.slice(0, start)}${source.slice(end, terminal)}${source.slice(terminal)}\n${relay}`;
+}
+
+function installedChoiceYieldFixture() {
+  const childThreadId = 'installed-choice-child';
+  const commands = { initial: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke rescue', continuation: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue resume', status: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-status rescue' };
+  const segment = (name, command, handle, exitCode) => [
+    installedToolCall(`${name}-exec`, installedExecInput(command)), installedToolOutput(`${name}-exec`, { output: 'partial\n', session_id: handle }),
+    ...(name === 'initial' ? [installedToolCall('initial-status', installedExecInput(commands.status)), installedToolOutput('initial-status', { output: '{"type":"rescue-status"}\n', exit_code: 0 })] : []),
+    installedToolCall(`${name}-poll`, installedPollInput(handle)), installedToolOutput(`${name}-poll`, { output: 'heartbeat\n', session_id: handle }),
+    installedToolCall(`${name}-terminal`, installedPollInput(handle)), installedToolOutput(`${name}-terminal`, { output: 'terminal\n', exit_code: exitCode }),
+    { type: 'event_msg', payload: { type: 'agent_message', phase: 'final_answer', message: 'terminal' } },
+  ];
+  return { childThreadId, commands, rollouts: [[
+    { type: 'session_meta', payload: { id: childThreadId } },
+    ...segment('initial', commands.initial, 51, 3),
+    ...segment('continuation', commands.continuation, 61, 0),
+  ]] };
+}
+
+function installedChoiceYieldFacts(rollouts, childThreadId, commands) {
+  try {
+    const child = rollouts.filter((events) => events?.[0]?.payload?.id === childThreadId);
+    if (child.length !== 1) throw new Error('child');
+    const events = child[0]; const finals = events.filter((event) => event?.payload?.phase === 'final_answer');
+    if (finals.length !== 2) throw new Error('finals');
+    const firstFinal = events.indexOf(finals[0]); const secondFinal = events.indexOf(finals[1]);
+    return {
+      initial: installedYieldSegmentFacts(events.slice(1, firstFinal), commands.initial, commands.status, 3),
+      continuation: installedYieldSegmentFacts(events.slice(firstFinal + 1, secondFinal), commands.continuation, commands.status, 0),
+    };
+  } catch { throw new Error('Installed choice qualification requires yielded same-handle terminal evidence in both logical segments.'); }
+}
+
+function installedYieldSegmentFacts(events, expectedCommand, statusCommand, expectedExitCode) {
+  const calls = events.filter((event) => event?.payload?.type === 'custom_tool_call');
+  const outputs = events.filter((event) => event?.payload?.type === 'custom_tool_call_output');
+  const decoded = calls.map((event) => ({ event, call: parseInstalledToolInput(event.payload.input) }));
+  const status = decoded.filter(({ call }) => call.kind === 'exec_command' && call.value.cmd === statusCommand);
+  if (status.length > 1) throw new Error('status');
+  const foreground = decoded.filter(({ event }) => !status.some((entry) => entry.event === event));
+  if (foreground.length < 2 || foreground[0].call.kind !== 'exec_command' || foreground[0].call.value.cmd !== expectedCommand
+    || foreground.slice(1).some(({ call }) => call.kind !== 'write_stdin')) throw new Error('calls');
+  let handle; let terminalCount = 0; let terminalExitCode; let pollCount = 0;
+  for (const { event, call } of foreground) {
+    const linked = outputs.filter((output) => output.payload.call_id === event.payload.call_id);
+    if (linked.length !== 1) throw new Error('link');
+    const result = parseInstalledHostOutput(linked[0].payload.output);
+    if (call.kind === 'write_stdin') {
+      pollCount += 1;
+      if (handle === undefined || call.value.session_id !== handle || call.value.chars !== '') throw new Error('handle');
+    }
+    if (Object.hasOwn(result, 'session_id')) {
+      if (!Number.isSafeInteger(result.session_id) || result.session_id <= 0 || handle !== undefined && result.session_id !== handle) throw new Error('handle');
+      handle ??= result.session_id;
+    } else if (Object.hasOwn(result, 'exit_code')) {
+      terminalCount += 1; terminalExitCode = result.exit_code;
+      if (event !== foreground.at(-1).event) throw new Error('terminal');
+    } else throw new Error('result');
+  }
+  if (handle === undefined || pollCount < 1 || terminalCount !== 1 || terminalExitCode !== expectedExitCode) throw new Error('terminal');
+  return { execCommandCount: 1, pollCount, sameHandleChecked: true, terminalExitCode };
+}
+
+function installedToolCall(callId, input) { return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input } }; }
+function installedToolOutput(callId, result) { return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: installedHostOutput(result) } }; }
+function installedExecInput(cmd) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace' })}); text(JSON.stringify(r))\n`; }
+function installedPollInput(sessionId) { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 30000 })}); text(JSON.stringify(r))\n`; }
+function installedHostOutput(result) { return [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }]; }
+function parseInstalledToolInput(source) {
+  for (const [kind, prefix] of [['exec_command', 'const r = await tools.exec_command('], ['write_stdin', 'const r = await tools.write_stdin(']]) {
+    const suffix = '); text(JSON.stringify(r))\n';
+    if (typeof source === 'string' && source.startsWith(prefix) && source.endsWith(suffix)) return { kind, value: JSON.parse(source.slice(prefix.length, -suffix.length)) };
+  }
+  throw new Error('tool input');
+}
+function parseInstalledHostOutput(output) {
+  if (!Array.isArray(output) || output.length !== 2 || !output[0]?.text?.startsWith('Script completed\n') || typeof output[1]?.text !== 'string') throw new Error('tool output');
+  const result = JSON.parse(output[1].text);
+  if (!result || typeof result !== 'object' || Array.isArray(result) || typeof result.output !== 'string') throw new Error('tool output');
+  return result;
 }
