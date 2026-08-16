@@ -139,6 +139,7 @@ test('relay sink is serialized, terminal flush waits boundedly, and close drops 
   reporter.observe(notification('prompt_started'));
   reporter.observe(notification('model_streaming'));
   reporter.observe(notification('prompt_completed'));
+  reporter.stopAccepting();
   assert.deepEqual(calls.map((record) => record.sequence), [1]);
 
   completions.shift()(); await new Promise((resolve) => setImmediate(resolve));
@@ -166,6 +167,37 @@ test('relay sink is serialized, terminal flush waits boundedly, and close drops 
   await stalled.flush(Date.now());
   stalled.close(); release(); await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(lateCalls, [1]);
+});
+
+test('stopAccepting fences heartbeat and late semantic relay producers while draining accepted records', async () => {
+  const calls = []; const completions = []; let heartbeat = () => {}; let resolveDescription = () => {}; let currentTime = observedAt;
+  const delayedDescription = new Promise((resolve) => { resolveDescription = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', relay: (record) => {
+      calls.push(record);
+      return new Promise((resolve) => { completions.push(resolve); });
+    }, now: () => currentTime, describeNotification: () => delayedDescription,
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started'));
+  reporter.observe(notification('model_streaming'));
+  reporter.observe({ method: 'v4/conversation/frame', params: {} });
+  reporter.stopAccepting();
+  currentTime = '2026-08-08T00:00:21.000Z';
+  heartbeat();
+  assert.equal(reporter.observe(notification('prompt_completed')), null);
+  resolveDescription({ disposition: 'accepted', phase: 'online', events: [{ phase: 'running', message: 'LATE_PRIVATE_EVENT', observedAt }] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((record) => record.sequence), [1]);
+
+  completions.shift()(); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((record) => record.sequence), [1, 2]);
+  completions.shift()(); await reporter.flush();
+  assert.deepEqual(calls.map(({ sequence, phase }) => ({ sequence, phase })), [
+    { sequence: 1, phase: 'starting' }, { sequence: 2, phase: 'running' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(calls), /LATE_PRIVATE_EVENT/);
+  reporter.close();
 });
 
 test('snapshot reads cannot start before accepted-boundary activation and begin on the first heartbeat', async () => {

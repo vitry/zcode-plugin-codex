@@ -194,6 +194,10 @@ export function createProgressReporter({
     }, PROGRESS_HEARTBEAT_MS);
     timer?.unref?.();
   };
+  const stopTimer = () => {
+    if (timer === null) return;
+    clearIntervalFn(timer); timer = null;
+  };
   /** @param {boolean} requireAcceptedBoundary */
   const activateCompatibilityBoundary = (requireAcceptedBoundary = false) => {
     if (closed || !accepting || requireAcceptedBoundary && !acceptedBoundaryActivated || compatibilityBoundaryActivated || progressProbe.state !== 'probing' || progressProbe.acceptedOnline > 0) return false;
@@ -534,7 +538,7 @@ export function createProgressReporter({
     diagnose(kind) { return diagnose(kind); },
     stopAccepting() {
       if (!accepting) return;
-      accepting = false; descriptorEpoch += 1;
+      accepting = false; relayClosed = true; stopTimer(); descriptorEpoch += 1;
       for (const item of logicalPending) if (item.kind === 'descriptor' && item.state === 'pending' && item !== activeDescriptor) item.state = 'dropped';
       descriptorOverflowed = false; pumpLogical();
     },
@@ -577,9 +581,7 @@ export function createProgressReporter({
       for (const item of logicalPending) if (item.kind === 'descriptor') item.state = 'dropped';
       activeDescriptor = null; descriptorInFlight = null; pumpLogical(); logicalPending.length = 0;
       disableWriter(); disablePersist(); disableRelay();
-      if (timer === null) return;
-      clearIntervalFn(timer);
-      timer = null;
+      stopTimer();
     },
   };
 
