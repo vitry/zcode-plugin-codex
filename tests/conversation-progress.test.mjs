@@ -99,6 +99,25 @@ test('observed unknown rows and sequence gaps do not silence later known progres
   }
 });
 
+test('cumulative and reset sequence ranges converge without replaying known rows', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createStructuralDescriber({ sessionId: 'session-cumulative', subscriptionId: 'subscription-cumulative', workspace });
+  const frame = (options) => conversationFrame({ sessionId: 'session-cumulative', subscriptionId: 'subscription-cumulative', ...options });
+  const turn = turnRow({ rowId: 1, state: 'running' });
+  const running = toolRow({ rowId: 2, toolCallId: 'tool-cumulative', toolName: 'Read', status: 'running' });
+  const completed = toolRow({ rowId: 2, toolCallId: 'tool-cumulative', toolName: 'Read', status: 'success' });
+
+  const first = await describer.observe(frame({ ordinal: 1, fromSeq: 1, toSeq: 10, deltas: [turn] }), observedAt);
+  const cumulative = await describer.observe(frame({ ordinal: 2, fromSeq: 1, toSeq: 11, deltas: [turn, running] }), observedAt);
+  const overlapping = await describer.observe(frame({ ordinal: 3, fromSeq: 1, toSeq: 12, deltas: [turn, running] }), observedAt);
+  const reset = await describer.observe(frame({ ordinal: 4, fromSeq: 0, toSeq: 13, deltas: [turn, completed] }), observedAt);
+
+  assert.deepEqual(first.events.map((event) => event.message), ['ZCode turn started.']);
+  assert.deepEqual(cumulative.events.map((event) => event.message), ['Running tool: Read.']);
+  assert.deepEqual(overlapping, { disposition: 'accepted', phase: 'online', events: [] });
+  assert.deepEqual(reset.events.map((event) => event.message), ['Read completed.']);
+});
+
 test('normalizes previews by removing controls, collapsing whitespace, and truncating by Unicode code point', () => {
   assert.equal(normalizePreview(' a\r\n\tb\u0000\u0085  c ', 96), 'a b c');
   const value = `${'😀'.repeat(95)}界尾`;
@@ -256,14 +275,14 @@ test('rejects discontinuities diagnostically while advancing the observational w
   const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
   const frame = (ordinal, fromSeq, toSeq, rowId) => conversationFrame({ ordinal, fromSeq, toSeq, deltas: [toolRow({ rowId, input: { command: `echo ${rowId}` } })] });
   assert.equal((await describer.observe(frame(7, 10, 10, 1), observedAt)).events.length, 1);
-  assert.deepEqual(await describer.observe(frame(8, 1, 11, 2), observedAt), { disposition: 'rejected', reason: 'sequence', events: [] });
-  assert.deepEqual(await describer.observe(frame(8, 11, 11, 2), observedAt), { disposition: 'ignored', reason: 'stale', events: [] });
-  const invalid = frame(8, 11, 11, 2); invalid.params.frame.payload.deltas[0].row.extra = true;
+  assert.deepEqual(await describer.observe(frame(8, 12, 12, 2), observedAt), { disposition: 'rejected', reason: 'sequence', events: [] });
+  assert.deepEqual(await describer.observe(frame(8, 12, 12, 2), observedAt), { disposition: 'ignored', reason: 'stale', events: [] });
+  const invalid = frame(8, 12, 12, 2); invalid.params.frame.payload.deltas[0].row.extra = true;
   assert.deepEqual(await describer.observe(invalid, observedAt), { disposition: 'rejected', reason: 'row-shape', events: [] });
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 8, fromSeq: 11, toSeq: 11, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'ignored', reason: 'stale', events: [] });
-  assert.equal((await describer.observe(frame(9, 12, 12, 3), observedAt)).events.length, 1);
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 11, fromSeq: 14, toSeq: 14, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
-  assert.equal((await describer.observe(frame(12, 15, 15, 4), observedAt)).events.length, 1);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 8, fromSeq: 12, toSeq: 12, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'ignored', reason: 'stale', events: [] });
+  assert.equal((await describer.observe(frame(9, 1, 13, 3), observedAt)).events.length, 1);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 11, fromSeq: 1, toSeq: 15, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
+  assert.equal((await describer.observe(frame(12, 1, 16, 4), observedAt)).events.length, 1);
 });
 
 test('recognizes only captured tool failure statuses and turn failure terminal states', async () => {

@@ -104,7 +104,7 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     if (needsRecovery) return ignored('recovery-required');
     if (lastOrdinal !== undefined && frame.ordinal <= lastOrdinal) return ignored('stale');
     const sequenceGap = lastOrdinal !== undefined
-      && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== /** @type {number} */ (lastSeq) + 1);
+      && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq > /** @type {number} */ (lastSeq) + 1);
     lastOrdinal = frame.ordinal; lastSeq = Math.max(lastSeq ?? frame.toSeq, frame.toSeq);
     if (sequenceGap) return rejected('sequence');
     const staged = [];

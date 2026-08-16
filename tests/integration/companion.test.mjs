@@ -144,7 +144,7 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'cumulative-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
@@ -431,6 +431,22 @@ test('observed unknown conversation rows and a sequence gap preserve later safe 
   assert.equal(scenario.stored.progressProbe.state, 'online');
   assert.equal(scenario.stored.progressProbe.acceptedOnline, 2);
   assert.equal(scenario.stored.progressProbe.rejected.sequence, 1);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1);
+});
+
+test('cumulative and reset conversation ranges emit each known lifecycle once', async () => {
+  const context = await fixture();
+  const scenario = await deterministicConversationScenario(context, 'cumulative-ranges');
+  const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
+  assert.equal(scenario.lines.filter((line) => line === '[zcode] ZCode turn started.\n').length, 1);
+  assert.equal(scenario.lines.filter((line) => line === '[zcode] Running tool: Read.\n').length, 1);
+  assert.equal(scenario.lines.filter((line) => line === '[zcode] Read completed (25ms).\n').length, 1);
+  assert.doesNotMatch(visible, /PRIVATE_CUMULATIVE_ROW/);
+  assert.equal(scenario.output.result, 'done');
+  assert.equal(scenario.stored.progressProbe.state, 'online');
+  assert.equal(scenario.stored.progressProbe.acceptedOnline, 4);
+  assert.equal(scenario.stored.progressProbe.rejected.sequence, 0);
   assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1);
 });
