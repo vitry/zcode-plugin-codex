@@ -5,6 +5,12 @@ import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import {
+  assertRescueRouteContract,
+  expectedGenericRescueMessage,
+  expectedNamedRescueMessage,
+} from './helpers/rescue-skill-contract.mjs';
+
 const root = new URL('../', import.meta.url);
 const rootPath = fileURLToPath(root);
 const expected = ['adversarial-review', 'cancel', 'rescue', 'result', 'review', 'setup', 'status', 'transfer'];
@@ -18,62 +24,34 @@ const hints = {
   cancel: '[job-id]',
   setup: '[--enable-review-gate | --disable-review-gate]',
 };
-const expectedNamedRescueMessage = 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.';
-const expectedGenericRescueMessage = [
-  'Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:',
-  'node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke rescue',
-  'Preserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request/print/persist authorization material.',
-  'Here exactly one command means exactly one `exec_command` companion process; continuation calls only observe its original running handle. Never start a second `exec_command`. A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.',
-  'If that command returned a needs-choice response, stop. Only after the parent sends exactly `Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.` run exactly:',
-  'node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-choice rescue resume',
-  'Only after the parent sends exactly `Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.` run exactly:',
-  'node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-choice rescue fresh',
-].join('\n');
-
 function skill(name) {
   return readFileSync(new URL(`skills/${name}/SKILL.md`, root), 'utf8');
 }
 
-function rescueContractSections(source) {
-  const preflightEnd = source.indexOf('then stop without spawning.');
-  const namedRouteStart = source.indexOf('\nWhen the active `spawn_agent` tool schema exposes `agent_type`');
-  assert.ok(preflightEnd >= 0, 'successful-preflight boundary must exist');
-  assert.ok(namedRouteStart > preflightEnd, 'named-route boundary must follow preflight');
-  const naming = source.slice(preflightEnd + 'then stop without spawning.'.length, namedRouteStart).trim();
-
-  const namedMatch = /When the active `spawn_agent` tool schema exposes `agent_type`, prefer this exact named spawn with a fresh context:\n\n```text\n([\s\S]+?)\n```/.exec(source);
-  assert.ok(namedMatch, 'named spawn block must exist');
-
-  const genericMatch = /\n(For the generic route,[^\n]+):\n\n```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source);
-  assert.ok(genericMatch, 'generic route instruction and fixed message must exist');
-  return { naming, namedSpawn: namedMatch[1], genericInstruction: genericMatch[1], genericMessage: genericMatch[2] };
-}
-
 function assertRescueNamingContract(source) {
-  const { naming } = rescueContractSections(source);
-  assert.match(naming, /`rescueTaskName`/);
-  assert.match(naming, /`zcode_rescue_<semantic_slug>\[_<ordinal>\]`/);
-  assert.match(naming, /safe fallback[^\n]+`zcode_rescue_task`/i);
-  assert.match(naming, /occupied sibling[^\n]+smallest available ordinal[^\n]+2[^\n]+9999/i);
-  assert.match(naming, /ordinal[^\n]+2[^\n]+9999[^\n]+without leading zeros/i);
-  assert.match(naming, /complete name[^\n]+64 UTF-8 bytes/i);
-  assert.match(naming, /1[–-]3 lowercase ASCII semantic words/i);
-  assert.match(naming, /each[^\n]+begins?[^\n]+letter[^\n]+(?:at most|max(?:imum)?) 16[^\n]+lowercase letters or digits/i);
-  assert.match(naming, /generic objective description[^\n]+never cop(?:y|ies)[^\n]+mechanically transform[^\n]+task text/i);
-  assert.match(naming, /prompt fragments[^\n]+repo(?:sitory)? or filesystem paths[^\n]+personal names[^\n]+issue, job, or session IDs[^\n]+hashes[^\n]+credentials[^\n]+capabilities[^\n]+authorization material/i);
-  assert.match(naming, /task_name[^\n]+agent_path[^\n]+presentation metadata[^\n]+neither sufficient nor necessary[^\n]+Rescue (?:identity|evidence)/i);
-  assert.match(naming, /(?:do not|never)[^\n]+classify[^\n]+authorize[^\n]+route[^\n]+reject[^\n]+downgrade[^\n]+recover Rescue[^\n]+name or path/i);
-  assert.match(naming, /trusted routing facts[^\n]+named Role[^\n]+exact returned child ID[^\n]+parent-child linkage[^\n]+fixed forwarder contract[^\n]+hook-bound executor state/i);
-  assert.match(naming, /collision handling never authorizes a second spawn/i);
+  const { naming } = assertRescueRouteContract(source);
+  const namingText = naming.text;
+  assert.match(namingText, /`rescueTaskName`/);
+  assert.match(namingText, /`zcode_rescue_<semantic_slug>\[_<ordinal>\]`/);
+  assert.match(namingText, /safe fallback[^\n]+`zcode_rescue_task`/i);
+  assert.match(namingText, /occupied sibling[^\n]+smallest available ordinal[^\n]+2[^\n]+9999/i);
+  assert.match(namingText, /ordinal[^\n]+2[^\n]+9999[^\n]+without leading zeros/i);
+  assert.match(namingText, /complete name[^\n]+64 UTF-8 bytes/i);
+  assert.match(namingText, /1[–-]3 lowercase ASCII semantic words/i);
+  assert.match(namingText, /each[^\n]+begins?[^\n]+letter[^\n]+(?:at most|max(?:imum)?) 16[^\n]+lowercase letters or digits/i);
+  assert.match(namingText, /generic objective description[^\n]+never cop(?:y|ies)[^\n]+mechanically transform[^\n]+task text/i);
+  assert.match(namingText, /prompt fragments[^\n]+repo(?:sitory)? or filesystem paths[^\n]+personal names[^\n]+issue, job, or session IDs[^\n]+hashes[^\n]+credentials[^\n]+capabilities[^\n]+authorization material/i);
+  assert.match(namingText, /task_name[^\n]+agent_path[^\n]+presentation metadata[^\n]+neither sufficient nor necessary[^\n]+Rescue (?:identity|evidence)/i);
+  assert.match(namingText, /(?:do not|never)[^\n]+classify[^\n]+authorize[^\n]+route[^\n]+reject[^\n]+downgrade[^\n]+recover Rescue[^\n]+name or path/i);
+  assert.match(namingText, /trusted routing facts[^\n]+named Role[^\n]+exact returned child ID[^\n]+parent-child linkage[^\n]+fixed forwarder contract[^\n]+hook-bound executor state/i);
+  assert.match(namingText, /collision handling never authorizes a second spawn/i);
 }
 
 function assertRescueSpawnContracts(source) {
-  const { namedSpawn, genericInstruction, genericMessage } = rescueContractSections(source);
-  assert.equal(namedSpawn.match(/task_name:\s*rescueTaskName/g)?.length, 1);
-  assert.equal(genericInstruction.match(/task_name:\s*rescueTaskName/g)?.length, 1);
-  const namedMessages = [...namedSpawn.matchAll(/\bmessage:\s*'([^'\n]*)'/g)].map((match) => match[1]);
+  const { namedSpawn, genericMessage } = assertRescueRouteContract(source);
+  const namedMessages = [...namedSpawn.text.matchAll(/\bmessage:\s*'([^'\n]*)'/g)].map((match) => match[1]);
   assert.deepEqual(namedMessages, [expectedNamedRescueMessage]);
-  assert.equal(genericMessage, expectedGenericRescueMessage);
+  assert.equal(genericMessage.text, expectedGenericRescueMessage);
 }
 
 test('ships exactly the eight namespaced ZCode skills', () => {
