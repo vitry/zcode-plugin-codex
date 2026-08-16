@@ -16,6 +16,52 @@ import { runChild } from '../helpers/run-child.mjs';
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const expectedSkills = ['adversarial-review', 'cancel', 'rescue', 'result', 'review', 'setup', 'status', 'transfer'];
 
+function installedRescueSections(source) {
+  const preflightStart = source.indexOf('role-status rescue');
+  const preflightEnd = source.indexOf('then stop without spawning.', preflightStart);
+  const namingStart = source.indexOf('After the readiness preflight succeeds and before route selection or any spawn', preflightEnd);
+  const namedRouteStart = source.indexOf('\nWhen the active `spawn_agent` tool schema exposes `agent_type`', namingStart);
+  const namedSpawnMarker = source.indexOf('\n```text\n', namedRouteStart);
+  const namedSpawnStart = namedSpawnMarker + '\n```text\n'.length;
+  const namedSpawnEnd = source.indexOf('\n```', namedSpawnStart);
+  const namedRouteEnd = source.indexOf('\nOnly after the preflight returned `ready`', namedSpawnEnd);
+  const genericRouteStart = source.indexOf('\nFor the generic route,', namedRouteEnd);
+  const genericMessageMarker = source.indexOf('\n\n```text\nAct only as the installed ZCode Rescue forwarder.', genericRouteStart);
+  const genericMessageStart = genericMessageMarker + '\n\n```text\n'.length;
+  const genericMessageEnd = source.indexOf('\n```', genericMessageStart);
+  const genericRouteEnd = source.indexOf('\nKeep the returned child ID as `rescueChildId`', genericMessageEnd);
+
+  assert.ok(preflightStart >= 0, 'installed Rescue preflight marker must exist');
+  assert.ok(preflightEnd > preflightStart, 'installed Rescue successful-preflight boundary must follow the preflight');
+  assert.ok(namingStart > preflightEnd, 'installed Rescue naming section must follow the successful preflight');
+  assert.ok(namedRouteStart > namingStart, 'installed Rescue named-route marker must follow the naming section');
+  assert.ok(namedSpawnMarker > namedRouteStart && namedSpawnEnd > namedSpawnStart, 'installed Rescue named-spawn block markers must exist');
+  assert.ok(namedRouteEnd > namedSpawnEnd, 'installed Rescue named-route boundary must follow the named spawn');
+  assert.ok(genericRouteStart > namedRouteEnd, 'installed Rescue generic-route marker must follow the named route');
+  assert.ok(genericMessageMarker > genericRouteStart, 'installed Rescue generic-route instruction boundary must exist');
+  assert.ok(genericMessageEnd > genericMessageStart, 'installed Rescue generic-message block markers must exist');
+  assert.ok(genericRouteEnd > genericMessageEnd, 'installed Rescue generic-route boundary must follow the child message');
+
+  return {
+    naming: { start: namingStart, end: namedRouteStart, text: source.slice(namingStart, namedRouteStart) },
+    namedSpawn: { start: namedSpawnStart, end: namedSpawnEnd, text: source.slice(namedSpawnStart, namedSpawnEnd) },
+    genericInstruction: { start: genericRouteStart, end: genericMessageMarker, text: source.slice(genericRouteStart, genericMessageMarker) },
+    genericMessage: { start: genericMessageStart, end: genericMessageEnd, text: source.slice(genericMessageStart, genericMessageEnd) },
+  };
+}
+
+function assertInstalledRescueRoutingContract(source) {
+  const { naming, namedSpawn, genericInstruction, genericMessage } = installedRescueSections(source);
+  assert.equal(naming.text.match(/choose `rescueTaskName` exactly once/g)?.length, 1, 'installed Rescue naming section must choose rescueTaskName exactly once');
+  assert.match(naming.text, /task_name[^\n]+agent_path[^\n]+presentation metadata[^\n]+convention matching[^\n]+neither sufficient nor necessary[^\n]+Rescue identity evidence/i);
+  assert.match(naming.text, /Never classify, authorize, route, reject, downgrade, or recover Rescue based on any name or path/i);
+  assert.equal(namedSpawn.text.match(/task_name:\s*rescueTaskName/g)?.length, 1, 'installed named spawn must use rescueTaskName exactly once');
+  assert.equal(genericInstruction.text.match(/task_name:\s*rescueTaskName/g)?.length, 1, 'installed generic route must use rescueTaskName exactly once');
+  assert.ok(genericMessage.text.indexOf('scripts/zcode-companion.mjs" invoke rescue') >= 0, 'installed generic child message must contain the Rescue companion command');
+  assert.doesNotMatch(source, /task_name:\s*['"]zcode_rescue['"]/);
+  return { naming, namedSpawn, genericInstruction, genericMessage };
+}
+
 async function run(args, cwd, env) {
   const launch = codexLaunch(args, { root, env });
   return runProcess(launch, { cwd, env, timeoutMs: 30_000, maxOutputBytes: 4 * 1024 * 1024 });
@@ -143,10 +189,15 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     'scripts/lib/progress.mjs',
   ]) assert.ok((await readFile(join(installedRoot, modulePath), 'utf8')).length > 0, `${modulePath} missing from installed marketplace payload`);
   const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
-  const preflightOffset = installedRescue.indexOf('role-status rescue');
-  const namedSpawnOffset = installedRescue.indexOf("task_name: 'zcode_rescue'");
-  const childCommandOffset = installedRescue.indexOf('scripts/zcode-companion.mjs" invoke rescue');
-  assert.ok(preflightOffset >= 0 && namedSpawnOffset > preflightOffset && childCommandOffset > namedSpawnOffset, 'installed routing must preflight, spawn, then send only the child command');
+  const installedSections = assertInstalledRescueRoutingContract(installedRescue);
+  for (const [routeName, route] of [['named', installedSections.namedSpawn], ['generic', installedSections.genericInstruction]]) {
+    const fixedNameMutation = `${installedRescue.slice(0, route.start)}${route.text.replace('task_name: rescueTaskName', "task_name: 'zcode_rescue'")}${installedRescue.slice(route.end)}`;
+    assert.throws(
+      () => assertInstalledRescueRoutingContract(fixedNameMutation),
+      new RegExp(`installed ${routeName} (?:spawn|route) must use rescueTaskName exactly once`),
+      `installed ${routeName} route assertion must reject a fixed task name even when other dynamic naming prose remains`,
+    );
+  }
   assert.match(installedRescue, /agent_type:\s*'zcode-rescue'/);
   assert.match(installedRescue, /fork_turns:\s*'none'/);
   assert.match(installedRescue, /Do not relay raw child progress, stderr, tool output, or intermediate messages into the parent/);
