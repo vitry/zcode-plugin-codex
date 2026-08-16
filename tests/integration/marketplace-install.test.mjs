@@ -156,6 +156,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     'scripts/lib/conversation-progress.mjs',
     'scripts/lib/managed-agent-role.mjs',
     'scripts/lib/progress.mjs',
+    'scripts/lib/rescue-progress-relay.mjs',
   ]) assert.ok((await readFile(join(installedRoot, modulePath), 'utf8')).length > 0, `${modulePath} missing from installed marketplace payload`);
   const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const installedSections = assertInstalledRescueRoutingContract(installedRescue);
@@ -213,7 +214,9 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   );
   assert.match(installedRescue, /agent_type:\s*'zcode-rescue'/);
   assert.match(installedRescue, /fork_turns:\s*'none'/);
-  assert.match(installedRescue, /Do not relay raw child progress, stderr, tool output, or intermediate messages into the parent/);
+  assert.match(installedRescue, /Relay is liveness only and never completion/);
+  assert.match(installedRescue, /Never relay detailed `\[zcode\]` lines, arbitrary stderr, stdout, commands, paths, identifiers, content, results, or errors/);
+  assert.match(installedRescue, /invoke-status rescue/);
   assert.match(installedRescue, /return only the child's public stdout verbatim without interpretation/);
   assert.doesNotMatch(installedRescue, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
   const listedComponents = await listPluginComponents(temporary, env);
