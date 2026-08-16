@@ -21,6 +21,7 @@ import {
 import {
   assertInstalledForwarderLifecycleContract,
   extractInstalledRoleInstructions,
+  installedCanonicalContradictionMutations,
   installedLifecycleContractMutations,
 } from '../helpers/installed-rescue-lifecycle-contract.mjs';
 import { runChild } from '../helpers/run-child.mjs';
@@ -172,6 +173,13 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
       assert.throws(
         () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ' }),
         /unique operative lifecycle region/u,
+        `installed ${routeName}: ${mutation}`,
+      );
+    }
+    for (const [mutation, mutated] of installedCanonicalContradictionMutations(forwarder, routeName)) {
+      assert.throws(
+        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ' }),
+        /exact canonical operative route/u,
         `installed ${routeName}: ${mutation}`,
       );
     }

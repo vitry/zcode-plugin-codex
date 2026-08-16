@@ -31,6 +31,7 @@ import {
 import {
   assertInstalledForwarderLifecycleContract,
   extractInstalledRoleInstructions,
+  installedCanonicalContradictionMutations,
   installedLifecycleContractMutations,
 } from '../helpers/installed-rescue-lifecycle-contract.mjs';
 
@@ -484,6 +485,9 @@ test('installed named and generic foreground and choice policies independently b
     assertInstalledForwarderLifecycleContract(source, route);
     for (const [mutation, mutated] of installedLifecycleContractMutations(source, route)) {
       assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route), /unique operative lifecycle region/u, `${route}: ${mutation}`);
+    }
+    for (const [mutation, mutated] of installedCanonicalContradictionMutations(source, route)) {
+      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route), /exact canonical operative route/u, `${route}: ${mutation}`);
     }
   }
 });

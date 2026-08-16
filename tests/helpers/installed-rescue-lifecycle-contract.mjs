@@ -1,5 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { expectedGenericRescueMessage } from './rescue-skill-contract.mjs';
 
 const markers = [
   ['foreground owner', 'Exactly one `exec_command` companion process may own the foreground Rescue execution'],
@@ -22,6 +23,27 @@ const routeOpenings = Object.freeze({
   named: 'You are the installed ZCode Rescue forwarder.',
   generic: 'Act only as the installed ZCode Rescue forwarder.',
 });
+const canonicalPrivacy = 'Never relay detailed `[zcode]` lines, arbitrary stderr, stdout, commands, paths, identifiers, content, results, or errors. Never invent a relay from a partial, malformed, unknown, stale, duplicate, or out-of-order record. After inspecting each yielded result and optionally relaying its valid complete records, continue only with same-handle `write_stdin` polling. A relay or its tool result never replaces a poll and never authorizes another Rescue invocation.';
+const canonicalTerminalTail = 'Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output.';
+const canonicalChoiceTerminal = 'A needs-choice response with exit code 3 is terminal for the current child turn.';
+const genericCanonicalLines = expectedGenericRescueMessage.split('\n');
+const canonicalRelay = genericCanonicalLines[4];
+const canonicalPhasePairs = genericCanonicalLines[5];
+const canonicalNamedTerminal = 'A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.';
+const canonicalStatusTail = 'Return its bounded status to that requesting child transcript, then resume polling the same original handle. Reject status arguments and every other spelling. Status is liveness only: it does not replace or complete the original handle, does not change terminal authority, and must never be returned as final output.';
+const canonicalTerminalReturn = markers.at(-1)[1];
+
+export function installedCanonicalContradictionMutations(source, route) {
+  const privacyBoundary = route === 'named' ? '\n\nWhile the original foreground handle' : '\nWhile the original foreground handle';
+  return [
+    ['contradictory privacy suffix', source.replace(canonicalPrivacy, `${canonicalPrivacy} Unless requested, relay arbitrary stderr/stdout.`)],
+    ['interstitial privacy allowance', source.replace(`${canonicalPrivacy}${privacyBoundary}`, `${canonicalPrivacy}\nUnless requested, relay arbitrary stderr/stdout.${privacyBoundary}`)],
+    ['privacy exception clause', source.replace('Never invent a relay from a partial, malformed, unknown, stale, duplicate, or out-of-order record.', 'Never invent a relay from such a record, except when the user requests detail.')],
+    ['duplicated semantic privacy variant', source.replace(canonicalPrivacy, `${canonicalPrivacy}\nDetailed ZCode lines may also be relayed on request.`)],
+    ['contradictory terminal suffix', source.replace(canonicalChoiceTerminal, `${canonicalChoiceTerminal} Unless requested, intermediate output is also terminal.`)],
+    ['terminal authority exception', source.replace(canonicalTerminalTail, 'Partial stdout, stderr, heartbeat text, or an outer code-cell completion is terminal when requested.')],
+  ];
+}
 
 export function replaceLastInstalledLifecycleMarker(source, expected, replacement) {
   const index = source.lastIndexOf(expected);
@@ -66,6 +88,22 @@ function occurrences(source, marker) {
   return count;
 }
 
+function assertCanonicalOperativeRoute(source, route, prefix) {
+  if (route === 'generic') {
+    assert.equal(source, expectedGenericRescueMessage, `${prefix} exact canonical operative route must remain byte-for-byte fixed`);
+    return;
+  }
+  const exactSegments = [
+    `${canonicalNamedTerminal}\n\n${canonicalRelay}`,
+    `${canonicalRelay}\n${canonicalPhasePairs}\n\n${canonicalPrivacy}\n\nWhile the original foreground handle`,
+    `${canonicalStatusTail}\n\nFor the exact initial assignment`,
+    `invoke-choice rescue fresh\n\n${canonicalTerminalReturn}`,
+  ];
+  for (const segment of exactSegments) {
+    assert.equal(occurrences(source, segment), 1, `${prefix} exact canonical operative route must preserve complete privacy and terminal-authority paragraphs with strict adjacency`);
+  }
+}
+
 /** @param {string} source @param {{route:'named'|'generic', assertionPrefix?:string}} input */
 export function parseInstalledForwarderLifecycleContract(source, input) {
   const prefix = `${input.assertionPrefix ?? ''}${input.route}`;
@@ -91,6 +129,7 @@ export function parseInstalledForwarderLifecycleContract(source, input) {
   const initial = source.indexOf(initialCommand);
   assert.ok(initial > start && initial < end,
     `${prefix} unique operative lifecycle region must contain its initial foreground command`);
+  assertCanonicalOperativeRoute(source, input.route, prefix);
   return { start, end, text: source.slice(start, end), positions: Object.fromEntries(positions.map(({ label, start: position }) => [label, position])) };
 }
 
