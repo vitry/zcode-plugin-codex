@@ -119,6 +119,60 @@ test('initial Rescue invocation must match the parent turn captured by SubagentS
   const result = await runChild(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'turn-child' } });
   assert.notEqual(result.code, 0); assert.match(result.stdout, /EXECUTOR_PARENT_TURN_MISMATCH/);
 });
+
+test('bound Rescue status sidecar exposes only safe fixed fields and starts no ZCode protocol', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
+  await identity.beginCallerTurn({ sessionId: 'status-parent', turnId: 'status-parent-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
+  await startRescueChild(ctx, 'status-parent', 'status-child', 'status-child-turn');
+  const job = await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'status-parent', ownerTurnId: 'status-parent-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(ctx.workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'PRIVATE_SESSION' });
+  const observedAt = new Date().toISOString();
+  await store.updateJobProgress(ctx.workspace, job.id, { phase: 'running', message: 'ZCode is working with a tool.', observedAt });
+  const beforeStatus = await store.readJob(ctx.workspace, job.id);
+  const protocolRecord = join(ctx.directory, 'status-protocol.jsonl');
+
+  const result = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'status-child', FAKE_ZCODE_RECORD: protocolRecord } });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  const status = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(status), ['type', 'status', 'phase', 'lastActivityAt', 'progressPreview', 'terminal']);
+  assert.deepEqual(status, { type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: observedAt, progressPreview: ['ZCode is working with a tool.'], terminal: false });
+  assert.doesNotMatch(result.stdout, /job-|session-|workspace|worker|artifact|PRIVATE/i);
+  assert.deepEqual(await store.readJob(ctx.workspace, job.id), beforeStatus);
+  await assert.rejects(readFile(protocolRecord, 'utf8'), { code: 'ENOENT' });
+
+  for (const argv of [
+    ['invoke-status'], ['invoke-status', 'rescue', '--all'], ['invoke-status', 'rescue', 'job-id'], ['invoke-status', 'review'],
+  ]) {
+    const rejected = await runChild(process.execPath, [cli, ...argv], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'status-child', FAKE_ZCODE_RECORD: protocolRecord } });
+    assert.notEqual(rejected.code, 0, argv.join(' '));
+  }
+  await assert.rejects(readFile(protocolRecord, 'utf8'), { code: 'ENOENT' });
+});
+
+test('bound Rescue status sidecar rejects missing, sibling, stale-turn and ambiguous bindings', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const missing = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'missing-child' } });
+  assert.notEqual(missing.code, 0); assert.match(missing.stdout, /EXECUTOR_IDENTITY_NOT_FOUND/);
+
+  await identity.beginCallerTurn({ sessionId: 'side-parent', turnId: 'bound-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
+  await startRescueChild(ctx, 'side-parent', 'bound-child', 'bound-child-turn');
+  await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'side-parent', ownerTurnId: 'bound-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await startRescueChild(ctx, 'side-parent', 'same-turn-sibling', 'same-turn-sibling-turn');
+  const sameTurnSibling = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-child' } });
+  assert.notEqual(sameTurnSibling.code, 0); assert.match(sameTurnSibling.stdout, /EXECUTOR_IDENTITY_AMBIGUOUS/);
+  await stopRescueChild(ctx, 'side-parent', 'same-turn-sibling', 'same-turn-sibling-turn');
+  await identity.beginCallerTurn({ sessionId: 'side-parent', turnId: 'new-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'new turn' });
+  const stale = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-child' } });
+  assert.notEqual(stale.code, 0); assert.match(stale.stdout, /EXECUTOR_PARENT_TURN_MISMATCH/);
+
+  const sibling = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'sibling-child' } });
+  assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /EXECUTOR_IDENTITY_NOT_FOUND/);
+
+  await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'side-parent', ownerTurnId: 'bound-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await identity.beginCallerTurn({ sessionId: 'side-parent', turnId: 'bound-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
+  const ambiguous = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-child' } });
+  assert.notEqual(ambiguous.code, 0); assert.match(ambiguous.stdout, /BOUND_RESCUE_STATUS_NOT_FOUND/);
+});
 async function stopRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
   const result = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], { cwd: ctx.workspace, env: ctx.env, ordinaryInput: true, input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: agentType, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } });
   assert.equal(result.code, 0, result.stderr || result.stdout);
