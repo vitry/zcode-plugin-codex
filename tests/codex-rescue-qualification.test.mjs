@@ -249,6 +249,12 @@ test('Rescue relay qualification rejects untrusted routing, content, ordering, a
     { code: 'progress-relay-order', mutate: ({ child }) => { const relay = relayCalls(child)[0]; child.splice(child.indexOf(relay), 1); child.splice(1, 0, relay); } },
     { code: 'progress-relay-after-terminal', mutate: ({ child }) => { const relay = relayCalls(child).at(-1); const output = relayOutputs(child).at(-1); child.splice(child.indexOf(relay), 1); child.splice(child.indexOf(output), 1); child.splice(-1, 0, relay, output); } },
     { code: 'progress-relay-author', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.author = '/root/sibling'; } },
+    { code: 'progress-relay-envelope', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.content[0].text = parentRelayMessages(parent)[0].payload.content[0].text.replace('Task name: /root\n', 'Task name: /root/sibling\n'); } },
+    { code: 'progress-relay-encrypted', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.content.pop(); } },
+    { code: 'progress-relay-encrypted', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.content[1].encrypted_content = 'short'; } },
+    { code: 'progress-relay-parent-content', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.content.push({ type: 'input_text', text: 'PRIVATE extra plaintext' }); } },
+    { code: 'progress-relay-call-id', mutate: ({ child }) => { relayOutputs(child)[0].payload.type = 'custom_tool_call_output'; } },
+    { code: 'progress-relay-call-id', mutate: ({ child }) => { child.splice(child.indexOf(relayCalls(child)[0]), 1); } },
     { code: 'progress-relay-output', mutate: ({ child }) => { relayOutputs(child)[0].payload.output = 'not empty'; } },
     { code: 'progress-relay-call-id', mutate: ({ child }) => { const call = relayCalls(child)[0]; const output = relayOutputs(child)[0]; call.payload.call_id = 'poll-1'; output.payload.call_id = 'poll-1'; } },
     { code: 'progress-relay-parent-wait', mutate: ({ parent }) => { const call = parent.find((event) => event?.payload?.name === 'wait_agent' && event.payload.call_id === 'relay-wait-1'); const output = parent.find((event) => event?.payload?.type === 'function_call_output' && event.payload.call_id === 'relay-wait-1'); parent.splice(parent.indexOf(call), 1); parent.splice(parent.indexOf(output), 1); } },
@@ -270,6 +276,13 @@ test('Rescue bound status qualification rejects arguments, sibling ownership, an
     { code: 'status-sidecar-call-id', mutate: (child) => { statusCall(child).payload.call_id = 'poll-1'; } },
     { code: 'status-sidecar-order', mutate: (child) => { const call = statusCall(child); const output = statusOutput(child); child.splice(child.indexOf(call), 1); child.splice(child.indexOf(output), 1); child.splice(1, 0, call, output); } },
     { code: 'status-sidecar-output', mutate: (child) => { statusOutput(child).payload.output = capturedResult({ output: `${expectedPublicOutput}\n`, exit_code: 0 }); } },
+    { code: 'status-sidecar-output', mutate: (child) => mutateStatusSnapshot(child, (value) => { value.status = 'unknown'; }) },
+    { code: 'status-sidecar-output', mutate: (child) => mutateStatusSnapshot(child, (value) => { value.phase = 'editing'; }) },
+    { code: 'status-sidecar-output', mutate: (child) => mutateStatusSnapshot(child, (value) => { value.status = 'succeeded'; value.terminal = false; }) },
+    { code: 'status-sidecar-output', mutate: (child) => mutateStatusSnapshot(child, (value) => { value.progressPreview = ['1', '2', '3', '4', '5']; }) },
+    { code: 'status-sidecar-output', mutate: (child) => mutateStatusSnapshot(child, (value) => { value.progressPreview = ['PRIVATE raw status']; }) },
+    { code: 'status-sidecar-output', mutate: (child) => mutateStatusSnapshot(child, (value) => { value.progressPreview = ['bad\ncontrol']; }) },
+    { code: 'status-sidecar-output', mutate: (child) => mutateStatusSnapshot(child, (value) => { value.progressPreview = ['x'.repeat(257)]; }) },
   ];
   for (const { code, mutate } of cases) {
     const input = relayedYieldedFixture({ withStatus: true }); mutate(input.rollouts[1]);
@@ -439,6 +452,47 @@ test('choice qualification permits yielded polling in the initial turn, continua
     for (const turn of turns) yieldChoiceTurn(input, turn);
     retimestampChoice(input);
     assert.equal(qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')).choice, 'resume', turns.join('+'));
+  }
+});
+
+test('choice qualification validates relay and optional status within both original-handle segments', () => {
+  const input = relayedChoiceFixture({ withStatus: true });
+  const evidence = qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume', {
+    requireProgressRelay: true,
+    requireStatusSidecar: true,
+    expectedStatusCommand,
+    includeExecutionFacts: true,
+  }));
+  assert.equal(evidence.progressRelayChecked, true);
+  assert.equal(evidence.statusSidecarChecked, true);
+  assert.deepEqual(evidence.executions, {
+    initial: { execCommandCount: 1 }, continuation: { execCommandCount: 1 },
+  });
+});
+
+test('choice qualification rejects relay/status ownership drift across logical segments before encrypted unqualification', () => {
+  const cases = [
+    { code: 'choice-initial-progress-relay-target', mutate: (input) => { relayCalls(input.rollouts[1])[0].payload.arguments = JSON.stringify({ target: '/root/sibling', message: relayMessage('started') }); } },
+    { code: 'choice-continuation-progress-relay-call-id', mutate: (input) => { const calls = relayCalls(input.rollouts[1]); const outputs = relayOutputs(input.rollouts[1]); calls[1].payload.call_id = calls[0].payload.call_id; outputs[1].payload.call_id = calls[0].payload.call_id; } },
+    { code: 'choice-initial-status-sidecar-command', mutate: (input) => { statusCall(input.rollouts[1]).payload.input = structuredExecResult(`${expectedStatusCommand} --all`, 'status-1').payload.input; } },
+    { code: 'choice-continuation-progress-relay-call-id', mutate: (input) => { relayOutputs(input.rollouts[1])[1].payload.type = 'custom_tool_call_output'; } },
+    { code: 'choice-initial-progress-relay-call-id', mutate: (input) => { const child = input.rollouts[1]; child.splice(child.indexOf(relayCalls(child)[0]), 1); } },
+    { code: 'choice-continuation-progress-relay-call-id', mutate: (input) => { const messages = parentRelayMessages(input.rollouts[0]); messages[1].payload.id = messages[0].payload.id; messages[1].payload.internal_chat_message_metadata_passthrough.turn_id = messages[0].payload.internal_chat_message_metadata_passthrough.turn_id; } },
+    { code: 'choice-child-execution-boundary', mutate: (input) => { const child = input.rollouts[1]; const relay = relayCalls(child)[0]; const output = relayOutputs(child)[0]; child.splice(child.indexOf(relay), 1); child.splice(child.indexOf(output), 1); child.splice(child.indexOf(child.filter((event) => event?.payload?.phase === 'final_answer')[0]) + 1, 0, relay, output); } },
+    { code: 'choice-continuation-progress-relay-target', encrypted: true, mutate: (input) => { relayCalls(input.rollouts[1])[1].payload.arguments = JSON.stringify({ target: '/root/sibling', message: relayMessage('model-active') }); } },
+  ];
+  for (const { code, encrypted: encryptedPath, mutate } of cases) {
+    const input = relayedChoiceFixture({ withStatus: true });
+    if (encryptedPath) {
+      const spawn = spawnEvent(input); const args = JSON.parse(spawn.payload.arguments); args.message = `gAAAA${'A'.repeat(64)}`; spawn.payload.arguments = JSON.stringify(args);
+      const followup = choiceFollowup(input); const followupArgs = JSON.parse(followup.payload.arguments); followupArgs.message = `gAAAA${'B'.repeat(64)}`; followup.payload.arguments = JSON.stringify(followupArgs);
+    }
+    mutate(input); retimestampChoice(input);
+    assert.throws(
+      () => qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume', { requireProgressRelay: true, requireStatusSidecar: true, expectedStatusCommand })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
+      code,
+    );
   }
 });
 
@@ -981,6 +1035,7 @@ function options(overrides = {}) {
     expectedSemanticProgress,
     expectedNamedSpawnMessage: 'fixed named forwarder',
     expectedGenericSpawnMessage: 'fixed generic forwarder',
+    statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
     forbiddenParentText: [
       'Running command: npm test', expectedSemanticProgress.snapshotFallback, expectedSemanticProgress.lifecycleOnly,
       'raw output must stay private', 'reasoning must stay private',
@@ -1064,10 +1119,20 @@ function relayedYieldedFixture({ withStatus = false } = {}) {
 function relayLine(sequence, phase, code) {
   return `[zcode-relay] ${JSON.stringify({ version: 1, sequence, phase, code, observedAt: `2026-08-17T00:00:0${sequence}.000Z` })}`;
 }
-function relayMessage(code) { return ({ started: 'ZCode Rescue started.', 'tool-active': 'ZCode is working with a tool.' })[code]; }
+function relayMessage(code) { return ({ started: 'ZCode Rescue started.', 'model-active': 'ZCode is generating a response.', 'tool-active': 'ZCode is working with a tool.' })[code]; }
 function relayCall(callId, code) { return { type: 'response_item', payload: { type: 'function_call', name: 'send_message', call_id: callId, arguments: JSON.stringify({ target: '/root', message: relayMessage(code) }) } }; }
 function relayOutput(callId) { return { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '' } }; }
-function parentRelay(author, message) { return { type: 'response_item', payload: { type: 'agent_message', author, recipient: '/root', content: [{ type: 'input_text', text: message }] } }; }
+function parentRelay(author, message) {
+  const marker = message === relayMessage('started') ? 'a' : 'b';
+  return { type: 'response_item', payload: {
+    type: 'agent_message', id: `amsg_${marker.repeat(36)}`, author, recipient: '/root',
+    content: [
+      { type: 'input_text', text: `Message Type: MESSAGE\nTask name: /root\nSender: ${author}\nPayload:\n` },
+      { type: 'encrypted_content', encrypted_content: `gAAAA${'A'.repeat(64)}` },
+    ],
+    internal_chat_message_metadata_passthrough: { turn_id: `${marker.repeat(8)}-${marker.repeat(4)}-4${marker.repeat(3)}-8${marker.repeat(3)}-${marker.repeat(12)}` },
+  } };
+}
 function relayCalls(child) { return child.filter((event) => event?.payload?.type === 'function_call' && event.payload.name === 'send_message'); }
 function relayOutputs(child) { const ids = new Set(relayCalls(child).map((event) => event.payload.call_id)); return child.filter((event) => event?.payload?.type === 'function_call_output' && ids.has(event.payload.call_id)); }
 function parentRelayMessages(parent) { return parent.filter((event) => event?.payload?.type === 'agent_message' && event.payload.author === agentPath && !event.payload.content?.[0]?.text?.startsWith('Message Type: FINAL_ANSWER')); }
@@ -1077,6 +1142,10 @@ function setCapturedOutput(child, callId, outputText, sessionId) {
 }
 function statusCall(child) { return child.find((event) => event?.payload?.type === 'custom_tool_call' && event.payload.call_id === 'status-1'); }
 function statusOutput(child) { return child.find((event) => event?.payload?.type === 'custom_tool_call_output' && event.payload.call_id === 'status-1'); }
+function mutateStatusSnapshot(child, mutate) {
+  const event = statusOutput(child); const captured = JSON.parse(event.payload.output[1].text); const value = JSON.parse(captured.output);
+  mutate(value); captured.output = `${JSON.stringify(value)}\n`; event.payload.output = capturedResult(captured);
+}
 
 function setYieldedHandle(input, handle) {
   const calls = childPolls(input); const outputs = input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call_output');
@@ -1117,7 +1186,7 @@ function setPresentation(input, nextTaskName, nextAgentPath) {
   return input;
 }
 
-function choiceOptions(choice) {
+function choiceOptions(choice, overrides = {}) {
   return {
     expectedChoice: choice,
     expectedParentThreadId: parentId,
@@ -1130,6 +1199,8 @@ function choiceOptions(choice) {
     expectedChoiceCommand: `node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`,
     expectedFollowupMessage: `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`,
     expectedPublicOutput,
+    statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
+    ...overrides,
   };
 }
 
@@ -1169,6 +1240,30 @@ function choiceFixture(choice) {
   return { rollouts: [parent, child] };
 }
 
+function relayedChoiceFixture({ withStatus = false } = {}) {
+  const input = choiceFixture('resume');
+  yieldChoiceTurn(input, 'initial'); yieldChoiceTurn(input, 'continuation');
+  const child = input.rollouts[1]; const parent = input.rollouts[0];
+  const childFinals = child.filter((event) => event?.payload?.phase === 'final_answer');
+  const initialOutput = child.find((event) => event?.payload?.call_id === 'exec-1' && event.payload.type === 'custom_tool_call_output');
+  initialOutput.payload.output = capturedResult({ output: `partial\n${relayLine(1, 'starting', 'started')}\n`, session_id: 51 });
+  const initialAdditions = [relayCall('choice-relay-1', 'started'), relayOutput('choice-relay-1')];
+  if (withStatus) initialAdditions.push(structuredExecResult(expectedStatusCommand, 'status-1'), capturedResultEvent('status-1', {
+    output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`, exit_code: 0,
+  }));
+  child.splice(child.indexOf(initialOutput) + 1, 0, ...initialAdditions);
+  const continuationStart = child.indexOf(childFinals[0]) + 1;
+  const continuationOutput = child.slice(continuationStart).find((event) => event?.payload?.type === 'custom_tool_call_output');
+  continuationOutput.payload.output = capturedResult({ output: `partial\n${relayLine(1, 'running', 'model-active')}\n`, session_id: 61 });
+  child.splice(child.indexOf(continuationOutput) + 1, 0, relayCall('choice-relay-2', 'model-active'), relayOutput('choice-relay-2'));
+  const returns = parent.filter((event) => event?.payload?.author === agentPath);
+  parent.splice(parent.indexOf(returns[0]), 0, parentRelay(agentPath, relayMessage('started')), structuredWait('choice-relay-wait-1'), waitOutput('choice-relay-wait-1', false));
+  const secondReturn = parent.filter((event) => event?.payload?.author === agentPath).at(-1);
+  parent.splice(parent.indexOf(secondReturn), 0, parentRelay(agentPath, relayMessage('model-active')), structuredWait('choice-relay-wait-2'), waitOutput('choice-relay-wait-2', false));
+  retimestampChoice(input);
+  return input;
+}
+
 function yieldChoiceTurn(input, turn) {
   const child = input.rollouts[1]; const finals = child.filter((event) => event?.payload?.phase === 'final_answer');
   const final = finals[turn === 'initial' ? 0 : 1]; const start = turn === 'initial' ? 1 : child.indexOf(finals[0]) + 1;
@@ -1185,7 +1280,7 @@ function yieldChoiceTurn(input, turn) {
 
 function retimestampChoice(input) {
   const parent = input.rollouts[0]; const child = input.rollouts[1]; const childFinals = child.filter((event) => event?.payload?.phase === 'final_answer');
-  const returns = parent.filter((event) => event?.payload?.author === agentPath); const parentFinals = parent.filter((event) => event?.payload?.phase === 'final_answer');
+  const returns = parent.filter((event) => event?.payload?.author === agentPath && event.payload.content?.[0]?.text?.startsWith('Message Type: FINAL_ANSWER\n')); const parentFinals = parent.filter((event) => event?.payload?.phase === 'final_answer');
   const followup = choiceFollowup(input); const followupResultEvent = followupResult(input); let offset = 4;
   const stamp = (event) => { event.timestamp = new Date(Date.parse('2026-08-10T00:00:00.000Z') + offset++).toISOString(); };
   for (const event of child.slice(1, child.indexOf(childFinals[0]) + 1)) stamp(event);

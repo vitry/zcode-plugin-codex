@@ -12,6 +12,10 @@ const MAX_RESCUE_TASK_NAME_BYTES = 64;
 const RESCUE_TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
 const GENERIC_HIDDEN_SCHEMA_VERSIONS = new Set(['0.147.0']);
 const EXEC_ENVELOPE_KEYS = new Set(['cmd', 'workdir', 'yield_time_ms', 'max_output_tokens']);
+const PUBLIC_JOB_STATUSES = new Set(['queued', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled']);
+const PUBLIC_PROGRESS_PHASES = new Set(['starting', 'running', 'waiting', 'finalizing']);
+const TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+const MAX_PUBLIC_PROGRESS_LINE_BYTES = 256;
 
 export class CodexRescueUnqualifiedError extends Error {
   constructor(code, message, evidence) { super(message); this.name = 'CodexRescueUnqualifiedError'; this.code = code; this.evidence = evidence; }
@@ -137,6 +141,11 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
 
   const allChildCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
   const allChildOutputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
+  if (options.requireProgressRelay) {
+    const relayCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call');
+    const relayOutputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output');
+    validateCallOutputOwnership(relayCalls, relayOutputs, 'progress-relay-call-id');
+  }
   if (options.requireStatusSidecar) {
     const allHostCalls = child.filter((event) => event?.type === 'response_item'
       && ['custom_tool_call', 'function_call'].includes(event.payload?.type));
@@ -170,6 +179,7 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   });
   const relay = validateProgressRelays({ child, parent, execution, agentPath, startIndex, options });
   const statusSidecarChecked = validateStatusSidecars({ child, statusCalls, statusOutputs, execution, options });
+  if (options.requireStatusSidecar && !statusSidecarChecked) mismatch('status-sidecar-count', 'Required status evidence must contain one linked status sidecar.');
   assertSemanticProgress(execution.output, options.expectedSemanticProgress);
   assertTerminalSentinel(execution.output, options.expectedPublicOutput);
   const childFinalIndex = child.findIndex((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
@@ -213,14 +223,20 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   return evidence;
 }
 
-function splitStatusSidecars(calls, outputs, options) {
-  if (!options.requireStatusSidecar) return { statusCalls: [], statusOutputs: [], executionCalls: calls, executionOutputs: outputs };
+function splitStatusSidecars(calls, outputs, options, codePrefix = '') {
+  const code = (suffix) => codePrefix ? `${codePrefix}-${suffix}` : suffix;
+  if (!options.expectedStatusCommand) {
+    if (options.requireStatusSidecar) mismatch(code('status-sidecar-count'), 'Required status evidence has no fixed status command contract.');
+    return { statusCalls: [], statusOutputs: [], executionCalls: calls, executionOutputs: outputs };
+  }
   const parsed = calls.map((event) => ({ event, host: parseCapturedHostCall(event.payload.input) }));
   const execCommands = parsed.filter(({ host }) => host.kind === 'exec_command');
-  if (execCommands.length !== 2) mismatch('status-sidecar-count', 'Required status evidence must contain one foreground execution and one status sidecar.');
   const foreground = execCommands.filter(({ host }) => host.envelope.get('cmd') === options.expectedCommand);
-  if (foreground.length !== 1) mismatch('child-command-count', 'Required evidence does not identify one exact foreground Rescue execution.');
+  if (foreground.length !== 1) mismatch(codePrefix ? 'choice-command-count' : 'child-command-count', 'Required evidence does not identify one exact foreground Rescue execution.');
   const statusCalls = execCommands.filter(({ event }) => event !== foreground[0].event).map(({ event }) => event);
+  if (statusCalls.length > 1 || (options.requireStatusSidecar && statusCalls.length !== 1)) {
+    mismatch(code('status-sidecar-count'), 'Status evidence must contain at most one status sidecar beside the foreground execution.');
+  }
   const statusIds = new Set(statusCalls.map((event) => event.payload.call_id));
   return {
     statusCalls,
@@ -230,39 +246,46 @@ function splitStatusSidecars(calls, outputs, options) {
   };
 }
 
-function validateStatusSidecars({ child, statusCalls, statusOutputs, execution, options }) {
-  if (!options.requireStatusSidecar) return false;
-  if (statusCalls.length !== 1 || statusOutputs.length !== 1) mismatch('status-sidecar-count', 'Required status evidence must contain one linked status sidecar.');
+function validateStatusSidecars({ child, statusCalls, statusOutputs, execution, options, codePrefix = '' }) {
+  const code = (suffix) => codePrefix ? `${codePrefix}-${suffix}` : suffix;
+  if (statusCalls.length === 0 && statusOutputs.length === 0) return false;
+  if (statusCalls.length !== 1 || statusOutputs.length !== 1) mismatch(code('status-sidecar-count'), 'Status evidence must contain one linked status sidecar.');
   const [call] = statusCalls; const [output] = statusOutputs;
   const allCalls = child.filter((event) => event?.type === 'response_item'
     && ['custom_tool_call', 'function_call'].includes(event.payload?.type));
   const ids = allCalls.map((event) => boundedString(event.payload.call_id));
   if (!call.payload.call_id || new Set(ids).size !== ids.length || output.payload.call_id !== call.payload.call_id) {
-    mismatch('status-sidecar-call-id', 'The status sidecar requires a globally unique linked call ID.');
+    mismatch(code('status-sidecar-call-id'), 'The status sidecar requires a globally unique linked call ID.');
   }
   const host = parseCapturedHostCall(call.payload.input);
-  if (host.kind !== 'exec_command') mismatch('status-sidecar-command', 'The status sidecar must be one constant direct command.');
-  assertExecEnvelope(host.envelope, options.expectedStatusCommand, options.expectedWorkspace, 'status-sidecar-command');
+  if (host.kind !== 'exec_command') mismatch(code('status-sidecar-command'), 'The status sidecar must be one constant direct command.');
+  assertExecEnvelope(host.envelope, options.expectedStatusCommand, options.expectedWorkspace, code('status-sidecar-command'));
   const callIndex = child.indexOf(call); const outputIndex = child.indexOf(output);
   const firstRunningIndex = child.indexOf(execution.execEvent) + 1;
   if (callIndex <= firstRunningIndex || outputIndex <= callIndex || outputIndex >= execution.terminalEventIndex) {
-    mismatch('status-sidecar-order', 'The status sidecar must run between polls while the original handle remains live.');
+    mismatch(code('status-sidecar-order'), 'The status sidecar must run between polls while the original handle remains live.');
   }
   const result = parseCapturedHostResult(output.payload.output);
-  if (result.exit_code !== 0 || Object.hasOwn(result, 'session_id')) mismatch('status-sidecar-output', 'The status sidecar must exit independently without a running handle.');
+  if (result.exit_code !== 0 || Object.hasOwn(result, 'session_id')) mismatch(code('status-sidecar-output'), 'The status sidecar must exit independently without a running handle.');
   let snapshot;
-  try { snapshot = JSON.parse(result.output.trim()); } catch { mismatch('status-sidecar-output', 'The status sidecar output is not the bounded public projection.'); }
-  assertExactKeys(snapshot, ['lastActivityAt', 'phase', 'progressPreview', 'status', 'terminal', 'type'], 'status-sidecar-output');
-  if (snapshot.type !== 'rescue-status' || !boundedString(snapshot.status)
-    || !(snapshot.phase === null || boundedString(snapshot.phase))
+  try { snapshot = JSON.parse(result.output.trim()); } catch { mismatch(code('status-sidecar-output'), 'The status sidecar output is not the bounded public projection.'); }
+  assertExactKeys(snapshot, ['lastActivityAt', 'phase', 'progressPreview', 'status', 'terminal', 'type'], code('status-sidecar-output'));
+  const status = boundedString(snapshot.status); const phase = snapshot.phase === null ? null : boundedString(snapshot.phase);
+  const canaries = Array.isArray(options.statusPrivacyCanaries) ? options.statusPrivacyCanaries.filter((value) => boundedString(value)) : [];
+  if (snapshot.type !== 'rescue-status' || !PUBLIC_JOB_STATUSES.has(status)
+    || !(phase === null || PUBLIC_PROGRESS_PHASES.has(phase))
     || !(snapshot.lastActivityAt === null || eventTimestamp({ timestamp: snapshot.lastActivityAt }) !== undefined)
     || !Array.isArray(snapshot.progressPreview)
-    || snapshot.progressPreview.length > 4 || snapshot.progressPreview.some((line) => !boundedString(line))
-    || typeof snapshot.terminal !== 'boolean') mismatch('status-sidecar-output', 'The status sidecar output is not the bounded public projection.');
+    || snapshot.progressPreview.length > 4 || snapshot.progressPreview.some((line) => !safePublicProgressLine(line)
+      || canaries.some((canary) => line.includes(canary)))
+    || typeof snapshot.terminal !== 'boolean' || snapshot.terminal !== TERMINAL_JOB_STATUSES.has(status)) {
+    mismatch(code('status-sidecar-output'), 'The status sidecar output is not the bounded public projection.');
+  }
   return true;
 }
 
-function validateProgressRelays({ child, parent, execution, agentPath, options }) {
+function validateProgressRelays({ child, parent, execution, agentPath, options, codePrefix = '', identitySets }) {
+  const code = (suffix) => codePrefix ? `${codePrefix}-${suffix}` : suffix;
   if (!options.requireProgressRelay) return { checked: false };
   const sourceCallIds = new Set(execution.callIds);
   const records = [];
@@ -272,57 +295,95 @@ function validateProgressRelays({ child, parent, execution, agentPath, options }
     for (const completeLine of result.output.match(/[^\n]*\n/gu) ?? []) {
       if (!completeLine.startsWith(RESCUE_RELAY_PREFIX)) continue;
       let record;
-      try { record = parseRescueProgressRelay(completeLine); } catch { mismatch('progress-relay-record', 'A Rescue relay line failed strict wire validation.'); }
+      try { record = parseRescueProgressRelay(completeLine); } catch { mismatch(code('progress-relay-record'), 'A Rescue relay line failed strict wire validation.'); }
       records.push({ record, eventIndex: child.indexOf(event) });
     }
   }
-  if (records.length === 0) mismatch('progress-relay-missing', 'Required progress relay evidence is absent.');
+  if (records.length === 0) mismatch(code('progress-relay-missing'), 'Required progress relay evidence is absent.');
   for (let index = 0; index < records.length; index += 1) {
-    if (records[index].record.sequence !== index + 1) mismatch('progress-relay-sequence', 'Rescue relay sequences must be strictly increasing from one.');
+    if (records[index].record.sequence !== index + 1) mismatch(code('progress-relay-sequence'), 'Rescue relay sequences must be strictly increasing from one.');
   }
   const calls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call');
   if (calls.length !== records.length || calls.some((event) => event.payload.name !== 'send_message')) {
-    mismatch('progress-relay-count', 'Each validated relay requires exactly one native send_message call.');
+    mismatch(code('progress-relay-count'), 'Each validated relay requires exactly one native send_message call.');
   }
   const outputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call_output');
-  validateCallOutputOwnership(calls, outputs, 'progress-relay-call-id');
+  validateCallOutputOwnership(calls, outputs, code('progress-relay-call-id'));
   const childMessages = [];
   for (let index = 0; index < calls.length; index += 1) {
     const call = calls[index]; const linked = outputs.find((event) => event.payload.call_id === call.payload.call_id);
-    const args = parseObject(call.payload.arguments, 'progress-relay-arguments');
-    assertExactKeys(args, ['message', 'target'], 'progress-relay-keys');
-    if (args.target !== '/root') mismatch('progress-relay-target', 'A Rescue progress relay may target only /root.');
+    const args = parseObject(call.payload.arguments, code('progress-relay-arguments'));
+    assertExactKeys(args, ['message', 'target'], code('progress-relay-keys'));
+    if (args.target !== '/root') mismatch(code('progress-relay-target'), 'A Rescue progress relay may target only /root.');
     const expectedMessage = RESCUE_RELAY_MESSAGES[records[index].record.code];
-    if (args.message !== expectedMessage) mismatch('progress-relay-content', 'A Rescue progress relay must use the fixed code-to-message map.');
-    if (linked.payload.output !== '') mismatch('progress-relay-output', 'A Rescue relay tool output must remain empty.');
+    if (args.message !== expectedMessage) mismatch(code('progress-relay-content'), 'A Rescue progress relay must use the fixed code-to-message map.');
+    if (linked.payload.output !== '') mismatch(code('progress-relay-output'), 'A Rescue relay tool output must remain empty.');
     const callIndex = child.indexOf(call); const outputIndex = child.indexOf(linked);
     if (callIndex <= records[index].eventIndex || outputIndex <= callIndex || outputIndex >= execution.terminalEventIndex) {
-      mismatch(index > 0 && callIndex > execution.terminalEventIndex ? 'progress-relay-after-terminal' : 'progress-relay-order', 'A Rescue relay must follow its validated line and precede terminal exit.');
+      mismatch(code(index > 0 && callIndex > execution.terminalEventIndex ? 'progress-relay-after-terminal' : 'progress-relay-order'), 'A Rescue relay must follow its validated line and precede terminal exit.');
     }
     childMessages.push(expectedMessage);
   }
   const parentMessages = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message'
     && !event.payload.content?.some((item) => item?.type === 'input_text' && item.text?.startsWith('Message Type: FINAL_ANSWER\n')));
-  if (parentMessages.length !== childMessages.length) mismatch('progress-relay-parent-count', 'The parent must observe exactly the linked Rescue relay messages.');
+  if (parentMessages.length !== childMessages.length) mismatch(code('progress-relay-parent-count'), 'The parent must observe exactly the linked Rescue relay messages.');
+  const messageIds = identitySets?.messageIds ?? new Set(); const turnIds = identitySets?.turnIds ?? new Set();
   for (let index = 0; index < parentMessages.length; index += 1) {
     const message = parentMessages[index];
-    if (message.payload.author !== agentPath) mismatch('progress-relay-author', 'Parent relay evidence must originate from the exact Rescue child.');
-    if (message.payload.recipient !== '/root' || message.payload.content?.length !== 1
-      || message.payload.content[0]?.type !== 'input_text' || message.payload.content[0].text !== childMessages[index]) {
-      mismatch('progress-relay-parent-content', 'Parent relay evidence must contain only the fixed mapped liveness message.');
-    }
+    if (message.payload.author !== agentPath) mismatch(code('progress-relay-author'), 'Parent relay evidence must originate from the exact Rescue child.');
+    validateEncryptedParentRelay(message.payload, agentPath, messageIds, turnIds, codePrefix);
     const messageIndex = parent.indexOf(message); const wait = parent[messageIndex + 1]; const waitOutput = parent[messageIndex + 2];
     if (wait?.payload?.type !== 'function_call' || wait.payload.name !== 'wait_agent'
       || waitOutput?.payload?.type !== 'function_call_output' || waitOutput.payload.call_id !== wait.payload.call_id) {
-      mismatch('progress-relay-parent-wait', 'Each parent relay update must be followed by a linked wait on the same Rescue child.');
+      mismatch(code('progress-relay-parent-wait'), 'Each parent relay update must be followed by a linked wait on the same Rescue child.');
     }
-    const waitArgs = parseObject(wait.payload.arguments, 'progress-relay-parent-wait');
-    assertExactKeys(waitArgs, ['timeout_ms'], 'progress-relay-parent-wait');
+    const waitArgs = parseObject(wait.payload.arguments, code('progress-relay-parent-wait'));
+    assertExactKeys(waitArgs, ['timeout_ms'], code('progress-relay-parent-wait'));
     if (waitArgs.timeout_ms !== 30000 || !boundedString(waitOutput.payload.output)) {
-      mismatch('progress-relay-parent-wait', 'Each parent relay update must be followed by the fixed bounded wait.');
+      mismatch(code('progress-relay-parent-wait'), 'Each parent relay update must be followed by the fixed bounded wait.');
     }
   }
   return { checked: true };
+}
+
+function validateEncryptedParentRelay(payload, agentPath, messageIds, turnIds, codePrefix = '') {
+  const code = (suffix) => codePrefix ? `${codePrefix}-${suffix}` : suffix;
+  assertExactKeys(payload, ['author', 'content', 'id', 'internal_chat_message_metadata_passthrough', 'recipient', 'type'], code('progress-relay-parent-content'));
+  if (payload.type !== 'agent_message' || payload.recipient !== '/root') mismatch(code('progress-relay-target'), 'Parent relay evidence must target only /root.');
+  const id = boundedString(payload.id); const metadata = payload.internal_chat_message_metadata_passthrough;
+  if (!id || !/^amsg_[A-Za-z0-9-]{16,96}$/u.test(id) || messageIds.has(id)) mismatch(code('progress-relay-call-id'), 'Parent relay message identity is absent, malformed, or reused.');
+  messageIds.add(id);
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) mismatch(code('progress-relay-call-id'), 'Parent relay turn linkage is absent.');
+  assertExactKeys(metadata, ['turn_id'], code('progress-relay-call-id'));
+  const turnId = boundedString(metadata.turn_id);
+  if (!turnId || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(turnId) || turnIds.has(turnId)) {
+    mismatch(code('progress-relay-call-id'), 'Parent relay turn linkage is malformed or reused.');
+  }
+  turnIds.add(turnId);
+  if (!Array.isArray(payload.content) || payload.content.length !== 2) {
+    mismatch(Array.isArray(payload.content) && !payload.content.some((item) => item?.type === 'encrypted_content')
+      ? code('progress-relay-encrypted') : code('progress-relay-parent-content'), 'Parent relay evidence must contain only its route envelope and encrypted payload.');
+  }
+  const [envelope, encryptedPayload] = payload.content;
+  assertExactKeys(envelope, ['text', 'type'], code('progress-relay-envelope'));
+  if (envelope.type !== 'input_text'
+    || envelope.text !== `Message Type: MESSAGE\nTask name: /root\nSender: ${agentPath}\nPayload:\n`) {
+    mismatch(code('progress-relay-envelope'), 'Parent relay evidence has the wrong anchored route envelope.');
+  }
+  assertExactKeys(encryptedPayload, ['encrypted_content', 'type'], code('progress-relay-encrypted'));
+  if (encryptedPayload.type !== 'encrypted_content' || !encrypted(encryptedPayload.encrypted_content)
+    || Buffer.byteLength(encryptedPayload.encrypted_content, 'utf8') > MAX_TEXT_BYTES) {
+    mismatch(code('progress-relay-encrypted'), 'Parent relay evidence lacks one bounded opaque encrypted payload.');
+  }
+}
+
+function safePublicProgressLine(value) {
+  return typeof value === 'string' && value.length > 0
+    && Buffer.byteLength(value, 'utf8') <= MAX_PUBLIC_PROGRESS_LINE_BYTES
+    && !Array.from(value).some((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+    });
 }
 
 function validateChildExecution(child, calls, outputs, expectedCommand, expectedWorkspace, options = {}) {
@@ -542,7 +603,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     if (!Array.isArray(state.agents) || state.agents.length !== 1) mismatch('choice-child-state-shape', 'Child-state evidence must contain only the retained child.');
     assertExactKeys(state.agents[0], ['agent_name', 'agent_status'], 'choice-child-state-shape');
     if (state.agents[0].agent_name !== agentPath || state.agents[0].agent_status !== 'running') mismatch('choice-child-state-mismatch', 'Timeout recovery did not observe the retained child running.');
-    const firstReturnIndex = parent.findIndex((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath);
+    const firstReturnIndex = parent.findIndex((event) => isTerminalChildReturn(event, agentPath));
     const nextWaitIndex = waitEvidence.find(({ callIndex }) => callIndex > parent.indexOf(linked[0]))?.callIndex ?? -1;
     if (!(timedOutWaitIndexes[0] < parent.indexOf(lists[0]) && parent.indexOf(linked[0]) < nextWaitIndex && nextWaitIndex < firstReturnIndex)) mismatch('choice-child-state-order', 'Timeout recovery state inspection is out of order.');
   }
@@ -556,9 +617,40 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   const initialEvents = child.slice(1, firstFinalIndex); const continuationEvents = child.slice(firstFinalIndex + 1, secondFinalIndex);
   const callsIn = (events) => events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
   const outputsIn = (events) => events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
-  const initialExecution = validateChildExecution(initialEvents, callsIn(initialEvents), outputsIn(initialEvents), options.expectedInitialCommand, options.expectedWorkspace, { codePrefix: 'choice-initial', commandCountCode: 'choice-command-count', expectedExitCode: 3, expectedExitCodeMismatchCode: 'choice-needs-choice-exit' });
-  const continuationExecution = validateChildExecution(continuationEvents, callsIn(continuationEvents), outputsIn(continuationEvents), options.expectedChoiceCommand, options.expectedWorkspace, { codePrefix: 'choice-continuation', commandCountCode: 'choice-command-count', commandMismatchCode: 'choice-command-mismatch', expectedExitCode: 0 });
-  if (initialExecution.callIds.some((id) => continuationExecution.callIds.includes(id))) mismatch('choice-child-call-id-reused', 'The two logical executions reused a host call ID.');
+  const segmentOptions = (expectedCommand) => ({ ...options, expectedCommand, requireStatusSidecar: false });
+  const qualifySegment = (events, expectedCommand, codePrefix, executionOptions) => {
+    const firstHost = events.find((event) => isChildHostEvent(event));
+    if (firstHost?.payload?.type !== 'custom_tool_call'
+      || parseCapturedHostCall(firstHost.payload.input).kind !== 'exec_command') {
+      mismatch('choice-child-execution-boundary', 'Each logical child turn must begin by starting its one foreground execution.');
+    }
+    const customCalls = callsIn(events); const customOutputs = outputsIn(events);
+    const parts = splitStatusSidecars(customCalls, customOutputs, segmentOptions(expectedCommand), codePrefix);
+    const hasRelayHostEvent = events.some((event) => event?.type === 'response_item'
+      && ['function_call', 'function_call_output'].includes(event.payload?.type));
+    if (hasRelayHostEvent) validateChildHostCallOwnership(events, parts.statusCalls, codePrefix);
+    const execution = validateChildExecution(events, parts.executionCalls, parts.executionOutputs, expectedCommand, options.expectedWorkspace, executionOptions);
+    if (!hasRelayHostEvent) validateChildHostCallOwnership(events, parts.statusCalls, codePrefix);
+    const statusChecked = validateStatusSidecars({ child: events, statusCalls: parts.statusCalls, statusOutputs: parts.statusOutputs,
+      execution, options: segmentOptions(expectedCommand), codePrefix });
+    return { execution, statusChecked };
+  };
+  const initial = qualifySegment(initialEvents, options.expectedInitialCommand, 'choice-initial', { codePrefix: 'choice-initial', commandCountCode: 'choice-command-count', expectedExitCode: 3, expectedExitCodeMismatchCode: 'choice-needs-choice-exit' });
+  const continuation = qualifySegment(continuationEvents, options.expectedChoiceCommand, 'choice-continuation', { codePrefix: 'choice-continuation', commandCountCode: 'choice-command-count', commandMismatchCode: 'choice-command-mismatch', expectedExitCode: 0 });
+  const initialExecution = initial.execution; const continuationExecution = continuation.execution;
+  assertNoChoiceCallIdReuse(initialEvents, continuationEvents, options);
+
+  const returns = parent.filter((event) => isTerminalChildReturn(event, agentPath));
+  if (returns.length !== 2) mismatch('choice-child-return-count', 'The parent must receive needs-choice and terminal results from the same child.');
+  const initialParent = parent.slice(startIndex + 1, parent.indexOf(returns[0]));
+  const continuationParent = parent.slice(parent.indexOf(followupOutputs[0]) + 1, parent.indexOf(returns[1]));
+  const relayIdentitySets = { messageIds: new Set(), turnIds: new Set() };
+  const initialRelay = validateProgressRelays({ child: initialEvents, parent: initialParent, execution: initialExecution, agentPath,
+    options: segmentOptions(options.expectedInitialCommand), codePrefix: 'choice-initial', identitySets: relayIdentitySets });
+  const continuationRelay = validateProgressRelays({ child: continuationEvents, parent: continuationParent, execution: continuationExecution, agentPath,
+    options: segmentOptions(options.expectedChoiceCommand), codePrefix: 'choice-continuation', identitySets: relayIdentitySets });
+  const statusSidecarChecked = initial.statusChecked || continuation.statusChecked;
+  if (options.requireStatusSidecar && !statusSidecarChecked) mismatch('choice-status-sidecar-count', 'Required choice evidence lacks a status sidecar in both logical segments.');
   const needsChoiceText = terminalOutputText(initialExecution.output, 'choice-needs-choice-output');
   let needsChoice;
   try { needsChoice = JSON.parse(needsChoiceText); } catch { mismatch('choice-needs-choice-output', 'The first child output is not exact needs-choice JSON.'); }
@@ -572,8 +664,6 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     || child.indexOf(initialExecution.terminalEvent) >= firstFinalIndex || firstFinalIndex >= child.indexOf(continuationExecution.execEvent)
     || child.indexOf(continuationExecution.terminalEvent) >= secondFinalIndex) mismatch('choice-child-terminal-sequence', 'The same child must finalize each exact stdout after its linked command output.');
 
-  const returns = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath && event.payload.recipient === '/root');
-  if (returns.length !== 2) mismatch('choice-child-return-count', 'The parent must receive needs-choice and terminal results from the same child.');
   const returnPayloads = returns.map((event) => childReturnText(event, agentPath));
   if (returnPayloads[0] !== needsChoiceText || returnPayloads[1] !== options.expectedPublicOutput) mismatch('choice-child-return-output', 'Same-child return payloads are not exact public stdout.');
   const waitBoundaries = [startIndex, parent.indexOf(followupOutputs[0])];
@@ -603,6 +693,8 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
   const evidence = {
     parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, taskName, choice: options.expectedChoice,
+    ...(options.requireProgressRelay ? { progressRelayChecked: initialRelay.checked && continuationRelay.checked } : {}),
+    ...(options.requireStatusSidecar ? { statusSidecarChecked } : {}),
     ...(options.includeExecutionFacts ? { executions: {
       initial: { execCommandCount: initialExecution.execCommandCount },
       continuation: { execCommandCount: continuationExecution.execCommandCount },
@@ -614,7 +706,52 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
 }
 
 function isChildHostEvent(event) {
-  return event?.type === 'response_item' && ['custom_tool_call', 'custom_tool_call_output'].includes(event.payload?.type);
+  return event?.type === 'response_item' && ['custom_tool_call', 'custom_tool_call_output', 'function_call', 'function_call_output'].includes(event.payload?.type);
+}
+
+function isTerminalChildReturn(event, agentPath) {
+  return event?.type === 'response_item' && event.payload?.type === 'agent_message'
+    && event.payload.author === agentPath && event.payload.recipient === '/root'
+    && event.payload.content?.some((item) => item?.type === 'input_text' && item.text?.startsWith('Message Type: FINAL_ANSWER\n'));
+}
+
+function validateChildHostCallOwnership(events, statusCalls, codePrefix) {
+  const calls = events.filter((event) => event?.type === 'response_item' && ['custom_tool_call', 'function_call'].includes(event.payload?.type));
+  const outputs = events.filter((event) => event?.type === 'response_item' && ['custom_tool_call_output', 'function_call_output'].includes(event.payload?.type));
+  const callIds = calls.map((event) => boundedString(event.payload.call_id));
+  const outputIds = outputs.map((event) => boundedString(event.payload.call_id));
+  const statusIds = new Set(statusCalls.map((event) => event.payload.call_id));
+  const relayPresent = calls.some((event) => event.payload.type === 'function_call') || outputs.some((event) => event.payload.type === 'function_call_output');
+  const errorCode = relayPresent ? `${codePrefix}-progress-relay-call-id`
+    : statusIds.size > 0 ? `${codePrefix}-status-sidecar-call-id` : `${codePrefix}-call-id`;
+  if (callIds.some((id) => !id) || outputIds.some((id) => !id)
+    || new Set(callIds).size !== callIds.length || new Set(outputIds).size !== outputIds.length
+    || callIds.length !== outputIds.length) mismatch(errorCode, 'Child host calls and outputs require unique one-to-one identities.');
+  for (const call of calls) {
+    const expectedType = call.payload.type === 'function_call' ? 'function_call_output' : 'custom_tool_call_output';
+    if (outputs.filter((output) => output.payload.call_id === call.payload.call_id && output.payload.type === expectedType).length !== 1) {
+      mismatch(call.payload.type === 'function_call' ? `${codePrefix}-progress-relay-call-id`
+        : statusIds.has(call.payload.call_id) ? `${codePrefix}-status-sidecar-call-id` : `${codePrefix}-call-id`,
+      'Each child host output must retain the call family and exact call identity.');
+    }
+  }
+  if (outputs.some((output) => !calls.some((call) => call.payload.call_id === output.payload.call_id
+    && output.payload.type === (call.payload.type === 'function_call' ? 'function_call_output' : 'custom_tool_call_output')))) {
+    mismatch(errorCode, 'Orphan or cross-family child host output is not qualified.');
+  }
+}
+
+function assertNoChoiceCallIdReuse(initialEvents, continuationEvents, options) {
+  const calls = (events) => events.filter((event) => event?.type === 'response_item' && ['custom_tool_call', 'function_call'].includes(event.payload?.type));
+  const initialIds = new Set(calls(initialEvents).map((event) => event.payload.call_id));
+  const reused = calls(continuationEvents).find((event) => initialIds.has(event.payload.call_id));
+  if (!reused) return;
+  if (reused.payload.type === 'function_call') mismatch('choice-continuation-progress-relay-call-id', 'The continuation relay reused an earlier host call ID.');
+  const host = parseCapturedHostCall(reused.payload.input);
+  if (options.expectedStatusCommand && host.kind === 'exec_command' && host.envelope.get('cmd') !== options.expectedChoiceCommand) {
+    mismatch('choice-continuation-status-sidecar-call-id', 'The continuation status sidecar reused an earlier host call ID.');
+  }
+  mismatch('choice-child-call-id-reused', 'The two logical executions reused a host call ID.');
 }
 
 function validateChoiceParentCallOwnership(parent) {
