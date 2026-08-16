@@ -1,6 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -13,6 +14,7 @@ import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import {
+  assertCodexRescueDisplayName,
   CodexRescueEvidenceMismatchError,
   CodexRescueUnqualifiedError,
   parseCodexRolloutJsonl,
@@ -23,10 +25,302 @@ import {
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
+const TEST_PROCESS_NONCE = 'a'.repeat(64);
+const STALE_PROCESS_NONCE = 'b'.repeat(64);
 const SUPPORTED_CODEX_LINES = Object.freeze(['0.147']);
+const RESCUE_DISPLAY_PRIVATE_SENTINELS = Object.freeze([
+  'repaircanary', 'privpromptcanary', 'privpathcanary', 'privworkcanary',
+  'privsesscanary', 'privjobcanary', 'privcapcanary', 'privargcanary',
+]);
 const qualificationRequired = process.env.ZCODE_REQUIRE_QUALIFIED === '1';
 const optInSkip = process.env.ZCODE_CODEX_SKILLS_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_SKILLS_E2E=1 to spend authenticated Codex credits.');
 const rescueOptInSkip = process.env.ZCODE_CODEX_RESCUE_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_RESCUE_E2E=1 to qualify the runtime-observed native Rescue route.');
+
+function assertRescueDisplayOmitsPrivateSentinels(display) {
+  const displayIdentity = `${display.taskName}\n${display.agentPath}`.toLowerCase();
+  for (const sentinel of RESCUE_DISPLAY_PRIVATE_SENTINELS) {
+    assert.equal(displayIdentity.includes(sentinel.toLowerCase()), false, `Rescue display identity copied private installed sentinel: ${sentinel}`);
+  }
+}
+
+function assertInstalledRescueDisplay(evidence) {
+  const display = assertCodexRescueDisplayName(evidence);
+  assert.equal(display.displayNameConforms, true);
+  assertRescueDisplayOmitsPrivateSentinels(display);
+  return display;
+}
+
+function installedRescueChoiceFacts(rollouts, parentThreadId, requireFollowup) {
+  assert.ok(Array.isArray(rollouts), 'choice linkage requires rollout evidence');
+  assert.ok(typeof parentThreadId === 'string' && parentThreadId.length > 0, 'choice linkage requires the exact parent thread ID');
+  const parentCandidates = rollouts.filter((events) => Array.isArray(events)
+    && events.some((event) => event?.type === 'session_meta' && event.payload?.id === parentThreadId));
+  assert.equal(parentCandidates.length, 1, 'choice linkage must expose exactly one parent rollout');
+  const parent = parentCandidates[0];
+  const calls = (name) => parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === name);
+  const spawns = calls('spawn_agent'); const followups = calls('followup_task');
+  const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
+  assert.equal(spawns.length, 1, 'choice linkage must expose exactly one original spawn');
+  assert.equal(starts.length, 1, 'choice linkage must expose exactly one original child start');
+  assert.equal(followups.length, requireFollowup ? 1 : 0, `choice linkage must expose ${requireFollowup ? 'one continuation follow-up' : 'no follow-up before resume'}`);
+  const spawnArgs = JSON.parse(spawns[0].payload.arguments);
+  const taskName = spawnArgs.task_name; const agentPath = starts[0].payload.agent_path; const childThreadId = starts[0].payload.agent_thread_id;
+  assert.ok(typeof taskName === 'string' && typeof agentPath === 'string' && typeof childThreadId === 'string', 'choice linkage rollout must expose all original child identity fields');
+  const childCandidates = rollouts.filter((events) => Array.isArray(events)
+    && events.some((event) => event?.type === 'session_meta' && event.payload?.id === childThreadId));
+  assert.equal(childCandidates.length, 1, 'choice linkage must expose exactly one retained child rollout');
+  const childMetas = childCandidates[0].filter((event) => event?.type === 'session_meta');
+  assert.equal(childMetas.length, 1, 'choice linkage retained child must expose one metadata record');
+  assert.equal(childMetas[0].payload.id, childThreadId, 'choice child metadata must retain the original child ID');
+  assert.equal(childMetas[0].payload.parent_thread_id, parentThreadId, 'choice child metadata must retain the original parent ID');
+  assert.equal(childMetas[0].payload.source?.subagent?.thread_spawn?.agent_path, agentPath, 'choice child metadata path must retain the original agent path');
+  return { taskName, agentPath, childThreadId, followupTarget: requireFollowup ? JSON.parse(followups[0].payload.arguments).target : undefined };
+}
+
+function captureInstalledRescueChoiceIdentity(rollouts, parentThreadId) {
+  const { taskName, agentPath, childThreadId } = installedRescueChoiceFacts(rollouts, parentThreadId, false);
+  return Object.freeze({ taskName, agentPath, childThreadId });
+}
+
+function assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId, evidence, pendingIdentity) {
+  assert.ok(evidence && typeof evidence === 'object', 'choice linkage requires qualified evidence');
+  assert.ok(pendingIdentity && typeof pendingIdentity === 'object', 'choice linkage requires the independent pending snapshot');
+  for (const field of ['taskName', 'agentPath', 'childThreadId']) {
+    assert.ok(typeof pendingIdentity[field] === 'string' && pendingIdentity[field].length > 0, `pending snapshot must expose ${field}`);
+    assert.equal(evidence[field], pendingIdentity[field], `choice evidence ${field} must match the pending snapshot`);
+  }
+  const post = installedRescueChoiceFacts(postRollouts, parentThreadId, true);
+  for (const field of ['taskName', 'agentPath', 'childThreadId']) {
+    assert.equal(post[field], pendingIdentity[field], `post-continuation ${field} must match the pending snapshot`);
+  }
+  assert.equal(post.followupTarget, pendingIdentity.childThreadId, 'post-continuation follow-up target must match the pending snapshot child ID');
+}
+
+function installedRescueQualificationBody(source) {
+  const startName = ['installed Rescue uses one isolated native child', 'for initial and choice continuations'].join(' ');
+  const endName = ['installed Rescue display privacy rejects case-insensitive private substrings', 'without generic-word collisions'].join(' ');
+  const startMarker = `test('${startName}'`;
+  const endMarker = `test('${endName}'`;
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker);
+  assert.notEqual(start, -1, 'installed Rescue qualification start marker must exist');
+  assert.notEqual(end, -1, 'installed Rescue qualification end marker must exist');
+  assert.ok(start < end, 'installed Rescue qualification markers must be ordered');
+  return source.slice(start, end);
+}
+
+function assertInstalledRescueQualificationSource(source) {
+  const installedQualification = installedRescueQualificationBody(source);
+  assert.doesNotMatch(installedQualification, /expected(?:TaskName|AgentPath)\s*:/u, 'installed qualification must not pin model-selected display identity');
+  const foreground = exactSourceRegion(installedQualification,
+    '  try {\n    const evidence = qualifyCodexRescueEvidence(', '\n\n  for (const choice', 'foreground qualifier');
+  const choice = exactSourceRegion(installedQualification,
+    '    try {\n      const evidence = qualifyCodexRescueChoiceEvidence(', '\n    const choiceCalls', 'choice qualifier');
+  const background = exactSourceRegion(installedQualification,
+    '    try {\n      const evidence = qualifyCodexRescueBackgroundEvidence(', '\n    await writeFile(backgroundGate', 'background qualifier');
+  assert.equal(installedQualification.match(/\bqualifyCodexRescueEvidence\(/gu)?.length, 1, 'foreground qualifier must have one installed call site');
+  assert.equal(installedQualification.match(/\bqualifyCodexRescueChoiceEvidence\(/gu)?.length, 1, 'choice qualifier must have one installed call site');
+  assert.equal(installedQualification.match(/\bqualifyCodexRescueBackgroundEvidence\(/gu)?.length, 1, 'background qualifier must have one installed call site');
+  assertInstalledSourceBranch(foreground, 'foreground', false);
+  assertInstalledSourceBranch(choice, 'choice', true);
+  assertInstalledSourceBranch(background, 'background', false);
+  assertSourceOrder(installedQualification, [
+    'const pendingFrames =',
+    'const pendingIdentity = captureInstalledRescueChoiceIdentity(pendingRollouts, parentIds[0]);',
+    'const answer = await codex([',
+    'qualifyCodexRescueChoiceEvidence(',
+  ], 'choice pending snapshot');
+}
+
+function exactSourceRegion(source, startMarker, endMarker, label) {
+  const start = source.indexOf(startMarker); const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.notEqual(start, -1, `${label} start marker must exist`);
+  assert.notEqual(end, -1, `${label} end marker must exist`);
+  assert.ok(start < end, `${label} markers must be ordered`);
+  return source.slice(start, end);
+}
+
+function assertInstalledSourceBranch(region, label, requireChoiceLinkage) {
+  const catchMarker = '} catch (error) {';
+  const catchIndex = region.indexOf(catchMarker);
+  assert.ok(catchIndex > 0, `${label} qualifier catch must exist`);
+  const success = region.slice(0, catchIndex); const encrypted = region.slice(catchIndex);
+  assertSourceOrder(success, [
+    `qualifyCodexRescue${label === 'foreground' ? '' : label === 'choice' ? 'Choice' : 'Background'}Evidence(`,
+    'assertInstalledRescueDisplay(evidence);',
+    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity);'] : []),
+  ], `${label} display${requireChoiceLinkage ? ' and linkage' : ''}`);
+  const guardMarker = label === 'choice'
+    ? "if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {"
+    : "if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {";
+  assert.equal(encrypted.split(guardMarker).length - 1, 1, `${label} encrypted guard predicate must occur exactly once`);
+  const guardStart = encrypted.indexOf(guardMarker);
+  const guardCloseMarker = label === 'foreground' ? '\n    }' : '\n      }';
+  const guardEnd = encrypted.indexOf(guardCloseMarker, guardStart + guardMarker.length);
+  assert.ok(guardEnd > guardStart, `${label} encrypted guard closing brace must exist`);
+  const guarded = encrypted.slice(guardStart, guardEnd);
+  assertSourceOrder(guarded, [
+    guardMarker,
+    'assertInstalledRescueDisplay(error.evidence);',
+    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);'] : []),
+    'markUnqualified(',
+    'return;',
+  ], `${label} encrypted guard display${requireChoiceLinkage ? ' and linkage' : ''}`);
+}
+
+function assertSourceOrder(source, markers, label) {
+  let previous = -1;
+  for (const marker of markers) {
+    const index = source.indexOf(marker, previous + 1);
+    assert.ok(index > previous, `${label} assertion must remain in its branch and before any early return: ${marker}`);
+    previous = index;
+  }
+}
+
+test('foreground Rescue gate lifecycle releases and cleans exact processes on gate discovery timeout', async () => {
+  const events = []; let rejectCodex; let alive = true;
+  const result = new Promise((_, reject) => { rejectCodex = reject; });
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
+    launch: () => ({ result, terminate: async () => { events.push('terminate-codex'); rejectCodex(new Error('terminated exact Codex')); throw new Error('Codex termination reported failure'); } }),
+    waitForGate: async () => { throw new Error('gate discovery timeout'); },
+    readProcessMarker: async () => ({ pid: 48123, ppid: 71, nonce: TEST_PROCESS_NONCE }), inspectProcessIdentity: async () => alive ? ({ pid: 48123, ppid: 71, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }) : undefined,
+    releaseGate: async (path) => { events.push(`release:${path}`); }, terminateExactProcess: async (identity) => { events.push(`terminate-pid:${identity.pid}`); alive = false; },
+    waitForProcessExit: async (identity) => { events.push(`wait-pid:${identity.pid}`); }, holdMs: 0,
+  }), /gate discovery timeout/);
+  assert.deepEqual(events, ['release:/exact/gate', 'terminate-pid:48123', 'wait-pid:48123', 'terminate-codex']);
+});
+
+test('foreground Rescue gate lifecycle consumes Codex failure and releases the exact gate', async () => {
+  const events = []; let alive = true;
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
+    launch: () => ({ result: Promise.reject(new Error('Codex failed')), terminate: async () => { events.push('terminate-codex'); } }),
+    waitForGate: (signal) => new Promise((resolvePromise) => signal.addEventListener('abort', resolvePromise, { once: true })),
+    readProcessMarker: async () => ({ pid: 59123, ppid: 72, nonce: TEST_PROCESS_NONCE }), inspectProcessIdentity: async () => alive ? ({ pid: 59123, ppid: 72, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }) : undefined,
+    releaseGate: async (path) => { events.push(`release:${path}`); }, terminateExactProcess: async (identity) => { events.push(`terminate-pid:${identity.pid}`); alive = false; },
+    waitForProcessExit: async (identity) => { events.push(`wait-pid:${identity.pid}`); }, holdMs: 0,
+  }), /Codex failed/);
+  assert.deepEqual(events, ['release:/exact/gate', 'terminate-pid:59123', 'wait-pid:59123', 'terminate-codex']);
+});
+
+test('foreground Rescue gate lifecycle cleans an exact fake child that does not exit naturally', async () => {
+  const events = []; let gateReleased = false; let alive = true; let resolveCodex;
+  const result = new Promise((resolvePromise) => { resolveCodex = resolvePromise; });
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE, launch: () => ({ result }),
+    waitForGate: async () => {}, readProcessMarker: async () => ({ pid: 60123, ppid: 73, nonce: TEST_PROCESS_NONCE }), inspectProcessIdentity: async () => alive ? ({ pid: 60123, ppid: 73, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }) : undefined,
+    releaseGate: async () => { gateReleased = true; events.push('release'); resolveCodex({ code: 0, stdout: '', stderr: '' }); }, sleep: async () => {},
+    waitForProcessExit: async (identity, phase) => { events.push(`wait-${phase}:${identity.pid}`); if (phase === 'natural') throw new Error('fake child did not exit'); },
+    terminateExactProcess: async (identity) => { assert.equal(gateReleased, true); events.push(`terminate-pid:${identity.pid}`); alive = false; }, holdMs: 0,
+  }), /fake child did not exit/);
+  assert.deepEqual(events, ['release', 'wait-natural:60123', 'terminate-pid:60123', 'wait-cleanup:60123']);
+});
+
+test('foreground Rescue gate lifecycle releases the exact gate when launch throws synchronously', async () => {
+  const released = [];
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
+    launch: () => { throw new Error('synchronous launch failure'); },
+    waitForGate: async () => { assert.fail('gate wait must not start before launch succeeds'); },
+    releaseGate: async (path) => { released.push(path); }, holdMs: 0,
+  }), /synchronous launch failure/);
+  assert.deepEqual(released, ['/exact/gate']);
+});
+
+test('foreground Rescue early Codex result aborts and awaits the losing gate wait', async () => {
+  let aborted = false; let awaited = false; const events = [];
+  const foreground = await runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
+    launch: () => ({ result: Promise.resolve({ code: 0, stdout: '', stderr: '' }), terminate: async () => { events.push('terminate'); } }),
+    waitForGate: (signal) => new Promise((resolvePromise) => signal.addEventListener('abort', () => {
+      aborted = true; queueMicrotask(() => { awaited = true; resolvePromise(); });
+    }, { once: true })),
+    readProcessMarker: async () => { const error = new Error('marker absent'); error.code = 'ENOENT'; throw error; }, releaseGate: async () => { events.push('release'); }, holdMs: 0,
+  });
+  assert.equal(foreground.endedBeforeGate, true);
+  assert.equal(aborted, true); assert.equal(awaited, true);
+  assert.deepEqual(events, ['release', 'terminate']);
+});
+
+test('foreground Rescue refuses to signal stale, nonce-mismatched, or reparented process identities', async (t) => {
+  const cases = [
+    {
+      name: 'stale marker nonce', marker: { pid: 61123, ppid: 71, nonce: STALE_PROCESS_NONCE },
+      inspect: async () => ({ pid: 61123, ppid: 71, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }), pattern: /nonce changed|nonce mismatch/i,
+    },
+    {
+      name: 'reparented process', marker: { pid: 61124, ppid: 72, nonce: TEST_PROCESS_NONCE },
+      inspect: async () => ({ pid: 61124, ppid: 73, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }), pattern: /parent identity changed|parent.*mismatch/i,
+    },
+    {
+      name: 'same-second PID reuse', marker: { pid: 61125, ppid: 74, nonce: TEST_PROCESS_NONCE },
+      inspect: (() => { let reads = 0; return async () => ({ pid: 61125, ppid: 74, startIdentity: 'same-second', processNonce: reads++ === 0 ? TEST_PROCESS_NONCE : STALE_PROCESS_NONCE }); })(),
+      failAfterCapture: true, pattern: /process identity changed/i,
+    },
+  ];
+  for (const scenario of cases) await t.test(scenario.name, async () => {
+    let terminated = false; let codexTerminated = false; let rejectCodex;
+    const result = new Promise((_, reject) => { rejectCodex = reject; });
+    await assert.rejects(runHeldForegroundRescue({
+      gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
+      launch: () => ({ result, terminate: async () => { codexTerminated = true; rejectCodex(new Error('terminated exact Codex')); } }), waitForGate: async () => {},
+      readProcessMarker: async () => scenario.marker, inspectProcessIdentity: scenario.inspect,
+      releaseGate: async () => {}, sleep: async () => { if (scenario.failAfterCapture) throw new Error('verify cleanup identity'); },
+      terminateExactProcess: async () => { terminated = true; }, waitForProcessExit: async () => {}, holdMs: 0,
+    }), scenario.pattern);
+    assert.equal(terminated, false, 'identity mismatch must never signal an unrelated PID');
+    assert.equal(codexTerminated, true, 'identity mismatch must not prevent exact Codex termination');
+  });
+});
+
+test('foreground Rescue reports cleanup identity change without signaling the reused PID', async () => {
+  let reads = 0; let terminated = false; let rejectCodex;
+  const result = new Promise((_, reject) => { rejectCodex = reject; });
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
+    launch: () => ({ result, terminate: async () => { rejectCodex(new Error('terminated exact Codex')); } }), waitForGate: async () => {},
+    readProcessMarker: async () => ({ pid: 62123, ppid: 81, nonce: TEST_PROCESS_NONCE }),
+    inspectProcessIdentity: async () => ({ pid: 62123, ppid: 81, startIdentity: reads++ === 0 ? 'start-a' : 'start-b', processNonce: TEST_PROCESS_NONCE }),
+    releaseGate: async () => {}, sleep: async () => { throw new Error('held verification failed'); },
+    terminateExactProcess: async () => { terminated = true; }, holdMs: 0,
+  }), /process identity changed during cleanup/i);
+  assert.equal(terminated, false);
+});
+
+test('foreground Rescue cleans the exact fake child before Codex termination can reparent it', async () => {
+  const events = []; let alive = true; let reparented = false; let rejectCodex;
+  const result = new Promise((_, reject) => { rejectCodex = reject; });
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
+    launch: () => ({ result, terminate: async () => { events.push('terminate-codex'); reparented = true; rejectCodex(new Error('terminated exact Codex')); } }),
+    waitForGate: async () => {},
+    readProcessMarker: async () => ({ pid: 63123, ppid: 91, nonce: TEST_PROCESS_NONCE }),
+    inspectProcessIdentity: async () => alive ? ({ pid: 63123, ppid: reparented ? 1 : 91, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }) : undefined,
+    releaseGate: async () => { events.push('release'); },
+    terminateExactProcess: async () => { events.push('terminate-child'); alive = false; },
+    waitForProcessExit: async (_identity, phase) => { events.push(`wait-child:${phase}`); assert.equal(alive, false); },
+    sleep: async () => { throw new Error('held verification failed'); }, holdMs: 0,
+  }), /held verification failed/);
+  assert.deepEqual(events, ['release', 'terminate-child', 'wait-child:cleanup', 'terminate-codex']);
+  assert.equal(alive, false);
+});
+
+test('foreground Rescue still terminates Codex after exact child cleanup fails', async () => {
+  const events = []; let rejectCodex;
+  const result = new Promise((_, reject) => { rejectCodex = reject; });
+  await assert.rejects(runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
+    launch: () => ({ result, terminate: async () => { events.push('terminate-codex'); rejectCodex(new Error('terminated exact Codex')); } }),
+    waitForGate: async () => {},
+    readProcessMarker: async () => ({ pid: 63124, ppid: 92, nonce: TEST_PROCESS_NONCE }),
+    inspectProcessIdentity: async () => ({ pid: 63124, ppid: 92, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }), releaseGate: async () => { events.push('release'); },
+    terminateExactProcess: async () => { events.push('terminate-child'); throw new Error('exact child cleanup failed'); },
+    waitForProcessExit: async () => { events.push('wait-child'); throw new Error('exact child remained alive'); },
+    sleep: async () => { throw new Error('held verification failed'); }, holdMs: 0,
+  }), /held verification failed/);
+  assert.deepEqual(events, ['release', 'terminate-child', 'wait-child', 'terminate-codex']);
+});
 
 test('preserved installed evidence scrubs isolated credential copies on normal, thrown, and timed-out cleanup', async (t) => {
   for (const mode of ['normal', 'sync-throw', 'timeout']) await t.test(mode, async () => {
@@ -79,6 +373,38 @@ test('installed Rescue qualification declares its supported Codex line and a sco
   t.diagnostic(diagnostic);
 });
 
+test('installed Rescue qualification source checks every dynamic display identity independently', async () => {
+  const source = await readFile(fileURLToPath(import.meta.url), 'utf8');
+  assertInstalledRescueQualificationSource(source);
+});
+
+test('installed Rescue source contract rejects moved, unreachable, and missing branch checks', async () => {
+  const source = await readFile(fileURLToPath(import.meta.url), 'utf8');
+  const foregroundDisplay = '    assertInstalledRescueDisplay(evidence);\n';
+  const choiceDisplayAnchor = '      assertInstalledRescueDisplay(evidence);\n';
+  const movedToWrongBranch = source.replace(foregroundDisplay, '').replace(choiceDisplayAnchor, `${foregroundDisplay}${choiceDisplayAnchor}`);
+  assert.throws(() => assertInstalledRescueQualificationSource(movedToWrongBranch), /foreground display/u);
+
+  const encryptedDisplay = '      assertInstalledRescueDisplay(error.evidence);\n';
+  const foregroundMark = '      markUnqualified(t, unqualified(error.code, detail)); return;';
+  const movedAfterReturn = source.replace(encryptedDisplay, '').replace(foregroundMark, `${foregroundMark}\n${encryptedDisplay}`);
+  assert.throws(() => assertInstalledRescueQualificationSource(movedAfterReturn), /foreground encrypted guard display/u);
+
+  const missingChoiceLinkage = source.replace('        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);\n', '');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingChoiceLinkage), /choice encrypted guard display and linkage/u);
+
+  const foregroundCatch = '  } catch (error) {\n';
+  const foregroundPredicate = "    if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {\n";
+  const movedDisplayAboveGuard = source.replace(encryptedDisplay, '').replace(foregroundCatch + foregroundPredicate, foregroundCatch + encryptedDisplay + foregroundPredicate);
+  assert.throws(() => assertInstalledRescueQualificationSource(movedDisplayAboveGuard), /foreground encrypted guard/u);
+
+  const choiceEncryptedChecks = '        assertInstalledRescueDisplay(error.evidence);\n        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);\n';
+  const choiceCatch = '    } catch (error) {\n';
+  const choicePredicate = "      if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {\n";
+  const movedChoiceChecksAboveGuard = source.replace(choiceEncryptedChecks, '').replace(choiceCatch + choicePredicate, choiceCatch + choiceEncryptedChecks + choicePredicate);
+  assert.throws(() => assertInstalledRescueQualificationSource(movedChoiceChecksAboveGuard), /choice encrypted guard/u);
+});
+
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
   if (process.env.ZCODE_CODEX_SKILLS_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_SKILLS_E2E=1.'));
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-skills-e2e-'));
@@ -107,9 +433,15 @@ test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode
 });
 
 test('installed Rescue uses one isolated native child for initial and choice continuations', { skip: rescueOptInSkip, timeout: 1_200_000 }, async (t) => {
+  function assertInstalledRescueChoiceLinkage(rollouts, parentThreadId, evidence, pendingIdentity) {
+    assert.equal(evidence.executions.initial.execCommandCount, 1, 'choice initial turn must execute exactly once');
+    assert.equal(evidence.executions.continuation.execCommandCount, 1, 'choice continuation must execute exactly once');
+    assertInstalledRescueChoiceIdentityLinkage(rollouts, parentThreadId, evidence, pendingIdentity);
+  }
+
   if (process.env.ZCODE_CODEX_RESCUE_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_RESCUE_E2E=1.'));
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-codex-rescue-e2e-')); let preserveTemporary = false;
-  const codexHome = join(temporary, 'codex-home'); const home = join(temporary, 'home'); const marketplace = join(temporary, 'marketplace'); const workspace = join(temporary, 'workspace'); const zcodeRecord = join(temporary, 'zcode.jsonl'); const recoveryControl = join(temporary, 'zcode-recovery.json');
+  const codexHome = join(temporary, 'codex-home'); const home = join(temporary, 'home'); const marketplace = join(temporary, 'marketplace'); const workspace = join(temporary, 'privpathcanary'); const zcodeRecord = join(temporary, 'zcode.jsonl'); const recoveryControl = join(temporary, 'zcode-recovery.json');
   const isolatedAuthPath = join(codexHome, 'auth.json'); t.after(() => cleanupInstalledEvidence({ credentialPaths: [isolatedAuthPath], diagnostic: (message) => t.diagnostic(message), preserve: preserveTemporary, temporary }));
   await Promise.all([mkdir(codexHome, { recursive: true, mode: 0o700 }), mkdir(home, { recursive: true, mode: 0o700 }), mkdir(workspace, { recursive: true }), writeFile(zcodeRecord, ''), writeFile(recoveryControl, JSON.stringify({ mode: 'completed' }))]);
   const sourceCodexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
@@ -133,15 +465,28 @@ test('installed Rescue uses one isolated native child for initial and choice con
   }
   assert.equal(setupReady, true, 'four successful setup turns did not establish a fresh-session ready Rescue Role');
   await qualifyInstalledIdentityFailures({ installedPluginRoot, installedDataRoot: join(codexHome, 'plugins', 'data', 'zcode-vitry'), temporary, env, zcodeRecord });
-  await writeFile(zcodeRecord, '');
-  const rescue = await codex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result.'], workspace, env, 240_000);
+  const foregroundGate = join(temporary, 'foreground-long-completion.gate'); const foregroundGateReached = join(temporary, 'foreground-long-completion.reached'); const foregroundProcess = join(temporary, 'foreground-long-process.json'); const foregroundNonce = randomBytes(32).toString('hex');
+  await Promise.all([writeFile(zcodeRecord, ''), writeFile(foregroundGate, 'hold'), writeFile(foregroundGateReached, ''), writeFile(foregroundProcess, '')]);
+  const longEnv = { ...env, FAKE_ZCODE_COMPLETION_GATE: foregroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: foregroundGateReached, FAKE_ZCODE_PROCESS_FILE: foregroundProcess, FAKE_ZCODE_PROCESS_NONCE: foregroundNonce };
+  const foreground = await runHeldForegroundRescue({
+    gatePath: foregroundGate, processPath: foregroundProcess, processNonce: foregroundNonce,
+    launch: () => controlledCodex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now for repaircanary. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result. Keep these private fixture labels out of the display name: privpromptcanary, privpathcanary, privworkcanary, privsesscanary, privjobcanary, privcapcanary. Also keep the independent command argument/option canary `--privargcanary` out of the display name.'], workspace, longEnv, 300_000),
+    waitForGate: (signal) => waitUntil(async () => await readFile(foregroundGateReached, 'utf8').catch(() => '') === 'blocked', 60_000, 'installed foreground Rescue never reached the held fake-ZCode completion boundary', signal),
+    holdMs: 35_000,
+  });
+  if (foreground.endedBeforeGate) {
+    if (skipExternalFailure(t, foreground.rescue)) return;
+    assert.fail(`installed foreground Rescue ended before the long completion boundary\n${foreground.rescue.stdout}\n${foreground.rescue.stderr}`);
+  }
+  const { rescue, processAliveWhileHeld } = foreground;
   if (skipExternalFailure(t, rescue)) return;
   assert.equal(rescue.code, 0, `codex Rescue failed\n${rescue.stdout}\n${rescue.stderr}`);
+  assert.equal(processAliveWhileHeld, true, 'the exact fake-ZCode process must remain alive beyond the maximum initial host yield');
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const expectedCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke rescue`;
   const expectedPreflightCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" role-status rescue`;
   const expectedNamedSpawnMessage = 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.';
-  const expectedGenericSpawnMessage = `Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:\n${expectedCommand}\nPreserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request/print/persist authorization material.\nIf that command returned a needs-choice response, stop. Only after the parent sends exactly \`Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.\` run exactly:\nnode "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue resume\nOnly after the parent sends exactly \`Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.\` run exactly:\nnode "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue fresh`;
+  const expectedGenericSpawnMessage = `Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:\n${expectedCommand}\nPreserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request/print/persist authorization material.\nHere exactly one command means exactly one \`exec_command\` companion process; continuation calls only observe its original running handle. Never start a second \`exec_command\`. A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.\nIf that command returned a needs-choice response, stop. Only after the parent sends exactly \`Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.\` run exactly:\nnode "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue resume\nOnly after the parent sends exactly \`Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.\` run exactly:\nnode "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue fresh`;
   const canonicalWorkspace = await realpath(workspace);
   const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(zcodeCalls.filter((call) => call.method === 'session/send').length, 1, 'one ZCode send after one native child spawn');
@@ -149,8 +494,6 @@ test('installed Rescue uses one isolated native child for initial and choice con
     const evidence = qualifyCodexRescueEvidence(
       { execFrames: frames, rollouts: await loadCodexRollouts(codexHome) },
       {
-        expectedTaskName: 'zcode_rescue',
-        expectedAgentPath: '/root/zcode_rescue',
         expectedAgentType: 'zcode-rescue',
         expectedWorkspace: canonicalWorkspace,
         expectedCommand,
@@ -158,13 +501,18 @@ test('installed Rescue uses one isolated native child for initial and choice con
         expectedNamedSpawnMessage,
         expectedGenericSpawnMessage,
         expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
+        requireYieldedExecution: true,
         expectedSemanticProgress: {
           start: '[zcode] Running command: npm test.',
           terminal: '[zcode] Command completed: npm test (25ms).',
+          snapshotFallback: '[zcode] ZCode conversation frames were unavailable; using bounded session progress.',
+          lifecycleOnly: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.',
         },
         forbiddenParentText: [
           'Running command: npm test.',
           'Command completed: npm test (25ms).',
+          'ZCode conversation frames were unavailable; using bounded session progress.',
+          'ZCode semantic progress is unavailable; lifecycle updates will continue.',
           'raw output must stay private',
           'reasoning must stay private',
           'capability must stay private',
@@ -172,12 +520,22 @@ test('installed Rescue uses one isolated native child for initial and choice con
         ],
       },
     );
+    assertInstalledRescueDisplay(evidence);
     assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route), 'qualification must record an automatically observed native route');
     assert.equal(evidence.semanticProgressChecked, true);
+    assert.equal(evidence.yieldedExecution.execCommandCount, 1);
+    assert.ok(evidence.yieldedExecution.pollCount >= 1);
+    assert.equal(evidence.yieldedExecution.sameHandleChecked, true);
+    assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
     t.diagnostic(`qualified native Rescue route: ${evidence.route}`);
   } catch (error) {
     if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
+      assertInstalledRescueDisplay(error.evidence);
       assert.ok(['named', 'generic-schema-hidden'].includes(error.evidence?.route), 'encrypted-message evidence must record the automatically observed native route');
+      assert.equal(error.evidence.yieldedExecution.execCommandCount, 1);
+      assert.ok(error.evidence.yieldedExecution.pollCount >= 1);
+      assert.equal(error.evidence.yieldedExecution.sameHandleChecked, true);
+      assert.equal(error.evidence.yieldedExecution.terminalExitCode, 0);
       const detail = `Observed route ${error.evidence.route}. ${error.message}`;
       markUnqualified(t, unqualified(error.code, detail)); return;
     }
@@ -192,6 +550,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
     const pendingFrames = pending.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
     const parentIds = [...new Set(pendingFrames.filter((frame) => frame?.type === 'thread.started').map((frame) => frame.thread_id))];
     assert.equal(parentIds.length, 1, 'pending Rescue must expose exactly one resumable parent thread ID');
+    const pendingRollouts = await loadCodexRollouts(codexHome);
+    const pendingIdentity = captureInstalledRescueChoiceIdentity(pendingRollouts, parentIds[0]);
     const answer = await codex([
       'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
       '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all',
@@ -201,33 +561,39 @@ test('installed Rescue uses one isolated native child for initial and choice con
     assert.equal(answer.code, 0, `codex ${choice} continuation failed\n${answer.stdout}\n${answer.stderr}`);
     const choiceCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`;
     const followupMessage = `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`;
+    const choiceRollouts = await loadCodexRollouts(codexHome);
     try {
       const evidence = qualifyCodexRescueChoiceEvidence(
-        { rollouts: await loadCodexRollouts(codexHome) },
+        { rollouts: choiceRollouts },
         {
           expectedChoice: choice,
           expectedParentThreadId: parentIds[0],
-          expectedAgentPath: '/root/zcode_rescue',
           expectedAgentType: 'zcode-rescue',
           expectedWorkspace: canonicalWorkspace,
           expectedInitialCommand: expectedCommand,
           expectedNamedSpawnMessage,
           expectedGenericSpawnMessage,
-          expectedTaskName: 'zcode_rescue',
           expectedChoiceCommand: choiceCommand,
           expectedFollowupMessage: followupMessage,
           expectedPreflightCommand,
           expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
+          includeExecutionFacts: true,
           forbiddenParentText: [
             'Running command: npm test.', 'Command completed: npm test (25ms).', 'raw output must stay private',
+            'ZCode conversation frames were unavailable; using bounded session progress.',
+            'ZCode semantic progress is unavailable; lifecycle updates will continue.',
             'reasoning must stay private', 'capability must stay private', 'v4/conversation/frame',
           ],
         },
       );
+      assertInstalledRescueDisplay(evidence);
+      assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity);
       assert.equal(evidence.choice, choice);
       t.diagnostic(`qualified same-child Rescue ${choice}: ${evidence.childThreadId}`);
     } catch (error) {
       if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {
+        assertInstalledRescueDisplay(error.evidence);
+        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);
         markUnqualified(t, unqualified(error.code, error.message)); return;
       }
       throw error;
@@ -238,7 +604,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
 
   await writeFile(zcodeRecord, '');
   const installedDataRoot = join(codexHome, 'plugins', 'data', 'zcode-vitry');
-  const backgroundWorkspace = join(temporary, 'background-workspace'); await initializeGitWorkspace(backgroundWorkspace); const backgroundCanonicalWorkspace = await realpath(backgroundWorkspace);
+  const backgroundWorkspace = join(temporary, 'privworkcanary'); await initializeGitWorkspace(backgroundWorkspace); const backgroundCanonicalWorkspace = await realpath(backgroundWorkspace);
   const privateCapabilityEvidence = await installPrivateCapabilityObserver(installedPluginRoot, temporary);
   const backgroundGate = join(temporary, 'background-completion.gate'); const backgroundGateReached = join(temporary, 'background-completion.reached');
   const backgroundStorage = await resolveWorkspaceStorage({ dataRoot: installedDataRoot, workspace: backgroundCanonicalWorkspace }); const backgroundJobsDirectory = join(backgroundStorage.directory, 'jobs');
@@ -267,17 +633,24 @@ test('installed Rescue uses one isolated native child for initial and choice con
         { execFrames: backgroundFrames, rollouts: await loadCodexRollouts(codexHome) },
         {
           expectedJobId: backgroundJobId,
-          expectedTaskName: 'zcode_rescue', expectedAgentPath: '/root/zcode_rescue', expectedAgentType: 'zcode-rescue', expectedWorkspace: backgroundCanonicalWorkspace,
+          expectedAgentType: 'zcode-rescue', expectedWorkspace: backgroundCanonicalWorkspace,
           expectedCommand, expectedPreflightCommand, expectedNamedSpawnMessage, expectedGenericSpawnMessage,
           privateExecutionCapability: privateCapability,
           publicLogs: [background.stdout, background.stderr],
-          forbiddenParentText: ['Running command: npm test.', 'Command completed: npm test (25ms).', 'raw output must stay private', 'reasoning must stay private', 'capability must stay private', 'v4/conversation/frame'],
+          forbiddenParentText: ['Running command: npm test.', 'Command completed: npm test (25ms).', 'ZCode conversation frames were unavailable; using bounded session progress.', 'ZCode semantic progress is unavailable; lifecycle updates will continue.', 'raw output must stay private', 'reasoning must stay private', 'capability must stay private', 'v4/conversation/frame'],
         },
       );
+      assertInstalledRescueDisplay(evidence);
       assert.equal(evidence.jobId, backgroundJobId); assert.equal(evidence.capabilityChecked, true); assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route));
       if (`${background.stdout}${background.stderr}${JSON.stringify(job)}`.includes(privateCapability)) assert.fail('production capability entered public background diagnostics');
     } catch (error) {
-      if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') { markUnqualified(t, unqualified(error.code, error.message)); return; }
+      if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
+        assertInstalledRescueDisplay(error.evidence);
+        assert.equal(error.evidence.jobId, backgroundJobId);
+        assert.equal(error.evidence.capabilityChecked, true);
+        assert.ok(['named', 'generic-schema-hidden'].includes(error.evidence.route));
+        markUnqualified(t, unqualified(error.code, error.message)); return;
+      }
       throw error;
     }
     await writeFile(backgroundGate, 'release');
@@ -410,11 +783,13 @@ test('installed Rescue uses one isolated native child for initial and choice con
   await writeFile(zcodeRecord, '');
   const lossWorkspace = join(temporary, 'loss-workspace'); await initializeGitWorkspace(lossWorkspace); const lossCanonicalWorkspace = await realpath(lossWorkspace);
   const lossGate = join(temporary, 'loss-completion.gate'); const lossGateReached = join(temporary, 'loss-completion.reached');
+  const lossProcessNonce = randomBytes(32).toString('hex');
   const lossStorage = await resolveWorkspaceStorage({ dataRoot: installedDataRoot, workspace: lossCanonicalWorkspace }); const lossJobsDirectory = join(lossStorage.directory, 'jobs');
   const lossBaseline = await canonicalJobIds(lossJobsDirectory);
   await Promise.all([writeFile(lossGate, 'hold'), writeFile(recoveryControl, JSON.stringify({ mode: 'active' }))]); let lossIdentity; let lossJobId; let lossJobPath; let lossThreadId; let lossVerified = false;
   const lossApp = await createInstalledCodexAppServer(lossWorkspace, {
     ...env,
+    ZCODE_E2E_PROCESS_NONCE: lossProcessNonce,
     FAKE_ZCODE_COMPLETION_GATE: lossGate,
     FAKE_ZCODE_COMPLETION_GATE_REACHED: lossGateReached,
     FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS: '100',
@@ -438,11 +813,12 @@ test('installed Rescue uses one isolated native child for initial and choice con
     const lossRoute = await waitForValue(async () => nativeRouteEvidence(await loadCodexRollouts(codexHome).catch(() => []), lossThreadId), 30_000, 'installed loss turn exposed no native child identity');
     assert.equal(lossRoute.spawnCount, 1); assert.equal(lossRoute.startCount, 1);
 
+    const lossWorkerProcess = await captureExactPidIdentity(lossIdentity.pid, lossProcessNonce, 'ZCODE_E2E_PROCESS_NONCE');
+    await signalExactProcess(lossWorkerProcess, (expected) => readExactPidIdentity(expected), 'SIGKILL');
+    await waitUntil(() => !processAlive(lossIdentity.pid), 5_000, 'the exact accepted foreground worker survived simulated native child loss');
     const lostCodexPid = lossApp.pid;
     await lossApp.close('SIGKILL');
     assert.equal(processAlive(lostCodexPid), false, 'the exact installed Codex parent process must be gone before recovery');
-    if (processAlive(lossIdentity.pid)) process.kill(lossIdentity.pid, 'SIGKILL');
-    await waitUntil(() => !processAlive(lossIdentity.pid), 5_000, 'the exact accepted foreground worker survived simulated native child loss');
     await writeFile(recoveryControl, JSON.stringify({ mode: 'completed' }));
     await writeFile(lossGate, 'release');
     const recovered = await codex([
@@ -470,6 +846,41 @@ test('installed Rescue uses one isolated native child for initial and choice con
     if (lossJobId) assert.deepEqual(discovered, [lossJobId], 'loss recovery must settle the exact initially accepted durable job');
     if (lossVerified && lossJobId && discovered.length === 1) preserveTemporary = false;
   }
+});
+
+test('installed Rescue display privacy rejects case-insensitive private substrings without generic-word collisions', () => {
+  for (const taskName of ['zcode_rescue_contest', 'zcode_rescue_awaiting']) {
+    assert.doesNotThrow(() => assertRescueDisplayOmitsPrivateSentinels({ taskName, agentPath: `/root/${taskName}` }));
+  }
+  for (const sentinel of ['repaircanary', 'privpromptcanary', 'privpathcanary', 'privworkcanary', 'privsesscanary', 'privjobcanary', 'privcapcanary']) {
+    const display = { taskName: `zcode_rescue_${sentinel}`, agentPath: `/root/zcode_rescue_${sentinel}` };
+    assert.throws(() => assertRescueDisplayOmitsPrivateSentinels(display), new RegExp(sentinel));
+  }
+  const embeddedCommandArgument = { taskName: 'zcode_rescue_xprivargcanary', agentPath: '/root/zcode_rescue_xprivargcanary' };
+  assert.throws(() => assertRescueDisplayOmitsPrivateSentinels(embeddedCommandArgument), /privargcanary/u);
+  assert.throws(
+    () => assertRescueDisplayOmitsPrivateSentinels({ taskName: 'zcode_rescue_xPrIvArGcAnArY', agentPath: '/root/zcode_rescue_xPrIvArGcAnArY' }),
+    /privargcanary/u,
+  );
+});
+
+test('installed Rescue choice linkage rejects post-continuation identity drift from the pending snapshot', () => {
+  const parentThreadId = 'parent-thread';
+  const pendingIdentity = { taskName: 'zcode_rescue_fix_progress', agentPath: '/root/zcode_rescue_fix_progress', childThreadId: 'child-thread' };
+  const evidence = { ...pendingIdentity };
+  const postRollouts = [
+    [
+      { type: 'session_meta', payload: { id: parentThreadId } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', arguments: JSON.stringify({ task_name: pendingIdentity.taskName }) } },
+      { type: 'event_msg', payload: { type: 'sub_agent_activity', kind: 'started', agent_path: '/root/zcode_rescue_drifted', agent_thread_id: pendingIdentity.childThreadId } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: pendingIdentity.childThreadId }) } },
+    ],
+    [{ type: 'session_meta', payload: { id: pendingIdentity.childThreadId, parent_thread_id: parentThreadId, source: { subagent: { thread_spawn: { agent_path: '/root/zcode_rescue_drifted' } } } } }],
+  ];
+  assert.throws(
+    () => assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId, evidence, pendingIdentity),
+    /pending snapshot/u,
+  );
 });
 
 async function qualifyInstalledIdentityFailures({ installedPluginRoot, installedDataRoot, temporary, env, zcodeRecord }) {
@@ -534,9 +945,200 @@ async function installPrivateCapabilityObserver(installedPluginRoot, temporary) 
 }
 
 async function codex(args, cwd, env, timeoutMs = 60_000) { return runProcess(codexLaunch(args, { root, env }), { cwd, env, timeoutMs, maxOutputBytes: 16 * 1024 * 1024 }); }
+function controlledCodex(args, cwd, env, timeoutMs = 60_000) {
+  const controller = new AbortController();
+  const result = runProcess(codexLaunch(args, { root, env }), { cwd, env, timeoutMs, maxOutputBytes: 16 * 1024 * 1024, signal: controller.signal });
+  return { result, terminate: async () => { controller.abort(); await result.catch(() => {}); } };
+}
+
+async function runHeldForegroundRescue(input) {
+  const releaseGate = input.releaseGate ?? ((path) => writeFile(path, 'release'));
+  const sleep = input.sleep ?? ((duration) => new Promise((resolvePromise) => setTimeout(resolvePromise, duration)));
+  const readProcessMarker = input.readProcessMarker ?? (async () => JSON.parse(await readFile(input.processPath, 'utf8')));
+  const inspectProcessIdentity = input.inspectProcessIdentity ?? inspectExactProcessIdentity;
+  const captureProcessIdentity = input.captureProcessIdentity ?? (async () => captureExactProcessIdentity(await readProcessMarker(), input.processNonce, inspectProcessIdentity));
+  const readProcessIdentity = input.readProcessIdentity ?? ((expected) => readExactProcessIdentity(expected, readProcessMarker, inspectProcessIdentity));
+  const waitForProcessExit = input.waitForProcessExit ?? ((expected, phase) => waitForExactProcessExit(expected, readProcessIdentity, phase));
+  const terminateExactProcess = input.terminateExactProcess ?? ((expected) => terminateVerifiedProcess(expected, readProcessIdentity));
+  const gateController = new AbortController();
+  let control; let resultOutcome; let gateOutcome; let identity; let gateReleased = false; let completed = false; let answer; let failure;
+  try {
+    control = await input.launch();
+    resultOutcome = Promise.resolve(control.result).then(
+      (value) => ({ kind: 'result', value }),
+      (error) => ({ kind: 'error', error }),
+    );
+    gateOutcome = Promise.resolve().then(() => input.waitForGate(gateController.signal)).then(
+      () => ({ kind: 'held' }),
+      (error) => ({ kind: 'gate-error', error }),
+    );
+    const boundary = await Promise.race([gateOutcome, resultOutcome]);
+    if (boundary.kind === 'gate-error') throw boundary.error;
+    if (boundary.kind === 'error') throw boundary.error;
+    if (boundary.kind === 'result') {
+      gateController.abort(); await gateOutcome;
+      answer = { endedBeforeGate: true, rescue: boundary.value };
+    } else {
+      identity = await captureProcessIdentity();
+      await sleep(input.holdMs ?? 35_000);
+      const processAliveWhileHeld = await readProcessIdentity(identity) !== undefined;
+      await releaseGate(input.gatePath); gateReleased = true;
+      const outcome = await resultOutcome;
+      if (outcome.kind === 'error') throw outcome.error;
+      await waitForProcessExit(identity, 'natural');
+      answer = { endedBeforeGate: false, identity, processAliveWhileHeld, rescue: outcome.value };
+      completed = true;
+    }
+  } catch (error) { failure = error; }
+  const cleanupErrors = [];
+  gateController.abort();
+  if (gateOutcome) { try { await gateOutcome; } catch (error) { cleanupErrors.push(error); } }
+  if (!gateReleased) {
+    try { await releaseGate(input.gatePath); gateReleased = true; } catch (error) { cleanupErrors.push(error); }
+  }
+  if (!completed) {
+    if (!identity) {
+      try { identity = await captureProcessIdentity(); }
+      catch (error) { if (!processMarkerUnavailable(error)) cleanupErrors.push(error); }
+    }
+    if (identity) {
+      let current;
+      try { current = await readProcessIdentity(identity); } catch (error) { cleanupErrors.push(error); }
+      if (current) {
+        try { await terminateExactProcess(identity); } catch (error) { cleanupErrors.push(error); }
+        try { await waitForProcessExit(identity, 'cleanup'); } catch (error) { cleanupErrors.push(error); }
+      }
+    }
+    if (typeof control?.terminate === 'function') { try { await control.terminate(); } catch (error) { cleanupErrors.push(error); } }
+  }
+  if (cleanupErrors.length > 0) {
+    if (!failure) failure = cleanupErrors.length === 1 ? cleanupErrors[0] : new AggregateError(cleanupErrors, 'foreground Rescue cleanup failed');
+    else {
+      const identityChanged = cleanupErrors.some((error) => /exact fake-ZCode process identity changed/iu.test(error?.message ?? ''));
+      failure = new AggregateError([failure, ...cleanupErrors], identityChanged ? `${failure.message}; exact fake-ZCode process identity changed during cleanup` : failure.message);
+    }
+  }
+  if (failure) throw failure;
+  return answer;
+}
+
+async function captureExactProcessIdentity(marker, expectedNonce, inspect) {
+  validateProcessNonce(expectedNonce); validateProcessMarker(marker, expectedNonce);
+  const observed = await inspect(marker.pid, expectedNonce, 'FAKE_ZCODE_PROCESS_NONCE');
+  if (!observed) throw new Error('exact fake-ZCode process exited before identity capture');
+  validateObservedProcess(observed, marker.pid, expectedNonce);
+  if (observed.ppid !== marker.ppid) throw new Error('exact fake-ZCode parent identity mismatch');
+  return { pid: marker.pid, ppid: marker.ppid, nonce: expectedNonce, nonceVariable: 'FAKE_ZCODE_PROCESS_NONCE', startIdentity: observed.startIdentity };
+}
+
+async function captureExactPidIdentity(pid, expectedNonce, nonceVariable) {
+  validateProcessNonce(expectedNonce);
+  const observed = await inspectExactProcessIdentity(pid, expectedNonce, nonceVariable);
+  if (!observed) throw new Error('exact installed process exited before identity capture');
+  validateObservedProcess(observed, pid, expectedNonce);
+  return { pid, ppid: observed.ppid, nonce: expectedNonce, nonceVariable, startIdentity: observed.startIdentity };
+}
+
+function processMarkerUnavailable(error) { return error?.code === 'ENOENT' || error instanceof SyntaxError; }
+
+async function readExactProcessIdentity(expected, readMarker, inspect) {
+  const marker = await readMarker(); validateProcessMarker(marker, expected.nonce);
+  if (marker.pid !== expected.pid || marker.ppid !== expected.ppid) throw new Error('exact fake-ZCode process identity changed');
+  const observed = await inspect(expected.pid, expected.nonce, expected.nonceVariable);
+  if (!observed) return undefined;
+  validateObservedProcess(observed, expected.pid, expected.nonce);
+  if (observed.ppid !== expected.ppid || observed.startIdentity !== expected.startIdentity) throw new Error('exact fake-ZCode process identity changed');
+  return observed;
+}
+
+async function readExactPidIdentity(expected) {
+  const observed = await inspectExactProcessIdentity(expected.pid, expected.nonce, expected.nonceVariable);
+  if (!observed) return undefined;
+  validateObservedProcess(observed, expected.pid, expected.nonce);
+  if (observed.ppid !== expected.ppid || observed.startIdentity !== expected.startIdentity) throw new Error('exact installed process identity changed');
+  return observed;
+}
+
+function validateProcessNonce(nonce) {
+  if (typeof nonce !== 'string' || !/^[a-f0-9]{64}$/u.test(nonce)) throw new Error('exact fake-ZCode process nonce mismatch');
+}
+
+function validateProcessMarker(marker, expectedNonce) {
+  validateProcessNonce(expectedNonce);
+  if (!marker || !Number.isSafeInteger(marker.pid) || marker.pid <= 0 || !Number.isSafeInteger(marker.ppid) || marker.ppid <= 0) throw new Error('exact fake-ZCode process marker identity is invalid');
+  if (marker.nonce !== expectedNonce) throw new Error('exact fake-ZCode process nonce mismatch');
+}
+
+function validateObservedProcess(observed, expectedPid, expectedNonce) {
+  if (observed.pid !== expectedPid || !Number.isSafeInteger(observed.ppid) || observed.ppid <= 0) throw new Error('exact fake-ZCode process identity changed');
+  if (typeof observed.startIdentity !== 'string' || observed.startIdentity.length === 0 || observed.startIdentity.length > 256) throw new Error('exact fake-ZCode process start identity is unavailable');
+  if (observed.processNonce !== expectedNonce) throw new Error('exact fake-ZCode process identity changed');
+}
+
+async function inspectExactProcessIdentity(pid, expectedNonce, nonceVariable = 'FAKE_ZCODE_PROCESS_NONCE') {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('exact fake-ZCode PID is invalid');
+  validateProcessNonce(expectedNonce);
+  if (typeof nonceVariable !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/u.test(nonceVariable)) throw new Error('exact fake-ZCode process nonce marker is invalid');
+  if (process.platform === 'win32') throw new Error('stable fake-ZCode process identity is unavailable on this platform');
+  if (process.platform === 'linux') {
+    const before = await readLinuxProcessStart(pid); if (!before) return undefined;
+    let environ;
+    try { environ = await readFile(`/proc/${pid}/environ`, 'utf8'); } catch (error) { if (error?.code === 'ENOENT') return undefined; throw error; }
+    const after = await readLinuxProcessStart(pid); if (!after) return undefined;
+    if (before.ppid !== after.ppid || before.startIdentity !== after.startIdentity) throw new Error('exact fake-ZCode process identity changed');
+    if (!environ.split('\0').includes(`${nonceVariable}=${expectedNonce}`)) throw new Error('exact fake-ZCode process identity changed');
+    return { ...after, processNonce: expectedNonce };
+  }
+  const before = await readPsProcessStart(pid); if (!before) return undefined;
+  const command = await runProcess({ command: 'ps', args: ['eww', '-o', 'command=', '-p', String(pid)] }, { timeoutMs: 2_000, maxOutputBytes: 64 * 1024 });
+  if (command.code !== 0 || !command.stdout.trim()) return undefined;
+  const after = await readPsProcessStart(pid); if (!after) return undefined;
+  if (before.ppid !== after.ppid || before.startIdentity !== after.startIdentity) throw new Error('exact fake-ZCode process identity changed');
+  const nonceMarker = `${nonceVariable}=${expectedNonce}`;
+  if (!command.stdout.split(/\s+/u).includes(nonceMarker)) throw new Error('exact fake-ZCode process identity changed');
+  return { ...after, processNonce: expectedNonce };
+}
+
+async function readLinuxProcessStart(pid) {
+  let statText;
+  try { statText = await readFile(`/proc/${pid}/stat`, 'utf8'); } catch (error) { if (error?.code === 'ENOENT') return undefined; throw error; }
+  const close = statText.lastIndexOf(')'); const fields = close < 0 ? [] : statText.slice(close + 2).trim().split(/\s+/u);
+  const observedPid = Number(statText.slice(0, statText.indexOf(' '))); const ppid = Number(fields[1]); const startTicks = fields[19];
+  if (observedPid !== pid || !Number.isSafeInteger(ppid) || ppid <= 0 || !/^\d+$/u.test(startTicks ?? '')) throw new Error('stable fake-ZCode process identity could not be parsed');
+  return { pid: observedPid, ppid, startIdentity: `proc:${startTicks}` };
+}
+
+async function readPsProcessStart(pid) {
+  const result = await runProcess({ command: 'ps', args: ['-o', 'pid=', '-o', 'ppid=', '-o', 'lstart=', '-p', String(pid)] }, { timeoutMs: 2_000, maxOutputBytes: 4 * 1024 });
+  if (result.code !== 0 || !result.stdout.trim()) return undefined;
+  const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/u.exec(result.stdout);
+  if (!match || Number(match[1]) !== pid || !Number.isSafeInteger(Number(match[2])) || Number(match[2]) <= 0) throw new Error('stable fake-ZCode process identity could not be parsed');
+  return { pid, ppid: Number(match[2]), startIdentity: match[3] };
+}
+
+async function terminateVerifiedProcess(expected, readIdentity) {
+  if (!await readIdentity(expected)) return;
+  try { process.kill(expected.pid, 'SIGTERM'); } catch { return; }
+  try { await waitForExactProcessExit(expected, readIdentity, 'terminate'); return; } catch { /* escalate only the still-matching PID */ }
+  if (!await readIdentity(expected)) return;
+  try { process.kill(expected.pid, 'SIGKILL'); } catch { /* already exited */ }
+}
+
+async function signalExactProcess(expected, readIdentity, signal) {
+  if (!['SIGTERM', 'SIGKILL'].includes(signal)) throw new Error('exact installed process signal is invalid');
+  if (!await readIdentity(expected)) return false;
+  try { process.kill(expected.pid, signal); return true; } catch { return false; }
+}
+
+async function waitForExactProcessExit(expected, readIdentity, phase) {
+  const timeoutMs = phase === 'natural' ? 10_000 : phase === 'terminate' ? 1_000 : 5_000;
+  await waitUntil(async () => await readIdentity(expected) === undefined, timeoutMs, `the exact fake-ZCode process remained alive during ${phase}`);
+}
 async function git(args, cwd) { const result = await runProcess({ command: 'git', args, options: { shell: false } }, { cwd, timeoutMs: 30_000 }); assert.equal(result.code, 0, result.stderr); return result; }
 async function initializeGitWorkspace(workspace) { await mkdir(workspace, { recursive: true }); await git(['init', '-q'], workspace); await writeFile(join(workspace, 'tracked.txt'), 'base\n'); await git(['add', 'tracked.txt'], workspace); await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], workspace); }
-async function waitUntil(predicate, timeoutMs, message) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { if (await predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } assert.fail(message); }
+async function waitUntil(predicate, timeoutMs, message, signal) { const deadline = Date.now() + timeoutMs; while (Date.now() < deadline) { if (signal?.aborted) throw abortError(); if (await predicate()) return; await abortableDelay(50, signal); } assert.fail(message); }
+function abortableDelay(timeoutMs, signal) { return new Promise((resolvePromise, reject) => { if (signal?.aborted) { reject(abortError()); return; } const timer = setTimeout(finish, timeoutMs); const cancel = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); reject(abortError()); }; function finish() { signal?.removeEventListener('abort', cancel); resolvePromise(); } signal?.addEventListener('abort', cancel, { once: true }); }); }
+function abortError() { const error = new Error('foreground gate wait aborted'); error.name = 'AbortError'; return error; }
 async function waitForValue(read, timeoutMs, message) { let value; await waitUntil(async () => { value = await read(); return value !== undefined; }, timeoutMs, message); return value; }
 async function startInstalledTurn(app, threadId, text) { const result = await app.request('turn/start', { approvalPolicy: 'never', input: [{ type: 'text', text }], sandboxPolicy: { type: 'dangerFullAccess' }, threadId }, 30_000); assert.ok(result.turn?.id, 'installed turn/start omitted its turn ID'); return result.turn.id; }
 async function waitForCodexTurn(app, threadId, turnId, timeoutMs) {

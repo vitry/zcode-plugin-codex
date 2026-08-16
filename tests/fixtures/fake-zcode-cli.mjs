@@ -8,7 +8,16 @@ if (process.argv.includes('--version')) {
   process.stdout.write(`${process.env.FAKE_ZCODE_VERSION ?? '0.16.1'}\n`);
   process.exit(0);
 }
-if (process.env.FAKE_ZCODE_PROCESS_FILE) await writeFile(process.env.FAKE_ZCODE_PROCESS_FILE, JSON.stringify({ pid: process.pid, ppid: process.ppid }));
+const processNonce = process.env.FAKE_ZCODE_PROCESS_NONCE;
+if (processNonce !== undefined && !/^[a-f0-9]{64}$/u.test(processNonce)) throw new Error('fake process nonce must be 256 bits');
+const progressDispatchGate = process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE;
+const progressDispatchGateNonce = process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE_NONCE;
+if ((progressDispatchGate === undefined) !== (progressDispatchGateNonce === undefined)
+  || progressDispatchGateNonce !== undefined && !/^[a-f0-9]{64}$/u.test(progressDispatchGateNonce)) throw new Error('fake progress-dispatch gate identity is invalid');
+let progressDispatchGateChecks = 0;
+if (process.env.FAKE_ZCODE_PROCESS_FILE) await writeFile(process.env.FAKE_ZCODE_PROCESS_FILE, JSON.stringify({
+  pid: process.pid, ppid: process.ppid, ...(processNonce ? { nonce: processNonce } : {}),
+}));
 if (process.env.FAKE_ZCODE_STDERR_BYTES) process.stderr.write((process.env.FAKE_ZCODE_STDERR_TEXT ?? 'sensitive-stderr').repeat(Math.ceil(Number(process.env.FAKE_ZCODE_STDERR_BYTES) / (process.env.FAKE_ZCODE_STDERR_TEXT ?? 'sensitive-stderr').length)));
 
 const sessions = new Map();
@@ -27,6 +36,8 @@ let pendingConcurrentStopResponse;
 const pendingCompletionTimers = new Map();
 const conversationSubscriptions = new Map();
 const conversationSubscriptionCounts = new Map();
+const sessionReadCounts = new Map();
+const sessionProgressRecoveryCompleted = new Set();
 
 const defaultModel = { providerId: 'fake', modelId: 'model' };
 function settings(model = defaultModel) { return { appliedProviderRevision: 'provider-revision-1', model: { current: model, available: [{ ref: model, label: 'Fixture model', reasoning: { enabled: true, levels: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] } }, { ref: { providerId: 'fake2', modelId: 'other' }, label: 'Other model', reasoning: { enabled: true, levels: [{ value: 'XHIGH', label: 'Extreme' }] } }] }, thoughtLevel: { enabled: true, current: 'low', defaultLevel: 'low', available: [{ value: 'low', label: 'Low' }, { value: 'HIGH', label: 'High' }] }, mode: { current: 'build' }, permission: { mode: 'build', rulesRevision: 1 } }; }
@@ -75,6 +86,27 @@ function snapshotForMethod(method, sessionId, value = sessions.get(sessionId)) {
   return result;
 }
 
+function addSessionProgress(result, mode) {
+  const assistant = result.messages.findLast((message) => message?.info?.role === 'assistant');
+  if (!assistant) return result;
+  const partBase = { sessionId: assistant.info.sessionId, messageId: assistant.info.messageId };
+  const tool = process.env.FAKE_ZCODE_SESSION_PROGRESS_TOOL ?? 'Bash';
+  const input = tool === 'Read'
+    ? { file_path: process.env.FAKE_ZCODE_SESSION_PROGRESS_PATH ?? 'PRIVATE_SNAPSHOT_PATH' }
+    : { command: 'PRIVATE_SNAPSHOT_COMMAND', capability: 'PRIVATE_SNAPSHOT_CAPABILITY' };
+  const state = mode === 'terminal'
+    ? { status: 'completed', input, output: 'PRIVATE_SNAPSHOT_OUTPUT', title: 'PRIVATE_SNAPSHOT_METADATA', metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' }, startedAt: 10, completedAt: 20 }
+    : { status: 'running', input, startedAt: 10, metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' } };
+  assistant.parts.push(
+    { ...partBase, partId: 'snapshot-private-prose', type: 'text', text: 'PRIVATE_SNAPSHOT_PROSE' },
+    { ...partBase, partId: 'snapshot-private-reasoning', type: 'reasoning', text: 'PRIVATE_SNAPSHOT_REASONING' },
+    { ...partBase, partId: 'snapshot-private-file', type: 'file', mime: 'text/plain', url: 'PRIVATE_SNAPSHOT_FILE' },
+    { ...partBase, partId: 'snapshot-private-patch', type: 'patch', hash: 'PRIVATE_SNAPSHOT_PATCH', files: ['PRIVATE_SNAPSHOT_FILE'] },
+    { ...partBase, partId: 'snapshot-tool', type: 'tool', callId: 'PRIVATE_SNAPSHOT_CALL', tool, state, metadata: { secret: 'PRIVATE_SNAPSHOT_METADATA' } },
+  );
+  return result;
+}
+
 async function recoveryMode() { if (!process.env.FAKE_ZCODE_RECOVERY_CONTROL) return null; try { const value = JSON.parse(await readFile(process.env.FAKE_ZCODE_RECOVERY_CONTROL, 'utf8')); return ['active', 'completed', 'stopped', 'missing'].includes(value.mode) ? value.mode : 'active'; } catch { return 'active'; } }
 function applyRecoveryMode(session, mode) {
   if (!session || !mode) return;
@@ -95,6 +127,16 @@ async function record(message) {
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
+async function progressDispatchReleased() {
+  if (!progressDispatchGate || !progressDispatchGateNonce) return true;
+  const value = await readFile(progressDispatchGate, 'utf8').then(JSON.parse).catch(() => null);
+  if (value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'nonce,state,version'
+    && value.version === 1 && value.nonce === progressDispatchGateNonce && value.state === 'release') return true;
+  progressDispatchGateChecks += 1;
+  if (process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE_REACHED) await writeFile(process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE_REACHED, JSON.stringify({ version: 1, nonce: progressDispatchGateNonce, checks: progressDispatchGateChecks }));
+  return false;
+}
 async function scheduleCompletion(sessionId, completion) {
   const reachedDelayMs = Number(process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS ?? 0);
   if (Number.isSafeInteger(reachedDelayMs) && reachedDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, reachedDelayMs));
@@ -102,13 +144,23 @@ async function scheduleCompletion(sessionId, completion) {
   /** @type {NodeJS.Timeout} */ let timer;
   const deliver = async () => {
     if (pendingCompletionTimers.get(sessionId) !== timer) return;
+    if (process.env.FAKE_ZCODE_WAIT_FOR_PROGRESS_READ === '1' && (sessionReadCounts.get(sessionId) ?? 0) < 1) {
+      timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return;
+    }
+    if (process.env.FAKE_ZCODE_SESSION_PROGRESS_RECOVERY === '1' && !sessionProgressRecoveryCompleted.has(sessionId)) {
+      timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return;
+    }
+    if (!await progressDispatchReleased()) {
+      timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return;
+    }
     if (process.env.FAKE_ZCODE_COMPLETION_GATE) {
       const state = await readFile(process.env.FAKE_ZCODE_COMPLETION_GATE, 'utf8').catch(() => '');
       if (state.trim() !== 'release') { timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer); return; }
     }
     pendingCompletionTimers.delete(sessionId); send(completion);
   };
-  timer = setTimeout(() => { void deliver(); }, 5); pendingCompletionTimers.set(sessionId, timer);
+  const completionDelayMs = Number(process.env.FAKE_ZCODE_COMPLETION_DELAY_MS ?? 5);
+  timer = setTimeout(() => { void deliver(); }, Number.isSafeInteger(completionDelayMs) && completionDelayMs >= 0 ? completionDelayMs : 5); pendingCompletionTimers.set(sessionId, timer);
 }
 function sendBatch(messages) { process.stdout.write(messages.map((message) => JSON.stringify(message)).join('\n') + '\n'); }
 function flushConcurrentCreateSubscribe() {
@@ -123,8 +175,8 @@ function flushConcurrentStopSubscribe() {
   sendBatch([pendingConcurrentSubscribeResponse, pendingConcurrentStopResponse]);
   pendingConcurrentStopResponse = undefined; pendingConcurrentSubscribeResponse = undefined;
 }
-function conversationNotification({ sessionId, subscriptionId, deliveryKind, ordinal, deltas, topic = `conversation/${sessionId}` }) {
-  return { method: 'v4/conversation/frame', params: { wireVersion: 3, kind: 'complete', deliveryKind, logicalFrameId: `frame-${ordinal}`, logicalFrameOrdinal: ordinal, topic, subscriptionId, frame: { topic, subscriptionId, fromSeq: ordinal, toSeq: ordinal, sentAt: 1_786_233_600_000, payload: { kind: 'deltas', deltas } } } };
+function conversationNotification({ sessionId, subscriptionId, deliveryKind, ordinal, deltas, logicalFrameId = `frame-${ordinal}`, topic = `conversation/${sessionId}` }) {
+  return { method: 'v4/conversation/frame', params: { wireVersion: 3, kind: 'complete', deliveryKind, logicalFrameId, logicalFrameOrdinal: ordinal, topic, subscriptionId, frame: { topic, subscriptionId, fromSeq: ordinal, toSeq: ordinal, sentAt: 1_786_233_600_000, payload: { kind: 'deltas', deltas } } } };
 }
 
 function isUnsupportedRuntimePreferencesResponse(message, pending) {
@@ -233,8 +285,11 @@ input.on('line', async (line) => {
       if (process.env.FAKE_ZCODE_BARRIER === '1') send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: p.sessionId, revision: 999, reason: 'prompt_completed', patch: { status: 'idle' } } });
       const response = { id: message.id, result: { sessionId: p.sessionId, accepted: true, stateRevision } };
       if (process.env.FAKE_ZCODE_BAD_SEND_ONCE === '1' && sendCount === 1) response.result.stateRevision = 'bad';
-      if (process.env.FAKE_ZCODE_SYNC_BATCH !== 'stale-valid') send(response);
       const subscription = conversationSubscriptions.get(p.sessionId);
+      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'zero-online' && subscription) {
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 1, deltas: [] }));
+      }
+      if (process.env.FAKE_ZCODE_SYNC_BATCH !== 'stale-valid') send(response);
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1' && subscription) {
         const base = { rowId: 41, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 41, kind: 'toolCall', toolCallId: 'tool-command-1', toolName: 'Bash', input: { command: 'npm\ttest', reasoning: 'reasoning must stay private', brokerToken: 'capability must stay private' }, inputText: '{"command":"raw output"}', startedAt: 1_786_233_600_000 };
         send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 2, deltas: [{ op: 'row.upserted', row: { ...base, status: 'inputStreaming' } }] }));
@@ -282,6 +337,26 @@ input.on('line', async (line) => {
       if (process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_BATCH === '1' || process.env.FAKE_ZCODE_CONCURRENT_CREATE_SUBSCRIBE_REVERSE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentCreateSubscribe(); }
       else if (process.env.FAKE_ZCODE_CONCURRENT_STOP_SUBSCRIBE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentStopSubscribe(); }
       else send(response);
+      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'initial-only') {
+        send(conversationNotification({
+          sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, logicalFrameId: 'PRIVATE_INITIAL_FRAME_ID',
+          deltas: [{ op: 'row.upserted', row: { rowId: 43, turnId: 'PRIVATE_INITIAL_TURN_ID', createdAt: 1_786_233_600_000, createdAtSeq: 43, kind: 'toolCall', toolCallId: 'PRIVATE_INITIAL_TOOL_ID', toolName: 'Bash', status: 'running', inputText: '{"command":"PRIVATE_INITIAL_COMMAND"}', input: { command: 'PRIVATE_INITIAL_COMMAND', reasoning: 'PRIVATE_INITIAL_REASONING' }, startedAt: 1_786_233_600_000 } }],
+        }));
+      }
+      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'rejection-burst') {
+        for (let index = 0; index < 4; index += 1) {
+          send(conversationNotification({
+            sessionId, subscriptionId, deliveryKind: 'online', ordinal: 1, logicalFrameId: `PRIVATE_REJECTED_FRAME_${index}`,
+            deltas: [{ op: 'row.upserted', row: { rowId: 44 + index, kind: 'toolCall', privateIdentifier: `PRIVATE_REJECTED_ROW_${index}`, inputText: '{"command":"PRIVATE_REJECTED_COMMAND"}', input: { command: 'PRIVATE_REJECTED_COMMAND', reasoning: 'PRIVATE_REJECTED_REASONING' } } }],
+          }));
+        }
+      }
+      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'sequence-gap') {
+        send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'recovery', ordinal: 1, deltas: [] }));
+        for (const ordinal of [3, 4, 5, 6]) send(conversationNotification({
+          sessionId, subscriptionId, deliveryKind: 'online', ordinal, logicalFrameId: `PRIVATE_SEQUENCE_FRAME_${ordinal}`, deltas: [],
+        }));
+      }
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 40, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: 1_786_233_600_000 } }] }));
       break;
     }
@@ -293,7 +368,24 @@ input.on('line', async (line) => {
       break;
     case 'session/read': {
       const session = sessions.get(p.sessionId); applyRecoveryMode(session, await recoveryMode());
-      send({ id: message.id, result: snapshotForMethod('session/read', p.sessionId, session) });
+      const readCount = (sessionReadCounts.get(p.sessionId) ?? 0) + 1; sessionReadCounts.set(p.sessionId, readCount);
+      if (readCount === 1 && process.env.FAKE_ZCODE_SESSION_PROGRESS_READ_FAIL === '1') {
+        send({ id: message.id, error: { code: -32099, message: 'PRIVATE_SNAPSHOT_READ_REJECTION' } }); break;
+      }
+      let result = snapshotForMethod('session/read', p.sessionId, session);
+      if (readCount === 1 && process.env.FAKE_ZCODE_SESSION_PROGRESS_RECOVERY === '1') {
+        result = structuredClone(result); addSessionProgress(result, 'running');
+        const tool = result.messages.flatMap((entry) => entry.parts).find((part) => part.type === 'tool');
+        if (tool) tool.state.input.command = 'PRIVATE_LATE_SNAPSHOT';
+        const subscriptionId = conversationSubscriptions.get(p.sessionId);
+        if (subscriptionId) send(conversationNotification({ sessionId: p.sessionId, subscriptionId, deliveryKind: 'online', ordinal: 2, deltas: [] }));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      if (readCount === 1 && ['running', 'terminal'].includes(process.env.FAKE_ZCODE_SESSION_PROGRESS)) {
+        result = structuredClone(result); addSessionProgress(result, process.env.FAKE_ZCODE_SESSION_PROGRESS);
+      }
+      send({ id: message.id, result });
+      if (readCount === 1 && process.env.FAKE_ZCODE_SESSION_PROGRESS_RECOVERY === '1') sessionProgressRecoveryCompleted.add(p.sessionId);
       break;
     }
     case 'session/resume':

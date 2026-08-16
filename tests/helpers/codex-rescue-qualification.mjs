@@ -5,6 +5,9 @@ const MAX_EVENTS_PER_ROLLOUT = 8_192;
 const MAX_TEXT_BYTES = 1024 * 1024;
 const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
 const MAX_EXEC_AGENT_MESSAGES = 256;
+const MAX_CHILD_POLLS = 64;
+const MAX_RESCUE_TASK_NAME_BYTES = 64;
+const RESCUE_TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
 const GENERIC_HIDDEN_SCHEMA_VERSIONS = new Set(['0.147.0']);
 const EXEC_ENVELOPE_KEYS = new Set(['cmd', 'workdir', 'yield_time_ms', 'max_output_tokens']);
 
@@ -14,6 +17,18 @@ export class CodexRescueUnqualifiedError extends Error {
 
 export class CodexRescueEvidenceMismatchError extends Error {
   constructor(code, message) { super(message); this.name = 'CodexRescueEvidenceMismatchError'; this.code = code; }
+}
+
+export function assertCodexRescueDisplayName(evidence) {
+  const taskName = boundedString(evidence?.taskName);
+  if (!taskName || Buffer.byteLength(taskName, 'utf8') > MAX_RESCUE_TASK_NAME_BYTES || !RESCUE_TASK_NAME_PATTERN.test(taskName)) {
+    mismatch('display-task-name-contract', 'The Rescue display task name does not match the bounded naming contract.');
+  }
+  const agentPath = boundedString(evidence?.agentPath);
+  if (agentPath !== `/root/${taskName}`) {
+    mismatch('display-agent-path-contract', 'The Rescue display agent path does not exactly match its task name.');
+  }
+  return { taskName, agentPath, displayNameConforms: true };
 }
 
 export function parseCodexRolloutJsonl(value) {
@@ -66,7 +81,8 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   const spawn = spawns[0].payload;
   const spawnArgs = parseObject(spawn.arguments, 'spawn-arguments');
   const spawnMessage = boundedString(spawnArgs.message);
-  if (spawnArgs.task_name !== options.expectedTaskName || spawnArgs.fork_turns !== 'none') {
+  const taskName = boundedString(spawnArgs.task_name);
+  if (!taskName || spawnArgs.fork_turns !== 'none') {
     mismatch('spawn-contract-mismatch', 'The native spawn task or context mode differs from the Rescue contract.');
   }
 
@@ -80,7 +96,6 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   const agentPath = boundedString(start.agent_path);
   if (!childThreadId || !agentPath) mismatch('child-identity-unavailable', 'The child start event omits its thread ID or agent path.');
   if (start.event_id !== spawn.call_id) mismatch('spawn-start-link-mismatch', 'The child start event does not link to the spawn call.');
-  if (agentPath !== options.expectedAgentPath) mismatch('agent-path-mismatch', 'The started child path does not match the fixed Rescue task name.');
 
   const childCandidates = rollouts.filter((events) => sessionMeta(events)?.id === childThreadId);
   if (childCandidates.length === 0) {
@@ -119,7 +134,6 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   assertParentPreflight(parent, spawnIndex, startIndex, options);
 
   const childCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
-  const childExecCalls = childCalls.filter((event) => event.payload.name === 'exec');
   if (childCalls.length === 0) {
     const unsupportedCalls = child.filter((event) => event?.type === 'response_item'
       && event.payload?.type === 'function_call'
@@ -127,25 +141,25 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
     if (unsupportedCalls.length > 0) mismatch('child-command-shape-mismatch', 'The child command used a tool-call shape not captured for Codex 0.147.');
     mismatch('child-command-unavailable', 'The child rollout did not expose structured tool-call evidence.');
   }
-  if (childCalls.length !== 1 || childExecCalls.length !== 1) mismatch('child-command-count', 'The child must execute exactly one tool call and it must be exec.');
-  const childEnvelope = parseCapturedExecEnvelope(childExecCalls[0].payload.input);
-  assertExecEnvelope(childEnvelope, options.expectedCommand, options.expectedWorkspace, 'child-exec-envelope-mismatch');
-
   const childOutputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
   if (childOutputs.length === 0) mismatch('child-output-count', 'The child rollout has no structured exec output.');
-  if (childOutputs.length !== 1) mismatch('child-output-count', 'The child rollout must have exactly one structured exec output.');
-  if (childOutputs[0].payload.call_id !== childExecCalls[0].payload.call_id) mismatch('child-output-link', 'The child exec output does not link to its unique call.');
-  if (child.indexOf(childExecCalls[0]) >= child.indexOf(childOutputs[0])) mismatch('child-output-order', 'The linked child output must follow its exec call.');
-  assertSemanticProgress(childOutputs[0].payload.output, options.expectedSemanticProgress);
-  assertTerminalSentinel(childOutputs[0].payload.output, options.expectedPublicOutput);
+  const execution = validateChildExecution(child, childCalls, childOutputs, options.expectedCommand, options.expectedWorkspace, {
+    expectedExitCode: 0, allowLegacyWithoutExit: true,
+  });
+  assertSemanticProgress(execution.output, options.expectedSemanticProgress);
+  assertTerminalSentinel(execution.output, options.expectedPublicOutput);
   const childFinalIndex = child.findIndex((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
-  if (childFinalIndex <= child.indexOf(childOutputs[0])) mismatch('child-terminal-order', 'The child final message must follow its linked exec output.');
+  if (childFinalIndex <= execution.terminalEventIndex) mismatch('child-terminal-order', 'The child final message must follow its terminal companion output.');
 
   assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
 
   const childReturnIndex = parent.findIndex((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath && event.payload.recipient === '/root');
   const parentFinalIndex = parent.findIndex((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
   if (childReturnIndex < startIndex || parentFinalIndex <= childReturnIndex) mismatch('parent-terminal-order', 'The linked child return and parent final message are out of order.');
+  const terminalTimeline = [execution.terminalEvent, child[childFinalIndex], parent[childReturnIndex], parent[parentFinalIndex]].map(eventTimestamp);
+  if (terminalTimeline.some((value) => value === undefined) || terminalTimeline.some((value, index) => index > 0 && value <= terminalTimeline[index - 1])) {
+    mismatch('parent-terminal-timeline', 'Trusted timestamps do not prove child exit before child final, parent return, and parent final.');
+  }
 
   const childFinal = finalRolloutMessage(child, 'child-terminal-unavailable');
   const childReturn = childReturnPayload(parent, agentPath);
@@ -154,14 +168,122 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   for (const actual of [childFinal, childReturn, parentFinal, execFinal]) {
     if (actual !== options.expectedPublicOutput) mismatch('public-output-mismatch', 'Child and parent terminal public output must equal the expected sentinel byte-for-byte.');
   }
-  const evidence = { parentThreadId, childThreadId, agentPath, taskName: spawnArgs.task_name, agentType, route, publicOutput: execFinal,
-    ...(options.expectedSemanticProgress === undefined ? {} : { semanticProgressChecked: true }) };
+  if (options.requireYieldedExecution && (execution.originalHandle === undefined || execution.pollCount < 1 || !Number.isSafeInteger(execution.terminalExitCode))) {
+    mismatch('child-yielded-execution-required', 'Required native evidence does not contain a running handle, same-handle poll, and terminal exit code.');
+  }
+  const evidence = { parentThreadId, childThreadId, agentPath, taskName, agentType, route, publicOutput: execFinal,
+    ...(options.expectedSemanticProgress === undefined ? {} : { semanticProgressChecked: true }),
+    ...(options.requireYieldedExecution ? { yieldedExecution: {
+      execCommandCount: execution.execCommandCount, pollCount: execution.pollCount,
+      sameHandleChecked: true, terminalExitCode: execution.terminalExitCode,
+    } } : {}) };
   if (!spawnMessage) mismatch('spawn-message-unavailable', 'The structured spawn metadata does not expose a bounded message field.');
   const spawnMessageEncrypted = encrypted(spawnMessage);
   if (!spawnMessageEncrypted && spawnMessage !== expectedSpawnMessage) mismatch('spawn-message-mismatch', 'The runtime spawn message differs from the fixed Rescue forwarder contract.');
   if (spawnMessageEncrypted && !deferEncryptedSpawnUnqualified) unqualified('spawn-message-encrypted', 'Codex 0.147 persisted the spawn message field as ciphertext, so its exact runtime value cannot be qualified.', evidence);
 
   return evidence;
+}
+
+function validateChildExecution(child, calls, outputs, expectedCommand, expectedWorkspace, options = {}) {
+  const code = (suffix) => options.codePrefix ? `${options.codePrefix}-${suffix}` : `child-${suffix}`;
+  const commandCountCode = options.commandCountCode ?? code('command-count');
+  if (calls.length === 0 || calls.length > MAX_CHILD_POLLS + 1 || calls.length !== child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call').length) {
+    mismatch(commandCountCode, 'The child must use one exec_command and only bounded continuation polls.');
+  }
+  if (calls.some((call) => call.payload.name !== 'exec')) mismatch(code('tool-name'), 'Every captured child host wrapper must use the exact exec tool name.');
+  const parsedCalls = calls.map((call) => parseCapturedHostCall(call.payload.input));
+  if (parsedCalls.filter((call) => call.kind === 'exec_command').length !== 1) mismatch(commandCountCode, 'The child started more than one companion process.');
+  if (outputs.length !== calls.length) mismatch(code('output-count'), 'Every child host call must have exactly one linked structured output.');
+  const callIds = validateCallOutputOwnership(calls, outputs, code('call-id'));
+  let execCount = 0; let handle; let terminalEventIndex = -1; let terminalCount = 0; let terminalExitCode; const normalized = []; const pollHandles = [];
+  for (let index = 0; index < calls.length; index += 1) {
+    const call = calls[index];
+    const linked = outputs.filter((event) => event.payload.call_id === call.payload.call_id);
+    if (linked.length !== 1) mismatch(code('output-link'), 'Every child host call must have exactly one linked output.');
+    const outputEvent = linked[0];
+    const callIndex = child.indexOf(call); const outputIndex = child.indexOf(outputEvent);
+    if (callIndex >= outputIndex) mismatch(code('output-order'), 'A linked child host output must follow its call.');
+    if (index > 0) {
+      const previousOutput = outputs.find((event) => event.payload.call_id === calls[index - 1].payload.call_id);
+      if (child.indexOf(previousOutput) >= callIndex) mismatch(code('output-order'), 'Each continuation call must follow the preceding host result.');
+    }
+    if (terminalCount > 0) mismatch(code('poll-after-terminal'), 'The child polled after the companion process exited.');
+    const host = parsedCalls[index];
+    if (host.kind === 'exec_command') {
+      execCount += 1;
+      if (execCount !== 1 || index !== 0) mismatch(commandCountCode, 'The child started more than one companion process.');
+      if (options.commandMismatchCode && host.envelope.get('cmd') !== expectedCommand) mismatch(options.commandMismatchCode, 'The child continuation command differs from the selected constant command.');
+      assertExecEnvelope(host.envelope, expectedCommand, expectedWorkspace, code('exec-envelope-mismatch'));
+    } else {
+      if (execCount !== 1 || handle === undefined) mismatch(code('handle-mismatch'), 'A continuation poll did not follow the original running handle.');
+      assertPollEnvelope(host.envelope, handle, code);
+      pollHandles.push(host.envelope.get('session_id'));
+    }
+    if (host.legacy) {
+      if (calls.length !== 1) mismatch(code('terminal-exit-missing'), 'A multi-call child execution must expose structured host results.');
+      if (!Array.isArray(outputEvent.payload.output) || outputEvent.payload.output.length < 1 || outputEvent.payload.output.length > 8
+        || outputEvent.payload.output.some((item) => item?.type !== 'input_text' || boundedString(item.text) === undefined)) mismatch(code('terminal-exit-missing'), 'The one-shot captured result is not terminal.');
+      normalized.push(...outputEvent.payload.output); terminalCount += 1; terminalEventIndex = outputIndex;
+      continue;
+    }
+    const result = parseCapturedHostResult(outputEvent.payload.output);
+    normalized.push({ type: 'input_text', text: result.output });
+    const hasHandle = Object.hasOwn(result, 'session_id'); const hasExit = Object.hasOwn(result, 'exit_code');
+    if (hasHandle === hasExit) mismatch(code('terminal-exit-missing'), 'A captured host result must expose either one running handle or one exit code.');
+    if (hasHandle) {
+      if (!Number.isSafeInteger(result.session_id) || result.session_id <= 0) mismatch(code('handle-invalid'), 'The running execution handle is not a positive safe integer.');
+      if (handle === undefined) handle = result.session_id;
+      else if (result.session_id !== handle) mismatch(code('handle-mismatch'), 'A continuation result changed the original running handle.');
+    } else {
+      if (!Number.isSafeInteger(result.exit_code)) mismatch(code('terminal-exit-invalid'), 'The terminal exit code is not a safe integer.');
+      terminalCount += 1; terminalEventIndex = outputIndex; terminalExitCode = result.exit_code;
+      if (options.expectedExitCode !== undefined && result.exit_code !== options.expectedExitCode) mismatch(options.expectedExitCodeMismatchCode ?? code('terminal-exit-invalid'), 'The terminal exit code differs from the required child-turn contract.');
+    }
+  }
+  if (execCount !== 1) mismatch(commandCountCode, 'The child must start exactly one companion process.');
+  if (terminalCount !== 1 || terminalEventIndex < 0) mismatch(code('terminal-exit-missing'), 'The original companion process has no unique terminal exit code.');
+  if (options.expectedExitCode !== undefined && parsedCalls[0].legacy && !options.allowLegacyWithoutExit) mismatch(code('terminal-exit-missing'), 'This child turn requires an observed terminal exit code.');
+  return {
+    callIds, execCommandCount: execCount, execEvent: calls[0], originalHandle: handle, output: normalized, pollCount: pollHandles.length,
+    pollHandles, terminalEventIndex, terminalEvent: child[terminalEventIndex], terminalExitCode,
+  };
+}
+
+function validateCallOutputOwnership(calls, outputs, errorCode) {
+  const callIds = calls.map((event) => boundedString(event?.payload?.call_id));
+  const outputIds = outputs.map((event) => boundedString(event?.payload?.call_id));
+  if (callIds.some((id) => !id) || outputIds.some((id) => !id)
+    || new Set(callIds).size !== callIds.length || new Set(outputIds).size !== outputIds.length
+    || callIds.length !== outputIds.length || callIds.some((id) => !outputIds.includes(id))) {
+    mismatch(errorCode, 'Host calls and outputs require nonempty, bounded, globally unique, one-to-one call IDs.');
+  }
+  return callIds;
+}
+
+function assertPollEnvelope(envelope, expectedHandle, code = (suffix) => `child-${suffix}`) {
+  const keys = [...envelope.keys()];
+  if (keys.some((key) => !['chars', 'max_output_tokens', 'session_id', 'yield_time_ms'].includes(key))) mismatch(code('poll-envelope'), 'The continuation poll contains a forbidden field.');
+  if (envelope.get('session_id') !== expectedHandle) mismatch(code('handle-mismatch'), 'The continuation poll changed the original running handle.');
+  if (envelope.get('chars') !== '') mismatch(code('poll-input'), 'The continuation poll supplied nonempty input.');
+  if (envelope.has('yield_time_ms') && (!Number.isInteger(envelope.get('yield_time_ms')) || envelope.get('yield_time_ms') < 250 || envelope.get('yield_time_ms') > 300_000)) mismatch(code('poll-envelope'), 'The continuation yield bound is unsafe.');
+  if (envelope.has('max_output_tokens') && (!Number.isInteger(envelope.get('max_output_tokens')) || envelope.get('max_output_tokens') < 1 || envelope.get('max_output_tokens') > 100_000)) mismatch(code('poll-envelope'), 'The continuation output bound is unsafe.');
+}
+
+function parseCapturedHostResult(output) {
+  if (!Array.isArray(output) || output.length !== 2 || output[0]?.type !== 'input_text' || output[1]?.type !== 'input_text'
+    || !boundedString(output[0].text)?.startsWith('Script completed\n')) mismatch('child-result-shape', 'The host result does not match the captured Codex 0.147 output shape.');
+  const text = boundedString(output[1].text); let result;
+  try { result = JSON.parse(text); } catch { mismatch('child-result-shape', 'The captured host result is not exact JSON.'); }
+  if (!result || typeof result !== 'object' || Array.isArray(result)) mismatch('child-result-shape', 'The captured host result is not an object.');
+  const allowed = new Set(['chunk_id', 'exit_code', 'original_token_count', 'output', 'session_id', 'wall_time_seconds']);
+  if (Object.keys(result).some((key) => !allowed.has(key)) || typeof result.output !== 'string' || boundedString(result.output) === undefined) mismatch('child-result-shape', 'The captured host result differs from the Codex 0.147 contract.');
+  if (Object.hasOwn(result, 'chunk_id') && !boundedString(result.chunk_id)
+    || Object.hasOwn(result, 'original_token_count') && (!Number.isSafeInteger(result.original_token_count) || result.original_token_count < 0)
+    || Object.hasOwn(result, 'wall_time_seconds') && (!Number.isFinite(result.wall_time_seconds) || result.wall_time_seconds < 0)) {
+    mismatch('child-result-shape', 'The captured host result fields exceed their safe bounds.');
+  }
+  return result;
 }
 
 export function qualifyCodexRescueBackgroundEvidence(input, options) {
@@ -196,9 +318,11 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (parentCandidates.length !== 1) mismatch('choice-parent-count', 'Choice evidence must contain exactly one parent rollout.');
   const parent = parentCandidates[0];
   const parentMeta = sessionMeta(parent);
+  validateChoiceParentCallOwnership(parent);
   const spawns = namedCalls(parent, 'spawn_agent');
   if (spawns.length !== 1) mismatch('choice-spawn-count', 'Choice continuation must retain exactly one initial spawn.');
   const spawnArgs = parseObject(spawns[0].payload.arguments, 'choice-spawn-arguments');
+  const taskName = boundedString(spawnArgs.task_name);
   const spawnMessageEncrypted = encrypted(spawnArgs.message);
   let expectedSpawnMessage;
   if (Object.hasOwn(spawnArgs, 'agent_type')) {
@@ -210,7 +334,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     if (!GENERIC_HIDDEN_SCHEMA_VERSIONS.has(sessionMeta(parent)?.cli_version)) mismatch('choice-generic-version', 'The choice-flow generic spawn is not qualified for this Codex version.');
     expectedSpawnMessage = options.expectedGenericSpawnMessage;
   }
-  if (spawnArgs.task_name !== options.expectedTaskName || spawnArgs.fork_turns !== 'none') mismatch('choice-spawn-contract', 'The choice-flow spawn task or context mode differs from the Rescue contract.');
+  if (!taskName || spawnArgs.fork_turns !== 'none') mismatch('choice-spawn-contract', 'The choice-flow spawn task or context mode differs from the Rescue contract.');
   if (!spawnMessageEncrypted && spawnArgs.message !== expectedSpawnMessage) mismatch('choice-spawn-message', 'The choice-flow spawn message differs from its fixed contract.');
   const spawnIndex = parent.indexOf(spawns[0]);
   const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
@@ -218,7 +342,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   const start = starts[0];
   const childThreadId = boundedString(start.payload.agent_thread_id);
   const agentPath = boundedString(start.payload.agent_path);
-  if (!childThreadId || agentPath !== options.expectedAgentPath || start.payload.event_id !== spawns[0].payload.call_id) {
+  if (!childThreadId || !agentPath || start.payload.event_id !== spawns[0].payload.call_id) {
     mismatch('choice-child-identity', 'The choice flow does not link one exact child ID to the initial spawn.');
   }
   const startIndex = parent.indexOf(start);
@@ -232,6 +356,8 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (childCandidates.length !== 1) mismatch('choice-child-count', 'Choice evidence must contain exactly one rollout for the retained child ID.');
   const child = childCandidates[0];
   const meta = sessionMeta(child);
+  const childSessionMeta = child.filter((event) => event?.type === 'session_meta');
+  if (childSessionMeta.length !== 1 || child.indexOf(childSessionMeta[0]) !== 0) mismatch('choice-child-execution-boundary', 'The child rollout must begin with exactly one session_meta record.');
   const spawnMeta = meta?.source?.subagent?.thread_spawn;
   validateParentChildRoute({ parentMeta, parentThreadId: options.expectedParentThreadId, start: start.payload, childMeta: meta, childThreadId, agentPath, codePrefix: 'choice-' });
   if (Object.hasOwn(spawnArgs, 'agent_type') ? spawnMeta.agent_role !== options.expectedAgentType : spawnMeta.agent_role !== null) {
@@ -281,23 +407,19 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     if (!(timedOutWaitIndexes[0] < parent.indexOf(lists[0]) && parent.indexOf(linked[0]) < nextWaitIndex && nextWaitIndex < firstReturnIndex)) mismatch('choice-child-state-order', 'Timeout recovery state inspection is out of order.');
   }
 
-  const childCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
-  const childExecs = childCalls.filter((event) => event.payload.name === 'exec');
-  if (childCalls.length !== 2 || childExecs.length !== 2) mismatch('choice-command-count', 'The retained child must run exactly the initial and selected continuation commands.');
-  assertExecEnvelope(parseCapturedExecEnvelope(childExecs[0].payload.input), options.expectedInitialCommand, options.expectedWorkspace, 'choice-initial-envelope');
-  const choiceEnvelope = parseCapturedExecEnvelope(childExecs[1].payload.input);
-  if (choiceEnvelope.get('cmd') !== options.expectedChoiceCommand) mismatch('choice-command-mismatch', 'The child continuation command differs from the selected constant command.');
-  assertExecEnvelope(choiceEnvelope, options.expectedChoiceCommand, options.expectedWorkspace, 'choice-command-envelope');
-  if (child.indexOf(childExecs[0]) >= child.indexOf(childExecs[1])) mismatch('choice-command-order', 'The continuation command must follow the initial command in the same child.');
-
-  const outputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
-  if (outputs.length !== 2) mismatch('choice-output-count', 'The same-child flow must expose exactly two linked command outputs.');
-  for (let index = 0; index < 2; index += 1) {
-    if (outputs[index].payload.call_id !== childExecs[index].payload.call_id || child.indexOf(childExecs[index]) >= child.indexOf(outputs[index])) {
-      mismatch('choice-output-link', 'A choice output is not linked after its command.');
-    }
-  }
-  const needsChoiceText = terminalOutputText(outputs[0].payload.output, 'choice-needs-choice-output');
+  const childFinals = child.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
+  if (childFinals.length !== 2) mismatch('choice-child-terminal-sequence', 'The retained child must finalize exactly two turns.');
+  const firstFinalIndex = child.indexOf(childFinals[0]); const secondFinalIndex = child.indexOf(childFinals[1]);
+  const outsideHostEvents = child.filter((event, index) => isChildHostEvent(event)
+    && !(index > 0 && index < firstFinalIndex || index > firstFinalIndex && index < secondFinalIndex));
+  if (outsideHostEvents.length > 0) mismatch('choice-child-execution-boundary', 'Every child host call and output must belong to exactly one logical execution before its final.');
+  const initialEvents = child.slice(1, firstFinalIndex); const continuationEvents = child.slice(firstFinalIndex + 1, secondFinalIndex);
+  const callsIn = (events) => events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
+  const outputsIn = (events) => events.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
+  const initialExecution = validateChildExecution(initialEvents, callsIn(initialEvents), outputsIn(initialEvents), options.expectedInitialCommand, options.expectedWorkspace, { codePrefix: 'choice-initial', commandCountCode: 'choice-command-count', expectedExitCode: 3, expectedExitCodeMismatchCode: 'choice-needs-choice-exit' });
+  const continuationExecution = validateChildExecution(continuationEvents, callsIn(continuationEvents), outputsIn(continuationEvents), options.expectedChoiceCommand, options.expectedWorkspace, { codePrefix: 'choice-continuation', commandCountCode: 'choice-command-count', commandMismatchCode: 'choice-command-mismatch', expectedExitCode: 0 });
+  if (initialExecution.callIds.some((id) => continuationExecution.callIds.includes(id))) mismatch('choice-child-call-id-reused', 'The two logical executions reused a host call ID.');
+  const needsChoiceText = terminalOutputText(initialExecution.output, 'choice-needs-choice-output');
   let needsChoice;
   try { needsChoice = JSON.parse(needsChoiceText); } catch { mismatch('choice-needs-choice-output', 'The first child output is not exact needs-choice JSON.'); }
   assertExactKeys(needsChoice, ['candidate', 'choices', 'type'], 'choice-needs-choice-output');
@@ -305,11 +427,10 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     mismatch('choice-needs-choice-output', 'The first child output is not the fixed needs-choice response.');
   }
   boundedJson(needsChoice.candidate);
-  assertTerminalSentinel(outputs[1].payload.output, options.expectedPublicOutput);
-  const childFinals = child.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
+  assertTerminalSentinel(continuationExecution.output, options.expectedPublicOutput);
   if (childFinals.length !== 2 || childFinals[0].payload.message !== needsChoiceText || childFinals[1].payload.message !== options.expectedPublicOutput
-    || child.indexOf(outputs[0]) >= child.indexOf(childFinals[0]) || child.indexOf(childFinals[0]) >= child.indexOf(childExecs[1])
-    || child.indexOf(outputs[1]) >= child.indexOf(childFinals[1])) mismatch('choice-child-terminal-sequence', 'The same child must finalize each exact stdout after its linked command output.');
+    || child.indexOf(initialExecution.terminalEvent) >= firstFinalIndex || firstFinalIndex >= child.indexOf(continuationExecution.execEvent)
+    || child.indexOf(continuationExecution.terminalEvent) >= secondFinalIndex) mismatch('choice-child-terminal-sequence', 'The same child must finalize each exact stdout after its linked command output.');
 
   const returns = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message' && event.payload.author === agentPath && event.payload.recipient === '/root');
   if (returns.length !== 2) mismatch('choice-child-return-count', 'The parent must receive needs-choice and terminal results from the same child.');
@@ -334,16 +455,43 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     mismatch('choice-wait-order', 'Wait evidence does not bracket the two same-child turns.');
   }
 
-  const timeline = [childExecs[0], outputs[0], childFinals[0], returns[0], parentFinals[0], followups[0], followupOutputs[0], childExecs[1], outputs[1], childFinals[1], returns[1], parentFinals[1]].map(eventTimestamp);
+  const timeline = [initialExecution.execEvent, initialExecution.terminalEvent, childFinals[0], returns[0], parentFinals[0], followups[0], followupOutputs[0], continuationExecution.execEvent, continuationExecution.terminalEvent, childFinals[1], returns[1], parentFinals[1]].map(eventTimestamp);
   if (timeline.some((value) => value === undefined) || timeline.some((value, index) => index > 0 && value <= timeline[index - 1])) {
     mismatch('choice-terminal-timeline', 'The observable timestamps do not prove the complete initial-exec through terminal-parent sequence.');
   }
 
   assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
-  const evidence = { parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, choice: options.expectedChoice };
+  const evidence = {
+    parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, taskName, choice: options.expectedChoice,
+    ...(options.includeExecutionFacts ? { executions: {
+      initial: { execCommandCount: initialExecution.execCommandCount },
+      continuation: { execCommandCount: continuationExecution.execCommandCount },
+    } } : {}),
+  };
   if (spawnMessageEncrypted) unqualified('choice-spawn-encrypted', 'Codex encrypted only the spawn message field, so its exact runtime value cannot be qualified.', evidence);
   if (followupMessageEncrypted) unqualified('choice-followup-encrypted', 'Codex encrypted only the continuation message field, so its exact runtime value cannot be qualified.', evidence);
   return evidence;
+}
+
+function isChildHostEvent(event) {
+  return event?.type === 'response_item' && ['custom_tool_call', 'custom_tool_call_output'].includes(event.payload?.type);
+}
+
+function validateChoiceParentCallOwnership(parent) {
+  const calls = parent.filter((event) => event?.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(event.payload?.type));
+  const outputs = parent.filter((event) => event?.type === 'response_item' && ['function_call_output', 'custom_tool_call_output'].includes(event.payload?.type));
+  const callIds = calls.map((event) => boundedString(event.payload.call_id));
+  const outputIds = outputs.map((event) => boundedString(event.payload.call_id));
+  if (callIds.some((id) => !id) || outputIds.some((id) => !id) || new Set(callIds).size !== callIds.length || new Set(outputIds).size !== outputIds.length) {
+    mismatch('choice-parent-call-id', 'Parent calls and outputs require nonempty bounded unique call IDs.');
+  }
+  const outputOwningCalls = calls.filter((event) => !(event.payload.type === 'function_call' && event.payload.name === 'spawn_agent'));
+  const linkedOutput = (call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id
+    && output.payload.type === (call.payload.type === 'custom_tool_call' ? 'custom_tool_call_output' : 'function_call_output'));
+  if (outputOwningCalls.length !== outputs.length || outputOwningCalls.some((call) => linkedOutput(call).length !== 1)
+    || outputs.some((output) => !outputOwningCalls.some((call) => linkedOutput(call).includes(output)))) {
+    mismatch('choice-parent-call-id', 'Every parent host output must belong one-to-one to one non-spawn call.');
+  }
 }
 
 function validateParentChildRoute({ parentMeta, parentThreadId, start, childMeta, childThreadId, agentPath, codePrefix }) {
@@ -368,10 +516,21 @@ function namedCalls(events, name) {
 
 function eventTimestamp(event) {
   const value = boundedString(event?.timestamp);
-  const match = value === undefined ? null : /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/u.exec(value);
+  const match = value === undefined ? null : /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$/u.exec(value);
   if (!match) return undefined;
-  const seconds = Date.parse(`${match[1]}Z`); if (!Number.isFinite(seconds)) return undefined;
-  return BigInt(seconds) * 1_000_000n + BigInt((match[2] ?? '').padEnd(9, '0'));
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+  const offsetHour = match[10] === undefined ? 0 : Number(match[10]); const offsetMinute = match[11] === undefined ? 0 : Number(match[11]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]
+    || hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) return undefined;
+  const adjustedYear = year - (month <= 2 ? 1 : 0); const era = Math.floor(adjustedYear / 400); const yearOfEra = adjustedYear - era * 400;
+  const adjustedMonth = month + (month > 2 ? -3 : 9); const dayOfYear = Math.floor((153 * adjustedMonth + 2) / 5) + day - 1;
+  const dayOfEra = yearOfEra * 365 + Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100) + dayOfYear;
+  const epochDays = era * 146097 + dayOfEra - 719468;
+  const offsetSeconds = (offsetHour * 60 + offsetMinute) * 60 * (match[9] === '-' ? -1 : 1);
+  const epochSeconds = BigInt(epochDays * 86_400 + hour * 3_600 + minute * 60 + second - offsetSeconds);
+  return epochSeconds * 1_000_000_000n + BigInt((match[7] ?? '').padEnd(9, '0'));
 }
 
 function childReturnText(event, agentPath) {
@@ -455,15 +614,20 @@ function assertTerminalSentinel(output, sentinel) {
 
 function assertSemanticProgress(output, expected) {
   if (expected === undefined) return;
-  assertExactKeys(expected, ['start', 'terminal'], 'semantic-progress-contract');
+  assertExactKeys(expected, ['start', 'terminal', 'snapshotFallback', 'lifecycleOnly'], 'semantic-progress-contract');
   const start = boundedString(expected.start); const terminal = boundedString(expected.terminal);
-  if (!start || !terminal || !start.startsWith('[zcode] ') || !terminal.startsWith('[zcode] ')) mismatch('semantic-progress-contract', 'Semantic progress expectations must be exact bounded allowlisted ZCode lines.');
+  const snapshotFallback = boundedString(expected.snapshotFallback); const lifecycleOnly = boundedString(expected.lifecycleOnly);
+  if (!start || !terminal || !snapshotFallback || !lifecycleOnly
+    || ![start, terminal, snapshotFallback, lifecycleOnly].every((line) => line.startsWith('[zcode] '))) mismatch('semantic-progress-contract', 'Semantic progress expectations must be exact bounded allowlisted ZCode lines.');
   terminalOutputText(output, 'semantic-progress-missing');
   const lines = output.flatMap((item) => item.text.split('\n'));
   const startIndexes = lines.map((line, index) => line === start ? index : -1).filter((index) => index >= 0);
   const terminalIndexes = lines.map((line, index) => line === terminal ? index : -1).filter((index) => index >= 0);
-  if (startIndexes.length !== 1 || terminalIndexes.length !== 1 || startIndexes[0] >= terminalIndexes[0]) {
-    mismatch('semantic-progress-missing', 'The child transcript lacks one ordered exact semantic progress start and terminal line.');
+  const diagnosticCounts = [snapshotFallback, lifecycleOnly].map((diagnostic) => lines.filter((line) => line === diagnostic).length);
+  const hasSemanticPair = startIndexes.length === 1 && terminalIndexes.length === 1 && startIndexes[0] < terminalIndexes[0];
+  const hasExactCompatibilityDiagnostic = diagnosticCounts.some((count) => count === 1) && diagnosticCounts.every((count) => count <= 1);
+  if (!hasSemanticPair && !hasExactCompatibilityDiagnostic) {
+    mismatch('semantic-progress-missing', 'The child transcript lacks one ordered safe semantic progress pair or one exact degraded diagnostic.');
   }
 }
 
@@ -576,6 +740,23 @@ function parseCapturedExecEnvelope(input) {
   const objectSource = source.slice(prefix.length, -suffix.length);
   const values = parseTopLevelExecObject(objectSource);
   return values;
+}
+
+function parseCapturedHostCall(input) {
+  const source = boundedString(input);
+  if (!source) mismatch('child-command-encoding', 'The child host-call evidence is absent.');
+  const structured = [
+    ['exec_command', 'const r = await tools.exec_command('],
+    ['write_stdin', 'const r = await tools.write_stdin('],
+  ];
+  const suffix = '); text(JSON.stringify(r))\n';
+  for (const [kind, prefix] of structured) {
+    if (!source.startsWith(prefix)) continue;
+    if (!source.endsWith(suffix)) continue;
+    if (source.indexOf(`tools.${kind}`, prefix.length) !== -1) mismatch('child-command-encoding', 'The child host call does not match the captured Codex 0.147 wrapper.');
+    return { kind, envelope: parseTopLevelExecObject(source.slice(prefix.length, -suffix.length)), legacy: false };
+  }
+  return { kind: 'exec_command', envelope: parseCapturedExecEnvelope(input), legacy: true };
 }
 
 function parseTopLevelExecObject(source) {

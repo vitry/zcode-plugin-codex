@@ -42,6 +42,546 @@ test('exports fixed progress bounds and phases', () => {
   assert.equal(progressModule.MAX_PROGRESS_DIAGNOSTIC_KINDS, 8);
 });
 
+test('snapshot reads cannot start before accepted-boundary activation and begin on the first heartbeat', async () => {
+  const lines = []; let heartbeat = () => {}; let reads = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', deferred: true, write: (line) => lines.push(line), now: () => observedAt,
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.activate(notification('prompt_started'));
+  heartbeat(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 0); assert.equal(reporter.probeSnapshot().state, 'probing');
+
+  reporter.activateAcceptedBoundary({
+    readSnapshot: async () => { reads += 1; return { runtime: { stateRevision: 1 }, messages: [] }; },
+    describer: { observe: async (_snapshot, seenAt) => [{ phase: 'running', message: 'Running tool: Bash.', observedAt: seenAt }] },
+  });
+  heartbeat(); await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.equal(reads, 1); assert.equal(reporter.probeSnapshot().state, 'snapshot-fallback');
+  assert.deepEqual(lines, [
+    '[zcode] ZCode started the delegated turn.\n',
+    '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n',
+    '[zcode] Running tool: Bash.\n',
+  ]);
+  reporter.close();
+});
+
+test('keeps one snapshot read in flight and accepted online recovery discards its late result', async () => {
+  const lines = []; let heartbeat = () => {}; let reads = 0; let resolveRead = () => {};
+  const delayedRead = new Promise((resolve) => { resolveRead = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt,
+    describeNotification: async () => ({ disposition: 'accepted', phase: 'online', events: [] }),
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.activateAcceptedBoundary({
+    readSnapshot: () => { reads += 1; return delayedRead; },
+    describer: { observe: async (_snapshot, seenAt) => [{ phase: 'running', message: 'LATE_PRIVATE_PROGRESS', observedAt: seenAt }] },
+  });
+  reporter.activateCompatibilityBoundary(); heartbeat(); heartbeat();
+  await Promise.resolve();
+  assert.equal(reads, 1);
+
+  reporter.observe(conversationFrame({ deltas: [] })); await reporter.flush();
+  assert.equal(reporter.probeSnapshot().state, 'online');
+  resolveRead({ runtime: { stateRevision: 1 }, messages: [] });
+  await new Promise((resolve) => setImmediate(resolve)); heartbeat(); await reporter.flush();
+
+  assert.equal(reads, 1);
+  assert.doesNotMatch(lines.join(''), /LATE_PRIVATE_PROGRESS/);
+  reporter.close();
+});
+
+test('an early rejection-triggered snapshot read claims the adjacent heartbeat window', async () => {
+  let heartbeat = () => {}; let reads = 0;
+  const reasons = ['wire-version', 'envelope-shape', 'sequence', 'topic'];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: () => {}, now: () => observedAt,
+    describeNotification: async () => ({ disposition: 'rejected', reason: reasons.shift(), events: [] }),
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.activateAcceptedBoundary({
+    readSnapshot: async () => { reads += 1; return { runtime: { stateRevision: 1 }, messages: [] }; },
+    describer: { observe: async () => [] },
+  });
+  reporter.activate(notification('prompt_started'));
+  for (let index = 0; index < 4; index += 1) reporter.observe({ method: 'v4/conversation/frame', index });
+  await reporter.flush(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1);
+
+  heartbeat(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1);
+  reporter.observe(notification('tool_started'));
+  heartbeat(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 2);
+  heartbeat(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 3);
+  reporter.close();
+});
+
+test('snapshot read failure degrades exactly once without exposing its rejection', async () => {
+  const lines = []; const diagnostics = []; let reads = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt,
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+  });
+  reporter.activateAcceptedBoundary({
+    readSnapshot: async () => { reads += 1; throw new Error('PRIVATE_READ_REJECTION'); },
+    describer: { observe: async () => [] },
+  });
+  reporter.activateCompatibilityBoundary();
+  await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.equal(reads, 1); assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+  assert.deepEqual(diagnostics, ['conversation-snapshot-fallback', 'conversation-lifecycle-only']);
+  assert.equal(lines.filter((line) => /semantic progress is unavailable/.test(line)).length, 1);
+  assert.doesNotMatch(lines.join(''), /PRIVATE_READ_REJECTION/);
+  reporter.close();
+});
+
+test('stopAccepting fences a late snapshot read rejection without a cleanup diagnostic', async () => {
+  const lines = []; const diagnostics = []; let rejectRead = () => {};
+  const pendingRead = new Promise((_resolve, reject) => { rejectRead = reject; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt,
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+  });
+  reporter.activateAcceptedBoundary({
+    readSnapshot: () => pendingRead,
+    describer: { observe: async () => [] },
+  });
+  reporter.activate(notification('prompt_started'));
+  reporter.activateCompatibilityBoundary(); await Promise.resolve();
+  assert.equal(reporter.probeSnapshot().state, 'snapshot-fallback');
+
+  reporter.stopAccepting(); rejectRead(new Error('PRIVATE_LATE_READ_REJECTION'));
+  await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.equal(reporter.probeSnapshot().state, 'snapshot-fallback');
+  assert.deepEqual(diagnostics, ['conversation-snapshot-fallback']);
+  assert.doesNotMatch(lines.join(''), /semantic progress is unavailable|PRIVATE_LATE_READ_REJECTION/);
+  reporter.close();
+});
+
+test('stopAccepting fences late snapshot description and normalization failures', async () => {
+  for (const mode of ['rejection', 'invalid-normalization']) {
+    const lines = []; const diagnostics = []; let settleDescription = () => {};
+    let markDescriptionStarted = () => {};
+    const descriptionStarted = new Promise((resolve) => { markDescriptionStarted = resolve; });
+    const description = new Promise((resolve, reject) => {
+      settleDescription = () => mode === 'rejection'
+        ? reject(new Error('PRIVATE_LATE_DESCRIPTION_REJECTION'))
+        : resolve([{ phase: 'running', message: 'PRIVATE\nINVALID', observedAt }]);
+    });
+    const reporter = progressModule.createProgressReporter({
+      sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt,
+      onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    });
+    reporter.activateAcceptedBoundary({
+      readSnapshot: async () => ({ runtime: { stateRevision: 1 }, messages: [] }),
+      describer: { observe: () => { markDescriptionStarted(); return description; } },
+    });
+    reporter.activate(notification('prompt_started'));
+    reporter.activateCompatibilityBoundary(); await descriptionStarted;
+
+    reporter.stopAccepting(); settleDescription();
+    await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+    assert.equal(reporter.probeSnapshot().state, 'snapshot-fallback', mode);
+    assert.deepEqual(diagnostics, ['conversation-snapshot-fallback'], mode);
+    assert.doesNotMatch(lines.join(''), /semantic progress is unavailable|PRIVATE/, mode);
+    reporter.close();
+  }
+});
+
+test('invalid snapshot normalization degrades once instead of silently accepting unsafe events', async () => {
+  const lines = [];
+  const reporter = progressModule.createProgressReporter({ sessionId: 'session-a', write: (line) => lines.push(line), now: () => observedAt });
+  reporter.activateAcceptedBoundary({
+    readSnapshot: async () => ({ runtime: { stateRevision: 1 }, messages: [] }),
+    describer: { observe: async () => [{ phase: 'running', message: 'PRIVATE\nUNSAFE', observedAt }] },
+  });
+  reporter.activateCompatibilityBoundary(); await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+  assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+  assert.equal(lines.filter((line) => /semantic progress is unavailable/.test(line)).length, 1);
+  assert.doesNotMatch(lines.join(''), /PRIVATE|UNSAFE/);
+  reporter.close();
+});
+
+test('tracks bounded structural compatibility and activates fallback only at an explicit boundary', async () => {
+  const probes = []; const diagnostics = []; const lines = []; let heartbeat;
+  const results = [
+    { disposition: 'accepted', phase: 'initial', events: [] },
+    { disposition: 'rejected', reason: 'row-shape', events: [] },
+    { disposition: 'accepted', phase: 'online', events: [] },
+  ];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line),
+    describeNotification: async () => results.shift(),
+    persistProbe: async (probe) => probes.push(probe),
+    activateSnapshotFallback: () => () => {},
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => observedAt,
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.markConversationSubscribed();
+  reporter.observe(conversationFrame({ deliveryKind: 'initial', deltas: [] }));
+  await reporter.flush();
+  assert.equal(probes.at(-1).state, 'probing');
+  assert.equal(probes.at(-1).acceptedInitial, 1);
+  assert.equal(probes.at(-1).subscriptionAcknowledged, true);
+  heartbeat(); await reporter.flush();
+  assert.equal(probes.at(-1).state, 'snapshot-fallback');
+  assert.equal(probes.at(-1).snapshotFallbackActive, true);
+  assert.deepEqual(diagnostics, ['conversation-snapshot-fallback']);
+  assert.deepEqual(lines, ['[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n']);
+  reporter.observe(conversationFrame({ deltas: [toolRow()] }));
+  reporter.observe(conversationFrame({ ordinal: 2, deltas: [] }));
+  await reporter.flush();
+  assert.equal(probes.at(-1).rejected['row-shape'], 1);
+  assert.equal(probes.at(-1).acceptedOnline, 1);
+  assert.equal(probes.at(-1).state, 'online');
+  assert.equal(probes.at(-1).snapshotFallbackActive, false);
+  assert.equal(reporter.activateCompatibilityBoundary(), false);
+  assert.deepEqual(diagnostics, ['conversation-snapshot-fallback']);
+  reporter.close();
+});
+
+test('an accepted zero-event online frame recovers lifecycle-only without reactivating fallback', async () => {
+  const diagnostics = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => ({ disposition: 'accepted', phase: 'online', events: [] }),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+  });
+  assert.equal(reporter.activateCompatibilityBoundary(), true);
+  assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+  reporter.observe(conversationFrame({ deltas: [] })); await reporter.flush();
+  assert.equal(reporter.probeSnapshot().state, 'online');
+  assert.equal(reporter.probeSnapshot().snapshotFallbackUnavailable, false);
+  assert.equal(reporter.activateCompatibilityBoundary(), false);
+  assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
+  reporter.close();
+});
+
+test('fallback activation requires a cleanup callback', async () => {
+  for (const activation of [true, undefined, { cleanup() {} }]) {
+    const diagnostics = []; const lines = [];
+    const reporter = progressModule.createProgressReporter({
+      sessionId: 'session-a', activateSnapshotFallback: () => activation,
+      write: (line) => lines.push(line), onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+      setInterval: () => ({ unref() {} }), clearInterval: () => {},
+    });
+    assert.equal(reporter.activateCompatibilityBoundary(), true);
+    await reporter.flush();
+    assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+    assert.equal(reporter.probeSnapshot().snapshotFallbackActive, false);
+    assert.equal(reporter.probeSnapshot().snapshotFallbackUnavailable, true);
+    assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
+    assert.deepEqual(lines, ['[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n']);
+    reporter.close();
+  }
+});
+
+test('rejected fallback activation is observed while degrading to lifecycle-only', async () => {
+  const unhandled = []; const diagnostics = []; const lines = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', activateSnapshotFallback: () => Promise.reject(new Error('PRIVATE_ACTIVATION_REJECTION')),
+    write: (line) => lines.push(line), onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  try {
+    assert.equal(reporter.activateCompatibilityBoundary(), true);
+    await reporter.flush(); await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+    assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+    assert.equal(reporter.probeSnapshot().snapshotFallbackActive, false);
+    assert.equal(reporter.probeSnapshot().snapshotFallbackUnavailable, true);
+    assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
+    assert.deepEqual(lines, ['[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n']);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+    reporter.close();
+  }
+});
+
+test('never-settling Promise fallback activation is detached from bounded flush and close', async () => {
+  const lines = []; const activation = new Promise(() => {});
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', activateSnapshotFallback: () => activation,
+    write: (line) => lines.push(line), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  assert.equal(reporter.activateCompatibilityBoundary(), true);
+  const outcome = await Promise.race([
+    reporter.flush(Date.now() + 25).then(() => 'flushed'),
+    new Promise((resolve) => { const timer = setTimeout(() => resolve('timed-out'), 100); timer.unref?.(); }),
+  ]);
+  assert.equal(outcome, 'flushed');
+  assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+  assert.deepEqual(lines, ['[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n']);
+  assert.doesNotThrow(() => reporter.close());
+});
+
+test('hostile fallback activation then access stays observational', async () => {
+  let thenReads = 0; let catchReads = 0; const unhandled = [];
+  const activation = {};
+  Object.defineProperties(activation, {
+    then: { get() { thenReads += 1; throw new Error('PRIVATE_HOSTILE_THEN'); } },
+    catch: { get() { catchReads += 1; throw new Error('PRIVATE_HOSTILE_CATCH'); } },
+  });
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', activateSnapshotFallback: () => activation, now: () => observedAt,
+  });
+  try {
+    assert.equal(reporter.activateCompatibilityBoundary(), true);
+    await reporter.flush(); await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(thenReads, 1); assert.equal(catchReads, 0); assert.deepEqual(unhandled, []);
+    assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+    assert.equal(reporter.probeSnapshot().snapshotFallbackUnavailable, true);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+    reporter.close();
+  }
+});
+
+test('accepted online recovery invokes an activated snapshot fallback cleanup once', async () => {
+  let cleanupCalls = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    activateSnapshotFallback: () => () => { cleanupCalls += 1; },
+    describeNotification: async () => ({ disposition: 'accepted', phase: 'online', events: [] }),
+    now: () => observedAt,
+  });
+  assert.equal(reporter.activateCompatibilityBoundary(), true);
+  assert.equal(reporter.probeSnapshot().state, 'snapshot-fallback');
+  reporter.observe(conversationFrame({ deltas: [] })); await reporter.flush();
+  assert.equal(reporter.probeSnapshot().state, 'online'); assert.equal(cleanupCalls, 1);
+  reporter.close(); assert.equal(cleanupCalls, 1);
+});
+
+test('close invokes an activated snapshot fallback cleanup once', () => {
+  let cleanupCalls = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', activateSnapshotFallback: () => () => { cleanupCalls += 1; }, now: () => observedAt,
+  });
+  assert.equal(reporter.activateCompatibilityBoundary(), true);
+  reporter.close(); reporter.close();
+  assert.equal(cleanupCalls, 1);
+});
+
+test('throwing and non-settling fallback cleanup stay observational and bounded', async () => {
+  let throwingCalls = 0;
+  const throwing = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    activateSnapshotFallback: () => () => { throwingCalls += 1; throw new Error('private fallback cleanup failure'); },
+    describeNotification: async () => ({ disposition: 'accepted', phase: 'online', events: [] }), now: () => observedAt,
+  });
+  throwing.activateCompatibilityBoundary(); throwing.observe(conversationFrame({ deltas: [] }));
+  await throwing.flush();
+  assert.equal(throwing.probeSnapshot().state, 'online'); assert.equal(throwingCalls, 1);
+  throwing.close();
+
+  let nonSettlingCalls = 0;
+  const nonSettling = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    activateSnapshotFallback: () => () => { nonSettlingCalls += 1; return new Promise(() => {}); },
+    now: () => observedAt,
+  });
+  nonSettling.activateCompatibilityBoundary();
+  const started = Date.now(); nonSettling.close();
+  assert.ok(Date.now() - started < 100); assert.equal(nonSettlingCalls, 1);
+});
+
+test('an accepted zero-event online frame marks the probe online and blocks fallback', async () => {
+  const diagnostics = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => ({ disposition: 'accepted', phase: 'online', events: [] }),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+  });
+  reporter.observe(conversationFrame({ deltas: [] })); await reporter.flush();
+  assert.deepEqual(reporter.probeSnapshot(), {
+    state: 'online', subscriptionAcknowledged: false, framesReceived: 1,
+    acceptedInitial: 0, acceptedOnline: 1, acceptedRecovery: 0,
+    rejected: { 'wire-version': 0, 'envelope-shape': 0, sequence: 0, topic: 0, 'row-kind': 0, 'row-shape': 0 },
+    snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
+  });
+  assert.equal(reporter.activateCompatibilityBoundary(), false);
+  assert.deepEqual(diagnostics, []);
+  reporter.close();
+});
+
+test('the fixed fourth structural rejection activates lifecycle-only exactly once', async () => {
+  const diagnostics = [];
+  const reasons = ['wire-version', 'envelope-shape', 'sequence', 'topic'];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => ({ disposition: 'rejected', reason: reasons.shift(), events: [] }),
+    activateSnapshotFallback: () => false,
+    onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+  });
+  for (let index = 0; index < 4; index += 1) reporter.observe({ method: 'v4/conversation/frame', index });
+  await reporter.flush();
+  assert.equal(reporter.probeSnapshot().state, 'lifecycle-only');
+  assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
+  reporter.close();
+});
+
+test('stopAccepting fences a held structural rejection from every progress mutation', async () => {
+  const diagnostics = []; const probes = []; let fallbackCalls = 0;
+  let releaseHeld = () => {}; let markHeldStarted = () => {};
+  const heldStarted = new Promise((resolve) => { markHeldStarted = resolve; });
+  const held = new Promise((resolve) => { releaseHeld = () => resolve({ disposition: 'rejected', reason: 'sequence', events: [] }); });
+  let descriptions = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    describeNotification: async () => {
+      descriptions += 1;
+      if (descriptions < 4) return { disposition: 'rejected', reason: 'sequence', events: [] };
+      markHeldStarted(); return held;
+    },
+    activateSnapshotFallback: () => { fallbackCalls += 1; return false; },
+    persistProbe: async (probe) => probes.push(probe),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => observedAt,
+  });
+  for (let index = 0; index < 3; index += 1) {
+    reporter.observe({ method: 'v4/conversation/frame', index });
+    await reporter.flush();
+  }
+  reporter.observe({ method: 'v4/conversation/frame', index: 3 });
+  await heldStarted;
+  const beforeProbe = reporter.probeSnapshot(); const beforePersists = probes.length;
+
+  reporter.stopAccepting(); releaseHeld();
+  await new Promise((resolve) => setImmediate(resolve)); await reporter.flush();
+
+  assert.deepEqual(reporter.probeSnapshot(), beforeProbe);
+  assert.equal(probes.length, beforePersists);
+  assert.equal(fallbackCalls, 0);
+  assert.deepEqual(diagnostics, []);
+  reporter.close();
+});
+
+test('stopAccepting silently settles a held descriptor rejection without retrying it', async () => {
+  const diagnostics = []; const probes = []; const lines = []; const persisted = []; let fallbackCalls = 0;
+  let rejectHeld = () => {}; let markHeldStarted = () => {};
+  const heldStarted = new Promise((resolve) => { markHeldStarted = resolve; });
+  const held = new Promise((_resolve, reject) => { rejectHeld = reject; });
+  let descriptions = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    describeNotification: () => {
+      descriptions += 1;
+      if (descriptions > 1) throw new Error('a rejected descriptor must never restart');
+      markHeldStarted(); return held;
+    },
+    activateSnapshotFallback: () => { fallbackCalls += 1; return false; },
+    persistProbe: async (probe) => probes.push(probe),
+    persist: async (event) => persisted.push(event),
+    write: (line) => lines.push(line),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind),
+    now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe({ method: 'v4/conversation/frame', index: 0 }); await heldStarted;
+  const beforeProbe = reporter.probeSnapshot(); const beforePersists = probes.length;
+
+  reporter.stopAccepting(); rejectHeld(new Error('PRIVATE_LATE_DESCRIPTOR_REJECTION'));
+  const started = Date.now(); await reporter.flush(Date.now() + 250);
+
+  assert.ok(Date.now() - started < 250);
+  assert.equal(descriptions, 1);
+  assert.deepEqual(reporter.probeSnapshot(), beforeProbe);
+  assert.equal(probes.length, beforePersists);
+  assert.equal(fallbackCalls, 0);
+  assert.deepEqual(diagnostics, []);
+  assert.deepEqual(lines, []); assert.deepEqual(persisted, []);
+  reporter.close();
+});
+
+test('falls back to lifecycle-only with one fixed diagnostic when no snapshot capability exists', async () => {
+  const probes = []; const diagnostics = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => ({ disposition: 'rejected', reason: 'topic', events: [] }),
+    persistProbe: (probe) => probes.push(probe), onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+  });
+  reporter.markConversationSubscribed();
+  reporter.activateCompatibilityBoundary(); reporter.activateCompatibilityBoundary();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(probes.at(-1).state, 'lifecycle-only');
+  assert.equal(probes.at(-1).snapshotFallbackUnavailable, true);
+  assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
+  reporter.close();
+});
+
+test('coalesces probe persistence to one bounded pending snapshot under a frame flood', async () => {
+  const probes = []; let releaseFirst;
+  const first = new Promise((resolve) => { releaseFirst = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: () => new Promise(() => {}),
+    persistProbe: (probe) => { probes.push(probe); return probes.length === 1 ? first : undefined; },
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.markConversationSubscribed();
+  for (let index = 0; index < 20; index += 1) reporter.observe({ method: 'v4/conversation/frame', index });
+  assert.equal(probes.length, 1);
+  releaseFirst(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(probes.length, 2);
+  assert.equal(probes[1].framesReceived, 20);
+  reporter.close();
+});
+
+test('reporter saturates received accepted and every structural rejection counter', async () => {
+  let result = { disposition: 'accepted', phase: 'initial', events: [] };
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', describeNotification: async () => result, now: () => observedAt,
+  });
+  const observeUntilSaturated = async (nextResult) => {
+    result = nextResult;
+    for (let index = 0; index <= progressModule.MAX_PROGRESS_PROBE_COUNT; index += 1) {
+      reporter.observe({ method: 'v4/conversation/frame' });
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  for (const phase of ['initial', 'online', 'recovery']) {
+    await observeUntilSaturated({ disposition: 'accepted', phase, events: [] });
+  }
+  for (const reason of ['wire-version', 'envelope-shape', 'sequence', 'topic', 'row-kind', 'row-shape']) {
+    await observeUntilSaturated({ disposition: 'rejected', reason, events: [] });
+  }
+  await reporter.flush();
+  assert.deepEqual(reporter.probeSnapshot(), {
+    state: 'online', subscriptionAcknowledged: false, framesReceived: progressModule.MAX_PROGRESS_PROBE_COUNT,
+    acceptedInitial: progressModule.MAX_PROGRESS_PROBE_COUNT,
+    acceptedOnline: progressModule.MAX_PROGRESS_PROBE_COUNT,
+    acceptedRecovery: progressModule.MAX_PROGRESS_PROBE_COUNT,
+    rejected: Object.fromEntries(['wire-version', 'envelope-shape', 'sequence', 'topic', 'row-kind', 'row-shape'].map((reason) => [reason, progressModule.MAX_PROGRESS_PROBE_COUNT])),
+    snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
+  });
+  reporter.close();
+});
+
+test('flush boundedly drains the latest coalesced probe snapshot before cleanup', async () => {
+  const probes = []; let releaseFirst;
+  const first = new Promise((resolve) => { releaseFirst = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', persistProbe: (probe) => { probes.push(probe); return probes.length === 1 ? first : undefined; },
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.markConversationSubscribed(); reporter.activateCompatibilityBoundary();
+  let flushed = false; const flushing = reporter.flush().then(() => { flushed = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(flushed, false);
+  releaseFirst(); await flushing;
+  assert.equal(probes.length, 2);
+  assert.equal(probes[1].state, 'lifecycle-only');
+  reporter.close();
+});
+
 test('normalizes known same-session activity to fixed public messages', () => {
   const cases = [
     ['prompt_started', 'starting', 'ZCode started the delegated turn.'],
@@ -221,6 +761,7 @@ test('duplicate activity refreshes the heartbeat clock without repeating output 
   let currentTime = observedAt;
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a',
+    activateSnapshotFallback: () => false,
     write: (line) => lines.push(line),
     persist: async (event) => persisted.push(event),
     now: () => currentTime,
@@ -235,8 +776,14 @@ test('duplicate activity refreshes the heartbeat clock without repeating output 
   intervalCallback();
   await reporter.flush();
 
-  assert.deepEqual(lines, ['[zcode] ZCode tool work is still running.\n']);
-  assert.deepEqual(persisted, [{ phase: 'running', message: 'ZCode tool work is still running.', observedAt }]);
+  assert.deepEqual(lines, [
+    '[zcode] ZCode tool work is still running.\n',
+    '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.\n',
+  ]);
+  assert.deepEqual(persisted, [
+    { phase: 'running', message: 'ZCode tool work is still running.', observedAt },
+    { phase: 'waiting', message: 'ZCode semantic progress is unavailable; lifecycle updates will continue.', observedAt: currentTime },
+  ]);
   reporter.close();
 });
 
@@ -710,6 +1257,22 @@ test('does not create a heartbeat interval without a writer', () => {
     clearInterval: () => {},
   });
   assert.equal(intervalCalls, 0);
+  reporter.close();
+});
+
+test('persistence-only probes reach the first-heartbeat compatibility boundary', async () => {
+  const probes = []; const diagnostics = []; let heartbeat; let intervalCalls = 0;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', persistProbe: (probe) => probes.push(probe),
+    activateSnapshotFallback: () => false,
+    onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+    setInterval: (callback) => { intervalCalls += 1; heartbeat = callback; return { unref() {} }; },
+    clearInterval: () => {},
+  });
+  assert.equal(intervalCalls, 1);
+  heartbeat(); await Promise.resolve();
+  assert.equal(probes.at(-1).state, 'lifecycle-only');
+  assert.deepEqual(diagnostics, ['conversation-lifecycle-only']);
   reporter.close();
 });
 

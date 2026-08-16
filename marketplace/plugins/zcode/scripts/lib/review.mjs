@@ -8,8 +8,10 @@ import { resolveModel } from './args.mjs';
 import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
 import { createJobController, withJobCancellationLock } from './job-control.mjs';
+import { isBoundedPublicIdentifier } from './identifier.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { createDeferredConversationProgressObserver } from './conversation-progress.mjs';
+import { createSessionProgressDescriber } from './session-progress.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -98,6 +100,7 @@ export async function executeJob(input) {
       deferred: true,
       ...(input.progressWriter ? { write: input.progressWriter } : {}),
       persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
+      persistProbe: (probe) => input.store.updateJobProgressProbe(workspace, job.id, probe),
       describeNotification: conversationObserver.observe,
       onDescriptorOverflow: conversationObserver.markGap,
       ...input.progressDependencies,
@@ -106,8 +109,10 @@ export async function executeJob(input) {
     if (typeof client.subscribeConversation === 'function') {
       try {
         const conversationSubscription = await client.subscribeConversation(activeSessionId, { connectionId: `companion-${randomBytes(12).toString('hex')}`, clientMode: 'desktop-continuous' });
+        if (!conversationSubscription || !isBoundedPublicIdentifier(conversationSubscription.subscriptionId) || typeof conversationSubscription.unsubscribe !== 'function') throw new Error('invalid conversation subscription');
         // Register cleanup before binding can perform any asynchronous work.
         unsubscribeConversation = conversationSubscription.unsubscribe;
+        reporter.markConversationSubscribed();
         await conversationObserver.bind(conversationSubscription.subscriptionId);
       } catch { conversationObserver.fail(); reporter.diagnose('conversation-subscribe-failed'); }
     } else conversationObserver.fail();
@@ -124,10 +129,14 @@ export async function executeJob(input) {
     });
     input.signal?.throwIfAborted();
     const beforeMessageIds = [...snapshotMessageIds(snapshot)]; sendAttempted = true; const sent = await boundedStep(() => client.send(activeSessionId, prompt), input.signal);
-    reporter.activate({ method: 'state.updated', params: { scope: 'session', sessionId: activeSessionId, reason: 'prompt_started' } });
     running = await input.store.transitionJob(workspace, job.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds });
     await input.onBoundaryPersisted?.(running);
     const turnBoundary = { beforeMessageIds: new Set(beforeMessageIds), ...sent };
+    try {
+      const sessionDescriber = await createSessionProgressDescriber({ workspace, turnBoundary });
+      reporter.activateAcceptedBoundary({ readSnapshot: () => client.readSession(activeSessionId), describer: sessionDescriber });
+    } catch { reporter.activateAcceptedBoundary({}); }
+    reporter.activate({ method: 'state.updated', params: { scope: 'session', sessionId: activeSessionId, reason: 'prompt_started' } });
     await waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
     await cleanupProgress();
     const finalSnapshot = await client.readSession(activeSessionId);

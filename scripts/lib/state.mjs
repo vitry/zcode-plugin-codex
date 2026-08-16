@@ -13,6 +13,7 @@ import {
 } from './fs.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
 import {
+  MAX_PROGRESS_PROBE_COUNT,
   MAX_PROGRESS_MESSAGE_BYTES,
   MAX_PROGRESS_PREVIEW_ENTRIES,
   PROGRESS_PHASES,
@@ -186,6 +187,25 @@ export function createStateStore(options) {
             Date.parse(job.updatedAt),
             observedAtMs,
           )).toISOString(),
+        };
+        validateJobRecord(updated, jobId, storage.workspacePath);
+        await atomicWriteJson(path, updated);
+        return updated;
+      });
+    },
+
+    /** @param {string} workspace @param {string} jobId @param {unknown} progressProbe */
+    async updateJobProgressProbe(workspace, jobId, progressProbe) {
+      const boundedProbe = normalizeProgressProbeInput(workspace, jobId, progressProbe);
+      const storage = await jobStorage(dataRoot, workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const path = jobPath(storage.jobsDirectory, jobId);
+        const job = await readJobRecord(path, jobId, storage.workspacePath);
+        if (job.status === 'queued' || TERMINAL_STATUSES.has(job.status)) return job;
+        const updated = {
+          ...job,
+          progressProbe: boundedProbe,
+          updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString(),
         };
         validateJobRecord(updated, jobId, storage.workspacePath);
         await atomicWriteJson(path, updated);
@@ -679,6 +699,53 @@ function validateProgressInput(workspace, jobId, event) {
   if (invalidFields.length > 0) throw invalidProgressInput(invalidFields);
 }
 
+const PROGRESS_PROBE_STATES = new Set(['probing', 'online', 'snapshot-fallback', 'lifecycle-only']);
+const PROGRESS_PROBE_REJECTIONS = ['wire-version', 'envelope-shape', 'sequence', 'topic', 'row-kind', 'row-shape'];
+
+/** @param {unknown} value */
+export function validProgressProbe(value) {
+  if (!isPlainJsonObject(value)
+    || Object.keys(value).sort().join(',') !== 'acceptedInitial,acceptedOnline,acceptedRecovery,framesReceived,rejected,snapshotFallbackActive,snapshotFallbackUnavailable,state,subscriptionAcknowledged'
+    || !PROGRESS_PROBE_STATES.has(value.state)
+    || typeof value.subscriptionAcknowledged !== 'boolean'
+    || typeof value.snapshotFallbackActive !== 'boolean'
+    || typeof value.snapshotFallbackUnavailable !== 'boolean'
+    || !isPlainJsonObject(value.rejected)
+    || Object.keys(value.rejected).sort().join(',') !== [...PROGRESS_PROBE_REJECTIONS].sort().join(',')) return false;
+  for (const field of ['framesReceived', 'acceptedInitial', 'acceptedOnline', 'acceptedRecovery']) {
+    if (!boundedProbeCount(value[field])) return false;
+  }
+  for (const reason of PROGRESS_PROBE_REJECTIONS) if (!boundedProbeCount(value.rejected[reason])) return false;
+  if (value.state === 'snapshot-fallback') return value.snapshotFallbackActive && !value.snapshotFallbackUnavailable;
+  if (value.state === 'lifecycle-only') return !value.snapshotFallbackActive && value.snapshotFallbackUnavailable;
+  return !value.snapshotFallbackActive && !value.snapshotFallbackUnavailable;
+}
+
+/** @param {unknown} value */
+function boundedProbeCount(value) { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= MAX_PROGRESS_PROBE_COUNT; }
+
+/** @param {unknown} workspace @param {unknown} jobId @param {unknown} progressProbe */
+function normalizeProgressProbeInput(workspace, jobId, progressProbe) {
+  const invalid = () => new PluginError('JOB_PROGRESS_PROBE_INPUT_INVALID', 'Job progress compatibility probe is invalid.', {
+    category: 'state', remedy: 'Provide only the fixed bounded progress compatibility schema.',
+  });
+  if (!isNonEmptyString(workspace) || !isDigest(jobId) || !isPlainJsonObject(progressProbe)
+    || Object.keys(progressProbe).sort().join(',') !== 'acceptedInitial,acceptedOnline,acceptedRecovery,framesReceived,rejected,snapshotFallbackActive,snapshotFallbackUnavailable,state,subscriptionAcknowledged'
+    || !isPlainJsonObject(progressProbe.rejected)
+    || Object.keys(progressProbe.rejected).sort().join(',') !== [...PROGRESS_PROBE_REJECTIONS].sort().join(',')) throw invalid();
+  const normalized = /** @type {Record<string,any>} */ ({ ...progressProbe, rejected: { ...progressProbe.rejected } });
+  for (const field of ['framesReceived', 'acceptedInitial', 'acceptedOnline', 'acceptedRecovery']) {
+    if (!Number.isSafeInteger(normalized[field]) || normalized[field] < 0) throw invalid();
+    normalized[field] = Math.min(MAX_PROGRESS_PROBE_COUNT, normalized[field]);
+  }
+  for (const reason of PROGRESS_PROBE_REJECTIONS) {
+    if (!Number.isSafeInteger(normalized.rejected[reason]) || normalized.rejected[reason] < 0) throw invalid();
+    normalized.rejected[reason] = Math.min(MAX_PROGRESS_PROBE_COUNT, normalized.rejected[reason]);
+  }
+  if (!validProgressProbe(normalized)) throw invalid();
+  return normalized;
+}
+
 /** @param {string[]} invalidFields */
 function invalidProgressInput(invalidFields) {
   return new PluginError('JOB_PROGRESS_INPUT_INVALID', 'Job progress input is invalid.', {
@@ -716,7 +783,8 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
     && (!('lastCancelError' in job) || isCancellationError(job.lastCancelError))
     && (!('phase' in job) || PROGRESS_PHASES.includes(job.phase))
     && (!('lastActivityAt' in job) || isIsoTimestamp(job.lastActivityAt))
-    && (!('progressPreview' in job) || validProgressPreview(job.progressPreview));
+    && (!('progressPreview' in job) || validProgressPreview(job.progressPreview))
+    && (!('progressProbe' in job) || validProgressProbe(job.progressProbe));
   const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
   const hasBoundary = boundaryFields.some((field) => field in job);
   const validBoundary = !hasBoundary || boundaryFields.every((field) => field in job)

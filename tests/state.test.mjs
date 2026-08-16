@@ -382,6 +382,7 @@ test('persisted jobs are schema-validated before use', async () => {
     { ...job, resultArtifact: 'artifacts/result.json' },
     { ...job, status: 'running', error: 'too early' },
     { ...job, status: 'failed', resultArtifact: 'artifacts/result.json' },
+    { ...job, progressProbe: { state: 'online', framesReceived: 1, raw: 'must-fail-closed' } },
   ]) {
     await atomicWriteJson(path, invalidJob);
     await assert.rejects(
@@ -862,6 +863,34 @@ test('progress is a no-op once queued or terminal lifecycle state wins', async (
   });
   assert.deepEqual(await store.updateJobProgress(workspace, succeeded.id, event), succeeded);
   assert.deepEqual(await store.readJob(workspace, succeeded.id), succeeded);
+});
+
+test('persists only the exact bounded progress probe schema for active jobs', async () => {
+  const { dataRoot, workspace } = await fixture(); const store = createStateStore({ dataRoot });
+  const queued = await store.reserveJob({ workspace, ...jobInput });
+  const probe = {
+    state: 'online', subscriptionAcknowledged: true, framesReceived: 255,
+    acceptedInitial: 1, acceptedOnline: 2, acceptedRecovery: 3,
+    rejected: { 'wire-version': 1, 'envelope-shape': 2, sequence: 3, topic: 4, 'row-kind': 5, 'row-shape': 6 },
+    snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
+  };
+  assert.deepEqual(await store.updateJobProgressProbe(workspace, queued.id, probe), queued);
+  const running = await store.transitionJob(workspace, queued.id, ['queued'], 'running');
+  const updated = await store.updateJobProgressProbe(workspace, queued.id, probe);
+  assert.deepEqual(updated.progressProbe, probe);
+  assert.ok(Date.parse(updated.updatedAt) >= Date.parse(running.updatedAt));
+  const corrupt = /** @type {any} */ (structuredClone(probe)); corrupt.rejected.secret = 1;
+  await assert.rejects(store.updateJobProgressProbe(workspace, queued.id, corrupt), { code: 'JOB_PROGRESS_PROBE_INPUT_INVALID' });
+  const overflow = structuredClone(probe); overflow.framesReceived = 256;
+  const saturated = await store.updateJobProgressProbe(workspace, queued.id, overflow);
+  assert.equal(saturated.progressProbe.framesReceived, 255);
+  const negative = structuredClone(probe); negative.acceptedInitial = -1;
+  await assert.rejects(store.updateJobProgressProbe(workspace, queued.id, negative), { code: 'JOB_PROGRESS_PROBE_INPUT_INVALID' });
+  await store.transitionJob(workspace, queued.id, ['running'], 'cancelling');
+  const cancelling = await store.updateJobProgressProbe(workspace, queued.id, { ...probe, acceptedOnline: 3 });
+  assert.equal(cancelling.status, 'cancelling'); assert.equal(cancelling.progressProbe.acceptedOnline, 3);
+  const terminal = await store.finishJob(workspace, queued.id, ['cancelling'], 'succeeded');
+  assert.deepEqual(await store.updateJobProgressProbe(workspace, queued.id, { ...probe, acceptedOnline: 3 }), terminal);
 });
 
 test('future progress is rejected without poisoning a subsequent current update', async () => {

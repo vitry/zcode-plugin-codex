@@ -5,6 +5,12 @@ import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import {
+  assertRescueRouteContract,
+  expectedGenericRescueMessage,
+  expectedNamedRescueMessage,
+} from './helpers/rescue-skill-contract.mjs';
+
 const root = new URL('../', import.meta.url);
 const rootPath = fileURLToPath(root);
 const expected = ['adversarial-review', 'cancel', 'rescue', 'result', 'review', 'setup', 'status', 'transfer'];
@@ -18,9 +24,34 @@ const hints = {
   cancel: '[job-id]',
   setup: '[--enable-review-gate | --disable-review-gate]',
 };
-
 function skill(name) {
   return readFileSync(new URL(`skills/${name}/SKILL.md`, root), 'utf8');
+}
+
+function assertRescueNamingContract(source) {
+  const { naming } = assertRescueRouteContract(source);
+  const namingText = naming.text;
+  assert.match(namingText, /`rescueTaskName`/);
+  assert.match(namingText, /`zcode_rescue_<semantic_slug>\[_<ordinal>\]`/);
+  assert.match(namingText, /safe fallback[^\n]+`zcode_rescue_task`/i);
+  assert.match(namingText, /occupied sibling[^\n]+smallest available ordinal[^\n]+2[^\n]+9999/i);
+  assert.match(namingText, /ordinal[^\n]+2[^\n]+9999[^\n]+without leading zeros/i);
+  assert.match(namingText, /complete name[^\n]+64 UTF-8 bytes/i);
+  assert.match(namingText, /1[–-]3 lowercase ASCII semantic words/i);
+  assert.match(namingText, /each[^\n]+begins?[^\n]+letter[^\n]+(?:at most|max(?:imum)?) 16[^\n]+lowercase letters or digits/i);
+  assert.match(namingText, /generic objective description[^\n]+never cop(?:y|ies)[^\n]+mechanically transform[^\n]+task text/i);
+  assert.match(namingText, /prompt fragments[^\n]+repo(?:sitory)? or filesystem paths[^\n]+personal names[^\n]+issue, job, or session IDs[^\n]+hashes[^\n]+credentials[^\n]+capabilities[^\n]+authorization material/i);
+  assert.match(namingText, /task_name[^\n]+agent_path[^\n]+presentation metadata[^\n]+neither sufficient nor necessary[^\n]+Rescue (?:identity|evidence)/i);
+  assert.match(namingText, /(?:do not|never)[^\n]+classify[^\n]+authorize[^\n]+route[^\n]+reject[^\n]+downgrade[^\n]+recover Rescue[^\n]+name or path/i);
+  assert.match(namingText, /trusted routing facts[^\n]+named Role[^\n]+exact returned child ID[^\n]+parent-child linkage[^\n]+fixed forwarder contract[^\n]+hook-bound executor state/i);
+  assert.match(namingText, /collision handling never authorizes a second spawn/i);
+}
+
+function assertRescueSpawnContracts(source) {
+  const { namedSpawn, genericMessage } = assertRescueRouteContract(source);
+  const namedMessages = [...namedSpawn.text.matchAll(/\bmessage:\s*'([^'\n]*)'/g)].map((match) => match[1]);
+  assert.deepEqual(namedMessages, [expectedNamedRescueMessage]);
+  assert.equal(genericMessage.text, expectedGenericRescueMessage);
 }
 
 test('ships exactly the eight namespaced ZCode skills', () => {
@@ -84,7 +115,9 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   const source = skill('rescue');
   assert.match(source, /defaults? to foreground/i);
   assert.match(source, /role-status rescue/);
-  assert.match(source, /task_name:\s*['"]zcode_rescue['"]/);
+  assertRescueNamingContract(source);
+  assertRescueSpawnContracts(source);
+  assert.doesNotMatch(source, /task_name:\s*['"]zcode_rescue['"]/);
   assert.match(source, /fork_turns:\s*['"]none['"]/);
   assert.match(source, /agent_type:\s*['"]zcode-rescue['"]/);
   assert.match(source, /Run the installed ZCode Rescue forwarder now\. Return its public stdout verbatim\./);
@@ -93,6 +126,39 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   assert.match(source, /unknown\/unavailable\/invalid (?:value|Role value) `zcode-rescue`[\s\S]+\$zcode:setup/i);
   assert.match(source, /wait[\s\S]+same child/i);
   assert.doesNotMatch(source, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
+});
+
+test('Rescue naming clauses cannot be relocated outside the preflight-to-route section', () => {
+  const source = skill('rescue');
+  const section = /After the readiness preflight succeeds[\s\S]+?(?=\nWhen the active `spawn_agent` tool schema exposes)/.exec(source)?.[0];
+  assert.ok(section);
+  const misplaced = source.replace(section, '').concat(`\n${section}\n`);
+  assert.throws(() => assertRescueNamingContract(misplaced));
+});
+
+test('Rescue collision safety cannot be relocated outside the naming section', () => {
+  const source = skill('rescue');
+  const sentence = 'collision handling never authorizes a second spawn.';
+  const misplaced = source.replace(sentence, '').concat(`\n${sentence}\n`);
+  assert.throws(() => assertRescueNamingContract(misplaced));
+});
+
+test('Rescue route task names must remain in their own instructions', () => {
+  const source = skill('rescue');
+  const namedMisplaced = source.replace('  task_name: rescueTaskName,', '  task_name: wrongTaskName,').concat('\ntask_name: rescueTaskName\n');
+  const genericMisplaced = source.replace('with `task_name: rescueTaskName`,', 'with `task_name: wrongTaskName`,').concat('\ntask_name: rescueTaskName\n');
+  assert.throws(() => assertRescueSpawnContracts(namedMisplaced));
+  assert.throws(() => assertRescueSpawnContracts(genericMisplaced));
+});
+
+test('Rescue fixed messages cannot be repaired by duplicate prose elsewhere', () => {
+  const source = skill('rescue');
+  const named = 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.';
+  const namedMutated = source.replace(named, 'Run an altered forwarder.').concat(`\n${named}\n`);
+  const genericLine = 'Preserve stderr and return public stdout verbatim.';
+  const genericMutated = source.replace(genericLine, 'Preserve altered output.').concat(`\n${genericLine}\n`);
+  assert.throws(() => assertRescueSpawnContracts(namedMutated));
+  assert.throws(() => assertRescueSpawnContracts(genericMutated));
 });
 
 test('Rescue routing stays single-hop and ordinary subagents fall back transparently', () => {
@@ -120,13 +186,23 @@ test('Rescue routing stays single-hop and ordinary subagents fall back transpare
   assert.equal(marketplaceSource, source, 'marketplace Rescue Skill must be byte-identical to source');
 });
 
+test('Rescue chooses its presentation name after readiness and before spawning', () => {
+  const source = skill('rescue');
+  const readiness = source.indexOf('If its status is not `ready`');
+  const naming = source.indexOf('choose `rescueTaskName` exactly once');
+  const namedSpawn = source.indexOf('spawn_agent({');
+  assert.ok(readiness >= 0, 'readiness preflight outcome must exist');
+  assert.ok(naming > readiness, 'presentation naming must follow successful readiness preflight');
+  assert.ok(namedSpawn > naming, 'presentation naming must precede route selection and spawn');
+});
+
 test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task or authorization material', () => {
   const source = skill('rescue');
   assert.match(source, /Only after the preflight returned `ready`/);
   assert.match(source, /Act only as the installed ZCode Rescue forwarder\./);
   assert.match(source, /node "<canonical-plugin-root>\/scripts\/zcode-companion\.mjs" invoke rescue/);
   assert.match(source, /Preserve stderr and return public stdout verbatim\./);
-  assert.match(source, /Do not inspect or modify code independently, interpret results, retry, poll, cancel, choose a pending branch, or request\/print\/persist authorization material\./);
+  assert.match(source, /Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request\/print\/persist authorization material\./);
   assert.match(source, /never issue a second spawn/i);
   assert.match(source, /unknown\/unrecognized\/unsupported\/reserved (?:field\/key\/parameter|field, key, or parameter) `agent_type`/i);
   assert.match(source, /no agent ID, start event, or activity/i);
@@ -150,6 +226,27 @@ test('managed Rescue role is a fixed TOML forwarder without capability or task m
   assert.match(source, /return public stdout verbatim/i);
   assert.match(source, /preserve stderr/i);
   assert.match(source, /(?:Do not|Never) inspect or modify code independently/i);
+});
+
+test('named and generic Rescue forwarders keep yielded executions attached through a real exit code', () => {
+  const role = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
+  const source = skill('rescue');
+  const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source)?.[1];
+  assert.ok(generic, 'generic forwarder fixture must be present');
+  for (const forwarder of [role, generic]) {
+    assert.match(forwarder, /result containing an exit code is terminal/i);
+    assert.match(forwarder, /running execution or session handle is nonterminal/i);
+    assert.match(forwarder, /poll only that same handle with the host continuation tool until it reports an exit code/i);
+    assert.match(forwarder, /Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal/i);
+    assert.match(forwarder, /needs-choice response with exit code 3 is terminal for the current child turn/i);
+    assert.match(forwarder, /exactly one `exec_command` companion process/i);
+    assert.match(forwarder, /continuation calls only observe its original running handle/i);
+    assert.match(forwarder, /(?:do not|never)[^.]*second `exec_command`/i);
+    assert.match(forwarder, /(?:do not|never)[^.]*retry/i);
+    assert.match(forwarder, /(?:do not|never)[^.]*cancel/i);
+    assert.match(forwarder, /(?:do not|never)[^.]*choose/i);
+    assert.match(forwarder, /(?:do not|never)[^.]*inspect or modify code independently/i);
+  }
 });
 
 test('native Rescue forwarders request explicit background through the same capability-free constant invocation', () => {
@@ -209,4 +306,29 @@ test('agents metadata uses quoted strings and namespaced default prompts', () =>
 test('contract fixtures are rooted in this checkout', () => {
   assert.equal(isAbsolute(rootPath), true);
   assert.equal(existsSync(new URL('package.json', root)), true);
+});
+
+test('opt-in installed Rescue E2E requires real yielded execution and privacy-safe facts', () => {
+  const source = readFileSync(new URL('tests/e2e/codex-skills-e2e.test.mjs', root), 'utf8');
+  const installed = /test\('installed Rescue uses one isolated native child[\s\S]+?\n\}\);/.exec(source)?.[0];
+  assert.ok(installed, 'opt-in installed native Rescue test must exist');
+  assert.match(installed, /FAKE_ZCODE_COMPLETION_GATE/);
+  assert.match(installed, /FAKE_ZCODE_COMPLETION_GATE_REACHED/);
+  assert.match(installed, /FAKE_ZCODE_PROCESS_FILE/);
+  assert.match(installed, /requireYieldedExecution:\s*true/);
+  assert.match(installed, /yieldedExecution\.execCommandCount/);
+  assert.match(installed, /yieldedExecution\.pollCount/);
+  assert.match(installed, /yieldedExecution\.sameHandleChecked/);
+  assert.doesNotMatch(installed, /yieldedExecution\.(?:pollHandles|originalHandle)/);
+  assert.match(installed, /yieldedExecution\.terminalExitCode/);
+  assert.match(installed, /executions\.initial\.execCommandCount/);
+  assert.match(installed, /executions\.continuation\.execCommandCount/);
+  assert.match(installed, /snapshotFallback:\s*'\[zcode\] ZCode conversation frames were unavailable; using bounded session progress\.'/);
+  assert.match(installed, /lifecycleOnly:\s*'\[zcode\] ZCode semantic progress is unavailable; lifecycle updates will continue\.'/);
+  const forbiddenBlocks = [...installed.matchAll(/forbiddenParentText:\s*\[([\s\S]*?)\]/g)].map((match) => match[1]);
+  assert.ok(forbiddenBlocks.length >= 3, 'installed Rescue must check foreground, choice, and background parent isolation');
+  for (const block of forbiddenBlocks) {
+    assert.match(block, /ZCode conversation frames were unavailable; using bounded session progress\./);
+    assert.match(block, /ZCode semantic progress is unavailable; lifecycle updates will continue\./);
+  }
 });

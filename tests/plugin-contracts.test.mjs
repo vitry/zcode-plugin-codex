@@ -240,3 +240,27 @@ test('package test scripts do not depend on shell glob expansion', () => {
     'node --test tests/integration/plugin-layout.test.mjs',
   );
 });
+
+test('conversation compatibility progress never parses raw session logs or synthesizes conversation frames', () => {
+  for (const relativePath of ['scripts/lib/progress.mjs', 'scripts/lib/conversation-progress.mjs', 'scripts/lib/session-progress.mjs']) {
+    const source = readFileSync(new URL(relativePath, root), 'utf8');
+    assert.doesNotMatch(source, /(?:readFile|createReadStream).*zcode/si, `${relativePath} must not parse raw ZCode logs`);
+  }
+  assert.doesNotMatch(readFileSync(new URL('scripts/lib/session-progress.mjs', root), 'utf8'), /v4\/conversation\/frame/, 'session fallback must not synthesize conversation frames');
+});
+
+test('marketplace runtime mirrors the progress compatibility implementation byte for byte', () => {
+  for (const relativePath of [
+    'scripts/lib/conversation-progress.mjs',
+    'scripts/lib/progress.mjs',
+    'scripts/lib/render.mjs',
+    'scripts/lib/review.mjs',
+    'scripts/lib/session-progress.mjs',
+    'scripts/lib/state.mjs',
+    'scripts/zcode-companion.mjs',
+  ]) {
+    const source = readFileSync(new URL(relativePath, root));
+    const marketplace = readFileSync(new URL(`marketplace/plugins/zcode/${relativePath}`, root));
+    assert.deepEqual(marketplace, source, `${relativePath} marketplace runtime must be byte-identical to source`);
+  }
+});
