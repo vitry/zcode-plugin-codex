@@ -66,7 +66,7 @@ test('coarse relay is independent from detailed stderr and coalesces duplicate s
   reporter.close();
 });
 
-test('heartbeat emits a fixed waiting relay and terminal progress closes relay production', async () => {
+test('every eligible heartbeat emits a fixed waiting relay and terminal progress closes relay production', async () => {
   const relays = []; let heartbeat = () => {}; let currentTime = observedAt;
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a', relay: (record) => relays.push(record), now: () => currentTime,
@@ -74,15 +74,39 @@ test('heartbeat emits a fixed waiting relay and terminal progress closes relay p
   });
   reporter.observe(notification('prompt_started'));
   currentTime = '2026-08-17T00:00:21.000Z'; heartbeat();
-  reporter.observe(notification('prompt_completed'));
   currentTime = '2026-08-17T00:00:42.000Z'; heartbeat();
+  reporter.observe(notification('prompt_completed'));
+  currentTime = '2026-08-17T00:01:03.000Z'; heartbeat();
   await reporter.flush();
   assert.deepEqual(relays.map(({ sequence, phase, code }) => ({ sequence, phase, code })), [
     { sequence: 1, phase: 'starting', code: 'started' },
     { sequence: 2, phase: 'waiting', code: 'waiting' },
-    { sequence: 3, phase: 'finalizing', code: 'finalizing' },
+    { sequence: 3, phase: 'waiting', code: 'waiting' },
+    { sequence: 4, phase: 'finalizing', code: 'finalizing' },
   ]);
   reporter.close();
+});
+
+test('validated edit, write, and verification tool frames select fixed relay categories without rendering inputs', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-relay-category-'));
+  const cases = [
+    ['Edit', { file_path: join(workspace, 'edit.txt'), old_string: 'PRIVATE_OLD', new_string: 'PRIVATE_NEW' }, 'editing', 'editing'],
+    ['Write', { file_path: join(workspace, 'write.txt'), content: 'PRIVATE_CONTENT' }, 'editing', 'editing'],
+    ['Bash', { command: 'npm test PRIVATE_ARGUMENT' }, 'verifying', 'verifying'],
+  ];
+  for (const [toolName, input, phase, code] of cases) {
+    const relays = [];
+    const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const reporter = progressModule.createProgressReporter({
+      sessionId: 'session-1', relay: (record) => { relays.push(record); }, now: () => observedAt,
+      describeNotification: describer.observe, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+    });
+    reporter.observe(conversationFrame({ deltas: [toolRow({ toolName, input })] }));
+    await reporter.flush();
+    assert.deepEqual(relays.map((record) => ({ phase: record.phase, code: record.code })), [{ phase, code }]);
+    assert.doesNotMatch(JSON.stringify(relays), /PRIVATE|npm test|edit\.txt|write\.txt/);
+    reporter.close();
+  }
 });
 
 test('throwing relay is observational and cannot affect detailed progress or persistence', async () => {
