@@ -30,24 +30,22 @@ const STALE_PROCESS_NONCE = 'b'.repeat(64);
 const SUPPORTED_CODEX_LINES = Object.freeze(['0.147']);
 const RESCUE_DISPLAY_PRIVATE_SENTINELS = Object.freeze([
   'repaircanary', 'privpromptcanary', 'privpathcanary', 'privworkcanary',
-  'privsesscanary', 'privjobcanary', 'privcapcanary',
+  'privsesscanary', 'privjobcanary', 'privcapcanary', 'privargcanary',
 ]);
 const qualificationRequired = process.env.ZCODE_REQUIRE_QUALIFIED === '1';
 const optInSkip = process.env.ZCODE_CODEX_SKILLS_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_SKILLS_E2E=1 to spend authenticated Codex credits.');
 const rescueOptInSkip = process.env.ZCODE_CODEX_RESCUE_E2E === '1' || qualificationRequired ? false : unqualified('opt-in-required', 'Set ZCODE_CODEX_RESCUE_E2E=1 to qualify the runtime-observed native Rescue route.');
 
 function assertRescueDisplayOmitsPrivateSentinels(display) {
-  const identityTokens = new Set(`${display.taskName}\n${display.agentPath}`.toLowerCase().split(/[^a-z0-9]+/u).filter(Boolean));
+  const displayIdentity = `${display.taskName}\n${display.agentPath}`.toLowerCase();
   for (const sentinel of RESCUE_DISPLAY_PRIVATE_SENTINELS) {
-    assert.equal(identityTokens.has(sentinel), false, `Rescue display identity copied private installed sentinel: ${sentinel}`);
+    assert.equal(displayIdentity.includes(sentinel.toLowerCase()), false, `Rescue display identity copied private installed sentinel: ${sentinel}`);
   }
 }
 
 function assertInstalledRescueDisplay(evidence) {
   const display = assertCodexRescueDisplayName(evidence);
   assert.equal(display.displayNameConforms, true);
-  assert.match(display.taskName, /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u);
-  assert.equal(display.agentPath, `/root/${display.taskName}`);
   assertRescueDisplayOmitsPrivateSentinels(display);
   return display;
 }
@@ -100,7 +98,7 @@ function assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId
 
 function installedRescueQualificationBody(source) {
   const startName = ['installed Rescue uses one isolated native child', 'for initial and choice continuations'].join(' ');
-  const endName = ['installed Rescue display privacy rejects exact private tokens', 'without substring collisions'].join(' ');
+  const endName = ['installed Rescue display privacy rejects case-insensitive private substrings', 'without generic-word collisions'].join(' ');
   const startMarker = `test('${startName}'`;
   const endMarker = `test('${endName}'`;
   const start = source.indexOf(startMarker);
@@ -472,7 +470,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const longEnv = { ...env, FAKE_ZCODE_COMPLETION_GATE: foregroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: foregroundGateReached, FAKE_ZCODE_PROCESS_FILE: foregroundProcess, FAKE_ZCODE_PROCESS_NONCE: foregroundNonce };
   const foreground = await runHeldForegroundRescue({
     gatePath: foregroundGate, processPath: foregroundProcess, processNonce: foregroundNonce,
-    launch: () => controlledCodex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now for repaircanary. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result. Keep these private fixture labels out of the display name: privpromptcanary, privpathcanary, privworkcanary, privsesscanary, privjobcanary, privcapcanary.'], workspace, longEnv, 300_000),
+    launch: () => controlledCodex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now for repaircanary. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result. Keep these private fixture labels out of the display name: privpromptcanary, privpathcanary, privworkcanary, privsesscanary, privjobcanary, privcapcanary. Also keep the independent command argument/option canary `--privargcanary` out of the display name.'], workspace, longEnv, 300_000),
     waitForGate: (signal) => waitUntil(async () => await readFile(foregroundGateReached, 'utf8').catch(() => '') === 'blocked', 60_000, 'installed foreground Rescue never reached the held fake-ZCode completion boundary', signal),
     holdMs: 35_000,
   });
@@ -850,13 +848,20 @@ test('installed Rescue uses one isolated native child for initial and choice con
   }
 });
 
-test('installed Rescue display privacy rejects exact private tokens without substring collisions', () => {
-  const ordinary = { taskName: 'zcode_rescue_contest', agentPath: '/root/zcode_rescue_contest' };
-  assert.doesNotThrow(() => assertRescueDisplayOmitsPrivateSentinels(ordinary));
+test('installed Rescue display privacy rejects case-insensitive private substrings without generic-word collisions', () => {
+  for (const taskName of ['zcode_rescue_contest', 'zcode_rescue_awaiting']) {
+    assert.doesNotThrow(() => assertRescueDisplayOmitsPrivateSentinels({ taskName, agentPath: `/root/${taskName}` }));
+  }
   for (const sentinel of ['repaircanary', 'privpromptcanary', 'privpathcanary', 'privworkcanary', 'privsesscanary', 'privjobcanary', 'privcapcanary']) {
     const display = { taskName: `zcode_rescue_${sentinel}`, agentPath: `/root/zcode_rescue_${sentinel}` };
     assert.throws(() => assertRescueDisplayOmitsPrivateSentinels(display), new RegExp(sentinel));
   }
+  const embeddedCommandArgument = { taskName: 'zcode_rescue_xprivargcanary', agentPath: '/root/zcode_rescue_xprivargcanary' };
+  assert.throws(() => assertRescueDisplayOmitsPrivateSentinels(embeddedCommandArgument), /privargcanary/u);
+  assert.throws(
+    () => assertRescueDisplayOmitsPrivateSentinels({ taskName: 'zcode_rescue_xPrIvArGcAnArY', agentPath: '/root/zcode_rescue_xPrIvArGcAnArY' }),
+    /privargcanary/u,
+  );
 });
 
 test('installed Rescue choice linkage rejects post-continuation identity drift from the pending snapshot', () => {

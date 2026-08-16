@@ -87,12 +87,15 @@ test('identity accepts a consistently observed opaque host path before display a
 });
 
 test('display-name grammar accepts one to three semantic words and supported ordinals', () => {
+  const sixtyFourByteTaskName = `zcode_rescue_${'a'.repeat(16)}_${'b'.repeat(16)}_${'c'.repeat(14)}_10`;
+  assert.equal(Buffer.byteLength(sixtyFourByteTaskName, 'utf8'), 64);
   for (const validTaskName of [
     'zcode_rescue_task',
     'zcode_rescue_fix_progress',
     'zcode_rescue_fix_progress_now',
     'zcode_rescue_task_2',
     'zcode_rescue_fix_progress_9999',
+    sixtyFourByteTaskName,
   ]) {
     assert.deepEqual(assertCodexRescueDisplayName({ taskName: validTaskName, agentPath: `/root/${validTaskName}` }), {
       taskName: validTaskName,
