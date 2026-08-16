@@ -52,6 +52,52 @@ function assertInstalledRescueDisplay(evidence) {
   return display;
 }
 
+function installedRescueChoiceFacts(rollouts, parentThreadId, requireFollowup) {
+  assert.ok(Array.isArray(rollouts), 'choice linkage requires rollout evidence');
+  assert.ok(typeof parentThreadId === 'string' && parentThreadId.length > 0, 'choice linkage requires the exact parent thread ID');
+  const parentCandidates = rollouts.filter((events) => Array.isArray(events)
+    && events.some((event) => event?.type === 'session_meta' && event.payload?.id === parentThreadId));
+  assert.equal(parentCandidates.length, 1, 'choice linkage must expose exactly one parent rollout');
+  const parent = parentCandidates[0];
+  const calls = (name) => parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === name);
+  const spawns = calls('spawn_agent'); const followups = calls('followup_task');
+  const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
+  assert.equal(spawns.length, 1, 'choice linkage must expose exactly one original spawn');
+  assert.equal(starts.length, 1, 'choice linkage must expose exactly one original child start');
+  assert.equal(followups.length, requireFollowup ? 1 : 0, `choice linkage must expose ${requireFollowup ? 'one continuation follow-up' : 'no follow-up before resume'}`);
+  const spawnArgs = JSON.parse(spawns[0].payload.arguments);
+  const taskName = spawnArgs.task_name; const agentPath = starts[0].payload.agent_path; const childThreadId = starts[0].payload.agent_thread_id;
+  assert.ok(typeof taskName === 'string' && typeof agentPath === 'string' && typeof childThreadId === 'string', 'choice linkage rollout must expose all original child identity fields');
+  const childCandidates = rollouts.filter((events) => Array.isArray(events)
+    && events.some((event) => event?.type === 'session_meta' && event.payload?.id === childThreadId));
+  assert.equal(childCandidates.length, 1, 'choice linkage must expose exactly one retained child rollout');
+  const childMetas = childCandidates[0].filter((event) => event?.type === 'session_meta');
+  assert.equal(childMetas.length, 1, 'choice linkage retained child must expose one metadata record');
+  assert.equal(childMetas[0].payload.id, childThreadId, 'choice child metadata must retain the original child ID');
+  assert.equal(childMetas[0].payload.parent_thread_id, parentThreadId, 'choice child metadata must retain the original parent ID');
+  assert.equal(childMetas[0].payload.source?.subagent?.thread_spawn?.agent_path, agentPath, 'choice child metadata path must retain the original agent path');
+  return { taskName, agentPath, childThreadId, followupTarget: requireFollowup ? JSON.parse(followups[0].payload.arguments).target : undefined };
+}
+
+function captureInstalledRescueChoiceIdentity(rollouts, parentThreadId) {
+  const { taskName, agentPath, childThreadId } = installedRescueChoiceFacts(rollouts, parentThreadId, false);
+  return Object.freeze({ taskName, agentPath, childThreadId });
+}
+
+function assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId, evidence, pendingIdentity) {
+  assert.ok(evidence && typeof evidence === 'object', 'choice linkage requires qualified evidence');
+  assert.ok(pendingIdentity && typeof pendingIdentity === 'object', 'choice linkage requires the independent pending snapshot');
+  for (const field of ['taskName', 'agentPath', 'childThreadId']) {
+    assert.ok(typeof pendingIdentity[field] === 'string' && pendingIdentity[field].length > 0, `pending snapshot must expose ${field}`);
+    assert.equal(evidence[field], pendingIdentity[field], `choice evidence ${field} must match the pending snapshot`);
+  }
+  const post = installedRescueChoiceFacts(postRollouts, parentThreadId, true);
+  for (const field of ['taskName', 'agentPath', 'childThreadId']) {
+    assert.equal(post[field], pendingIdentity[field], `post-continuation ${field} must match the pending snapshot`);
+  }
+  assert.equal(post.followupTarget, pendingIdentity.childThreadId, 'post-continuation follow-up target must match the pending snapshot child ID');
+}
+
 function installedRescueQualificationBody(source) {
   const startName = ['installed Rescue uses one isolated native child', 'for initial and choice continuations'].join(' ');
   const endName = ['installed Rescue display privacy rejects exact private tokens', 'without substring collisions'].join(' ');
@@ -80,6 +126,12 @@ function assertInstalledRescueQualificationSource(source) {
   assertInstalledSourceBranch(foreground, 'foreground', false);
   assertInstalledSourceBranch(choice, 'choice', true);
   assertInstalledSourceBranch(background, 'background', false);
+  assertSourceOrder(installedQualification, [
+    'const pendingFrames =',
+    'const pendingIdentity = captureInstalledRescueChoiceIdentity(pendingRollouts, parentIds[0]);',
+    'const answer = await codex([',
+    'qualifyCodexRescueChoiceEvidence(',
+  ], 'choice pending snapshot');
 }
 
 function exactSourceRegion(source, startMarker, endMarker, label) {
@@ -98,14 +150,24 @@ function assertInstalledSourceBranch(region, label, requireChoiceLinkage) {
   assertSourceOrder(success, [
     `qualifyCodexRescue${label === 'foreground' ? '' : label === 'choice' ? 'Choice' : 'Background'}Evidence(`,
     'assertInstalledRescueDisplay(evidence);',
-    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence);'] : []),
+    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity);'] : []),
   ], `${label} display${requireChoiceLinkage ? ' and linkage' : ''}`);
-  assertSourceOrder(encrypted, [
+  const guardMarker = label === 'choice'
+    ? "if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {"
+    : "if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {";
+  assert.equal(encrypted.split(guardMarker).length - 1, 1, `${label} encrypted guard predicate must occur exactly once`);
+  const guardStart = encrypted.indexOf(guardMarker);
+  const guardCloseMarker = label === 'foreground' ? '\n    }' : '\n      }';
+  const guardEnd = encrypted.indexOf(guardCloseMarker, guardStart + guardMarker.length);
+  assert.ok(guardEnd > guardStart, `${label} encrypted guard closing brace must exist`);
+  const guarded = encrypted.slice(guardStart, guardEnd);
+  assertSourceOrder(guarded, [
+    guardMarker,
     'assertInstalledRescueDisplay(error.evidence);',
-    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence);'] : []),
+    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);'] : []),
     'markUnqualified(',
     'return;',
-  ], `${label} encrypted display${requireChoiceLinkage ? ' and linkage' : ''}`);
+  ], `${label} encrypted guard display${requireChoiceLinkage ? ' and linkage' : ''}`);
 }
 
 function assertSourceOrder(source, markers, label) {
@@ -328,10 +390,21 @@ test('installed Rescue source contract rejects moved, unreachable, and missing b
   const encryptedDisplay = '      assertInstalledRescueDisplay(error.evidence);\n';
   const foregroundMark = '      markUnqualified(t, unqualified(error.code, detail)); return;';
   const movedAfterReturn = source.replace(encryptedDisplay, '').replace(foregroundMark, `${foregroundMark}\n${encryptedDisplay}`);
-  assert.throws(() => assertInstalledRescueQualificationSource(movedAfterReturn), /foreground encrypted display/u);
+  assert.throws(() => assertInstalledRescueQualificationSource(movedAfterReturn), /foreground encrypted guard display/u);
 
-  const missingChoiceLinkage = source.replace('        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence);\n', '');
-  assert.throws(() => assertInstalledRescueQualificationSource(missingChoiceLinkage), /choice encrypted display and linkage/u);
+  const missingChoiceLinkage = source.replace('        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);\n', '');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingChoiceLinkage), /choice encrypted guard display and linkage/u);
+
+  const foregroundCatch = '  } catch (error) {\n';
+  const foregroundPredicate = "    if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {\n";
+  const movedDisplayAboveGuard = source.replace(encryptedDisplay, '').replace(foregroundCatch + foregroundPredicate, foregroundCatch + encryptedDisplay + foregroundPredicate);
+  assert.throws(() => assertInstalledRescueQualificationSource(movedDisplayAboveGuard), /foreground encrypted guard/u);
+
+  const choiceEncryptedChecks = '        assertInstalledRescueDisplay(error.evidence);\n        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);\n';
+  const choiceCatch = '    } catch (error) {\n';
+  const choicePredicate = "      if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {\n";
+  const movedChoiceChecksAboveGuard = source.replace(choiceEncryptedChecks, '').replace(choiceCatch + choicePredicate, choiceCatch + choiceEncryptedChecks + choicePredicate);
+  assert.throws(() => assertInstalledRescueQualificationSource(movedChoiceChecksAboveGuard), /choice encrypted guard/u);
 });
 
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
@@ -362,39 +435,10 @@ test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode
 });
 
 test('installed Rescue uses one isolated native child for initial and choice continuations', { skip: rescueOptInSkip, timeout: 1_200_000 }, async (t) => {
-  function assertInstalledRescueChoiceLinkage(rollouts, parentThreadId, evidence) {
-    assert.ok(Array.isArray(rollouts), 'choice linkage requires rollout evidence');
-    assert.ok(typeof parentThreadId === 'string' && parentThreadId.length > 0, 'choice linkage requires the exact parent thread ID');
-    assert.ok(evidence && typeof evidence === 'object', 'choice linkage requires qualified evidence');
-    assert.ok(typeof evidence.taskName === 'string' && typeof evidence.agentPath === 'string' && typeof evidence.childThreadId === 'string', 'choice linkage evidence must expose all original child identity fields');
+  function assertInstalledRescueChoiceLinkage(rollouts, parentThreadId, evidence, pendingIdentity) {
     assert.equal(evidence.executions.initial.execCommandCount, 1, 'choice initial turn must execute exactly once');
     assert.equal(evidence.executions.continuation.execCommandCount, 1, 'choice continuation must execute exactly once');
-
-    const parentCandidates = rollouts.filter((events) => Array.isArray(events)
-      && events.some((event) => event?.type === 'session_meta' && event.payload?.id === parentThreadId));
-    assert.equal(parentCandidates.length, 1, 'choice linkage must expose exactly one parent rollout');
-    const parent = parentCandidates[0];
-    const calls = (name) => parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'function_call' && event.payload.name === name);
-    const spawns = calls('spawn_agent'); const followups = calls('followup_task');
-    const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
-    assert.equal(spawns.length, 1, 'choice linkage must expose exactly one original spawn');
-    assert.equal(starts.length, 1, 'choice linkage must expose exactly one original child start');
-    assert.equal(followups.length, 1, 'choice linkage must expose exactly one continuation follow-up');
-    const spawnArgs = JSON.parse(spawns[0].payload.arguments);
-    const followupArgs = JSON.parse(followups[0].payload.arguments);
-    assert.equal(spawnArgs.task_name, evidence.taskName, 'choice evidence task name must match the original spawn');
-    assert.equal(starts[0].payload.agent_path, evidence.agentPath, 'choice evidence agent path must match the original child start');
-    assert.equal(starts[0].payload.agent_thread_id, evidence.childThreadId, 'choice evidence child ID must match the original child start');
-    assert.equal(followupArgs.target, evidence.childThreadId, 'choice continuation must target the original child ID');
-
-    const childCandidates = rollouts.filter((events) => Array.isArray(events)
-      && events.some((event) => event?.type === 'session_meta' && event.payload?.id === evidence.childThreadId));
-    assert.equal(childCandidates.length, 1, 'choice linkage must expose exactly one retained child rollout');
-    const childMetas = childCandidates[0].filter((event) => event?.type === 'session_meta');
-    assert.equal(childMetas.length, 1, 'choice linkage retained child must expose one metadata record');
-    assert.equal(childMetas[0].payload.id, evidence.childThreadId, 'choice child metadata must retain the original child ID');
-    assert.equal(childMetas[0].payload.parent_thread_id, parentThreadId, 'choice child metadata must retain the original parent ID');
-    assert.equal(childMetas[0].payload.source?.subagent?.thread_spawn?.agent_path, evidence.agentPath, 'choice child metadata path must retain the original agent path');
+    assertInstalledRescueChoiceIdentityLinkage(rollouts, parentThreadId, evidence, pendingIdentity);
   }
 
   if (process.env.ZCODE_CODEX_RESCUE_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_RESCUE_E2E=1.'));
@@ -508,6 +552,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
     const pendingFrames = pending.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
     const parentIds = [...new Set(pendingFrames.filter((frame) => frame?.type === 'thread.started').map((frame) => frame.thread_id))];
     assert.equal(parentIds.length, 1, 'pending Rescue must expose exactly one resumable parent thread ID');
+    const pendingRollouts = await loadCodexRollouts(codexHome);
+    const pendingIdentity = captureInstalledRescueChoiceIdentity(pendingRollouts, parentIds[0]);
     const answer = await codex([
       'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
       '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all',
@@ -543,13 +589,13 @@ test('installed Rescue uses one isolated native child for initial and choice con
         },
       );
       assertInstalledRescueDisplay(evidence);
-      assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence);
+      assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity);
       assert.equal(evidence.choice, choice);
       t.diagnostic(`qualified same-child Rescue ${choice}: ${evidence.childThreadId}`);
     } catch (error) {
       if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {
         assertInstalledRescueDisplay(error.evidence);
-        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence);
+        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);
         markUnqualified(t, unqualified(error.code, error.message)); return;
       }
       throw error;
@@ -811,6 +857,25 @@ test('installed Rescue display privacy rejects exact private tokens without subs
     const display = { taskName: `zcode_rescue_${sentinel}`, agentPath: `/root/zcode_rescue_${sentinel}` };
     assert.throws(() => assertRescueDisplayOmitsPrivateSentinels(display), new RegExp(sentinel));
   }
+});
+
+test('installed Rescue choice linkage rejects post-continuation identity drift from the pending snapshot', () => {
+  const parentThreadId = 'parent-thread';
+  const pendingIdentity = { taskName: 'zcode_rescue_fix_progress', agentPath: '/root/zcode_rescue_fix_progress', childThreadId: 'child-thread' };
+  const evidence = { ...pendingIdentity };
+  const postRollouts = [
+    [
+      { type: 'session_meta', payload: { id: parentThreadId } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', arguments: JSON.stringify({ task_name: pendingIdentity.taskName }) } },
+      { type: 'event_msg', payload: { type: 'sub_agent_activity', kind: 'started', agent_path: '/root/zcode_rescue_drifted', agent_thread_id: pendingIdentity.childThreadId } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: pendingIdentity.childThreadId }) } },
+    ],
+    [{ type: 'session_meta', payload: { id: pendingIdentity.childThreadId, parent_thread_id: parentThreadId, source: { subagent: { thread_spawn: { agent_path: '/root/zcode_rescue_drifted' } } } } }],
+  ];
+  assert.throws(
+    () => assertInstalledRescueChoiceIdentityLinkage(postRollouts, parentThreadId, evidence, pendingIdentity),
+    /pending snapshot/u,
+  );
 });
 
 async function qualifyInstalledIdentityFailures({ installedPluginRoot, installedDataRoot, temporary, env, zcodeRecord }) {
