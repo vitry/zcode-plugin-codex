@@ -6,6 +6,8 @@ const MAX_TEXT_BYTES = 1024 * 1024;
 const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
 const MAX_EXEC_AGENT_MESSAGES = 256;
 const MAX_CHILD_POLLS = 64;
+const MAX_RESCUE_TASK_NAME_BYTES = 64;
+const RESCUE_TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
 const GENERIC_HIDDEN_SCHEMA_VERSIONS = new Set(['0.147.0']);
 const EXEC_ENVELOPE_KEYS = new Set(['cmd', 'workdir', 'yield_time_ms', 'max_output_tokens']);
 
@@ -15,6 +17,18 @@ export class CodexRescueUnqualifiedError extends Error {
 
 export class CodexRescueEvidenceMismatchError extends Error {
   constructor(code, message) { super(message); this.name = 'CodexRescueEvidenceMismatchError'; this.code = code; }
+}
+
+export function assertCodexRescueDisplayName(evidence) {
+  const taskName = boundedString(evidence?.taskName);
+  if (!taskName || Buffer.byteLength(taskName, 'utf8') > MAX_RESCUE_TASK_NAME_BYTES || !RESCUE_TASK_NAME_PATTERN.test(taskName)) {
+    mismatch('display-task-name-contract', 'The Rescue display task name does not match the bounded naming contract.');
+  }
+  const agentPath = boundedString(evidence?.agentPath);
+  if (agentPath !== `/root/${taskName}`) {
+    mismatch('display-agent-path-contract', 'The Rescue display agent path does not exactly match its task name.');
+  }
+  return { taskName, agentPath, displayNameConforms: true };
 }
 
 export function parseCodexRolloutJsonl(value) {
@@ -67,7 +81,8 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   const spawn = spawns[0].payload;
   const spawnArgs = parseObject(spawn.arguments, 'spawn-arguments');
   const spawnMessage = boundedString(spawnArgs.message);
-  if (spawnArgs.task_name !== options.expectedTaskName || spawnArgs.fork_turns !== 'none') {
+  const taskName = boundedString(spawnArgs.task_name);
+  if (!taskName || spawnArgs.fork_turns !== 'none') {
     mismatch('spawn-contract-mismatch', 'The native spawn task or context mode differs from the Rescue contract.');
   }
 
@@ -81,7 +96,6 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   const agentPath = boundedString(start.agent_path);
   if (!childThreadId || !agentPath) mismatch('child-identity-unavailable', 'The child start event omits its thread ID or agent path.');
   if (start.event_id !== spawn.call_id) mismatch('spawn-start-link-mismatch', 'The child start event does not link to the spawn call.');
-  if (agentPath !== options.expectedAgentPath) mismatch('agent-path-mismatch', 'The started child path does not match the fixed Rescue task name.');
 
   const childCandidates = rollouts.filter((events) => sessionMeta(events)?.id === childThreadId);
   if (childCandidates.length === 0) {
@@ -157,7 +171,7 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   if (options.requireYieldedExecution && (execution.originalHandle === undefined || execution.pollCount < 1 || !Number.isSafeInteger(execution.terminalExitCode))) {
     mismatch('child-yielded-execution-required', 'Required native evidence does not contain a running handle, same-handle poll, and terminal exit code.');
   }
-  const evidence = { parentThreadId, childThreadId, agentPath, taskName: spawnArgs.task_name, agentType, route, publicOutput: execFinal,
+  const evidence = { parentThreadId, childThreadId, agentPath, taskName, agentType, route, publicOutput: execFinal,
     ...(options.expectedSemanticProgress === undefined ? {} : { semanticProgressChecked: true }),
     ...(options.requireYieldedExecution ? { yieldedExecution: {
       execCommandCount: execution.execCommandCount, pollCount: execution.pollCount,
@@ -308,6 +322,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   const spawns = namedCalls(parent, 'spawn_agent');
   if (spawns.length !== 1) mismatch('choice-spawn-count', 'Choice continuation must retain exactly one initial spawn.');
   const spawnArgs = parseObject(spawns[0].payload.arguments, 'choice-spawn-arguments');
+  const taskName = boundedString(spawnArgs.task_name);
   const spawnMessageEncrypted = encrypted(spawnArgs.message);
   let expectedSpawnMessage;
   if (Object.hasOwn(spawnArgs, 'agent_type')) {
@@ -319,7 +334,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     if (!GENERIC_HIDDEN_SCHEMA_VERSIONS.has(sessionMeta(parent)?.cli_version)) mismatch('choice-generic-version', 'The choice-flow generic spawn is not qualified for this Codex version.');
     expectedSpawnMessage = options.expectedGenericSpawnMessage;
   }
-  if (spawnArgs.task_name !== options.expectedTaskName || spawnArgs.fork_turns !== 'none') mismatch('choice-spawn-contract', 'The choice-flow spawn task or context mode differs from the Rescue contract.');
+  if (!taskName || spawnArgs.fork_turns !== 'none') mismatch('choice-spawn-contract', 'The choice-flow spawn task or context mode differs from the Rescue contract.');
   if (!spawnMessageEncrypted && spawnArgs.message !== expectedSpawnMessage) mismatch('choice-spawn-message', 'The choice-flow spawn message differs from its fixed contract.');
   const spawnIndex = parent.indexOf(spawns[0]);
   const starts = parent.filter((event) => event?.type === 'event_msg' && event.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
@@ -327,7 +342,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   const start = starts[0];
   const childThreadId = boundedString(start.payload.agent_thread_id);
   const agentPath = boundedString(start.payload.agent_path);
-  if (!childThreadId || agentPath !== options.expectedAgentPath || start.payload.event_id !== spawns[0].payload.call_id) {
+  if (!childThreadId || !agentPath || start.payload.event_id !== spawns[0].payload.call_id) {
     mismatch('choice-child-identity', 'The choice flow does not link one exact child ID to the initial spawn.');
   }
   const startIndex = parent.indexOf(start);
@@ -447,7 +462,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
 
   assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
   const evidence = {
-    parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, choice: options.expectedChoice,
+    parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, taskName, choice: options.expectedChoice,
     ...(options.includeExecutionFacts ? { executions: {
       initial: { execCommandCount: initialExecution.execCommandCount },
       continuation: { execCommandCount: continuationExecution.execCommandCount },

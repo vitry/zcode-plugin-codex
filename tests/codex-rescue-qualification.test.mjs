@@ -8,6 +8,7 @@ import test from 'node:test';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
 
 import {
+  assertCodexRescueDisplayName,
   CodexRescueEvidenceMismatchError,
   CodexRescueUnqualifiedError,
   parseCodexRolloutJsonl,
@@ -18,7 +19,8 @@ import {
 
 const parentId = '019fe6df-faa2-7851-8edb-55f1be7d5489';
 const childId = '019fe6e0-4764-7192-83ba-0b0cc2c48660';
-const agentPath = '/root/zcode_rescue';
+const taskName = 'zcode_rescue_fix_progress';
+const agentPath = `/root/${taskName}`;
 const expectedWorkspace = '/repo';
 const expectedCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke rescue';
 const expectedPreflightCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" role-status rescue';
@@ -39,12 +41,81 @@ test('qualifies named Rescue from linked parent and child rollout metadata', () 
     parentThreadId: parentId,
     childThreadId: childId,
     agentPath,
-    taskName: 'zcode_rescue',
+    taskName,
     agentType: 'zcode-rescue',
     route: 'named',
     publicOutput: expectedPublicOutput,
     semanticProgressChecked: true,
   });
+});
+
+test('trusted named Rescue identity does not depend on display-name conformance', () => {
+  const input = fixture();
+  setPresentation(input, 'ordinary_child', '/root/ordinary_child');
+  const evidence = qualifyCodexRescueEvidence(input, options());
+  assert.equal(evidence.taskName, 'ordinary_child');
+  assert.equal(evidence.agentPath, '/root/ordinary_child');
+  assert.throws(
+    () => assertCodexRescueDisplayName(evidence),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'display-task-name-contract',
+  );
+});
+
+test('matching Rescue presentation is not sufficient named Role evidence', () => {
+  const input = fixture();
+  childMeta(input).payload.source.subagent.thread_spawn.agent_role = 'default';
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'agent-role-mismatch',
+  );
+});
+
+test('valid dynamic Rescue evidence has a conforming display name', () => {
+  const evidence = qualifyCodexRescueEvidence(fixture(), options());
+  assert.deepEqual(assertCodexRescueDisplayName(evidence), { taskName, agentPath, displayNameConforms: true });
+});
+
+test('identity accepts a consistently observed opaque host path before display assertion rejects it', () => {
+  const input = fixture();
+  setPresentation(input, taskName, '/root/host_selected_label');
+  const evidence = qualifyCodexRescueEvidence(input, options());
+  assert.equal(evidence.agentPath, '/root/host_selected_label');
+  assert.throws(
+    () => assertCodexRescueDisplayName(evidence),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'display-agent-path-contract',
+  );
+});
+
+test('display-name grammar accepts one to three semantic words and supported ordinals', () => {
+  for (const validTaskName of [
+    'zcode_rescue_task',
+    'zcode_rescue_fix_progress',
+    'zcode_rescue_fix_progress_now',
+    'zcode_rescue_task_2',
+    'zcode_rescue_fix_progress_9999',
+  ]) {
+    assert.deepEqual(assertCodexRescueDisplayName({ taskName: validTaskName, agentPath: `/root/${validTaskName}` }), {
+      taskName: validTaskName,
+      agentPath: `/root/${validTaskName}`,
+      displayNameConforms: true,
+    }, validTaskName);
+  }
+});
+
+test('display-name grammar rejects invalid syntax, word count, byte length, and ordinals', () => {
+  for (const invalidTaskName of [
+    'zcode_rescue_bad-name',
+    'zcode_rescue_one_two_three_four',
+    `zcode_rescue_${'a'.repeat(16)}_${'b'.repeat(16)}_${'c'.repeat(16)}_9999`,
+    'zcode_rescue_task_01',
+    'zcode_rescue_task_1',
+  ]) {
+    assert.throws(
+      () => assertCodexRescueDisplayName({ taskName: invalidTaskName, agentPath: `/root/${invalidTaskName}` }),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'display-task-name-contract',
+      invalidTaskName,
+    );
+  }
 });
 
 test('qualifies named and generic Rescue only after the original yielded execution exits', () => {
@@ -160,7 +231,7 @@ test('foreground qualification accepts either exact compatibility diagnostic whi
 test('qualifies named and generic background Rescue with one linked queued output and no capability leak', () => {
   const named = backgroundFixture();
   assert.deepEqual(qualifyCodexRescueBackgroundEvidence(named, backgroundOptions()), {
-    parentThreadId: parentId, childThreadId: childId, agentPath, taskName: 'zcode_rescue', agentType: 'zcode-rescue', route: 'named',
+    parentThreadId: parentId, childThreadId: childId, agentPath, taskName, agentType: 'zcode-rescue', route: 'named',
     publicOutput: backgroundPublicOutput, jobId: backgroundJobId, capabilityChecked: true,
   });
   const generic = backgroundFixture(); const args = JSON.parse(spawnEvent(generic).payload.arguments); delete args.agent_type; args.message = 'fixed generic forwarder'; spawnEvent(generic).payload.arguments = JSON.stringify(args); childMeta(generic).payload.source.subagent.thread_spawn.agent_role = null;
@@ -229,6 +300,7 @@ test('qualifies exact resume and fresh follow-ups against one existing child ID'
       parentThreadId: parentId,
       childThreadId: childId,
       agentPath,
+      taskName,
       choice,
     });
   }
@@ -405,7 +477,7 @@ test('qualifies the complete 0.147 generic default same-child choice continuatio
   const args = JSON.parse(spawnEvent(input).payload.arguments); delete args.agent_type; args.message = choiceOptions('resume').expectedGenericSpawnMessage; spawnEvent(input).payload.arguments = JSON.stringify(args);
   childMeta(input).payload.source.subagent.thread_spawn.agent_role = null;
   assert.deepEqual(qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')), {
-    parentThreadId: parentId, childThreadId: childId, agentPath, choice: 'resume',
+    parentThreadId: parentId, childThreadId: childId, agentPath, taskName, choice: 'resume',
   });
 });
 
@@ -431,10 +503,10 @@ test('choice qualification marks only explicitly encrypted continuation argument
 
 test('qualifies the verified 0.147 generic route from its complete fixed assignment and child chain', () => {
   const input = fixture();
-  spawnEvent(input).payload.arguments = JSON.stringify({ fork_turns: 'none', message: 'fixed generic forwarder', task_name: 'zcode_rescue' });
+  spawnEvent(input).payload.arguments = JSON.stringify({ fork_turns: 'none', message: 'fixed generic forwarder', task_name: taskName });
   childMeta(input).payload.source.subagent.thread_spawn.agent_role = null;
   assert.deepEqual(qualifyCodexRescueEvidence(input, options()), {
-    parentThreadId: parentId, childThreadId: childId, agentPath, taskName: 'zcode_rescue', agentType: 'default',
+    parentThreadId: parentId, childThreadId: childId, agentPath, taskName, agentType: 'default',
     route: 'generic-schema-hidden', publicOutput: expectedPublicOutput, semanticProgressChecked: true,
   });
 });
@@ -603,16 +675,12 @@ test('fails instead of skipping when observed child ID conflicts with an existin
   );
 });
 
-test('fails when task name and linked agent path do not select zcode_rescue', () => {
+test('accepts any bounded task name and consistently linked opaque agent path as presentation metadata', () => {
   const input = fixture();
-  const returned = childReturnEvent(input);
-  startEvent(input).payload.agent_path = '/root/not_rescue';
-  childMeta(input).payload.source.subagent.thread_spawn.agent_path = '/root/not_rescue';
-  returned.payload.author = '/root/not_rescue';
-  returned.payload.content[0].text = returned.payload.content[0].text.replace(agentPath, '/root/not_rescue');
-  assert.throws(
-    () => qualifyCodexRescueEvidence(input, options()),
-    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'agent-path-mismatch',
+  setPresentation(input, 'not_rescue', '/root/not_rescue');
+  assert.deepEqual(
+    (({ taskName: actualTaskName, agentPath: actualAgentPath }) => ({ taskName: actualTaskName, agentPath: actualAgentPath }))(qualifyCodexRescueEvidence(input, options())),
+    { taskName: 'not_rescue', agentPath: '/root/not_rescue' },
   );
 });
 
@@ -778,8 +846,6 @@ test('rollout JSONL parser is bounded and fails closed on malformed records', ()
 
 function options(overrides = {}) {
   const value = {
-    expectedTaskName: 'zcode_rescue',
-    expectedAgentPath: agentPath,
     expectedAgentType: 'zcode-rescue',
     expectedWorkspace,
     expectedCommand,
@@ -813,7 +879,7 @@ function fixture(publicOutput = expectedPublicOutput) {
       { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
       structuredExec(expectedPreflightCommand, 'preflight-1'),
       toolOutput('preflight-1', `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
-      { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ agent_type: 'zcode-rescue', fork_turns: 'none', message: 'fixed named forwarder', task_name: 'zcode_rescue' }) } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ agent_type: 'zcode-rescue', fork_turns: 'none', message: 'fixed named forwarder', task_name: taskName }) } },
       { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
       { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: childEnvelope }] } },
       { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
@@ -856,17 +922,31 @@ function setYieldedHandle(input, handle) {
 
 function backgroundFixture() { const input = fixture(backgroundPublicOutput); childOutput(input).payload.output = [{ type: 'input_text', text: `${backgroundPublicOutput}\n` }]; return input; }
 
+function setPresentation(input, nextTaskName, nextAgentPath) {
+  const spawn = spawnEvent(input);
+  const args = JSON.parse(spawn.payload.arguments);
+  args.task_name = nextTaskName;
+  spawn.payload.arguments = JSON.stringify(args);
+  startEvent(input).payload.agent_path = nextAgentPath;
+  childMeta(input).payload.source.subagent.thread_spawn.agent_path = nextAgentPath;
+  for (const event of input.rollouts[0].filter((candidate) => candidate?.payload?.type === 'agent_message' && candidate.payload.recipient === '/root')) {
+    event.payload.author = nextAgentPath;
+    for (const content of event.payload.content ?? []) {
+      if (content?.type === 'input_text') content.text = content.text.replace(`Sender: ${agentPath}\n`, `Sender: ${nextAgentPath}\n`);
+    }
+  }
+  return input;
+}
+
 function choiceOptions(choice) {
   return {
     expectedChoice: choice,
     expectedParentThreadId: parentId,
-    expectedAgentPath: agentPath,
     expectedAgentType: 'zcode-rescue',
     expectedWorkspace,
     expectedInitialCommand: expectedCommand,
     expectedNamedSpawnMessage: 'fixed named forwarder',
     expectedGenericSpawnMessage: 'fixed generic forwarder',
-    expectedTaskName: 'zcode_rescue',
     expectedPreflightCommand,
     expectedChoiceCommand: `node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`,
     expectedFollowupMessage: `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`,
@@ -941,7 +1021,7 @@ function timeoutFixture() {
 }
 
 function structuredSpawn(callId) {
-  return { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: callId, arguments: JSON.stringify({ agent_type: 'zcode-rescue', fork_turns: 'none', message: 'fixed named forwarder', task_name: 'zcode_rescue' }) } };
+  return { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: callId, arguments: JSON.stringify({ agent_type: 'zcode-rescue', fork_turns: 'none', message: 'fixed named forwarder', task_name: taskName }) } };
 }
 
 function structuredFollowup(callId, choice) {
