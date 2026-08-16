@@ -11,10 +11,25 @@ import test from 'node:test';
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { runProcess, terminateProcess } from '../../scripts/lib/process.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
+import {
+  assertRescueRouteContract,
+  expectedGenericRescueInstruction as expectedInstalledGenericInstruction,
+  expectedGenericRescueMessage as expectedInstalledGenericMessage,
+  expectedNamedRescueInstruction as expectedInstalledNamedInstruction,
+  expectedNamedRescueSpawn as expectedInstalledNamedSpawn,
+} from '../helpers/rescue-skill-contract.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const expectedSkills = ['adversarial-review', 'cancel', 'rescue', 'result', 'review', 'setup', 'status', 'transfer'];
+function assertInstalledRescueRoutingContract(source) {
+  const sections = assertRescueRouteContract(source, { assertionPrefix: 'installed ' });
+  const { naming } = sections;
+  assert.equal(naming.text.match(/choose `rescueTaskName` exactly once/g)?.length, 1, 'installed Rescue naming section must choose rescueTaskName exactly once');
+  assert.match(naming.text, /task_name[^\n]+agent_path[^\n]+presentation metadata[^\n]+convention matching[^\n]+neither sufficient nor necessary[^\n]+Rescue identity evidence/i);
+  assert.match(naming.text, /Never classify, authorize, route, reject, downgrade, or recover Rescue based on any name or path/i);
+  return sections;
+}
 
 async function run(args, cwd, env) {
   const launch = codexLaunch(args, { root, env });
@@ -143,10 +158,59 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     'scripts/lib/progress.mjs',
   ]) assert.ok((await readFile(join(installedRoot, modulePath), 'utf8')).length > 0, `${modulePath} missing from installed marketplace payload`);
   const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
-  const preflightOffset = installedRescue.indexOf('role-status rescue');
-  const namedSpawnOffset = installedRescue.indexOf("task_name: 'zcode_rescue'");
-  const childCommandOffset = installedRescue.indexOf('scripts/zcode-companion.mjs" invoke rescue');
-  assert.ok(preflightOffset >= 0 && namedSpawnOffset > preflightOffset && childCommandOffset > namedSpawnOffset, 'installed routing must preflight, spawn, then send only the child command');
+  const installedSections = assertInstalledRescueRoutingContract(installedRescue);
+  for (const [routeName, route] of [['named', installedSections.namedSpawn], ['generic', installedSections.genericInstruction]]) {
+    const fixedNameMutation = `${installedRescue.slice(0, route.start)}${route.text.replace('task_name: rescueTaskName', "task_name: 'zcode_rescue'")}${installedRescue.slice(route.end)}`;
+    assert.throws(
+      () => assertInstalledRescueRoutingContract(fixedNameMutation),
+      new RegExp(`installed ${routeName} (?:spawn|route) must use rescueTaskName exactly once`),
+      `installed ${routeName} route assertion must reject a fixed task name even when other dynamic naming prose remains`,
+    );
+  }
+  const namedDecoyMutation = installedRescue
+    .replace('task_name: rescueTaskName', "task_name: 'worker'")
+    .replace(
+      'prefer this exact named spawn with a fresh context:\n\n```text\n',
+      'prefer this exact named spawn with a fresh context:\n\n```text\nspawn_agent({\n  task_name: rescueTaskName,\n})\n```\n\nUnrelated dynamic example:\n\n```text\n',
+    );
+  assert.throws(
+    () => assertInstalledRescueRoutingContract(namedDecoyMutation),
+    /installed named (?:spawn must preserve the exact dynamic Rescue object|route must be one instruction and one fenced block with whitespace-only adjacency)/,
+    'installed named-route assertion must reject a decoy dynamic fence before the real worker-named spawn',
+  );
+  const genericDecoyMutation = installedRescue
+    .replace('then call `spawn_agent` with `task_name: rescueTaskName`', "then call `spawn_agent` with `task_name: 'worker'`")
+    .replace('\n\n```text\nAct only as the installed ZCode Rescue forwarder.', '\n\nUnrelated example: `task_name: rescueTaskName`.\n\n```text\nAct only as the installed ZCode Rescue forwarder.');
+  assert.throws(
+    () => assertInstalledRescueRoutingContract(genericDecoyMutation),
+    /installed generic (?:call sentence must preserve the exact dynamic Rescue arguments|route must be one instruction and one fenced block with whitespace-only adjacency)/,
+    'installed generic-route assertion must reject unrelated dynamic prose when the real call sentence uses a worker name',
+  );
+  const namedFullDecoyMutation = installedRescue
+    .replace('task_name: rescueTaskName', "task_name: 'worker'")
+    .replace(
+      `${expectedInstalledNamedInstruction}\n\n\`\`\`text\n`,
+      `${expectedInstalledNamedInstruction}\n\n\`\`\`text\n${expectedInstalledNamedSpawn}\n\`\`\`\n\n\`\`\`text\n`,
+    );
+  assert.throws(
+    () => assertInstalledRescueRoutingContract(namedFullDecoyMutation),
+    /installed named (?:spawn must preserve the exact dynamic Rescue object|route must be one instruction and one fenced block with whitespace-only adjacency)/,
+    'installed named route must reject a complete legal decoy spawn hiding the later worker-named spawn',
+  );
+  const badGenericInstruction = expectedInstalledGenericInstruction.replace('task_name: rescueTaskName', "task_name: 'worker'");
+  const badGenericMessage = expectedInstalledGenericMessage.replace('Act only as the installed ZCode Rescue forwarder.', 'Act independently from the installed ZCode Rescue forwarder.');
+  const genericFullDecoyMutation = installedRescue
+    .replace(expectedInstalledGenericInstruction, badGenericInstruction)
+    .replace(expectedInstalledGenericMessage, badGenericMessage)
+    .replace(
+      badGenericInstruction,
+      `${expectedInstalledGenericInstruction}\n\n\`\`\`text\n${expectedInstalledGenericMessage}\n\`\`\`\n\n${badGenericInstruction}`,
+    );
+  assert.throws(
+    () => assertInstalledRescueRoutingContract(genericFullDecoyMutation),
+    /installed generic (?:child message must remain fixed|route must be one instruction and one fenced block with whitespace-only adjacency)/,
+    'installed generic route must reject a complete legal decoy hiding the later broken call and message',
+  );
   assert.match(installedRescue, /agent_type:\s*'zcode-rescue'/);
   assert.match(installedRescue, /fork_turns:\s*'none'/);
   assert.match(installedRescue, /Do not relay raw child progress, stderr, tool output, or intermediate messages into the parent/);
