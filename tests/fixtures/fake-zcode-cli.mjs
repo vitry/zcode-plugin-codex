@@ -290,6 +290,19 @@ input.on('line', async (line) => {
         send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 1, deltas: [] }));
       }
       if (process.env.FAKE_ZCODE_SYNC_BATCH !== 'stale-valid') send(response);
+      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'observed-traffic' && subscription) {
+        const unknownRow = (rowId, marker) => ({ op: 'row.upserted', row: { rowId, turnId: 'turn-observed', createdAt: 1_786_233_600_000, createdAtSeq: rowId, kind: 'assistantDraft', content: marker } });
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 1, deltas: [
+          { op: 'row.upserted', row: { rowId: 51, turnId: 'turn-observed', createdAt: 1_786_233_600_000, createdAtSeq: 51, kind: 'turnHeader', origin: 'userInput', state: 'running', startedAt: 1_786_233_600_000 } },
+          unknownRow(52, 'PRIVATE_OBSERVED_UNKNOWN'),
+        ] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 1, deltas: [unknownRow(53, 'PRIVATE_OBSERVED_STALE')] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 4, deltas: [{ op: 'row.upserted', row: { rowId: 54, turnId: 'turn-observed', createdAt: 1_786_233_600_000, createdAtSeq: 54, kind: 'toolCall', toolCallId: 'tool-observed', toolName: 'Read', status: 'running', inputText: '{}', input: {}, startedAt: 1_786_233_600_000 } }] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 5, deltas: [
+          unknownRow(55, 'PRIVATE_OBSERVED_INTERLEAVED'),
+          { op: 'row.upserted', row: { rowId: 56, turnId: 'turn-observed', createdAt: 1_786_233_600_000, createdAtSeq: 56, kind: 'toolCall', toolCallId: 'tool-observed', toolName: 'Read', status: 'success', inputText: '{}', input: {}, startedAt: 1_786_233_600_000, endedAt: 1_786_233_600_025 } },
+        ] }));
+      }
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1' && subscription) {
         const base = { rowId: 41, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 41, kind: 'toolCall', toolCallId: 'tool-command-1', toolName: 'Bash', input: { command: 'npm\ttest', reasoning: 'reasoning must stay private', brokerToken: 'capability must stay private' }, inputText: '{"command":"raw output"}', startedAt: 1_786_233_600_000 };
         send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 2, deltas: [{ op: 'row.upserted', row: { ...base, status: 'inputStreaming' } }] }));

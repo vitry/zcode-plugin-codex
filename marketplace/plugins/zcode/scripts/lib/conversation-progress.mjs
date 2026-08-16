@@ -16,6 +16,8 @@ const MAX_TRACKED_ROWS = 256;
 const MAX_PENDING_OBSERVATIONS = 4;
 const PATH_RESOLUTION_TIMEOUT_MS = 100;
 const CONVERSATION_WIRE_VERSION = 3;
+const SUPPORTED_DELTA_OPS = new Set(['row.appended', 'row.upserted']);
+const SUPPORTED_ROW_KINDS = new Set(['toolCall', 'turnHeader']);
 /** @typedef {{phase:string,message:string,observedAt:string}} PublicProgressEvent */
 /** @typedef {{disposition:'accepted',phase:'initial'|'online'|'recovery',events:PublicProgressEvent[]}|{disposition:'rejected'|'ignored',reason:string,events:PublicProgressEvent[]}} ObservationResult */
 /** @param {string} reason @returns {ObservationResult} */
@@ -94,18 +96,17 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     if (frame.deliveryKind === 'initial') return accepted('initial');
     if (frame.deliveryKind === 'recovery') {
       if (lastOrdinal !== undefined && (frame.ordinal <= lastOrdinal || frame.toSeq <= /** @type {number} */ (lastSeq))) {
-        needsRecovery = true; return rejected('sequence');
-      }
-      if (!needsRecovery && lastOrdinal !== undefined && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== /** @type {number} */ (lastSeq) + 1)) {
-        needsRecovery = true; return rejected('sequence');
+        return ignored('stale');
       }
       lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false;
       absorbRecovery(frame.deltas); return accepted('recovery');
     }
-    if (lastOrdinal !== undefined && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== /** @type {number} */ (lastSeq) + 1)) {
-      needsRecovery = true; return rejected('sequence');
-    }
     if (needsRecovery) return ignored('recovery-required');
+    if (lastOrdinal !== undefined && frame.ordinal <= lastOrdinal) return ignored('stale');
+    const sequenceGap = lastOrdinal !== undefined
+      && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== /** @type {number} */ (lastSeq) + 1);
+    lastOrdinal = frame.ordinal; lastSeq = Math.max(lastSeq ?? frame.toSeq, frame.toSeq);
+    if (sequenceGap) return rejected('sequence');
     const staged = [];
     for (const delta of frame.deltas) {
       if (!delta.row) continue;
@@ -127,7 +128,6 @@ export async function createConversationProgressDescriber({ sessionId, subscript
         if (row.state === 'running' && previous === undefined) staged.push({ phase: 'starting', message: 'ZCode turn started.', observedAt: publicObservedAt });
       }
     }
-    lastOrdinal = frame.ordinal; lastSeq = frame.toSeq;
     return accepted('online', staged);
   }
 
@@ -199,7 +199,7 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
   });
 }
 
-/** @param {unknown} notification @param {string} topic @param {string} subscriptionId @returns {{ok:true,value:{deliveryKind:'initial'|'online'|'recovery',ordinal:number,fromSeq:number,toSeq:number,deltas:Array<{op:string,row:Record<string,any>}>}}|{ok:false,reason:string}} */
+/** @param {unknown} notification @param {string} topic @param {string} subscriptionId @returns {{ok:true,value:{deliveryKind:'initial'|'online'|'recovery',ordinal:number,fromSeq:number,toSeq:number,deltas:Array<{op:string,row:Record<string,any>|null}>}}|{ok:false,reason:string}} */
 function validateNotification(notification, topic, subscriptionId) {
   if (!plainObject(notification) || notification.method !== 'v4/conversation/frame' || !plainObject(notification.params)) return { ok: false, reason: 'envelope-shape' };
   const wire = notification.params;
@@ -224,15 +224,24 @@ function validateNotification(notification, topic, subscriptionId) {
   return { ok: true, value: { deliveryKind: wire.deliveryKind, ordinal: wire.logicalFrameOrdinal, fromSeq: frame.fromSeq, toSeq: frame.toSeq, deltas } };
 }
 
-/** @param {unknown} value @returns {{ok:true,value:{op:string,row:Record<string,any>}}|{ok:false,reason:string}} */
+/** @param {unknown} value @returns {{ok:true,value:{op:string,row:Record<string,any>|null}}|{ok:false,reason:string}} */
 function validateDelta(value) {
-  if (!plainObject(value) || typeof value.op !== 'string') return { ok: false, reason: 'row-shape' };
-  if (value.op === 'row.appended' || value.op === 'row.upserted') {
-    if (!exactKeys(value, ['op', 'row']) || !plainObject(value.row)) return { ok: false, reason: 'row-shape' };
-    if (!['toolCall', 'turnHeader'].includes(value.row.kind)) return { ok: false, reason: 'row-kind' };
-    const row = validateRow(value.row); return row ? { ok: true, value: { op: value.op, row } } : { ok: false, reason: 'row-shape' };
-  }
-  return { ok: false, reason: 'row-kind' };
+  if (!plainObject(value) || !SUPPORTED_DELTA_OPS.has(value.op) || !exactKeys(value, ['op'], ['row'])) return { ok: false, reason: 'row-shape' };
+  if (value.row === undefined) return { ok: true, value: { op: value.op, row: null } };
+  if (!plainObject(value.row) || !safeRowEnvelope(value.row)) return { ok: false, reason: 'row-shape' };
+  if (!SUPPORTED_ROW_KINDS.has(value.row.kind)) return { ok: true, value: { op: value.op, row: null } };
+  const row = validateRow(value.row); return row ? { ok: true, value: { op: value.op, row } } : { ok: false, reason: 'row-shape' };
+}
+
+/** @param {Record<string,any>} row */
+function safeRowEnvelope(row) {
+  if (!wireNumber(row.rowId) || !boundedIdentifier(row.turnId, 1024) || !wireTimestamp(row.createdAt)
+    || !wireNumber(row.createdAtSeq) || !boundedIdentifier(row.kind, 256)
+    || row.visibility !== undefined && row.visibility !== 'visible'
+    || row.entityId !== undefined && !boundedIdentifier(row.entityId, 1024)
+    || row.productTurnId !== undefined && !boundedIdentifier(row.productTurnId, 1024)
+    || !validActions(row.actions)) return false;
+  try { return Buffer.byteLength(JSON.stringify(row)) <= MAX_WIRE_TEXT; } catch { return false; }
 }
 
 /** @param {Record<string,any>} row */
