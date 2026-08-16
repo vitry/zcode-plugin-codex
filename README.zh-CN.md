@@ -58,7 +58,7 @@ ZCode 支持时，child 会订阅 online conversation progress，并用结构化
 
 后台语义保持不变：child 只负责预留生产 background worker 并返回公开 job ID，一次性 capability 仍只经 production-owned protected descriptor 传输。持久恢复继续使用 `$zcode:status`、`$zcode:result` 和 `$zcode:cancel`。普通 steering、等待超时或父/child 丢失都不授权替代执行。
 
-Codex 0.147 是本次发布唯一被固定并纳入原生 Rescue installed-host qualification suite 的版本线。只有严格认证套件完整成功的 build 才算 qualified；默认的机器可读 `unqualified` 结果不是兼容性证据。其他 Codex 版本在各自的 installed qualification 成功前不宣称兼容。uninstall 插件不会自动删除稳定私有数据、受管 Role 收据/文件、job 历史或精确 user-config 配置叶。请先结束或取消 owner job，再按[手动卸载与残留状态清理指南](docs/manual-uninstall.md)审查并移除能证明属于本插件的条目；绝不能删除有冲突的用户或项目 Role。
+Codex 0.147 是本次发布唯一被固定并纳入原生 Rescue installed-host qualification suite 的版本线。默认 CI 会分别重放经过净化的 0.147 captured rollout，独立覆盖具名 Role 和 generic fallback，包括 yielded 前台执行及同一 child 的 choice continuation。带认证的 live 测试仍只记录 Codex 实际选择的一条路由；它不会声称一次 live turn 同时执行了两条路由。只有严格认证套件完整成功的 build 才算 qualified；默认的机器可读 `unqualified` 结果不是兼容性证据。其他 Codex 版本在各自的 installed qualification 成功前不宣称兼容。uninstall 插件不会自动删除稳定私有数据、受管 Role 收据/文件、job 历史或精确 user-config 配置叶。请先结束或取消 owner job，再按[手动卸载与残留状态清理指南](docs/manual-uninstall.md)审查并移除能证明属于本插件的条目；绝不能删除有冲突的用户或项目 Role。
 
 ## 模型
 

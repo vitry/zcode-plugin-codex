@@ -497,6 +497,57 @@ test('installed named and generic foreground and choice policies independently b
   }
 });
 
+test('installed named and generic routes independently execute captured Codex 0.147 foreground rollouts', async () => {
+  const routes = await installedCapturedRescueRoutes();
+  for (const route of routes) {
+    const evidence = qualifyInstalledCapturedForeground(route);
+    assert.equal(evidence.route, route.expectedEvidenceRoute);
+    assert.equal(evidence.progressRelayChecked, true);
+    assert.equal(evidence.statusSidecarChecked, true);
+    assert.deepEqual(evidence.yieldedExecution, {
+      execCommandCount: 1,
+      pollCount: 2,
+      sameHandleChecked: true,
+      terminalExitCode: 0,
+    });
+    assert.equal(route.fixture.rollouts.length, 2, `${route.name} must retain exactly one parent and one child rollout`);
+    assert.equal(installedCapturedRunningHandles(route.fixture).size, 0, `${route.name} must leave no nonterminal handle orphaned`);
+  }
+});
+
+test('captured installed route wiring mutations fail only the mutated foreground route', async () => {
+  const routes = await installedCapturedRescueRoutes();
+  for (const route of routes) {
+    const other = routes.find((candidate) => candidate !== route);
+    assert.equal(qualifyInstalledCapturedForeground(other).route, other.expectedEvidenceRoute, `${other.name} control route must remain qualified`);
+    const mutated = { ...route, fixture: structuredClone(route.fixture) };
+    const spawn = mutated.fixture.rollouts[0].find((event) => event?.payload?.name === 'spawn_agent');
+    const args = JSON.parse(spawn.payload.arguments);
+    if (route.name === 'named') delete args.agent_type;
+    else args.agent_type = 'zcode-rescue';
+    spawn.payload.arguments = JSON.stringify(args);
+    assert.throws(() => qualifyInstalledCapturedForeground(mutated), CodexRescueEvidenceMismatchError, `${route.name} route wiring mutation`);
+  }
+});
+
+test('installed named and generic routes independently execute both captured choice segments', async () => {
+  const routes = await installedCapturedRescueRoutes();
+  for (const route of routes) {
+    for (const requested of ['resume', 'fresh']) {
+      const choice = installedCapturedChoiceRoute(route, requested);
+      const evidence = qualifyInstalledCapturedChoice(choice);
+      assert.equal(evidence.progressRelayChecked, true);
+      assert.equal(evidence.statusSidecarChecked, true);
+      assert.deepEqual(evidence.executions, { initial: { execCommandCount: 1 }, continuation: { execCommandCount: 1 } });
+      assert.deepEqual(installedChoiceYieldFacts(choice.fixture.rollouts, choice.childThreadId, choice.commands), {
+        initial: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 3 },
+        continuation: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 0 },
+      });
+      assert.equal(installedCapturedRunningHandles(choice.fixture).size, 0, `${route.name} ${requested} choice must leave no nonterminal handle orphaned`);
+    }
+  }
+});
+
 test('installed choice qualification requires yielded same-handle terminal evidence in both logical segments', () => {
   const fixture = installedChoiceYieldFixture();
   assert.deepEqual(installedChoiceYieldFacts(fixture.rollouts, fixture.childThreadId, fixture.commands), {
@@ -1553,6 +1604,199 @@ function installedChoiceYieldFixture() {
     ...segment('continuation', commands.continuation, 61, 0),
   ]] };
 }
+
+async function installedCapturedRescueRoutes() {
+  const installedRoot = '/captured/installed/zcode';
+  const installedSnapshot = join(root, 'marketplace', 'plugins', 'zcode');
+  const namedTemplate = extractInstalledRoleInstructions(await readFile(join(installedSnapshot, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
+  const genericTemplate = assertRescueRouteContract(await readFile(join(installedSnapshot, 'skills', 'rescue', 'SKILL.md'), 'utf8')).genericMessage.text;
+  assertInstalledForwarderLifecycleContract(namedTemplate, 'named', { expectedRoot: '{{PLUGIN_ROOT}}' });
+  assertInstalledForwarderLifecycleContract(genericTemplate, 'generic', { expectedRoot: '<canonical-plugin-root>' });
+  const namedPolicy = namedTemplate.replaceAll('{{PLUGIN_ROOT}}', installedRoot);
+  const genericPolicy = genericTemplate.replaceAll('<canonical-plugin-root>', installedRoot);
+  assertInstalledForwarderLifecycleContract(namedPolicy, 'named', { expectedRoot: installedRoot });
+  // The generic template itself is the spawn assignment; rendering is verified by
+  // the fixed command evidence and exact expected spawn message below.
+  return [
+    installedCapturedRescueRoute('named', namedPolicy, expectedNamedRescueMessage, installedRoot),
+    installedCapturedRescueRoute('generic', genericPolicy, genericPolicy, installedRoot),
+  ];
+}
+
+function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, installedRoot) {
+  const parentThreadId = name === 'named' ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222';
+  const childThreadId = name === 'named' ? '33333333-3333-4333-8333-333333333333' : '44444444-4444-4444-8444-444444444444';
+  const taskName = `zcode_rescue_captured_${name}`; const agentPath = `/root/${taskName}`;
+  const command = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke rescue`;
+  const preflightCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" role-status rescue`;
+  const statusCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-status rescue`;
+  for (const expected of [command, statusCommand,
+    `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue resume`,
+    `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue fresh`]) {
+    assert.ok(renderedPolicy.includes(expected), `${name} rendered installed policy must own ${expected}`);
+  }
+  const publicOutput = `captured-${name}-done`; const handle = name === 'named' ? 71 : 81;
+  const semantic = {
+    start: '[zcode] Running command: npm test.',
+    terminal: '[zcode] Command completed: npm test (25ms).',
+    snapshotFallback: '[zcode] ZCode conversation frames were unavailable; using bounded session progress.',
+    lifecycleOnly: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.',
+  };
+  const spawnArgs = { fork_turns: 'none', message: spawnMessage, task_name: taskName };
+  if (name === 'named') spawnArgs.agent_type = 'zcode-rescue';
+  const childEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${publicOutput}`;
+  const child = [
+    { type: 'session_meta', payload: { session_id: parentThreadId, id: childThreadId, parent_thread_id: parentThreadId, cli_version: '0.147.0', thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentThreadId, depth: 1, agent_path: agentPath, agent_nickname: 'Ada', agent_role: name === 'named' ? 'zcode-rescue' : null } } } } },
+    installedToolCall(`${name}-exec`, installedExecInput(command)),
+    installedToolOutput(`${name}-exec`, { output: `${semantic.start}\n${installedCapturedRelayLine(1, 'starting', 'started')}\n`, session_id: handle }),
+    installedCapturedRelayCall(`${name}-relay-1`, 'started'), installedCapturedFunctionOutput(`${name}-relay-1`),
+    installedToolCall(`${name}-poll-1`, installedPollInput(handle)),
+    installedToolOutput(`${name}-poll-1`, { output: `${installedCapturedRelayLine(2, 'investigating', 'tool-active')}\n`, session_id: handle }),
+    installedCapturedRelayCall(`${name}-relay-2`, 'tool-active'), installedCapturedFunctionOutput(`${name}-relay-2`),
+    installedToolCall(`${name}-status`, installedExecInput(statusCommand)),
+    installedToolOutput(`${name}-status`, { output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`, exit_code: 0 }),
+    installedToolCall(`${name}-poll-2`, installedPollInput(handle)),
+    installedToolOutput(`${name}-poll-2`, { output: `${semantic.terminal}\n${publicOutput}\n`, exit_code: 0 }),
+    { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
+  ];
+  const parent = [
+    { type: 'session_meta', payload: { session_id: parentThreadId, id: parentThreadId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
+    installedToolCall(`${name}-preflight`, installedCapturedLegacyExecInput(preflightCommand)),
+    installedCapturedLegacyOutput(`${name}-preflight`, `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+    { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: `${name}-spawn`, arguments: JSON.stringify(spawnArgs) } },
+    { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: `${name}-spawn`, agent_thread_id: childThreadId, agent_path: agentPath, kind: 'started' } },
+    installedCapturedParentRelay(agentPath, 'started', name === 'named' ? 'a' : 'c', name === 'named' ? 'a' : 'c'),
+    ...installedCapturedWait(`${name}-wait-1`, true),
+    installedCapturedParentRelay(agentPath, 'tool-active', name === 'named' ? 'b' : 'd', name === 'named' ? 'a' : 'c'),
+    ...installedCapturedWait(`${name}-wait-2`, false),
+    { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: childEnvelope }] } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
+  ];
+  let offset = 1; const stamp = (event) => { event.timestamp = `2026-08-17T00:00:${String(offset++).padStart(2, '0')}.000Z`; };
+  for (const event of child.slice(1, 5)) stamp(event);
+  for (const event of parent.slice(5, 8)) stamp(event);
+  for (const event of child.slice(5, 9)) stamp(event);
+  for (const event of parent.slice(8, 11)) stamp(event);
+  for (const event of child.slice(9)) stamp(event);
+  for (const event of parent.slice(11)) stamp(event);
+  const fixture = { execFrames: [
+    { type: 'thread.started', thread_id: parentThreadId }, { type: 'turn.started' },
+    { type: 'item.completed', item: { id: `${name}-final`, type: 'agent_message', text: publicOutput } },
+    { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 10, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 5 } },
+  ], rollouts: [parent, child] };
+  return { name, fixture, expectedEvidenceRoute: name === 'named' ? 'named' : 'generic-schema-hidden', installedRoot, renderedPolicy, command, preflightCommand, statusCommand, spawnMessage, publicOutput, semantic };
+}
+
+function qualifyInstalledCapturedForeground(route) {
+  return qualifyCodexRescueEvidence(route.fixture, {
+    expectedAgentType: 'zcode-rescue', expectedWorkspace: '/installed/workspace', expectedCommand: route.command,
+    expectedPreflightCommand: route.preflightCommand, expectedNamedSpawnMessage: expectedNamedRescueMessage,
+    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
+    expectedPublicOutput: route.publicOutput, expectedSemanticProgress: route.semantic,
+    requireYieldedExecution: true, requireProgressRelay: true, requireStatusSidecar: true, expectedStatusCommand: route.statusCommand,
+    statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
+    forbiddenParentText: [route.semantic.start, route.semantic.terminal, 'raw output must stay private', 'reasoning must stay private'],
+  });
+}
+
+function installedCapturedChoiceRoute(route, choice) {
+  const parentThreadId = route.fixture.rollouts[0][0].payload.id;
+  const childThreadId = route.fixture.rollouts[1][0].payload.id;
+  const childMeta = structuredClone(route.fixture.rollouts[1][0]);
+  const spawn = structuredClone(route.fixture.rollouts[0].find((event) => event?.payload?.name === 'spawn_agent'));
+  const start = structuredClone(route.fixture.rollouts[0].find((event) => event?.payload?.type === 'sub_agent_activity'));
+  const agentPath = start.payload.agent_path;
+  const choiceCommand = `node "${route.installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`;
+  const followupMessage = `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`;
+  const needsChoice = `${JSON.stringify({ type: 'needs-choice', candidate: { sessionId: `captured-${route.name}-session` }, choices: ['--resume', '--fresh'] })}\n`;
+  const handles = route.name === 'named' ? [91, 92] : [93, 94];
+  const initial = [
+    installedToolCall(`${route.name}-initial-exec`, installedExecInput(route.command)),
+    installedToolOutput(`${route.name}-initial-exec`, { output: `partial\n${installedCapturedRelayLine(1, 'starting', 'started')}\n`, session_id: handles[0] }),
+    installedCapturedRelayCall(`${route.name}-initial-relay`, 'started'), installedCapturedFunctionOutput(`${route.name}-initial-relay`),
+    installedToolCall(`${route.name}-initial-status`, installedExecInput(route.statusCommand)),
+    installedToolOutput(`${route.name}-initial-status`, { output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`, exit_code: 0 }),
+    installedToolCall(`${route.name}-initial-poll`, installedPollInput(handles[0])), installedToolOutput(`${route.name}-initial-poll`, { output: 'heartbeat\n', session_id: handles[0] }),
+    installedToolCall(`${route.name}-initial-terminal`, installedPollInput(handles[0])), installedToolOutput(`${route.name}-initial-terminal`, { output: needsChoice, exit_code: 3 }),
+    { type: 'event_msg', payload: { type: 'agent_message', message: needsChoice, phase: 'final_answer' } },
+  ];
+  const continuation = [
+    installedToolCall(`${route.name}-continuation-exec`, installedExecInput(choiceCommand)),
+    installedToolOutput(`${route.name}-continuation-exec`, { output: `partial\n${installedCapturedRelayLine(1, 'running', 'model-active')}\n`, session_id: handles[1] }),
+    installedCapturedRelayCall(`${route.name}-continuation-relay`, 'model-active'), installedCapturedFunctionOutput(`${route.name}-continuation-relay`),
+    installedToolCall(`${route.name}-continuation-poll`, installedPollInput(handles[1])), installedToolOutput(`${route.name}-continuation-poll`, { output: 'heartbeat\n', session_id: handles[1] }),
+    installedToolCall(`${route.name}-continuation-terminal`, installedPollInput(handles[1])), installedToolOutput(`${route.name}-continuation-terminal`, { output: `${route.publicOutput}\n`, exit_code: 0 }),
+    { type: 'event_msg', payload: { type: 'agent_message', message: route.publicOutput, phase: 'final_answer' } },
+  ];
+  const firstEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${needsChoice}`;
+  const secondEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${route.publicOutput}`;
+  const parent = [
+    structuredClone(route.fixture.rollouts[0][0]),
+    installedToolCall(`${route.name}-choice-preflight`, installedCapturedLegacyExecInput(route.preflightCommand)),
+    installedCapturedLegacyOutput(`${route.name}-choice-preflight`, `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+    spawn, start,
+    installedCapturedParentRelay(agentPath, 'started', route.name === 'named' ? 'e' : '1', route.name === 'named' ? 'e' : '1'),
+    ...installedCapturedWait(`${route.name}-initial-wait`, false),
+    { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: firstEnvelope }] } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: `${needsChoice}Choose resume or fresh.`, phase: 'final_answer' } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: `${route.name}-followup`, arguments: JSON.stringify({ target: childThreadId, message: followupMessage }) } },
+    installedCapturedFunctionOutput(`${route.name}-followup`),
+    installedCapturedParentRelay(agentPath, 'model-active', route.name === 'named' ? 'f' : '2', route.name === 'named' ? 'f' : '2'),
+    ...installedCapturedWait(`${route.name}-continuation-wait`, false),
+    { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: secondEnvelope }] } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: route.publicOutput, phase: 'final_answer' } },
+  ];
+  const child = [childMeta, ...initial, ...continuation];
+  const timeline = [
+    initial[0], initial.at(-2), initial.at(-1), parent[8], parent[9], parent[10], parent[11],
+    continuation[0], continuation.at(-2), continuation.at(-1), parent.at(-2), parent.at(-1),
+  ];
+  timeline.forEach((event, index) => { event.timestamp = `2026-08-17T01:00:${String(index + 1).padStart(2, '0')}.000Z`; });
+  initial[2].timestamp = '2026-08-17T01:00:01.100Z'; parent[5].timestamp = '2026-08-17T01:00:01.200Z';
+  continuation[2].timestamp = '2026-08-17T01:00:08.100Z'; parent[12].timestamp = '2026-08-17T01:00:08.200Z';
+  return { ...route, fixture: { rollouts: [parent, child] }, parentThreadId, childThreadId, choice, choiceCommand, followupMessage,
+    commands: { initial: route.command, continuation: choiceCommand, status: route.statusCommand } };
+}
+
+function qualifyInstalledCapturedChoice(route) {
+  return qualifyCodexRescueChoiceEvidence(route.fixture, {
+    expectedChoice: route.choice, expectedParentThreadId: route.parentThreadId, expectedAgentType: 'zcode-rescue',
+    expectedWorkspace: '/installed/workspace', expectedInitialCommand: route.command, expectedChoiceCommand: route.choiceCommand,
+    expectedNamedSpawnMessage: expectedNamedRescueMessage,
+    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
+    expectedPreflightCommand: route.preflightCommand, expectedFollowupMessage: route.followupMessage,
+    expectedPublicOutput: route.publicOutput, requireProgressRelay: true, requireStatusSidecar: true,
+    expectedStatusCommand: route.statusCommand, includeExecutionFacts: true,
+    statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
+    forbiddenParentText: ['partial', 'heartbeat', 'raw output must stay private', 'reasoning must stay private'],
+  });
+}
+
+function installedCapturedRunningHandles(fixture) {
+  const active = new Set();
+  for (const events of fixture.rollouts) {
+    const outputs = new Map(events.filter((event) => event?.payload?.type === 'custom_tool_call_output').map((event) => [event.payload.call_id, event.payload.output]));
+    for (const event of events.filter((candidate) => candidate?.payload?.type === 'custom_tool_call')) {
+      let call; let result;
+      try { call = parseInstalledToolInput(event.payload.input); result = parseInstalledHostOutput(outputs.get(event.payload.call_id)); } catch { continue; }
+      if (call.kind === 'exec_command' && / invoke rescue$/u.test(call.value.cmd) && Number.isSafeInteger(result.session_id)) active.add(result.session_id);
+      if (call.kind === 'write_stdin' && Object.hasOwn(result, 'exit_code')) active.delete(call.value.session_id);
+    }
+  }
+  return active;
+}
+
+function installedCapturedRelayLine(sequence, phase, code) { return `[zcode-relay] ${JSON.stringify({ version: 1, sequence, phase, code, observedAt: `2026-08-17T00:00:0${sequence}.000Z` })}`; }
+function installedCapturedRelayMessage(code) { return ({ started: 'ZCode Rescue started.', 'model-active': 'ZCode is generating a response.', 'tool-active': 'ZCode is working with a tool.' })[code]; }
+function installedCapturedRelayCall(callId, code) { return { type: 'response_item', payload: { type: 'function_call', name: 'send_message', call_id: callId, arguments: JSON.stringify({ target: '/root', message: installedCapturedRelayMessage(code) }) } }; }
+function installedCapturedFunctionOutput(callId) { return { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '' } }; }
+function installedCapturedParentRelay(author, code, idMarker, turnMarker) { return { type: 'response_item', payload: { type: 'agent_message', id: `amsg_${idMarker.repeat(36)}`, author, recipient: '/root', content: [{ type: 'input_text', text: `Message Type: MESSAGE\nTask name: /root\nSender: ${author}\nPayload:\n` }, { type: 'encrypted_content', encrypted_content: `gAAAA${'A'.repeat(64)}` }], internal_chat_message_metadata_passthrough: { turn_id: `${turnMarker.repeat(8)}-${turnMarker.repeat(4)}-4${turnMarker.repeat(3)}-8${turnMarker.repeat(3)}-${turnMarker.repeat(12)}` } } }; }
+function installedCapturedWait(callId, timedOut) { return [
+  { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: callId, arguments: JSON.stringify({ timeout_ms: 30000 }) } },
+  { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: JSON.stringify({ message: timedOut ? 'Wait timed out.' : 'Wait completed.', timed_out: timedOut }) } },
+]; }
+function installedCapturedLegacyExecInput(cmd) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace' })});\ntext(r.output);\n`; }
+function installedCapturedLegacyOutput(callId, text) { return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text }] } }; }
 
 function installedChoiceYieldFacts(rollouts, childThreadId, commands) {
   try {
