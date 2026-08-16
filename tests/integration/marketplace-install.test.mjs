@@ -18,6 +18,11 @@ import {
   expectedNamedRescueInstruction as expectedInstalledNamedInstruction,
   expectedNamedRescueSpawn as expectedInstalledNamedSpawn,
 } from '../helpers/rescue-skill-contract.mjs';
+import {
+  assertInstalledForwarderLifecycleContract,
+  extractInstalledRoleInstructions,
+  installedLifecycleContractMutations,
+} from '../helpers/installed-rescue-lifecycle-contract.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -29,40 +34,6 @@ function assertInstalledRescueRoutingContract(source) {
   assert.match(naming.text, /task_name[^\n]+agent_path[^\n]+presentation metadata[^\n]+convention matching[^\n]+neither sufficient nor necessary[^\n]+Rescue identity evidence/i);
   assert.match(naming.text, /Never classify, authorize, route, reject, downgrade, or recover Rescue based on any name or path/i);
   return sections;
-}
-
-function extractInstalledRoleInstructions(source) {
-  const match = /^developer_instructions = """\n(?<body>[\s\S]*?)\n"""\s*$/u.exec(source);
-  assert.ok(match?.groups?.body, 'installed named Role must contain one exact developer-instructions body');
-  return match.groups.body;
-}
-
-function assertInstalledForwarderLifecycleContract(source, route) {
-  const originalHandle = source.indexOf('Exactly one `exec_command` companion process may own the foreground Rescue execution');
-  const terminalRule = source.indexOf('A companion result containing an exit code is terminal.');
-  const relayStart = source.indexOf('For every result yielded by the original foreground handle');
-  const relayValidation = source.indexOf('Before relay, require JSON with exact keys', relayStart);
-  const relayForward = source.indexOf('use `send_message` only to `/root` with the fixed mapped message', relayValidation);
-  const rawProhibition = source.indexOf('Never relay detailed `[zcode]` lines, arbitrary stderr', relayStart);
-  const sameHandlePoll = source.indexOf('continue only with same-handle `write_stdin` polling', rawProhibition);
-  const statusStart = source.indexOf('While the original foreground handle is live and only between polls', sameHandlePoll);
-  const statusCommand = source.indexOf('invoke-status rescue', statusStart);
-  const statusArguments = source.indexOf('Reject status arguments and every other spelling.', statusCommand);
-  const terminalReturn = source.indexOf("Return only the original foreground execution's terminal public stdout.", statusArguments);
-  assert.ok(originalHandle >= 0 && terminalRule > originalHandle, `installed ${route} same-handle terminal contract must precede relay handling`);
-  assert.ok(relayStart > terminalRule && relayValidation > relayStart && relayForward > relayValidation && relayForward < terminalReturn, `installed ${route} relay validation must precede terminal return`);
-  assert.ok(rawProhibition > relayForward && rawProhibition < statusStart, `installed ${route} raw progress prohibition must remain in the relay region`);
-  assert.ok(sameHandlePoll > rawProhibition && statusStart > sameHandlePoll && statusCommand > statusStart && statusArguments > statusCommand, `installed ${route} bound status must remain observational between same-handle polls`);
-  for (const command of ['invoke rescue', 'invoke-choice rescue resume', 'invoke-choice rescue fresh']) assert.ok(source.includes(command), `installed ${route} foreground and both choice commands must share the lifecycle contract`);
-}
-
-function moveInstalledRelayAfterTerminal(source) {
-  const start = source.indexOf('For every result yielded by the original foreground handle');
-  const end = source.indexOf('While the original foreground handle is live and only between polls', start);
-  const terminal = source.indexOf("Return only the original foreground execution's terminal public stdout.", end);
-  assert.ok(start >= 0 && end > start && terminal > end, 'installed relay mutation requires exact bounded source regions');
-  const relay = source.slice(start, end);
-  return `${source.slice(0, start)}${source.slice(end, terminal)}${source.slice(terminal)}\n${relay}`;
 }
 
 async function run(args, cwd, env) {
@@ -196,12 +167,14 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const installedSections = assertInstalledRescueRoutingContract(installedRescue);
   for (const [routeName, forwarder] of [['named', extractInstalledRoleInstructions(installedRoleSource)], ['generic', installedSections.genericMessage.text]]) {
-    assertInstalledForwarderLifecycleContract(forwarder, routeName);
-    assert.throws(() => assertInstalledForwarderLifecycleContract(moveInstalledRelayAfterTerminal(forwarder), routeName), new RegExp(`installed ${routeName} relay validation must precede terminal return`));
-    assert.throws(
-      () => assertInstalledForwarderLifecycleContract(forwarder.replace('Never relay detailed `[zcode]` lines, arbitrary stderr', 'Relay detailed `[zcode]` lines and arbitrary stderr'), routeName),
-      new RegExp(`installed ${routeName} raw progress prohibition must remain in the relay region`),
-    );
+    assertInstalledForwarderLifecycleContract(forwarder, routeName, { assertionPrefix: 'installed ' });
+    for (const [mutation, mutated] of installedLifecycleContractMutations(forwarder, routeName)) {
+      assert.throws(
+        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ' }),
+        /unique operative lifecycle region/u,
+        `installed ${routeName}: ${mutation}`,
+      );
+    }
   }
   for (const [routeName, route] of [['named', installedSections.namedSpawn], ['generic', installedSections.genericInstruction]]) {
     const fixedNameMutation = `${installedRescue.slice(0, route.start)}${route.text.replace('task_name: rescueTaskName', "task_name: 'zcode_rescue'")}${installedRescue.slice(route.end)}`;
