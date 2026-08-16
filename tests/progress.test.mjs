@@ -42,6 +42,64 @@ test('exports fixed progress bounds and phases', () => {
   assert.equal(progressModule.MAX_PROGRESS_DIAGNOSTIC_KINDS, 8);
 });
 
+test('coarse relay is independent from detailed stderr and coalesces duplicate semantic phases', async () => {
+  const lines = []; const relays = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), relay: (record) => relays.push(record), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started'));
+  reporter.observe(notification('model_streaming'));
+  reporter.observe(notification('tool_call_started'));
+  reporter.observe(notification('tool_call_progress'));
+  reporter.observe(notification('prompt_completed'));
+  reporter.observe(notification('tool_call_result'));
+  await reporter.flush();
+  assert.deepEqual(relays, [
+    { sequence: 1, phase: 'starting', code: 'started', observedAt },
+    { sequence: 2, phase: 'running', code: 'model-active', observedAt },
+    { sequence: 3, phase: 'investigating', code: 'tool-active', observedAt },
+    { sequence: 4, phase: 'finalizing', code: 'finalizing', observedAt },
+  ]);
+  assert.match(lines.join(''), /started a tool call/);
+  assert.doesNotMatch(JSON.stringify(relays), /tool call|delegated turn/);
+  reporter.close();
+});
+
+test('heartbeat emits a fixed waiting relay and terminal progress closes relay production', async () => {
+  const relays = []; let heartbeat = () => {}; let currentTime = observedAt;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', relay: (record) => relays.push(record), now: () => currentTime,
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started'));
+  currentTime = '2026-08-17T00:00:21.000Z'; heartbeat();
+  reporter.observe(notification('prompt_completed'));
+  currentTime = '2026-08-17T00:00:42.000Z'; heartbeat();
+  await reporter.flush();
+  assert.deepEqual(relays.map(({ sequence, phase, code }) => ({ sequence, phase, code })), [
+    { sequence: 1, phase: 'starting', code: 'started' },
+    { sequence: 2, phase: 'waiting', code: 'waiting' },
+    { sequence: 3, phase: 'finalizing', code: 'finalizing' },
+  ]);
+  reporter.close();
+});
+
+test('throwing relay is observational and cannot affect detailed progress or persistence', async () => {
+  const lines = []; const persisted = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), persist: (event) => persisted.push(event),
+    relay: () => { throw new Error('PRIVATE_RELAY_FAILURE'); }, now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started'));
+  reporter.observe(notification('prompt_completed'));
+  await reporter.flush();
+  assert.equal(lines.length, 2); assert.equal(persisted.length, 2);
+  assert.doesNotMatch(lines.join('') + JSON.stringify(persisted), /PRIVATE_RELAY_FAILURE/);
+  reporter.close();
+});
+
 test('snapshot reads cannot start before accepted-boundary activation and begin on the first heartbeat', async () => {
   const lines = []; let heartbeat = () => {}; let reads = 0;
   const reporter = progressModule.createProgressReporter({

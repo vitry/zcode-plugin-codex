@@ -64,12 +64,13 @@ export function normalizeZCodeProgress(notification, sessionId, observedAt) {
 }
 
 /**
- * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>false|(()=>unknown),describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
+ * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,relay?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>false|(()=>unknown),describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
  */
 export function createProgressReporter({
   sessionId,
   deferred = false,
   write,
+  relay,
   persist,
   persistProbe,
   activateSnapshotFallback: configuredSnapshotFallback,
@@ -86,10 +87,10 @@ export function createProgressReporter({
   let lastActivityAt = active ? now() : null;
   /** @type {string|null} */
   let previousKey = null;
-  /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */
+  /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number,relaySource:string}>} */
   const buffered = [];
   const bufferedKeys = new Set();
-  /** @type {Array<{kind:'event',event:{phase:string,message:string,observedAt:string},sequence:number}|{kind:'descriptor',notification:unknown,observedAt:string,sequence:number,state:'pending'|'ready'|'dropped',events:Array<{phase:string,message:string,observedAt:string}>}>} */
+  /** @type {Array<{kind:'event',event:{phase:string,message:string,observedAt:string},sequence:number,relaySource:string}|{kind:'descriptor',notification:unknown,observedAt:string,sequence:number,state:'pending'|'ready'|'dropped',events:Array<{phase:string,message:string,observedAt:string}>}>} */
   const logicalPending = [];
   /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */ const writerPending = [];
   /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */ const persistPending = [];
@@ -105,6 +106,8 @@ export function createProgressReporter({
   let observationSequence = 0;
   /** @type {number|null} */ let terminalSequence = null;
   let terminalDispatched = false;
+  let relaySequence = 0; let relayDisabled = false; let relayClosed = false;
+  /** @type {string|null} */ let previousRelayPhase = null;
   const progressProbe = {
     state: 'probing', subscriptionAcknowledged: false, framesReceived: 0,
     acceptedInitial: 0, acceptedOnline: 0, acceptedRecovery: 0,
@@ -162,7 +165,7 @@ export function createProgressReporter({
       const observedAt = now(); if (!validTimestamp(observedAt)) return;
       const event = { phase: 'waiting', message, observedAt };
       const sequence = observationSequence; observationSequence += 1;
-      if (!active && terminalSequence === null) bufferEvent(event, sequence);
+      if (!active && terminalSequence === null) bufferEvent(event, sequence, 'none');
       else dispatchDiagnostic(event, sequence);
     });
     return true;
@@ -170,7 +173,7 @@ export function createProgressReporter({
   /** @type {any} */
   let timer = null;
   const startTimer = () => {
-    if (timer !== null || typeof write !== 'function' && typeof persistProbe !== 'function' && typeof activateSnapshotFallback !== 'function') return;
+    if (timer !== null || typeof write !== 'function' && typeof relay !== 'function' && typeof persistProbe !== 'function' && typeof activateSnapshotFallback !== 'function') return;
     timer = setIntervalFn(() => {
       activateCompatibilityBoundary(true);
       if (progressProbe.state === 'snapshot-fallback') {
@@ -184,6 +187,7 @@ export function createProgressReporter({
       const seconds = Math.floor(elapsedMs / 1_000);
       try { if (!writerDisabled && typeof write === 'function') write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`); }
       catch { writerDisabled = true; diagnose('writer-disabled'); }
+      emitRelay('waiting', 'waiting', currentTime);
     }, PROGRESS_HEARTBEAT_MS);
     timer?.unref?.();
   };
@@ -225,7 +229,7 @@ export function createProgressReporter({
       if (!boundedEvents.every(validPublicEvent)) throw new Error('snapshot progress event invalid');
       for (const event of boundedEvents) {
         const sequence = observationSequence; observationSequence += 1;
-        enqueueLogical({ kind: 'event', event, sequence });
+        enqueueLogical({ kind: 'event', event, sequence, relaySource: 'tool' });
       }
     }).catch(() => {
       if (closed || !accepting || epoch !== snapshotEpoch || progressProbe.state !== 'snapshot-fallback') return;
@@ -318,8 +322,28 @@ export function createProgressReporter({
     const entry = { event, sequence };
     if (persistInFlight === null) startPersist(entry); else retainBounded(persistPending, entry);
   };
-  /** @param {{phase:string,message:string,observedAt:string}} event @param {number} [sequence] */
-  const dispatch = (event, sequence = observationSequence++) => {
+  /** @param {string} phase @param {string} code @param {string} observedAt */
+  const emitRelay = (phase, code, observedAt) => {
+    if (relayClosed || relayDisabled || typeof relay !== 'function' || phase === previousRelayPhase) return;
+    previousRelayPhase = phase;
+    const record = { sequence: relaySequence + 1, phase, code, observedAt };
+    relaySequence += 1;
+    try { Promise.resolve(relay(record)).catch(() => { relayDisabled = true; }); }
+    catch { relayDisabled = true; }
+    if (phase === 'finalizing') relayClosed = true;
+  };
+  /** @param {{phase:string,message:string,observedAt:string}} event @param {string} source */
+  const relayEvent = (event, source) => {
+    if (event.phase === 'starting') return emitRelay('starting', 'started', event.observedAt);
+    if (event.phase === 'waiting') return emitRelay('waiting', 'waiting', event.observedAt);
+    if (event.phase === 'finalizing') return emitRelay('finalizing', 'finalizing', event.observedAt);
+    if (event.phase === 'editing') return emitRelay('editing', 'editing', event.observedAt);
+    if (event.phase === 'verifying') return emitRelay('verifying', 'verifying', event.observedAt);
+    if (event.phase === 'investigating' || source === 'tool') return emitRelay('investigating', 'tool-active', event.observedAt);
+    return emitRelay('running', 'model-active', event.observedAt);
+  };
+  /** @param {{phase:string,message:string,observedAt:string}} event @param {number} [sequence] @param {string} [relaySource] */
+  const dispatch = (event, sequence = observationSequence++, relaySource = 'model') => {
     if (terminalSequence !== null && sequence > terminalSequence || terminalDispatched) return null;
     if (!validTimestamp(lastActivityAt) || Date.parse(event.observedAt) > Date.parse(lastActivityAt)) lastActivityAt = event.observedAt;
     const key = `${event.phase}\u0000${event.message}`;
@@ -327,6 +351,7 @@ export function createProgressReporter({
     previousKey = key;
     if (event.phase === 'finalizing') terminalDispatched = true;
     enqueueWriter(event, sequence); enqueuePersist(event, sequence);
+    if (relaySource !== 'none') relayEvent(event, relaySource);
     return event;
   };
   /** Diagnostics remain observational and may follow terminal semantic progress. @param {{phase:string,message:string,observedAt:string}} event @param {number} sequence */
@@ -409,12 +434,12 @@ export function createProgressReporter({
         }
         logicalPending.shift();
         for (const event of item.events) {
-          if (!active) bufferEvent(event, item.sequence); else dispatch(event, item.sequence);
+          if (!active) bufferEvent(event, item.sequence, 'tool'); else dispatch(event, item.sequence, 'tool');
         }
         continue;
       }
       logicalPending.shift();
-      if (!active) bufferEvent(item.event, item.sequence); else dispatch(item.event, item.sequence);
+      if (!active) bufferEvent(item.event, item.sequence, item.relaySource); else dispatch(item.event, item.sequence, item.relaySource);
     }
     if (activeDescriptor === null) descriptorOverflowed = false;
   };
@@ -464,7 +489,7 @@ export function createProgressReporter({
       if (event === null) return null;
       const terminal = event.phase === 'finalizing';
       if (terminal) terminalSequence = sequence;
-      enqueueLogical({ kind: 'event', event, sequence }); return event;
+      enqueueLogical({ kind: 'event', event, sequence, relaySource: relaySourceForNotification(notification) }); return event;
     },
     /** @param {unknown} initialNotification */
     activate(initialNotification) {
@@ -472,8 +497,8 @@ export function createProgressReporter({
       const activatedAt = now(); active = true; lastActivityAt = activatedAt; startTimer();
       persistProbeSnapshot();
       const initial = normalizeZCodeProgress(initialNotification, sessionId, activatedAt);
-      if (initial) dispatch(initial, -1);
-      for (const { event, sequence } of buffered.sort((left, right) => left.sequence - right.sequence)) dispatch({ ...event, observedAt: activatedAt }, sequence);
+      if (initial) dispatch(initial, -1, relaySourceForNotification(initialNotification));
+      for (const { event, sequence, relaySource } of buffered.sort((left, right) => left.sequence - right.sequence)) dispatch({ ...event, observedAt: activatedAt }, sequence, relaySource);
       buffered.length = 0; bufferedKeys.clear(); pumpLogical(); return true;
     },
     /** @param {string} kind */
@@ -515,7 +540,7 @@ export function createProgressReporter({
     },
     close() {
       cleanupSnapshotFallback();
-      accepting = false; closed = true; buffered.length = 0; bufferedKeys.clear();
+      accepting = false; closed = true; relayClosed = true; buffered.length = 0; bufferedKeys.clear();
       disableProbePersist();
       descriptorEpoch += 1;
       for (const item of logicalPending) if (item.kind === 'descriptor') item.state = 'dropped';
@@ -528,14 +553,14 @@ export function createProgressReporter({
   };
 
   /** @param {{phase:string,message:string,observedAt:string}} event */
-  function bufferEvent(event, sequence = observationSequence++) {
+  function bufferEvent(event, sequence = observationSequence++, relaySource = 'model') {
     const key = `${event.phase}\u0000${event.message}`;
     if (bufferedKeys.has(key)) return;
     if (buffered.length === MAX_PROGRESS_PREVIEW_ENTRIES) {
       const removed = buffered.shift();
       if (removed) bufferedKeys.delete(`${removed.event.phase}\u0000${removed.event.message}`);
     }
-    buffered.push({ event, sequence }); bufferedKeys.add(key);
+    buffered.push({ event, sequence, relaySource }); bufferedKeys.add(key);
   }
 
   async function drainDescriptors() {
@@ -596,6 +621,12 @@ function hasControl(value) { return [...value].some((character) => { const codeP
 function validTimestamp(value) {
   if (typeof value !== 'string' || value.length === 0) return false;
   try { return new Date(value).toISOString() === value; } catch { return false; }
+}
+
+/** @param {unknown} notification */
+function relaySourceForNotification(notification) {
+  if (!plainObject(notification) || !plainObject(notification.params)) return 'model';
+  return ['tool_call_started', 'tool_call_progress', 'tool_call_result'].includes(notification.params.reason) ? 'tool' : 'model';
 }
 
 /** @param {unknown} value @returns {value is Record<string,any>} */

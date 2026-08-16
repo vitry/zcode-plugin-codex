@@ -708,6 +708,8 @@ test('executor reports only same-session progress and drains persistence before 
   /** @type {string[]} */
   const lines = [];
   /** @type {any[]} */
+  const relays = [];
+  /** @type {any[]} */
   const persisted = [];
   /** @type {string[]} */
   const order = [];
@@ -749,6 +751,7 @@ test('executor reports only same-session progress and drains persistence before 
   const execution = executeJob({
     job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task',
     progressWriter: (line) => lines.push(line),
+    progressRelayWriter: (record) => { relays.push(record); },
     progressDependencies: {
       now: () => new Date().toISOString(),
       setInterval: (callback) => { intervalCallback = callback; return { unref() {} }; },
@@ -770,6 +773,13 @@ test('executor reports only same-session progress and drains persistence before 
     '[zcode] ZCode completed the delegated turn.\n',
   ]);
   assert.deepEqual(persisted.map((event) => event.message), lines.map((line) => line.slice(8, -1)));
+  assert.deepEqual(relays.map(({ sequence, phase, code }) => ({ sequence, phase, code })), [
+    { sequence: 1, phase: 'starting', code: 'started' },
+    { sequence: 2, phase: 'investigating', code: 'tool-active' },
+    { sequence: 3, phase: 'running', code: 'model-active' },
+    { sequence: 4, phase: 'investigating', code: 'tool-active' },
+    { sequence: 5, phase: 'finalizing', code: 'finalizing' },
+  ]);
   assert.ok(order.lastIndexOf('persist:finalizing') < order.indexOf('transition:succeeded'));
   assert.equal(order.includes('persist:waiting'), false);
   assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
@@ -826,7 +836,7 @@ test('writer failure stays observational while progress persists and the exact r
     send: async () => ({ inputId: 'input-writer-failure', stateRevision: 1 }), waitForCompletion: async () => {},
     readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-writer-failure', parentMessageId: 'input-writer-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
-  const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: () => { throw new Error('stderr closed'); } });
+  const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: () => { throw new Error('stderr closed'); }, progressRelayWriter: () => { throw new Error('PRIVATE_RELAY_FAILURE'); } });
   assert.equal(result.result, 'done');
   assert.ok(persisted.some((event) => event.message === 'ZCode started the delegated turn.'));
   assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
