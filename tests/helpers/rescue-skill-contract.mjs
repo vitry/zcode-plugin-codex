@@ -69,8 +69,8 @@ export function assertRescueRouteContract(source, { assertionPrefix = '' } = {})
   assert.equal(named.instruction, expectedNamedRescueInstruction.slice(0, -1), `${assertionPrefix}named route must preserve its exact instruction`);
   assert.equal(named.body.text.match(/task_name:\s*rescueTaskName/g)?.length, 1, `${assertionPrefix}named spawn must use rescueTaskName exactly once`);
   assert.equal(named.body.text, expectedNamedRescueSpawn, `${assertionPrefix}named spawn must preserve the exact dynamic Rescue object`);
-  assert.equal(generic.instruction, expectedGenericRescueInstruction.slice(0, -1), `${assertionPrefix}generic call sentence must preserve the exact dynamic Rescue arguments`);
   assert.equal(generic.instruction.match(/task_name:\s*rescueTaskName/g)?.length, 1, `${assertionPrefix}generic route must use rescueTaskName exactly once`);
+  assert.equal(generic.instruction, expectedGenericRescueInstruction.slice(0, -1), `${assertionPrefix}generic call sentence must preserve the exact dynamic Rescue arguments`);
   assert.equal(generic.body.text, expectedGenericRescueMessage, `${assertionPrefix}generic child message must remain fixed`);
   assert.doesNotMatch(source, /task_name:\s*['"]zcode_rescue['"]/);
 
