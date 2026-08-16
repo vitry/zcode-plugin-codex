@@ -255,6 +255,9 @@ test('Rescue relay qualification rejects untrusted routing, content, ordering, a
     { code: 'progress-relay-parent-content', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.content.push({ type: 'input_text', text: 'PRIVATE extra plaintext' }); } },
     { code: 'progress-relay-call-id', mutate: ({ child }) => { relayOutputs(child)[0].payload.type = 'custom_tool_call_output'; } },
     { code: 'progress-relay-call-id', mutate: ({ child }) => { child.splice(child.indexOf(relayCalls(child)[0]), 1); } },
+    { code: 'progress-relay-call-id', mutate: ({ parent }) => { const messages = parentRelayMessages(parent); messages[1].payload.id = messages[0].payload.id; } },
+    { code: 'progress-relay-turn-association', mutate: ({ parent }) => { parentRelayMessages(parent)[1].payload.internal_chat_message_metadata_passthrough.turn_id = relayTurnId('b'); } },
+    { code: 'progress-relay-turn-association', mutate: ({ parent }) => { parentRelayMessages(parent)[0].payload.internal_chat_message_metadata_passthrough.turn_id = 'malformed'; } },
     { code: 'progress-relay-output', mutate: ({ child }) => { relayOutputs(child)[0].payload.output = 'not empty'; } },
     { code: 'progress-relay-call-id', mutate: ({ child }) => { const call = relayCalls(child)[0]; const output = relayOutputs(child)[0]; call.payload.call_id = 'poll-1'; output.payload.call_id = 'poll-1'; } },
     { code: 'progress-relay-parent-wait', mutate: ({ parent }) => { const call = parent.find((event) => event?.payload?.name === 'wait_agent' && event.payload.call_id === 'relay-wait-1'); const output = parent.find((event) => event?.payload?.type === 'function_call_output' && event.payload.call_id === 'relay-wait-1'); parent.splice(parent.indexOf(call), 1); parent.splice(parent.indexOf(output), 1); } },
@@ -478,6 +481,7 @@ test('choice qualification rejects relay/status ownership drift across logical s
     { code: 'choice-continuation-progress-relay-call-id', mutate: (input) => { relayOutputs(input.rollouts[1])[1].payload.type = 'custom_tool_call_output'; } },
     { code: 'choice-initial-progress-relay-call-id', mutate: (input) => { const child = input.rollouts[1]; child.splice(child.indexOf(relayCalls(child)[0]), 1); } },
     { code: 'choice-continuation-progress-relay-call-id', mutate: (input) => { const messages = parentRelayMessages(input.rollouts[0]); messages[1].payload.id = messages[0].payload.id; messages[1].payload.internal_chat_message_metadata_passthrough.turn_id = messages[0].payload.internal_chat_message_metadata_passthrough.turn_id; } },
+    { code: 'choice-continuation-progress-relay-turn-association', mutate: (input) => { const messages = parentRelayMessages(input.rollouts[0]); messages[1].payload.internal_chat_message_metadata_passthrough.turn_id = messages[0].payload.internal_chat_message_metadata_passthrough.turn_id; } },
     { code: 'choice-child-execution-boundary', mutate: (input) => { const child = input.rollouts[1]; const relay = relayCalls(child)[0]; const output = relayOutputs(child)[0]; child.splice(child.indexOf(relay), 1); child.splice(child.indexOf(output), 1); child.splice(child.indexOf(child.filter((event) => event?.payload?.phase === 'final_answer')[0]) + 1, 0, relay, output); } },
     { code: 'choice-continuation-progress-relay-target', encrypted: true, mutate: (input) => { relayCalls(input.rollouts[1])[1].payload.arguments = JSON.stringify({ target: '/root/sibling', message: relayMessage('model-active') }); } },
   ];
@@ -1122,7 +1126,7 @@ function relayLine(sequence, phase, code) {
 function relayMessage(code) { return ({ started: 'ZCode Rescue started.', 'model-active': 'ZCode is generating a response.', 'tool-active': 'ZCode is working with a tool.' })[code]; }
 function relayCall(callId, code) { return { type: 'response_item', payload: { type: 'function_call', name: 'send_message', call_id: callId, arguments: JSON.stringify({ target: '/root', message: relayMessage(code) }) } }; }
 function relayOutput(callId) { return { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '' } }; }
-function parentRelay(author, message) {
+function parentRelay(author, message, turnMarker = 'a') {
   const marker = message === relayMessage('started') ? 'a' : 'b';
   return { type: 'response_item', payload: {
     type: 'agent_message', id: `amsg_${marker.repeat(36)}`, author, recipient: '/root',
@@ -1130,9 +1134,10 @@ function parentRelay(author, message) {
       { type: 'input_text', text: `Message Type: MESSAGE\nTask name: /root\nSender: ${author}\nPayload:\n` },
       { type: 'encrypted_content', encrypted_content: `gAAAA${'A'.repeat(64)}` },
     ],
-    internal_chat_message_metadata_passthrough: { turn_id: `${marker.repeat(8)}-${marker.repeat(4)}-4${marker.repeat(3)}-8${marker.repeat(3)}-${marker.repeat(12)}` },
+    internal_chat_message_metadata_passthrough: { turn_id: relayTurnId(turnMarker) },
   } };
 }
+function relayTurnId(marker) { return `${marker.repeat(8)}-${marker.repeat(4)}-4${marker.repeat(3)}-8${marker.repeat(3)}-${marker.repeat(12)}`; }
 function relayCalls(child) { return child.filter((event) => event?.payload?.type === 'function_call' && event.payload.name === 'send_message'); }
 function relayOutputs(child) { const ids = new Set(relayCalls(child).map((event) => event.payload.call_id)); return child.filter((event) => event?.payload?.type === 'function_call_output' && ids.has(event.payload.call_id)); }
 function parentRelayMessages(parent) { return parent.filter((event) => event?.payload?.type === 'agent_message' && event.payload.author === agentPath && !event.payload.content?.[0]?.text?.startsWith('Message Type: FINAL_ANSWER')); }
@@ -1259,7 +1264,7 @@ function relayedChoiceFixture({ withStatus = false } = {}) {
   const returns = parent.filter((event) => event?.payload?.author === agentPath);
   parent.splice(parent.indexOf(returns[0]), 0, parentRelay(agentPath, relayMessage('started')), structuredWait('choice-relay-wait-1'), waitOutput('choice-relay-wait-1', false));
   const secondReturn = parent.filter((event) => event?.payload?.author === agentPath).at(-1);
-  parent.splice(parent.indexOf(secondReturn), 0, parentRelay(agentPath, relayMessage('model-active')), structuredWait('choice-relay-wait-2'), waitOutput('choice-relay-wait-2', false));
+  parent.splice(parent.indexOf(secondReturn), 0, parentRelay(agentPath, relayMessage('model-active'), 'b'), structuredWait('choice-relay-wait-2'), waitOutput('choice-relay-wait-2', false));
   retimestampChoice(input);
   return input;
 }

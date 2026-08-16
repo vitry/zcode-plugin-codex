@@ -327,11 +327,19 @@ function validateProgressRelays({ child, parent, execution, agentPath, options, 
   const parentMessages = parent.filter((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message'
     && !event.payload.content?.some((item) => item?.type === 'input_text' && item.text?.startsWith('Message Type: FINAL_ANSWER\n')));
   if (parentMessages.length !== childMessages.length) mismatch(code('progress-relay-parent-count'), 'The parent must observe exactly the linked Rescue relay messages.');
-  const messageIds = identitySets?.messageIds ?? new Set(); const turnIds = identitySets?.turnIds ?? new Set();
+  const messageIds = identitySets?.messageIds ?? new Set();
+  const turnAssociations = identitySets?.turnAssociations ?? new Set();
+  let segmentTurnId;
   for (let index = 0; index < parentMessages.length; index += 1) {
     const message = parentMessages[index];
     if (message.payload.author !== agentPath) mismatch(code('progress-relay-author'), 'Parent relay evidence must originate from the exact Rescue child.');
-    validateEncryptedParentRelay(message.payload, agentPath, messageIds, turnIds, codePrefix);
+    const turnId = validateEncryptedParentRelay(message.payload, agentPath, messageIds, codePrefix);
+    if (segmentTurnId === undefined) {
+      if (turnAssociations.has(turnId)) mismatch(code('progress-relay-turn-association'), 'A Rescue logical child turn reused a foreign or prior turn association.');
+      segmentTurnId = turnId; turnAssociations.add(turnId);
+    } else if (turnId !== segmentTurnId) {
+      mismatch(code('progress-relay-turn-association'), 'Every Rescue relay in one logical child turn must retain the same turn association.');
+    }
     const messageIndex = parent.indexOf(message); const wait = parent[messageIndex + 1]; const waitOutput = parent[messageIndex + 2];
     if (wait?.payload?.type !== 'function_call' || wait.payload.name !== 'wait_agent'
       || waitOutput?.payload?.type !== 'function_call_output' || waitOutput.payload.call_id !== wait.payload.call_id) {
@@ -346,7 +354,7 @@ function validateProgressRelays({ child, parent, execution, agentPath, options, 
   return { checked: true };
 }
 
-function validateEncryptedParentRelay(payload, agentPath, messageIds, turnIds, codePrefix = '') {
+function validateEncryptedParentRelay(payload, agentPath, messageIds, codePrefix = '') {
   const code = (suffix) => codePrefix ? `${codePrefix}-${suffix}` : suffix;
   assertExactKeys(payload, ['author', 'content', 'id', 'internal_chat_message_metadata_passthrough', 'recipient', 'type'], code('progress-relay-parent-content'));
   if (payload.type !== 'agent_message' || payload.recipient !== '/root') mismatch(code('progress-relay-target'), 'Parent relay evidence must target only /root.');
@@ -356,10 +364,9 @@ function validateEncryptedParentRelay(payload, agentPath, messageIds, turnIds, c
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) mismatch(code('progress-relay-call-id'), 'Parent relay turn linkage is absent.');
   assertExactKeys(metadata, ['turn_id'], code('progress-relay-call-id'));
   const turnId = boundedString(metadata.turn_id);
-  if (!turnId || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(turnId) || turnIds.has(turnId)) {
-    mismatch(code('progress-relay-call-id'), 'Parent relay turn linkage is malformed or reused.');
+  if (!turnId || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(turnId)) {
+    mismatch(code('progress-relay-turn-association'), 'Parent relay turn association is malformed.');
   }
-  turnIds.add(turnId);
   if (!Array.isArray(payload.content) || payload.content.length !== 2) {
     mismatch(Array.isArray(payload.content) && !payload.content.some((item) => item?.type === 'encrypted_content')
       ? code('progress-relay-encrypted') : code('progress-relay-parent-content'), 'Parent relay evidence must contain only its route envelope and encrypted payload.');
@@ -375,6 +382,7 @@ function validateEncryptedParentRelay(payload, agentPath, messageIds, turnIds, c
     || Buffer.byteLength(encryptedPayload.encrypted_content, 'utf8') > MAX_TEXT_BYTES) {
     mismatch(code('progress-relay-encrypted'), 'Parent relay evidence lacks one bounded opaque encrypted payload.');
   }
+  return turnId;
 }
 
 function safePublicProgressLine(value) {
@@ -644,7 +652,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (returns.length !== 2) mismatch('choice-child-return-count', 'The parent must receive needs-choice and terminal results from the same child.');
   const initialParent = parent.slice(startIndex + 1, parent.indexOf(returns[0]));
   const continuationParent = parent.slice(parent.indexOf(followupOutputs[0]) + 1, parent.indexOf(returns[1]));
-  const relayIdentitySets = { messageIds: new Set(), turnIds: new Set() };
+  const relayIdentitySets = { messageIds: new Set(), turnAssociations: new Set() };
   const initialRelay = validateProgressRelays({ child: initialEvents, parent: initialParent, execution: initialExecution, agentPath,
     options: segmentOptions(options.expectedInitialCommand), codePrefix: 'choice-initial', identitySets: relayIdentitySets });
   const continuationRelay = validateProgressRelays({ child: continuationEvents, parent: continuationParent, execution: continuationExecution, agentPath,
