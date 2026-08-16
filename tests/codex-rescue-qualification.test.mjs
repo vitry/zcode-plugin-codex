@@ -103,10 +103,12 @@ test('display-name grammar accepts one to three semantic words and supported ord
 });
 
 test('display-name grammar rejects invalid syntax, word count, byte length, and ordinals', () => {
+  const sixtyFiveByteTaskName = `zcode_rescue_${'a'.repeat(16)}_${'b'.repeat(16)}_${'c'.repeat(16)}_2`;
+  assert.equal(Buffer.byteLength(sixtyFiveByteTaskName, 'utf8'), 65);
   for (const invalidTaskName of [
     'zcode_rescue_bad-name',
     'zcode_rescue_one_two_three_four',
-    `zcode_rescue_${'a'.repeat(16)}_${'b'.repeat(16)}_${'c'.repeat(16)}_9999`,
+    sixtyFiveByteTaskName,
     'zcode_rescue_task_01',
     'zcode_rescue_task_1',
   ]) {
@@ -116,6 +118,72 @@ test('display-name grammar rejects invalid syntax, word count, byte length, and 
       invalidTaskName,
     );
   }
+});
+
+test('presentation updates only the linked child records and matching registry entry', () => {
+  const input = timeoutFixture();
+  const siblingPath = '/root/unrelated_sibling';
+  const siblingEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${siblingPath}\nPayload:\nsibling`;
+  const siblingReturn = { type: 'response_item', payload: { type: 'agent_message', author: siblingPath, recipient: '/root', content: [{ type: 'input_text', text: siblingEnvelope }] } };
+  input.rollouts[0].push(siblingReturn);
+  const stateOutput = waitResult(input, 'list-after-timeout');
+  const state = JSON.parse(stateOutput.payload.output);
+  state.agents.push({ agent_name: siblingPath, agent_status: 'running' });
+  stateOutput.payload.output = JSON.stringify(state);
+
+  setPresentation(input, 'ordinary_child', '/root/ordinary_child');
+
+  assert.equal(siblingReturn.payload.author, siblingPath);
+  assert.equal(siblingReturn.payload.content[0].text, siblingEnvelope);
+  assert.deepEqual(JSON.parse(stateOutput.payload.output).agents, [
+    { agent_name: '/root/ordinary_child', agent_status: 'running' },
+    { agent_name: siblingPath, agent_status: 'running' },
+  ]);
+  input.rollouts[0].pop();
+  const linkedOnlyState = JSON.parse(stateOutput.payload.output);
+  linkedOnlyState.agents.pop();
+  stateOutput.payload.output = JSON.stringify(linkedOnlyState);
+  assert.equal(qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume')).taskName, 'ordinary_child');
+});
+
+test('background Rescue identity accepts nonconforming presentation and rejects only broken route linkage', () => {
+  const input = backgroundFixture();
+  setPresentation(input, 'ordinary_child', '/root/ordinary_child');
+  const evidence = qualifyCodexRescueBackgroundEvidence(input, backgroundOptions());
+  assert.equal(evidence.taskName, 'ordinary_child');
+  assert.equal(evidence.agentPath, '/root/ordinary_child');
+  assert.throws(
+    () => assertCodexRescueDisplayName(evidence),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'display-task-name-contract',
+  );
+
+  const mismatched = backgroundFixture();
+  setPresentation(mismatched, 'ordinary_child', '/root/ordinary_child');
+  childMeta(mismatched).payload.source.subagent.thread_spawn.agent_path = agentPath;
+  assert.throws(
+    () => qualifyCodexRescueBackgroundEvidence(mismatched, backgroundOptions()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-link-mismatch',
+  );
+});
+
+test('choice Rescue identity accepts nonconforming presentation and rejects only broken route linkage', () => {
+  const input = choiceFixture('resume');
+  setPresentation(input, 'ordinary_child', '/root/ordinary_child');
+  const evidence = qualifyCodexRescueChoiceEvidence(input, choiceOptions('resume'));
+  assert.equal(evidence.taskName, 'ordinary_child');
+  assert.equal(evidence.agentPath, '/root/ordinary_child');
+  assert.throws(
+    () => assertCodexRescueDisplayName(evidence),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'display-task-name-contract',
+  );
+
+  const mismatched = choiceFixture('resume');
+  setPresentation(mismatched, 'ordinary_child', '/root/ordinary_child');
+  childMeta(mismatched).payload.source.subagent.thread_spawn.agent_path = agentPath;
+  assert.throws(
+    () => qualifyCodexRescueChoiceEvidence(mismatched, choiceOptions('resume')),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-child-link',
+  );
 });
 
 test('qualifies named and generic Rescue only after the original yielded execution exits', () => {
@@ -927,13 +995,26 @@ function setPresentation(input, nextTaskName, nextAgentPath) {
   const args = JSON.parse(spawn.payload.arguments);
   args.task_name = nextTaskName;
   spawn.payload.arguments = JSON.stringify(args);
+  const previousAgentPath = startEvent(input).payload.agent_path;
   startEvent(input).payload.agent_path = nextAgentPath;
   childMeta(input).payload.source.subagent.thread_spawn.agent_path = nextAgentPath;
-  for (const event of input.rollouts[0].filter((candidate) => candidate?.payload?.type === 'agent_message' && candidate.payload.recipient === '/root')) {
+  for (const event of input.rollouts[0].filter((candidate) => candidate?.payload?.type === 'agent_message'
+    && candidate.payload.recipient === '/root' && candidate.payload.author === previousAgentPath)) {
     event.payload.author = nextAgentPath;
     for (const content of event.payload.content ?? []) {
-      if (content?.type === 'input_text') content.text = content.text.replace(`Sender: ${agentPath}\n`, `Sender: ${nextAgentPath}\n`);
+      if (content?.type === 'input_text') content.text = content.text.replace(`Sender: ${previousAgentPath}\n`, `Sender: ${nextAgentPath}\n`);
     }
+  }
+  const listCallIds = new Set(input.rollouts[0]
+    .filter((event) => event?.payload?.type === 'function_call' && event.payload.name === 'list_agents')
+    .map((event) => event.payload.call_id));
+  for (const output of input.rollouts[0].filter((event) => event?.payload?.type === 'function_call_output'
+    && listCallIds.has(event.payload.call_id))) {
+    const state = JSON.parse(output.payload.output);
+    for (const entry of state.agents ?? []) {
+      if (entry?.agent_name === previousAgentPath) entry.agent_name = nextAgentPath;
+    }
+    output.payload.output = JSON.stringify(state);
   }
   return input;
 }
