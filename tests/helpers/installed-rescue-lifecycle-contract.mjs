@@ -1,6 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { isAbsolute, win32 } from 'node:path';
 import { expectedGenericRescueMessage } from './rescue-skill-contract.mjs';
 
 const markers = [
@@ -34,7 +35,7 @@ const canonicalNamedTerminal = 'A companion result containing an exit code is te
 const canonicalStatusTail = 'Return its bounded status to that requesting child transcript, then resume polling the same original handle. Reject status arguments and every other spelling. Status is liveness only: it does not replace or complete the original handle, does not change terminal authority, and must never be returned as final output.';
 const canonicalTerminalReturn = markers.at(-1)[1];
 const canonicalNamedRoleDigest = 'e8e72753cefba759de6e5cc5eab68f413db01137515ffd2f1a01efa274665dcf';
-const namedCommandLine = /^node "(?<root>.+)\/scripts\/zcode-companion\.mjs" (?<command>invoke rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
+const companionCommandLine = /^node "(?<root>[^"\r\n]{1,2048})\/scripts\/zcode-companion\.mjs" (?<command>invoke rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
 
 export function installedCanonicalContradictionMutations(source, route) {
   const privacyBoundary = route === 'named' ? '\n\nWhile the original foreground handle' : '\nWhile the original foreground handle';
@@ -51,6 +52,21 @@ export function installedCanonicalContradictionMutations(source, route) {
   ];
 }
 
+export function installedCommandPathMutations(source) {
+  const commands = [...source.matchAll(companionCommandLine)];
+  assert.equal(commands.length, 4, 'command-path mutations require four canonical companion commands');
+  const root = commands[0].groups.root;
+  const wrongRoot = '/wrong/installed-rescue-root';
+  return [
+    ['uniform wrong root', source.replaceAll(root, wrongRoot)],
+    ['divergent root', replaceLastInstalledLifecycleMarker(source, root, wrongRoot)],
+    ['quote and argument injection', source.replaceAll(root, `${root}" --inspect "`)],
+    ['appended companion option', source.replace('invoke rescue', 'invoke rescue --detail')],
+    ['control in root', source.replaceAll(root, `${root}\tunsafe`)],
+    ['newline in root', source.replaceAll(root, `${root}\nunsafe`)],
+  ];
+}
+
 export function replaceLastInstalledLifecycleMarker(source, expected, replacement) {
   const index = source.lastIndexOf(expected);
   assert.ok(index >= 0, 'lifecycle mutation target must exist');
@@ -61,11 +77,11 @@ export function installedShortLifecycleDecoy() {
   return [...markers.slice(0, 10).map(([, marker]) => marker), markers.at(-1)[1]].join('\n');
 }
 
-export function installedLifecycleContractMutations(source, route) {
+export function installedLifecycleContractMutations(source, route, expectedRoot) {
   const relayMarker = markers.find(([label]) => label === 'relay start')[1];
   const rawMarker = markers.find(([label]) => label === 'raw progress prohibition')[1];
   const rawAllowance = replaceLastInstalledLifecycleMarker(source, rawMarker, 'Relay detailed `[zcode]` lines and arbitrary stderr');
-  const relocated = moveInstalledRelayAfterTerminal(source, route);
+  const relocated = moveInstalledRelayAfterTerminal(source, route, expectedRoot);
   const lifecycleStart = source.indexOf(markers[0][1]);
   const lifecycleEndMarker = markers.at(-1)[1];
   const lifecycleEnd = source.indexOf(lifecycleEndMarker) + lifecycleEndMarker.length;
@@ -94,7 +110,36 @@ function occurrences(source, marker) {
   return count;
 }
 
-function assertCanonicalOperativeRoute(source, route, prefix) {
+function hasUnsafeCommandPathCharacter(value) {
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if (character === '"' || code <= 0x1f || code >= 0x7f && code <= 0x9f) return true;
+  }
+  return false;
+}
+
+function assertExactCommandPaths(source, expectedRoot, prefix) {
+  const placeholder = expectedRoot === '{{PLUGIN_ROOT}}' || expectedRoot === '<canonical-plugin-root>';
+  assert.ok(typeof expectedRoot === 'string' && expectedRoot && Buffer.byteLength(expectedRoot) <= 2048
+    && !hasUnsafeCommandPathCharacter(expectedRoot)
+    && (placeholder || isAbsolute(expectedRoot) || win32.isAbsolute(expectedRoot)),
+  `${prefix} trusted expected root and exact argv require one safe bounded absolute root or canonical placeholder`);
+  const encodedExpectedRoot = placeholder ? expectedRoot : JSON.stringify(expectedRoot).slice(1, -1);
+  const commands = [...source.matchAll(companionCommandLine)];
+  assert.equal(commands.length, 4, `${prefix} trusted expected root and exact argv require four strict companion command lines`);
+  assert.ok(commands.every((match) => !hasUnsafeCommandPathCharacter(match.groups.root)
+    && Buffer.byteLength(match.groups.root) <= 2048),
+  `${prefix} trusted expected root and exact argv require quote/control/newline-free bounded command paths`);
+  assert.ok(commands.every((match) => match.groups.root === encodedExpectedRoot),
+    `${prefix} trusted expected root and exact argv must match every renderer-substituted command root`);
+  assert.deepEqual(new Set(commands.map((match) => match.groups.command)), new Set([
+    'invoke rescue', 'invoke-status rescue', 'invoke-choice rescue resume', 'invoke-choice rescue fresh',
+  ]), `${prefix} trusted expected root and exact argv must retain all four fixed companion commands`);
+  return source.replace(companionCommandLine,
+    (_line, _root, command) => `node "{{PLUGIN_ROOT}}/scripts/zcode-companion.mjs" ${command}`);
+}
+
+function assertCanonicalOperativeRoute(source, normalized, route, prefix) {
   if (route === 'generic') {
     assert.equal(source, expectedGenericRescueMessage, `${prefix} exact canonical operative route must remain byte-for-byte fixed`);
     return;
@@ -108,20 +153,11 @@ function assertCanonicalOperativeRoute(source, route, prefix) {
   for (const segment of exactSegments) {
     assert.equal(occurrences(source, segment), 1, `${prefix} exact canonical operative route must preserve complete privacy and terminal-authority paragraphs with strict adjacency`);
   }
-  const commands = [...source.matchAll(namedCommandLine)];
-  assert.equal(commands.length, 4, `${prefix} exact canonical operative route must contain four renderer-substituted companion command lines`);
-  assert.equal(new Set(commands.map((match) => match.groups.root)).size, 1,
-    `${prefix} exact canonical operative route must use one renderer-substituted plugin root`);
-  assert.deepEqual(new Set(commands.map((match) => match.groups.command)), new Set([
-    'invoke rescue', 'invoke-status rescue', 'invoke-choice rescue resume', 'invoke-choice rescue fresh',
-  ]), `${prefix} exact canonical operative route must retain all four fixed companion commands`);
-  const normalized = source.replace(namedCommandLine,
-    (_line, _root, command) => `node "{{PLUGIN_ROOT}}/scripts/zcode-companion.mjs" ${command}`);
   assert.equal(createHash('sha256').update(normalized).digest('hex'), canonicalNamedRoleDigest,
     `${prefix} exact canonical operative route must match the independent normalized managed Role digest`);
 }
 
-/** @param {string} source @param {{route:'named'|'generic', assertionPrefix?:string}} input */
+/** @param {string} source @param {{route:'named'|'generic', expectedRoot:string, assertionPrefix?:string}} input */
 export function parseInstalledForwarderLifecycleContract(source, input) {
   const prefix = `${input.assertionPrefix ?? ''}${input.route}`;
   assert.equal(typeof source, 'string', `${prefix} lifecycle source must be text`);
@@ -146,18 +182,19 @@ export function parseInstalledForwarderLifecycleContract(source, input) {
   const initial = source.indexOf(initialCommand);
   assert.ok(initial > start && initial < end,
     `${prefix} unique operative lifecycle region must contain its initial foreground command`);
-  assertCanonicalOperativeRoute(source, input.route, prefix);
+  const normalized = assertExactCommandPaths(source, input.expectedRoot, prefix);
+  assertCanonicalOperativeRoute(source, normalized, input.route, prefix);
   return { start, end, text: source.slice(start, end), positions: Object.fromEntries(positions.map(({ label, start: position }) => [label, position])) };
 }
 
-/** @param {string} source @param {'named'|'generic'} route @param {{assertionPrefix?:string}} [options] */
+/** @param {string} source @param {'named'|'generic'} route @param {{expectedRoot:string, assertionPrefix?:string}} options */
 export function assertInstalledForwarderLifecycleContract(source, route, options = {}) {
-  parseInstalledForwarderLifecycleContract(source, { route, assertionPrefix: options.assertionPrefix });
+  parseInstalledForwarderLifecycleContract(source, { route, expectedRoot: options.expectedRoot, assertionPrefix: options.assertionPrefix });
   return true;
 }
 
-export function moveInstalledRelayAfterTerminal(source, route) {
-  const parsed = parseInstalledForwarderLifecycleContract(source, { route });
+export function moveInstalledRelayAfterTerminal(source, route, expectedRoot) {
+  const parsed = parseInstalledForwarderLifecycleContract(source, { route, expectedRoot });
   const start = parsed.positions['relay start'];
   const end = parsed.positions['status boundary'];
   const terminal = parsed.positions['terminal return'];

@@ -32,6 +32,7 @@ import {
   assertInstalledForwarderLifecycleContract,
   extractInstalledRoleInstructions,
   installedCanonicalContradictionMutations,
+  installedCommandPathMutations,
   installedLifecycleContractMutations,
 } from '../helpers/installed-rescue-lifecycle-contract.mjs';
 
@@ -482,12 +483,16 @@ test('installed named and generic foreground and choice policies independently b
   const skill = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const generic = assertRescueRouteContract(skill).genericMessage.text;
   for (const [route, source] of [['named', role], ['generic', generic]]) {
-    assertInstalledForwarderLifecycleContract(source, route);
-    for (const [mutation, mutated] of installedLifecycleContractMutations(source, route)) {
-      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route), /unique operative lifecycle region/u, `${route}: ${mutation}`);
+    const expectedRoot = route === 'named' ? '{{PLUGIN_ROOT}}' : '<canonical-plugin-root>';
+    assertInstalledForwarderLifecycleContract(source, route, { expectedRoot });
+    for (const [mutation, mutated] of installedLifecycleContractMutations(source, route, expectedRoot)) {
+      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedRoot }), /unique operative lifecycle region/u, `${route}: ${mutation}`);
     }
     for (const [mutation, mutated] of installedCanonicalContradictionMutations(source, route)) {
-      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route), /exact canonical operative route/u, `${route}: ${mutation}`);
+      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedRoot }), /exact canonical operative route/u, `${route}: ${mutation}`);
+    }
+    for (const [mutation, mutated] of installedCommandPathMutations(source)) {
+      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedRoot }), /trusted expected root and exact argv/u, `${route}: ${mutation}`);
     }
   }
 });
