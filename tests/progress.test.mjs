@@ -109,19 +109,63 @@ test('validated edit, write, and verification tool frames select fixed relay cat
   }
 });
 
-test('throwing relay is observational and cannot affect detailed progress or persistence', async () => {
-  const lines = []; const persisted = [];
+test('throwing and rejecting relays are observational and cannot affect detailed progress or persistence', async () => {
+  for (const relay of [
+    () => { throw new Error('PRIVATE_RELAY_FAILURE'); },
+    async () => { throw new Error('PRIVATE_RELAY_REJECTION'); },
+  ]) {
+    const lines = []; const persisted = [];
+    const reporter = progressModule.createProgressReporter({
+      sessionId: 'session-a', write: (line) => lines.push(line), persist: (event) => persisted.push(event), relay, now: () => observedAt,
+      setInterval: () => ({ unref() {} }), clearInterval: () => {},
+    });
+    reporter.observe(notification('prompt_started'));
+    reporter.observe(notification('prompt_completed'));
+    await reporter.flush();
+    assert.equal(lines.length, 2); assert.equal(persisted.length, 2);
+    assert.doesNotMatch(lines.join('') + JSON.stringify(persisted), /PRIVATE_RELAY/);
+    reporter.close();
+  }
+});
+
+test('relay sink is serialized, terminal flush waits boundedly, and close drops queued emissions', async () => {
+  const calls = []; const completions = [];
   const reporter = progressModule.createProgressReporter({
-    sessionId: 'session-a', write: (line) => lines.push(line), persist: (event) => persisted.push(event),
-    relay: () => { throw new Error('PRIVATE_RELAY_FAILURE'); }, now: () => observedAt,
-    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+    sessionId: 'session-a', relay: (record) => {
+      calls.push(record);
+      return new Promise((resolve) => { completions.push(resolve); });
+    }, now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
   });
   reporter.observe(notification('prompt_started'));
+  reporter.observe(notification('model_streaming'));
   reporter.observe(notification('prompt_completed'));
-  await reporter.flush();
-  assert.equal(lines.length, 2); assert.equal(persisted.length, 2);
-  assert.doesNotMatch(lines.join('') + JSON.stringify(persisted), /PRIVATE_RELAY_FAILURE/);
+  assert.deepEqual(calls.map((record) => record.sequence), [1]);
+
+  completions.shift()(); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((record) => record.sequence), [1, 2]);
+  completions.shift()(); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((record) => record.sequence), [1, 2, 3]);
+
+  let flushed = false;
+  const flushing = reporter.flush().then(() => { flushed = true; });
+  await Promise.resolve(); assert.equal(flushed, false);
+  completions.shift()(); await flushing;
+  assert.equal(flushed, true);
   reporter.close();
+
+  const lateCalls = []; let release = () => {};
+  const stalled = progressModule.createProgressReporter({
+    sessionId: 'session-a', relay: (record) => {
+      lateCalls.push(record.sequence);
+      return new Promise((resolve) => { release = resolve; });
+    }, now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  stalled.observe(notification('prompt_started'));
+  stalled.observe(notification('model_streaming'));
+  stalled.observe(notification('prompt_completed'));
+  await stalled.flush(Date.now());
+  stalled.close(); release(); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(lateCalls, [1]);
 });
 
 test('snapshot reads cannot start before accepted-boundary activation and begin on the first heartbeat', async () => {

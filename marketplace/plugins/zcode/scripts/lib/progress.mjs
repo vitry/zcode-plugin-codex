@@ -108,6 +108,9 @@ export function createProgressReporter({
   let terminalDispatched = false;
   let relaySequence = 0; let relayDisabled = false; let relayClosed = false;
   /** @type {string|null} */ let previousRelayPhase = null;
+  /** @type {Array<{sequence:number,phase:string,code:string,observedAt:string}>} */ const relayPending = [];
+  /** @type {Promise<void>|null} */ let relayInFlight = null;
+  let relayEpoch = 0;
   const progressProbe = {
     state: 'probing', subscriptionAcknowledged: false, framesReceived: 0,
     acceptedInitial: 0, acceptedOnline: 0, acceptedRecovery: 0,
@@ -322,14 +325,37 @@ export function createProgressReporter({
     const entry = { event, sequence };
     if (persistInFlight === null) startPersist(entry); else retainBounded(persistPending, entry);
   };
+  /** @param {{sequence:number,phase:string,code:string,observedAt:string}} record */
+  const startRelay = (record) => {
+    if (typeof relay !== 'function' || relayDisabled) return;
+    const epoch = relayEpoch;
+    let operation;
+    try { operation = Promise.resolve(relay(record)); }
+    catch { operation = Promise.reject(new Error('progress relay failed')); }
+    const tracked = operation.catch(() => {
+      if (epoch === relayEpoch) disableRelay();
+    }).then(() => {
+      if (epoch !== relayEpoch) return;
+      relayInFlight = null;
+      const next = relayPending.shift(); if (next) startRelay(next);
+    });
+    relayInFlight = tracked;
+  };
+  /** @param {{sequence:number,phase:string,code:string,observedAt:string}} record */
+  const enqueueRelay = (record) => {
+    if (relayInFlight === null) { startRelay(record); return; }
+    relayPending.push(record);
+    if (relayPending.length <= MAX_PROGRESS_PENDING_EVENTS) return;
+    const removeIndex = relayPending.findIndex((entry) => entry.phase !== 'finalizing');
+    if (removeIndex !== -1) relayPending.splice(removeIndex, 1); else relayPending.pop();
+  };
   /** @param {string} phase @param {string} code @param {string} observedAt @param {boolean} [repeat] */
   const emitRelay = (phase, code, observedAt, repeat = false) => {
     if (relayClosed || relayDisabled || typeof relay !== 'function' || !repeat && phase === previousRelayPhase) return;
     previousRelayPhase = phase;
     const record = { sequence: relaySequence + 1, phase, code, observedAt };
     relaySequence += 1;
-    try { Promise.resolve(relay(record)).catch(() => { relayDisabled = true; }); }
-    catch { relayDisabled = true; }
+    enqueueRelay(record);
     if (phase === 'finalizing') relayClosed = true;
   };
   /** @param {{phase:string,message:string,observedAt:string}} event @param {string} source */
@@ -524,19 +550,21 @@ export function createProgressReporter({
         diagnose('progress-flush-timeout'); await Promise.resolve();
       }
       const sinkBudget = remaining(deadline);
-      const [writerDrained, persistenceDrained, probePersistenceDrained] = await Promise.all([
-        waitWithin(drainWriter(), sinkBudget), waitWithin(drainPersistence(), sinkBudget), waitWithin(drainProbePersistence(), sinkBudget),
+      const [writerDrained, persistenceDrained, probePersistenceDrained, relayDrained] = await Promise.all([
+        waitWithin(drainWriter(), sinkBudget), waitWithin(drainPersistence(), sinkBudget), waitWithin(drainProbePersistence(), sinkBudget), waitWithin(drainRelay(), sinkBudget),
       ]);
-      if (!writerDrained || !persistenceDrained || !probePersistenceDrained) {
+      if (!writerDrained || !persistenceDrained || !probePersistenceDrained || !relayDrained) {
         diagnose('progress-flush-timeout'); await Promise.resolve();
         if (!writerDrained) disableWriter();
         if (!persistenceDrained) disablePersist();
         if (!probePersistenceDrained) disableProbePersist();
+        if (!relayDrained) disableRelay();
         const finalBudget = remaining(deadline);
         await Promise.all([
           writerDisabled ? Promise.resolve() : waitWithin(drainWriter(), finalBudget),
           persistDisabled ? Promise.resolve() : waitWithin(drainPersistence(), finalBudget),
           probePersistInFlight === null ? Promise.resolve() : waitWithin(drainProbePersistence(), finalBudget),
+          relayInFlight === null ? Promise.resolve() : waitWithin(drainRelay(), finalBudget),
         ]);
       }
       return true;
@@ -548,7 +576,7 @@ export function createProgressReporter({
       descriptorEpoch += 1;
       for (const item of logicalPending) if (item.kind === 'descriptor') item.state = 'dropped';
       activeDescriptor = null; descriptorInFlight = null; pumpLogical(); logicalPending.length = 0;
-      disableWriter(); disablePersist();
+      disableWriter(); disablePersist(); disableRelay();
       if (timer === null) return;
       clearIntervalFn(timer);
       timer = null;
@@ -579,10 +607,12 @@ export function createProgressReporter({
   }
 
   async function drainWriter() { while (writerInFlight !== null) await writerInFlight; }
+  async function drainRelay() { while (relayInFlight !== null) await relayInFlight; }
 
   function disableWriter() { writerEpoch += 1; writerDisabled = true; writerInFlight = null; writerPending.length = 0; }
   function disablePersist() { persistEpoch += 1; persistDisabled = true; persistInFlight = null; persistPending.length = 0; }
   function disableProbePersist() { probePersistInFlight = null; probePersistPending = null; }
+  function disableRelay() { relayEpoch += 1; relayDisabled = true; relayInFlight = null; relayPending.length = 0; }
 }
 
 /** @param {Promise<void>} operation @param {number} milliseconds */
