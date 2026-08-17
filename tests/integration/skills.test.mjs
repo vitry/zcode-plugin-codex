@@ -144,10 +144,15 @@ test('legacy child invoke rescue requires the prepared route', async (t) => {
 });
 
 test('prepared Rescue is single-use and bound to the exact parent turn, workspace, and executor', async (t) => {
-  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const unpreparedRecord = join(ctx.directory, 'unprepared-zcode.jsonl');
+  await identity.beginCallerTurn({ sessionId: 'unprepared-parent', turnId: 'unprepared-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue unprepared objective' });
+  await startRescueChild(ctx, 'unprepared-parent', 'unprepared-child');
+  const unprepared = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'unprepared-child', FAKE_ZCODE_RECORD: unpreparedRecord } });
+  assert.notEqual(unprepared.code, 0); assert.match(unprepared.stdout, /RESCUE_PREPARATION_NOT_FOUND/);
+  await assert.rejects(readFile(unpreparedRecord, 'utf8'), { code: 'ENOENT' });
+  await stopRescueChild(ctx, 'unprepared-parent', 'unprepared-child');
+
   await identity.beginCallerTurn({ sessionId: 'bound-parent', turnId: 'bound-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue exact objective' });
-  const unprepared = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'ordinary-child' } });
-  assert.notEqual(unprepared.code, 0); assert.match(unprepared.stdout, /EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)/);
   await prepareRescue(ctx, 'bound-parent', { version: 1, source: 'explicit', task: 'exact objective', options: { resume: 'fresh' } });
   const parent = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-parent' } });
   assert.notEqual(parent.code, 0); assert.match(parent.stdout, /EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)/);
