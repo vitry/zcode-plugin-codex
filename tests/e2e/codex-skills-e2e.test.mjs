@@ -515,6 +515,37 @@ test('installed named and generic routes independently execute captured Codex 0.
   }
 });
 
+test('captured proactive clear fresh and resume routes remain one-shot without choice or follow-up', async () => {
+  for (const resume of ['fresh', 'resume']) {
+    const routes = await installedCapturedRescueRoutes({ source: 'proactive', options: { execution: 'foreground', resume } });
+    for (const route of routes) {
+      assert.equal(qualifyInstalledCapturedForeground(route).route, route.expectedEvidenceRoute);
+      assert.deepEqual(JSON.parse(route.preparationPayload), {
+        version: 1,
+        source: 'proactive',
+        task: `repair captured ${route.name} route`,
+        options: { execution: 'foreground', resume },
+      });
+      const emittedNeedsChoice = route.fixture.rollouts.flat().some((event) => event?.payload?.type === 'custom_tool_call_output'
+        && JSON.stringify(event.payload.output).includes('"type":"needs-choice"'));
+      assert.equal(emittedNeedsChoice, false);
+      assert.equal(route.fixture.rollouts[0].some((event) => event?.payload?.name === 'followup_task'), false);
+    }
+  }
+});
+
+test('captured installed named and generic background routes satisfy full qualification by default', async () => {
+  const routes = await installedCapturedRescueRoutes({ options: { execution: 'background', resume: 'fresh' } });
+  for (const route of routes) {
+    const background = installedCapturedBackgroundRoute(route);
+    const evidence = qualifyInstalledCapturedBackground(background);
+    assert.equal(evidence.route, route.expectedEvidenceRoute);
+    assert.equal(evidence.jobId, background.jobId);
+    assert.equal(evidence.capabilityChecked, true);
+    assert.equal(installedCapturedRunningHandles(background.fixture).size, 0);
+  }
+});
+
 test('captured installed route wiring mutations fail only the mutated foreground route', async () => {
   const routes = await installedCapturedRescueRoutes();
   for (const route of routes) {
@@ -1611,7 +1642,7 @@ function installedChoiceYieldFixture() {
   ]] };
 }
 
-async function installedCapturedRescueRoutes() {
+async function installedCapturedRescueRoutes(config = {}) {
   const installedRoot = '/captured/installed/zcode';
   const installedSnapshot = join(root, 'marketplace', 'plugins', 'zcode');
   const namedTemplate = extractInstalledRoleInstructions(await readFile(join(installedSnapshot, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
@@ -1624,19 +1655,19 @@ async function installedCapturedRescueRoutes() {
   // The generic template itself is the spawn assignment; rendering is verified by
   // the fixed command evidence and exact expected spawn message below.
   return [
-    installedCapturedRescueRoute('named', namedPolicy, expectedNamedRescueMessage, installedRoot),
-    installedCapturedRescueRoute('generic', genericPolicy, genericPolicy, installedRoot),
+    installedCapturedRescueRoute('named', namedPolicy, expectedNamedRescueMessage, installedRoot, config),
+    installedCapturedRescueRoute('generic', genericPolicy, genericPolicy, installedRoot, config),
   ];
 }
 
-function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, installedRoot) {
+function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, installedRoot, config = {}) {
   const parentThreadId = name === 'named' ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222';
   const childThreadId = name === 'named' ? '33333333-3333-4333-8333-333333333333' : '44444444-4444-4444-8444-444444444444';
   const taskName = `zcode_rescue_captured_${name}`; const agentPath = `/root/${taskName}`;
   const command = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-prepared rescue`;
   const preflightCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" role-status rescue`;
   const preparationCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" prepare rescue`;
-  const preparationPayload = JSON.stringify({ version: 1, source: 'explicit', task: `repair captured ${name} route`, options: { execution: 'foreground', resume: 'fresh' } });
+  const preparationPayload = JSON.stringify({ version: 1, source: config.source ?? 'explicit', task: config.task ?? `repair captured ${name} route`, options: config.options ?? { execution: 'foreground', resume: 'fresh' } });
   const statusCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-status rescue`;
   for (const expected of [command, statusCommand,
     `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue resume`,
@@ -1709,6 +1740,42 @@ function qualifyInstalledCapturedForeground(route) {
     requireYieldedExecution: true, requireProgressRelay: true, requireStatusSidecar: true, expectedStatusCommand: route.statusCommand,
     statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
     forbiddenParentText: [route.semantic.start, route.semantic.terminal, 'raw output must stay private', 'reasoning must stay private'],
+  });
+}
+
+function installedCapturedBackgroundRoute(route) {
+  const jobId = (route.name === 'named' ? 'a' : 'b').repeat(64);
+  const publicOutput = `Reserved background job ${jobId}.`;
+  const fixture = JSON.parse(JSON.stringify(route.fixture).replaceAll(route.publicOutput, publicOutput));
+  const child = fixture.rollouts[1];
+  const commandCall = child.find((event) => event?.payload?.type === 'custom_tool_call'
+    && event.payload.call_id === `${route.name}-exec`);
+  commandCall.payload.input = `const r = await tools.exec_command({cmd:${JSON.stringify(route.command)},workdir:"/installed/workspace"});\ntext(r.output);\n`;
+  const commandOutput = child.find((event) => event?.payload?.type === 'custom_tool_call_output'
+    && event.payload.call_id === `${route.name}-exec`);
+  commandOutput.payload.output = [{ type: 'input_text', text: `${publicOutput}\n` }];
+  fixture.rollouts[1] = [child[0], commandCall, commandOutput, child.at(-1)];
+  return {
+    ...route,
+    fixture,
+    jobId,
+    privateExecutionCapability: `private-background-capability-${route.name}`,
+    publicOutput,
+  };
+}
+
+function qualifyInstalledCapturedBackground(route) {
+  return qualifyCodexRescueBackgroundEvidence(route.fixture, {
+    expectedJobId: route.jobId,
+    privateExecutionCapability: route.privateExecutionCapability,
+    publicLogs: ['captured public background log'],
+    expectedAgentType: 'zcode-rescue', expectedWorkspace: '/installed/workspace', expectedCommand: route.command,
+    expectedPreflightCommand: route.preflightCommand, expectedNamedSpawnMessage: expectedNamedRescueMessage,
+    expectedPreparationCommand: route.preparationCommand, expectedPreparationPayload: route.preparationPayload,
+    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
+    expectedSemanticProgress: undefined,
+    statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
+    forbiddenParentText: ['raw output must stay private', 'reasoning must stay private'],
   });
 }
 

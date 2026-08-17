@@ -743,6 +743,31 @@ test('requires exact Role readiness and one private same-handle preparation befo
   }
 });
 
+test('confines the exact preparation task to the one same-handle parent write chars field', () => {
+  const task = expectedPreparationEnvelope.task;
+  const cases = [
+    ['parent commentary', (input) => input.rollouts[0].splice(-2, 0, { type: 'event_msg', payload: { type: 'agent_message', message: task, phase: 'commentary' } })],
+    ['unrelated exec argv', (input) => input.rollouts[0].splice(7, 0, structuredExec(`printf %s ${JSON.stringify(task)}`, 'unrelated-task-argv'), toolOutput('unrelated-task-argv', ''))],
+    ['unrelated exec env', (input) => input.rollouts[0].splice(7, 0, structuredExec('true', 'unrelated-task-env', { env: { PRIVATE_TASK: task } }), toolOutput('unrelated-task-env', ''))],
+    ['unrelated tool output', (input) => input.rollouts[0].splice(7, 0, structuredExec('true', 'unrelated-task-output'), toolOutput('unrelated-task-output', task))],
+    ['prepared ack task echo', (input) => { parentOutput(input, 'prepare-write-1').payload.output = capturedResult({ output: `${JSON.stringify({ type: 'prepared', command: 'rescue', task })}\n`, exit_code: 0 }); }],
+    ['spawn message', (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.message = `${args.message} ${task}`; spawnEvent(input).payload.arguments = JSON.stringify(args); }],
+    ['parent relay', (input) => input.rollouts[0].splice(-2, 0, { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: task }] } })],
+    ['parent status output', (input) => input.rollouts[0].splice(-2, 0, structuredExec(expectedStatusCommand, 'parent-status-task'), toolOutput('parent-status-task', task))],
+  ];
+  for (const [name, mutate] of cases) {
+    const input = fixture(); mutate(input);
+    assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => {
+      assert.doesNotMatch(error.message, new RegExp(task, 'u'), name);
+      return error instanceof CodexRescueEvidenceMismatchError && error.code === 'preparation-task-exclusivity';
+    }, name);
+  }
+  assert.equal(qualifyCodexRescueEvidence(fixture(), options()).publicOutput, expectedPublicOutput);
+  const recordedUserInput = fixture();
+  recordedUserInput.rollouts[0].splice(1, 0, { type: 'event_msg', payload: { type: 'user_message', message: task } });
+  assert.equal(qualifyCodexRescueEvidence(recordedUserInput, options()).publicOutput, expectedPublicOutput);
+});
+
 test('binds child stdout to the unique exec call and terminal sentinel', () => {
   const cases = [
     { code: 'child-output-count', mutate: (input) => input.rollouts[1].splice(2, 1) },

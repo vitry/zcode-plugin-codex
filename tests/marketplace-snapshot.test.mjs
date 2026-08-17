@@ -23,6 +23,8 @@ test('marketplace builder requires the complete isolated Rescue payload', () => 
     'scripts/lib/conversation-progress.mjs',
     'scripts/lib/managed-agent-role.mjs',
     'scripts/lib/progress.mjs',
+    'hooks/subagent-hook.mjs',
+    'hooks/session-lifecycle-hook.mjs',
     'hooks/user-prompt-hook.mjs',
     'hooks/session-end-hook.mjs',
     'hooks/stop-review-gate-hook.mjs',

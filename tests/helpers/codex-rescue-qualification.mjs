@@ -918,6 +918,7 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
     || Object.keys(payload.options).some((key) => !['effort', 'execution', 'model', 'resume'].includes(key))) {
     mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
   }
+  assertParentPreparationTaskExclusivity(parent, write.event, payload.task);
   const writeOutputs = outputs.filter(({ event }) => event.payload.call_id === write.event.payload.call_id);
   if (writeOutputs.length !== 1) mismatch('preparation-ack-count', 'The private preparation write must expose exactly one linked terminal acknowledgement.');
   const acknowledged = parseCapturedHostResult(writeOutputs[0].event.payload.output);
@@ -930,6 +931,19 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
     && write.index < writeOutputs[0].index && writeOutputs[0].index < spawnIndex && spawnIndex < startIndex)) {
     mismatch('preparation-order', 'Role readiness, raw readiness, one private write, acknowledgement, spawn, and child start are out of order.');
   }
+}
+
+function assertParentPreparationTaskExclusivity(parent, writeEvent, task) {
+  for (const event of parent) {
+    if (event === writeEvent || isExplicitParentUserInput(event)) continue;
+    if (boundedJson(event).includes(task)) {
+      mismatch('preparation-task-exclusivity', 'The private Rescue task escaped the single authorized preparation write.');
+    }
+  }
+}
+
+function isExplicitParentUserInput(event) {
+  return event?.type === 'event_msg' && event.payload?.type === 'user_message';
 }
 
 function assertExecEnvelope(envelope, expectedCommand, expectedWorkspace, code, extensions = {}) {

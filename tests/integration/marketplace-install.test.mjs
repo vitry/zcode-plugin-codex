@@ -266,6 +266,10 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.deepEqual(installedSkills.map((skill) => skill.name).sort(), expectedSkills.map((name) => `zcode:${name}`).sort());
   assert.ok(installedSkills.every((skill) => skill.enabled === true));
   assert.match(JSON.stringify(listedComponents.hooks), /session-lifecycle-hook|user-prompt-hook/, 'Codex must auto-discover the installed default hooks/hooks.json');
+  await Promise.all(['subagent-hook.mjs', 'session-lifecycle-hook.mjs'].map(async (hook) => {
+    const source = await readFile(join(installedRoot, 'hooks', hook), 'utf8');
+    assert.ok(source.length > 0, `installed Rescue payload must contain ${hook}`);
+  }));
   const nativeBinding = await realpath(join(installedRoot, 'node_modules', 'fs-native-extensions'));
   const installedRootPath = await realpath(installedRoot); const nativeBindingRelative = relative(installedRootPath, nativeBinding);
   assert.ok(nativeBindingRelative && !isAbsolute(nativeBindingRelative) && nativeBindingRelative !== '..' && !nativeBindingRelative.startsWith(`..${sep}`));
