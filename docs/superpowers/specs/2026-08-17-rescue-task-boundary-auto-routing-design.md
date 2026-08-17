@@ -114,9 +114,12 @@ existing private plugin-data boundary.
 ### Private preparation protocol
 
 After the constant readiness preflight, the parent starts one constant private
-command, `prepare rescue`, over ordinary stdio. The process reads exactly one
-newline-terminated JSON object from stdin, requires EOF, emits only a bounded
-task-free acknowledgement, and exits. The exact envelope is:
+command, `prepare rescue`, in a PTY. Before accepting input, the process requires
+a raw-mode-capable terminal, enables raw mode to disable terminal echo, and emits
+a fixed task-free input-readiness record. The parent then sends exactly one
+newline-terminated JSON frame over the same handle. The process validates that
+single frame without waiting for EOF, restores terminal mode on every exit path,
+emits only a bounded task-free acknowledgement, and exits. The exact envelope is:
 
 ```json
 {
@@ -135,9 +138,10 @@ task-free acknowledgement, and exits. The exact envelope is:
 `source` is `explicit` or `proactive`. `task` is non-empty and bounded to the
 existing 64 KiB limit. `options` admits only the existing Rescue option values;
 optional keys are omitted, never null. Unknown keys, duplicate JSON keys,
-trailing bytes, invalid UTF-8, an inactive/mismatched parent turn, or a second
-preparation for that exact turn fail closed. Preparation neither reserves a job
-nor starts ZCode.
+bytes after the LF in the submitted frame, invalid UTF-8, an
+inactive/mismatched parent turn, or a second preparation for that exact turn
+fail closed. Non-TTY input and failure to enter no-echo raw mode fail before the
+task is sent. Preparation neither reserves a job nor starts ZCode.
 
 The subsequent constant child command changes from `invoke rescue` to
 `invoke-prepared rescue`. Consumption is atomic and requires the exact active

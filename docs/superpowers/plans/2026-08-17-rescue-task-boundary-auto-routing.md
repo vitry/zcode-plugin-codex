@@ -287,7 +287,7 @@ proactive clear independent task -> prepare fresh
 genuine proactive ambiguity -> ask once before prepare
 ```
 
-Assert the parent performs `role-status rescue`, then one constant `prepare rescue` process plus same-handle stdin/EOF, then one spawn. Assert the task/source/options never enter command text, environment, spawn message, relay, status, or output. Assert both named and generic initial child mappings use only `invoke-prepared rescue`; choice/status commands remain unchanged. Retain all one-child, ordinary-subagent prohibition, wait, relay, and liveness assertions.
+Assert the parent performs `role-status rescue`, then starts one constant `prepare rescue` PTY, waits for its fixed no-echo input-readiness record, sends one LF-terminated JSON frame on the same handle, receives a task-free terminal acknowledgement, and then performs one spawn. Assert raw mode is enabled before input and restored on success, failure, and interruption. Assert the task/source/options never enter command text, environment, spawn message, relay, status, or output. Assert both named and generic initial child mappings use only `invoke-prepared rescue`; choice/status commands remain unchanged. Retain all one-child, ordinary-subagent prohibition, wait, relay, and liveness assertions.
 
 - [ ] **Step 2: Run contract tests and verify RED**
 
@@ -308,7 +308,7 @@ In `skills/rescue/SKILL.md`, specify one executable sequence:
 3. Normalize a non-empty business objective and omit host-only stop/report/review/routing policy.
 4. For proactive entry, choose resume/fresh semantically before preparation; ask only genuine ambiguity.
 5. Run the existing constant readiness preflight.
-6. Start constant `prepare rescue` with a PTY, send one JSON line through the same handle, then send terminal EOF (`U+0004`); accept only the fixed task-free ack and zero exit.
+6. Start constant `prepare rescue` with a PTY, wait for the fixed task-free readiness proving raw no-echo input is active, then send exactly one JSON line through the same handle; do not send EOF or `U+0004`. Accept only the fixed task-free terminal ack and zero exit.
 7. Spawn one fresh named Role or the existing verified generic fallback.
 8. Retain exact child ID and accept only its authoritative terminal result.
 
@@ -354,7 +354,7 @@ Commit: `feat: route proactive Rescue automatically`
 Extend captured parent evidence to require the order:
 
 ```text
-role-status exit 0 -> prepare start -> one JSON line -> EOF -> task-free ack exit 0 -> spawn -> child invoke-prepared
+role-status exit 0 -> prepare raw-mode readiness -> one JSON line -> task-free ack exit 0 -> spawn -> child invoke-prepared
 ```
 
 Add mutation tests for missing/duplicate preparation, task in argv/env/ack/spawn, malformed/trailing stdin, wrong handle, prepare after spawn, source/marker mismatch, replay, and initial child `invoke rescue`. Keep existing named/generic, foreground/background, explicit same-child choice, relay/status, and terminal-causality coverage.
