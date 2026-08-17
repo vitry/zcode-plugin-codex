@@ -143,6 +143,16 @@ test('managed Rescue role exposes the fixed contract and stable non-cache paths'
   assert.doesNotMatch(ctx.paths.rolePath, /cache|0\.1\.0/);
 });
 
+test('installed Rescue Role consumes only a previously prepared task-blind invocation', async () => {
+  const source = await readFile(new URL('../agents/zcode-rescue.toml.template', import.meta.url), 'utf8');
+  assert.match(source, /Run the installed prepared ZCode Rescue forwarder now/);
+  assert.match(source, /invoke-prepared rescue/);
+  assert.doesNotMatch(source, /invoke rescue(?:\s|$)/m);
+  assert.doesNotMatch(source, /\{\{(?:TASK|SOURCE|OPTIONS|ARGS|JOB|SESSION|WORKSPACE|PERMISSION|CAPABILITY)[^}]*\}\}/i);
+  assert.match(source, /task-blind/i);
+  assert.match(source, /capability-free/i);
+});
+
 test('managed Rescue role rendering deterministically TOML-escapes only the canonical plugin root', () => {
   const unix = renderManagedRescueRole({ template, pluginRoot: '/opt/ZCode "active"' });
   assert.equal(unix, template.replaceAll('{{PLUGIN_ROOT}}', '/opt/ZCode \\"active\\"'));

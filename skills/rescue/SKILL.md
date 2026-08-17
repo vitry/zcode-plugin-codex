@@ -5,13 +5,15 @@ description: Use when a user wants ZCode to investigate, implement, repair, or c
 
 # ZCode Rescue
 
-Invoke as `$zcode:rescue [--background | --wait] [--resume | --fresh] [--model <provider/model|alias>] [--effort none|minimal|low|medium|high|xhigh] <task...>`.
+Invoke explicitly as `$zcode:rescue [--background | --wait] [--resume | --fresh] [--model <provider/model|alias>] [--effort none|minimal|low|medium|high|xhigh] <task...>`, or route here proactively when the top-level Codex agent selects ZCode for an applicable substantial coding task. There is no `--auto` flag: automatic routing is a Root behavior, not a public command option.
 
-Require non-empty task text. Rescue may change the workspace and defaults to foreground. The native prompt hook has already recorded the exact arguments and task text. Never place user text, command arguments, job or session identity, permissions, credentials, or authorization material in a process command or agent message.
+Require a non-empty normalized business objective. Rescue may change the workspace and defaults to foreground. Before the child starts, the parent must prepare the exact private Rescue envelope as specified below. Never place user text, command arguments, job or session identity, permissions, credentials, or authorization material in a process command or agent message.
 
 ## Single-hop Rescue routing
 
 The dedicated `zcode-rescue` child, or the fixed generic compatibility forwarder created by this Skill, is already the Rescue subagent.
+
+Before classification, preflight, preparation, naming, or route selection, inspect the current operation's state for an existing `rescueChildId`. This is the highest priority rule: if it exists, only rejoin, wait for, inspect, or follow up that exact child as allowed below. Never preflight, prepare, spawn, or invoke again, and never execute any initial companion command for that operation. Ordinary user steering and an active child are continuation of the same operation unless the authoritative child has already terminated.
 
 - `$zcode:rescue` must be invoked by the top-level user-facing Codex agent, not by an ordinary spawned subagent.
 - Always collapse `top-level Codex agent -> ordinary subagent -> Rescue subagent` into `top-level Codex agent -> Rescue subagent`.
@@ -20,11 +22,39 @@ The dedicated `zcode-rescue` child, or the fixed generic compatibility forwarder
 - If an ordinary subagent reports that exact sentence, the top-level agent must include it in its user-facing final response verbatim and must not describe the ordinary subagent's work as ZCode output.
 - The dedicated `zcode-rescue` child and the fixed generic compatibility forwarder are exempt from the ordinary-subagent rule and must follow their fixed forwarder instructions.
 
-Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. Before spawning anything, use the available terminal tool in the parent to run exactly `node "<plugin-root>/scripts/zcode-companion.mjs" role-status rescue` over ordinary stdio. This is the only companion command the parent may run. Accept only the fixed `role-status` object. If its status is not `ready`, present its status and exact `$zcode:setup` remedy, then stop without spawning.
+## Entry classification and choice precedence
+
+Classify the entry source exactly once. If the user's request literally contains an applicable `$zcode:rescue` invocation, source is `explicit`. Otherwise, when Root automatically or proactively selects ZCode for an applicable task, source is `proactive`.
+
+Normalize `task` from the complete request semantics into a non-empty business objective. Exclude host-only requests to stop, report, review, wait, or discuss routing policy. Never mechanically slice, take, or extract text before or after a marker; flags, skill markers, routing discussion, and host-control instructions are not the objective.
+
+Apply this precedence before preparation:
+
+- An explicit `--fresh` or `--resume` is authoritative.
+- For an explicit request with a continuation candidate but no choice, omit `resume` during preparation. If the child later returns the same-child `needs-choice` response, ask exactly once using the continuation protocol below.
+- For a proactive clear continuation, materialize `resume` as `resume` in the prepare envelope. For a proactive clear independent task, materialize `resume` as `fresh` in the prepare envelope. A proactive clear route must include either `fresh` or `resume`.
+- For a genuinely ambiguous route, ask exactly once before running prepare or spawn, then materialize the answer. Do not ask when the complete request semantics make continuation or independence clear.
+- An explicit request with no route and no continuation candidate may omit `resume`; do not synthesize a choice.
+
+## Parent preflight and private preparation
+
+Resolve the plugin root as the directory two directories above this `SKILL.md`; use its absolute canonical plugin root. After the active-child check and before spawning anything, use the available terminal tool in the parent to run exactly `node "<plugin-root>/scripts/zcode-companion.mjs" role-status rescue` over ordinary stdio. Accept only the fixed `role-status` object. If its status is not `ready`, present its status and exact `$zcode:setup` remedy, then stop without spawning.
+
+After readiness, run exactly `node "<plugin-root>/scripts/zcode-companion.mjs" prepare rescue` once with a PTY. Keep the same process handle. Through parent `write_stdin`, send exactly one JSON line, then send U+0004 as EOF on that same handle. The payload is the exact envelope with keys `version`, `source`, `task`, and `options`:
+
+```json
+{"version":1,"source":"explicit","task":"<normalized non-empty business objective>","options":{"execution":"foreground","resume":"fresh","model":"<model>","effort":"<effort>"}}
+```
+
+`version` is exactly `1`; `source` is exactly `explicit` or `proactive`; `task` is the normalized non-empty objective. `options` permits only existing `execution`, `resume`, `model`, and `effort` fields. Omit every absent option; never encode an absent option as null. `execution` is only `foreground` or `background`, `resume` is only `fresh` or `resume`, and model and effort retain the existing public meanings.
+
+Task, source, and options are allowed only in the parent `write_stdin` payload. Never put them in argv, the environment, a spawn message, output, relay, status, task name, or agent metadata. The prepared state is private and task-free at every child-facing boundary.
+
+Accept preparation only when the same handle exits with zero exit status and its sole accepted terminal object is exactly `{ type: 'prepared', command: 'rescue' }`, with no task or option fields. A signal, failed prepare, nonzero exit, extra field, malformed output, or any other result must stop the operation and must not spawn. Preparation authorizes exactly one named or generic spawn.
 
 After the readiness preflight succeeds and before route selection or any spawn, choose `rescueTaskName` exactly once as display metadata.
 
-Use the exact written form `zcode_rescue_<semantic_slug>[_<ordinal>]`; the complete name must be no more than 64 UTF-8 bytes. The semantic slug must contain 1–3 lowercase ASCII semantic words separated by underscores; each word begins with a lowercase ASCII letter and contains at most 16 lowercase letters or digits. The slug is a generic objective description and never copies or mechanically transforms task text. It must not contain prompt fragments, command arguments or options, repository or filesystem paths, personal names, issue, job, or session IDs, hashes, credentials, capabilities, or authorization material. Use the safe fallback `zcode_rescue_task` when no compliant private-safe semantic slug is available. Start with the unsuffixed name; if it collides with an occupied sibling task name, use the smallest available ordinal from 2 through 9999, written without leading zeros. Determine that collision before the one spawn; collision handling never authorizes a second spawn.
+Use the task-independent base `zcode_rescue_task` and the exact written form `zcode_rescue_task[_<ordinal>]`; the complete name must be no more than 64 UTF-8 bytes. The name is never derived from the business objective or task text and must contain no prompt fragment, option, path, personal name, identifier, hash, credential, capability, or authorization material. Start with the unsuffixed name; if it collides with an occupied sibling task name, use the smallest available ordinal from 2 through 9999, written without leading zeros. Determine that collision before the one spawn; collision handling never authorizes a second spawn.
 
 Both `task_name` and `agent_path` are presentation metadata, and convention matching is neither sufficient nor necessary Rescue identity evidence. Never classify, authorize, route, reject, downgrade, or recover Rescue based on any name or path. Trusted routing facts remain the named Role where available, exact returned child ID, parent-child linkage, fixed forwarder contract, and hook-bound executor state.
 
@@ -35,7 +65,7 @@ spawn_agent({
   task_name: rescueTaskName,
   fork_turns: 'none',
   agent_type: 'zcode-rescue',
-  message: 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.',
+  message: 'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.',
 })
 ```
 
@@ -53,10 +83,10 @@ Do not infer field incompatibility merely from the words `unknown`, `invalid`, o
 For the generic route, substitute only the preflight-verified absolute canonical plugin root in this fixed message, then call `spawn_agent` with `task_name: rescueTaskName`, `fork_turns: 'none'`, no `agent_type`, and exactly that message:
 
 ```text
-Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:
-node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke rescue
+Act only as the installed ZCode Rescue forwarder. You are task-blind and capability-free. In the current workspace run exactly:
+node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-prepared rescue
 Preserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request/print/persist authorization material.
-Exactly one `exec_command` companion process may own the foreground Rescue execution; continuation calls only observe its original running handle. Never start a second `exec_command` for Rescue invocation. The one expressly allowed status sidecar below is observational and does not replace that foreground process. A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. Relay text and status text are also nonterminal. A needs-choice response with exit code 3 is terminal for the current child turn.
+Exactly one `exec_command` companion process may own the foreground prepared Rescue execution; continuation calls only observe its original running handle. Never start a second `exec_command` for Rescue invocation. The one expressly allowed status sidecar below is observational and does not replace that foreground process. A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. Relay text and status text are also nonterminal. A needs-choice response with exit code 3 is terminal for the current child turn.
 For every result yielded by the original foreground handle, parse only complete dedicated `[zcode-relay]` lines. Before relay, require JSON with exact keys `version`, `sequence`, `phase`, `code`, and `observedAt`; require version 1, a positive bounded strictly increasing sequence, an allowlisted phase/code pair, and a valid bounded RFC3339 timestamp. Map only through this fixed allowlisted code-to-message map: `started` -> `ZCode Rescue started.`; `model-active` -> `ZCode is generating a response.`; `tool-active` -> `ZCode is working with a tool.`; `editing` -> `ZCode is applying workspace changes.`; `verifying` -> `ZCode is verifying the work.`; `waiting` -> `ZCode Rescue is still running.`; `finalizing` -> `ZCode Rescue is finalizing.`. Coalesce a repeated identical phase. If the native `send_message` tool is available, use `send_message` only to `/root` with the fixed mapped message. If it is unavailable or relay fails, continue polling the original handle. Relay is liveness only and never completion.
 Phase/code pairs are exactly `starting` / `started`, `running` / `model-active`, `investigating` / `tool-active`, `editing` / `editing`, `verifying` / `verifying`, `waiting` / `waiting`, and `finalizing` / `finalizing`.
 Never relay detailed `[zcode]` lines, arbitrary stderr, stdout, commands, paths, identifiers, content, results, or errors. Never invent a relay from a partial, malformed, unknown, stale, duplicate, or out-of-order record. After inspecting each yielded result and optionally relaying its valid complete records, continue only with same-handle `write_stdin` polling. A relay or its tool result never replaces a poll and never authorizes another Rescue invocation.
@@ -67,6 +97,7 @@ If that command returned a needs-choice response, stop. Only after the parent se
 node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-choice rescue resume
 Only after the parent sends exactly `Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.` run exactly:
 node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-choice rescue fresh
+A project tool, test, build, lint, or other command failure reported while the ZCode turn remains active is not a Rescue failure. Do not hard-code project commands or parse their output to decide completion; keep polling the exact original handle. Only the original companion and ZCode terminal result is authoritative.
 Return only the original foreground execution's terminal public stdout. Never substitute relay output, status output, intermediate output, or child-authored text.
 ```
 
@@ -81,6 +112,8 @@ wait_agent({ timeout_ms: 30000 })
 ```
 
 Accept a progress update only when its author is the exact `rescueChildId`, its target is `/root`, and its content is one fixed allowlisted relay message. Such an update from the exact `rescueChildId` is liveness only: show it if useful, then wait or rejoin that same child. A progress update is never completion, never terminal evidence, and never authority to spawn, follow up, execute a companion command, or change ownership. Reject sibling-authored, arbitrary, detailed, or malformed progress. On terminal completion proven by the original child execution, return only the child's public stdout verbatim without interpretation.
+
+A project tool, test, build, lint, or other command failure observed while the ZCode turn remains active is not a Rescue failure. Root must continue waiting for the exact `rescueChildId`. Do not hard-code project commands or parse their output to infer completion. Only the original companion and ZCode authoritative terminal result may end the operation.
 
 Detailed semantic progress belongs only to the child transcript and durable job preview; only fixed content-free relay messages may reach the parent. When explaining inspection, direct the user to `/agent` or `/subagents` to select the Rescue child; `/ps` lists background terminals for the currently active thread and is not a subagent selector. Online conversation subscription may degrade to fixed lifecycle messages and the 20-second heartbeat without changing the authoritative result. Command and query previews are control-free single lines shortened to 96-character display bounds, but truncation is not secret redaction; never claim it removes secrets supplied in a command or search.
 
