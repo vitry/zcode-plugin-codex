@@ -750,6 +750,7 @@ test('confines the exact preparation task to the one same-handle parent write ch
     ['unrelated exec argv', (input) => input.rollouts[0].splice(7, 0, structuredExec(`printf %s ${JSON.stringify(task)}`, 'unrelated-task-argv'), toolOutput('unrelated-task-argv', ''))],
     ['unrelated exec env', (input) => input.rollouts[0].splice(7, 0, structuredExec('true', 'unrelated-task-env', { env: { PRIVATE_TASK: task } }), toolOutput('unrelated-task-env', ''))],
     ['unrelated tool output', (input) => input.rollouts[0].splice(7, 0, structuredExec('true', 'unrelated-task-output'), toolOutput('unrelated-task-output', task))],
+    ['write event metadata', (input) => { parentCall(input, 'prepare-write-1').payload.private_task = task; }],
     ['prepared ack task echo', (input) => { parentOutput(input, 'prepare-write-1').payload.output = capturedResult({ output: `${JSON.stringify({ type: 'prepared', command: 'rescue', task })}\n`, exit_code: 0 }); }],
     ['spawn message', (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.message = `${args.message} ${task}`; spawnEvent(input).payload.arguments = JSON.stringify(args); }],
     ['parent relay', (input) => input.rollouts[0].splice(-2, 0, { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: task }] } })],
@@ -766,6 +767,28 @@ test('confines the exact preparation task to the one same-handle parent write ch
   const recordedUserInput = fixture();
   recordedUserInput.rollouts[0].splice(1, 0, { type: 'event_msg', payload: { type: 'user_message', message: task } });
   assert.equal(qualifyCodexRescueEvidence(recordedUserInput, options()).publicOutput, expectedPublicOutput);
+});
+
+test('detects escaped private task text in parent commentary and decoded tool envelopes', () => {
+  const cases = [
+    ['repair the "quoted" route', (input, task) => input.rollouts[0].splice(-2, 0, { type: 'event_msg', payload: { type: 'agent_message', message: `leaked: ${task}`, phase: 'commentary' } })],
+    ['repair the \\backslash route', (input, task) => input.rollouts[0].splice(7, 0, structuredExec('true', 'escaped-task-env', { env: { PRIVATE_TASK: task } }), toolOutput('escaped-task-env', ''))],
+    ['repair the\nmultiline route', (input, task) => { parentOutput(input, 'prepare-write-1').payload.output = capturedResult({ output: `${JSON.stringify({ type: 'prepared', command: 'rescue', task })}\n`, exit_code: 0 }); }],
+  ];
+  for (const [task, leak] of cases) {
+    const envelope = { ...expectedPreparationEnvelope, task };
+    const preparationPayload = JSON.stringify(envelope);
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    leak(input, task);
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => {
+        assert.doesNotMatch(error.message, new RegExp(task.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+        return error instanceof CodexRescueEvidenceMismatchError && error.code === 'preparation-task-exclusivity';
+      },
+    );
+  }
 });
 
 test('binds child stdout to the unique exec call and terminal sentinel', () => {

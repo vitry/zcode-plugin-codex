@@ -918,7 +918,7 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
     || Object.keys(payload.options).some((key) => !['effort', 'execution', 'model', 'resume'].includes(key))) {
     mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
   }
-  assertParentPreparationTaskExclusivity(parent, write.event, payload.task);
+  assertParentPreparationTaskExclusivity(parent, write.event, payload.task, calls, outputs);
   const writeOutputs = outputs.filter(({ event }) => event.payload.call_id === write.event.payload.call_id);
   if (writeOutputs.length !== 1) mismatch('preparation-ack-count', 'The private preparation write must expose exactly one linked terminal acknowledgement.');
   const acknowledged = parseCapturedHostResult(writeOutputs[0].event.payload.output);
@@ -933,17 +933,68 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
   }
 }
 
-function assertParentPreparationTaskExclusivity(parent, writeEvent, task) {
+function assertParentPreparationTaskExclusivity(parent, writeEvent, task, calls, outputs) {
   for (const event of parent) {
-    if (event === writeEvent || isExplicitParentUserInput(event)) continue;
-    if (boundedJson(event).includes(task)) {
+    boundedJson(event);
+    if (parentEventStringContainsTask(event, task, writeEvent)) {
+      mismatch('preparation-task-exclusivity', 'The private Rescue task escaped the single authorized preparation write.');
+    }
+  }
+  for (const call of calls) {
+    const decoded = Object.fromEntries(call.host.envelope);
+    if (call.event === writeEvent) delete decoded.chars;
+    if (stringLeafContains(decoded, task)) {
+      mismatch('preparation-task-exclusivity', 'The private Rescue task escaped the single authorized preparation write.');
+    }
+  }
+  for (const { event } of outputs) {
+    const linkedCall = calls.find((call) => call.event.payload.call_id === event.payload.call_id);
+    if (linkedCall?.host.legacy) continue;
+    let result;
+    try { result = parseCapturedHostResult(event.payload.output); } catch { continue; }
+    let decodedOutput;
+    try { decodedOutput = JSON.parse(result.output.trim()); } catch { /* Ordinary command output is not required to be JSON. */ }
+    if (stringLeafContains(result, task) || stringLeafContains(decodedOutput, task)) {
+      mismatch('preparation-task-exclusivity', 'The private Rescue task escaped the single authorized preparation write.');
+    }
+  }
+  for (const event of parent.filter((candidate) => candidate?.type === 'response_item' && candidate.payload?.type === 'function_call')) {
+    let args;
+    try { args = parseObject(event.payload.arguments, 'preparation-task-exclusivity'); } catch { continue; }
+    if (stringLeafContains(args, task)) {
       mismatch('preparation-task-exclusivity', 'The private Rescue task escaped the single authorized preparation write.');
     }
   }
 }
 
-function isExplicitParentUserInput(event) {
-  return event?.type === 'event_msg' && event.payload?.type === 'user_message';
+function parentEventStringContainsTask(event, task, writeEvent) {
+  const pending = [{ value: event, parent: undefined, key: undefined }];
+  while (pending.length > 0) {
+    const { value, parent, key } = pending.pop();
+    if (typeof value === 'string') {
+      const authorizedPreparationInput = event === writeEvent && parent === event.payload && key === 'input';
+      const authorizedUserPrompt = event?.type === 'event_msg' && event.payload?.type === 'user_message'
+        && parent === event.payload && key === 'message';
+      if (!authorizedPreparationInput && !authorizedUserPrompt && value.includes(task)) return true;
+      continue;
+    }
+    if (!value || typeof value !== 'object') continue;
+    for (const [childKey, child] of Object.entries(value)) pending.push({ value: child, parent: value, key: childKey });
+  }
+  return false;
+}
+
+function stringLeafContains(value, task) {
+  const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === 'string') {
+      if (current.includes(task)) return true;
+    } else if (current && typeof current === 'object') {
+      pending.push(...Object.values(current));
+    }
+  }
+  return false;
 }
 
 function assertExecEnvelope(envelope, expectedCommand, expectedWorkspace, code, extensions = {}) {
