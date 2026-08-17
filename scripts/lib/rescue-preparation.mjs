@@ -1,9 +1,16 @@
 import { createHash } from 'node:crypto';
-import { access, opendir, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { constants, lstatSync, unlinkSync } from 'node:fs';
+import { lstat, open } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
-import { atomicWriteJson, ensurePrivateDirectory, readBoundedJsonFile, withFileLock } from './fs.mjs';
+import {
+  atomicWriteJson,
+  ensurePrivateDirectoryWithin,
+  readBoundedJsonFile,
+  readPrivateDirectory,
+  withFileLock,
+} from './fs.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
@@ -20,6 +27,7 @@ const OPTION_KEYS = new Set(['effort', 'execution', 'model', 'resume']);
 const PREPARATION_LIFETIME_MS = 30 * 60_000;
 const PREPARATION_SCAN_MAX_RECORDS = 1024;
 const PREPARATION_RECORD_MAX_BYTES = 2 * 1024 * 1024;
+const PREPARATION_MAX_CHUNKS = 1024;
 const RECORD_KEYS = [
   'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'key',
   'permissionMode', 'sessionId', 'source', 'turnId', 'version', 'workspace',
@@ -30,31 +38,29 @@ export async function readRescuePreparation(stream) {
   if (stream === null || typeof stream !== 'object' || !(Symbol.asyncIterator in stream)) {
     throw invalidPreparation();
   }
-  /** @type {Buffer[]} */
-  const chunks = [];
-  let length = 0;
+  const buffer = Buffer.allocUnsafe(RESCUE_ENVELOPE_MAX_BYTES);
+  let length = 0; let chunkCount = 0;
   try {
     for await (const chunk of stream) {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      length += bytes.length;
-      if (length > RESCUE_ENVELOPE_MAX_BYTES) throw invalidPreparation();
-      chunks.push(bytes);
+      if (bytes.length === 0) continue;
+      chunkCount += 1;
+      if (chunkCount > PREPARATION_MAX_CHUNKS
+        || length + bytes.length > RESCUE_ENVELOPE_MAX_BYTES) throw invalidPreparation();
+      bytes.copy(buffer, length); length += bytes.length;
     }
-    const bytes = Buffer.concat(chunks, length);
-    if (bytes.length === 0 || bytes.at(-1) !== 0x0a || bytes.subarray(0, -1).includes(0x0a)) {
-      throw invalidPreparation();
-    }
-    let text;
-    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, -1)); }
-    catch { throw invalidPreparation(); }
-    rejectDuplicateObjectKeys(text);
-    let value;
-    try { value = JSON.parse(text); } catch { throw invalidPreparation(); }
-    return validateRescuePreparation(value);
-  } catch (error) {
-    if (error instanceof PluginError) throw error;
+  } catch { throw invalidPreparation(); }
+  const bytes = buffer.subarray(0, length);
+  if (bytes.length === 0 || bytes.at(-1) !== 0x0a || bytes.subarray(0, -1).includes(0x0a)) {
     throw invalidPreparation();
   }
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, -1)); }
+  catch { throw invalidPreparation(); }
+  rejectDuplicateObjectKeys(text);
+  let value;
+  try { value = JSON.parse(text); } catch { throw invalidPreparation(); }
+  return validateRescuePreparation(value);
 }
 
 /** @param {unknown} value */
@@ -85,11 +91,12 @@ export function hasRecordedRescueMarker(prompt) {
   return typeof prompt === 'string' && /(?:^|\s)\$zcode:rescue(?=$|\s)/u.test(prompt);
 }
 
-/** @param {{dataRoot:string}} options */
-export function createRescuePreparationStore({ dataRoot }) {
+/** @param {{dataRoot:string,testHooks?:{beforeCleanupMutation?:()=>Promise<void>,afterContainedRecordRead?:()=>Promise<void>}}} options */
+export function createRescuePreparationStore({ dataRoot, testHooks = {} }) {
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) throw preparationError(
     'RESCUE_PREPARATION_INVALID', 'A plugin data root is required.',
   );
+  validateTestHooks(testHooks);
   return {
     /** @param {any} input */
     async save(input) {
@@ -100,7 +107,7 @@ export function createRescuePreparationStore({ dataRoot }) {
         'RESCUE_PREPARATION_SOURCE_MISMATCH',
         'The Rescue preparation source does not match the recorded prompt.',
       );
-      const storage = await preparationStorage(dataRoot, input.workspace);
+      const storage = await preparationStorage(dataRoot, input.workspace, testHooks);
       const key = preparationKey(input.sessionId, input.turnId, storage.workspacePath);
       const path = join(storage.directory, `${key}.json`);
       const createdAt = timestamp(input.now);
@@ -121,26 +128,26 @@ export function createRescuePreparationStore({ dataRoot }) {
       if (Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`) > PREPARATION_RECORD_MAX_BYTES) {
         throw invalidPreparation();
       }
-      await withFileLock(storage.lockPath, async () => {
-        const names = await boundedRecordNames(storage.directory);
+      await withPreparationLock(storage, async () => {
+        const names = await boundedRecordNames(storage);
         if (names.includes(`${key}.json`) || await exists(path)) throw preparationError(
           'RESCUE_PREPARATION_EXISTS', 'A Rescue preparation already exists for this turn.',
         );
         if (names.length === PREPARATION_SCAN_MAX_RECORDS) throw preparationError(
           'RESCUE_PREPARATION_SCAN_LIMIT', 'The Rescue preparation record scan limit was exceeded.',
         );
-        await atomicWriteJson(path, record);
+        await atomicWriteJson(path, record, { privateRoot: storage.privateRoot });
       });
     },
 
     /** @param {any} input */
     async consume(input) {
       validateConsumeInput(input);
-      const storage = await preparationStorage(dataRoot, input.workspace);
+      const storage = await preparationStorage(dataRoot, input.workspace, testHooks);
       const key = preparationKey(input.sessionId, input.turnId, storage.workspacePath);
       const path = join(storage.directory, `${key}.json`);
-      return withFileLock(storage.lockPath, async () => {
-        const record = await readPreparedRecord(path, key, storage.workspacePath, true);
+      return withPreparationLock(storage, async () => {
+        const record = await readPreparedRecord(storage, path, key, true);
         if (record.sessionId !== input.sessionId || record.turnId !== input.turnId
           || record.workspace !== storage.workspacePath || record.permissionMode !== input.permissionMode) {
           throw preparationError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation identity does not match.');
@@ -152,6 +159,7 @@ export function createRescuePreparationStore({ dataRoot }) {
           throw preparationError('RESCUE_PREPARATION_CONSUMED', 'The Rescue preparation has already been consumed.');
         }
         const consumedAt = timestamp(input.now);
+        if (consumedAt < Date.parse(record.createdAt)) throw invalidPreparation();
         if (consumedAt >= Date.parse(record.expiresAt)) throw preparationError(
           'RESCUE_PREPARATION_EXPIRED', 'The Rescue preparation has expired.',
         );
@@ -161,7 +169,7 @@ export function createRescuePreparationStore({ dataRoot }) {
           consumedAt: new Date(consumedAt).toISOString(),
           executorAgentId: input.executorAgentId,
         };
-        await atomicWriteJson(path, consumed);
+        await atomicWriteJson(path, consumed, { privateRoot: storage.privateRoot });
         return cloneRecord(consumed);
       });
     },
@@ -169,21 +177,21 @@ export function createRescuePreparationStore({ dataRoot }) {
     /** @param {any} input */
     async cleanupTurn(input) {
       validateTurnInput(input);
-      const storage = await preparationStorage(dataRoot, input.workspace);
+      const storage = await preparationStorage(dataRoot, input.workspace, testHooks);
       const key = preparationKey(input.sessionId, input.turnId, storage.workspacePath);
       const path = join(storage.directory, `${key}.json`);
-      await withFileLock(storage.lockPath, async () => {
+      await withPreparationLock(storage, async () => {
         if (!await exists(path)) return;
-        const record = await readPreparedRecord(path, key, storage.workspacePath, false);
+        const record = await readPreparedRecord(storage, path, key, false);
         if (record.sessionId !== input.sessionId || record.turnId !== input.turnId) throw invalidRecord();
-        await unlink(path);
+        await unlinkPreparedRecord(storage, path);
       });
     },
 
     /** @param {any} input */
     async cleanupOlderTurns(input) {
       validateTurnInput(input);
-      const storage = await preparationStorage(dataRoot, input.workspace);
+      const storage = await preparationStorage(dataRoot, input.workspace, testHooks);
       await cleanupMatching(storage, (record) => (
         record.sessionId === input.sessionId && record.turnId !== input.turnId
       ));
@@ -192,7 +200,7 @@ export function createRescuePreparationStore({ dataRoot }) {
     /** @param {any} input */
     async cleanupSession(input) {
       validateSessionInput(input);
-      const storage = await preparationStorage(dataRoot, input.workspace);
+      const storage = await preparationStorage(dataRoot, input.workspace, testHooks);
       await cleanupMatching(storage, (record) => record.sessionId === input.sessionId);
     },
   };
@@ -200,39 +208,37 @@ export function createRescuePreparationStore({ dataRoot }) {
 
 /** @param {any} storage @param {(record:any)=>boolean} predicate */
 async function cleanupMatching(storage, predicate) {
-  await withFileLock(storage.lockPath, async () => {
-    const names = await boundedRecordNames(storage.directory);
+  await withPreparationLock(storage, async () => {
+    const names = await boundedRecordNames(storage);
     const targets = [];
     for (const name of names) {
       const key = name.slice(0, -5);
       const path = join(storage.directory, name);
-      const record = await readPreparedRecord(path, key, storage.workspacePath, false);
+      const record = await readPreparedRecord(storage, path, key, false);
       if (predicate(record)) targets.push(path);
     }
-    for (const path of targets) await unlink(path);
+    for (const path of targets) await unlinkPreparedRecord(storage, path);
   });
 }
 
-/** @param {string} directory */
-async function boundedRecordNames(directory) {
-  const handle = await opendir(directory);
-  const entries = [];
+/** @param {any} storage */
+async function boundedRecordNames(storage) {
+  let entries;
   try {
-    for await (const entry of handle) {
-      if (entries.length === PREPARATION_SCAN_MAX_RECORDS) throw preparationError(
-        'RESCUE_PREPARATION_SCAN_LIMIT', 'The Rescue preparation record scan limit was exceeded.',
-      );
-      entries.push(entry);
-    }
-  } finally { await handle.close().catch(() => {}); }
+    entries = await readPrivateDirectory(
+      storage.privateRoot, storage.directory, PREPARATION_SCAN_MAX_RECORDS,
+    );
+  } catch { throw preparationError(
+    'RESCUE_PREPARATION_SCAN_LIMIT', 'The Rescue preparation record scan limit was exceeded.',
+  ); }
   if (entries.some((entry) => !entry.isFile() || !/^[a-f0-9]{64}\.json$/u.test(entry.name))) throw invalidRecord();
   return entries.map((entry) => entry.name);
 }
 
-/** @param {string} path @param {string} key @param {string} workspace @param {boolean} missingIsNotFound */
-async function readPreparedRecord(path, key, workspace, missingIsNotFound) {
+/** @param {any} storage @param {string} path @param {string} key @param {boolean} missingIsNotFound */
+async function readPreparedRecord(storage, path, key, missingIsNotFound) {
   let record;
-  try { record = await readBoundedJsonFile(dirname(path), path, PREPARATION_RECORD_MAX_BYTES); }
+  try { record = await readPrivatePreparationJson(storage, path); }
   catch (error) {
     if (missingIsNotFound && (/** @type {any} */ (error)?.code === 'ENOENT'
       || error instanceof PluginError && error.code === 'JSON_READ_FAILED'
@@ -241,8 +247,50 @@ async function readPreparedRecord(path, key, workspace, missingIsNotFound) {
     }
     throw invalidRecord();
   }
-  if (!validRecord(record, key, workspace)) throw invalidRecord();
+  if (!validRecord(record, key, storage.workspacePath)) throw invalidRecord();
   return record;
+}
+
+/** @param {any} storage @param {string} path */
+async function readPrivatePreparationJson(storage, path) {
+  const trusted = await readBoundedJsonFile(
+    storage.privateRoot, path, PREPARATION_RECORD_MAX_BYTES,
+  );
+  await storage.testHooks.afterContainedRecordRead?.();
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size > BigInt(PREPARATION_RECORD_MAX_BYTES)) throw invalidRecord();
+    const bytes = Buffer.allocUnsafe(Number(before.size)); let offset = 0;
+    while (offset < bytes.length) {
+      const result = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (result.bytesRead === 0) break;
+      offset += result.bytesRead;
+    }
+    if (offset !== bytes.length) throw invalidRecord();
+    const [after, current] = await Promise.all([
+      handle.stat({ bigint: true }), lstat(path, { bigint: true }),
+    ]);
+    if (current.isSymbolicLink() || !current.isFile()
+      || !sameFileIdentity(before, after) || !sameFileIdentity(before, current)) throw invalidRecord();
+    let text;
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch { throw invalidRecord(); }
+    try {
+      rejectDuplicateObjectKeys(text);
+      const parsed = JSON.parse(text);
+      if (JSON.stringify(parsed) !== JSON.stringify(trusted)) throw invalidRecord();
+      await assertStorageIdentity(storage);
+      return trusted;
+    } catch { throw invalidRecord(); }
+  } finally { await handle?.close().catch(() => {}); }
+}
+
+/** @param {import('node:fs').BigIntStats} left @param {import('node:fs').BigIntStats} right */
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size
+    && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
 }
 
 /** @param {any} record @param {string} key @param {string} workspace */
@@ -292,13 +340,109 @@ function validateSessionInput(input) {
   if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.workspace)) throw invalidPreparation();
 }
 
-/** @param {string} dataRoot @param {string} workspace */
-async function preparationStorage(dataRoot, workspace) {
+/** @param {any} value */
+function validateTestHooks(value) {
+  if (!plain(value) || Object.keys(value).some((key) => ![
+    'afterContainedRecordRead', 'beforeCleanupMutation',
+  ].includes(key)) || Object.values(value).some((hook) => typeof hook !== 'function')) throw invalidPreparation();
+}
+
+/** @param {string} dataRoot @param {string} workspace @param {any} testHooks */
+async function preparationStorage(dataRoot, workspace, testHooks) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const invocationsDirectory = join(storage.directory, 'invocations');
   const directory = join(invocationsDirectory, 'prepared');
-  await ensurePrivateDirectory(directory);
-  return { ...storage, directory, lockPath: join(invocationsDirectory, '.lock') };
+  await ensurePrivateDirectoryWithin(storage.directory, invocationsDirectory);
+  await ensurePrivateDirectoryWithin(storage.directory, directory);
+  const lockPath = join(storage.directory, '.rescue-preparation-lock');
+  const lockIdentity = await preparationLockIdentity(lockPath);
+  return {
+    ...storage,
+    privateRoot: storage.directory,
+    invocationsDirectory,
+    directory,
+    lockPath,
+    lockDirectoryIdentity: lockIdentity.directory,
+    lockFileIdentity: lockIdentity.file,
+    invocationsIdentity: await lstat(invocationsDirectory, { bigint: true }),
+    directoryIdentity: await lstat(directory, { bigint: true }),
+    testHooks,
+  };
+}
+
+/** @template T @param {any} storage @param {()=>Promise<T>} operation @returns {Promise<T>} */
+async function withPreparationLock(storage, operation) {
+  return withFileLock(storage.lockPath, async () => {
+    assertLockIdentity(storage);
+    await assertStorageIdentity(storage);
+    try {
+      const result = await operation();
+      assertLockIdentity(storage);
+      await assertStorageIdentity(storage);
+      return result;
+    } catch (error) {
+      assertLockIdentity(storage);
+      await assertStorageIdentity(storage);
+      throw error;
+    }
+  });
+}
+
+/** @param {string} lockPath */
+async function preparationLockIdentity(lockPath) {
+  try { return currentLockIdentity(lockPath); }
+  catch (error) {
+    if (/** @type {any} */ (error)?.code !== 'ENOENT') throw error;
+    await withFileLock(lockPath, async () => {});
+    return currentLockIdentity(lockPath);
+  }
+}
+
+/** @param {string} lockPath */
+function currentLockIdentity(lockPath) {
+  const directory = lstatSync(lockPath, { bigint: true });
+  const file = lstatSync(join(lockPath, 'advisory.lock'), { bigint: true });
+  if (!directory.isDirectory() || !file.isFile()) throw invalidRecord();
+  return { directory, file };
+}
+
+/** @param {any} storage */
+function assertLockIdentity(storage) {
+  const current = currentLockIdentity(storage.lockPath);
+  if (!sameDirectoryIdentity(storage.lockDirectoryIdentity, current.directory)
+    || !sameDirectoryIdentity(storage.lockFileIdentity, current.file)) throw invalidRecord();
+}
+
+/** @param {any} storage @param {string} path */
+async function unlinkPreparedRecord(storage, path) {
+  await storage.testHooks.beforeCleanupMutation?.();
+  await assertStorageIdentity(storage);
+  assertLockIdentity(storage);
+  const invocations = lstatSync(storage.invocationsDirectory, { bigint: true });
+  const directory = lstatSync(storage.directory, { bigint: true });
+  const record = lstatSync(path, { bigint: true });
+  if (!record.isFile()
+    || !sameDirectoryIdentity(storage.invocationsIdentity, invocations)
+    || !sameDirectoryIdentity(storage.directoryIdentity, directory)) throw invalidRecord();
+  unlinkSync(path);
+}
+
+/** @param {any} storage */
+async function assertStorageIdentity(storage) {
+  await ensurePrivateDirectoryWithin(storage.privateRoot, storage.invocationsDirectory);
+  await ensurePrivateDirectoryWithin(storage.privateRoot, storage.directory);
+  const [invocations, directory] = await Promise.all([
+    lstat(storage.invocationsDirectory, { bigint: true }),
+    lstat(storage.directory, { bigint: true }),
+  ]);
+  if (!invocations.isDirectory() || !directory.isDirectory()
+    || !sameDirectoryIdentity(storage.invocationsIdentity, invocations)
+    || !sameDirectoryIdentity(storage.directoryIdentity, directory)) throw invalidRecord();
+}
+
+/** @param {import('node:fs').BigIntStats} left @param {import('node:fs').BigIntStats} right */
+function sameDirectoryIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 /** @param {string} sessionId @param {string} turnId @param {string} workspace */
@@ -313,7 +457,7 @@ function cloneRecord(record) {
 
 /** @param {string} path */
 async function exists(path) {
-  try { await access(path); return true; } catch (error) {
+  try { await lstat(path); return true; } catch (error) {
     if (/** @type {any} */ (error)?.code === 'ENOENT') return false;
     throw error;
   }
