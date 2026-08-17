@@ -3,6 +3,7 @@ import process from 'node:process';
 import { createHash, randomBytes } from 'node:crypto';
 import { closeSync as closeFdSync, realpathSync } from 'node:fs';
 import { Socket } from 'node:net';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { join, resolve, sep } from 'node:path';
 
@@ -18,7 +19,7 @@ import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
-import { createRescuePreparationStore, readRescuePreparation } from './lib/rescue-preparation.mjs';
+import { createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
@@ -99,7 +100,7 @@ export async function runCompanion(argv, runtime = {}) {
   return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
 }
 
-/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:NodeJS.ReadableStream,dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
+/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:NodeJS.ReadableStream,preparationTransport?:{writeReady:(line:string)=>unknown|Promise<unknown>},dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runDirectInvocation(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
   const [entry, command, choice, ...extra] = argv;
@@ -111,9 +112,12 @@ export async function runDirectInvocation(argv, runtime = {}) {
   const identity = createIdentityStore({ dataRoot });
   if (prepareInvocation) {
     const caller = await identity.resolveActiveTurn({ sessionId: ambientThreadId, workspace: cwd });
-    const envelope = await readRescuePreparationAbortable(runtime.input ?? process.stdin, runtime.signal);
-    await createRescuePreparationStore({ dataRoot }).save({ ...caller, recordedPrompt: caller.prompt, envelope, signal: runtime.signal });
-    return { type: 'prepared', command: 'rescue' };
+    const input = runtime.input ?? process.stdin;
+    return withPrivatePreparationTransport(input, runtime.preparationTransport, async () => {
+      const envelope = await readRescuePreparationFrame(input, runtime.signal);
+      await createRescuePreparationStore({ dataRoot }).save({ ...caller, recordedPrompt: caller.prompt, envelope, signal: runtime.signal });
+      return { type: 'prepared', command: 'rescue' };
+    });
   }
   if (preparedInvocation) {
     const executor = await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId);
@@ -199,6 +203,59 @@ function readRescuePreparationAbortable(input, signal) {
     if (signal.aborted) { onAbort(); return; }
     readRescuePreparation(input).then((value) => finish(undefined, value), (error) => finish(error));
   });
+}
+
+/** @param {NodeJS.ReadableStream} input @param {{writeReady:(line:string)=>unknown|Promise<unknown>}|undefined} transport @param {()=>Promise<any>} operation */
+async function withPrivatePreparationTransport(input, transport, operation) {
+  if (!transport) return operation();
+  const tty = /** @type {NodeJS.ReadableStream & {isTTY?:boolean,setRawMode?:(enabled:boolean)=>unknown}} */ (input);
+  if (tty.isTTY !== true || typeof tty.setRawMode !== 'function') throw new PluginError('PREPARATION_TTY_REQUIRED', 'Private Rescue preparation requires a raw-capable terminal.', { category: 'authorization', remedy: 'Run prepare rescue through its installed private PTY transport.' });
+  tty.setRawMode(true);
+  try {
+    await transport.writeReady('{"type":"preparation-input-ready","command":"rescue"}\n');
+    return await operation();
+  } finally { try { tty.setRawMode(false); } catch { /* process exit restores terminal state */ } }
+}
+
+/** @param {NodeJS.ReadableStream} input @param {AbortSignal|undefined} signal @returns {Promise<any>} */
+function readRescuePreparationFrame(input, signal) {
+  if (typeof input?.on !== 'function' || typeof input?.removeListener !== 'function') return readRescuePreparationAbortable(input, signal);
+  return new Promise((resolvePromise, reject) => {
+    /** @type {Buffer[]} */ let chunks = []; let bytes = 0; let settled = false;
+    const cleanup = () => {
+      input.removeListener('data', onData); input.removeListener('end', onEnd); input.removeListener('error', onError); signal?.removeEventListener('abort', onAbort);
+      try { input.pause?.(); } catch { /* best effort flow stop */ }
+      try { /** @type {NodeJS.ReadableStream & {unref?:()=>unknown}} */ (input).unref?.(); } catch { /* allow the private process to exit without stdin EOF */ }
+    };
+    /** @param {Buffer} captured */
+    const validate = (captured) => {
+      if (settled) return; settled = true; cleanup();
+      readRescuePreparation(Readable.from([captured])).then(resolvePromise, reject);
+    };
+    /** @param {Buffer|string|Uint8Array} chunk */
+    const onData = (chunk) => {
+      if (settled) return;
+      const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (bytes + value.length > RESCUE_ENVELOPE_MAX_BYTES) { validate(Buffer.alloc(RESCUE_ENVELOPE_MAX_BYTES + 1)); return; }
+      chunks.push(value); bytes += value.length;
+      if (value.includes(0x0a)) validate(Buffer.concat(chunks, bytes));
+    };
+    const onEnd = () => validate(Buffer.concat(chunks, bytes));
+    const onError = () => validate(Buffer.alloc(0));
+    const onAbort = () => {
+      if (settled || !signal) return; settled = true; cleanup();
+      reject(rescuePreparationInterruption(signal));
+    };
+    input.on('data', onData); input.once('end', onEnd); input.once('error', onError); signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
+/** @param {AbortSignal} signal */
+function rescuePreparationInterruption(signal) {
+  return signal.reason instanceof PluginError && signal.reason.code === 'JOB_INTERRUPTED'
+    ? signal.reason
+    : new PluginError('JOB_INTERRUPTED', 'Rescue preparation was interrupted.', { category: 'interruption', remedy: 'Retry the command when you are ready.' });
 }
 
 /** @param {any} context */
@@ -524,6 +581,7 @@ async function main() {
   try {
     const authorization = setup || roleStatus || direct ? undefined : await readInternalEnvelope(3, { signal: signalController?.signal });
     const foregroundProgress = worker ? {} : {
+      ...(entry === 'prepare' ? { input: process.stdin, preparationTransport: { writeReady: (/** @type {string} */ line) => process.stdout.write(line) } } : {}),
       progressWriter: (/** @type {string} */ line) => process.stderr.write(line),
       ...(rescueDirect ? { progressRelayWriter: (/** @type {{sequence:number,phase:string,code:string,observedAt:string}} */ record) => process.stderr.write(serializeRescueProgressRelay(record)) } : {}),
       progressDependencies: { now: () => new Date().toISOString(), setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval },

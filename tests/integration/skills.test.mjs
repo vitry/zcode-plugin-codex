@@ -165,6 +165,40 @@ test('prepare Rescue aborts an injected input wait with the exact task-free inte
   await assert.rejects(operation, (error) => error === interruption && !`${error.message}${error.remedy}`.includes('proactive objective'));
 });
 
+test('private prepare transport enables raw mode before readiness and accepts one LF frame without EOF', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const input = new PassThrough(); const events = []; const task = '--fresh ; $(echo private)';
+  input.isTTY = true; input.setRawMode = (enabled) => { events.push(`raw:${enabled}`); return input; };
+  await identity.beginCallerTurn({ sessionId: 'transport-parent', turnId: 'transport-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${task}` });
+  const fallback = setTimeout(() => input.destroy(), 250); t.after(() => { clearTimeout(fallback); input.destroy(); });
+  const operation = runDirectInvocation(['prepare', 'rescue'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'transport-parent' }, input,
+    preparationTransport: { writeReady: (line) => { events.push(`ready:${line}`); input.write(`${JSON.stringify({ version: 1, source: 'explicit', task, options: { resume: 'fresh' } })}\n`); } },
+  });
+  assert.deepEqual(await operation, { type: 'prepared', command: 'rescue' });
+  assert.deepEqual(events, ['raw:true', 'ready:{"type":"preparation-input-ready","command":"rescue"}\n', 'raw:false']);
+  assert.equal(events.join('').includes(task), false); assert.equal(input.destroyed, false, 'one complete LF frame must not require or force EOF');
+});
+
+test('private prepare transport requires a raw-capable TTY before reading task bytes', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const input = new PassThrough(); let ready = false;
+  await identity.beginCallerTurn({ sessionId: 'non-tty-parent', turnId: 'non-tty-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue private non-tty task' });
+  const fallback = setTimeout(() => input.destroy(), 250); t.after(() => { clearTimeout(fallback); input.destroy(); });
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'non-tty-parent' }, input, preparationTransport: { writeReady: () => { ready = true; } } }), (error) => error?.code === 'PREPARATION_TTY_REQUIRED' && !`${error.message}${error.remedy}`.includes('private non-tty task'));
+  assert.equal(ready, false); assert.equal(input.listenerCount('data'), 0);
+});
+
+test('private prepare transport rejects bytes after its LF frame without waiting for EOF', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const input = new PassThrough(); const rawModes = [];
+  input.isTTY = true; input.setRawMode = (enabled) => { rawModes.push(enabled); return input; };
+  await identity.beginCallerTurn({ sessionId: 'trailing-parent', turnId: 'trailing-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'proactive trailing objective' });
+  const fallback = setTimeout(() => input.destroy(), 250); t.after(() => { clearTimeout(fallback); input.destroy(); });
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
+    cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'trailing-parent' }, input,
+    preparationTransport: { writeReady: () => input.write(`${JSON.stringify({ version: 1, source: 'proactive', task: 'trailing objective', options: {} })}\nextra`) },
+  }), { code: 'RESCUE_PREPARATION_INVALID' });
+  assert.deepEqual(rawModes, [true, false]); assert.equal(input.destroyed, false);
+});
+
 test('prepare Rescue forwards an injected abort through a contended save without persisting', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'Contended preparation interrupted.', { category: 'interruption', remedy: 'Retry.' });
   await identity.beginCallerTurn({ sessionId: 'save-abort-parent', turnId: 'save-abort-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'proactive save objective' });
