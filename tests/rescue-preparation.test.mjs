@@ -554,6 +554,46 @@ test('16-way concurrent save and consume each permit exactly one success', async
   assert.equal(consumes.filter(({ status }) => status === 'rejected').length, 15);
 });
 
+test('aborting save during lock contention rejects quickly without committing the record', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  await store.cleanupTurn({ sessionId: 'session-a', turnId: 'bootstrap', workspace: workspaceA });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA });
+  const lockPath = join(storage.directory, '.rescue-preparation-lock');
+  const controller = new AbortController();
+  const reason = new Error('cancel contended preparation');
+  const saveInput = {
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'default', recordedPrompt: 'proactive work',
+    envelope: { ...validEnvelope, source: 'proactive' }, signal: controller.signal,
+  };
+  await withFileLock(lockPath, async () => {
+    const pending = store.save(saveInput);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const beforeAbort = await Promise.race([
+      pending.then(() => 'settled', () => 'settled'),
+      new Promise((resolve) => setTimeout(() => resolve('pending'), 25)),
+    ]);
+    assert.equal(beforeAbort, 'pending', 'save must have entered lock contention');
+    controller.abort(reason);
+    const outcome = await Promise.race([
+      pending.then(
+        () => ({ status: 'fulfilled' }),
+        (error) => ({ status: 'rejected', error }),
+      ),
+      new Promise((resolve) => setTimeout(() => resolve({ status: 'pending' }), 250)),
+    ]);
+    assert.deepEqual(outcome, { status: 'rejected', error: reason });
+  });
+
+  const { directory } = await preparedDirectory(dataRoot, workspaceA);
+  assert.deepEqual((await readdir(directory)).filter((name) => name.endsWith('.json')), []);
+  await store.save({ ...saveInput, signal: undefined });
+  await store.consume({
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'default', executorAgentId: 'child',
+  });
+});
+
 test('prepared storage is private and shell-like task text remains inert data', { skip: process.platform === 'win32' }, async () => {
   const { dataRoot, root, store, workspaceA } = await storeFixture();
   const escaped = join(root, 'shell-side-effect');

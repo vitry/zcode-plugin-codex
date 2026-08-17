@@ -124,16 +124,20 @@ export function createRescuePreparationStore({ dataRoot }) {
       if (Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`) > PREPARATION_RECORD_MAX_BYTES) {
         throw invalidPreparation();
       }
-      await withPreparationLock(storage, async () => {
-        const names = await boundedRecordNames(storage);
-        if (names.includes(`${key}.json`) || await exists(path)) throw preparationError(
-          'RESCUE_PREPARATION_EXISTS', 'A Rescue preparation already exists for this turn.',
-        );
-        if (names.length === PREPARATION_SCAN_MAX_RECORDS) throw preparationError(
-          'RESCUE_PREPARATION_SCAN_LIMIT', 'The Rescue preparation record scan limit was exceeded.',
-        );
-        await atomicWriteJson(path, record, { privateRoot: storage.privateRoot });
-      });
+      const cancellation = lockCancellation(input.signal);
+      try {
+        await withPreparationLock(storage, async () => {
+          const names = await boundedRecordNames(storage);
+          if (names.includes(`${key}.json`) || await exists(path)) throw preparationError(
+            'RESCUE_PREPARATION_EXISTS', 'A Rescue preparation already exists for this turn.',
+          );
+          if (names.length === PREPARATION_SCAN_MAX_RECORDS) throw preparationError(
+            'RESCUE_PREPARATION_SCAN_LIMIT', 'The Rescue preparation record scan limit was exceeded.',
+          );
+          cancellation.linearize();
+          await atomicWriteJson(path, record, { privateRoot: storage.privateRoot });
+        }, { signal: cancellation.signal });
+      } finally { cancellation.detach(); }
     },
 
     /** @param {any} input */
@@ -358,7 +362,8 @@ function validRecord(record, key, workspace) {
 function validateSaveInput(input) {
   if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.turnId)
     || !nonempty(input.workspace) || !PERMISSION_MODES.includes(input.permissionMode)
-    || typeof input.recordedPrompt !== 'string' || Buffer.byteLength(input.recordedPrompt) > RESCUE_TASK_MAX_BYTES) {
+    || typeof input.recordedPrompt !== 'string' || Buffer.byteLength(input.recordedPrompt) > RESCUE_TASK_MAX_BYTES
+    || input.signal !== undefined && !(input.signal instanceof AbortSignal)) {
     throw invalidPreparation();
   }
   timestamp(input.now);
@@ -405,8 +410,8 @@ async function preparationStorage(dataRoot, workspace) {
   };
 }
 
-/** @template T @param {any} storage @param {()=>Promise<T>} operation @returns {Promise<T>} */
-async function withPreparationLock(storage, operation) {
+/** @template T @param {any} storage @param {()=>Promise<T>} operation @param {{signal?:AbortSignal}} [options] @returns {Promise<T>} */
+async function withPreparationLock(storage, operation, options = {}) {
   return withFileLock(storage.lockPath, async () => {
     assertLockIdentity(storage);
     await assertStorageIdentity(storage);
@@ -420,7 +425,34 @@ async function withPreparationLock(storage, operation) {
       await assertStorageIdentity(storage);
       throw error;
     }
-  });
+  }, options);
+}
+
+/** @param {AbortSignal|undefined} signal */
+function lockCancellation(signal) {
+  if (signal === undefined) return {
+    signal: undefined,
+    detach() {},
+    linearize() {},
+  };
+  signal.throwIfAborted();
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(signal.reason);
+  signal.addEventListener('abort', forwardAbort, { once: true });
+  let attached = true;
+  const detach = () => {
+    if (!attached) return;
+    attached = false;
+    signal.removeEventListener('abort', forwardAbort);
+  };
+  return {
+    signal: controller.signal,
+    detach,
+    linearize() {
+      signal.throwIfAborted();
+      detach();
+    },
+  };
 }
 
 /** @param {string} lockPath */
