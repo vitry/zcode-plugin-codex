@@ -111,7 +111,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
   const identity = createIdentityStore({ dataRoot });
   if (prepareInvocation) {
     const caller = await identity.resolveActiveTurn({ sessionId: ambientThreadId, workspace: cwd });
-    const envelope = await readRescuePreparation(runtime.input ?? process.stdin);
+    const envelope = await readRescuePreparationAbortable(runtime.input ?? process.stdin, runtime.signal);
     await createRescuePreparationStore({ dataRoot }).save({ ...caller, recordedPrompt: caller.prompt, envelope });
     return { type: 'prepared', command: 'rescue' };
   }
@@ -173,8 +173,32 @@ function rescueArgvFromPreparation(envelope) {
   if (envelope.options.resume) argv.push(`--${envelope.options.resume}`);
   if (envelope.options.model) argv.push('--model', envelope.options.model);
   if (envelope.options.effort) argv.push('--effort', envelope.options.effort);
-  argv.push(envelope.task);
+  argv.push('--', envelope.task);
   return argv;
+}
+
+/** @param {NodeJS.ReadableStream} input @param {AbortSignal|undefined} signal @returns {Promise<any>} */
+function readRescuePreparationAbortable(input, signal) {
+  if (!signal) return readRescuePreparation(input);
+  return new Promise((resolvePromise, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    /** @param {unknown} error @param {any} [value] */
+    const finish = (error, value) => {
+      if (settled) return; settled = true; cleanup();
+      if (error) reject(error); else resolvePromise(value);
+    };
+    const onAbort = () => {
+      const reason = signal.reason instanceof PluginError && signal.reason.code === 'JOB_INTERRUPTED'
+        ? signal.reason
+        : new PluginError('JOB_INTERRUPTED', 'Rescue preparation was interrupted.', { category: 'interruption', remedy: 'Retry the command when you are ready.' });
+      try { /** @type {{destroy?:()=>void}} */ (input).destroy?.(); } catch { /* best effort input release */ }
+      finish(reason);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) { onAbort(); return; }
+    readRescuePreparation(input).then((value) => finish(undefined, value), (error) => finish(error));
+  });
 }
 
 /** @param {any} context */

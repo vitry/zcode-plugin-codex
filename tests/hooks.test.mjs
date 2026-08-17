@@ -551,6 +551,15 @@ test('prompt, Root Stop, and SessionEnd clean only their exact prepared Rescue l
     assert.equal((await prepared.consume({ sessionId: 'sibling', turnId: 'sibling-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'sibling-child' })).envelope.task, 'sibling objective');
   });
 
+  await t.test('storage-level cleanup failure does not mint a new active caller turn', async () => {
+    const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd });
+    await runHook('session-lifecycle-hook.mjs', { session_id: 'cleanup-failure-owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+    await mkdir(join(storage.directory, 'invocations'), { recursive: true }); await writeFile(join(storage.directory, 'invocations', 'prepared'), 'unsafe non-directory');
+    const submitted = await runHook('user-prompt-hook.mjs', { session_id: 'cleanup-failure-owner', turn_id: 'must-not-mint', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'private prompt bytes' }, env);
+    assert.notEqual(submitted.code, 0); assert.match(submitted.stderr, /ZCode prompt hook failed safely:/); assert.doesNotMatch(submitted.stderr, /private prompt bytes|must-not-mint|cleanup-failure-owner/);
+    await assert.rejects(identity.resolveActiveTurn({ sessionId: 'cleanup-failure-owner', workspace: cwd }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+  });
+
   await t.test('Root Stop deletes its exact preparation while a forwarding Stop preserves the parent preparation', async () => {
     const { cwd, data, env } = await workspace(); const prepared = createRescuePreparationStore({ dataRoot: data });
     await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);

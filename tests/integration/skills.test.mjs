@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
+import { PluginError } from '../../scripts/lib/errors.mjs';
 import { createInvocationStore } from '../../scripts/lib/invocation.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
@@ -126,6 +127,23 @@ test('prepared Rescue forwards only the normalized incident objective to ZCode',
   assert.doesNotMatch(`${invoked.stdout}${invoked.stderr}${invoked.spawnargs.join(' ')}`, /incident-parent|incident-turn|incident-child|explicit/);
 });
 
+test('prepared Rescue preserves option-like and shell-like tasks as one positional value', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const record = join(ctx.directory, 'option-like-tasks.jsonl'); await writeFile(record, '');
+  const tasks = ['-leading objective', '--fresh', 'shell ; $(echo nope) "quoted"'];
+  for (const [index, task] of tasks.entries()) {
+    const parentId = `task-parent-${index}`; const childId = `task-child-${index}`;
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `task-turn-${index}`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${task}` });
+    await prepareRescue(ctx, parentId, { version: 1, source: 'explicit', task, options: { execution: 'foreground', resume: 'fresh' } });
+    await startRescueChild(ctx, parentId, childId);
+    const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
+    assert.equal(invoked.code, 0, invoked.stderr || invoked.stdout);
+    assert.equal(invoked.stdout, 'done\n'); assert.equal(`${invoked.stdout}${invoked.stderr}${invoked.spawnargs.join(' ')}`.includes(task), false);
+    const sent = (await readFile(record, 'utf8')).trim().split('\n').map(JSON.parse).filter((frame) => frame.method === 'session/send').at(-1);
+    const encodedObjective = /--- BEGIN AUTHORIZED RESCUE OBJECTIVE ---\n([^\n]+)\n--- END AUTHORIZED RESCUE OBJECTIVE ---/u.exec(sent.params.content)?.[1];
+    assert.equal(JSON.parse(encodedObjective), task); assert.doesNotMatch(`${invoked.stdout}${invoked.stderr}${invoked.spawnargs.join(' ')}`, /task-parent-|task-turn-|task-child-/);
+  }
+});
+
 test('prepare Rescue accepts proactive source without a marker and rejects malformed or mismatched input task-free', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   await identity.beginCallerTurn({ sessionId: 'proactive-parent', turnId: 'proactive-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'Implement the approved objective.' });
@@ -133,6 +151,16 @@ test('prepare Rescue accepts proactive source without a marker and rejects malfo
   await identity.beginCallerTurn({ sessionId: 'bad-parent', turnId: 'bad-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue protected secret objective' });
   await assert.rejects(prepareRescue(ctx, 'bad-parent', { version: 1, source: 'proactive', task: 'protected secret objective', options: {} }), (error) => error?.code === 'RESCUE_PREPARATION_SOURCE_MISMATCH' && !`${error.message}${error.remedy}`.includes('protected secret objective'));
   await assert.rejects(runDirectInvocation(['prepare', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bad-parent' }, input: Readable.from(['not-json\n']) }), (error) => error?.code === 'RESCUE_PREPARATION_INVALID' && !`${error.message}${error.remedy}`.includes('not-json'));
+});
+
+test('prepare Rescue aborts an injected input wait with the exact task-free interruption', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const input = new PassThrough(); const controller = new AbortController();
+  await identity.beginCallerTurn({ sessionId: 'abort-parent', turnId: 'abort-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'proactive objective' });
+  const interruption = new PluginError('JOB_INTERRUPTED', 'Preparation interrupted.', { category: 'interruption', remedy: 'Retry.' });
+  const operation = runDirectInvocation(['prepare', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'abort-parent' }, input, signal: controller.signal });
+  const abortTimer = setTimeout(() => controller.abort(interruption), 10); const fallbackTimer = setTimeout(() => input.destroy(), 200);
+  t.after(() => { clearTimeout(abortTimer); clearTimeout(fallbackTimer); input.destroy(); });
+  await assert.rejects(operation, (error) => error === interruption && !`${error.message}${error.remedy}`.includes('proactive objective'));
 });
 
 test('legacy child invoke rescue requires the prepared route', async (t) => {
@@ -184,7 +212,7 @@ test('prepared explicit candidate choice preserves source and normalized argv fo
   const undecided = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'prepared-choice-child' } });
   assert.equal(undecided.code, 3); assert.match(undecided.stdout, /needs-choice/);
   assert.deepEqual(await createInvocationStore({ dataRoot: ctx.dataRoot }).consumePending({ sessionId: 'choice-parent', workspace: ctx.workspace, command: 'rescue', choice: 'resume', executorAgentId: 'prepared-choice-child' }), {
-    argv: ['rescue', '--resume', '--model', 'model', '--effort', 'high', 'choose continuation'], source: 'explicit',
+    argv: ['rescue', '--resume', '--model', 'model', '--effort', 'high', '--', 'choose continuation'], source: 'explicit',
     caller: { sessionId: 'choice-parent', turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write' },
   });
 });

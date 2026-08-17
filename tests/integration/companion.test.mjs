@@ -605,6 +605,18 @@ test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves 
   assert.equal(stdout, ''); assert.equal(internal, ''); assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|"error"/);
 });
 
+test('prepare Rescue exits on SIGTERM while stdin remains open', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); await context.identity.beginCallerTurn({ sessionId: 'prepare-signal-parent', turnId: 'prepare-signal-turn', workspace: context.workspace, permissionMode: 'workspace-write', prompt: 'proactive signal objective' });
+  const child = spawn(process.execPath, [cli, 'prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: 'prepare-signal-parent' }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+  let stdout = ''; let stderr = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdin?.write('{');
+  const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  await new Promise((resolve) => setTimeout(resolve, 100)); child.kill('SIGTERM');
+  const bounded = await Promise.race([exit, new Promise((_, reject) => setTimeout(() => reject(new Error('prepare did not exit after SIGTERM')), 1_000))]);
+  assert.deepEqual(bounded, { code: 143, signal: null }); assert.equal(stdout, ''); assert.match(stderr, /Interrupted by SIGTERM\./); assert.doesNotMatch(stderr, /proactive signal objective|prepare-signal/);
+});
+
 test('isolated Rescue child SIGTERM after accepted send stops once and keeps the parent thread as durable owner', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const record = join(context.directory, 'isolated-child-sigterm.jsonl'); await writeFile(record, '');
   const parentSessionId = 'isolated-parent'; const parentTurnId = 'isolated-parent-turn'; const childId = 'isolated-rescue-child';

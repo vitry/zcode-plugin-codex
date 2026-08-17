@@ -14,8 +14,9 @@ try {
   if (input.agent_id !== undefined) { process.stdout.write('{}'); process.exit(0); }
   const dataRoot = resolvePluginDataRoot({ env: process.env, pluginRoot: resolve(fileURLToPath(new URL('../', import.meta.url))) });
   if (!await isOwnedSession(dataRoot, input)) { process.stdout.write('{}'); process.exit(0); }
-  const identity = createIdentityStore({ dataRoot }); await identity.beginCallerTurn({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd, permissionMode: input.permission_mode, prompt: input.prompt });
+  const identity = createIdentityStore({ dataRoot });
   await createRescuePreparationStore({ dataRoot }).cleanupOlderTurns({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd });
+  await identity.beginCallerTurn({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd, permissionMode: input.permission_mode, prompt: input.prompt });
   try { const fingerprint = await fingerprintWorkspace(input.cwd); await identity.recordGateBaseline({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd, fingerprint, permissionSnapshot: { permissionMode: input.permission_mode } }); } catch (error) { if (error?.code === 'GATE_BASELINE_EXISTS') { /* another exact hook invocation already recorded it */ } else { /* review gating is optional; caller authorization is not */ } }
   const unread = await unreadJobs(dataRoot, input.cwd, input.session_id);
   const context = [];
