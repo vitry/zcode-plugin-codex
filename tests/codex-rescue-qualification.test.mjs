@@ -356,6 +356,20 @@ test('forwarder child rollout rejects every unaccounted response and non-allowli
   }
 });
 
+test('forwarder child rejects function-call exec shapes even beside one valid custom exec', () => {
+  for (const name of ['exec', 'exec_command']) {
+    const input = fixture();
+    input.rollouts[1].splice(-1, 0, {
+      type: 'response_item', payload: { type: 'function_call', name, call_id: `extra-${name}`, arguments: JSON.stringify({ cmd: expectedCommand }) },
+    });
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-command-shape-mismatch',
+      name,
+    );
+  }
+});
+
 test('foreground qualification fails closed unless child transcript contains exact semantic start and terminal progress', () => {
   for (const missing of ['start', 'terminal']) {
     const input = fixture();
@@ -805,6 +819,25 @@ test('preparation qualification independently validates task and every bounded o
   assert.equal(qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })).publicOutput, expectedPublicOutput);
 });
 
+test('preparation qualification rejects duplicate raw keys and an oversized escaped frame', () => {
+  const optionsJson = JSON.stringify(expectedPreparationEnvelope.options);
+  const cases = [
+    `{"version":1,"source":"explicit","task":"decoy","task":${JSON.stringify(expectedPreparationEnvelope.task)},"options":${optionsJson}}`,
+    `{"version":1,"source":"explicit","task":${JSON.stringify(expectedPreparationEnvelope.task)},"options":{"execution":"background","execution":"foreground","resume":"fresh"}}`,
+    JSON.stringify({ ...expectedPreparationEnvelope, task: `objective:${'\u0000'.repeat(12_000)}` }),
+  ];
+  assert.ok(Buffer.byteLength(cases[2], 'utf8') + 1 > 64 * 1024 + 4096);
+  for (const preparationPayload of cases) {
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'preparation-payload-contract'
+        && !error.message.includes(expectedPreparationEnvelope.task) && !error.message.includes('execution'),
+    );
+  }
+});
+
 test('confines the exact preparation task to the one same-handle parent write chars field', () => {
   const task = expectedPreparationEnvelope.task;
   const cases = [
@@ -861,6 +894,28 @@ test('detects escaped private task text inside unrelated legacy host output', ()
     input.rollouts[0].splice(7, 0,
       structuredExec('true', 'escaped-legacy-output'),
       toolOutput('escaped-legacy-output', JSON.stringify({ diagnostic: task })));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+    );
+  }
+});
+
+test('bounded legacy output decoding detects prefixed JSON, JSONL, and nested JSON strings', () => {
+  const cases = [
+    ['repair the "quoted" route', (task) => `legacy prefix: ${JSON.stringify({ diagnostic: task })}`],
+    ['repair the \\backslash route', (task) => `${JSON.stringify({ type: 'diagnostic' })}\n${JSON.stringify({ diagnostic: task })}\n`],
+    ['repair the\nmultiline route', (task) => JSON.stringify(JSON.stringify(JSON.stringify({ diagnostic: task })))],
+    ['repair bounded "depth" route', (task) => { let value = JSON.stringify({ diagnostic: task }); for (let depth = 0; depth < 10; depth += 1) value = JSON.stringify(value); return value; }],
+  ];
+  for (const [task, legacyOutput] of cases) {
+    const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structuredExec('true', 'encoded-legacy-output'),
+      toolOutput('encoded-legacy-output', legacyOutput(task)));
     assert.throws(
       () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
       (error) => error instanceof CodexRescueEvidenceMismatchError

@@ -10,7 +10,12 @@ const MAX_EXEC_AGENT_MESSAGES = 256;
 const MAX_CHILD_POLLS = 64;
 const MAX_RESCUE_TASK_NAME_BYTES = 64;
 const MAX_RESCUE_TASK_BYTES = 64 * 1024;
+const MAX_RESCUE_ENVELOPE_BYTES = MAX_RESCUE_TASK_BYTES + 4096;
 const MAX_RESCUE_MODEL_BYTES = 512;
+const MAX_LEGACY_JSON_DEPTH = 8;
+const MAX_LEGACY_JSON_CANDIDATES = 256;
+const MAX_LEGACY_JSON_DECODE_BYTES = 4 * MAX_TEXT_BYTES;
+const MAX_PREPARATION_JSON_DEPTH = 256;
 const RESCUE_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const RESCUE_TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
 const GENERIC_HIDDEN_SCHEMA_VERSIONS = new Set(['0.147.0']);
@@ -737,7 +742,9 @@ function validateForwarderChildEvents(child, options) {
     if (options.requireProgressRelay && event?.type === 'response_item' && event.payload?.type === 'function_call'
       && event.payload.name === 'send_message') continue;
     if (event?.type === 'response_item' && event.payload?.type === 'function_call'
-      && ['exec', 'exec_command'].includes(event.payload.name)) continue;
+      && ['exec', 'exec_command'].includes(event.payload.name)) {
+      mismatch('child-command-shape-mismatch', 'The child command used a tool-call shape not captured for Codex 0.147.');
+    }
     if (options.requireProgressRelay && event?.type === 'response_item' && event.payload?.type === 'function_call_output') continue;
     mismatch('child-event-accounting', 'The forwarder child rollout contains an unaccounted event.');
   }
@@ -937,6 +944,7 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
     mismatch('preparation-write-frame', 'The parent write must contain exactly one LF-terminated private JSON frame without EOF.');
   }
   let payload;
+  assertExactPreparationJson(options.expectedPreparationPayload);
   try { payload = JSON.parse(options.expectedPreparationPayload); } catch { mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.'); }
   assertExactKeys(payload, ['options', 'source', 'task', 'version'], 'preparation-payload-contract');
   if (!payload.options || typeof payload.options !== 'object' || Array.isArray(payload.options)) {
@@ -989,9 +997,7 @@ function assertParentPreparationTaskExclusivity(parent, writeEvent, task, calls,
     if (linkedCall?.host.legacy) {
       for (const item of event.payload.output ?? []) {
         if (typeof item?.text !== 'string') continue;
-        let decoded;
-        try { decoded = JSON.parse(item.text.trim()); } catch { continue; }
-        if (stringLeafContains(decoded, task)) {
+        if (boundedDecodedTextContainsTask(item.text, task)) {
           mismatch('preparation-task-exclusivity', 'The private Rescue task escaped the single authorized preparation write.');
         }
       }
@@ -1042,6 +1048,125 @@ function stringLeafContains(value, task) {
     }
   }
   return false;
+}
+
+function boundedDecodedTextContainsTask(text, task) {
+  const pending = [{ text, depth: 0 }]; const seen = new Set();
+  let candidateCount = 0; let decodedBytes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current.text.includes(task)) return true;
+    if (current.depth >= MAX_LEGACY_JSON_DEPTH) {
+      for (const candidate of jsonTextCandidates(current.text)) {
+        try {
+          JSON.parse(candidate);
+          mismatch('preparation-task-exclusivity', 'The bounded parent output decoding budget was exceeded.');
+        } catch (error) {
+          if (error instanceof CodexRescueEvidenceMismatchError) throw error;
+        }
+      }
+      continue;
+    }
+    const candidates = jsonTextCandidates(current.text);
+    for (const candidate of candidates) {
+      if (seen.has(candidate)) continue;
+      seen.add(candidate); candidateCount += 1; decodedBytes += Buffer.byteLength(candidate, 'utf8');
+      if (candidateCount > MAX_LEGACY_JSON_CANDIDATES || decodedBytes > MAX_LEGACY_JSON_DECODE_BYTES) {
+        mismatch('preparation-task-exclusivity', 'The bounded parent output decoding budget was exceeded.');
+      }
+      let decoded;
+      try { decoded = JSON.parse(candidate); } catch { continue; }
+      if (stringLeafContains(decoded, task)) return true;
+      for (const leaf of stringLeaves(decoded)) pending.push({ text: leaf, depth: current.depth + 1 });
+    }
+  }
+  return false;
+}
+
+function jsonTextCandidates(text) {
+  const lines = text.split('\n');
+  if (lines.length > MAX_LEGACY_JSON_CANDIDATES) {
+    mismatch('preparation-task-exclusivity', 'The bounded parent output decoding budget was exceeded.');
+  }
+  const candidates = new Set();
+  const add = (value) => { const trimmed = value.trim(); if (trimmed) candidates.add(trimmed); };
+  add(text);
+  for (const line of lines) {
+    add(line);
+    const starts = [line.indexOf('{'), line.indexOf('[')].filter((index) => index > 0);
+    if (starts.length > 0) add(line.slice(Math.min(...starts)));
+  }
+  return candidates;
+}
+
+function stringLeaves(value) {
+  const leaves = []; const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === 'string') leaves.push(current);
+    else if (current && typeof current === 'object') pending.push(...Object.values(current));
+  }
+  return leaves;
+}
+
+function assertExactPreparationJson(text) {
+  if (typeof text !== 'string' || Buffer.byteLength(`${text}\n`, 'utf8') > MAX_RESCUE_ENVELOPE_BYTES) {
+    mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
+  }
+  let offset = 0; let depth = 0;
+  const whitespace = () => { while (/\s/u.test(text[offset] ?? '')) offset += 1; };
+  const string = () => {
+    if (text[offset] !== '"') mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.');
+    const start = offset++; let escaped = false;
+    while (offset < text.length) {
+      const character = text[offset++];
+      if (escaped) { escaped = false; continue; }
+      if (character === '\\') { escaped = true; continue; }
+      if (character === '"') {
+        try { return JSON.parse(text.slice(start, offset)); } catch { mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.'); }
+      }
+    }
+    mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.');
+  };
+  const value = () => {
+    whitespace();
+    if (text[offset] === '{') { object(); return; }
+    if (text[offset] === '[') { array(); return; }
+    if (text[offset] === '"') { string(); return; }
+    const start = offset;
+    while (offset < text.length && !/[\s,\]}]/u.test(text[offset])) offset += 1;
+    if (offset === start) mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.');
+  };
+  const object = () => {
+    offset += 1; depth += 1;
+    if (depth > MAX_PREPARATION_JSON_DEPTH) mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
+    whitespace(); const keys = new Set();
+    if (text[offset] === '}') { offset += 1; depth -= 1; return; }
+    while (offset < text.length) {
+      whitespace(); const key = string(); whitespace();
+      if (keys.has(key)) mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
+      keys.add(key);
+      if (text[offset++] !== ':') mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.');
+      value(); whitespace();
+      if (text[offset] === '}') { offset += 1; depth -= 1; return; }
+      if (text[offset++] !== ',') mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.');
+    }
+    mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.');
+  };
+  const array = () => {
+    offset += 1; depth += 1;
+    if (depth > MAX_PREPARATION_JSON_DEPTH) mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
+    whitespace();
+    if (text[offset] === ']') { offset += 1; depth -= 1; return; }
+    while (offset < text.length) {
+      value(); whitespace();
+      if (text[offset] === ']') { offset += 1; depth -= 1; return; }
+      if (text[offset++] !== ',') mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.');
+    }
+    mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.');
+  };
+  whitespace(); value(); whitespace();
+  if (offset !== text.length) mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.');
 }
 
 function assertExecEnvelope(envelope, expectedCommand, expectedWorkspace, code, extensions = {}) {

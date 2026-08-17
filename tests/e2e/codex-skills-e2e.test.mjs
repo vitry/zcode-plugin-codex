@@ -546,7 +546,7 @@ test('synthetic captured qualification fixtures cover named and generic backgrou
   }
 });
 
-test('captured installed route wiring mutations fail only the mutated foreground route', async () => {
+test('synthetic captured qualification wiring mutations fail only the mutated foreground route', async () => {
   const routes = await installedCapturedRescueRoutes();
   for (const route of routes) {
     const other = routes.find((candidate) => candidate !== route);
