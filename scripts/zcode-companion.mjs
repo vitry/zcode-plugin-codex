@@ -112,7 +112,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
   if (prepareInvocation) {
     const caller = await identity.resolveActiveTurn({ sessionId: ambientThreadId, workspace: cwd });
     const envelope = await readRescuePreparationAbortable(runtime.input ?? process.stdin, runtime.signal);
-    await createRescuePreparationStore({ dataRoot }).save({ ...caller, recordedPrompt: caller.prompt, envelope });
+    await createRescuePreparationStore({ dataRoot }).save({ ...caller, recordedPrompt: caller.prompt, envelope, signal: runtime.signal });
     return { type: 'prepared', command: 'rescue' };
   }
   if (preparedInvocation) {

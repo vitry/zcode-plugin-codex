@@ -9,7 +9,9 @@ import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
+import { withFileLock } from '../../scripts/lib/fs.mjs';
 import { createInvocationStore } from '../../scripts/lib/invocation.mjs';
+import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparation.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
@@ -161,6 +163,20 @@ test('prepare Rescue aborts an injected input wait with the exact task-free inte
   const abortTimer = setTimeout(() => controller.abort(interruption), 10); const fallbackTimer = setTimeout(() => input.destroy(), 200);
   t.after(() => { clearTimeout(abortTimer); clearTimeout(fallbackTimer); input.destroy(); });
   await assert.rejects(operation, (error) => error === interruption && !`${error.message}${error.remedy}`.includes('proactive objective'));
+});
+
+test('prepare Rescue forwards an injected abort through a contended save without persisting', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'Contended preparation interrupted.', { category: 'interruption', remedy: 'Retry.' });
+  await identity.beginCallerTurn({ sessionId: 'save-abort-parent', turnId: 'save-abort-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'proactive save objective' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace }); const lockPath = join(storage.directory, '.rescue-preparation-lock'); let operation; let observed;
+  await withFileLock(lockPath, async () => {
+    operation = runDirectInvocation(['prepare', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'save-abort-parent' }, input: Readable.from([`${JSON.stringify({ version: 1, source: 'proactive', task: 'save objective', options: {} })}\n`]), signal: controller.signal }).then((value) => ({ value }), (error) => ({ error }));
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50)); controller.abort(interruption);
+    observed = await Promise.race([operation, new Promise((resolvePromise) => setTimeout(() => resolvePromise({ timeout: true }), 250))]);
+  });
+  await operation;
+  assert.equal(observed?.error, interruption);
+  await assert.rejects(createRescuePreparationStore({ dataRoot: ctx.dataRoot }).consume({ sessionId: 'save-abort-parent', turnId: 'save-abort-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
 });
 
 test('legacy child invoke rescue requires the prepared route', async (t) => {

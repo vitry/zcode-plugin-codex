@@ -14,6 +14,7 @@ import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
+import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparation.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
 import { createManagedZCodeClient, releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
@@ -32,6 +33,7 @@ const completionSignalProbe = join(root, 'tests', 'fixtures', 'completion-signal
 const signalHandlerProbe = join(root, 'tests', 'fixtures', 'signal-handler-probe.cjs');
 const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs');
 const sessionEndHook = join(root, 'hooks', 'session-end-hook.mjs');
+const lockHolder = join(root, 'tests', 'fixtures', 'lock-holder.mjs');
 const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
 /** @typedef {(pid:number,signal?:number|string)=>boolean} KillFn */
 
@@ -615,6 +617,22 @@ test('prepare Rescue exits on SIGTERM while stdin remains open', { skip: windows
   await new Promise((resolve) => setTimeout(resolve, 100)); child.kill('SIGTERM');
   const bounded = await Promise.race([exit, new Promise((_, reject) => setTimeout(() => reject(new Error('prepare did not exit after SIGTERM')), 1_000))]);
   assert.deepEqual(bounded, { code: 143, signal: null }); assert.equal(stdout, ''); assert.match(stderr, /Interrupted by SIGTERM\./); assert.doesNotMatch(stderr, /proactive signal objective|prepare-signal/);
+});
+
+test('prepare Rescue exits on SIGTERM while its decoded envelope waits for the save lock', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); await context.identity.beginCallerTurn({ sessionId: 'prepare-save-parent', turnId: 'prepare-save-turn', workspace: context.workspace, permissionMode: 'workspace-write', prompt: 'proactive locked objective' });
+  const storage = await resolveWorkspaceStorage(context); const holder = spawn(process.execPath, [lockHolder, join(storage.directory, '.rescue-preparation-lock')], { stdio: ['pipe', 'pipe', 'pipe'], shell: false }); let holderStdout = ''; let holderExited = false;
+  holder.stdout?.on('data', (chunk) => { holderStdout += chunk; }); const holderExit = new Promise((resolve, reject) => { holder.once('error', reject); holder.once('exit', (code) => { holderExited = true; resolve(code); }); });
+  await waitFor(async () => holderStdout.includes('acquired\n'), 'preparation lock holder did not acquire the lock');
+  const child = spawn(process.execPath, [cli, 'prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: 'prepare-save-parent' }, stdio: ['pipe', 'pipe', 'pipe'], shell: false }); let stdout = ''; let stderr = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdin?.end(`${JSON.stringify({ version: 1, source: 'proactive', task: 'locked objective', options: {} })}\n`);
+  const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+  t.after(() => { if (!exited) child.kill('SIGKILL'); if (!holderExited) holder.kill('SIGKILL'); });
+  await new Promise((resolve) => setTimeout(resolve, 100)); child.kill('SIGTERM');
+  const bounded = await Promise.race([exit, new Promise((_, reject) => setTimeout(() => reject(new Error('contended prepare did not exit after SIGTERM')), 1_000))]);
+  assert.deepEqual(bounded, { code: 143, signal: null }); assert.equal(stdout, ''); assert.match(stderr, /Interrupted by SIGTERM\./); assert.doesNotMatch(stderr, /locked objective|prepare-save/);
+  holder.stdin?.end('release\n'); assert.equal(await holderExit, 0);
+  await assert.rejects(createRescuePreparationStore({ dataRoot: context.dataRoot }).consume({ sessionId: 'prepare-save-parent', turnId: 'prepare-save-turn', workspace: context.workspace, permissionMode: 'workspace-write', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
 });
 
 test('isolated Rescue child SIGTERM after accepted send stops once and keeps the parent thread as durable owner', { skip: windowsRealSignalSkip }, async (t) => {
