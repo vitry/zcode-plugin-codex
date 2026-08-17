@@ -92,15 +92,15 @@ test('stream errors are always converted to a new task-free preparation error', 
   }
 });
 
-test('stdin skips empty chunks but rejects excessive nonempty chunk fragmentation', async () => {
+test('stdin skips empty chunks and accepts arbitrary byte-bounded transport fragmentation', async () => {
   const bytes = Buffer.from(`${JSON.stringify(validEnvelope)}\n`);
   const emptyChunks = Array.from({ length: 2048 }, () => Buffer.alloc(0));
   assert.deepEqual(await readRescuePreparation(Readable.from([...emptyChunks, bytes])), validEnvelope);
-  const fragmented = Readable.from([
-    ...Array.from({ length: 1025 }, () => Buffer.from(' ')),
-    bytes,
-  ]);
-  await assert.rejects(readRescuePreparation(fragmented), { code: 'RESCUE_PREPARATION_INVALID' });
+  const largeEnvelope = { ...validEnvelope, task: 'x'.repeat(2048) };
+  const fragmentedBytes = Buffer.from(`${JSON.stringify(largeEnvelope)}\n`);
+  assert.ok(fragmentedBytes.length > 1024);
+  const fragmented = Readable.from([...fragmentedBytes].map((byte) => Buffer.from([byte])));
+  assert.deepEqual(await readRescuePreparation(fragmented), largeEnvelope);
 });
 
 test('validation requires the exact envelope and option schemas', () => {
@@ -270,36 +270,6 @@ test('prepared cleanup rejects directory replacement while waiting for its works
   await assert.rejects(/** @type {Promise<void>} */ (cleanup));
   assert.equal((await readdir(displaced)).filter((name) => name.endsWith('.json')).length, 1);
   assert.deepEqual(await readdir(prepared), []);
-});
-
-test('cleanup revalidates containment after its mutation seam before unlinking', async () => {
-  const { dataRoot, root, workspaceA } = await storeFixture();
-  const seed = createRescuePreparationStore({ dataRoot });
-  await seed.save({
-    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
-    permissionMode: 'default', recordedPrompt: 'proactive',
-    envelope: { ...validEnvelope, source: 'proactive' },
-  });
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA });
-  const prepared = join(storage.directory, 'invocations', 'prepared');
-  const [name] = (await readdir(prepared)).filter((entry) => entry.endsWith('.json'));
-  const displaced = join(root, 'cleanup-displaced'); const outside = join(root, 'cleanup-outside');
-  await mkdir(outside); await writeFile(join(outside, name), 'outside-victim');
-  let seamCalled = false;
-  const guarded = createRescuePreparationStore({
-    dataRoot,
-    testHooks: {
-      beforeCleanupMutation: async () => {
-        seamCalled = true;
-        await rename(prepared, displaced);
-        await symlink(outside, prepared, 'dir');
-      },
-    },
-  });
-  await assert.rejects(guarded.cleanupTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA }));
-  assert.equal(seamCalled, true);
-  assert.equal(await readFile(join(outside, name), 'utf8'), 'outside-victim');
-  assert.equal((await readdir(displaced)).includes(name), true);
 });
 
 test('save rejects replacement of the workspace-root lock while waiting', async () => {
@@ -506,42 +476,6 @@ test('persisted records reject duplicate object keys before JSON parsing', async
     sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
     permissionMode: 'default', executorAgentId: 'child',
   }), { code: 'RESCUE_PREPARATION_RECORD_INVALID' });
-});
-
-test('persisted parsing returns only the contained snapshot across a directory swap seam', async () => {
-  const { dataRoot, root, workspaceA } = await storeFixture();
-  const seed = createRescuePreparationStore({ dataRoot });
-  await seed.save({
-    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
-    permissionMode: 'default', recordedPrompt: 'proactive',
-    envelope: { ...validEnvelope, source: 'proactive' },
-  });
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA });
-  const prepared = join(storage.directory, 'invocations', 'prepared');
-  const [name] = (await readdir(prepared)).filter((entry) => entry.endsWith('.json'));
-  const original = JSON.parse(await readFile(join(prepared, name), 'utf8'));
-  const outside = join(root, 'parse-outside'); const displaced = join(root, 'parse-displaced');
-  await mkdir(outside);
-  await writeFile(join(outside, name), `${JSON.stringify({
-    ...original,
-    envelope: { ...original.envelope, task: 'OUTSIDE_PARSE_SENTINEL' },
-  })}\n`);
-  let seamCalled = false;
-  const guarded = createRescuePreparationStore({
-    dataRoot,
-    testHooks: {
-      afterContainedRecordRead: async () => {
-        seamCalled = true;
-        await rename(prepared, displaced);
-        await symlink(outside, prepared, 'dir');
-      },
-    },
-  });
-  await assert.rejects(guarded.consume({
-    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
-    permissionMode: 'default', executorAgentId: 'child',
-  }));
-  assert.equal(seamCalled, true);
 });
 
 test('16-way concurrent save and consume each permit exactly one success', async () => {

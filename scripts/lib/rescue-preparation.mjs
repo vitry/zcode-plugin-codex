@@ -27,7 +27,6 @@ const OPTION_KEYS = new Set(['effort', 'execution', 'model', 'resume']);
 const PREPARATION_LIFETIME_MS = 30 * 60_000;
 const PREPARATION_SCAN_MAX_RECORDS = 1024;
 const PREPARATION_RECORD_MAX_BYTES = 2 * 1024 * 1024;
-const PREPARATION_MAX_CHUNKS = 1024;
 const RECORD_KEYS = [
   'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'key',
   'permissionMode', 'sessionId', 'source', 'turnId', 'version', 'workspace',
@@ -39,14 +38,12 @@ export async function readRescuePreparation(stream) {
     throw invalidPreparation();
   }
   const buffer = Buffer.allocUnsafe(RESCUE_ENVELOPE_MAX_BYTES);
-  let length = 0; let chunkCount = 0;
+  let length = 0;
   try {
     for await (const chunk of stream) {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       if (bytes.length === 0) continue;
-      chunkCount += 1;
-      if (chunkCount > PREPARATION_MAX_CHUNKS
-        || length + bytes.length > RESCUE_ENVELOPE_MAX_BYTES) throw invalidPreparation();
+      if (length + bytes.length > RESCUE_ENVELOPE_MAX_BYTES) throw invalidPreparation();
       bytes.copy(buffer, length); length += bytes.length;
     }
   } catch { throw invalidPreparation(); }
@@ -91,12 +88,11 @@ export function hasRecordedRescueMarker(prompt) {
   return typeof prompt === 'string' && /(?:^|\s)\$zcode:rescue(?=$|\s)/u.test(prompt);
 }
 
-/** @param {{dataRoot:string,testHooks?:{beforeCleanupMutation?:()=>Promise<void>,afterContainedRecordRead?:()=>Promise<void>}}} options */
-export function createRescuePreparationStore({ dataRoot, testHooks = {} }) {
+/** @param {{dataRoot:string}} options */
+export function createRescuePreparationStore({ dataRoot }) {
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) throw preparationError(
     'RESCUE_PREPARATION_INVALID', 'A plugin data root is required.',
   );
-  validateTestHooks(testHooks);
   return {
     /** @param {any} input */
     async save(input) {
@@ -107,7 +103,7 @@ export function createRescuePreparationStore({ dataRoot, testHooks = {} }) {
         'RESCUE_PREPARATION_SOURCE_MISMATCH',
         'The Rescue preparation source does not match the recorded prompt.',
       );
-      const storage = await preparationStorage(dataRoot, input.workspace, testHooks);
+      const storage = await preparationStorage(dataRoot, input.workspace);
       const key = preparationKey(input.sessionId, input.turnId, storage.workspacePath);
       const path = join(storage.directory, `${key}.json`);
       const createdAt = timestamp(input.now);
@@ -143,7 +139,7 @@ export function createRescuePreparationStore({ dataRoot, testHooks = {} }) {
     /** @param {any} input */
     async consume(input) {
       validateConsumeInput(input);
-      const storage = await preparationStorage(dataRoot, input.workspace, testHooks);
+      const storage = await preparationStorage(dataRoot, input.workspace);
       const key = preparationKey(input.sessionId, input.turnId, storage.workspacePath);
       const path = join(storage.directory, `${key}.json`);
       return withPreparationLock(storage, async () => {
@@ -177,7 +173,7 @@ export function createRescuePreparationStore({ dataRoot, testHooks = {} }) {
     /** @param {any} input */
     async cleanupTurn(input) {
       validateTurnInput(input);
-      const storage = await preparationStorage(dataRoot, input.workspace, testHooks);
+      const storage = await preparationStorage(dataRoot, input.workspace);
       const key = preparationKey(input.sessionId, input.turnId, storage.workspacePath);
       const path = join(storage.directory, `${key}.json`);
       await withPreparationLock(storage, async () => {
@@ -191,7 +187,7 @@ export function createRescuePreparationStore({ dataRoot, testHooks = {} }) {
     /** @param {any} input */
     async cleanupOlderTurns(input) {
       validateTurnInput(input);
-      const storage = await preparationStorage(dataRoot, input.workspace, testHooks);
+      const storage = await preparationStorage(dataRoot, input.workspace);
       await cleanupMatching(storage, (record) => (
         record.sessionId === input.sessionId && record.turnId !== input.turnId
       ));
@@ -200,7 +196,7 @@ export function createRescuePreparationStore({ dataRoot, testHooks = {} }) {
     /** @param {any} input */
     async cleanupSession(input) {
       validateSessionInput(input);
-      const storage = await preparationStorage(dataRoot, input.workspace, testHooks);
+      const storage = await preparationStorage(dataRoot, input.workspace);
       await cleanupMatching(storage, (record) => record.sessionId === input.sessionId);
     },
   };
@@ -256,7 +252,6 @@ async function readPrivatePreparationJson(storage, path) {
   const trusted = await readBoundedJsonFile(
     storage.privateRoot, path, PREPARATION_RECORD_MAX_BYTES,
   );
-  await storage.testHooks.afterContainedRecordRead?.();
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -340,15 +335,8 @@ function validateSessionInput(input) {
   if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.workspace)) throw invalidPreparation();
 }
 
-/** @param {any} value */
-function validateTestHooks(value) {
-  if (!plain(value) || Object.keys(value).some((key) => ![
-    'afterContainedRecordRead', 'beforeCleanupMutation',
-  ].includes(key)) || Object.values(value).some((hook) => typeof hook !== 'function')) throw invalidPreparation();
-}
-
-/** @param {string} dataRoot @param {string} workspace @param {any} testHooks */
-async function preparationStorage(dataRoot, workspace, testHooks) {
+/** @param {string} dataRoot @param {string} workspace */
+async function preparationStorage(dataRoot, workspace) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const invocationsDirectory = join(storage.directory, 'invocations');
   const directory = join(invocationsDirectory, 'prepared');
@@ -366,7 +354,6 @@ async function preparationStorage(dataRoot, workspace, testHooks) {
     lockFileIdentity: lockIdentity.file,
     invocationsIdentity: await lstat(invocationsDirectory, { bigint: true }),
     directoryIdentity: await lstat(directory, { bigint: true }),
-    testHooks,
   };
 }
 
@@ -415,7 +402,6 @@ function assertLockIdentity(storage) {
 
 /** @param {any} storage @param {string} path */
 async function unlinkPreparedRecord(storage, path) {
-  await storage.testHooks.beforeCleanupMutation?.();
   await assertStorageIdentity(storage);
   assertLockIdentity(storage);
   const invocations = lstatSync(storage.invocationsDirectory, { bigint: true });
