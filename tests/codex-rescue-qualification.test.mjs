@@ -838,6 +838,17 @@ test('preparation qualification rejects duplicate raw keys and an oversized esca
   }
 });
 
+test('preparation qualification rejects a raw LF before the frame terminator', () => {
+  const preparationPayload = JSON.stringify(expectedPreparationEnvelope, null, 2);
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'preparation-write-frame'
+      && !error.message.includes(expectedPreparationEnvelope.task),
+  );
+});
+
 test('confines the exact preparation task to the one same-handle parent write chars field', () => {
   const task = expectedPreparationEnvelope.task;
   const cases = [
@@ -922,6 +933,47 @@ test('bounded legacy output decoding detects prefixed JSON, JSONL, and nested JS
         && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
     );
   }
+});
+
+test('bounded task scanning covers balanced JSON tokens in legacy and structured captured output', () => {
+  const task = 'repair the "quoted" \\route\nnow';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const cases = [
+    ['legacy prefix and suffix', false, `prefix ${JSON.stringify({ diagnostic: task })} suffix`],
+    ['legacy sibling tokens', false, `context={} payload=${JSON.stringify(task)}`],
+    ['structured prefix', true, `prefix ${JSON.stringify({ diagnostic: task })}`],
+    ['structured JSONL', true, `${JSON.stringify({ context: {} })}\n${JSON.stringify({ diagnostic: task })}\n`],
+    ['structured multilayer', true, JSON.stringify(JSON.stringify(JSON.stringify({ diagnostic: task })))],
+    ['structured prefix and suffix', true, `before ${JSON.stringify({ diagnostic: task })} after`],
+  ];
+  for (const [name, structured, output] of cases) {
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structured ? structuredExecResult('true', `balanced-${name}`) : structuredExec('true', `balanced-${name}`),
+      structured ? capturedResultEvent(`balanced-${name}`, { output, exit_code: 0 }) : toolOutput(`balanced-${name}`, output));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+      name,
+    );
+  }
+});
+
+test('structured task scanning retains parsed non-output result fields', () => {
+  const task = 'repair the "quoted" \\route\nnow';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  input.rollouts[0].splice(7, 0,
+    structuredExecResult('true', 'structured-result-field'),
+    capturedResultEvent('structured-result-field', { output: '', exit_code: 0, chunk_id: task }));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+  );
 });
 
 test('binds child stdout to the unique exec call and terminal sentinel', () => {

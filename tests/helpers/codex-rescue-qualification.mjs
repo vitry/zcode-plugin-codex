@@ -940,7 +940,8 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
   assertExactKeys(Object.fromEntries(write.host.envelope), ['chars', 'session_id'], 'preparation-write-envelope');
   const expectedFrame = `${options.expectedPreparationPayload}\n`;
   if (write.host.envelope.get('session_id') !== ready.session_id) mismatch('preparation-write-handle', 'The private preparation frame was not written to the readiness handle.');
-  if (write.host.envelope.get('chars') !== expectedFrame || expectedFrame.includes('\u0004') || !expectedFrame.endsWith('\n') || expectedFrame.endsWith('\n\n')) {
+  if (write.host.envelope.get('chars') !== expectedFrame || expectedFrame.includes('\u0004')
+    || options.expectedPreparationPayload.includes('\n') || !expectedFrame.endsWith('\n') || expectedFrame.endsWith('\n\n')) {
     mismatch('preparation-write-frame', 'The parent write must contain exactly one LF-terminated private JSON frame without EOF.');
   }
   let payload;
@@ -997,7 +998,7 @@ function assertParentPreparationTaskExclusivity(parent, writeEvent, task, calls,
     if (linkedCall?.host.legacy) {
       for (const item of event.payload.output ?? []) {
         if (typeof item?.text !== 'string') continue;
-        if (boundedDecodedTextContainsTask(item.text, task)) {
+        if (boundedOutputContainsTask(item.text, task)) {
           mismatch('preparation-task-exclusivity', 'The private Rescue task escaped the single authorized preparation write.');
         }
       }
@@ -1005,9 +1006,7 @@ function assertParentPreparationTaskExclusivity(parent, writeEvent, task, calls,
     }
     let result;
     try { result = parseCapturedHostResult(event.payload.output); } catch { continue; }
-    let decodedOutput;
-    try { decodedOutput = JSON.parse(result.output.trim()); } catch { /* Ordinary command output is not required to be JSON. */ }
-    if (stringLeafContains(result, task) || stringLeafContains(decodedOutput, task)) {
+    if (stringLeafContains(result, task) || boundedOutputContainsTask(result.output, task)) {
       mismatch('preparation-task-exclusivity', 'The private Rescue task escaped the single authorized preparation write.');
     }
   }
@@ -1050,7 +1049,10 @@ function stringLeafContains(value, task) {
   return false;
 }
 
-function boundedDecodedTextContainsTask(text, task) {
+function boundedOutputContainsTask(text, task) {
+  if (Buffer.byteLength(text, 'utf8') > MAX_LEGACY_JSON_DECODE_BYTES) {
+    mismatch('preparation-task-exclusivity', 'The bounded parent output decoding budget was exceeded.');
+  }
   const pending = [{ text, depth: 0 }]; const seen = new Set();
   let candidateCount = 0; let decodedBytes = 0;
   while (pending.length > 0) {
@@ -1084,19 +1086,53 @@ function boundedDecodedTextContainsTask(text, task) {
 }
 
 function jsonTextCandidates(text) {
-  const lines = text.split('\n');
-  if (lines.length > MAX_LEGACY_JSON_CANDIDATES) {
-    mismatch('preparation-task-exclusivity', 'The bounded parent output decoding budget was exceeded.');
-  }
   const candidates = new Set();
-  const add = (value) => { const trimmed = value.trim(); if (trimmed) candidates.add(trimmed); };
+  const add = (value) => {
+    const trimmed = value.trim();
+    if (!trimmed || candidates.has(trimmed)) return;
+    candidates.add(trimmed);
+    if (candidates.size > MAX_LEGACY_JSON_CANDIDATES) {
+      mismatch('preparation-task-exclusivity', 'The bounded parent output decoding budget was exceeded.');
+    }
+  };
   add(text);
-  for (const line of lines) {
-    add(line);
-    const starts = [line.indexOf('{'), line.indexOf('[')].filter((index) => index > 0);
-    if (starts.length > 0) add(line.slice(Math.min(...starts)));
+  for (let offset = 0; offset < text.length; offset += 1) {
+    if (!['"', '{', '['].includes(text[offset])) continue;
+    const end = balancedJsonTokenEnd(text, offset);
+    if (end !== undefined) add(text.slice(offset, end));
+    if (text[offset] === '"' && end !== undefined) offset = end - 1;
   }
   return candidates;
+}
+
+function balancedJsonTokenEnd(text, start) {
+  if (text[start] === '"') {
+    let escaped = false;
+    for (let offset = start + 1; offset < text.length; offset += 1) {
+      if (escaped) { escaped = false; continue; }
+      if (text[offset] === '\\') { escaped = true; continue; }
+      if (text[offset] === '"') return offset + 1;
+    }
+    return undefined;
+  }
+  const stack = [text[start]]; let inString = false; let escaped = false;
+  for (let offset = start + 1; offset < text.length; offset += 1) {
+    const character = text[offset];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') { inString = true; continue; }
+    if (character === '{' || character === '[') stack.push(character);
+    else if (character === '}' || character === ']') {
+      const opening = stack.pop();
+      if ((opening === '{') !== (character === '}')) return undefined;
+      if (stack.length === 0) return offset + 1;
+    }
+  }
+  return undefined;
 }
 
 function stringLeaves(value) {
