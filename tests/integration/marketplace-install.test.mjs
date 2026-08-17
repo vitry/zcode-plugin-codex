@@ -161,10 +161,16 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.match(installedRoleSource, /^developer_instructions = """/);
   await assert.rejects(readFile(join(installedRoot, 'agents', 'zcode-rescue.md'), 'utf8'), { code: 'ENOENT' });
   for (const modulePath of [
+    'skills/rescue/SKILL.md',
+    'scripts/zcode-companion.mjs',
+    'scripts/lib/rescue-preparation.mjs',
     'scripts/lib/conversation-progress.mjs',
     'scripts/lib/managed-agent-role.mjs',
     'scripts/lib/progress.mjs',
     'scripts/lib/rescue-progress-relay.mjs',
+    'hooks/user-prompt-hook.mjs',
+    'hooks/session-end-hook.mjs',
+    'hooks/stop-review-gate-hook.mjs',
   ]) assert.ok((await readFile(join(installedRoot, modulePath), 'utf8')).length > 0, `${modulePath} missing from installed marketplace payload`);
   const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const installedSections = assertInstalledRescueRoutingContract(installedRescue);
@@ -253,7 +259,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.match(installedRescue, /Never relay detailed `\[zcode\]` lines, arbitrary stderr, stdout, commands, paths, identifiers, content, results, or errors/);
   assert.match(installedRescue, /invoke-status rescue/);
   assert.match(installedRescue, /return only the child's public stdout verbatim without interpretation/);
-  assert.doesNotMatch(installedRescue, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
+  assert.doesNotMatch(installedRescue, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke-prepared rescue/i);
   const listedComponents = await listPluginComponents(temporary, env);
   const installedSkills = listedComponents.skills.data.flatMap((entry) => entry.skills)
     .filter((skill) => /^(?:zcode|zcode-plugin-codex):/.test(skill.name));
@@ -341,7 +347,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.equal(rerun.code, 0, rerun.stderr || rerun.stdout);
   assert.equal(JSON.parse(rerun.stdout).status, 'ready');
   const rolePath = join(pluginData, 'agent-roles', 'zcode-rescue.toml');
-  assert.match(await readFile(rolePath, 'utf8'), /invoke rescue/);
+  assert.match(await readFile(rolePath, 'utf8'), /invoke-prepared rescue/);
   assert.equal(relative(pluginData, rolePath), join('agent-roles', 'zcode-rescue.toml'));
   assert.doesNotMatch(rolePath, /cache|0\.1\.0/);
   const ended = await runChild(process.execPath, [join(installedRoot, 'hooks', 'session-end-hook.mjs')], {

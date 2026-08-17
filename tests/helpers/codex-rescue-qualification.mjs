@@ -12,6 +12,8 @@ const MAX_RESCUE_TASK_NAME_BYTES = 64;
 const RESCUE_TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
 const GENERIC_HIDDEN_SCHEMA_VERSIONS = new Set(['0.147.0']);
 const EXEC_ENVELOPE_KEYS = new Set(['cmd', 'workdir', 'yield_time_ms', 'max_output_tokens']);
+const PREPARATION_READY_LINE = `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`;
+const PREPARED_ACK_LINE = `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`;
 const PUBLIC_JOB_STATUSES = new Set(['queued', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled']);
 const PUBLIC_PROGRESS_PHASES = new Set(['starting', 'running', 'waiting', 'finalizing']);
 const TERMINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
@@ -137,7 +139,7 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   const spawnIndex = parent.indexOf(spawns[0]);
   const startIndex = parent.indexOf(starts[0]);
   if (spawnIndex >= startIndex) mismatch('spawn-start-order', 'The linked child start must follow its spawn call.');
-  assertParentPreflight(parent, spawnIndex, startIndex, options);
+  assertParentPreparation(parent, spawnIndex, startIndex, options);
 
   const allChildCalls = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call');
   const allChildOutputs = child.filter((event) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
@@ -185,7 +187,7 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   const childFinalIndex = child.findIndex((event) => event?.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload.phase === 'final_answer');
   if (childFinalIndex <= execution.terminalEventIndex) mismatch('child-terminal-order', 'The child final message must follow its terminal companion output.');
 
-  assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
+  assertParentIsolation(parent, options, options.forbiddenParentText ?? []);
 
   const childReturnIndex = parent.findIndex((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message'
     && event.payload.author === agentPath && event.payload.recipient === '/root'
@@ -556,8 +558,10 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   }
   const startIndex = parent.indexOf(start);
   if (spawnIndex >= startIndex) mismatch('choice-start-order', 'The child start must follow its unique spawn.');
-  assertParentPreflight(parent, spawnIndex, startIndex, {
+  assertParentPreparation(parent, spawnIndex, startIndex, {
     expectedPreflightCommand: options.expectedPreflightCommand,
+    expectedPreparationCommand: options.expectedPreparationCommand,
+    expectedPreparationPayload: options.expectedPreparationPayload,
     expectedWorkspace: options.expectedWorkspace,
   });
 
@@ -698,7 +702,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
     mismatch('choice-terminal-timeline', 'The observable timestamps do not prove the complete initial-exec through terminal-parent sequence.');
   }
 
-  assertParentIsolation(parent, options.expectedPreflightCommand, options.forbiddenParentText ?? []);
+  assertParentIsolation(parent, options, options.forbiddenParentText ?? []);
   const evidence = {
     parentThreadId: options.expectedParentThreadId, childThreadId, agentPath, taskName, choice: options.expectedChoice,
     ...(options.requireProgressRelay ? { progressRelayChecked: initialRelay.checked && continuationRelay.checked } : {}),
@@ -829,11 +833,16 @@ function childReturnText(event, agentPath) {
 
 function encrypted(value) { return typeof value === 'string' && /^gAAAA[A-Za-z0-9_-]{40,}={0,2}$/u.test(value); }
 
-function assertParentIsolation(parent, expectedPreflightCommand, forbiddenText) {
+function assertParentIsolation(parent, options, forbiddenText) {
   for (const event of parent) {
     if (event?.type === 'response_item' && event.payload?.type === 'custom_tool_call' && event.payload.name === 'exec') {
-      const command = parseCapturedExecEnvelope(event.payload.input).get('cmd');
-      if (command !== expectedPreflightCommand && isCompanionCommand(command)) mismatch('parent-inline-command', 'The parent executed a Rescue companion command outside the exact preflight.');
+      const host = parseCapturedHostCall(event.payload.input);
+      const command = host.kind === 'exec_command' ? host.envelope.get('cmd') : undefined;
+      if (isCompanionCommand(command)
+        && command !== options.expectedPreflightCommand
+        && command !== options.expectedPreparationCommand) {
+        mismatch('parent-inline-command', 'The parent executed a Rescue companion command outside the exact preparation protocol.');
+      }
     }
     let visible;
     if (event?.type === 'event_msg' && event.payload?.type === 'agent_message') visible = event.payload.message;
@@ -847,44 +856,92 @@ function assertParentIsolation(parent, expectedPreflightCommand, forbiddenText) 
   }
 }
 
-function assertParentPreflight(parent, spawnIndex, startIndex, options) {
+function assertParentPreparation(parent, spawnIndex, startIndex, options) {
+  if (typeof options.expectedPreparationCommand !== 'string' || !options.expectedPreparationCommand
+    || typeof options.expectedPreparationPayload !== 'string' || !options.expectedPreparationPayload) {
+    mismatch('preparation-contract-missing', 'The trusted preparation command and private envelope contract are required.');
+  }
   const calls = parent
     .map((event, index) => ({ event, index }))
     .filter(({ event }) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call' && event.payload.name === 'exec')
-    .map(({ event, index }) => ({ event, index, envelope: parseCapturedExecEnvelope(event.payload.input) }));
-  const preflights = calls.filter(({ envelope }) => envelope.get('cmd') === options.expectedPreflightCommand);
+    .map(({ event, index }) => ({ event, index, host: parseCapturedHostCall(event.payload.input) }));
+  const execCalls = calls.filter(({ host }) => host.kind === 'exec_command');
+  const writeCalls = calls.filter(({ host }) => host.kind === 'write_stdin');
+  const preflights = execCalls.filter(({ host }) => host.envelope.get('cmd') === options.expectedPreflightCommand);
   if (preflights.length === 0) {
-    if (calls.some(({ envelope }) => isCompanionCommand(envelope.get('cmd')))) mismatch('preflight-command-mismatch', 'The parent companion preflight command is not exact.');
+    if (execCalls.some(({ host }) => isCompanionCommand(host.envelope.get('cmd'))
+      && host.envelope.get('cmd') !== options.expectedPreparationCommand)) mismatch('preflight-command-mismatch', 'The parent companion preflight command is not exact.');
     mismatch('preflight-count', 'The parent rollout must contain exactly one readiness preflight.');
   }
   if (preflights.length !== 1) mismatch('preflight-count', 'The parent rollout must contain exactly one readiness preflight.');
   const preflight = preflights[0];
-  assertExecEnvelope(preflight.envelope, options.expectedPreflightCommand, options.expectedWorkspace, 'preflight-envelope-mismatch');
+  assertExecEnvelope(preflight.host.envelope, options.expectedPreflightCommand, options.expectedWorkspace, 'preflight-envelope-mismatch');
   const outputs = parent
     .map((event, index) => ({ event, index }))
     .filter(({ event }) => event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output');
   const linked = outputs.filter(({ event }) => event.payload.call_id === preflight.event.payload.call_id);
   if (linked.length !== 1) mismatch('preflight-output-link', 'The readiness output does not link exactly once to the preflight call.');
-  if (!(preflight.index < linked[0].index && linked[0].index < spawnIndex && linked[0].index < startIndex)) {
-    mismatch('preflight-order', 'The readiness preflight and output must complete before the child spawn.');
-  }
-  const statusText = terminalOutputText(linked[0].event.payload.output, 'preflight-status-mismatch').trim();
+  const preflightResult = parseCapturedHostResult(linked[0].event.payload.output);
+  if (preflightResult.exit_code !== 0 || Object.hasOwn(preflightResult, 'session_id')) mismatch('preflight-status-mismatch', 'The readiness preflight must exit exactly zero.');
+  const statusText = preflightResult.output.trim();
   let status;
   try { status = JSON.parse(statusText); } catch { mismatch('preflight-status-mismatch', 'The readiness output is not exact bounded JSON.'); }
   assertExactKeys(status, ['role', 'status', 'type'], 'preflight-status-mismatch');
   if (status.type !== 'role-status' || status.role !== 'zcode-rescue' || status.status !== 'ready') {
     mismatch('preflight-status-mismatch', 'The readiness output does not report the Rescue Role ready.');
   }
+
+  const preparations = execCalls.filter(({ host }) => host.envelope.get('cmd') === options.expectedPreparationCommand);
+  if (preparations.length !== 1) mismatch('preparation-count', 'The parent rollout must contain exactly one private preparation process.');
+  const preparation = preparations[0];
+  assertExecEnvelope(preparation.host.envelope, options.expectedPreparationCommand, options.expectedWorkspace, 'preparation-envelope-mismatch', { tty: true });
+  const readyOutputs = outputs.filter(({ event }) => event.payload.call_id === preparation.event.payload.call_id);
+  if (readyOutputs.length !== 1) mismatch('preparation-ready-count', 'The preparation process must expose exactly one linked raw-input readiness result.');
+  const ready = parseCapturedHostResult(readyOutputs[0].event.payload.output);
+  if (ready.output.includes(options.expectedPreparationPayload)) mismatch('preparation-payload-echo', 'The preparation tool output echoed the private frame.');
+  if (ready.output !== PREPARATION_READY_LINE || !Number.isSafeInteger(ready.session_id) || ready.session_id <= 0
+    || Object.hasOwn(ready, 'exit_code')) mismatch('preparation-ready-mismatch', 'The preparation process did not expose the exact nonterminal task-free readiness contract.');
+
+  if (writeCalls.length !== 1) mismatch('preparation-write-count', 'The parent must write exactly one private preparation frame.');
+  const write = writeCalls[0];
+  assertExactKeys(Object.fromEntries(write.host.envelope), ['chars', 'session_id'], 'preparation-write-envelope');
+  const expectedFrame = `${options.expectedPreparationPayload}\n`;
+  if (write.host.envelope.get('session_id') !== ready.session_id) mismatch('preparation-write-handle', 'The private preparation frame was not written to the readiness handle.');
+  if (write.host.envelope.get('chars') !== expectedFrame || expectedFrame.includes('\u0004') || !expectedFrame.endsWith('\n') || expectedFrame.endsWith('\n\n')) {
+    mismatch('preparation-write-frame', 'The parent write must contain exactly one LF-terminated private JSON frame without EOF.');
+  }
+  let payload;
+  try { payload = JSON.parse(options.expectedPreparationPayload); } catch { mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.'); }
+  assertExactKeys(payload, ['options', 'source', 'task', 'version'], 'preparation-payload-contract');
+  assertExactKeys(payload.options, Object.keys(payload.options), 'preparation-payload-contract');
+  if (payload.version !== 1 || !['explicit', 'proactive'].includes(payload.source) || typeof payload.task !== 'string' || !payload.task.trim()
+    || Object.keys(payload.options).some((key) => !['effort', 'execution', 'model', 'resume'].includes(key))) {
+    mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
+  }
+  const writeOutputs = outputs.filter(({ event }) => event.payload.call_id === write.event.payload.call_id);
+  if (writeOutputs.length !== 1) mismatch('preparation-ack-count', 'The private preparation write must expose exactly one linked terminal acknowledgement.');
+  const acknowledged = parseCapturedHostResult(writeOutputs[0].event.payload.output);
+  if (acknowledged.output.includes(options.expectedPreparationPayload)) mismatch('preparation-payload-echo', 'The preparation tool output echoed the private frame.');
+  if (acknowledged.output !== PREPARED_ACK_LINE || acknowledged.exit_code !== 0 || Object.hasOwn(acknowledged, 'session_id')) {
+    mismatch('preparation-ack-mismatch', 'The preparation acknowledgement must be task-free and exit exactly zero.');
+  }
+  if (!(preflight.index < linked[0].index && linked[0].index < preparation.index
+    && preparation.index < readyOutputs[0].index && readyOutputs[0].index < write.index
+    && write.index < writeOutputs[0].index && writeOutputs[0].index < spawnIndex && spawnIndex < startIndex)) {
+    mismatch('preparation-order', 'Role readiness, raw readiness, one private write, acknowledgement, spawn, and child start are out of order.');
+  }
 }
 
-function assertExecEnvelope(envelope, expectedCommand, expectedWorkspace, code) {
+function assertExecEnvelope(envelope, expectedCommand, expectedWorkspace, code, extensions = {}) {
   if (!envelope || typeof envelope.get !== 'function' || typeof envelope.keys !== 'function') mismatch(code, 'The exec envelope is absent.');
-  for (const key of envelope.keys()) if (!EXEC_ENVELOPE_KEYS.has(key)) mismatch(code, `The exec envelope contains forbidden key ${key}.`);
+  const allowed = new Set(EXEC_ENVELOPE_KEYS); if (extensions.tty) allowed.add('tty');
+  for (const key of envelope.keys()) if (!allowed.has(key)) mismatch(code, `The exec envelope contains forbidden key ${key}.`);
   if (envelope.get('cmd') !== expectedCommand || envelope.get('workdir') !== expectedWorkspace) {
     mismatch(code === 'child-exec-envelope-mismatch' && envelope.get('cmd') !== expectedCommand ? 'child-command-mismatch' : code, 'The exec command or canonical workspace differs from the contract.');
   }
   if (envelope.has('yield_time_ms') && (!Number.isInteger(envelope.get('yield_time_ms')) || envelope.get('yield_time_ms') < 250 || envelope.get('yield_time_ms') > 30_000)) mismatch(code, 'yield_time_ms is outside the captured safe bound.');
   if (envelope.has('max_output_tokens') && (!Number.isInteger(envelope.get('max_output_tokens')) || envelope.get('max_output_tokens') < 1 || envelope.get('max_output_tokens') > 100_000)) mismatch(code, 'max_output_tokens is outside the captured safe bound.');
+  if (extensions.tty && envelope.get('tty') !== true) mismatch(code, 'The preparation exec must request a PTY.');
 }
 
 function assertTerminalSentinel(output, sentinel) {
@@ -935,7 +992,7 @@ function assertExactKeys(object, expected, code) {
 }
 
 function isCompanionCommand(command) {
-  return typeof command === 'string' && (command.includes('zcode-companion.mjs') || /(?:^|\s)invoke(?:-choice)?\s+rescue(?:\s|$)/u.test(command));
+  return typeof command === 'string' && (command.includes('zcode-companion.mjs') || /(?:^|\s)(?:prepare|invoke(?:-prepared|-choice)?)\s+rescue(?:\s|$)/u.test(command));
 }
 
 function sessionMeta(events) {

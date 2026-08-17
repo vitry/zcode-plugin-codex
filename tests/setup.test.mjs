@@ -213,7 +213,7 @@ test('managed Rescue role reports ready in the same setup reconciliation', async
   const report = await runSetup(ctx.options);
   assert.equal(report.status, 'ready');
   const paths = managedRolePaths(await realpath(ctx.dataRoot));
-  assert.match(await readFile(paths.rolePath, 'utf8'), /invoke rescue/);
+  assert.match(await readFile(paths.rolePath, 'utf8'), /invoke-prepared rescue/);
   const receipt = JSON.parse(await readFile(paths.receiptPath, 'utf8'));
   assert.equal(receipt.role.path, paths.rolePath);
   const calls = (await readFile(ctx.record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);

@@ -17,9 +17,15 @@ import { npmLaunch } from '../scripts/lib/tool-launch.mjs';
 test('marketplace builder requires the complete isolated Rescue payload', () => {
   assert.deepEqual(REQUIRED_RESCUE_PAYLOAD, [
     'agents/zcode-rescue.toml.template',
+    'skills/rescue/SKILL.md',
+    'scripts/zcode-companion.mjs',
+    'scripts/lib/rescue-preparation.mjs',
     'scripts/lib/conversation-progress.mjs',
     'scripts/lib/managed-agent-role.mjs',
     'scripts/lib/progress.mjs',
+    'hooks/user-prompt-hook.mjs',
+    'hooks/session-end-hook.mjs',
+    'hooks/stop-review-gate-hook.mjs',
   ]);
 });
 
@@ -101,10 +107,12 @@ async function sourceFixture(t, options = {}) {
     mkdir(join(root, '.codex-plugin'), { recursive: true }),
     mkdir(join(root, 'agents'), { recursive: true }),
     mkdir(join(root, 'scripts', 'lib'), { recursive: true }),
+    mkdir(join(root, 'skills', 'rescue'), { recursive: true }),
+    mkdir(join(root, 'hooks'), { recursive: true }),
     mkdir(join(root, 'marketplace', '.agents', 'plugins'), { recursive: true }),
   ]);
   await Promise.all([
-    writeFile(join(root, 'package.json'), JSON.stringify({ name: 'zcode-plugin-codex', version: '1.2.3', files: ['.codex-plugin', 'agents', 'scripts'] })),
+    writeFile(join(root, 'package.json'), JSON.stringify({ name: 'zcode-plugin-codex', version: '1.2.3', files: ['.codex-plugin', 'agents', 'skills', 'scripts', 'hooks'] })),
     writeFile(join(root, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'zcode', version: '1.2.3' })),
     writeFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'developer_instructions = """fixture"""\n'),
     ...REQUIRED_RESCUE_PAYLOAD.slice(1).map((path) => writeFile(join(root, path), 'export {};\n')),

@@ -22,8 +22,11 @@ const childId = '019fe6e0-4764-7192-83ba-0b0cc2c48660';
 const taskName = 'zcode_rescue_fix_progress';
 const agentPath = `/root/${taskName}`;
 const expectedWorkspace = '/repo';
-const expectedCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke rescue';
+const expectedCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-prepared rescue';
 const expectedPreflightCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" role-status rescue';
+const expectedPreparationCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue';
+const expectedPreparationEnvelope = Object.freeze({ version: 1, source: 'explicit', task: 'repair the qualification fixture', options: { execution: 'foreground', resume: 'fresh' } });
+const expectedPreparationPayload = JSON.stringify(expectedPreparationEnvelope);
 const expectedStatusCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-status rescue';
 const expectedPublicOutput = 'done';
 const expectedSemanticProgress = Object.freeze({
@@ -710,20 +713,33 @@ test('does not self-report generic compatibility and lets named metadata work on
   assert.equal(qualifyCodexRescueEvidence(named, options()).route, 'named');
 });
 
-test('requires one exact ready parent preflight before spawn', () => {
+test('requires exact Role readiness and one private same-handle preparation before spawn', () => {
   const cases = [
-    { code: 'preflight-count', mutate: (input) => input.rollouts[0].splice(1, 1) },
-    { code: 'preflight-count', mutate: (input) => input.rollouts[0].splice(2, 0, structuredExec(expectedPreflightCommand, 'preflight-2')) },
-    { code: 'preflight-command-mismatch', mutate: (input) => { preflightEvent(input).payload.input = structuredExec(`${expectedPreflightCommand} && true`, 'preflight-1').payload.input; } },
+    { code: 'preflight-count', mutate: (input) => { removeParentCall(input, 'preflight-1'); } },
+    { code: 'preflight-count', mutate: (input) => input.rollouts[0].splice(1, 0, ...parentPreparationEvents('duplicate-').slice(0, 2)) },
+    { code: 'preflight-command-mismatch', mutate: (input) => { preflightEvent(input).payload.input = structuredExecResult(`${expectedPreflightCommand} && true`, 'preflight-1').payload.input; } },
     { code: 'preflight-output-link', mutate: (input) => { preflightOutput(input).payload.call_id = 'wrong-call'; } },
-    { code: 'preflight-output-link', mutate: (input) => input.rollouts[0].splice(2, 1) },
-    { code: 'preflight-output-link', mutate: (input) => input.rollouts[0].splice(3, 0, toolOutput('preflight-1', '{"type":"role-status","role":"zcode-rescue","status":"ready"}\n')) },
-    { code: 'preflight-status-mismatch', mutate: (input) => { preflightOutput(input).payload.output = toolOutput('preflight-1', `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'drift' })}\n`).payload.output; } },
-    { code: 'preflight-order', mutate: (input) => { const spawn = input.rollouts[0].splice(3, 1)[0]; input.rollouts[0].splice(2, 0, spawn); } },
+    { code: 'preflight-status-mismatch', mutate: (input) => { preflightOutput(input).payload.output = capturedResult({ output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'drift' })}\n`, exit_code: 0 }); } },
+    { code: 'preflight-status-mismatch', mutate: (input) => { preflightOutput(input).payload.output = capturedResult({ output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 1 }); } },
+    { code: 'preparation-count', mutate: (input) => { removeParentCall(input, 'prepare-1'); } },
+    { code: 'preparation-count', mutate: (input) => input.rollouts[0].splice(3, 0, structuredExecResult(expectedPreparationCommand, 'prepare-2', { tty: true })) },
+    { code: 'preparation-ready-count', mutate: (input) => { removeParentOutput(input, 'prepare-1'); } },
+    { code: 'preparation-ready-count', mutate: (input) => input.rollouts[0].splice(5, 0, capturedResultEvent('prepare-1', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 44 })) },
+    { code: 'preparation-order', mutate: (input) => { const write = parentCall(input, 'prepare-write-1'); input.rollouts[0].splice(input.rollouts[0].indexOf(write), 1); input.rollouts[0].splice(input.rollouts[0].indexOf(parentOutput(input, 'prepare-1')), 0, write); } },
+    { code: 'preparation-write-handle', mutate: (input) => { parentCall(input, 'prepare-write-1').payload.input = structuredPoll(999, 'prepare-write-1', `${expectedPreparationPayload}\n`).payload.input; } },
+    { code: 'preparation-write-count', mutate: (input) => input.rollouts[0].splice(7, 0, structuredPoll(44, 'prepare-write-2', `${expectedPreparationPayload}\n`), capturedResultEvent('prepare-write-2', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 })) },
+    { code: 'preparation-write-frame', mutate: (input) => { parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${expectedPreparationPayload}\n\u0004`).payload.input; } },
+    { code: 'preparation-payload-echo', mutate: (input) => { parentOutput(input, 'prepare-1').payload.output = capturedResult({ output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n${expectedPreparationPayload}`, session_id: 44 }); } },
+    { code: 'preparation-order', mutate: (input) => { const prepare = parentCall(input, 'prepare-1'); const ready = parentOutput(input, 'prepare-1'); input.rollouts[0].splice(input.rollouts[0].indexOf(ready), 1); input.rollouts[0].splice(input.rollouts[0].indexOf(prepare), 1); const spawn = spawnEvent(input); input.rollouts[0].splice(input.rollouts[0].indexOf(spawn) + 1, 0, prepare, ready); } },
+    { code: 'preparation-write-frame', mutate: (input) => { const changed = { ...expectedPreparationEnvelope, source: 'proactive' }; parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${JSON.stringify(changed)}\n`).payload.input; } },
+    { code: 'child-command-mismatch', mutate: (input) => { childExec(input).payload.input = structuredExec('node "/installed/zcode/scripts/zcode-companion.mjs" invoke rescue').payload.input; } },
   ];
   for (const { code, mutate } of cases) {
     const input = fixture(); mutate(input);
-    assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
+    assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => {
+      assert.doesNotMatch(error.message, new RegExp(expectedPreparationEnvelope.task, 'u'));
+      return error instanceof CodexRescueEvidenceMismatchError && error.code === code;
+    });
   }
 });
 
@@ -1035,6 +1051,8 @@ function options(overrides = {}) {
     expectedWorkspace,
     expectedCommand,
     expectedPreflightCommand,
+    expectedPreparationCommand,
+    expectedPreparationPayload,
     expectedPublicOutput,
     expectedSemanticProgress,
     expectedNamedSpawnMessage: 'fixed named forwarder',
@@ -1063,8 +1081,7 @@ function fixture(publicOutput = expectedPublicOutput) {
     ];
   const parent = [
       { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
-      structuredExec(expectedPreflightCommand, 'preflight-1'),
-      toolOutput('preflight-1', `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+      ...parentPreparationEvents(),
       { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ agent_type: 'zcode-rescue', fork_turns: 'none', message: 'fixed named forwarder', task_name: taskName }) } },
       { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
       { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: childEnvelope }] } },
@@ -1077,7 +1094,8 @@ function fixture(publicOutput = expectedPublicOutput) {
       { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
   ];
   child[2].timestamp = '2026-08-10T00:00:00.000006Z'; child[3].timestamp = '2026-08-10T00:00:00.000007Z';
-  parent[5].timestamp = '2026-08-10T00:00:00.000008Z'; parent[6].timestamp = '2026-08-10T00:00:00.000009Z';
+  parent.find((event) => event?.payload?.author === agentPath).timestamp = '2026-08-10T00:00:00.000008Z';
+  parent.find((event) => event?.payload?.phase === 'final_answer').timestamp = '2026-08-10T00:00:00.000009Z';
   return { execFrames, rollouts: [parent, child] };
 }
 
@@ -1201,6 +1219,8 @@ function choiceOptions(choice, overrides = {}) {
     expectedNamedSpawnMessage: 'fixed named forwarder',
     expectedGenericSpawnMessage: 'fixed generic forwarder',
     expectedPreflightCommand,
+    expectedPreparationCommand,
+    expectedPreparationPayload,
     expectedChoiceCommand: `node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`,
     expectedFollowupMessage: `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`,
     expectedPublicOutput,
@@ -1215,8 +1235,7 @@ function choiceFixture(choice) {
   const secondEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${expectedPublicOutput}`;
   const parent = [
     { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
-    structuredExec(expectedPreflightCommand, 'preflight-1'),
-    toolOutput('preflight-1', `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+    ...parentPreparationEvents(),
     structuredSpawn('spawn-1'),
     { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
     structuredWait('wait-1'),
@@ -1240,8 +1259,14 @@ function choiceFixture(choice) {
     { type: 'event_msg', payload: { type: 'agent_message', message: expectedPublicOutput, phase: 'final_answer' } },
   ];
   const at = (event, offset) => { event.timestamp = new Date(Date.parse('2026-08-10T00:00:00.000Z') + offset).toISOString(); };
-  at(child[1], 4); at(child[2], 5); at(child[3], 6); at(parent[7], 7); at(parent[8], 8);
-  at(parent[9], 9); at(parent[10], 10); at(child[4], 11); at(child[5], 12); at(child[6], 13); at(parent[13], 14); at(parent[14], 15);
+  const childFinals = child.filter((event) => event?.payload?.phase === 'final_answer');
+  const parentReturns = parent.filter((event) => event?.payload?.author === agentPath);
+  const parentFinals = parent.filter((event) => event?.payload?.phase === 'final_answer');
+  at(child[1], 4); at(child[2], 5); at(childFinals[0], 6); at(parentReturns[0], 7); at(parentFinals[0], 8);
+  at(choiceFollowup({ rollouts: [parent, child] }), 9); at(followupResult({ rollouts: [parent, child] }), 10);
+  at(child.find((event) => event?.payload?.call_id === 'exec-2' && event.payload.type === 'custom_tool_call'), 11);
+  at(child.find((event) => event?.payload?.call_id === 'exec-2' && event.payload.type === 'custom_tool_call_output'), 12);
+  at(childFinals[1], 13); at(parentReturns[1], 14); at(parentFinals[1], 15);
   return { rollouts: [parent, child] };
 }
 
@@ -1323,8 +1348,8 @@ function structuredExec(command, callId = 'exec-1', fields = {}) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace, ...fields })});\ntext(r.output);\n` } };
 }
 
-function structuredExecResult(command, callId) {
-  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace })}); text(JSON.stringify(r))\n` } };
+function structuredExecResult(command, callId, fields = {}) {
+  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace, ...fields })}); text(JSON.stringify(r))\n` } };
 }
 
 function structuredPoll(sessionId, callId, chars = '') {
@@ -1337,6 +1362,18 @@ function capturedResult(result) {
 
 function capturedResultEvent(callId, result) {
   return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: capturedResult(result) } };
+}
+
+function parentPreparationEvents(prefix = '') {
+  const handle = prefix ? 45 : 44;
+  return [
+    structuredExecResult(expectedPreflightCommand, `${prefix}preflight-1`),
+    capturedResultEvent(`${prefix}preflight-1`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }),
+    structuredExecResult(expectedPreparationCommand, `${prefix}prepare-1`, { tty: true }),
+    capturedResultEvent(`${prefix}prepare-1`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: handle }),
+    structuredPoll(handle, `${prefix}prepare-write-1`, `${expectedPreparationPayload}\n`),
+    capturedResultEvent(`${prefix}prepare-write-1`, { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }),
+  ];
 }
 
 function childPolls(input) { return input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call').slice(1); }
@@ -1362,6 +1399,10 @@ function childMeta(input) { return input.rollouts[1][0]; }
 function parentMeta(input) { return input.rollouts[0][0]; }
 function preflightEvent(input) { return input.rollouts[0].find((event) => event.payload?.type === 'custom_tool_call' && event.payload.call_id === 'preflight-1'); }
 function preflightOutput(input) { return input.rollouts[0].find((event) => event.payload?.type === 'custom_tool_call_output' && event.payload.call_id === 'preflight-1'); }
+function parentCall(input, callId) { return input.rollouts[0].find((event) => event.payload?.type === 'custom_tool_call' && event.payload.call_id === callId); }
+function parentOutput(input, callId) { return input.rollouts[0].find((event) => event.payload?.type === 'custom_tool_call_output' && event.payload.call_id === callId); }
+function removeParentCall(input, callId) { const call = parentCall(input, callId); const output = parentOutput(input, callId); input.rollouts[0] = input.rollouts[0].filter((event) => event !== call && event !== output); }
+function removeParentOutput(input, callId) { const output = parentOutput(input, callId); input.rollouts[0] = input.rollouts[0].filter((event) => event !== output); }
 function childExec(input) { return input.rollouts[1].find((event) => event.payload?.type === 'custom_tool_call'); }
 function childOutput(input) { return input.rollouts[1].find((event) => event.payload?.type === 'custom_tool_call_output'); }
 function choiceFollowup(input) { return input.rollouts[0].find((event) => event.payload?.name === 'followup_task'); }
