@@ -20,7 +20,7 @@ import { createManagedZCodeClient, releaseManagedZCodeOwner } from '../../script
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
-import { runCompanion } from '../../scripts/zcode-companion.mjs';
+import { runCompanion, runDirectInvocation } from '../../scripts/zcode-companion.mjs';
 import { markForwarding } from '../../hooks/lib/hook-state.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
@@ -246,6 +246,8 @@ async function prepareDirectRescueChild(context, input) {
     agent_id: input.childId,
     agent_type: 'zcode-rescue',
   }, active);
+  const preparation = new PassThrough(); preparation.end(`${JSON.stringify({ version: 1, source: 'explicit', task: input.prompt.replace(/^\$zcode:rescue(?:\s+--(?:fresh|resume|wait|background))*\s*/u, ''), options: { execution: 'foreground', resume: 'fresh' } })}\n`);
+  assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: input.parentSessionId }, input: preparation }), { type: 'prepared', command: 'rescue' });
   return { callerContext, parent };
 }
 
@@ -610,7 +612,7 @@ test('isolated Rescue child SIGTERM after accepted send stops once and keeps the
     parentSessionId, parentTurnId, childId, childTurnId: 'isolated-child-turn',
     prompt: '$zcode:rescue --fresh --wait repair after isolated SIGTERM',
   });
-  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], {
+  const child = spawn(process.execPath, [cli, 'invoke-prepared', 'rescue'], {
     cwd: context.workspace,
     env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -650,7 +652,7 @@ test('unacknowledged parent SessionEnd retains the durable guard without a secon
     FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1',
     FAKE_ZCODE_STOP_ERROR_ONCE: '1',
   };
-  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+  const child = spawn(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
   let exited = false; child.stdout?.resume(); child.stderr?.resume();
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
   const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
@@ -692,7 +694,7 @@ test('parent steering leaves one isolated Rescue child running with zero cancel 
     prompt: '$zcode:rescue --fresh --wait keep using the same child',
   });
   const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_COMPLETION_GATE: gate };
-  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+  const child = spawn(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
   let stdout = ''; let stderr = ''; let exited = false;
   child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
@@ -723,7 +725,7 @@ test('isolated child loss recovers the accepted parent-owned turn without anothe
   const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_PROCESS_FILE: workerProcess, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RECOVERY_CONTROL: recovery, FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' };
   const storage = await resolveWorkspaceStorage(context); const identityPath = join(storage.directory, 'broker', 'identity.json');
   /** @type {string|undefined} */ let ownedSessionId;
-  const child = spawn(process.execPath, [cli, 'invoke', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+  const child = spawn(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: context.workspace, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
   let exited = false; child.stdout?.resume(); child.stderr?.resume();
   const childExit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', () => { exited = true; resolve(undefined); }); });
   t.after(() => cleanupChildLossProcesses({ child, childExit, childExited: () => exited, context, identityPath, ownerId: ownerIdForSession(parentSessionId), sessionId: () => ownedSessionId, workerProcess }));
@@ -750,7 +752,7 @@ test('sibling child rejection happens before reservation, session send, or stop'
     parentSessionId: 'sibling-parent', parentTurnId: 'sibling-parent-turn', childId: 'approved-rescue-child', childTurnId: 'approved-child-turn',
     prompt: '$zcode:rescue --fresh --wait reject every sibling',
   });
-  const sibling = await run(process.execPath, [cli, 'invoke', 'rescue'], {
+  const sibling = await run(process.execPath, [cli, 'invoke-prepared', 'rescue'], {
     cwd: context.workspace,
     env: { ...context.env, CODEX_THREAD_ID: 'ordinary-sibling-child', FAKE_ZCODE_RECORD: record },
   });

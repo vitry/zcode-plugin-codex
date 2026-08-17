@@ -18,6 +18,7 @@ import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
+import { createRescuePreparationStore, readRescuePreparation } from './lib/rescue-preparation.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
@@ -98,13 +99,32 @@ export async function runCompanion(argv, runtime = {}) {
   return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
 }
 
-/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
+/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:NodeJS.ReadableStream,dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runDirectInvocation(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
   const [entry, command, choice, ...extra] = argv;
   const statusInvocation = entry === 'invoke-status' && command === 'rescue' && choice === undefined && extra.length === 0;
-  if (!statusInvocation && (!['invoke', 'invoke-choice'].includes(entry) || typeof command !== 'string' || extra.length)) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
+  const prepareInvocation = entry === 'prepare' && command === 'rescue' && choice === undefined && extra.length === 0;
+  const preparedInvocation = entry === 'invoke-prepared' && command === 'rescue' && choice === undefined && extra.length === 0;
+  if (!statusInvocation && !prepareInvocation && !preparedInvocation && (!['invoke', 'invoke-choice'].includes(entry) || typeof command !== 'string' || extra.length)) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
   const ambientThreadId = env.CODEX_THREAD_ID; if (typeof ambientThreadId !== 'string' || !ambientThreadId) throw new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' });
+  const identity = createIdentityStore({ dataRoot });
+  if (prepareInvocation) {
+    const caller = await identity.resolveActiveTurn({ sessionId: ambientThreadId, workspace: cwd });
+    const envelope = await readRescuePreparation(runtime.input ?? process.stdin);
+    await createRescuePreparationStore({ dataRoot }).save({ ...caller, recordedPrompt: caller.prompt, envelope });
+    return { type: 'prepared', command: 'rescue' };
+  }
+  if (preparedInvocation) {
+    const executor = await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId);
+    const caller = await identity.resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: cwd });
+    assertExecutorMatchesCaller(executor, caller);
+    const prepared = await createRescuePreparationStore({ dataRoot }).consume({ ...caller, executorAgentId: executor.agentId });
+    const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
+    const output = await runCompanion(preparedArgv, { cwd, env, caller, originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+    if (output?.type === 'needs-choice') await createInvocationStore({ dataRoot }).savePending({ sessionId: caller.sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode, command: 'rescue', source: prepared.envelope.source, executorAgentId: executor.agentId, spec: { argv: preparedArgv } });
+    return output;
+  }
   if (statusInvocation) {
     let canonicalWorkspace;
     try {
@@ -118,9 +138,13 @@ export async function runDirectInvocation(argv, runtime = {}) {
       throw new PluginError('BOUND_RESCUE_STATUS_UNAVAILABLE', 'Bound Rescue status is unavailable.', { category: 'state', remedy: 'Continue waiting on the original Rescue foreground execution.' });
     }
   }
+  if (entry === 'invoke' && command === 'rescue') {
+    if (choice !== undefined) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
+    throw new PluginError('PREPARED_INVOCATION_REQUIRED', 'Installed Rescue requires a prepared invocation.', { category: 'authorization', remedy: 'Return to the parent turn, run prepare rescue, and start one new Rescue child.' });
+  }
   let sessionId = ambientThreadId; let executorAgentId; let executor;
   if (command === 'rescue') { executor = await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: entry === 'invoke-choice' }); sessionId = executor.parentSessionId; executorAgentId = executor.agentId; }
-  const identity = createIdentityStore({ dataRoot }); const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd }); const invocations = createInvocationStore({ dataRoot });
+  const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd }); const invocations = createInvocationStore({ dataRoot });
   if (command === 'rescue' && entry === 'invoke' && (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode)) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The Rescue child is not bound to the active parent turn.', { category: 'authorization', remedy: 'Retry from the original parent thread with one newly started Rescue child.' });
   /** @type {any} */ let invocation; let executionCaller = caller;
   if (entry === 'invoke-choice') { invocation = await invocations.consumePending({ sessionId, workspace: cwd, command, choice, ...(executorAgentId === undefined ? {} : { executorAgentId }) }); executionCaller = invocation.caller; }
@@ -128,13 +152,29 @@ export async function runDirectInvocation(argv, runtime = {}) {
     if (choice !== undefined) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
     invocation = parseRecordedInvocation(command, caller.prompt);
     if (requiresExecutionChoice(command, invocation.argv)) {
-      await invocations.savePending({ sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode, command, spec: { argv: invocation.argv }, ...(executorAgentId === undefined ? {} : { executorAgentId }) });
+      await invocations.savePending({ sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode, command, spec: { argv: invocation.argv }, ...(command === 'rescue' ? { source: invocation.source ?? 'explicit' } : {}), ...(executorAgentId === undefined ? {} : { executorAgentId }) });
       return { type: 'needs-choice', choices: ['wait', 'background'] };
     }
   }
   const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
-  if (output?.type === 'needs-choice') await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv }, ...(executorAgentId === undefined ? {} : { executorAgentId }) });
+  if (output?.type === 'needs-choice') await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv }, ...(command === 'rescue' ? { source: invocation.source ?? 'explicit' } : {}), ...(executorAgentId === undefined ? {} : { executorAgentId }) });
   return output;
+}
+
+/** @param {any} executor @param {any} caller */
+function assertExecutorMatchesCaller(executor, caller) {
+  if (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The Rescue child is not bound to the active parent turn.', { category: 'authorization', remedy: 'Retry from the original parent thread with one newly started Rescue child.' });
+}
+
+/** @param {{task:string,options:{execution?:string,resume?:string,model?:string,effort?:string}}} envelope */
+function rescueArgvFromPreparation(envelope) {
+  const argv = ['rescue'];
+  if (envelope.options.execution === 'background') argv.push('--background');
+  if (envelope.options.resume) argv.push(`--${envelope.options.resume}`);
+  if (envelope.options.model) argv.push('--model', envelope.options.model);
+  if (envelope.options.effort) argv.push('--effort', envelope.options.effort);
+  argv.push(envelope.task);
+  return argv;
 }
 
 /** @param {any} context */
@@ -453,7 +493,7 @@ async function failQueuedJob(store, workspace, jobId, error) {
 }
 
 async function main() {
-  let output; const entry = process.argv[2]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = entry === 'invoke' || entry === 'invoke-choice' || entry === 'invoke-status'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
+  let output; const entry = process.argv[2]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = ['prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry); const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
   const boundStatusDirect = process.argv.length === 4 && entry === 'invoke-status' && process.argv[3] === 'rescue';
   const rescueDirect = direct && process.argv[3] === 'rescue';
   const signalController = !setup && !worker ? createForegroundSignalController({ process }) : null;
@@ -475,7 +515,7 @@ async function main() {
       if (typeof error.details.exitCode === 'number') process.exitCode = error.details.exitCode;
       return;
     }
-    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = entry !== 'setup' && entry !== 'role-status' && entry !== 'invoke' && entry !== 'invoke-choice' && entry !== 'invoke-status' && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1' && !boundStatusDirect) process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
+    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = !['setup', 'role-status', 'prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry) && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1' && !boundStatusDirect) process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
   }
   finally { signalController?.cleanup(); }
 }
