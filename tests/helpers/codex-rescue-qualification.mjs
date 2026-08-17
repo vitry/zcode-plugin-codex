@@ -9,6 +9,9 @@ const MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
 const MAX_EXEC_AGENT_MESSAGES = 256;
 const MAX_CHILD_POLLS = 64;
 const MAX_RESCUE_TASK_NAME_BYTES = 64;
+const MAX_RESCUE_TASK_BYTES = 64 * 1024;
+const MAX_RESCUE_MODEL_BYTES = 512;
+const RESCUE_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const RESCUE_TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
 const GENERIC_HIDDEN_SCHEMA_VERSIONS = new Set(['0.147.0']);
 const EXEC_ENVELOPE_KEYS = new Set(['cmd', 'workdir', 'yield_time_ms', 'max_output_tokens']);
@@ -120,6 +123,7 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   const childMeta = sessionMeta(child);
   const threadSpawn = childMeta.source?.subagent?.thread_spawn;
   validateParentChildRoute({ parentMeta, parentThreadId, start, childMeta, childThreadId, agentPath, codePrefix: '' });
+  validateForwarderChildEvents(child, options);
 
   let route;
   let agentType;
@@ -188,6 +192,7 @@ function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqua
   if (childFinalIndex <= execution.terminalEventIndex) mismatch('child-terminal-order', 'The child final message must follow its terminal companion output.');
 
   assertParentIsolation(parent, options, options.forbiddenParentText ?? []);
+  validateParentCallOwnership(parent, 'parent-call-id');
 
   const childReturnIndex = parent.findIndex((event) => event?.type === 'response_item' && event.payload?.type === 'agent_message'
     && event.payload.author === agentPath && event.payload.recipient === '/root'
@@ -529,7 +534,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (parentCandidates.length !== 1) mismatch('choice-parent-count', 'Choice evidence must contain exactly one parent rollout.');
   const parent = parentCandidates[0];
   const parentMeta = sessionMeta(parent);
-  validateChoiceParentCallOwnership(parent);
+  validateParentCallOwnership(parent, 'choice-parent-call-id');
   const spawns = namedCalls(parent, 'spawn_agent');
   if (spawns.length !== 1) mismatch('choice-spawn-count', 'Choice continuation must retain exactly one initial spawn.');
   const spawnArgs = parseObject(spawns[0].payload.arguments, 'choice-spawn-arguments');
@@ -573,6 +578,7 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   if (childSessionMeta.length !== 1 || child.indexOf(childSessionMeta[0]) !== 0) mismatch('choice-child-execution-boundary', 'The child rollout must begin with exactly one session_meta record.');
   const spawnMeta = meta?.source?.subagent?.thread_spawn;
   validateParentChildRoute({ parentMeta, parentThreadId: options.expectedParentThreadId, start: start.payload, childMeta: meta, childThreadId, agentPath, codePrefix: 'choice-' });
+  validateForwarderChildEvents(child, options);
   if (Object.hasOwn(spawnArgs, 'agent_type') ? spawnMeta.agent_role !== options.expectedAgentType : spawnMeta.agent_role !== null) {
     mismatch('choice-agent-role', 'The retained child Role metadata differs from the selected route.');
   }
@@ -717,6 +723,26 @@ export function qualifyCodexRescueChoiceEvidence(input, options) {
   return evidence;
 }
 
+function validateForwarderChildEvents(child, options) {
+  for (let index = 0; index < child.length; index += 1) {
+    const event = child[index];
+    if (event?.type === 'session_meta') {
+      if (index !== 0) mismatch('child-event-accounting', 'The forwarder child session metadata is out of order.');
+      continue;
+    }
+    if (event?.type === 'event_msg' && event.payload?.type === 'agent_message'
+      && event.payload.phase === 'final_answer') continue;
+    if (event?.type === 'response_item' && event.payload?.type === 'custom_tool_call') continue;
+    if (event?.type === 'response_item' && event.payload?.type === 'custom_tool_call_output') continue;
+    if (options.requireProgressRelay && event?.type === 'response_item' && event.payload?.type === 'function_call'
+      && event.payload.name === 'send_message') continue;
+    if (event?.type === 'response_item' && event.payload?.type === 'function_call'
+      && ['exec', 'exec_command'].includes(event.payload.name)) continue;
+    if (options.requireProgressRelay && event?.type === 'response_item' && event.payload?.type === 'function_call_output') continue;
+    mismatch('child-event-accounting', 'The forwarder child rollout contains an unaccounted event.');
+  }
+}
+
 function isChildHostEvent(event) {
   return event?.type === 'response_item' && ['custom_tool_call', 'custom_tool_call_output', 'function_call', 'function_call_output'].includes(event.payload?.type);
 }
@@ -766,20 +792,20 @@ function assertNoChoiceCallIdReuse(initialEvents, continuationEvents, options) {
   mismatch('choice-child-call-id-reused', 'The two logical executions reused a host call ID.');
 }
 
-function validateChoiceParentCallOwnership(parent) {
+function validateParentCallOwnership(parent, code) {
   const calls = parent.filter((event) => event?.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(event.payload?.type));
   const outputs = parent.filter((event) => event?.type === 'response_item' && ['function_call_output', 'custom_tool_call_output'].includes(event.payload?.type));
   const callIds = calls.map((event) => boundedString(event.payload.call_id));
   const outputIds = outputs.map((event) => boundedString(event.payload.call_id));
   if (callIds.some((id) => !id) || outputIds.some((id) => !id) || new Set(callIds).size !== callIds.length || new Set(outputIds).size !== outputIds.length) {
-    mismatch('choice-parent-call-id', 'Parent calls and outputs require nonempty bounded unique call IDs.');
+    mismatch(code, 'Parent calls and outputs require nonempty bounded unique call IDs.');
   }
   const outputOwningCalls = calls.filter((event) => !(event.payload.type === 'function_call' && event.payload.name === 'spawn_agent'));
   const linkedOutput = (call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id
     && output.payload.type === (call.payload.type === 'custom_tool_call' ? 'custom_tool_call_output' : 'function_call_output'));
   if (outputOwningCalls.length !== outputs.length || outputOwningCalls.some((call) => linkedOutput(call).length !== 1)
     || outputs.some((output) => !outputOwningCalls.some((call) => linkedOutput(call).includes(output)))) {
-    mismatch('choice-parent-call-id', 'Every parent host output must belong one-to-one to one non-spawn call.');
+    mismatch(code, 'Every parent host output must belong one-to-one to one non-spawn call.');
   }
 }
 
@@ -913,9 +939,20 @@ function assertParentPreparation(parent, spawnIndex, startIndex, options) {
   let payload;
   try { payload = JSON.parse(options.expectedPreparationPayload); } catch { mismatch('preparation-payload-contract', 'The trusted preparation envelope is not exact JSON.'); }
   assertExactKeys(payload, ['options', 'source', 'task', 'version'], 'preparation-payload-contract');
-  assertExactKeys(payload.options, Object.keys(payload.options), 'preparation-payload-contract');
-  if (payload.version !== 1 || !['explicit', 'proactive'].includes(payload.source) || typeof payload.task !== 'string' || !payload.task.trim()
-    || Object.keys(payload.options).some((key) => !['effort', 'execution', 'model', 'resume'].includes(key))) {
+  if (!payload.options || typeof payload.options !== 'object' || Array.isArray(payload.options)) {
+    mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
+  }
+  const optionKeys = Object.keys(payload.options);
+  const validModel = (value) => typeof value === 'string' && value.trim().length > 0
+    && Buffer.byteLength(value, 'utf8') <= MAX_RESCUE_MODEL_BYTES
+    && ![...value].some((character) => { const point = character.codePointAt(0); return point <= 31 || point >= 127 && point <= 159; });
+  if (payload.version !== 1 || !['explicit', 'proactive'].includes(payload.source)
+    || typeof payload.task !== 'string' || !payload.task.trim() || Buffer.byteLength(payload.task, 'utf8') > MAX_RESCUE_TASK_BYTES
+    || optionKeys.some((key) => !['effort', 'execution', 'model', 'resume'].includes(key) || payload.options[key] === null)
+    || payload.options.execution !== undefined && !['foreground', 'background'].includes(payload.options.execution)
+    || payload.options.resume !== undefined && !['fresh', 'resume'].includes(payload.options.resume)
+    || payload.options.effort !== undefined && !RESCUE_EFFORTS.has(payload.options.effort)
+    || payload.options.model !== undefined && !validModel(payload.options.model)) {
     mismatch('preparation-payload-contract', 'The trusted preparation envelope differs from the bounded Rescue contract.');
   }
   assertParentPreparationTaskExclusivity(parent, write.event, payload.task, calls, outputs);
@@ -949,7 +986,17 @@ function assertParentPreparationTaskExclusivity(parent, writeEvent, task, calls,
   }
   for (const { event } of outputs) {
     const linkedCall = calls.find((call) => call.event.payload.call_id === event.payload.call_id);
-    if (linkedCall?.host.legacy) continue;
+    if (linkedCall?.host.legacy) {
+      for (const item of event.payload.output ?? []) {
+        if (typeof item?.text !== 'string') continue;
+        let decoded;
+        try { decoded = JSON.parse(item.text.trim()); } catch { continue; }
+        if (stringLeafContains(decoded, task)) {
+          mismatch('preparation-task-exclusivity', 'The private Rescue task escaped the single authorized preparation write.');
+        }
+      }
+      continue;
+    }
     let result;
     try { result = parseCapturedHostResult(event.payload.output); } catch { continue; }
     let decodedOutput;
@@ -1000,7 +1047,7 @@ function stringLeafContains(value, task) {
 function assertExecEnvelope(envelope, expectedCommand, expectedWorkspace, code, extensions = {}) {
   if (!envelope || typeof envelope.get !== 'function' || typeof envelope.keys !== 'function') mismatch(code, 'The exec envelope is absent.');
   const allowed = new Set(EXEC_ENVELOPE_KEYS); if (extensions.tty) allowed.add('tty');
-  for (const key of envelope.keys()) if (!allowed.has(key)) mismatch(code, `The exec envelope contains forbidden key ${key}.`);
+  for (const key of envelope.keys()) if (!allowed.has(key)) mismatch(code, 'The exec envelope contains a forbidden field.');
   if (envelope.get('cmd') !== expectedCommand || envelope.get('workdir') !== expectedWorkspace) {
     mismatch(code === 'child-exec-envelope-mismatch' && envelope.get('cmd') !== expectedCommand ? 'child-command-mismatch' : code, 'The exec command or canonical workspace differs from the contract.');
   }

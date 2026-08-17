@@ -342,6 +342,20 @@ test('child host evidence requires exact exec tool names and one-to-one unique c
   }
 });
 
+test('forwarder child rollout rejects every unaccounted response and non-allowlisted function call', () => {
+  const cases = [
+    (input) => input.rollouts[1].splice(-1, 0, { type: 'response_item', payload: { type: 'reasoning', summary: 'unaccounted' } }),
+    (input) => input.rollouts[1].splice(-1, 0, { type: 'response_item', payload: { type: 'function_call', name: 'web_search', call_id: 'unknown-child-call', arguments: '{}' } }),
+  ];
+  for (const mutate of cases) {
+    const input = fixture(); mutate(input);
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-event-accounting',
+    );
+  }
+});
+
 test('foreground qualification fails closed unless child transcript contains exact semantic start and terminal progress', () => {
   for (const missing of ['start', 'terminal']) {
     const input = fixture();
@@ -743,6 +757,54 @@ test('requires exact Role readiness and one private same-handle preparation befo
   }
 });
 
+test('foreground and background parent calls own globally unique one-to-one call IDs', () => {
+  for (const callId of ['preflight-1', 'prepare-1', 'prepare-write-1']) {
+    for (const background of [false, true]) {
+      const input = background ? backgroundFixture() : fixture();
+      spawnEvent(input).payload.call_id = callId;
+      startEvent(input).payload.event_id = callId;
+      const qualify = background
+        ? () => qualifyCodexRescueBackgroundEvidence(input, backgroundOptions())
+        : () => qualifyCodexRescueEvidence(input, options());
+      assert.throws(
+        qualify,
+        (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-call-id',
+        `${background ? 'background' : 'foreground'} spawn reused ${callId}`,
+      );
+    }
+  }
+});
+
+test('preparation qualification independently validates task and every bounded option value', () => {
+  const invalidEnvelopes = [
+    { ...expectedPreparationEnvelope, task: ' ' },
+    { ...expectedPreparationEnvelope, task: 't'.repeat(64 * 1024 + 1) },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, unknown: true } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, execution: null } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, execution: 'detached' } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, resume: 'maybe' } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, effort: 'extreme' } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, model: '' } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, model: 'm'.repeat(513) } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, model: 'provider/model\nsecret' } },
+  ];
+  for (const envelope of invalidEnvelopes) {
+    const preparationPayload = JSON.stringify(envelope);
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-payload-contract'
+        && (envelope.task.trim().length === 0 || !error.message.includes(envelope.task)),
+    );
+  }
+  const valid = { ...expectedPreparationEnvelope, options: { execution: 'background', resume: 'resume', effort: 'xhigh', model: 'provider/model' } };
+  const preparationPayload = JSON.stringify(valid); const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  assert.equal(qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })).publicOutput, expectedPublicOutput);
+});
+
 test('confines the exact preparation task to the one same-handle parent write chars field', () => {
   const task = expectedPreparationEnvelope.task;
   const cases = [
@@ -787,6 +849,22 @@ test('detects escaped private task text in parent commentary and decoded tool en
         assert.doesNotMatch(error.message, new RegExp(task.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
         return error instanceof CodexRescueEvidenceMismatchError && error.code === 'preparation-task-exclusivity';
       },
+    );
+  }
+});
+
+test('detects escaped private task text inside unrelated legacy host output', () => {
+  for (const task of ['repair the "quoted" route', 'repair the \\backslash route', 'repair the\nmultiline route']) {
+    const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structuredExec('true', 'escaped-legacy-output'),
+      toolOutput('escaped-legacy-output', JSON.stringify({ diagnostic: task })));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
     );
   }
 });
@@ -858,6 +936,13 @@ test('requires exact spawn keys and safe exec envelopes in the canonical workspa
   }
   const bounded = fixture(); childExec(bounded).payload.input = structuredExec(expectedCommand, 'exec-1', { yield_time_ms: 10_000, max_output_tokens: 100 }).payload.input;
   assert.equal(qualifyCodexRescueEvidence(bounded, options()).publicOutput, expectedPublicOutput);
+  const privateKey = 'private_task_key'; const keyed = fixture();
+  childExec(keyed).payload.input = structuredExec(expectedCommand, 'exec-1', { [privateKey]: true }).payload.input;
+  assert.throws(
+    () => qualifyCodexRescueEvidence(keyed, options()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'child-exec-envelope-mismatch' && !error.message.includes(privateKey),
+  );
 });
 
 test('requires the exact fixed spawn message for named and generic routes', () => {

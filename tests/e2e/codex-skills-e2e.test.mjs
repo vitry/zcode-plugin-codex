@@ -497,7 +497,7 @@ test('installed named and generic foreground and choice policies independently b
   }
 });
 
-test('installed named and generic routes independently execute captured Codex 0.147 foreground rollouts', async () => {
+test('synthetic captured qualification fixtures cover named and generic Codex 0.147 foreground rollouts', async () => {
   const routes = await installedCapturedRescueRoutes();
   for (const route of routes) {
     const evidence = qualifyInstalledCapturedForeground(route);
@@ -515,7 +515,7 @@ test('installed named and generic routes independently execute captured Codex 0.
   }
 });
 
-test('captured proactive clear fresh and resume routes remain one-shot without choice or follow-up', async () => {
+test('synthetic captured qualification fixtures keep proactive clear fresh and resume routes one-shot', async () => {
   for (const resume of ['fresh', 'resume']) {
     const routes = await installedCapturedRescueRoutes({ source: 'proactive', options: { execution: 'foreground', resume } });
     for (const route of routes) {
@@ -534,7 +534,7 @@ test('captured proactive clear fresh and resume routes remain one-shot without c
   }
 });
 
-test('captured installed named and generic background routes satisfy full qualification by default', async () => {
+test('synthetic captured qualification fixtures cover named and generic background routes', async () => {
   const routes = await installedCapturedRescueRoutes({ options: { execution: 'background', resume: 'fresh' } });
   for (const route of routes) {
     const background = installedCapturedBackgroundRoute(route);
@@ -561,7 +561,7 @@ test('captured installed route wiring mutations fail only the mutated foreground
   }
 });
 
-test('installed named and generic routes independently execute both captured choice segments', async () => {
+test('synthetic captured qualification fixtures cover both named and generic choice segments', async () => {
   const routes = await installedCapturedRescueRoutes();
   for (const route of routes) {
     for (const requested of ['resume', 'fresh']) {
