@@ -222,7 +222,8 @@ test('routing precedence materializes only authoritative fresh or resume choices
   assert.match(source, /explicit[\s\S]+candidate[\s\S]+no choice[\s\S]+same-child `needs-choice`[\s\S]+ask exactly once/i);
   assert.match(source, /proactive[\s\S]+clear continuation[\s\S]+prepare[\s\S]+`resume`/i);
   assert.match(source, /clear independent[\s\S]+prepare[\s\S]+`fresh`/i);
-  assert.match(source, /genuinely ambiguous[\s\S]+ask exactly once[\s\S]+before[\s\S]+prepare[\s\S]+spawn/i);
+  assert.match(source, /proactive genuinely ambiguous[\s\S]+ask exactly once[\s\S]+before[\s\S]+prepare[\s\S]+spawn/i);
+  assert.doesNotMatch(source, /For a genuinely ambiguous route/i);
   assert.match(source, /explicit[\s\S]+no route[\s\S]+omit[^\n]+`resume`/i);
   assert.match(source, /proactive[\s\S]+must include[\s\S]+(?:`fresh` or `resume`|`fresh` or `resume`)/i);
 });

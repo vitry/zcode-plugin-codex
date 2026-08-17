@@ -33,7 +33,7 @@ Apply this precedence before preparation:
 - An explicit `--fresh` or `--resume` is authoritative.
 - For an explicit request with a continuation candidate but no choice, omit `resume` during preparation. If the child later returns the same-child `needs-choice` response, ask exactly once using the continuation protocol below.
 - For a proactive clear continuation, materialize `resume` as `resume` in the prepare envelope. For a proactive clear independent task, materialize `resume` as `fresh` in the prepare envelope. A proactive clear route must include either `fresh` or `resume`.
-- For a genuinely ambiguous route, ask exactly once before running prepare or spawn, then materialize the answer. Do not ask when the complete request semantics make continuation or independence clear.
+- For a proactive genuinely ambiguous route, ask exactly once before running prepare or spawn, then materialize the answer. This pre-prepare ambiguity rule never applies to an explicit request: an explicit continuation candidate with no choice still proceeds through prepare and spawn, then uses the same-child `needs-choice` response and asks exactly once. Do not ask when the complete request semantics make continuation or independence clear.
 - An explicit request with no route and no continuation candidate may omit `resume`; do not synthesize a choice.
 
 ## Parent preflight and private preparation

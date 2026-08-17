@@ -590,8 +590,8 @@ test('installed named and generic Rescue forwarders define terminal yielded-exec
     /continuation calls only observe its original running handle/i,
   ];
   for (const forwarder of [role, generic]) for (const contract of semantics) assert.match(forwarder, contract);
-  assert.equal((role.match(/invoke rescue/g) ?? []).length, 1);
-  assert.equal((generic.match(/invoke rescue/g) ?? []).length, 1);
+  assert.equal((role.match(/invoke-prepared rescue/g) ?? []).length, 1);
+  assert.equal((generic.match(/invoke-prepared rescue/g) ?? []).length, 1);
 });
 
 test('invoke-choice executes with the originating permission snapshot in both directions', async (t) => {
