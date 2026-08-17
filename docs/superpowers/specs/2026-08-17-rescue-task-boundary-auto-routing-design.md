@@ -1,6 +1,6 @@
 # Rescue Task Boundary and Automatic Routing Design
 
-Status: approved in design review; awaiting written-spec review
+Status: approved for implementation on 2026-08-17
 
 ## Problem
 
