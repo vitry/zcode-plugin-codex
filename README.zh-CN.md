@@ -46,7 +46,7 @@ ZCode Desktop 与 ZCode CLI 分别保存 model provider 设置。运行 `$zcode:
 
 Rescue 有两种等价入口：显式 `$zcode:rescue` 是请求中字面且适用的入口；Root 也可以根据完整业务目标主动选择 Rescue。这就是自动路由，不提供 `--auto` 选项。显式 `--fresh` 或 `--resume` 始终权威；明确的主动续做会在 child 启动前物化为 resume，明确的独立工作会物化为 fresh。
 
-Root 通过私有 stdin 把归一化目标精确发送一次给 `prepare rescue`，由其提交绑定精确 session、turn、workspace 和 executor 的 prepared state；返回边界只有不含 task 的 prepared 确认。随后具名 Role 或 generic child 都只运行常量 `invoke-prepared rescue` forwarder，不接收 task、options、capability 或授权材料。若已经有活动的 `rescueChildId`，Root 会重新加入并等待这个精确的 Rescue child，不会重复 preflight、prepare、spawn 或 invoke。
+Root 在 raw-capable TTY 上启动 `prepare rescue`。companion 先启用 raw mode，再输出精确且不含 task 的 readiness；readiness 是非终态。只有看到该行之后，Root 才通过私有 stdin 发送一行 JSON，并以 LF 结尾；不发送 EOF 或 U+0004。companion 消费这一帧、恢复 raw mode，并提交绑定精确 session、turn、workspace 和 executor 的 prepared state。非 TTY 或 raw mode 失败会在 task 交付前停止，且不会 spawn child。tool output 绝不包含或回显 payload；返回边界只有不含 task 的 readiness 和最终 prepared 确认。随后具名 Role 或 generic child 都只运行常量 `invoke-prepared rescue` forwarder，不接收 task、options、capability 或授权材料。若已经有活动的 `rescueChildId`，Root 会重新加入并等待这个精确的 Rescue child，不会重复 preflight、prepare、spawn 或 invoke。
 
 前台 Rescue 只在一个原生子线程中运行常量 forwarder。host 支持 `agent_type` 时，Codex 选择具名 `zcode-rescue` Role。generic child 只是 host-only 兼容回退：仅当当前 spawn schema 缺少 `agent_type`，或能证明该字段在任何 child 启动前已被拒绝时才允许；Role 缺失、被 shadow、漂移或属于外部配置时绝不回退。父线程只运行只读 Role preflight 和私有 prepare rollout、显示原生生命周期并返回 child 的最终公开 stdout；它不会 inline 执行 Rescue，也不会把 child stderr、工具输出、原始 conversation frame 或中间进度复制到父线程。
 

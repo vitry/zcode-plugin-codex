@@ -620,8 +620,10 @@ test('installed named and generic Rescue forwarders define terminal yielded-exec
     /poll only that same handle with the host continuation tool until it reports an exit code/i,
     /Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal/i,
     /needs-choice response with exit code 3 is terminal for the current child turn/i,
-    /exactly one `exec_command` companion process/i,
-    /continuation calls only observe its original running handle/i,
+    /each exact assignment and child turn[\s\S]+at most one mapped foreground `exec_command`/i,
+    /same-turn continuation calls only observe[^.]+original running handle/i,
+    /never start concurrent or retry foreground executions for the same assignment/i,
+    /initial needs-choice terminal[\s\S]+next exact parent continuation assignment[\s\S]+one new exact `invoke-choice` foreground handle/i,
   ];
   for (const forwarder of [role, generic]) for (const contract of semantics) assert.match(forwarder, contract);
   assert.equal((role.match(/invoke-prepared rescue/g) ?? []).length, 1);

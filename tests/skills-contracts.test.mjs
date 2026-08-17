@@ -206,8 +206,13 @@ test('active Rescue child rejoin is the first and exclusive Root action', () => 
 test('Root prepares exactly one private Rescue envelope before exactly one spawn', () => {
   const source = skill('rescue');
   assert.match(source, /node "<plugin-root>\/scripts\/zcode-companion\.mjs" prepare rescue/);
-  assert.match(source, /PTY[\s\S]+same (?:process |execution )?handle/i);
-  assert.match(source, /write_stdin[\s\S]+exactly one JSON line[\s\S]+U\+0004[\s\S]+EOF/i);
+  assert.match(source, /raw-capable TTY[\s\S]+setRawMode\(true\)/i);
+  assert.match(source, /\{"type":"preparation-input-ready","command":"rescue"\}/);
+  assert.match(source, /readiness[\s\S]+nonterminal[\s\S]+only after[\s\S]+write_stdin[\s\S]+exactly one JSON line[\s\S]+LF/i);
+  assert.match(source, /(?:do not|never)[^\n]+U\+0004[^\n]+EOF/i);
+  assert.match(source, /restore raw mode/i);
+  assert.match(source, /non-TTY[\s\S]+raw mode failure[\s\S]+stop[\s\S]+(?:must not|do not|never) spawn/i);
+  assert.match(source, /tool output[\s\S]+(?:must not|never)[^\n]+payload/i);
   assert.match(source, /\{\s*type:\s*['"]prepared['"],\s*command:\s*['"]rescue['"]\s*\}/);
   assert.match(source, /zero exit/i);
   assert.match(source, /(?:signal|failed prepare)[\s\S]+stop[\s\S]+(?:must not|do not|never) spawn/i);
@@ -297,9 +302,10 @@ test('named and generic Rescue forwarders keep yielded executions attached throu
     assert.match(forwarder, /poll only that same handle with the host continuation tool until it reports an exit code/i);
     assert.match(forwarder, /Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal/i);
     assert.match(forwarder, /needs-choice response with exit code 3 is terminal for the current child turn/i);
-    assert.match(forwarder, /exactly one `exec_command` companion process/i);
-    assert.match(forwarder, /continuation calls only observe its original running handle/i);
-    assert.match(forwarder, /(?:do not|never)[^.]*second `exec_command`/i);
+    assert.match(forwarder, /each exact assignment and child turn[\s\S]+at most one mapped foreground `exec_command`/i);
+    assert.match(forwarder, /same-turn continuation calls only observe[^.]+original running handle/i);
+    assert.match(forwarder, /never start concurrent or retry foreground executions for the same assignment/i);
+    assert.match(forwarder, /initial needs-choice terminal[\s\S]+next exact parent continuation assignment[\s\S]+one new exact `invoke-choice` foreground handle/i);
     assert.match(forwarder, /(?:do not|never)[^.]*retry/i);
     assert.match(forwarder, /(?:do not|never)[^.]*cancel/i);
     assert.match(forwarder, /(?:do not|never)[^.]*choose/i);
