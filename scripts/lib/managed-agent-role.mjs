@@ -37,7 +37,7 @@ export function renderManagedRescueRole({ template, pluginRoot }) {
     throw roleError('MANAGED_ROLE_ROOT_INVALID', 'The managed Role plugin root must be an absolute control-free path.');
   }
   if (typeof template !== 'string' || !template.trim()
-    || (template.match(/\{\{PLUGIN_ROOT\}\}/g) ?? []).length !== 3
+    || (template.match(/\{\{PLUGIN_ROOT\}\}/g) ?? []).length !== 4
     || /\{\{(?!PLUGIN_ROOT\}\})[^}]+\}\}/.test(template)) {
     throw roleError('MANAGED_ROLE_TEMPLATE_INVALID', 'The managed Role template contains unsupported placeholders.');
   }

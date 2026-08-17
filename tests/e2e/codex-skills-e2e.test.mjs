@@ -11,6 +11,7 @@ import test from 'node:test';
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
+import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import {
@@ -22,6 +23,18 @@ import {
   qualifyCodexRescueChoiceEvidence,
   qualifyCodexRescueEvidence,
 } from '../helpers/codex-rescue-qualification.mjs';
+import {
+  assertRescueRouteContract,
+  expectedGenericRescueMessage,
+  expectedNamedRescueMessage,
+} from '../helpers/rescue-skill-contract.mjs';
+import {
+  assertInstalledForwarderLifecycleContract,
+  extractInstalledRoleInstructions,
+  installedCanonicalContradictionMutations,
+  installedCommandPathMutations,
+  installedLifecycleContractMutations,
+} from '../helpers/installed-rescue-lifecycle-contract.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
@@ -124,10 +137,22 @@ function assertInstalledRescueQualificationSource(source) {
   assertInstalledSourceBranch(foreground, 'foreground', false);
   assertInstalledSourceBranch(choice, 'choice', true);
   assertInstalledSourceBranch(background, 'background', false);
+  const choiceLinkage = exactSourceRegion(installedQualification,
+    '  function assertInstalledRescueChoiceLinkage(', '\n\n  if (process.env.ZCODE_CODEX_RESCUE_E2E', 'choice yielded linkage');
+  assertSourceOrder(choiceLinkage, [
+    'installedChoiceYieldFacts(rollouts, evidence.childThreadId, commands);',
+    'assert.deepEqual(yielded, {',
+    'initial: { execCommandCount: 1, pollCount: yielded.initial.pollCount, sameHandleChecked: true, terminalExitCode: 3 }',
+    'continuation: { execCommandCount: 1, pollCount: yielded.continuation.pollCount, sameHandleChecked: true, terminalExitCode: 0 }',
+  ], 'choice yielded linkage');
+  assert.match(installedQualification, /const pendingSegment = await runHeldChoiceSegment\(`\$\{choice\}-initial`, expectedCommand,/u,
+    'choice initial segment must use the held yielded-process gate');
+  assert.match(installedQualification, /const answerSegment = await runHeldChoiceSegment\(`\$\{choice\}-continuation`, choiceCommand,/u,
+    'choice continuation segment must use the held yielded-process gate');
   assertSourceOrder(installedQualification, [
     'const pendingFrames =',
     'const pendingIdentity = captureInstalledRescueChoiceIdentity(pendingRollouts, parentIds[0]);',
-    'const answer = await codex([',
+    'const answerSegment = await runHeldChoiceSegment(',
     'qualifyCodexRescueChoiceEvidence(',
   ], 'choice pending snapshot');
 }
@@ -148,8 +173,16 @@ function assertInstalledSourceBranch(region, label, requireChoiceLinkage) {
   assertSourceOrder(success, [
     `qualifyCodexRescue${label === 'foreground' ? '' : label === 'choice' ? 'Choice' : 'Background'}Evidence(`,
     'assertInstalledRescueDisplay(evidence);',
-    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity);'] : []),
+    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });'] : []),
   ], `${label} display${requireChoiceLinkage ? ' and linkage' : ''}`);
+  if (label !== 'background') {
+    const callEnd = success.indexOf(label === 'choice' ? '\n      );' : '\n    );');
+    assert.ok(callEnd > 0, `${label} qualification call must have an exact bounded region`);
+    const qualifierCall = success.slice(0, callEnd);
+    assert.match(qualifierCall, /requireProgressRelay:\s*true/u, `${label} qualification must require a fixed parent relay`);
+    assert.match(qualifierCall, /expectedStatusCommand/u, `${label} qualification must validate any optional bound status sidecar`);
+    assert.match(success, /progressRelayChecked/u, `${label} qualification must assert the fixed parent relay result`);
+  }
   const guardMarker = label === 'choice'
     ? "if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {"
     : "if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {";
@@ -162,7 +195,7 @@ function assertInstalledSourceBranch(region, label, requireChoiceLinkage) {
   assertSourceOrder(guarded, [
     guardMarker,
     'assertInstalledRescueDisplay(error.evidence);',
-    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);'] : []),
+    ...(requireChoiceLinkage ? ['assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });'] : []),
     'markUnqualified(',
     'return;',
   ], `${label} encrypted guard display${requireChoiceLinkage ? ' and linkage' : ''}`);
@@ -202,6 +235,35 @@ test('foreground Rescue gate lifecycle consumes Codex failure and releases the e
     waitForProcessExit: async (identity) => { events.push(`wait-pid:${identity.pid}`); }, holdMs: 0,
   }), /Codex failed/);
   assert.deepEqual(events, ['release:/exact/gate', 'terminate-pid:59123', 'wait-pid:59123', 'terminate-codex']);
+});
+
+test('foreground Rescue waits for relay observation before releasing the exact completion gate', async () => {
+  const events = []; let alive = true; let resolveResult;
+  const result = new Promise((resolvePromise) => { resolveResult = resolvePromise; });
+  const foreground = await runHeldForegroundRescue({
+    gatePath: '/exact/gate', processPath: '/exact/process.json', processNonce: TEST_PROCESS_NONCE,
+    launch: () => ({ result }),
+    waitForGate: async () => { events.push('completion-held'); },
+    waitForObservation: async () => { events.push('relay-observed'); },
+    readProcessMarker: async () => ({ pid: 59623, ppid: 72, nonce: TEST_PROCESS_NONCE }),
+    inspectProcessIdentity: async () => alive ? ({ pid: 59623, ppid: 72, startIdentity: 'start-a', processNonce: TEST_PROCESS_NONCE }) : undefined,
+    releaseGate: async () => { events.push('release'); alive = false; resolveResult({ code: 0, stdout: '', stderr: '' }); },
+    waitForProcessExit: async () => {},
+    sleep: async () => { events.push('yield-proved'); }, holdMs: 0,
+  });
+  assert.equal(foreground.endedBeforeGate, false);
+  assert.deepEqual(events, ['completion-held', 'relay-observed', 'yield-proved', 'release']);
+});
+
+test('installed relay gate accepts only a strict fixed record paired with its root message', () => {
+  const relay = '[zcode-relay] {"version":1,"sequence":1,"phase":"starting","code":"started","observedAt":"2026-08-17T00:00:00.000Z"}\n';
+  const result = (output) => ({ payload: { type: 'custom_tool_call_output', output: JSON.stringify({ output }) } });
+  const send = (target, message) => ({ payload: { type: 'function_call', name: 'send_message', arguments: JSON.stringify({ target, message }) } });
+  assert.equal(installedRelayObserved([[result(`[zcode] PRIVATE detail\n${relay}`), send('/root', 'ZCode Rescue started.')]]), true);
+  assert.equal(installedRelayObserved([[result('[zcode] PRIVATE detail\n'), send('/root', 'ZCode Rescue started.')]]), false);
+  assert.equal(installedRelayObserved([[result(relay), send('/root/sibling', 'ZCode Rescue started.')]]), false);
+  assert.equal(installedRelayObserved([[result(relay), send('/root', '[zcode] PRIVATE detail')]]), false);
+  assert.equal(installedRelayObserved([[result(relay.replace('"sequence":1', '"sequence":0')), send('/root', 'ZCode Rescue started.')]]), false);
 });
 
 test('foreground Rescue gate lifecycle cleans an exact fake child that does not exit naturally', async () => {
@@ -390,7 +452,7 @@ test('installed Rescue source contract rejects moved, unreachable, and missing b
   const movedAfterReturn = source.replace(encryptedDisplay, '').replace(foregroundMark, `${foregroundMark}\n${encryptedDisplay}`);
   assert.throws(() => assertInstalledRescueQualificationSource(movedAfterReturn), /foreground encrypted guard display/u);
 
-  const missingChoiceLinkage = source.replace('        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);\n', '');
+  const missingChoiceLinkage = source.replace('        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });\n', '');
   assert.throws(() => assertInstalledRescueQualificationSource(missingChoiceLinkage), /choice encrypted guard display and linkage/u);
 
   const foregroundCatch = '  } catch (error) {\n';
@@ -398,11 +460,113 @@ test('installed Rescue source contract rejects moved, unreachable, and missing b
   const movedDisplayAboveGuard = source.replace(encryptedDisplay, '').replace(foregroundCatch + foregroundPredicate, foregroundCatch + encryptedDisplay + foregroundPredicate);
   assert.throws(() => assertInstalledRescueQualificationSource(movedDisplayAboveGuard), /foreground encrypted guard/u);
 
-  const choiceEncryptedChecks = '        assertInstalledRescueDisplay(error.evidence);\n        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);\n';
+  const choiceEncryptedChecks = '        assertInstalledRescueDisplay(error.evidence);\n        assert.equal(error.evidence.progressRelayChecked, true);\n        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });\n';
   const choiceCatch = '    } catch (error) {\n';
   const choicePredicate = "      if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {\n";
   const movedChoiceChecksAboveGuard = source.replace(choiceEncryptedChecks, '').replace(choiceCatch + choicePredicate, choiceCatch + choiceEncryptedChecks + choicePredicate);
   assert.throws(() => assertInstalledRescueQualificationSource(movedChoiceChecksAboveGuard), /choice encrypted guard/u);
+
+  const missingForegroundRelayRequirement = source.replace('        requireProgressRelay: true,\n', '');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingForegroundRelayRequirement), /foreground qualification must require a fixed parent relay/u);
+  const missingChoiceStatusContract = source.replace('          expectedStatusCommand,\n', '');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingChoiceStatusContract), /choice qualification must validate any optional bound status sidecar/u);
+  const missingChoiceYieldedEvidence = source.replace('    const yielded = installedChoiceYieldFacts(rollouts, evidence.childThreadId, commands);\n', '');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingChoiceYieldedEvidence), /choice yielded linkage/u);
+  const missingInitialHeldGate = source.replace('\n    const pendingSegment = await runHeldChoiceSegment(', '\n    const pendingSegment = await unheldChoiceSegment(');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingInitialHeldGate), /choice initial segment must use the held yielded-process gate/u);
+  const missingContinuationHeldGate = source.replace('\n    const answerSegment = await runHeldChoiceSegment(', '\n    const answerSegment = await unheldChoiceSegment(');
+  assert.throws(() => assertInstalledRescueQualificationSource(missingContinuationHeldGate), /choice continuation segment must use the held yielded-process gate/u);
+});
+
+test('installed named and generic foreground and choice policies independently bind relay status and terminal order', async () => {
+  const role = extractInstalledRoleInstructions(await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
+  const skill = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const generic = assertRescueRouteContract(skill).genericMessage.text;
+  for (const [route, source] of [['named', role], ['generic', generic]]) {
+    const expectedRoot = route === 'named' ? '{{PLUGIN_ROOT}}' : '<canonical-plugin-root>';
+    assertInstalledForwarderLifecycleContract(source, route, { expectedRoot });
+    for (const [mutation, mutated] of installedLifecycleContractMutations(source, route, expectedRoot)) {
+      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedRoot }), /unique operative lifecycle region/u, `${route}: ${mutation}`);
+    }
+    for (const [mutation, mutated] of installedCanonicalContradictionMutations(source, route)) {
+      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedRoot }), /exact canonical operative route/u, `${route}: ${mutation}`);
+    }
+    for (const [mutation, mutated] of installedCommandPathMutations(source)) {
+      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedRoot }), /trusted expected root and exact argv/u, `${route}: ${mutation}`);
+    }
+  }
+});
+
+test('installed named and generic routes independently execute captured Codex 0.147 foreground rollouts', async () => {
+  const routes = await installedCapturedRescueRoutes();
+  for (const route of routes) {
+    const evidence = qualifyInstalledCapturedForeground(route);
+    assert.equal(evidence.route, route.expectedEvidenceRoute);
+    assert.equal(evidence.progressRelayChecked, true);
+    assert.equal(evidence.statusSidecarChecked, true);
+    assert.deepEqual(evidence.yieldedExecution, {
+      execCommandCount: 1,
+      pollCount: 2,
+      sameHandleChecked: true,
+      terminalExitCode: 0,
+    });
+    assert.equal(route.fixture.rollouts.length, 2, `${route.name} must retain exactly one parent and one child rollout`);
+    assert.equal(installedCapturedRunningHandles(route.fixture).size, 0, `${route.name} must leave no nonterminal handle orphaned`);
+  }
+});
+
+test('captured installed route wiring mutations fail only the mutated foreground route', async () => {
+  const routes = await installedCapturedRescueRoutes();
+  for (const route of routes) {
+    const other = routes.find((candidate) => candidate !== route);
+    assert.equal(qualifyInstalledCapturedForeground(other).route, other.expectedEvidenceRoute, `${other.name} control route must remain qualified`);
+    const mutated = { ...route, fixture: structuredClone(route.fixture) };
+    const spawn = mutated.fixture.rollouts[0].find((event) => event?.payload?.name === 'spawn_agent');
+    const args = JSON.parse(spawn.payload.arguments);
+    if (route.name === 'named') delete args.agent_type;
+    else args.agent_type = 'zcode-rescue';
+    spawn.payload.arguments = JSON.stringify(args);
+    assert.throws(() => qualifyInstalledCapturedForeground(mutated), CodexRescueEvidenceMismatchError, `${route.name} route wiring mutation`);
+  }
+});
+
+test('installed named and generic routes independently execute both captured choice segments', async () => {
+  const routes = await installedCapturedRescueRoutes();
+  for (const route of routes) {
+    for (const requested of ['resume', 'fresh']) {
+      const choice = installedCapturedChoiceRoute(route, requested);
+      const evidence = qualifyInstalledCapturedChoice(choice);
+      assert.equal(evidence.progressRelayChecked, true);
+      assert.equal(evidence.statusSidecarChecked, true);
+      assert.deepEqual(evidence.executions, { initial: { execCommandCount: 1 }, continuation: { execCommandCount: 1 } });
+      assert.deepEqual(installedChoiceYieldFacts(choice.fixture.rollouts, choice.childThreadId, choice.commands), {
+        initial: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 3 },
+        continuation: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 0 },
+      });
+      assert.equal(installedCapturedRunningHandles(choice.fixture).size, 0, `${route.name} ${requested} choice must leave no nonterminal handle orphaned`);
+    }
+  }
+});
+
+test('installed choice qualification requires yielded same-handle terminal evidence in both logical segments', () => {
+  const fixture = installedChoiceYieldFixture();
+  assert.deepEqual(installedChoiceYieldFacts(fixture.rollouts, fixture.childThreadId, fixture.commands), {
+    initial: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 3 },
+    continuation: { execCommandCount: 1, pollCount: 2, sameHandleChecked: true, terminalExitCode: 0 },
+  });
+  for (const [label, mutate] of [
+    ['initial missing yield', (input) => {
+      input.rollouts[0].find((event) => event?.payload?.call_id === 'initial-exec' && event.payload.type === 'custom_tool_call_output').payload.output = installedHostOutput({ output: 'needs choice\n', exit_code: 3 });
+      input.rollouts[0] = input.rollouts[0].filter((event) => !['initial-poll', 'initial-terminal'].includes(event?.payload?.call_id));
+    }],
+    ['initial handle drift', (input) => { input.rollouts[0].find((event) => event?.payload?.call_id === 'initial-terminal').payload.input = installedPollInput(999); }],
+    ['continuation missing terminal exit', (input) => { input.rollouts[0].find((event) => event?.payload?.call_id === 'continuation-terminal' && event.payload.type === 'custom_tool_call_output').payload.output = installedHostOutput({ output: '', session_id: 61 }); }],
+    ['status command substitution', (input) => { input.rollouts[0].find((event) => event?.payload?.call_id === 'initial-status').payload.input = installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" invoke-status review'); }],
+    ['status arguments', (input) => { input.rollouts[0].find((event) => event?.payload?.call_id === 'initial-status').payload.input = installedExecInput(`${input.commands.status} --detail`); }],
+  ]) {
+    const input = installedChoiceYieldFixture(); mutate(input);
+    assert.throws(() => installedChoiceYieldFacts(input.rollouts, input.childThreadId, input.commands), /yielded same-handle terminal evidence/u, label);
+  }
 });
 
 test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode', { skip: optInSkip, timeout: 240_000 }, async (t) => {
@@ -433,10 +597,37 @@ test('installed marketplace skill crosses a real ephemeral Codex turn into ZCode
 });
 
 test('installed Rescue uses one isolated native child for initial and choice continuations', { skip: rescueOptInSkip, timeout: 1_200_000 }, async (t) => {
-  function assertInstalledRescueChoiceLinkage(rollouts, parentThreadId, evidence, pendingIdentity) {
-    assert.equal(evidence.executions.initial.execCommandCount, 1, 'choice initial turn must execute exactly once');
-    assert.equal(evidence.executions.continuation.execCommandCount, 1, 'choice continuation must execute exactly once');
+  function assertInstalledRescueChoiceLinkage(rollouts, parentThreadId, evidence, pendingIdentity, commands) {
+    const yielded = installedChoiceYieldFacts(rollouts, evidence.childThreadId, commands);
+    assert.equal(evidence.executions.initial.execCommandCount, 1);
+    assert.equal(evidence.executions.continuation.execCommandCount, 1);
+    assert.deepEqual(yielded, {
+      initial: { execCommandCount: 1, pollCount: yielded.initial.pollCount, sameHandleChecked: true, terminalExitCode: 3 },
+      continuation: { execCommandCount: 1, pollCount: yielded.continuation.pollCount, sameHandleChecked: true, terminalExitCode: 0 },
+    });
+    assert.ok(yielded.initial.pollCount >= 1, 'choice initial turn must survive an initial yield and poll its original handle');
+    assert.ok(yielded.continuation.pollCount >= 1, 'choice continuation must survive an initial yield and poll its original handle');
     assertInstalledRescueChoiceIdentityLinkage(rollouts, parentThreadId, evidence, pendingIdentity);
+  }
+
+  async function runHeldChoiceSegment(label, command, launch) {
+    const gatePath = join(temporary, `${label}.completion.gate`);
+    const gateReachedPath = join(temporary, `${label}.completion.reached`);
+    const processPath = join(temporary, `${label}.process.json`);
+    const processNonce = randomBytes(32).toString('hex');
+    const observedBefore = installedYieldedCommandPairs(await loadCodexRollouts(codexHome).catch(() => []), command);
+    await Promise.all([writeFile(gatePath, 'hold'), writeFile(gateReachedPath, ''), writeFile(processPath, '')]);
+    const held = await runHeldForegroundRescue({
+      gatePath, processPath, processNonce,
+      launch: () => launch({ ...env, FAKE_ZCODE_COMPLETION_GATE: gatePath, FAKE_ZCODE_COMPLETION_GATE_REACHED: gateReachedPath, FAKE_ZCODE_PROCESS_FILE: processPath, FAKE_ZCODE_PROCESS_NONCE: processNonce }),
+      waitForGate: (signal) => waitUntil(async () => await readFile(gateReachedPath, 'utf8').catch(() => '') === 'blocked', 60_000, `${label} never reached the held fake-ZCode completion boundary`, signal),
+      waitForObservation: (signal) => waitUntil(async () => {
+        const observed = installedYieldedCommandPairs(await loadCodexRollouts(codexHome).catch(() => []), command);
+        return [...observed].some((pair) => !observedBefore.has(pair));
+      }, 60_000, `${label} never polled its original yielded handle`, signal),
+      holdMs: 0,
+    });
+    return held;
   }
 
   if (process.env.ZCODE_CODEX_RESCUE_E2E !== '1') assert.fail(unqualified('opt-in-required', 'Required qualification needs ZCODE_CODEX_RESCUE_E2E=1.'));
@@ -472,7 +663,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
     gatePath: foregroundGate, processPath: foregroundProcess, processNonce: foregroundNonce,
     launch: () => controlledCodex([...commonArgs, 'Use the installed $zcode:rescue --fresh --wait skill exactly once now for repaircanary. Require ZCode to run exactly `npm test` as the safe deterministic fixture action, then return only its final public result. Keep these private fixture labels out of the display name: privpromptcanary, privpathcanary, privworkcanary, privsesscanary, privjobcanary, privcapcanary. Also keep the independent command argument/option canary `--privargcanary` out of the display name.'], workspace, longEnv, 300_000),
     waitForGate: (signal) => waitUntil(async () => await readFile(foregroundGateReached, 'utf8').catch(() => '') === 'blocked', 60_000, 'installed foreground Rescue never reached the held fake-ZCode completion boundary', signal),
-    holdMs: 35_000,
+    waitForObservation: (signal) => waitUntil(async () => installedRelayObserved(await loadCodexRollouts(codexHome).catch(() => [])), 60_000, 'installed foreground Rescue never emitted a strict fixed relay before completion', signal),
+    holdMs: 0,
   });
   if (foreground.endedBeforeGate) {
     if (skipExternalFailure(t, foreground.rescue)) return;
@@ -485,8 +677,9 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const expectedCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke rescue`;
   const expectedPreflightCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" role-status rescue`;
-  const expectedNamedSpawnMessage = 'Run the installed ZCode Rescue forwarder now. Return its public stdout verbatim.';
-  const expectedGenericSpawnMessage = `Act only as the installed ZCode Rescue forwarder. In the current workspace run exactly:\n${expectedCommand}\nPreserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request/print/persist authorization material.\nHere exactly one command means exactly one \`exec_command\` companion process; continuation calls only observe its original running handle. Never start a second \`exec_command\`. A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.\nIf that command returned a needs-choice response, stop. Only after the parent sends exactly \`Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.\` run exactly:\nnode "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue resume\nOnly after the parent sends exactly \`Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.\` run exactly:\nnode "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue fresh`;
+  const expectedStatusCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-status rescue`;
+  const expectedNamedSpawnMessage = expectedNamedRescueMessage;
+  const expectedGenericSpawnMessage = expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', installedPluginRoot);
   const canonicalWorkspace = await realpath(workspace);
   const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(zcodeCalls.filter((call) => call.method === 'session/send').length, 1, 'one ZCode send after one native child spawn');
@@ -502,6 +695,9 @@ test('installed Rescue uses one isolated native child for initial and choice con
         expectedGenericSpawnMessage,
         expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
         requireYieldedExecution: true,
+        requireProgressRelay: true,
+        expectedStatusCommand,
+        statusPrivacyCanaries: RESCUE_DISPLAY_PRIVATE_SENTINELS,
         expectedSemanticProgress: {
           start: '[zcode] Running command: npm test.',
           terminal: '[zcode] Command completed: npm test (25ms).',
@@ -523,6 +719,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
     assertInstalledRescueDisplay(evidence);
     assert.ok(['named', 'generic-schema-hidden'].includes(evidence.route), 'qualification must record an automatically observed native route');
     assert.equal(evidence.semanticProgressChecked, true);
+    assert.equal(evidence.progressRelayChecked, true);
     assert.equal(evidence.yieldedExecution.execCommandCount, 1);
     assert.ok(evidence.yieldedExecution.pollCount >= 1);
     assert.equal(evidence.yieldedExecution.sameHandleChecked, true);
@@ -532,6 +729,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
     if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
       assertInstalledRescueDisplay(error.evidence);
       assert.ok(['named', 'generic-schema-hidden'].includes(error.evidence?.route), 'encrypted-message evidence must record the automatically observed native route');
+      assert.equal(error.evidence.progressRelayChecked, true);
       assert.equal(error.evidence.yieldedExecution.execCommandCount, 1);
       assert.ok(error.evidence.yieldedExecution.pollCount >= 1);
       assert.equal(error.evidence.yieldedExecution.sameHandleChecked, true);
@@ -544,22 +742,30 @@ test('installed Rescue uses one isolated native child for initial and choice con
 
   for (const choice of ['resume', 'fresh']) {
     await writeFile(zcodeRecord, '');
-    const pending = await codex([...commonArgs, 'Use the installed $zcode:rescue --wait continue repairing the fixture skill exactly once now. If its child returns needs-choice, follow the installed skill, ask once, and stop without choosing.'], workspace, env, 240_000);
+    const pendingSegment = await runHeldChoiceSegment(`${choice}-initial`, expectedCommand,
+      (segmentEnv) => controlledCodex([...commonArgs, 'Use the installed $zcode:rescue --wait continue repairing the fixture skill exactly once now. If its child returns needs-choice, follow the installed skill, ask once, and stop without choosing.'], workspace, segmentEnv, 240_000));
+    const pending = pendingSegment.rescue;
     if (skipExternalFailure(t, pending)) return;
+    assert.equal(pendingSegment.endedBeforeGate, false, `choice ${choice} initial segment ended before its held completion boundary`);
+    assert.equal(pendingSegment.processAliveWhileHeld, true, `choice ${choice} initial exact process must remain alive through the observed same-handle poll`);
     assert.equal(pending.code, 0, `codex pending Rescue failed\n${pending.stdout}\n${pending.stderr}`);
     const pendingFrames = pending.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
     const parentIds = [...new Set(pendingFrames.filter((frame) => frame?.type === 'thread.started').map((frame) => frame.thread_id))];
     assert.equal(parentIds.length, 1, 'pending Rescue must expose exactly one resumable parent thread ID');
     const pendingRollouts = await loadCodexRollouts(codexHome);
     const pendingIdentity = captureInstalledRescueChoiceIdentity(pendingRollouts, parentIds[0]);
-    const answer = await codex([
-      'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
-      '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all',
-      parentIds[0], choice,
-    ], workspace, env, 240_000);
-    if (skipExternalFailure(t, answer)) return;
-    assert.equal(answer.code, 0, `codex ${choice} continuation failed\n${answer.stdout}\n${answer.stderr}`);
     const choiceCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`;
+    const answerSegment = await runHeldChoiceSegment(`${choice}-continuation`, choiceCommand,
+      (segmentEnv) => controlledCodex([
+        'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+        '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all',
+        parentIds[0], choice,
+      ], workspace, segmentEnv, 240_000));
+    const answer = answerSegment.rescue;
+    if (skipExternalFailure(t, answer)) return;
+    assert.equal(answerSegment.endedBeforeGate, false, `choice ${choice} continuation ended before its held completion boundary`);
+    assert.equal(answerSegment.processAliveWhileHeld, true, `choice ${choice} continuation exact process must remain alive through the observed same-handle poll`);
+    assert.equal(answer.code, 0, `codex ${choice} continuation failed\n${answer.stdout}\n${answer.stderr}`);
     const followupMessage = `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`;
     const choiceRollouts = await loadCodexRollouts(codexHome);
     try {
@@ -578,6 +784,9 @@ test('installed Rescue uses one isolated native child for initial and choice con
           expectedPreflightCommand,
           expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
           includeExecutionFacts: true,
+          requireProgressRelay: true,
+          expectedStatusCommand,
+          statusPrivacyCanaries: RESCUE_DISPLAY_PRIVATE_SENTINELS,
           forbiddenParentText: [
             'Running command: npm test.', 'Command completed: npm test (25ms).', 'raw output must stay private',
             'ZCode conversation frames were unavailable; using bounded session progress.',
@@ -587,13 +796,15 @@ test('installed Rescue uses one isolated native child for initial and choice con
         },
       );
       assertInstalledRescueDisplay(evidence);
-      assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity);
+      assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });
       assert.equal(evidence.choice, choice);
+      assert.equal(evidence.progressRelayChecked, true);
       t.diagnostic(`qualified same-child Rescue ${choice}: ${evidence.childThreadId}`);
     } catch (error) {
       if (error instanceof CodexRescueUnqualifiedError && ['choice-followup-encrypted', 'choice-spawn-encrypted'].includes(error.code)) {
         assertInstalledRescueDisplay(error.evidence);
-        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity);
+        assert.equal(error.evidence.progressRelayChecked, true);
+        assertInstalledRescueChoiceLinkage(choiceRollouts, parentIds[0], error.evidence, pendingIdentity, { initial: expectedCommand, continuation: choiceCommand, status: expectedStatusCommand });
         markUnqualified(t, unqualified(error.code, error.message)); return;
       }
       throw error;
@@ -980,6 +1191,7 @@ async function runHeldForegroundRescue(input) {
       answer = { endedBeforeGate: true, rescue: boundary.value };
     } else {
       identity = await captureProcessIdentity();
+      if (input.waitForObservation) await input.waitForObservation(gateController.signal);
       await sleep(input.holdMs ?? 35_000);
       const processAliveWhileHeld = await readProcessIdentity(identity) !== undefined;
       await releaseGate(input.gatePath); gateReleased = true;
@@ -1323,4 +1535,328 @@ async function loadCodexRollouts(codexHome) {
     if (metadata.size > 16 * 1024 * 1024) throw new CodexRescueEvidenceMismatchError('rollout-file-oversize', 'A Codex rollout exceeds the qualification bound.');
     return parseCodexRolloutJsonl(await readFile(path, 'utf8'));
   }));
+}
+
+function installedRelayObserved(rollouts) {
+  const observedMessages = new Set();
+  const sentMessages = new Set();
+  for (const events of rollouts) {
+    for (const event of events) {
+      if (event?.payload?.type === 'custom_tool_call_output' && typeof event.payload.output === 'string') {
+        let result;
+        try { result = JSON.parse(event.payload.output); } catch { continue; }
+        if (typeof result?.output !== 'string') continue;
+        for (const line of result.output.match(/[^\n]*\n/gu) ?? []) {
+          if (!line.startsWith(RESCUE_RELAY_PREFIX)) continue;
+          try { observedMessages.add(RESCUE_RELAY_MESSAGES[parseRescueProgressRelay(line).code]); } catch { /* final qualification reports malformed evidence */ }
+        }
+      } else if (event?.payload?.type === 'function_call' && event.payload.name === 'send_message') {
+        let args;
+        try { args = JSON.parse(event.payload.arguments); } catch { continue; }
+        if (args?.target === '/root' && typeof args.message === 'string') sentMessages.add(args.message);
+      }
+    }
+  }
+  return [...observedMessages].some((message) => sentMessages.has(message));
+}
+
+function installedYieldedCommandPairs(rollouts, command) {
+  const pairs = new Set();
+  for (const events of rollouts) {
+    const threadId = events?.[0]?.payload?.id;
+    if (typeof threadId !== 'string') continue;
+    const outputs = new Map(events.filter((event) => event?.payload?.type === 'custom_tool_call_output')
+      .map((event) => [event.payload.call_id, event.payload.output]));
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index];
+      if (event?.payload?.type !== 'custom_tool_call') continue;
+      try {
+        const call = parseInstalledToolInput(event.payload.input);
+        if (call.kind !== 'exec_command' || call.value.cmd !== command) continue;
+        const result = parseInstalledHostOutput(outputs.get(event.payload.call_id));
+        if (!Number.isSafeInteger(result.session_id) || result.session_id <= 0) continue;
+        for (const later of events.slice(index + 1)) {
+          if (later?.payload?.type !== 'custom_tool_call') continue;
+          const poll = parseInstalledToolInput(later.payload.input);
+          if (poll.kind === 'write_stdin' && poll.value.session_id === result.session_id && poll.value.chars === '') {
+            pairs.add(`${threadId}:${event.payload.call_id}:${later.payload.call_id}`);
+          }
+        }
+      } catch { /* ignore unrelated or partially persisted calls */ }
+    }
+  }
+  return pairs;
+}
+
+function installedChoiceYieldFixture() {
+  const childThreadId = 'installed-choice-child';
+  const commands = { initial: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke rescue', continuation: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue resume', status: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-status rescue' };
+  const segment = (name, command, handle, exitCode) => [
+    installedToolCall(`${name}-exec`, installedExecInput(command)), installedToolOutput(`${name}-exec`, { output: 'partial\n', session_id: handle }),
+    ...(name === 'initial' ? [installedToolCall('initial-status', installedExecInput(commands.status)), installedToolOutput('initial-status', { output: '{"type":"rescue-status"}\n', exit_code: 0 })] : []),
+    installedToolCall(`${name}-poll`, installedPollInput(handle)), installedToolOutput(`${name}-poll`, { output: 'heartbeat\n', session_id: handle }),
+    installedToolCall(`${name}-terminal`, installedPollInput(handle)), installedToolOutput(`${name}-terminal`, { output: 'terminal\n', exit_code: exitCode }),
+    { type: 'event_msg', payload: { type: 'agent_message', phase: 'final_answer', message: 'terminal' } },
+  ];
+  return { childThreadId, commands, rollouts: [[
+    { type: 'session_meta', payload: { id: childThreadId } },
+    ...segment('initial', commands.initial, 51, 3),
+    ...segment('continuation', commands.continuation, 61, 0),
+  ]] };
+}
+
+async function installedCapturedRescueRoutes() {
+  const installedRoot = '/captured/installed/zcode';
+  const installedSnapshot = join(root, 'marketplace', 'plugins', 'zcode');
+  const namedTemplate = extractInstalledRoleInstructions(await readFile(join(installedSnapshot, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
+  const genericTemplate = assertRescueRouteContract(await readFile(join(installedSnapshot, 'skills', 'rescue', 'SKILL.md'), 'utf8')).genericMessage.text;
+  assertInstalledForwarderLifecycleContract(namedTemplate, 'named', { expectedRoot: '{{PLUGIN_ROOT}}' });
+  assertInstalledForwarderLifecycleContract(genericTemplate, 'generic', { expectedRoot: '<canonical-plugin-root>' });
+  const namedPolicy = namedTemplate.replaceAll('{{PLUGIN_ROOT}}', installedRoot);
+  const genericPolicy = genericTemplate.replaceAll('<canonical-plugin-root>', installedRoot);
+  assertInstalledForwarderLifecycleContract(namedPolicy, 'named', { expectedRoot: installedRoot });
+  // The generic template itself is the spawn assignment; rendering is verified by
+  // the fixed command evidence and exact expected spawn message below.
+  return [
+    installedCapturedRescueRoute('named', namedPolicy, expectedNamedRescueMessage, installedRoot),
+    installedCapturedRescueRoute('generic', genericPolicy, genericPolicy, installedRoot),
+  ];
+}
+
+function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, installedRoot) {
+  const parentThreadId = name === 'named' ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222';
+  const childThreadId = name === 'named' ? '33333333-3333-4333-8333-333333333333' : '44444444-4444-4444-8444-444444444444';
+  const taskName = `zcode_rescue_captured_${name}`; const agentPath = `/root/${taskName}`;
+  const command = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke rescue`;
+  const preflightCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" role-status rescue`;
+  const statusCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-status rescue`;
+  for (const expected of [command, statusCommand,
+    `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue resume`,
+    `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue fresh`]) {
+    assert.ok(renderedPolicy.includes(expected), `${name} rendered installed policy must own ${expected}`);
+  }
+  const publicOutput = `captured-${name}-done`; const handle = name === 'named' ? 71 : 81;
+  const semantic = {
+    start: '[zcode] Running command: npm test.',
+    terminal: '[zcode] Command completed: npm test (25ms).',
+    snapshotFallback: '[zcode] ZCode conversation frames were unavailable; using bounded session progress.',
+    lifecycleOnly: '[zcode] ZCode semantic progress is unavailable; lifecycle updates will continue.',
+  };
+  const spawnArgs = { fork_turns: 'none', message: spawnMessage, task_name: taskName };
+  if (name === 'named') spawnArgs.agent_type = 'zcode-rescue';
+  const childEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${publicOutput}`;
+  const child = [
+    { type: 'session_meta', payload: { session_id: parentThreadId, id: childThreadId, parent_thread_id: parentThreadId, cli_version: '0.147.0', thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentThreadId, depth: 1, agent_path: agentPath, agent_nickname: 'Ada', agent_role: name === 'named' ? 'zcode-rescue' : null } } } } },
+    installedToolCall(`${name}-exec`, installedExecInput(command)),
+    installedToolOutput(`${name}-exec`, { output: `${semantic.start}\n${installedCapturedRelayLine(1, 'starting', 'started')}\n`, session_id: handle }),
+    installedCapturedRelayCall(`${name}-relay-1`, 'started'), installedCapturedFunctionOutput(`${name}-relay-1`),
+    installedToolCall(`${name}-poll-1`, installedPollInput(handle)),
+    installedToolOutput(`${name}-poll-1`, { output: `${installedCapturedRelayLine(2, 'investigating', 'tool-active')}\n`, session_id: handle }),
+    installedCapturedRelayCall(`${name}-relay-2`, 'tool-active'), installedCapturedFunctionOutput(`${name}-relay-2`),
+    installedToolCall(`${name}-status`, installedExecInput(statusCommand)),
+    installedToolOutput(`${name}-status`, { output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`, exit_code: 0 }),
+    installedToolCall(`${name}-poll-2`, installedPollInput(handle)),
+    installedToolOutput(`${name}-poll-2`, { output: `${semantic.terminal}\n${publicOutput}\n`, exit_code: 0 }),
+    { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
+  ];
+  const parent = [
+    { type: 'session_meta', payload: { session_id: parentThreadId, id: parentThreadId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
+    installedToolCall(`${name}-preflight`, installedCapturedLegacyExecInput(preflightCommand)),
+    installedCapturedLegacyOutput(`${name}-preflight`, `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+    { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: `${name}-spawn`, arguments: JSON.stringify(spawnArgs) } },
+    { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: `${name}-spawn`, agent_thread_id: childThreadId, agent_path: agentPath, kind: 'started' } },
+    installedCapturedParentRelay(agentPath, 'started', name === 'named' ? 'a' : 'c', name === 'named' ? 'a' : 'c'),
+    ...installedCapturedWait(`${name}-wait-1`, true),
+    installedCapturedParentRelay(agentPath, 'tool-active', name === 'named' ? 'b' : 'd', name === 'named' ? 'a' : 'c'),
+    ...installedCapturedWait(`${name}-wait-2`, false),
+    { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: childEnvelope }] } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
+  ];
+  let offset = 1; const stamp = (event) => { event.timestamp = `2026-08-17T00:00:${String(offset++).padStart(2, '0')}.000Z`; };
+  for (const event of child.slice(1, 5)) stamp(event);
+  for (const event of parent.slice(5, 8)) stamp(event);
+  for (const event of child.slice(5, 9)) stamp(event);
+  for (const event of parent.slice(8, 11)) stamp(event);
+  for (const event of child.slice(9)) stamp(event);
+  for (const event of parent.slice(11)) stamp(event);
+  const fixture = { execFrames: [
+    { type: 'thread.started', thread_id: parentThreadId }, { type: 'turn.started' },
+    { type: 'item.completed', item: { id: `${name}-final`, type: 'agent_message', text: publicOutput } },
+    { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 10, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 5 } },
+  ], rollouts: [parent, child] };
+  return { name, fixture, expectedEvidenceRoute: name === 'named' ? 'named' : 'generic-schema-hidden', installedRoot, renderedPolicy, command, preflightCommand, statusCommand, spawnMessage, publicOutput, semantic };
+}
+
+function qualifyInstalledCapturedForeground(route) {
+  return qualifyCodexRescueEvidence(route.fixture, {
+    expectedAgentType: 'zcode-rescue', expectedWorkspace: '/installed/workspace', expectedCommand: route.command,
+    expectedPreflightCommand: route.preflightCommand, expectedNamedSpawnMessage: expectedNamedRescueMessage,
+    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
+    expectedPublicOutput: route.publicOutput, expectedSemanticProgress: route.semantic,
+    requireYieldedExecution: true, requireProgressRelay: true, requireStatusSidecar: true, expectedStatusCommand: route.statusCommand,
+    statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
+    forbiddenParentText: [route.semantic.start, route.semantic.terminal, 'raw output must stay private', 'reasoning must stay private'],
+  });
+}
+
+function installedCapturedChoiceRoute(route, choice) {
+  const parentThreadId = route.fixture.rollouts[0][0].payload.id;
+  const childThreadId = route.fixture.rollouts[1][0].payload.id;
+  const childMeta = structuredClone(route.fixture.rollouts[1][0]);
+  const spawn = structuredClone(route.fixture.rollouts[0].find((event) => event?.payload?.name === 'spawn_agent'));
+  const start = structuredClone(route.fixture.rollouts[0].find((event) => event?.payload?.type === 'sub_agent_activity'));
+  const agentPath = start.payload.agent_path;
+  const choiceCommand = `node "${route.installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`;
+  const followupMessage = `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`;
+  const needsChoice = `${JSON.stringify({ type: 'needs-choice', candidate: { sessionId: `captured-${route.name}-session` }, choices: ['--resume', '--fresh'] })}\n`;
+  const handles = route.name === 'named' ? [91, 92] : [93, 94];
+  const initial = [
+    installedToolCall(`${route.name}-initial-exec`, installedExecInput(route.command)),
+    installedToolOutput(`${route.name}-initial-exec`, { output: `partial\n${installedCapturedRelayLine(1, 'starting', 'started')}\n`, session_id: handles[0] }),
+    installedCapturedRelayCall(`${route.name}-initial-relay`, 'started'), installedCapturedFunctionOutput(`${route.name}-initial-relay`),
+    installedToolCall(`${route.name}-initial-status`, installedExecInput(route.statusCommand)),
+    installedToolOutput(`${route.name}-initial-status`, { output: `${JSON.stringify({ type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:02.000Z', progressPreview: ['ZCode is working.'], terminal: false })}\n`, exit_code: 0 }),
+    installedToolCall(`${route.name}-initial-poll`, installedPollInput(handles[0])), installedToolOutput(`${route.name}-initial-poll`, { output: 'heartbeat\n', session_id: handles[0] }),
+    installedToolCall(`${route.name}-initial-terminal`, installedPollInput(handles[0])), installedToolOutput(`${route.name}-initial-terminal`, { output: needsChoice, exit_code: 3 }),
+    { type: 'event_msg', payload: { type: 'agent_message', message: needsChoice, phase: 'final_answer' } },
+  ];
+  const continuation = [
+    installedToolCall(`${route.name}-continuation-exec`, installedExecInput(choiceCommand)),
+    installedToolOutput(`${route.name}-continuation-exec`, { output: `partial\n${installedCapturedRelayLine(1, 'running', 'model-active')}\n`, session_id: handles[1] }),
+    installedCapturedRelayCall(`${route.name}-continuation-relay`, 'model-active'), installedCapturedFunctionOutput(`${route.name}-continuation-relay`),
+    installedToolCall(`${route.name}-continuation-poll`, installedPollInput(handles[1])), installedToolOutput(`${route.name}-continuation-poll`, { output: 'heartbeat\n', session_id: handles[1] }),
+    installedToolCall(`${route.name}-continuation-terminal`, installedPollInput(handles[1])), installedToolOutput(`${route.name}-continuation-terminal`, { output: `${route.publicOutput}\n`, exit_code: 0 }),
+    { type: 'event_msg', payload: { type: 'agent_message', message: route.publicOutput, phase: 'final_answer' } },
+  ];
+  const firstEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${needsChoice}`;
+  const secondEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${route.publicOutput}`;
+  const parent = [
+    structuredClone(route.fixture.rollouts[0][0]),
+    installedToolCall(`${route.name}-choice-preflight`, installedCapturedLegacyExecInput(route.preflightCommand)),
+    installedCapturedLegacyOutput(`${route.name}-choice-preflight`, `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+    spawn, start,
+    installedCapturedParentRelay(agentPath, 'started', route.name === 'named' ? 'e' : '1', route.name === 'named' ? 'e' : '1'),
+    ...installedCapturedWait(`${route.name}-initial-wait`, false),
+    { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: firstEnvelope }] } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: `${needsChoice}Choose resume or fresh.`, phase: 'final_answer' } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'followup_task', call_id: `${route.name}-followup`, arguments: JSON.stringify({ target: childThreadId, message: followupMessage }) } },
+    installedCapturedFunctionOutput(`${route.name}-followup`),
+    installedCapturedParentRelay(agentPath, 'model-active', route.name === 'named' ? 'f' : '2', route.name === 'named' ? 'f' : '2'),
+    ...installedCapturedWait(`${route.name}-continuation-wait`, false),
+    { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: secondEnvelope }] } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: route.publicOutput, phase: 'final_answer' } },
+  ];
+  const child = [childMeta, ...initial, ...continuation];
+  const timeline = [
+    initial[0], initial.at(-2), initial.at(-1), parent[8], parent[9], parent[10], parent[11],
+    continuation[0], continuation.at(-2), continuation.at(-1), parent.at(-2), parent.at(-1),
+  ];
+  timeline.forEach((event, index) => { event.timestamp = `2026-08-17T01:00:${String(index + 1).padStart(2, '0')}.000Z`; });
+  initial[2].timestamp = '2026-08-17T01:00:01.100Z'; parent[5].timestamp = '2026-08-17T01:00:01.200Z';
+  continuation[2].timestamp = '2026-08-17T01:00:08.100Z'; parent[12].timestamp = '2026-08-17T01:00:08.200Z';
+  return { ...route, fixture: { rollouts: [parent, child] }, parentThreadId, childThreadId, choice, choiceCommand, followupMessage,
+    commands: { initial: route.command, continuation: choiceCommand, status: route.statusCommand } };
+}
+
+function qualifyInstalledCapturedChoice(route) {
+  return qualifyCodexRescueChoiceEvidence(route.fixture, {
+    expectedChoice: route.choice, expectedParentThreadId: route.parentThreadId, expectedAgentType: 'zcode-rescue',
+    expectedWorkspace: '/installed/workspace', expectedInitialCommand: route.command, expectedChoiceCommand: route.choiceCommand,
+    expectedNamedSpawnMessage: expectedNamedRescueMessage,
+    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
+    expectedPreflightCommand: route.preflightCommand, expectedFollowupMessage: route.followupMessage,
+    expectedPublicOutput: route.publicOutput, requireProgressRelay: true, requireStatusSidecar: true,
+    expectedStatusCommand: route.statusCommand, includeExecutionFacts: true,
+    statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
+    forbiddenParentText: ['partial', 'heartbeat', 'raw output must stay private', 'reasoning must stay private'],
+  });
+}
+
+function installedCapturedRunningHandles(fixture) {
+  const active = new Set();
+  for (const events of fixture.rollouts) {
+    const outputs = new Map(events.filter((event) => event?.payload?.type === 'custom_tool_call_output').map((event) => [event.payload.call_id, event.payload.output]));
+    for (const event of events.filter((candidate) => candidate?.payload?.type === 'custom_tool_call')) {
+      let call; let result;
+      try { call = parseInstalledToolInput(event.payload.input); result = parseInstalledHostOutput(outputs.get(event.payload.call_id)); } catch { continue; }
+      if (call.kind === 'exec_command' && / invoke rescue$/u.test(call.value.cmd) && Number.isSafeInteger(result.session_id)) active.add(result.session_id);
+      if (call.kind === 'write_stdin' && Object.hasOwn(result, 'exit_code')) active.delete(call.value.session_id);
+    }
+  }
+  return active;
+}
+
+function installedCapturedRelayLine(sequence, phase, code) { return `[zcode-relay] ${JSON.stringify({ version: 1, sequence, phase, code, observedAt: `2026-08-17T00:00:0${sequence}.000Z` })}`; }
+function installedCapturedRelayMessage(code) { return ({ started: 'ZCode Rescue started.', 'model-active': 'ZCode is generating a response.', 'tool-active': 'ZCode is working with a tool.' })[code]; }
+function installedCapturedRelayCall(callId, code) { return { type: 'response_item', payload: { type: 'function_call', name: 'send_message', call_id: callId, arguments: JSON.stringify({ target: '/root', message: installedCapturedRelayMessage(code) }) } }; }
+function installedCapturedFunctionOutput(callId) { return { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: '' } }; }
+function installedCapturedParentRelay(author, code, idMarker, turnMarker) { return { type: 'response_item', payload: { type: 'agent_message', id: `amsg_${idMarker.repeat(36)}`, author, recipient: '/root', content: [{ type: 'input_text', text: `Message Type: MESSAGE\nTask name: /root\nSender: ${author}\nPayload:\n` }, { type: 'encrypted_content', encrypted_content: `gAAAA${'A'.repeat(64)}` }], internal_chat_message_metadata_passthrough: { turn_id: `${turnMarker.repeat(8)}-${turnMarker.repeat(4)}-4${turnMarker.repeat(3)}-8${turnMarker.repeat(3)}-${turnMarker.repeat(12)}` } } }; }
+function installedCapturedWait(callId, timedOut) { return [
+  { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: callId, arguments: JSON.stringify({ timeout_ms: 30000 }) } },
+  { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: JSON.stringify({ message: timedOut ? 'Wait timed out.' : 'Wait completed.', timed_out: timedOut }) } },
+]; }
+function installedCapturedLegacyExecInput(cmd) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace' })});\ntext(r.output);\n`; }
+function installedCapturedLegacyOutput(callId, text) { return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text }] } }; }
+
+function installedChoiceYieldFacts(rollouts, childThreadId, commands) {
+  try {
+    const child = rollouts.filter((events) => events?.[0]?.payload?.id === childThreadId);
+    if (child.length !== 1) throw new Error('child');
+    const events = child[0]; const finals = events.filter((event) => event?.payload?.phase === 'final_answer');
+    if (finals.length !== 2) throw new Error('finals');
+    const firstFinal = events.indexOf(finals[0]); const secondFinal = events.indexOf(finals[1]);
+    return {
+      initial: installedYieldSegmentFacts(events.slice(1, firstFinal), commands.initial, commands.status, 3),
+      continuation: installedYieldSegmentFacts(events.slice(firstFinal + 1, secondFinal), commands.continuation, commands.status, 0),
+    };
+  } catch { throw new Error('Installed choice qualification requires yielded same-handle terminal evidence in both logical segments.'); }
+}
+
+function installedYieldSegmentFacts(events, expectedCommand, statusCommand, expectedExitCode) {
+  const calls = events.filter((event) => event?.payload?.type === 'custom_tool_call');
+  const outputs = events.filter((event) => event?.payload?.type === 'custom_tool_call_output');
+  const decoded = calls.map((event) => ({ event, call: parseInstalledToolInput(event.payload.input) }));
+  const status = decoded.filter(({ call }) => call.kind === 'exec_command' && call.value.cmd === statusCommand);
+  if (status.length > 1) throw new Error('status');
+  const foreground = decoded.filter(({ event }) => !status.some((entry) => entry.event === event));
+  if (foreground.length < 2 || foreground[0].call.kind !== 'exec_command' || foreground[0].call.value.cmd !== expectedCommand
+    || foreground.slice(1).some(({ call }) => call.kind !== 'write_stdin')) throw new Error('calls');
+  let handle; let terminalCount = 0; let terminalExitCode; let pollCount = 0;
+  for (const { event, call } of foreground) {
+    const linked = outputs.filter((output) => output.payload.call_id === event.payload.call_id);
+    if (linked.length !== 1) throw new Error('link');
+    const result = parseInstalledHostOutput(linked[0].payload.output);
+    if (call.kind === 'write_stdin') {
+      pollCount += 1;
+      if (handle === undefined || call.value.session_id !== handle || call.value.chars !== '') throw new Error('handle');
+    }
+    if (Object.hasOwn(result, 'session_id')) {
+      if (!Number.isSafeInteger(result.session_id) || result.session_id <= 0 || handle !== undefined && result.session_id !== handle) throw new Error('handle');
+      handle ??= result.session_id;
+    } else if (Object.hasOwn(result, 'exit_code')) {
+      terminalCount += 1; terminalExitCode = result.exit_code;
+      if (event !== foreground.at(-1).event) throw new Error('terminal');
+    } else throw new Error('result');
+  }
+  if (handle === undefined || pollCount < 1 || terminalCount !== 1 || terminalExitCode !== expectedExitCode) throw new Error('terminal');
+  return { execCommandCount: 1, pollCount, sameHandleChecked: true, terminalExitCode };
+}
+
+function installedToolCall(callId, input) { return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input } }; }
+function installedToolOutput(callId, result) { return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: installedHostOutput(result) } }; }
+function installedExecInput(cmd) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace' })}); text(JSON.stringify(r))\n`; }
+function installedPollInput(sessionId) { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 30000 })}); text(JSON.stringify(r))\n`; }
+function installedHostOutput(result) { return [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }]; }
+function parseInstalledToolInput(source) {
+  for (const [kind, prefix] of [['exec_command', 'const r = await tools.exec_command('], ['write_stdin', 'const r = await tools.write_stdin(']]) {
+    const suffix = '); text(JSON.stringify(r))\n';
+    if (typeof source === 'string' && source.startsWith(prefix) && source.endsWith(suffix)) return { kind, value: JSON.parse(source.slice(prefix.length, -suffix.length)) };
+  }
+  throw new Error('tool input');
+}
+function parseInstalledHostOutput(output) {
+  if (!Array.isArray(output) || output.length !== 2 || !output[0]?.text?.startsWith('Script completed\n') || typeof output[1]?.text !== 'string') throw new Error('tool output');
+  const result = JSON.parse(output[1].text);
+  if (!result || typeof result !== 'object' || Array.isArray(result) || typeof result.output !== 'string') throw new Error('tool output');
+  return result;
 }

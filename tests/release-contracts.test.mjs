@@ -42,6 +42,12 @@ test('release docs explain progress reporting and supported interruption boundar
   assert.match(english, /session\/stop/);
   assert.match(english, /exact persisted ZCode session/i);
   assert.match(english, /does not claim to (?:stop|kill).{0,100}detached grandchildren/i);
+  assert.match(english, /Rescue child.{0,160}cc-style semantic progress/is);
+  assert.match(english, /root.{0,160}fixed coarse liveness updates/is);
+  assert.match(english, /terminal exit.{0,120}final stdout/is);
+  assert.match(english, /zcode status.{0,120}\$zcode:status.{0,120}\/zcode:status/is);
+  assert.match(english, /no job ID or option/is);
+  assert.match(english, /Raw PTY.{0,200}credentials.{0,80}capabilities/is);
 
   const chinese = read('README.zh-CN.md');
   assert.match(chinese, /前台运行.{0,80}ZCode 活动/);
@@ -53,6 +59,12 @@ test('release docs explain progress reporting and supported interruption boundar
   assert.match(chinese, /session\/stop/);
   assert.match(chinese, /精确持久化的 ZCode session/);
   assert.match(chinese, /不(?:声称|保证)(?:停止|终止|杀死).{0,100}detached grandchildren/i);
+  assert.match(chinese, /Rescue 子 agent.{0,160}cc-style 语义进度/is);
+  assert.match(chinese, /root.{0,160}固定的粗粒度存活更新/is);
+  assert.match(chinese, /终态退出.{0,120}最终 stdout/is);
+  assert.match(chinese, /zcode status.{0,120}\$zcode:status.{0,120}\/zcode:status/is);
+  assert.match(chinese, /不接受 job ID 或选项/is);
+  assert.match(chinese, /原始 PTY.{0,200}凭据.{0,80}capabilit/is);
 });
 
 test('Unreleased changelog records progress and interruption behavior without a version bump', () => {
@@ -63,6 +75,10 @@ test('Unreleased changelog records progress and interruption behavior without a 
   assert.match(changelog, /background.{0,120}explicit cancellation/i);
   assert.match(changelog, /SIGINT.*SIGTERM/i);
   assert.match(changelog, /session\/stop/);
+  assert.match(changelog, /cc-style semantic progress/i);
+  assert.match(changelog, /fixed coarse root liveness/i);
+  assert.match(changelog, /terminal exit.{0,100}final stdout/i);
+  assert.match(changelog, /bound no-argument status sidecar/i);
   assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
 });
 

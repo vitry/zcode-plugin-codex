@@ -249,6 +249,30 @@ test('named and generic Rescue forwarders keep yielded executions attached throu
   }
 });
 
+test('named and generic Rescue forwarders relay only validated coarse liveness and keep status observational', () => {
+  const role = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
+  const source = skill('rescue');
+  const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source)?.[1];
+  assert.ok(generic, 'generic forwarder fixture must be present');
+  for (const forwarder of [role, generic]) {
+    assert.match(forwarder, /parse only complete dedicated `?\[zcode-relay\]`? lines/i);
+    assert.match(forwarder, /exact keys[\s\S]+version[\s\S]+sequence[\s\S]+phase[\s\S]+code[\s\S]+observedAt/i);
+    assert.match(forwarder, /strictly increasing sequence/i);
+    assert.match(forwarder, /phase\/code pairs are exactly[\s\S]+`starting`\s*\/\s*`started`[\s\S]+`running`\s*\/\s*`model-active`[\s\S]+`investigating`\s*\/\s*`tool-active`[\s\S]+`finalizing`\s*\/\s*`finalizing`/i);
+    assert.match(forwarder, /send_message[\s\S]+only to (?:the exact target )?`?\/root`?/i);
+    assert.match(forwarder, /fixed (?:allowlisted )?code-to-message map/i);
+    assert.match(forwarder, /never relay[\s\S]+detailed `?\[zcode\]`?[\s\S]+stderr[\s\S]+stdout/i);
+    assert.match(forwarder, /relay[\s\S]+liveness only[\s\S]+never completion/i);
+    assert.match(forwarder, /exact trimmed[\s\S]+`zcode status`[\s\S]+`\$zcode:status`[\s\S]+`\/zcode:status`/i);
+    assert.match(forwarder, /invoke-status rescue/);
+    assert.match(forwarder, /no arguments/i);
+    assert.match(forwarder, /status[\s\S]+does not (?:replace|complete)[\s\S]+original[\s\S]+handle/i);
+    assert.match(forwarder, /return only[\s\S]+original[\s\S]+terminal[\s\S]+public stdout/i);
+  }
+  assert.match(source, /update from the exact `rescueChildId`[\s\S]+liveness only[\s\S]+wait|rejoin/i);
+  assert.match(source, /progress update[\s\S]+never[\s\S]+completion[\s\S]+spawn/i);
+});
+
 test('native Rescue forwarders request explicit background through the same capability-free constant invocation', () => {
   const source = skill('rescue'); const role = readFileSync(new URL('agents/zcode-rescue.toml.template', root), 'utf8');
   const generic = /```text\n(Act only as the installed ZCode Rescue forwarder\.[\s\S]+?)\n```/.exec(source)?.[1];

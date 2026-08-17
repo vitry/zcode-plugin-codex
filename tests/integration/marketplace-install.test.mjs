@@ -18,6 +18,13 @@ import {
   expectedNamedRescueInstruction as expectedInstalledNamedInstruction,
   expectedNamedRescueSpawn as expectedInstalledNamedSpawn,
 } from '../helpers/rescue-skill-contract.mjs';
+import {
+  assertInstalledForwarderLifecycleContract,
+  extractInstalledRoleInstructions,
+  installedCanonicalContradictionMutations,
+  installedCommandPathMutations,
+  installedLifecycleContractMutations,
+} from '../helpers/installed-rescue-lifecycle-contract.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -150,15 +157,44 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   assert.equal(installedManifest.name, 'zcode');
   assert.equal(Object.hasOwn(installedManifest, 'hooks'), false);
   assert.ok(JSON.parse(await readFile(join(installedRoot, 'hooks', 'hooks.json'), 'utf8')).hooks);
-  assert.match(await readFile(join(installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8'), /^developer_instructions = """/);
+  const installedRoleSource = await readFile(join(installedRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+  assert.match(installedRoleSource, /^developer_instructions = """/);
   await assert.rejects(readFile(join(installedRoot, 'agents', 'zcode-rescue.md'), 'utf8'), { code: 'ENOENT' });
   for (const modulePath of [
     'scripts/lib/conversation-progress.mjs',
     'scripts/lib/managed-agent-role.mjs',
     'scripts/lib/progress.mjs',
+    'scripts/lib/rescue-progress-relay.mjs',
   ]) assert.ok((await readFile(join(installedRoot, modulePath), 'utf8')).length > 0, `${modulePath} missing from installed marketplace payload`);
   const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const installedSections = assertInstalledRescueRoutingContract(installedRescue);
+  const installedNamedForwarder = extractInstalledRoleInstructions(installedRoleSource
+    .replaceAll('{{PLUGIN_ROOT}}', JSON.stringify(installedRoot).slice(1, -1)));
+  for (const [routeName, forwarder] of [['named', installedNamedForwarder], ['generic', installedSections.genericMessage.text]]) {
+    const expectedRoot = routeName === 'named' ? installedRoot : '<canonical-plugin-root>';
+    assertInstalledForwarderLifecycleContract(forwarder, routeName, { assertionPrefix: 'installed ', expectedRoot });
+    for (const [mutation, mutated] of installedLifecycleContractMutations(forwarder, routeName, expectedRoot)) {
+      assert.throws(
+        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ', expectedRoot }),
+        /unique operative lifecycle region/u,
+        `installed ${routeName}: ${mutation}`,
+      );
+    }
+    for (const [mutation, mutated] of installedCanonicalContradictionMutations(forwarder, routeName)) {
+      assert.throws(
+        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ', expectedRoot }),
+        /exact canonical operative route/u,
+        `installed ${routeName}: ${mutation}`,
+      );
+    }
+    for (const [mutation, mutated] of installedCommandPathMutations(forwarder)) {
+      assert.throws(
+        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ', expectedRoot }),
+        /trusted expected root and exact argv/u,
+        `installed ${routeName}: ${mutation}`,
+      );
+    }
+  }
   for (const [routeName, route] of [['named', installedSections.namedSpawn], ['generic', installedSections.genericInstruction]]) {
     const fixedNameMutation = `${installedRescue.slice(0, route.start)}${route.text.replace('task_name: rescueTaskName', "task_name: 'zcode_rescue'")}${installedRescue.slice(route.end)}`;
     assert.throws(
@@ -213,7 +249,9 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   );
   assert.match(installedRescue, /agent_type:\s*'zcode-rescue'/);
   assert.match(installedRescue, /fork_turns:\s*'none'/);
-  assert.match(installedRescue, /Do not relay raw child progress, stderr, tool output, or intermediate messages into the parent/);
+  assert.match(installedRescue, /Relay is liveness only and never completion/);
+  assert.match(installedRescue, /Never relay detailed `\[zcode\]` lines, arbitrary stderr, stdout, commands, paths, identifiers, content, results, or errors/);
+  assert.match(installedRescue, /invoke-status rescue/);
   assert.match(installedRescue, /return only the child's public stdout verbatim without interpretation/);
   assert.doesNotMatch(installedRescue, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
   const listedComponents = await listPluginComponents(temporary, env);

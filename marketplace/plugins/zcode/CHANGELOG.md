@@ -4,6 +4,8 @@ All notable changes follow Semantic Versioning.
 
 ## Unreleased
 
+- Added cc-style semantic progress in the selected Rescue child and fixed coarse root liveness relays without exposing raw PTY data, child stderr, tool output, file contents, reasoning, credentials, or capabilities. Progress remains observational: only the original foreground terminal exit and final stdout prove completion. The child also supports an exact bound no-argument status sidecar through `zcode status`, `$zcode:status`, or `/zcode:status` without selecting or replacing the foreground job.
+- Added deterministic installed Codex 0.147 captured-rollout qualification for both the named Role and generic fallback, independently covering yielded foreground and same-child choice continuations; authenticated live qualification still reports only the route Codex actually selected.
 - Added dynamic task-specific Rescue child display names with bounded sibling-collision ordinals. Display identity remains a navigation-only invariant and does not grant, prove, or remove Rescue authorization.
 - Added #24 neutral forwarding hooks, #25 attached-yield continuation on the same running handle, and #26 fixed-shape structural progress probes with detailed status limited to the exact owner.
 - Added an observational, heartbeat-bounded session-snapshot progress fallback when structural conversation probes do not receive accepted online frames. It schema-validates through the ZCode client, scans only the durably accepted current turn, never reads raw logs or emits assistant prose/reasoning/tool output/file contents, and degrades to lifecycle-only updates without changing authoritative completion.

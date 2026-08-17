@@ -42,6 +42,164 @@ test('exports fixed progress bounds and phases', () => {
   assert.equal(progressModule.MAX_PROGRESS_DIAGNOSTIC_KINDS, 8);
 });
 
+test('coarse relay is independent from detailed stderr and coalesces duplicate semantic phases', async () => {
+  const lines = []; const relays = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', write: (line) => lines.push(line), relay: (record) => relays.push(record), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started'));
+  reporter.observe(notification('model_streaming'));
+  reporter.observe(notification('tool_call_started'));
+  reporter.observe(notification('tool_call_progress'));
+  reporter.observe(notification('prompt_completed'));
+  reporter.observe(notification('tool_call_result'));
+  await reporter.flush();
+  assert.deepEqual(relays, [
+    { sequence: 1, phase: 'starting', code: 'started', observedAt },
+    { sequence: 2, phase: 'running', code: 'model-active', observedAt },
+    { sequence: 3, phase: 'investigating', code: 'tool-active', observedAt },
+    { sequence: 4, phase: 'finalizing', code: 'finalizing', observedAt },
+  ]);
+  assert.match(lines.join(''), /started a tool call/);
+  assert.doesNotMatch(JSON.stringify(relays), /tool call|delegated turn/);
+  reporter.close();
+});
+
+test('every eligible heartbeat emits a fixed waiting relay and terminal progress closes relay production', async () => {
+  const relays = []; let heartbeat = () => {}; let currentTime = observedAt;
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', relay: (record) => relays.push(record), now: () => currentTime,
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started'));
+  currentTime = '2026-08-17T00:00:21.000Z'; heartbeat();
+  currentTime = '2026-08-17T00:00:42.000Z'; heartbeat();
+  reporter.observe(notification('prompt_completed'));
+  currentTime = '2026-08-17T00:01:03.000Z'; heartbeat();
+  await reporter.flush();
+  assert.deepEqual(relays.map(({ sequence, phase, code }) => ({ sequence, phase, code })), [
+    { sequence: 1, phase: 'starting', code: 'started' },
+    { sequence: 2, phase: 'waiting', code: 'waiting' },
+    { sequence: 3, phase: 'waiting', code: 'waiting' },
+    { sequence: 4, phase: 'finalizing', code: 'finalizing' },
+  ]);
+  reporter.close();
+});
+
+test('validated edit, write, and verification tool frames select fixed relay categories without rendering inputs', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-relay-category-'));
+  const cases = [
+    ['Edit', { file_path: join(workspace, 'edit.txt'), old_string: 'PRIVATE_OLD', new_string: 'PRIVATE_NEW' }, 'editing', 'editing'],
+    ['Write', { file_path: join(workspace, 'write.txt'), content: 'PRIVATE_CONTENT' }, 'editing', 'editing'],
+    ['Bash', { command: 'npm test PRIVATE_ARGUMENT' }, 'verifying', 'verifying'],
+  ];
+  for (const [toolName, input, phase, code] of cases) {
+    const relays = [];
+    const describer = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const reporter = progressModule.createProgressReporter({
+      sessionId: 'session-1', relay: (record) => { relays.push(record); }, now: () => observedAt,
+      describeNotification: describer.observe, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+    });
+    reporter.observe(conversationFrame({ deltas: [toolRow({ toolName, input })] }));
+    await reporter.flush();
+    assert.deepEqual(relays.map((record) => ({ phase: record.phase, code: record.code })), [{ phase, code }]);
+    assert.doesNotMatch(JSON.stringify(relays), /PRIVATE|npm test|edit\.txt|write\.txt/);
+    reporter.close();
+  }
+});
+
+test('throwing and rejecting relays are observational and cannot affect detailed progress or persistence', async () => {
+  for (const relay of [
+    () => { throw new Error('PRIVATE_RELAY_FAILURE'); },
+    async () => { throw new Error('PRIVATE_RELAY_REJECTION'); },
+  ]) {
+    const lines = []; const persisted = [];
+    const reporter = progressModule.createProgressReporter({
+      sessionId: 'session-a', write: (line) => lines.push(line), persist: (event) => persisted.push(event), relay, now: () => observedAt,
+      setInterval: () => ({ unref() {} }), clearInterval: () => {},
+    });
+    reporter.observe(notification('prompt_started'));
+    reporter.observe(notification('prompt_completed'));
+    await reporter.flush();
+    assert.equal(lines.length, 2); assert.equal(persisted.length, 2);
+    assert.doesNotMatch(lines.join('') + JSON.stringify(persisted), /PRIVATE_RELAY/);
+    reporter.close();
+  }
+});
+
+test('relay sink is serialized, terminal flush waits boundedly, and close drops queued emissions', async () => {
+  const calls = []; const completions = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', relay: (record) => {
+      calls.push(record);
+      return new Promise((resolve) => { completions.push(resolve); });
+    }, now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started'));
+  reporter.observe(notification('model_streaming'));
+  reporter.observe(notification('prompt_completed'));
+  reporter.stopAccepting();
+  assert.deepEqual(calls.map((record) => record.sequence), [1]);
+
+  completions.shift()(); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((record) => record.sequence), [1, 2]);
+  completions.shift()(); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((record) => record.sequence), [1, 2, 3]);
+
+  let flushed = false;
+  const flushing = reporter.flush().then(() => { flushed = true; });
+  await Promise.resolve(); assert.equal(flushed, false);
+  completions.shift()(); await flushing;
+  assert.equal(flushed, true);
+  reporter.close();
+
+  const lateCalls = []; let release = () => {};
+  const stalled = progressModule.createProgressReporter({
+    sessionId: 'session-a', relay: (record) => {
+      lateCalls.push(record.sequence);
+      return new Promise((resolve) => { release = resolve; });
+    }, now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  stalled.observe(notification('prompt_started'));
+  stalled.observe(notification('model_streaming'));
+  stalled.observe(notification('prompt_completed'));
+  await stalled.flush(Date.now());
+  stalled.close(); release(); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(lateCalls, [1]);
+});
+
+test('stopAccepting fences heartbeat and late semantic relay producers while draining accepted records', async () => {
+  const calls = []; const completions = []; let heartbeat = () => {}; let resolveDescription = () => {}; let currentTime = observedAt;
+  const delayedDescription = new Promise((resolve) => { resolveDescription = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', relay: (record) => {
+      calls.push(record);
+      return new Promise((resolve) => { completions.push(resolve); });
+    }, now: () => currentTime, describeNotification: () => delayedDescription,
+    setInterval: (callback) => { heartbeat = callback; return { unref() {} }; }, clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started'));
+  reporter.observe(notification('model_streaming'));
+  reporter.observe({ method: 'v4/conversation/frame', params: {} });
+  reporter.stopAccepting();
+  currentTime = '2026-08-08T00:00:21.000Z';
+  heartbeat();
+  assert.equal(reporter.observe(notification('prompt_completed')), null);
+  resolveDescription({ disposition: 'accepted', phase: 'online', events: [{ phase: 'running', message: 'LATE_PRIVATE_EVENT', observedAt }] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((record) => record.sequence), [1]);
+
+  completions.shift()(); await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((record) => record.sequence), [1, 2]);
+  completions.shift()(); await reporter.flush();
+  assert.deepEqual(calls.map(({ sequence, phase }) => ({ sequence, phase })), [
+    { sequence: 1, phase: 'starting' }, { sequence: 2, phase: 'running' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(calls), /LATE_PRIVATE_EVENT/);
+  reporter.close();
+});
+
 test('snapshot reads cannot start before accepted-boundary activation and begin on the first heartbeat', async () => {
   const lines = []; let heartbeat = () => {}; let reads = 0;
   const reporter = progressModule.createProgressReporter({

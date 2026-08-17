@@ -12,7 +12,7 @@ import { inspectRescueRoleStatus, runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
-import { createJobController, ownerIdForSession, withJobCancellationLock } from './lib/job-control.mjs';
+import { createJobController, ownerIdForSession, readBoundRescueStatus, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataRoot } from './lib/plugin-data.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
@@ -22,6 +22,7 @@ import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
+import { serializeRescueProgressRelay } from './lib/rescue-progress-relay.mjs';
 import { createStateStore, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
@@ -32,8 +33,15 @@ import { resolveForwardingExecutor, resolveRecordedSessionStart } from '../hooks
 const backgroundBindings = new WeakMap();
 const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
 const MANAGED_ROLE_STATUSES = new Set(['ready', 'restart-required', 'install-required', 'upgrade-required', 'drift', 'foreign-conflict', 'project-shadowed', 'higher-precedence-conflict', 'unsupported']);
+const SAFE_BOUND_STATUS_ERRORS = new Set([
+  'ACTIVE_TURN_EXPIRED', 'ACTIVE_TURN_NOT_FOUND', 'BOUND_RESCUE_STATUS_INPUT_INVALID',
+  'BOUND_RESCUE_STATUS_NOT_FOUND', 'BOUND_RESCUE_STATUS_UNAVAILABLE',
+  'EXECUTOR_IDENTITY_AMBIGUOUS', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_IDENTITY_INVALID',
+  'EXECUTOR_IDENTITY_NOT_FOUND', 'EXECUTOR_PARENT_TURN_MISMATCH', 'EXECUTOR_ROLE_UNAPPROVED',
+  'EXECUTOR_STATE_MISMATCH',
+]);
 
-/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
+/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
   const parsed = parseArgs(argv); const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
@@ -87,14 +95,29 @@ export async function runCompanion(argv, runtime = {}) {
     try { return { job: await cancelling.cancel(cwd, selected.id, caller.sessionId) }; }
     finally { await client.close().catch(() => {}); }
   }
-  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
 }
 
-/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,dependencies?:any,progressWriter?:(line:string)=>void,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
+/** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runDirectInvocation(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
-  const [entry, command, choice, ...extra] = argv; if (!['invoke', 'invoke-choice'].includes(entry) || typeof command !== 'string' || extra.length) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
+  const [entry, command, choice, ...extra] = argv;
+  const statusInvocation = entry === 'invoke-status' && command === 'rescue' && choice === undefined && extra.length === 0;
+  if (!statusInvocation && (!['invoke', 'invoke-choice'].includes(entry) || typeof command !== 'string' || extra.length)) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
   const ambientThreadId = env.CODEX_THREAD_ID; if (typeof ambientThreadId !== 'string' || !ambientThreadId) throw new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' });
+  if (statusInvocation) {
+    let canonicalWorkspace;
+    try {
+      canonicalWorkspace = (await resolveWorkspaceStorage({ dataRoot, workspace: cwd })).workspacePath;
+      const executor = await resolveForwardingExecutor(dataRoot, canonicalWorkspace, ambientThreadId);
+      const caller = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: canonicalWorkspace });
+      if (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The Rescue child is not bound to the active parent turn.', { category: 'authorization', remedy: 'Retry from the original parent thread with one newly started Rescue child.' });
+      return await readBoundRescueStatus({ store: createStateStore({ dataRoot }), workspace: canonicalWorkspace, executor });
+    } catch (error) {
+      if (error instanceof PluginError && SAFE_BOUND_STATUS_ERRORS.has(error.code)) throw error;
+      throw new PluginError('BOUND_RESCUE_STATUS_UNAVAILABLE', 'Bound Rescue status is unavailable.', { category: 'state', remedy: 'Continue waiting on the original Rescue foreground execution.' });
+    }
+  }
   let sessionId = ambientThreadId; let executorAgentId; let executor;
   if (command === 'rescue') { executor = await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: entry === 'invoke-choice' }); sessionId = executor.parentSessionId; executorAgentId = executor.agentId; }
   const identity = createIdentityStore({ dataRoot }); const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd }); const invocations = createInvocationStore({ dataRoot });
@@ -109,7 +132,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
       return { type: 'needs-choice', choices: ['wait', 'background'] };
     }
   }
-  const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+  const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
   if (output?.type === 'needs-choice') await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv }, ...(executorAgentId === undefined ? {} : { executorAgentId }) });
   return output;
 }
@@ -226,7 +249,7 @@ async function executeReserved(context) {
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
     const executionClient = client; client = undefined;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); } });
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); } });
   } catch (error) {
     await client?.close().catch(() => {});
     const current = await store.readJob(cwd, job.id).catch(() => null);
@@ -430,12 +453,15 @@ async function failQueuedJob(store, workspace, jobId, error) {
 }
 
 async function main() {
-  let output; const entry = process.argv[2]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = entry === 'invoke' || entry === 'invoke-choice'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
+  let output; const entry = process.argv[2]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = entry === 'invoke' || entry === 'invoke-choice' || entry === 'invoke-status'; const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
+  const boundStatusDirect = process.argv.length === 4 && entry === 'invoke-status' && process.argv[3] === 'rescue';
+  const rescueDirect = direct && process.argv[3] === 'rescue';
   const signalController = !setup && !worker ? createForegroundSignalController({ process }) : null;
   try {
     const authorization = setup || roleStatus || direct ? undefined : await readInternalEnvelope(3, { signal: signalController?.signal });
     const foregroundProgress = worker ? {} : {
       progressWriter: (/** @type {string} */ line) => process.stderr.write(line),
+      ...(rescueDirect ? { progressRelayWriter: (/** @type {{sequence:number,phase:string,code:string,observedAt:string}} */ record) => process.stderr.write(serializeRescueProgressRelay(record)) } : {}),
       progressDependencies: { now: () => new Date().toISOString(), setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval },
       ...(signalController ? { signal: signalController.signal } : {}),
     };
@@ -449,7 +475,7 @@ async function main() {
       if (typeof error.details.exitCode === 'number') process.exitCode = error.details.exitCode;
       return;
     }
-    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = entry !== 'setup' && entry !== 'role-status' && entry !== 'invoke' && entry !== 'invoke-choice' && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1') process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
+    if (output?.type === 'background') await failBackgroundDelivery(output, error); const envelope = errorEnvelope(error); const protectedOutput = entry !== 'setup' && entry !== 'role-status' && entry !== 'invoke' && entry !== 'invoke-choice' && entry !== 'invoke-status' && process.env.ZCODE_BACKGROUND_WORKER !== '1'; if (protectedOutput) try { await writeInternalResponse(envelope); } catch { /* no trusted response channel */ } if (process.env.ZCODE_BACKGROUND_WORKER !== '1') process.stdout.write(renderOutput(envelope, { json: true })); if (process.env.ZCODE_DEBUG === '1' && !boundStatusDirect) process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`); process.exitCode = error instanceof PluginError && error.category === 'validation' ? 2 : 1;
   }
   finally { signalController?.cleanup(); }
 }

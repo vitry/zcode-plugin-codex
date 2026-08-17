@@ -7,7 +7,7 @@ import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
-import { createJobController, durableCancelledWinner, ownerIdForSession } from '../scripts/lib/job-control.mjs';
+import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { executeJob } from '../scripts/lib/review.mjs';
@@ -33,6 +33,60 @@ test('owner IDs are stable, opaque and session-confined', () => {
   assert.equal(ownerIdForSession('session-a'), ownerIdForSession('session-a'));
   assert.notEqual(ownerIdForSession('session-a'), ownerIdForSession('session-b'));
   assert.doesNotMatch(ownerIdForSession('session-a'), /session-a/);
+});
+
+test('bound Rescue status selects the exact parent turn and returns only the fixed safe projection', async () => {
+  const preview = ['one', 'two', 'three', 'four', 'five'];
+  const jobs = [
+    { id: 'job-wrong-turn', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'other-turn', command: 'rescue', status: 'running' },
+    { id: 'job-wrong-command', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'review', status: 'running' },
+    { id: 'job-bound', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'rescue', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:00.000Z', progressPreview: preview, workerLeaseId: 'PRIVATE_WORKER', resultArtifact: 'PRIVATE_ARTIFACT' },
+  ];
+  let listed;
+  const result = await readBoundRescueStatus({
+    store: { listOwnedJobs: async (/** @type {string} */ workspace, /** @type {string} */ ownerSessionId) => { listed = { workspace, ownerSessionId }; return jobs; } },
+    workspace: '/repo',
+    executor: { parentSessionId: 'parent', parentTurnId: 'parent-turn' },
+  });
+
+  assert.deepEqual(listed, { workspace: '/repo', ownerSessionId: 'parent' });
+  assert.deepEqual(Object.keys(result), ['type', 'status', 'phase', 'lastActivityAt', 'progressPreview', 'terminal']);
+  assert.deepEqual(result, {
+    type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:00.000Z',
+    progressPreview: ['two', 'three', 'four', 'five'], terminal: false,
+  });
+  assert.notEqual(result.progressPreview, preview);
+  assert.doesNotMatch(JSON.stringify(result), /job-|parent|repo|worker|artifact|PRIVATE/i);
+
+  const terminal = await readBoundRescueStatus({
+    store: { listOwnedJobs: async () => [{ ...jobs[2], status: 'succeeded', phase: 'finalizing' }] },
+    workspace: '/repo', executor: { parentSessionId: 'parent', parentTurnId: 'parent-turn' },
+  });
+  assert.equal(terminal.terminal, true);
+  assert.equal(terminal.status, 'succeeded');
+});
+
+test('bound Rescue status fails closed unless exactly one workspace and turn match exists', async () => {
+  const executor = { parentSessionId: 'parent', parentTurnId: 'parent-turn' };
+  const matching = { id: 'job-bound', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'rescue', status: 'succeeded', updatedAt: '2026-08-17T00:00:00.000Z' };
+  for (const jobs of [
+    [],
+    [matching, { ...matching, id: 'job-second' }],
+    [{ ...matching, workspace: '/foreign' }],
+    [{ ...matching, ownerTurnId: 'other-turn' }],
+    [{ ...matching, command: 'review' }],
+  ]) {
+    await assert.rejects(
+      readBoundRescueStatus({ store: { listOwnedJobs: async () => jobs }, workspace: '/repo', executor }),
+      { code: 'BOUND_RESCUE_STATUS_NOT_FOUND' },
+    );
+  }
+  await assert.rejects(readBoundRescueStatus({ store: {}, workspace: '/repo', executor }), { code: 'BOUND_RESCUE_STATUS_INPUT_INVALID' });
+  await assert.rejects(readBoundRescueStatus({ store: { listOwnedJobs: async () => [matching] }, workspace: '/repo', executor: /** @type {any} */ ({}) }), { code: 'BOUND_RESCUE_STATUS_INPUT_INVALID' });
+  await assert.rejects(
+    readBoundRescueStatus({ store: { listOwnedJobs: async () => { throw new PluginError('PRIVATE_STATE_FAILURE', 'PRIVATE_JOB_ID'); } }, workspace: '/repo', executor }),
+    (/** @type {any} */ error) => error?.code === 'BOUND_RESCUE_STATUS_UNAVAILABLE' && error.message === 'Bound Rescue status is unavailable.' && Object.keys(error.details).length === 0,
+  );
 });
 
 test('latest selection is canonical-workspace and owner confined', async () => {
@@ -112,27 +166,30 @@ test('wait interrupts a pending poll and handles its later rejection', async () 
   await new Promise((resolve) => setImmediate(resolve));
 });
 
-test('wait clears its polling timer and abort listener when interrupted', async () => {
+test('wait clears its polling timer and abort listener when interrupted', { timeout: 5_000 }, async () => {
   const { workspace, store } = await setup();
   const job = await store.reserveJob({ workspace, ...reservation });
   const timerToken = { timer: true };
+  /** @type {()=>void} */ let releasePoll = () => {};
+  /** @type {Promise<void>} */ const pollGate = new Promise((resolve) => { releasePoll = resolve; });
   /** @type {()=>void} */ let announceTimer = () => {};
   /** @type {Promise<void>} */ const timerStarted = new Promise((resolve) => { announceTimer = resolve; });
   let cleared;
   const controller = createJobController({
     store,
     pollIntervalMs: 1_000,
+    beforeWaitPoll: () => pollGate,
     setTimeout: () => { announceTimer(); return timerToken; },
     clearTimeout: (token) => { cleared = token; },
   });
   const abort = new AbortController();
   const interruption = new PluginError('JOB_INTERRUPTED', 'Interrupted by SIGINT.');
   const waiting = controller.wait(workspace, job.id, 10_000, abort.signal);
-  const enteredDelay = await Promise.race([timerStarted.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 25))]);
+  releasePoll();
+  await timerStarted;
   assert.equal(getEventListeners(abort.signal, 'abort').length, 1);
   abort.abort(interruption);
   await assert.rejects(waiting, (error) => error === interruption);
-  assert.equal(enteredDelay, true);
   assert.equal(cleared, timerToken);
   assert.equal(getEventListeners(abort.signal, 'abort').length, 0);
 });
@@ -708,6 +765,8 @@ test('executor reports only same-session progress and drains persistence before 
   /** @type {string[]} */
   const lines = [];
   /** @type {any[]} */
+  const relays = [];
+  /** @type {any[]} */
   const persisted = [];
   /** @type {string[]} */
   const order = [];
@@ -749,6 +808,7 @@ test('executor reports only same-session progress and drains persistence before 
   const execution = executeJob({
     job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task',
     progressWriter: (line) => lines.push(line),
+    progressRelayWriter: (record) => { relays.push(record); },
     progressDependencies: {
       now: () => new Date().toISOString(),
       setInterval: (callback) => { intervalCallback = callback; return { unref() {} }; },
@@ -770,6 +830,13 @@ test('executor reports only same-session progress and drains persistence before 
     '[zcode] ZCode completed the delegated turn.\n',
   ]);
   assert.deepEqual(persisted.map((event) => event.message), lines.map((line) => line.slice(8, -1)));
+  assert.deepEqual(relays.map(({ sequence, phase, code }) => ({ sequence, phase, code })), [
+    { sequence: 1, phase: 'starting', code: 'started' },
+    { sequence: 2, phase: 'investigating', code: 'tool-active' },
+    { sequence: 3, phase: 'running', code: 'model-active' },
+    { sequence: 4, phase: 'investigating', code: 'tool-active' },
+    { sequence: 5, phase: 'finalizing', code: 'finalizing' },
+  ]);
   assert.ok(order.lastIndexOf('persist:finalizing') < order.indexOf('transition:succeeded'));
   assert.equal(order.includes('persist:waiting'), false);
   assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
@@ -826,7 +893,7 @@ test('writer failure stays observational while progress persists and the exact r
     send: async () => ({ inputId: 'input-writer-failure', stateRevision: 1 }), waitForCompletion: async () => {},
     readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'assistant-writer-failure', parentMessageId: 'input-writer-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {},
   };
-  const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: () => { throw new Error('stderr closed'); } });
+  const result = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: () => { throw new Error('stderr closed'); }, progressRelayWriter: () => { throw new Error('PRIVATE_RELAY_FAILURE'); } });
   assert.equal(result.result, 'done');
   assert.ok(persisted.some((event) => event.message === 'ZCode started the delegated turn.'));
   assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');

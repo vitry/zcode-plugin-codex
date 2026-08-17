@@ -11,6 +11,53 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 
 /**
+ * Read the one Rescue job bound to a trusted forwarding executor without
+ * exposing any durable identity or execution metadata.
+ * @param {{store:any,workspace:string,executor:{parentSessionId:string,parentTurnId:string}}} input
+ */
+export async function readBoundRescueStatus(input) {
+  if (!input?.store || typeof input.store.listOwnedJobs !== 'function'
+    || typeof input.workspace !== 'string' || input.workspace.length === 0
+    || typeof input.executor?.parentSessionId !== 'string' || input.executor.parentSessionId.length === 0
+    || typeof input.executor?.parentTurnId !== 'string' || input.executor.parentTurnId.length === 0) {
+    throw new PluginError('BOUND_RESCUE_STATUS_INPUT_INVALID', 'The bound Rescue status input is invalid.', {
+      category: 'authorization', remedy: 'Invoke status only from the active Rescue child.',
+    });
+  }
+  let jobs;
+  try { jobs = await input.store.listOwnedJobs(input.workspace, input.executor.parentSessionId); }
+  catch { throw boundRescueStatusUnavailable(); }
+  if (!Array.isArray(jobs)) throw boundRescueStatusUnavailable();
+  const matches = jobs.filter((/** @type {any} */ job) => job.workspace === input.workspace
+    && job.ownerSessionId === input.executor.parentSessionId
+    && job.ownerTurnId === input.executor.parentTurnId
+    && job.command === 'rescue');
+  if (matches.length !== 1) {
+    throw new PluginError('BOUND_RESCUE_STATUS_NOT_FOUND', 'No unique bound Rescue status is available.', {
+      category: 'authorization', remedy: 'Continue waiting on the original Rescue foreground execution.',
+    });
+  }
+  const job = matches[0];
+  const progressPreview = Array.isArray(job.progressPreview)
+    ? job.progressPreview.filter((/** @type {unknown} */ value) => typeof value === 'string').slice(-4)
+    : [];
+  return {
+    type: 'rescue-status',
+    status: job.status,
+    phase: job.phase ?? null,
+    lastActivityAt: job.lastActivityAt ?? job.updatedAt ?? null,
+    progressPreview: [...progressPreview],
+    terminal: TERMINAL.has(job.status),
+  };
+}
+
+function boundRescueStatusUnavailable() {
+  return new PluginError('BOUND_RESCUE_STATUS_UNAVAILABLE', 'Bound Rescue status is unavailable.', {
+    category: 'state', remedy: 'Continue waiting on the original Rescue foreground execution.',
+  });
+}
+
+/**
  * Serialize executor finalization with cancellation, using the same durable workspace lock.
  * @param {{dataRoot:string,workspace:string,jobId:string,storage?:any,timeoutMs?:number}} input
  * @param {()=>Promise<any>} operation

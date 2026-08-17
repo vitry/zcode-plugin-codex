@@ -144,7 +144,7 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'cumulative-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
@@ -420,6 +420,37 @@ test('conversation online progress reaches stderr and preview while initial and 
   assert.equal(requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
 });
 
+test('observed unknown conversation rows and a sequence gap preserve later safe progress', async () => {
+  const context = await fixture();
+  const scenario = await deterministicConversationScenario(context, 'observed-traffic');
+  const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
+  assert.match(visible, /ZCode turn started\./);
+  assert.match(visible, /Read completed \(25ms\)\./);
+  assert.doesNotMatch(visible, /PRIVATE_OBSERVED_(?:UNKNOWN|STALE|INTERLEAVED)/);
+  assert.equal(scenario.output.result, 'done');
+  assert.equal(scenario.stored.progressProbe.state, 'online');
+  assert.equal(scenario.stored.progressProbe.acceptedOnline, 2);
+  assert.equal(scenario.stored.progressProbe.rejected.sequence, 1);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1);
+});
+
+test('cumulative and reset conversation ranges emit each known lifecycle once', async () => {
+  const context = await fixture();
+  const scenario = await deterministicConversationScenario(context, 'cumulative-ranges');
+  const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
+  assert.equal(scenario.lines.filter((line) => line === '[zcode] ZCode turn started.\n').length, 1);
+  assert.equal(scenario.lines.filter((line) => line === '[zcode] Running tool: Read.\n').length, 1);
+  assert.equal(scenario.lines.filter((line) => line === '[zcode] Read completed (25ms).\n').length, 1);
+  assert.doesNotMatch(visible, /PRIVATE_CUMULATIVE_ROW/);
+  assert.equal(scenario.output.result, 'done');
+  assert.equal(scenario.stored.progressProbe.state, 'online');
+  assert.equal(scenario.stored.progressProbe.acceptedOnline, 4);
+  assert.equal(scenario.stored.progressProbe.rejected.sequence, 0);
+  assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1);
+});
+
 test('initial-only conversation frames deterministically degrade on heartbeat without leaking frame material', async () => {
   const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'initial-only', { heartbeat: true });
   const diagnostic = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
@@ -513,12 +544,13 @@ test('malformed conversation rejection burst degrades once without leaking rejec
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one progress read remains separate from the final authoritative read');
 });
 
-test('repeated sequence gaps reach the owner-visible rejection threshold and activate fallback', async () => {
+test('one sequence gap remains diagnostic while later continuous frames keep progress online', async () => {
   const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'sequence-gap');
-  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.stored.progressProbe.rejected.sequence, 4);
-  assert.equal(scenario.stored.progressProbe.state, 'snapshot-fallback');
+  assert.equal(scenario.output.result, 'done'); assert.equal(scenario.stored.progressProbe.rejected.sequence, 1);
+  assert.equal(scenario.stored.progressProbe.acceptedOnline, 3);
+  assert.equal(scenario.stored.progressProbe.state, 'online');
   assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
-  assert.equal(scenario.lines.filter((line) => /conversation frames were unavailable/.test(line)).length, 1);
+  assert.equal(scenario.lines.filter((line) => /conversation frames were unavailable/.test(line)).length, 0);
   const visible = `${scenario.lines.join('')}${JSON.stringify(scenario.status)}`;
   assert.doesNotMatch(visible, /PRIVATE_SEQUENCE_FRAME|logicalFrame|ordinal|fromSeq|toSeq/);
 });

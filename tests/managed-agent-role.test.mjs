@@ -22,6 +22,7 @@ const template = `developer_instructions = """
 Root={{PLUGIN_ROOT}}
 Again={{PLUGIN_ROOT}}
 Last={{PLUGIN_ROOT}}
+Status={{PLUGIN_ROOT}}
 """
 `;
 
@@ -148,6 +149,8 @@ test('managed Rescue role rendering deterministically TOML-escapes only the cano
   const windows = renderManagedRescueRole({ template, pluginRoot: 'C:\\Users\\me\\ZCode' });
   assert.match(windows, /C:\\\\Users\\\\me\\\\ZCode/);
   assert.throws(() => renderManagedRescueRole({ template: `${template} task={{TASK}}`, pluginRoot: '/opt/zcode' }), { code: 'MANAGED_ROLE_TEMPLATE_INVALID' });
+  assert.throws(() => renderManagedRescueRole({ template: template.replace('Status={{PLUGIN_ROOT}}\n', ''), pluginRoot: '/opt/zcode' }), { code: 'MANAGED_ROLE_TEMPLATE_INVALID' });
+  assert.throws(() => renderManagedRescueRole({ template: template.replace('Status={{PLUGIN_ROOT}}', 'Status={{PLUGIN_ROOT}}\nExtra={{PLUGIN_ROOT}}'), pluginRoot: '/opt/zcode' }), { code: 'MANAGED_ROLE_TEMPLATE_INVALID' });
   assert.throws(() => renderManagedRescueRole({ template, pluginRoot: '/opt/zcode\nsecret' }), { code: 'MANAGED_ROLE_ROOT_INVALID' });
 });
 

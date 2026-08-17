@@ -64,12 +64,13 @@ export function normalizeZCodeProgress(notification, sessionId, observedAt) {
 }
 
 /**
- * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>false|(()=>unknown),describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
+ * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,relay?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>false|(()=>unknown),describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
  */
 export function createProgressReporter({
   sessionId,
   deferred = false,
   write,
+  relay,
   persist,
   persistProbe,
   activateSnapshotFallback: configuredSnapshotFallback,
@@ -86,10 +87,10 @@ export function createProgressReporter({
   let lastActivityAt = active ? now() : null;
   /** @type {string|null} */
   let previousKey = null;
-  /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */
+  /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number,relaySource:string}>} */
   const buffered = [];
   const bufferedKeys = new Set();
-  /** @type {Array<{kind:'event',event:{phase:string,message:string,observedAt:string},sequence:number}|{kind:'descriptor',notification:unknown,observedAt:string,sequence:number,state:'pending'|'ready'|'dropped',events:Array<{phase:string,message:string,observedAt:string}>}>} */
+  /** @type {Array<{kind:'event',event:{phase:string,message:string,observedAt:string},sequence:number,relaySource:string}|{kind:'descriptor',notification:unknown,observedAt:string,sequence:number,state:'pending'|'ready'|'dropped',events:Array<{phase:string,message:string,observedAt:string}>,relaySource:string}>} */
   const logicalPending = [];
   /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */ const writerPending = [];
   /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */ const persistPending = [];
@@ -105,6 +106,11 @@ export function createProgressReporter({
   let observationSequence = 0;
   /** @type {number|null} */ let terminalSequence = null;
   let terminalDispatched = false;
+  let relaySequence = 0; let relayDisabled = false; let relayClosed = false;
+  /** @type {string|null} */ let previousRelayPhase = null;
+  /** @type {Array<{sequence:number,phase:string,code:string,observedAt:string}>} */ const relayPending = [];
+  /** @type {Promise<void>|null} */ let relayInFlight = null;
+  let relayEpoch = 0;
   const progressProbe = {
     state: 'probing', subscriptionAcknowledged: false, framesReceived: 0,
     acceptedInitial: 0, acceptedOnline: 0, acceptedRecovery: 0,
@@ -162,7 +168,7 @@ export function createProgressReporter({
       const observedAt = now(); if (!validTimestamp(observedAt)) return;
       const event = { phase: 'waiting', message, observedAt };
       const sequence = observationSequence; observationSequence += 1;
-      if (!active && terminalSequence === null) bufferEvent(event, sequence);
+      if (!active && terminalSequence === null) bufferEvent(event, sequence, 'none');
       else dispatchDiagnostic(event, sequence);
     });
     return true;
@@ -170,7 +176,7 @@ export function createProgressReporter({
   /** @type {any} */
   let timer = null;
   const startTimer = () => {
-    if (timer !== null || typeof write !== 'function' && typeof persistProbe !== 'function' && typeof activateSnapshotFallback !== 'function') return;
+    if (timer !== null || typeof write !== 'function' && typeof relay !== 'function' && typeof persistProbe !== 'function' && typeof activateSnapshotFallback !== 'function') return;
     timer = setIntervalFn(() => {
       activateCompatibilityBoundary(true);
       if (progressProbe.state === 'snapshot-fallback') {
@@ -184,8 +190,13 @@ export function createProgressReporter({
       const seconds = Math.floor(elapsedMs / 1_000);
       try { if (!writerDisabled && typeof write === 'function') write(`[zcode] Still waiting for ZCode; last activity ${seconds}s ago.\n`); }
       catch { writerDisabled = true; diagnose('writer-disabled'); }
+      emitRelay('waiting', 'waiting', currentTime, true);
     }, PROGRESS_HEARTBEAT_MS);
     timer?.unref?.();
+  };
+  const stopTimer = () => {
+    if (timer === null) return;
+    clearIntervalFn(timer); timer = null;
   };
   /** @param {boolean} requireAcceptedBoundary */
   const activateCompatibilityBoundary = (requireAcceptedBoundary = false) => {
@@ -225,7 +236,7 @@ export function createProgressReporter({
       if (!boundedEvents.every(validPublicEvent)) throw new Error('snapshot progress event invalid');
       for (const event of boundedEvents) {
         const sequence = observationSequence; observationSequence += 1;
-        enqueueLogical({ kind: 'event', event, sequence });
+        enqueueLogical({ kind: 'event', event, sequence, relaySource: 'tool' });
       }
     }).catch(() => {
       if (closed || !accepting || epoch !== snapshotEpoch || progressProbe.state !== 'snapshot-fallback') return;
@@ -318,8 +329,51 @@ export function createProgressReporter({
     const entry = { event, sequence };
     if (persistInFlight === null) startPersist(entry); else retainBounded(persistPending, entry);
   };
-  /** @param {{phase:string,message:string,observedAt:string}} event @param {number} [sequence] */
-  const dispatch = (event, sequence = observationSequence++) => {
+  /** @param {{sequence:number,phase:string,code:string,observedAt:string}} record */
+  const startRelay = (record) => {
+    if (typeof relay !== 'function' || relayDisabled) return;
+    const epoch = relayEpoch;
+    let operation;
+    try { operation = Promise.resolve(relay(record)); }
+    catch { operation = Promise.reject(new Error('progress relay failed')); }
+    const tracked = operation.catch(() => {
+      if (epoch === relayEpoch) disableRelay();
+    }).then(() => {
+      if (epoch !== relayEpoch) return;
+      relayInFlight = null;
+      const next = relayPending.shift(); if (next) startRelay(next);
+    });
+    relayInFlight = tracked;
+  };
+  /** @param {{sequence:number,phase:string,code:string,observedAt:string}} record */
+  const enqueueRelay = (record) => {
+    if (relayInFlight === null) { startRelay(record); return; }
+    relayPending.push(record);
+    if (relayPending.length <= MAX_PROGRESS_PENDING_EVENTS) return;
+    const removeIndex = relayPending.findIndex((entry) => entry.phase !== 'finalizing');
+    if (removeIndex !== -1) relayPending.splice(removeIndex, 1); else relayPending.pop();
+  };
+  /** @param {string} phase @param {string} code @param {string} observedAt @param {boolean} [repeat] */
+  const emitRelay = (phase, code, observedAt, repeat = false) => {
+    if (relayClosed || relayDisabled || typeof relay !== 'function' || !repeat && phase === previousRelayPhase) return;
+    previousRelayPhase = phase;
+    const record = { sequence: relaySequence + 1, phase, code, observedAt };
+    relaySequence += 1;
+    enqueueRelay(record);
+    if (phase === 'finalizing') relayClosed = true;
+  };
+  /** @param {{phase:string,message:string,observedAt:string}} event @param {string} source */
+  const relayEvent = (event, source) => {
+    if (event.phase === 'starting') return emitRelay('starting', 'started', event.observedAt);
+    if (event.phase === 'waiting') return emitRelay('waiting', 'waiting', event.observedAt);
+    if (event.phase === 'finalizing') return emitRelay('finalizing', 'finalizing', event.observedAt);
+    if (event.phase === 'editing' || source === 'editing') return emitRelay('editing', 'editing', event.observedAt);
+    if (event.phase === 'verifying' || source === 'verifying') return emitRelay('verifying', 'verifying', event.observedAt);
+    if (event.phase === 'investigating' || source === 'tool') return emitRelay('investigating', 'tool-active', event.observedAt);
+    return emitRelay('running', 'model-active', event.observedAt);
+  };
+  /** @param {{phase:string,message:string,observedAt:string}} event @param {number} [sequence] @param {string} [relaySource] */
+  const dispatch = (event, sequence = observationSequence++, relaySource = 'model') => {
     if (terminalSequence !== null && sequence > terminalSequence || terminalDispatched) return null;
     if (!validTimestamp(lastActivityAt) || Date.parse(event.observedAt) > Date.parse(lastActivityAt)) lastActivityAt = event.observedAt;
     const key = `${event.phase}\u0000${event.message}`;
@@ -327,6 +381,7 @@ export function createProgressReporter({
     previousKey = key;
     if (event.phase === 'finalizing') terminalDispatched = true;
     enqueueWriter(event, sequence); enqueuePersist(event, sequence);
+    if (relaySource !== 'none') relayEvent(event, relaySource);
     return event;
   };
   /** Diagnostics remain observational and may follow terminal semantic progress. @param {{phase:string,message:string,observedAt:string}} event @param {number} sequence */
@@ -363,6 +418,9 @@ export function createProgressReporter({
         ? Array.isArray(description) ? description : recordDescriptionResult(description, epoch)
         : Array.isArray(description) ? description : plainObject(description) && description.disposition === 'accepted' && Array.isArray(description.events) ? description.events : [];
       if (!Array.isArray(events)) return;
+      item.relaySource = plainObject(description) && description.disposition === 'accepted'
+        ? relaySourceForAcceptedDescriptor(item.notification)
+        : 'tool';
       item.events = events.slice(0, MAX_PROGRESS_PENDING_EVENTS).filter((event) => validPublicEvent(event) && (current || event.phase !== 'finalizing'));
       for (const describedEvent of item.events) {
         if (current && describedEvent.phase === 'finalizing') {
@@ -395,7 +453,7 @@ export function createProgressReporter({
         diagnose('conversation-frame-overflow');
       }
     }
-    enqueueLogical({ kind: 'descriptor', ...item, state: 'pending', events: [] });
+    enqueueLogical({ kind: 'descriptor', ...item, state: 'pending', events: [], relaySource: 'tool' });
   };
   const pumpLogical = () => {
     while (logicalPending.length > 0) {
@@ -409,12 +467,12 @@ export function createProgressReporter({
         }
         logicalPending.shift();
         for (const event of item.events) {
-          if (!active) bufferEvent(event, item.sequence); else dispatch(event, item.sequence);
+          if (!active) bufferEvent(event, item.sequence, item.relaySource); else dispatch(event, item.sequence, item.relaySource);
         }
         continue;
       }
       logicalPending.shift();
-      if (!active) bufferEvent(item.event, item.sequence); else dispatch(item.event, item.sequence);
+      if (!active) bufferEvent(item.event, item.sequence, item.relaySource); else dispatch(item.event, item.sequence, item.relaySource);
     }
     if (activeDescriptor === null) descriptorOverflowed = false;
   };
@@ -464,7 +522,7 @@ export function createProgressReporter({
       if (event === null) return null;
       const terminal = event.phase === 'finalizing';
       if (terminal) terminalSequence = sequence;
-      enqueueLogical({ kind: 'event', event, sequence }); return event;
+      enqueueLogical({ kind: 'event', event, sequence, relaySource: relaySourceForNotification(notification) }); return event;
     },
     /** @param {unknown} initialNotification */
     activate(initialNotification) {
@@ -472,15 +530,15 @@ export function createProgressReporter({
       const activatedAt = now(); active = true; lastActivityAt = activatedAt; startTimer();
       persistProbeSnapshot();
       const initial = normalizeZCodeProgress(initialNotification, sessionId, activatedAt);
-      if (initial) dispatch(initial, -1);
-      for (const { event, sequence } of buffered.sort((left, right) => left.sequence - right.sequence)) dispatch({ ...event, observedAt: activatedAt }, sequence);
+      if (initial) dispatch(initial, -1, relaySourceForNotification(initialNotification));
+      for (const { event, sequence, relaySource } of buffered.sort((left, right) => left.sequence - right.sequence)) dispatch({ ...event, observedAt: activatedAt }, sequence, relaySource);
       buffered.length = 0; bufferedKeys.clear(); pumpLogical(); return true;
     },
     /** @param {string} kind */
     diagnose(kind) { return diagnose(kind); },
     stopAccepting() {
       if (!accepting) return;
-      accepting = false; descriptorEpoch += 1;
+      accepting = false; relayClosed = true; stopTimer(); descriptorEpoch += 1;
       for (const item of logicalPending) if (item.kind === 'descriptor' && item.state === 'pending' && item !== activeDescriptor) item.state = 'dropped';
       descriptorOverflowed = false; pumpLogical();
     },
@@ -496,46 +554,46 @@ export function createProgressReporter({
         diagnose('progress-flush-timeout'); await Promise.resolve();
       }
       const sinkBudget = remaining(deadline);
-      const [writerDrained, persistenceDrained, probePersistenceDrained] = await Promise.all([
-        waitWithin(drainWriter(), sinkBudget), waitWithin(drainPersistence(), sinkBudget), waitWithin(drainProbePersistence(), sinkBudget),
+      const [writerDrained, persistenceDrained, probePersistenceDrained, relayDrained] = await Promise.all([
+        waitWithin(drainWriter(), sinkBudget), waitWithin(drainPersistence(), sinkBudget), waitWithin(drainProbePersistence(), sinkBudget), waitWithin(drainRelay(), sinkBudget),
       ]);
-      if (!writerDrained || !persistenceDrained || !probePersistenceDrained) {
+      if (!writerDrained || !persistenceDrained || !probePersistenceDrained || !relayDrained) {
         diagnose('progress-flush-timeout'); await Promise.resolve();
         if (!writerDrained) disableWriter();
         if (!persistenceDrained) disablePersist();
         if (!probePersistenceDrained) disableProbePersist();
+        if (!relayDrained) disableRelay();
         const finalBudget = remaining(deadline);
         await Promise.all([
           writerDisabled ? Promise.resolve() : waitWithin(drainWriter(), finalBudget),
           persistDisabled ? Promise.resolve() : waitWithin(drainPersistence(), finalBudget),
           probePersistInFlight === null ? Promise.resolve() : waitWithin(drainProbePersistence(), finalBudget),
+          relayInFlight === null ? Promise.resolve() : waitWithin(drainRelay(), finalBudget),
         ]);
       }
       return true;
     },
     close() {
       cleanupSnapshotFallback();
-      accepting = false; closed = true; buffered.length = 0; bufferedKeys.clear();
+      accepting = false; closed = true; relayClosed = true; buffered.length = 0; bufferedKeys.clear();
       disableProbePersist();
       descriptorEpoch += 1;
       for (const item of logicalPending) if (item.kind === 'descriptor') item.state = 'dropped';
       activeDescriptor = null; descriptorInFlight = null; pumpLogical(); logicalPending.length = 0;
-      disableWriter(); disablePersist();
-      if (timer === null) return;
-      clearIntervalFn(timer);
-      timer = null;
+      disableWriter(); disablePersist(); disableRelay();
+      stopTimer();
     },
   };
 
   /** @param {{phase:string,message:string,observedAt:string}} event */
-  function bufferEvent(event, sequence = observationSequence++) {
+  function bufferEvent(event, sequence = observationSequence++, relaySource = 'model') {
     const key = `${event.phase}\u0000${event.message}`;
     if (bufferedKeys.has(key)) return;
     if (buffered.length === MAX_PROGRESS_PREVIEW_ENTRIES) {
       const removed = buffered.shift();
       if (removed) bufferedKeys.delete(`${removed.event.phase}\u0000${removed.event.message}`);
     }
-    buffered.push({ event, sequence }); bufferedKeys.add(key);
+    buffered.push({ event, sequence, relaySource }); bufferedKeys.add(key);
   }
 
   async function drainDescriptors() {
@@ -551,10 +609,12 @@ export function createProgressReporter({
   }
 
   async function drainWriter() { while (writerInFlight !== null) await writerInFlight; }
+  async function drainRelay() { while (relayInFlight !== null) await relayInFlight; }
 
   function disableWriter() { writerEpoch += 1; writerDisabled = true; writerInFlight = null; writerPending.length = 0; }
   function disablePersist() { persistEpoch += 1; persistDisabled = true; persistInFlight = null; persistPending.length = 0; }
   function disableProbePersist() { probePersistInFlight = null; probePersistPending = null; }
+  function disableRelay() { relayEpoch += 1; relayDisabled = true; relayInFlight = null; relayPending.length = 0; }
 }
 
 /** @param {Promise<void>} operation @param {number} milliseconds */
@@ -596,6 +656,36 @@ function hasControl(value) { return [...value].some((character) => { const codeP
 function validTimestamp(value) {
   if (typeof value !== 'string' || value.length === 0) return false;
   try { return new Date(value).toISOString() === value; } catch { return false; }
+}
+
+/** @param {unknown} notification */
+function relaySourceForNotification(notification) {
+  if (!plainObject(notification) || !plainObject(notification.params)) return 'model';
+  return ['tool_call_started', 'tool_call_progress', 'tool_call_result'].includes(notification.params.reason) ? 'tool' : 'model';
+}
+
+/** Derive only a fixed category after the conversation describer accepted the frame. @param {unknown} notification */
+function relaySourceForAcceptedDescriptor(notification) {
+  try {
+    if (!plainObject(notification) || !plainObject(notification.params) || !plainObject(notification.params.frame)
+      || !plainObject(notification.params.frame.payload) || !Array.isArray(notification.params.frame.payload.deltas)
+      || notification.params.frame.payload.deltas.length > 64) return 'tool';
+    let verifying = false;
+    for (const delta of notification.params.frame.payload.deltas) {
+      const row = plainObject(delta) && plainObject(delta.row) ? delta.row : null;
+      if (row?.kind !== 'toolCall' || typeof row.toolName !== 'string' || Buffer.byteLength(row.toolName) > 256) continue;
+      if (row.toolName === 'Edit' || row.toolName === 'Write') return 'editing';
+      if (['Verify', 'Verification', 'Test', 'Tests', 'Lint', 'Typecheck'].includes(row.toolName)) verifying = true;
+      if (row.toolName === 'Bash' && plainObject(row.input) && looksLikeVerificationCommand(row.input.command)) verifying = true;
+    }
+    return verifying ? 'verifying' : 'tool';
+  } catch { return 'tool'; }
+}
+
+/** @param {unknown} value */
+function looksLikeVerificationCommand(value) {
+  return typeof value === 'string' && Buffer.byteLength(value) <= 4_096
+    && /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff)\b/i.test(value);
 }
 
 /** @param {unknown} value @returns {value is Record<string,any>} */
