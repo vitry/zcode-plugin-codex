@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants, lstatSync, unlinkSync } from 'node:fs';
-import { lstat, open } from 'node:fs/promises';
-import { join } from 'node:path';
+import { lstat, open, opendir, realpath } from 'node:fs/promises';
+import { isAbsolute, join, relative } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import {
@@ -210,7 +210,12 @@ async function cleanupMatching(storage, predicate) {
     for (const name of names) {
       const key = name.slice(0, -5);
       const path = join(storage.directory, name);
-      const record = await readPreparedRecord(storage, path, key, false);
+      let record;
+      try { record = await readPreparedRecord(storage, path, key, false); }
+      catch (error) {
+        if (error instanceof PluginError && error.code === 'RESCUE_PREPARATION_RECORD_INVALID') continue;
+        throw error;
+      }
       if (predicate(record)) targets.push(path);
     }
     for (const path of targets) await unlinkPreparedRecord(storage, path);
@@ -224,9 +229,13 @@ async function boundedRecordNames(storage) {
     entries = await readPrivateDirectory(
       storage.privateRoot, storage.directory, PREPARATION_SCAN_MAX_RECORDS,
     );
-  } catch { throw preparationError(
-    'RESCUE_PREPARATION_SCAN_LIMIT', 'The Rescue preparation record scan limit was exceeded.',
-  ); }
+  } catch (error) {
+    if (await hasActualEntryOverflow(storage)) throw preparationError(
+      'RESCUE_PREPARATION_SCAN_LIMIT', 'The Rescue preparation record scan limit was exceeded.',
+    );
+    if (error instanceof PluginError && error.code === 'PRIVATE_PATH_UNSAFE') throw invalidRecord();
+    throw storageError();
+  }
   if (entries.some((entry) => !entry.isFile() || !/^[a-f0-9]{64}\.json$/u.test(entry.name))) throw invalidRecord();
   return entries.map((entry) => entry.name);
 }
@@ -241,10 +250,49 @@ async function readPreparedRecord(storage, path, key, missingIsNotFound) {
       && /** @type {any} */ (error.cause)?.code === 'ENOENT')) {
       throw preparationError('RESCUE_PREPARATION_NOT_FOUND', 'No Rescue preparation matches this turn.');
     }
-    throw invalidRecord();
+    if (recordCorruptionError(error)) throw invalidRecord();
+    throw storageError();
   }
   if (!validRecord(record, key, storage.workspacePath)) throw invalidRecord();
   return record;
+}
+
+/** @param {any} storage */
+async function hasActualEntryOverflow(storage) {
+  let handle;
+  try {
+    const [rootBefore, directoryBefore, canonicalRoot, canonicalDirectory] = await Promise.all([
+      lstat(storage.privateRoot, { bigint: true }),
+      lstat(storage.directory, { bigint: true }),
+      realpath(storage.privateRoot),
+      realpath(storage.directory),
+    ]);
+    const descendant = relative(canonicalRoot, canonicalDirectory);
+    if (!rootBefore.isDirectory() || !directoryBefore.isDirectory()
+      || descendant === '..' || descendant.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+      || isAbsolute(descendant)) return false;
+    handle = await opendir(storage.directory); let count = 0;
+    for await (const entry of handle) {
+      void entry; count += 1;
+      if (count > PREPARATION_SCAN_MAX_RECORDS) break;
+    }
+    const [rootAfter, directoryAfter] = await Promise.all([
+      lstat(storage.privateRoot, { bigint: true }), lstat(storage.directory, { bigint: true }),
+    ]);
+    return count > PREPARATION_SCAN_MAX_RECORDS
+      && sameDirectoryIdentity(rootBefore, rootAfter)
+      && sameDirectoryIdentity(directoryBefore, directoryAfter);
+  } catch { return false; }
+  finally { await handle?.close().catch(() => {}); }
+}
+
+/** @param {unknown} error */
+function recordCorruptionError(error) {
+  return error instanceof SyntaxError
+    || error instanceof PluginError && [
+      'PRIVATE_PATH_UNSAFE', 'RESCUE_PREPARATION_RECORD_INVALID',
+    ].includes(error.code)
+    || ['EISDIR', 'ELOOP', 'ENOTDIR'].includes(/** @type {any} */ (error)?.code);
 }
 
 /** @param {any} storage @param {string} path */
@@ -468,6 +516,10 @@ function timestamp(now) {
 
 function invalidRecord() {
   return preparationError('RESCUE_PREPARATION_RECORD_INVALID', 'A persisted Rescue preparation record is invalid.');
+}
+
+function storageError() {
+  return preparationError('RESCUE_PREPARATION_STORAGE_FAILED', 'Rescue preparation storage could not be read safely.');
 }
 
 /** @param {string} code @param {string} message */

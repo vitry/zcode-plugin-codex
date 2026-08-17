@@ -243,7 +243,11 @@ test('prepared storage rejects invocations and prepared directory symlink escape
       sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
       permissionMode: 'default', recordedPrompt: 'proactive',
       envelope: { ...validEnvelope, source: 'proactive' },
-    }));
+    }), (/** @type {any} */ error) => {
+      assert.notEqual(error.code, 'RESCUE_PREPARATION_SCAN_LIMIT');
+      assert.doesNotMatch(errorChainText(error), /implement the approved specification/u);
+      return true;
+    });
     assert.deepEqual(await readdir(outside), []);
   }
 });
@@ -384,7 +388,55 @@ test('prepared cleanup methods remove only their exact session, workspace, and t
   await store.consume({ sessionId: 'session-a', turnId: 'other-workspace', workspace: workspaceB, permissionMode: 'default', executorAgentId: 'child' });
 });
 
-test('corrupt prepared state and excessive scans fail closed without deleting siblings', async () => {
+test('broad cleanup skips corrupt sibling ownership while cleaning valid records for its session', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  /** @param {string} sessionId @param {string} turnId */
+  const save = (sessionId, turnId) => store.save({
+    sessionId, turnId, workspace: workspaceA, permissionMode: 'default',
+    recordedPrompt: 'proactive work', envelope: { ...validEnvelope, source: 'proactive' },
+  });
+  await save('session-a', 'old');
+  await save('session-a', 'current');
+  await save('session-b', 'sibling');
+  const { storage, directory } = await preparedDirectory(dataRoot, workspaceA);
+  const siblingPath = join(directory, `${preparedKey('session-b', 'sibling', storage.workspacePath)}.json`);
+  const corruptSibling = Buffer.from('{"sessionId":"session-b","task":"SIBLING_BYTES"');
+  await writeFile(siblingPath, corruptSibling);
+
+  await store.cleanupOlderTurns({ sessionId: 'session-a', turnId: 'current', workspace: workspaceA });
+  await assert.rejects(store.consume({
+    sessionId: 'session-a', turnId: 'old', workspace: workspaceA,
+    permissionMode: 'default', executorAgentId: 'child',
+  }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
+  assert.deepEqual(await readFile(siblingPath), corruptSibling);
+
+  await store.cleanupSession({ sessionId: 'session-a', workspace: workspaceA });
+  await assert.rejects(store.consume({
+    sessionId: 'session-a', turnId: 'current', workspace: workspaceA,
+    permissionMode: 'default', executorAgentId: 'child',
+  }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
+  assert.deepEqual(await readFile(siblingPath), corruptSibling);
+});
+
+test('exact cleanupTurn fails closed for its corrupt key without changing the record', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  await store.save({
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'default', recordedPrompt: 'proactive work',
+    envelope: { ...validEnvelope, source: 'proactive' },
+  });
+  const { storage, directory } = await preparedDirectory(dataRoot, workspaceA);
+  const path = join(directory, `${preparedKey('session-a', 'turn-a', storage.workspacePath)}.json`);
+  const corrupt = Buffer.from('{broken exact record');
+  await writeFile(path, corrupt);
+  await assert.rejects(
+    store.cleanupTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA }),
+    { code: 'RESCUE_PREPARATION_RECORD_INVALID' },
+  );
+  assert.deepEqual(await readFile(path), corrupt);
+});
+
+test('excessive prepared scans fail closed without deleting records', async () => {
   const { dataRoot, store, workspaceA } = await storeFixture();
   /** @param {string} turnId */
   const save = (turnId) => store.save({
@@ -393,16 +445,13 @@ test('corrupt prepared state and excessive scans fail closed without deleting si
   });
   await save('healthy');
   const { directory } = await preparedDirectory(dataRoot, workspaceA);
-  await writeFile(join(directory, `${'f'.repeat(64)}.json`), '{broken');
-  await assert.rejects(store.cleanupSession({ sessionId: 'session-a', workspace: workspaceA }));
-  await store.consume({ sessionId: 'session-a', turnId: 'healthy', workspace: workspaceA, permissionMode: 'default', executorAgentId: 'child' });
-
   await Promise.all(Array.from({ length: 1025 }, (_, index) => writeFile(
     join(directory, `${String(index).padStart(64, '0')}.json`), '{}\n',
   )));
   await assert.rejects(store.cleanupOlderTurns({ sessionId: 'session-a', turnId: 'healthy', workspace: workspaceA }), {
     code: 'RESCUE_PREPARATION_SCAN_LIMIT',
   });
+  await store.consume({ sessionId: 'session-a', turnId: 'healthy', workspace: workspaceA, permissionMode: 'default', executorAgentId: 'child' });
 });
 
 test('prepared save refuses to exceed the record-count bound', async () => {
@@ -422,10 +471,17 @@ test('prepared save refuses to exceed the record-count bound', async () => {
 test('corrupt record and stdin causes never retain task text', async () => {
   const { dataRoot, store, workspaceA } = await storeFixture();
   const sentinel = 'PRIVATE_TASK_CAUSE_SENTINEL';
-  const { directory } = await preparedDirectory(dataRoot, workspaceA);
-  await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, `${'e'.repeat(64)}.json`), `{${sentinel}`);
-  await assert.rejects(store.cleanupSession({ sessionId: 'session-a', workspace: workspaceA }), (/** @type {any} */ error) => {
+  await store.save({
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'default', recordedPrompt: 'proactive work',
+    envelope: { ...validEnvelope, source: 'proactive' },
+  });
+  const { storage, directory } = await preparedDirectory(dataRoot, workspaceA);
+  const path = join(directory, `${preparedKey('session-a', 'turn-a', storage.workspacePath)}.json`);
+  await writeFile(path, `{${sentinel}`);
+  await assert.rejects(store.cleanupTurn({
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
+  }), (/** @type {any} */ error) => {
     assert.doesNotMatch(errorChainText(error), new RegExp(sentinel));
     return error.code === 'RESCUE_PREPARATION_RECORD_INVALID';
   });
