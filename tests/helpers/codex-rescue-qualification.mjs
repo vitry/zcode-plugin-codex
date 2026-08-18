@@ -83,6 +83,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
     || typeof input.hookLifecycleJson !== 'string' || typeof input.executorRecordBytes !== 'string'
     || typeof input.bindingAuthorityBytes !== 'string' || typeof input.bindingPartitionBytes !== 'string'
     || typeof input.jobRecordBytesJson !== 'string' || typeof input.fakePeerJson !== 'string'
+    || typeof input.execFramesJson !== 'string'
     || !input.expected) {
     mismatch('continuation-raw-contract', 'Prepared continuation qualification requires bounded raw captured artifacts.');
   }
@@ -93,6 +94,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   const parseArray = (text, code) => { if (Buffer.byteLength(text) > MAX_ROLLOUT_BYTES) mismatch(code, 'Captured evidence exceeds its byte bound.'); let value; try { value = JSON.parse(text); } catch { mismatch(code, 'Captured evidence is malformed.'); } return boundedArray(value, MAX_EVENTS_PER_ROLLOUT, code); };
   const parent = parseArray(input.parentRolloutJson, 'continuation-parent-events'); const child = parseArray(input.childRolloutJson, 'continuation-child-events');
   const hooks = parseArray(input.hookLifecycleJson, 'continuation-hook-events'); const jobBytes = parseArray(input.jobRecordBytesJson, 'continuation-jobs'); const peer = parseArray(input.fakePeerJson, 'continuation-peer-events');
+  const execFrames = parseArray(input.execFramesJson, 'continuation-exec-frames');
   const spawns = namedCalls(parent, 'spawn_agent'); const followups = namedCalls(parent, 'followup_task');
   const parentExecs = parent.filter((event) => event?.payload?.type === 'custom_tool_call' && event.payload.name === 'exec');
   const parentOutputs = parent.filter((event) => ['custom_tool_call_output', 'function_call_output'].includes(event?.payload?.type));
@@ -183,6 +185,13 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   if (peer.length !== 4) mismatch('continuation-peer-method', 'Raw fake peer contains an unaccounted method.');
   if (peer.some((event) => !event || Object.keys(event).sort().join('\0') !== ['id', 'method', 'params'].sort().join('\0')
     || !Number.isSafeInteger(event.id) || !event.params || typeof event.params !== 'object' || Array.isArray(event.params))) mismatch('continuation-peer-method', 'Raw fake peer is not an exact inbound JSON-RPC request capture.');
+  if (new Set(peer.map((event) => event.id)).size !== peer.length) mismatch('continuation-peer-method', 'Raw fake-peer request IDs are not globally unique.');
+  if (Object.keys(creates[0]?.params ?? {}).join('\0') !== 'workspace'
+    || Object.keys(creates[0]?.params?.workspace ?? {}).join('\0') !== 'workspacePath'
+    || creates[0].params.workspace.workspacePath !== expected.workspace
+    || [...turns, ...resumes].some((event) => Object.keys(event?.params ?? {}).join('\0') !== 'sessionId')) {
+    mismatch('continuation-peer-method', 'Raw fake-peer request parameters are not exact or target another workspace.');
+  }
   if (creates.length !== 1 || resumes.length !== 1 || turns[0]?.params?.sessionId !== anchor.zcodeSessionId || resumes[0]?.params?.sessionId !== anchor.zcodeSessionId) mismatch('continuation-session-mismatch', 'Raw fake peer did not resume the exact created session inferred from its first send.');
   if (turns.length !== 2 || turns.some((turn) => turn?.params?.sessionId !== anchor.zcodeSessionId)) mismatch('continuation-peer-turn-count', 'Raw fake peer does not contain one initial and one resumed turn.');
   if (!(peer.indexOf(creates[0]) < peer.indexOf(turns[0]) && peer.indexOf(turns[0]) < peer.indexOf(resumes[0])
@@ -205,11 +214,11 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
     && eventTimestamp(calls[0]) < eventTimestamp(firstOutput) && eventTimestamp(firstOutput) < eventTimestamp(calls[1]) && eventTimestamp(calls[1]) < eventTimestamp(secondOutput))) mismatch('continuation-child-order', 'Raw child invocation chronology is invalid.');
   if (!(eventTimestamp(starts[0]) < eventTimestamp(calls[0]) && eventTimestamp(firstOutput) < eventTimestamp(stops[0])
     && eventTimestamp(followups[0]) < eventTimestamp(calls[1]))) mismatch('continuation-child-order', 'Cross-rollout child chronology is invalid.');
-  const publicSurfaces = deriveContinuationPublicSurfaces(parent, child, jobs, observedAgentPath);
+  assertMandatoryContinuationPublicSurfaces(parent, child, jobs, observedAgentPath, execFrames);
   const privateValues = [binding.key, binding.operationId, binding.anchorJobId, binding.currentJobId, anchor.zcodeSessionId,
     backgroundObserver?.executionCapability, current.workerLeaseId, executor.childTurnId].filter((value) => typeof value === 'string' && value);
   if (privateValues.length < 6) mismatch('continuation-private-sentinels', 'Raw artifacts do not provide mandatory private sentinels.');
-  const publicText = JSON.stringify(publicSurfaces);
+  const publicText = JSON.stringify({ parent: redactValidatedPreparationInputs(parent), child, execFrames });
   if (privateValues.some((value) => publicText.includes(value))) mismatch('continuation-private-leak', 'A public or host surface leaks a private identifier.');
   return {
     route: input.route, parentSessionId, childThreadId, agentPath: observedAgentPath, originalParentTurnId, continuationParentTurnId,
@@ -1077,7 +1086,7 @@ async function assertConsumedPreparationWithProduction(rawBytes, record, expecte
   } finally { await rm(dataRoot, { recursive: true, force: true }); }
 }
 
-function deriveContinuationPublicSurfaces(parent, child, jobs, agentPath) {
+function assertMandatoryContinuationPublicSurfaces(parent, child, jobs, agentPath, execFrames) {
   const calls = [...parent, ...child].filter((event) => event?.payload?.type === 'custom_tool_call');
   const hosts = calls.map((event) => parseCapturedHostCall(event.payload.input));
   const argv = hosts.map((host) => host.envelope.get('cmd')).filter((value) => typeof value === 'string');
@@ -1089,9 +1098,21 @@ function deriveContinuationPublicSurfaces(parent, child, jobs, agentPath) {
   const progress = child.filter((event) => event?.payload?.type === 'agent_message').map((event) => event.payload.message);
   const assignment = namedCalls(parent, 'spawn_agent').concat(namedCalls(parent, 'followup_task')).map((event) => parseObject(event.payload.arguments, 'continuation-assignment').message);
   const callMetadata = [...parent, ...child].filter((event) => ['custom_tool_call', 'function_call'].includes(event?.payload?.type)).map((event) => event.payload.call_id);
-  const surfaces = { assignment, argv, env, stdout, stderr, progress, status: jobs.map((job) => job.status), agentPath: [agentPath], callMetadata };
+  const surfaces = { assignment, argv, env, stdout, stderr, progress, status: jobs.map((job) => job.status), agentPath: [agentPath], callMetadata, execFrames };
   if ([assignment, argv, env, stdout, stderr, progress, surfaces.status, surfaces.agentPath, callMetadata].some((values) => values.length === 0)) mismatch('continuation-public-surfaces', 'Mandatory raw public surfaces are absent.');
-  return surfaces;
+  if (execFrames.length === 0) mismatch('continuation-public-surfaces', 'Mandatory raw execution frames are absent.');
+}
+
+function redactValidatedPreparationInputs(parent) {
+  return structuredClone(parent).map((event) => {
+    if (event?.payload?.type !== 'custom_tool_call') return event;
+    const host = parseCapturedHostCall(event.payload.input);
+    if (host.kind !== 'write_stdin') return event;
+    const envelope = Object.fromEntries(host.envelope);
+    if (typeof envelope.chars === 'string') envelope.chars = '[private preparation envelope]';
+    event.payload.input = JSON.stringify({ kind: host.kind, envelope });
+    return event;
+  });
 }
 
 function eventTimestamp(event) {

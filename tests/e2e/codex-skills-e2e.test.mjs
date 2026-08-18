@@ -834,11 +834,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
   assert.equal(resumed.length, 1, 'proactive continuation must resume exactly one fake-peer session');
   assert.equal(resumed[0].params?.sessionId, originalSessionId, 'proactive continuation must resume the original exact fake-peer session');
   assert.equal(proactivePeer.filter((call) => call.method === 'session/send').length, 1, 'proactive continuation must send exactly one new ZCode turn');
-  if (process.env.ZCODE_CONTINUATION_RAW_ARTIFACTS !== '1') {
-    markUnqualified(t, unqualified('continuation-artifacts-not-captured',
-      'The credentialed harness captured the real peer and Codex rollouts, but not every raw hook/preparation/state/public artifact required by the continuation oracle.'));
-    return;
-  }
+  markUnqualified(t, unqualified('continuation-artifacts-not-captured',
+    'The credentialed harness captured the real peer and Codex rollouts, but cannot yet capture every private hook, preparation, state, lease, and public execution artifact required by the continuation oracle.'));
 
   for (const choice of ['resume', 'fresh']) {
     await writeFile(zcodeRecord, '');
@@ -1757,6 +1754,11 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     route, execution: 'foreground', expected: { parentSessionId, childThreadId, agentPath: '/root/zcode_rescue_continue', workspace,
       permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-fresh' },
     parentRolloutJson: JSON.stringify(parent), childRolloutJson: JSON.stringify(child),
+    execFramesJson: JSON.stringify([
+      { type: 'thread.started', thread_id: parentSessionId },
+      { type: 'item.completed', item: { type: 'agent_message', text: 'continued' } },
+      { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1, cached_input_tokens: 0 } },
+    ]),
     hookLifecycleJson: overrides.hookLifecycleJson ?? JSON.stringify([
       { hook_event_name: 'SubagentStart', session_id: parentSessionId, turn_id: 'child-turn', parent_turn_id: 'turn-original', cwd: workspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },
       { hook_event_name: 'SubagentStop', session_id: parentSessionId, turn_id: 'child-turn', parent_turn_id: 'turn-original', cwd: workspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },

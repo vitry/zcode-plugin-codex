@@ -78,6 +78,9 @@ test('prepared continuation qualification rejects normalized claims and fails cl
     ['continuation-presentation', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.kind === 'started').payload.agent_path = '/root/sibling_task'; input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-child-turns', (input) => { const rows = JSON.parse(input.childRolloutJson); for (const row of rows.filter((item) => item?.payload?.type === 'custom_tool_call')) row.turn_id = 'one-turn'; for (const row of rows.filter((item) => item?.payload?.type === 'custom_tool_call_output')) row.turn_id = 'one-turn'; input.childRolloutJson = JSON.stringify(rows); }],
     ['continuation-session-mismatch', (input) => { const rows = JSON.parse(input.fakePeerJson); rows.find((row) => row.method === 'session/resume').params.sessionId = 'latest-wrong-session'; input.fakePeerJson = JSON.stringify(rows); }],
+    ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows[3].id = rows[2].id; input.fakePeerJson = JSON.stringify(rows); }],
+    ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows[0].params.workspace.workspacePath = '/foreign'; input.fakePeerJson = JSON.stringify(rows); }],
+    ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows[1].params.extra = true; input.fakePeerJson = JSON.stringify(rows); }],
     ['continuation-peer-order', (input) => { const rows = JSON.parse(input.fakePeerJson); input.fakePeerJson = JSON.stringify([rows[2], rows[1], rows[0], rows[3]]); }],
     ['continuation-private-leak', (input) => { const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((row) => row?.payload?.call_id === 'prepare-1'); const host = parseFixtureHostInput(call.payload.input); host.env.LEAK = JSON.parse(input.fakePeerJson)[1].params.sessionId; call.payload.input = fixtureExecInput(host); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-binding-invalid', (input) => { input.bindingPartitionBytes = `${input.bindingPartitionBytes.slice(0, -2)},"valid":true}\n`; }],
@@ -130,6 +133,10 @@ test('raw prepared continuation scans every declared public and host surface for
     (input, id) => { const rows = JSON.parse(input.childRolloutJson); const output = rows.find((row) => row?.payload?.call_id === 'invoke-1' && row.payload.type === 'custom_tool_call_output'); const value = JSON.parse(output.payload.output[1].text); value.output += id; output.payload.output = capturedResult(value); input.childRolloutJson = JSON.stringify(rows); },
     (input, id) => { const rows = JSON.parse(input.childRolloutJson); rows.find((row) => row?.payload?.type === 'agent_message').payload.message = id; input.childRolloutJson = JSON.stringify(rows); },
     (input, id) => { const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((row) => row?.payload?.call_id === 'followup-1'); const output = rows.find((row) => row?.payload?.type === 'function_call_output' && row.payload.call_id === 'followup-1'); call.payload.call_id = id; output.payload.call_id = id; input.parentRolloutJson = JSON.stringify(rows); },
+    (input, id) => { const rows = JSON.parse(input.parentRolloutJson); rows.push({ type: 'event_msg', payload: { type: 'agent_message', message: `commentary ${id}` } }); input.parentRolloutJson = JSON.stringify(rows); },
+    (input, id) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.call_id === 'followup-1' && row.payload.type === 'function_call_output').payload.extra = id; input.parentRolloutJson = JSON.stringify(rows); },
+    (input, id) => { const rows = JSON.parse(input.childRolloutJson); rows[0].payload.extra = id; input.childRolloutJson = JSON.stringify(rows); },
+    (input, id) => { const frames = JSON.parse(input.execFramesJson); frames[1].item.extra = id; input.execFramesJson = JSON.stringify(frames); },
   ];
   for (const mutate of mutations) {
     const input = preparedContinuationFixture('named'); const privateId = JSON.parse(input.fakePeerJson)[1].params.sessionId;
@@ -1883,6 +1890,11 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     route, execution, expected: { parentSessionId: parentId, childThreadId: childId, agentPath, workspace: expectedWorkspace,
       permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-fresh' },
     parentRolloutJson: JSON.stringify(parent), childRolloutJson: JSON.stringify(child),
+    execFramesJson: JSON.stringify([
+      { type: 'thread.started', thread_id: parentId },
+      { type: 'item.completed', item: { type: 'agent_message', text: 'continuation complete' } },
+      { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1, cached_input_tokens: 0 } },
+    ]),
     hookLifecycleJson: JSON.stringify([
       { hook_event_name: 'SubagentStart', session_id: parentId, turn_id: 'child-turn', parent_turn_id: 'turn-original', cwd: expectedWorkspace, permission_mode: 'acceptEdits', agent_id: childId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },
       { hook_event_name: 'SubagentStop', session_id: parentId, turn_id: 'child-turn', parent_turn_id: 'turn-original', cwd: expectedWorkspace, permission_mode: 'acceptEdits', agent_id: childId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },
