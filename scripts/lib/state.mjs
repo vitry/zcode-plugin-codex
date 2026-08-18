@@ -555,7 +555,9 @@ async function readBindingLocked(storage, expected) {
   const snapshot = await readBindingPartitionSnapshot(storage, expected.parentSessionId, true);
   const record = snapshot.records.get(rescueBindingKey(expected)) ?? null;
   if (record && (expected.permissionMode !== undefined && record.permissionMode !== expected.permissionMode
-    || expected.executorAgentType !== undefined && record.executorAgentType !== expected.executorAgentType)) throw invalidRescueBinding();
+    || expected.executorAgentType !== undefined && record.executorAgentType !== expected.executorAgentType
+    || expected.executorParentTurnId !== undefined && record.executorParentTurnId !== expected.executorParentTurnId
+    || expected.executorParentPermissionMode !== undefined && record.executorParentPermissionMode !== expected.executorParentPermissionMode)) throw invalidRescueBinding();
   return record;
 }
 

@@ -127,7 +127,8 @@ function executor(workspace, patch = {}) {
 }
 
 function bindingExpected(workspace, value, patch = {}) {
-  return { workspace, parentSessionId: value.parentSessionId, executorAgentId: value.agentId, permissionMode: value.parentPermissionMode, ...patch };
+  return { workspace, parentSessionId: value.parentSessionId, executorAgentId: value.agentId, executorAgentType: value.agentType,
+    executorParentTurnId: value.parentTurnId, executorParentPermissionMode: value.parentPermissionMode, permissionMode: value.parentPermissionMode, ...patch };
 }
 
 function reservation(workspace, turn = 'turn-a') {
@@ -528,6 +529,19 @@ test('fresh may replace a valid permission-mismatched slot but not corrupt prove
   for (const forged of [executor(workspace, { parentTurnId: 'rewritten-turn' }), executor(workspace, { parentPermissionMode: 'read-only' }), executor(workspace, { agentType: 'unapproved' })]) {
     await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: changedReservation, executor: forged }), { code: 'RESCUE_BINDING_INVALID' });
   }
+});
+
+test('resolve and continuation reject forged stopped-executor provenance without publication', async () => {
+  const { workspace, store } = await fixture(); const trusted = executor(workspace);
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
+  await makeEligible(store, workspace, fresh.job, 'zcode-session-a'); await store.finishJob(workspace, fresh.job.id, ['running'], 'succeeded');
+  const before = (await store.listJobs(workspace)).map((job) => job.id);
+  for (const patch of [{ parentTurnId: 'forged-turn' }, { parentPermissionMode: 'read-only' }]) {
+    const forged = executor(workspace, patch);
+    await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, forged, { permissionMode: 'workspace-write' })), { code: 'RESCUE_BINDING_INVALID' });
+    await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'later'), executor: forged, operationId: fresh.binding.operationId }), { code: 'RESCUE_BINDING_INVALID' });
+  }
+  assert.deepEqual((await store.listJobs(workspace)).map((job) => job.id), before);
 });
 
 test('binding capacity is isolated per parent session and active slots are never age-GCed', async () => {
