@@ -61,15 +61,20 @@ const TRANSITIONS = new Map([
   ['cancelling', new Set(['cancelled', 'running', 'succeeded', 'failed'])],
 ]);
 
-/** @param {{ dataRoot: string }} options */
+/** @param {{ dataRoot: string, testOnlyPublicationHook?:(seam:string)=>void|Promise<void> }} options `testOnlyPublicationHook` is a deterministic test seam; production callers must omit it. */
 export function createStateStore(options) {
-  const dataRoot = isPlainJsonObject(options) ? options.dataRoot : undefined;
+  const validOptions = options !== null && typeof options === 'object' && !Array.isArray(options)
+    && [Object.prototype, null].includes(Object.getPrototypeOf(options))
+    && Object.keys(options).every((key) => key === 'dataRoot' || key === 'testOnlyPublicationHook');
+  const dataRoot = validOptions ? options.dataRoot : undefined;
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) {
     throw new PluginError('DATA_ROOT_REQUIRED', 'A plugin data root must be provided explicitly.', {
       category: 'configuration',
       remedy: 'Pass the installed plugin data directory as dataRoot.',
     });
   }
+  if (options.testOnlyPublicationHook !== undefined && typeof options.testOnlyPublicationHook !== 'function') throw new TypeError('testOnlyPublicationHook must be a function');
+  const publicationHook = options.testOnlyPublicationHook ?? (async () => {});
 
   return {
     dataRoot,
@@ -120,13 +125,14 @@ export function createStateStore(options) {
       validateRescueReservationInput(input);
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
+        const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
         const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath);
-        const previous = await prepareBindingSlot(storage, exactIdentity);
+        const { record: previous, partitionIdentity } = await prepareBindingSlot(storage, exactIdentity);
         if (previous && previous.executorAgentType !== exactIdentity.executorAgentType) throw invalidRescueBinding();
         const job = makeReservedJob(storage, jobs, input.reservation);
         const binding = createRescueBinding({ ...exactIdentity, anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex') });
-        await publishRescueReservation(storage, job, binding, true);
+        await publishRescueReservation(storage, job, binding, { bindingFirst: true, lockIdentity, partitionIdentity, publicationHook, route: 'fresh' });
         return { job, binding };
       });
     },
@@ -137,13 +143,15 @@ export function createStateStore(options) {
       if (!isDigest(input.operationId)) throw staleRescueBinding();
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
+        const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
         const resolved = await resolveBindingForResumeLocked(storage, executorBindingIdentity(input.executor, storage.workspacePath));
         if (resolved.kind !== 'bound' || resolved.operationId !== input.operationId) throw staleRescueBinding();
+        const partitionIdentity = await lstat(bindingPartition(storage, resolved.binding.parentSessionId), { bigint: true }).catch(() => { throw invalidRescueBinding(); });
         const job = makeReservedJob(storage, jobs, input.reservation);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
         const binding = validateRescueBinding({ ...resolved.binding, currentJobId: job.id, updatedAt: now });
-        await publishRescueReservation(storage, job, binding, false);
+        await publishRescueReservation(storage, job, binding, { bindingFirst: false, lockIdentity, partitionIdentity, publicationHook, route: 'continuation' });
         return { job, binding, anchorJob: resolved.anchorJob };
       });
     },
@@ -154,19 +162,21 @@ export function createStateStore(options) {
       if (!isDigest(input.candidateJobId)) throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
+        const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
         const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath);
-        const existing = await prepareBindingSlot(storage, exactIdentity);
+        const { record: existing, partitionIdentity } = await prepareBindingSlot(storage, exactIdentity);
         if (existing !== null) throw invalidRescueBinding();
         const anchorJob = jobs.find((job) => job.id === input.candidateJobId);
         validateAnchorJob(anchorJob, input.executor.parentSessionId, storage.workspacePath);
         const job = makeReservedJob(storage, jobs, input.reservation);
         const base = createRescueBinding({ ...exactIdentity, anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex') });
-        await assertRescueBindingsRoot(storage);
-        await atomicWriteJson(bindingPath(storage, base), base, { privateRoot: storage.directory });
-        await publishJobRecord(storage, job);
+        await publicationCheckpoint(publicationHook, 'adopt:base-binding');
+        await writeBindingGuarded(storage, base, lockIdentity, partitionIdentity);
+        await publishJobRecord(storage, job, { lockIdentity, publicationHook, route: 'adopt' });
         const binding = validateRescueBinding({ ...base, currentJobId: job.id, updatedAt: new Date(Math.max(Date.now(), Date.parse(base.updatedAt))).toISOString() });
-        await atomicWriteJson(bindingPath(storage, binding), binding, { privateRoot: storage.directory });
+        await publicationCheckpoint(publicationHook, 'adopt:current-advance');
+        await writeBindingGuarded(storage, binding, lockIdentity, partitionIdentity);
         return { job, binding, anchorJob };
       });
     },
@@ -176,11 +186,13 @@ export function createStateStore(options) {
       if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.parentSessionId) || input.reason !== 'session-ended') throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
+        const lockIdentity = await captureStateLockIdentity(storage);
         const records = await readBindingLayout(storage, input.parentSessionId, true); let closed = 0;
+        const partitionIdentity = records.size === 0 ? null : await lstat(bindingPartition(storage, input.parentSessionId), { bigint: true }).catch(() => { throw invalidRescueBinding(); });
         for (const record of records.values()) {
           if (record.parentSessionId !== input.parentSessionId || record.state !== 'active') continue;
-          await assertRescueBindingsRoot(storage);
-          await atomicWriteJson(bindingPath(storage, record), closeRescueBinding(record, { operationId: record.operationId, reason: input.reason }), { privateRoot: storage.directory });
+          await publicationCheckpoint(publicationHook, 'close:binding');
+          await writeBindingGuarded(storage, closeRescueBinding(record, { operationId: record.operationId, reason: input.reason }), lockIdentity, partitionIdentity);
           closed += 1;
         }
         return closed;
@@ -442,21 +454,65 @@ function makeReservedJob(storage, jobs, reservation) {
   };
 }
 
-/** @param {any} storage @param {any} job @param {any} binding @param {boolean} bindingFirst */
-async function publishRescueReservation(storage, job, binding, bindingFirst) {
-  const path = bindingPath(storage, binding);
-  await assertRescueBindingsRoot(storage);
-  if (bindingFirst) await atomicWriteJson(path, binding, { privateRoot: storage.directory });
-  await publishJobRecord(storage, job);
-  if (!bindingFirst) await atomicWriteJson(path, binding, { privateRoot: storage.directory });
+/** @param {any} storage @param {any} job @param {any} binding @param {any} options */
+async function publishRescueReservation(storage, job, binding, options) {
+  if (options.bindingFirst) {
+    await publicationCheckpoint(options.publicationHook, `${options.route}:binding`);
+    await writeBindingGuarded(storage, binding, options.lockIdentity, options.partitionIdentity);
+  }
+  await publishJobRecord(storage, job, options);
+  if (!options.bindingFirst) {
+    await publicationCheckpoint(options.publicationHook, `${options.route}:current-advance`);
+    await writeBindingGuarded(storage, binding, options.lockIdentity, options.partitionIdentity);
+  }
 }
 
-/** @param {any} storage @param {any} job */
-async function publishJobRecord(storage, job) {
+/** @param {any} storage @param {any} job @param {any} options */
+async function publishJobRecord(storage, job, options) {
+  await publicationCheckpoint(options.publicationHook, `${options.route}:owner-binding`);
+  await assertStateLockIdentity(storage, options.lockIdentity);
   await writeOwnerBinding(storage, job);
+  await publicationCheckpoint(options.publicationHook, `${options.route}:job`);
+  await assertStateLockIdentity(storage, options.lockIdentity);
   await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), job);
+  await publicationCheckpoint(options.publicationHook, `${options.route}:marker`);
+  await assertStateLockIdentity(storage, options.lockIdentity);
   await publishOwnerIndexMarker(storage);
 }
+
+/** @param {(seam:string)=>void|Promise<void>} hook @param {string} seam */
+async function publicationCheckpoint(hook, seam) {
+  try { await hook(seam); }
+  catch { throw new PluginError('RESCUE_PUBLICATION_TEST_FAULT', 'The test-only Rescue publication fault was injected.', { category: 'state', remedy: 'Retry without the test-only publication hook.' }); }
+}
+
+/** @param {any} storage @param {any} binding @param {any} lockIdentity @param {any} partitionIdentity */
+async function writeBindingGuarded(storage, binding, lockIdentity, partitionIdentity) {
+  await assertStateLockIdentity(storage, lockIdentity); await assertRescueBindingsRoot(storage);
+  const current = await lstat(bindingPartition(storage, binding.parentSessionId), { bigint: true }).catch(() => { throw invalidRescueBinding(); });
+  if (!sameDirectoryIdentity(partitionIdentity, current)) throw invalidRescueBinding();
+  await atomicWriteJson(bindingPath(storage, binding), binding, { privateRoot: storage.directory });
+  const after = await lstat(bindingPartition(storage, binding.parentSessionId), { bigint: true }).catch(() => { throw invalidRescueBinding(); });
+  await assertStateLockIdentity(storage, lockIdentity); await assertRescueBindingsRoot(storage);
+  if (!sameDirectoryIdentity(partitionIdentity, after)) throw invalidRescueBinding();
+}
+
+/** @param {any} storage */
+async function captureStateLockIdentity(storage) {
+  try {
+    return { directory: await lstat(storage.lockPath, { bigint: true }), file: await lstat(join(storage.lockPath, 'advisory.lock'), { bigint: true }) };
+  } catch { throw invalidRescueBinding(); }
+}
+
+/** @param {any} storage @param {any} expected */
+async function assertStateLockIdentity(storage, expected) {
+  let current;
+  try { current = await captureStateLockIdentity(storage); } catch { throw invalidRescueBinding(); }
+  if (!sameDirectoryIdentity(expected.directory, current.directory) || !sameFileIdentity(expected.file, current.file)) throw invalidRescueBinding();
+}
+
+/** @param {import('node:fs').BigIntStats} left @param {import('node:fs').BigIntStats} right */
+function sameFileIdentity(left, right) { return left.isFile() && right.isFile() && left.dev === right.dev && left.ino === right.ino; }
 
 /** @param {any} storage @param {any} expected */
 async function resolveBindingForResumeLocked(storage, expected) {
@@ -501,7 +557,8 @@ async function readBindingLayout(storage, parentSessionId, allowMissing) {
   const records = new Map();
   for (const name of names) {
     const record = await readBindingPath(storage, join(directory, name));
-    if (record.parentSessionId !== parentSessionId || name !== `${record.key}.json` || records.has(record.key)) throw invalidRescueBinding();
+    if (record.parentSessionId !== parentSessionId || record.workspace !== storage.workspacePath
+      || name !== `${record.key}.json` || records.has(record.key)) throw invalidRescueBinding();
     records.set(record.key, record);
   }
   const directoryAfter = await lstat(directory, { bigint: true }).catch(() => { throw invalidRescueBinding(); });
@@ -528,11 +585,12 @@ async function prepareBindingSlot(storage, identity) {
   await assertRescueBindingsRoot(storage);
   await ensurePrivateDirectoryWithin(storage.rescueBindingsDirectory, directory);
   const records = await readBindingLayout(storage, identity.parentSessionId, false); const key = rescueBindingKey(identity);
-  if (records.has(key)) return records.get(key);
+  const partitionIdentity = await lstat(directory, { bigint: true }).catch(() => { throw invalidRescueBinding(); });
+  if (records.has(key)) return { record: records.get(key), partitionIdentity };
   const cutoff = Date.now() - RESCUE_BINDING_CLOSED_GC_MS;
   for (const [recordKey, record] of records) if (record.state === 'closed' && Date.parse(record.closedAt) < cutoff) { await unlink(join(directory, `${recordKey}.json`)); records.delete(recordKey); }
   if (records.size >= RESCUE_BINDING_MAX_RECORDS) throw new PluginError('RESCUE_BINDING_CAPACITY', 'The Rescue binding capacity is exhausted.', { category: 'state', remedy: 'End or clean up old Rescue operations before retrying.' });
-  return null;
+  return { record: null, partitionIdentity };
 }
 
 /** @param {any} storage */

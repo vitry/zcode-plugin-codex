@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, sep } from 'node:path';
+import { dirname, isAbsolute, normalize, relative, sep } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import { samePathHandleFileSnapshot } from './fs.mjs';
@@ -33,7 +33,7 @@ export function rescueBindingKey(input) {
 /** @param {any} input */
 export function createRescueBinding(input) {
   validateIdentity(input);
-  if (!EXECUTOR_AGENT_TYPES.has(input.executorAgentType) || !digest(input.anchorJobId) || !digest(input.currentJobId) || !digest(input.operationId)) throw invalidBinding();
+  if (!PERMISSION_MODES.includes(input.permissionMode) || !EXECUTOR_AGENT_TYPES.has(input.executorAgentType) || !digest(input.anchorJobId) || !digest(input.currentJobId) || !digest(input.operationId)) throw invalidBinding();
   const now = timestamp(input.now);
   return {
     version: RESCUE_BINDING_VERSION,
@@ -66,7 +66,8 @@ export function closeRescueBinding(record, input) {
 
 /** @param {string|Buffer} bytes @param {{parentSessionId:string,executorAgentId:string,executorAgentType?:string,workspace:string,permissionMode?:string}} [expected] */
 export function parseRescueBinding(bytes, expected) {
-  const text = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : bytes;
+  let text;
+  try { text = Buffer.isBuffer(bytes) ? new TextDecoder('utf-8', { fatal: true }).decode(bytes) : bytes; } catch { throw invalidBinding(); }
   if (typeof text !== 'string' || Buffer.byteLength(text) > RESCUE_BINDING_MAX_BYTES) throw invalidBinding();
   rejectDuplicateObjectKeys(text);
   let record;
@@ -115,6 +116,7 @@ export function validateRescueBinding(record) {
   if (!plain(record) || Object.keys(record).sort().join('\0') !== [...KEYS].sort().join('\0')
     || record.version !== RESCUE_BINDING_VERSION || !digest(record.key) || !digest(record.operationId)
     || !EXECUTOR_AGENT_TYPES.has(record.executorAgentType)
+    || !PERMISSION_MODES.includes(record.permissionMode)
     || !['active', 'closed'].includes(record.state) || !digest(record.anchorJobId) || !digest(record.currentJobId)
     || !canonicalTimestamp(record.createdAt) || !canonicalTimestamp(record.updatedAt)
     || Date.parse(record.updatedAt) < Date.parse(record.createdAt)) throw invalidBinding();
@@ -130,7 +132,7 @@ export function validateRescueBinding(record) {
 function validateIdentity(input) {
   if (!plain(input) || !safeIdentifier(input.parentSessionId, 4096)
     || !safeIdentifier(input.executorAgentId, 512)
-    || typeof input.workspace !== 'string' || !isAbsolute(input.workspace)
+    || typeof input.workspace !== 'string' || !isAbsolute(input.workspace) || normalize(input.workspace) !== input.workspace
     || Buffer.byteLength(input.workspace) > 4096 || /[\0\r\n]/u.test(input.workspace)
     || input.permissionMode !== undefined && !PERMISSION_MODES.includes(input.permissionMode)) throw invalidBinding();
 }
