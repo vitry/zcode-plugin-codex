@@ -151,6 +151,29 @@ test('installed Rescue Role consumes only a previously prepared task-blind invoc
   assert.doesNotMatch(source, /\{\{(?:TASK|SOURCE|OPTIONS|ARGS|JOB|SESSION|WORKSPACE|PERMISSION|CAPABILITY)[^}]*\}\}/i);
   assert.match(source, /task-blind/i);
   assert.match(source, /capability-free/i);
+  assert.match(source, /same exact prepared assignment[\s\S]+initial turn[\s\S]+stopped same-child prepared continuation/i);
+  assert.match(source, /one-command-per-turn rule applies to both/i);
+  assert.match(source, /arbitrary messages[\s\S]+sibling[\s\S]+nested Rescue[\s\S]+independent repository work/i);
+});
+
+test('owned previous Role bytes require one upgrade before exact continuation Role is ready', async () => {
+  const ctx = await fixture();
+  const currentTemplate = await readFile(new URL('../agents/zcode-rescue.toml.template', import.meta.url), 'utf8');
+  const previousTemplate = currentTemplate.replace(/\nThe same exact prepared assignment[^\n]+\n/u, '\n');
+  assert.notEqual(previousTemplate, currentTemplate, 'the Task 3 Role must add an exact prepared-continuation contract');
+  const previousBytes = Buffer.from(renderManagedRescueRole({ template: previousTemplate, pluginRoot: ctx.pluginRoot }));
+  await writeOwnedReceipt(ctx, { schemaVersion: '1.0.0', roleBytes: previousBytes });
+  const config = configState({ role: roleConfig(ctx.paths.rolePath) });
+  assert.equal((await inspectManagedRescueRole({ ...common(ctx, config), template: currentTemplate })).status, 'upgrade-required');
+  let writes = 0;
+  const upgraded = await reconcileManagedRescueRole({
+    ...common(ctx, config), template: currentTemplate,
+    batchWrite: async () => { writes += 1; return {}; }, readConfig: async () => config,
+    activateRole: async () => {},
+  });
+  assert.equal(upgraded.status, 'ready'); assert.equal(upgraded.changed, true); assert.equal(writes, 1);
+  assert.deepEqual(await readFile(ctx.paths.rolePath), Buffer.from(renderManagedRescueRole({ template: currentTemplate, pluginRoot: ctx.pluginRoot })));
+  assert.equal((await inspectManagedRescueRole({ ...common(ctx, config), template: currentTemplate })).status, 'ready');
 });
 
 test('managed Rescue role rendering deterministically TOML-escapes only the canonical plugin root', () => {

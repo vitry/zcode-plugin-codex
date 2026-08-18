@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
+  assertExactChildContinuationContract,
   assertRescueRouteContract,
   expectedGenericRescueMessage,
   expectedNamedRescueMessage,
@@ -203,6 +204,15 @@ test('active Rescue child rejoin is the first and exclusive Root action', () => 
   assert.match(source.slice(active, preflight), /(?:must not|never)[\s\S]+preflight[\s\S]+prepare[\s\S]+spawn[\s\S]+invoke/i);
 });
 
+test('Root routes active, stopped same-operation, and fresh Rescue child states without session substitution', () => {
+  const source = skill('rescue');
+  const { block } = assertExactChildContinuationContract(source);
+  assert.match(block, /no second `SubagentStart`|does not emit a second `SubagentStart`/i);
+  assert.match(block, /reuse[^\n]+`invoke-prepared rescue`/i);
+  assert.match(block, /invalid[^\n]+binding[\s\S]+fail closed/i);
+  assert.match(block, /permission[^\n]+change[\s\S]+fresh/i);
+});
+
 test('Root prepares exactly one private Rescue envelope before exactly one spawn', () => {
   const source = skill('rescue');
   assert.match(source, /node "<plugin-root>\/scripts\/zcode-companion\.mjs" prepare rescue/);
@@ -281,6 +291,8 @@ test('managed Rescue role is a fixed TOML forwarder without capability or task m
   assert.match(source, /invoke-prepared rescue/);
   assert.match(source, /invoke-choice rescue resume/);
   assert.match(source, /invoke-choice rescue fresh/);
+  assert.match(source, /same exact prepared assignment[\s\S]+initial turn[\s\S]+stopped same-child prepared continuation/i);
+  assert.match(source, /one-command-per-turn rule applies to both/i);
   assert.doesNotMatch(source, /--prompt-file|--write|spark|--force|\{\{(?:TASK|ARGS|JOB|SESSION|PERMISSION|CAPABILITY)[^}]*\}\}/i);
   assert.match(source, /return public stdout verbatim/i);
   assert.match(source, /preserve stderr/i);

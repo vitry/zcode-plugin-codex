@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 export const expectedNamedRescueInstruction = 'When the active `spawn_agent` tool schema exposes `agent_type`, prefer this exact named spawn with a fresh context:';
 export const expectedNamedRescueMessage = 'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.';
+export const expectedPreparedContinuationMessage = expectedNamedRescueMessage;
 export const expectedNamedRescueSpawn = [
   'spawn_agent({',
   '  task_name: rescueTaskName,',
@@ -16,6 +17,8 @@ export const expectedGenericRescueMessage = [
   'Act only as the installed ZCode Rescue forwarder. You are task-blind and capability-free. In the current workspace run exactly:',
   'node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-prepared rescue',
   'Preserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request/print/persist authorization material.',
+  'The same exact prepared assignment is valid for either the initial turn or a stopped same-child prepared continuation authorized by the parent. The one-command-per-turn rule applies to both.',
+  'Reject arbitrary messages, sibling continuation, nested Rescue, and independent repository work without running a command.',
   'Each exact assignment and child turn may start at most one mapped foreground `exec_command` companion process. Never start concurrent or retry foreground executions for the same assignment. Same-turn continuation calls only observe that turn\'s original running handle. The one expressly allowed status sidecar below is observational and does not replace that foreground process. A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. Relay text and status text are also nonterminal. A needs-choice response with exit code 3 is terminal for the current child turn. After that initial needs-choice terminal, the next exact parent continuation assignment may start one new exact `invoke-choice` foreground handle in the same child.',
   'For every result yielded by the original foreground handle, parse only complete dedicated `[zcode-relay]` lines. Before relay, require JSON with exact keys `version`, `sequence`, `phase`, `code`, and `observedAt`; require version 1, a positive bounded strictly increasing sequence, an allowlisted phase/code pair, and a valid bounded RFC3339 timestamp. Map only through this fixed allowlisted code-to-message map: `started` -> `ZCode Rescue started.`; `model-active` -> `ZCode is generating a response.`; `tool-active` -> `ZCode is working with a tool.`; `editing` -> `ZCode is applying workspace changes.`; `verifying` -> `ZCode is verifying the work.`; `waiting` -> `ZCode Rescue is still running.`; `finalizing` -> `ZCode Rescue is finalizing.`. Coalesce a repeated identical phase. If the native `send_message` tool is available, use `send_message` only to `/root` with the fixed mapped message. If it is unavailable or relay fails, continue polling the original handle. Relay is liveness only and never completion.',
   'Phase/code pairs are exactly `starting` / `started`, `running` / `model-active`, `investigating` / `tool-active`, `editing` / `editing`, `verifying` / `verifying`, `waiting` / `waiting`, and `finalizing` / `finalizing`.',
@@ -89,4 +92,22 @@ export function assertRescueRouteContract(source, { assertionPrefix = '' } = {})
     genericInstruction: { start: generic.start, end: generic.start + generic.instruction.length, text: generic.instruction },
     genericMessage: generic.body,
   };
+}
+
+export function assertExactChildContinuationContract(source, { assertionPrefix = '' } = {}) {
+  const active = source.indexOf('Active exact child');
+  const stopped = source.indexOf('Stopped exact same-operation child');
+  const fresh = source.indexOf('Fresh or independent operation');
+  assert.ok(active >= 0 && stopped > active && fresh > stopped, `${assertionPrefix}Rescue child-state precedence must be explicit and ordered`);
+  const end = source.indexOf('\n## Entry classification', fresh);
+  assert.ok(end > fresh, `${assertionPrefix}Rescue child-state block must precede entry classification`);
+  const block = source.slice(active, end);
+  assert.match(block, /Active exact child[\s\S]+rejoin[\s\S]+(?:zero|no)[^\n]+(?:preflight|prepare|spawn|invoke)/i);
+  assert.match(block, /Stopped exact same-operation child[\s\S]+role-status rescue[\s\S]+prepare rescue[\s\S]+followup_task[\s\S]+same[^\n]+`rescueChildId`[\s\S]+zero[^\n]+spawn/i);
+  assert.match(block, /proactive clear continuation[\s\S]+`resume`[\s\S]+explicit bound[^\n]+without[^\n]+flag[\s\S]+omit[^\n]+`resume`[\s\S]+`needs-choice`/i);
+  assert.match(block, /Fresh or independent operation[\s\S]+`fresh`[\s\S]+new Rescue child/i);
+  assert.match(block, /Root[^\n]+owns[^\n]+semantic choice/i);
+  assert.match(block, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*expectedPreparedContinuationMessage,?\s*\}\)/s);
+  assert.doesNotMatch(block, /followup_task\([\s\S]{0,240}(?:task|jobId|sessionId|workspace|permission|binding)/i);
+  return { active, stopped, fresh, block };
 }

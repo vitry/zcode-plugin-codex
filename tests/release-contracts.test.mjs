@@ -377,6 +377,29 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(read('tests/e2e/real-zcode.test.mjs'), /real-zcode-unqualified/);
 });
 
+test('release guidance documents exact stopped-child binding, lifecycle, upgrade, and legacy behavior bilingually', () => {
+  const english = read('README.md'); const chinese = read('README.zh-CN.md');
+  for (const source of [english, chinese]) {
+    assert.match(source, /anchorJobId|anchor job/i);
+    assert.match(source, /currentJobId|current job/i);
+    assert.match(source, /same (?:stopped )?(?:Rescue )?child|同一(?:个)?已停止的 Rescue child/i);
+    assert.match(source, /no second `?SubagentStart`?|不会.*第二次 `?SubagentStart`?/i);
+    assert.match(source, /legacy[\s\S]+(?:adopt|采用|接纳)/i);
+    assert.match(source, /permission[\s\S]+fresh|权限[\s\S]+fresh/i);
+    assert.match(source, /SessionEnd[\s\S]+(?:close|关闭)/i);
+    assert.match(source, /invalid[\s\S]+binding[\s\S]+fail closed|无效[\s\S]+binding[\s\S]+fail closed/i);
+    assert.match(source, /upgrade-required|升级.*required|需要升级/i);
+  }
+  const security = read('SECURITY.md'); const changelog = read('CHANGELOG.md'); const adr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');
+  assert.match(security, /durable Rescue binding[\s\S]+same stopped child[\s\S]+exact ZCode session/i);
+  assert.match(security, /private[\s\S]+anchorJobId[\s\S]+currentJobId/i);
+  assert.match(changelog, /exact stopped-child Rescue continuation/i);
+  assert.match(changelog, /no second `?SubagentStart`?/i);
+  assert.match(adr, /^---\nstatus: accepted\nsupersedes: stopped-rescue-choice-continuation-in-adr-0010\n---/);
+  assert.match(adr, /invoke-prepared rescue[\s\S]+same stopped child[\s\S]+anchorJobId[\s\S]+currentJobId/i);
+  assert.match(adr, /legacy[\s\S]+permission[\s\S]+SessionEnd[\s\S]+fail closed/i);
+});
+
 test('release package ships receipt-gated manual uninstall guidance', () => {
   const guidePath = 'docs/manual-uninstall.md';
   const english = read('README.md');
