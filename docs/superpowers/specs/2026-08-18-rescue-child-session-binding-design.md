@@ -99,6 +99,7 @@ Each record has an exact versioned schema:
   "state": "active",
   "parentSessionId": "root session",
   "executorAgentId": "trusted rescue child",
+  "executorAgentType": "zcode-rescue",
   "workspace": "canonical workspace",
   "permissionMode": "workspace-write",
   "anchorJobId": "job that owns the ZCode session",
@@ -111,18 +112,25 @@ Each record has an exact versioned schema:
 ```
 
 The key is derived from the version marker, parent session ID, executor agent ID,
-and the already-partitioned canonical workspace. `operationId` is a random
+and the already-partitioned canonical workspace. Records are stored beneath a
+hashed parent-session directory so one abandoned session cannot consume another
+session's capacity. `operationId` is a random
 generation token used for compare-and-swap updates and ABA protection. Closed
 records are tombstones whose reason is `fresh`, `session-ended`, or
 `invalidated`.
 
 The storage uses the same private-directory, bounded-read, exact-schema,
 symlink-resistant, atomic-write, and lock-identity controls as existing durable
-state. Active bindings do not expire after 30 minutes: continuation authorization
-still requires the original trusted stopped executor record within its existing
-authorization lifetime plus a fresh preparation for the current parent turn,
-while the durable binding itself must survive a long-running or terminal ZCode
-operation. This feature does not silently extend executor authorization.
+state. Active bindings do not expire after 30 minutes. Initial invocation and
+legacy choice retain the existing executor TTL. Exact bound continuation uses a
+narrow durable-provenance rule: the original executor record must still exist,
+be structurally valid, carry the approved role, and be stopped, but its age does
+not invalidate a matching binding. The binding preserves and cross-checks that
+original agent type. A fresh preparation for the current parent turn and the
+exact binding are also mandatory. Thus long-running and terminal operations
+remain continuable without making expired unbound executors usable. Ordinary
+executor resolution no longer deletes expired provenance; SessionEnd remains its
+authority cleanup boundary.
 
 ## Transaction Boundary
 
@@ -186,10 +194,14 @@ same child.
 
 When no binding exists, the existing legacy candidate behavior remains
 available. When presenting `needs-choice`, the companion persists the exact
-candidate job ID in the private, executor-bound, single-use pending record; it
-never emits that identity to the child or Root rollout. A requested resume
-consumes that record, revalidates precisely that candidate, and adopts it into
-the current child binding. A later job cannot replace the presented candidate.
+candidate job ID and a fixed route kind in the private, executor-bound,
+single-use pending record; it never emits that identity to the child or Root
+rollout. For a bound candidate it also snapshots the expected `operationId`. A
+requested resume consumes that record and either CAS-continues the same bound
+generation or, for a still-missing legacy slot, revalidates and adopts precisely
+the selected candidate. A later job cannot replace the presented candidate, and
+a fresh or continued generation created while the answer is pending invalidates
+the stale choice rather than changing its meaning.
 Pending records created by an older plugin version without an exact candidate
 cannot safely resume after upgrade and fail with an instruction to rerun the
 explicit command; a fresh choice remains safe. Only a truly missing binding may
@@ -209,8 +221,10 @@ executor to match:
 
 A same-child prepared continuation does not require or fabricate a new
 SubagentStart. It instead requires the exact original executor record to be
-stopped and unexpired, with matching parent session, canonical workspace, role,
-and permission. Its historical `parentTurnId` remains unchanged. Authorization
+stopped and structurally valid, with matching parent session, canonical
+workspace, role, and permission. Its historical `parentTurnId` and creation time
+remain unchanged; only this exact bound path may accept provenance older than
+the ordinary 30-minute executor TTL. Authorization
 for the new parent turn comes exclusively from the newly stored preparation,
 which must match the current active caller and can be consumed only by that
 executor ID, plus the exact durable binding. Missing any one of these proofs
@@ -236,12 +250,14 @@ carry the exact candidate job ID solely to prevent candidate substitution.
 runtime context.
 
 `invoke-choice` remains a separate narrow stopped-executor authorization path.
-It requires the same parent session/workspace/executor, the unexpired stopped
-executor record, and the single-use pending record from the originating turn and
-permission snapshot. It intentionally does not require the stopped executor's
-historical parent turn to equal the new active parent turn; the pending record is
-the authority for that one continuation. This exception does not authorize a
-general prepared invocation.
+Legacy choices require the same parent session/workspace/executor, the unexpired
+stopped executor record, and the single-use pending record from the originating
+turn and permission snapshot. A bound choice may use the same durable stopped
+provenance exception as prepared continuation, but only while its private
+expected generation and candidate still match. Neither form requires the
+stopped executor's historical parent turn to equal the new active parent turn;
+the pending record is the authority for that one continuation. This exception
+does not authorize any other prepared invocation.
 
 ## Lifecycle
 
@@ -258,14 +274,16 @@ general prepared invocation.
 - Closed tombstones are retained for bounded cleanup rather than immediately
   deleted, preventing stale writers from recreating an earlier generation.
 
-Binding enumeration is capped at 1,024 records per canonical workspace, with one
+Binding enumeration is capped at 1,024 child slots per parent session, with one
 extra entry read only to detect overflow. Closed tombstones become GC-eligible
-after 30 days; active records are never age-GCed. Before creating a new slot,
-StateStore validates the bounded set and removes eligible closed tombstones
-under `.state.lock`; if capacity remains full it fails without publication.
-Corrupt siblings fail closed and cannot be deleted by ordinary GC. SessionEnd
-may report an advisory close failure, but removal of session/executor authority
-still prevents that binding from being used.
+after 30 days; active records are never age-GCed. Before creating a new slot in
+that session partition, StateStore validates the bounded set and removes
+eligible closed tombstones under `.state.lock`; if the session capacity remains
+full it fails without publication. Corrupt siblings in the same session fail
+closed and cannot be deleted by ordinary GC. SessionEnd may report an advisory
+close failure, but removal of session/executor authority still prevents that
+binding from being used, and an abandoned session cannot consume capacity in a
+new or sibling session.
 
 ## Failure and Crash Semantics
 
@@ -315,11 +333,13 @@ TDD coverage is required at five layers:
 1. Binding codec/store tests: exact key/schema, private storage, permission and
    identity mismatch, corruption, duplicate/oversized records, symlink and lock
    replacement, concurrent fresh/continue/adopt, operation-generation ABA,
-   lifecycle closing, 1,024-entry capacity, over-limit rejection, 30-day closed
-   tombstone GC, active-never-GC, and Windows path/handle compatibility.
+   lifecycle closing, per-session 1,024-entry capacity, over-limit rejection,
+   30-day closed tombstone GC, active-never-GC, sibling-session isolation, and
+   Windows path/handle compatibility.
 2. Runtime tests: executor propagation through `invoke-prepared` and
    `invoke-choice`, fresh binding, exact continuation, immutable private
-   candidate selection across an intervening later job, legacy choice/adoption,
+   candidate/generation selection across an intervening later job or fresh
+   generation, legacy choice/adoption, greater-than-30-minute bound continuation,
    invalid-binding no-fallback, background jobs, current-job status, replay,
    sibling/workspace/session/permission attacks, and unchanged public CLI/jobs.
 3. Skill/Role tests: active rejoin, stopped same-child followup with zero spawn,

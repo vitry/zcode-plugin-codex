@@ -21,7 +21,8 @@
 - Modify: `tests/state.test.mjs` only when an existing StateStore compatibility assertion belongs there
 
 - [ ] Write failing tests for a pure exact binding codec/key API. Cover exact
-  keys, version/state enums, canonical workspace, safe identifiers, timestamps,
+  keys, version/state enums, canonical workspace, safe identifiers, persisted
+  approved `executorAgentType` provenance, timestamps,
   `operationId`, active/closed nullability, duplicate JSON keys, unknown keys,
   byte/count bounds, defensive copies, and fixed secret-free errors.
 - [ ] Run `node --test tests/rescue-binding.test.mjs` and record the expected
@@ -66,10 +67,13 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   exact JSON writes, and the StateStore lock. Reuse platform-aware path/handle
   snapshot validation.
 - [ ] Implement exact SessionEnd close tombstones with CAS-safe generation and
-  bounded cleanup; do not close on job terminal or child stop. Cap each workspace
-  at 1,024 records (+1 overflow detection), GC only valid closed tombstones older
-  than 30 days under the state lock before new-slot creation, never age-GC active
-  records, and fail closed on corrupt siblings or remaining capacity exhaustion.
+  bounded cleanup; do not close on job terminal or child stop. Store slots under
+  a hashed parent-session partition and cap each session at 1,024 records (+1
+  overflow detection), GC only valid closed tombstones older than 30 days under
+  the state lock before new-slot creation, never age-GC active records, and fail
+  closed on same-session corrupt siblings or remaining capacity exhaustion.
+  Prove an abandoned/advisory-close-failed session cannot consume sibling
+  session capacity.
 - [ ] Run focused tests, lint, typecheck, and `git diff --check`; commit:
   `feat: persist exact Rescue operation bindings`.
 
@@ -89,7 +93,9 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
 
 - [ ] Write failing tests proving `invoke-prepared` and `invoke-choice` propagate
   the trusted executor internally into `runCompanion`; no executor/binding/session
-  identity may appear in argv, env, output, progress, pending record, or task.
+  identity may appear in argv, env, output, progress, or task. The private
+  pending record admits only its exact-schema executor, route kind, candidate,
+  and expected-generation fields.
 - [ ] Reproduce the real Codex 0.147 lifecycle: one SubagentStart creates the
   executor, SubagentStop marks it inactive, a later `followup_task` produces no
   second SubagentStart, and the executor retains its historical parent turn.
@@ -114,20 +120,29 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   stores the exact bound `anchorJobId` as its private candidate. Inserting a
   later job cannot change it. Resume choice CAS-reserves an exact bound
   continuation; fresh choice creates a new generation. It never legacy-adopts
-  or calls latest-candidate selection.
+  or calls latest-candidate selection. A generation change while waiting rejects
+  the stale choice for both resume and fresh rather than retargeting it.
 - [ ] Run focused tests and record RED before production changes.
 - [ ] Pass trusted executor context from both `invoke-prepared` and
   `invoke-choice` into `runCompanion`/`startPublic` without changing public argv.
 - [ ] Extend `invoke-prepared` authorization without depending on a second
   SubagentStart: initial execution requires an active same-turn executor; bound
-  continuation requires the exact unexpired stopped executor, fresh preparation
+  continuation requires the exact retained stopped executor provenance, fresh preparation
   for the current active parent turn, and matching binding. Do not overwrite the
   executor's old `parentTurnId`.
+- [ ] Preserve stopped executor records as provenance instead of deleting them
+  merely for age. Initial/unbound routes keep the 30-minute TTL. Only a bound
+  continuation with matching fresh preparation, binding, parent session,
+  workspace, permission, stopped state, and persisted approved agent type may
+  use provenance older than 30 minutes. Test long-running and terminal
+  greater-than-30-minute continuations plus expired unbound rejection.
 - [ ] Version the private pending-choice schema to hold `candidateJobId` without
-  exposing it in output. Preserve the existing narrow `invoke-choice` authority:
+  exposing it in output. Add `routeKind` and, for bound choices,
+  `expectedOperationId`. Preserve the existing narrow `invoke-choice` authority:
   unexpired stopped executor + same parent session/workspace/executor + single-use
   originating pending record/permission. Do not require historical parentTurnId
-  to equal the new active turn.
+  to equal the new active turn. Bound choices may use durable stopped provenance
+  only while their candidate and expected generation still match.
 - [ ] Select routing as follows: bound+resume → exact continuation transaction;
   bound+fresh → fresh transaction; bound+omitted explicit → exact-anchor
   `needs-choice`; missing binding → existing legacy candidate behavior; invalid
@@ -237,6 +252,9 @@ git diff --check
   jobs remain reportable while a valid anchor resumes; cancelled/no-session
   anchor does not. Add candidate-insertion-between-choice-and-followup and old
   pending-without-candidate upgrade cases.
+- [ ] Add greater-than-30-minute fixtures: exact bound stopped provenance succeeds
+  only with fresh preparation and matching generation; expired unbound/legacy
+  executor, active executor, role mismatch, and missing provenance fail closed.
 - [ ] Extend optional live installed qualification with a cross-parent-turn clear
   continuation and exact fake/real peer session evidence where credentials permit;
   retain structured opt-in skips without credentials.
