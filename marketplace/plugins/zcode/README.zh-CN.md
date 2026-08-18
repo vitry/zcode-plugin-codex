@@ -48,6 +48,10 @@ Rescue 有两种等价入口：显式 `$zcode:rescue` 是请求中字面且适�
 
 Root 在 raw-capable TTY 上启动 `prepare rescue`。companion 先启用 raw mode，再输出精确且不含 task 的 readiness；readiness 是非终态。只有看到该行之后，Root 才通过私有 stdin 发送一行 JSON，并以 LF 结尾；不发送 EOF 或 U+0004。companion 消费这一帧、恢复 raw mode，并提交绑定精确 session、turn、workspace 和 executor 的 prepared state。非 TTY 或 raw mode 失败会在 task 交付前停止，且不会 spawn child。tool output 绝不包含或回显 payload；返回边界只有不含 task 的 readiness 和最终 prepared 确认。随后具名 Role 或 generic child 都只运行常量 `invoke-prepared rescue` forwarder，不接收 task、options、capability 或授权材料。若已经有活动的 `rescueChildId`，Root 会重新加入并等待这个精确的 Rescue child，不会重复 preflight、prepare、spawn 或 invoke。
 
+durable Rescue binding 现在把同一个已停止的 Rescue child 绑定到一个精确 ZCode session。私有 `anchorJobId` 标识被采用的操作，`currentJobId` 在每个续做 job 被持久预留并发布时前移，即使该 job 随后排队、失败或取消；两个标识都不会进入 child message。明确的主动续做会 prepare resume 并 follow up 同一个已停止的 Rescue child；它复用相同的 `invoke-prepared rescue` assignment，不会产生第二次 `SubagentStart`。显式 bound 请求若没有 `--resume` 或 `--fresh`，也 follow up 同一 child，并由其 bound `needs-choice` 结果触发一次用户选择。`--fresh` 始终准备独立操作和新的 child。
+
+legacy jobs-only 状态只会采用唯一且精确合格的续做候选；有歧义或旧 pending 状态会被拒绝而不是猜测。权限变化不能 resume 旧 binding，而 `--fresh` 会捕获当前 permission 快照。`SessionEnd` 会关闭结束 Codex session 的 Rescue binding，使其不能再次恢复。无效 binding、executor 不匹配、错误 workspace、已关闭 session 或 provenance 不一致都会 fail closed，不会 fallback 到 latest session。受管 Role 字节已经变化，因此 `role-status rescue` 可能返回 `upgrade-required`；继续前请重新运行 `$zcode:setup` 完成需要升级的 Role。
+
 前台 Rescue 只在一个原生子线程中运行常量 forwarder。host 支持 `agent_type` 时，Codex 选择具名 `zcode-rescue` Role。generic child 只是 host-only 兼容回退：仅当当前 spawn schema 缺少 `agent_type`，或能证明该字段在任何 child 启动前已被拒绝时才允许；Role 缺失、被 shadow、漂移或属于外部配置时绝不回退。父线程只运行只读 Role preflight 和私有 prepare rollout、显示原生生命周期并返回 child 的最终公开 stdout；它不会 inline 执行 Rescue，也不会把 child stderr、工具输出、原始 conversation frame 或中间进度复制到父线程。
 
 Rescue child 使用与任务无关的原生显示基名 `zcode_rescue_task`；同级名称冲突时会添加有界序号。该 metadata 不编码业务目标或 task 文本。名称和路径只用于导航：符合 `zcode_rescue_*` 规范既不能证明 child 是 Rescue，也不会授予 Rescue 权限；显示名称不同也不会移除一个已由可信链路确认的 Rescue child 的权限。

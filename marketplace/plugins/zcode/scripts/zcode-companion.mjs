@@ -33,6 +33,7 @@ import { reconcileBrokerOwnership } from './zcode-broker.mjs';
 import { resolveForwardingExecutor, resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
 
 const backgroundBindings = new WeakMap();
+const rescueChoiceRoutes = new WeakMap();
 const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
 const MANAGED_ROLE_STATUSES = new Set(['ready', 'restart-required', 'install-required', 'upgrade-required', 'drift', 'foreign-conflict', 'project-shadowed', 'higher-precedence-conflict', 'unsupported']);
 const SAFE_BOUND_STATUS_ERRORS = new Set([
@@ -43,7 +44,7 @@ const SAFE_BOUND_STATUS_ERRORS = new Set([
   'EXECUTOR_STATE_MISMATCH',
 ]);
 
-/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
+/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,executor?:any,rescueRoute?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
   const parsed = parseArgs(argv); const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
@@ -97,7 +98,7 @@ export async function runCompanion(argv, runtime = {}) {
     try { return { job: await cancelling.cancel(cwd, selected.id, caller.sessionId) }; }
     finally { await client.close().catch(() => {}); }
   }
-  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, executor: runtime.executor, rescueRoute: runtime.rescueRoute, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
 }
 
 /** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:NodeJS.ReadableStream,preparationTransport?:{writeReady:(line:string)=>unknown|Promise<unknown>},dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
@@ -120,13 +121,17 @@ export async function runDirectInvocation(argv, runtime = {}) {
     });
   }
   if (preparedInvocation) {
-    const executor = await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId);
+    const executor = await resolvePreparedExecutor(dataRoot, cwd, ambientThreadId);
     const caller = await identity.resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: cwd });
-    assertExecutorMatchesCaller(executor, caller);
+    if (executor.active) assertExecutorMatchesCaller(executor, caller);
     const prepared = await createRescuePreparationStore({ dataRoot }).consume({ ...caller, executorAgentId: executor.agentId });
+    if (!executor.active) {
+      const binding = await createStateStore({ dataRoot }).resolveRescueBinding({ ...bindingLookup(executor, cwd), ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}) });
+      if (binding.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
+    }
     const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
-    const output = await runCompanion(preparedArgv, { cwd, env, caller, originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
-    if (output?.type === 'needs-choice') await createInvocationStore({ dataRoot }).savePending({ sessionId: caller.sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode, command: 'rescue', source: prepared.envelope.source, executorAgentId: executor.agentId, spec: { argv: preparedArgv } });
+    const output = await runCompanion(preparedArgv, { cwd, env, caller, executor, originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+    if (output?.type === 'needs-choice') await saveRescuePendingChoice({ dataRoot, caller, cwd, source: prepared.envelope.source, executor, argv: preparedArgv, output });
     return output;
   }
   if (statusInvocation) {
@@ -147,11 +152,14 @@ export async function runDirectInvocation(argv, runtime = {}) {
     throw new PluginError('PREPARED_INVOCATION_REQUIRED', 'Installed Rescue requires a prepared invocation.', { category: 'authorization', remedy: 'Return to the parent turn, run prepare rescue, and start one new Rescue child.' });
   }
   let sessionId = ambientThreadId; let executorAgentId; let executor;
-  if (command === 'rescue') { executor = await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: entry === 'invoke-choice' }); sessionId = executor.parentSessionId; executorAgentId = executor.agentId; }
+  if (command === 'rescue') { executor = entry === 'invoke-choice' ? await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true, durableProvenance: true }) : await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId); sessionId = executor.parentSessionId; executorAgentId = executor.agentId; }
   const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd }); const invocations = createInvocationStore({ dataRoot });
   if (command === 'rescue' && entry === 'invoke' && (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode)) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The Rescue child is not bound to the active parent turn.', { category: 'authorization', remedy: 'Retry from the original parent thread with one newly started Rescue child.' });
   /** @type {any} */ let invocation; let executionCaller = caller;
-  if (entry === 'invoke-choice') { invocation = await invocations.consumePending({ sessionId, workspace: cwd, command, choice, ...(executorAgentId === undefined ? {} : { executorAgentId }) }); executionCaller = invocation.caller; }
+  if (entry === 'invoke-choice') {
+    invocation = await invocations.consumePending({ sessionId, workspace: cwd, command, choice, ...(executorAgentId === undefined ? {} : { executorAgentId }) }); executionCaller = invocation.caller;
+    if (command === 'rescue' && invocation.route?.routeKind !== 'bound') executor = await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true });
+  }
   else {
     if (choice !== undefined) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
     invocation = parseRecordedInvocation(command, caller.prompt);
@@ -160,9 +168,28 @@ export async function runDirectInvocation(argv, runtime = {}) {
       return { type: 'needs-choice', choices: ['wait', 'background'] };
     }
   }
-  const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
-  if (output?.type === 'needs-choice') await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv }, ...(command === 'rescue' ? { source: invocation.source ?? 'explicit' } : {}), ...(executorAgentId === undefined ? {} : { executorAgentId }) });
+  const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, executor, rescueRoute: invocation.route, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+  if (output?.type === 'needs-choice') {
+    if (command === 'rescue') await saveRescuePendingChoice({ dataRoot, caller: executionCaller, cwd, source: invocation.source ?? 'explicit', executor, argv: invocation.argv, output });
+    else await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv } });
+  }
   return output;
+}
+
+/** @param {string} dataRoot @param {string} workspace @param {string} agentId */
+async function resolvePreparedExecutor(dataRoot, workspace, agentId) {
+  try { return await resolveForwardingExecutor(dataRoot, workspace, agentId); }
+  catch (error) {
+    if (!(error instanceof PluginError) || !['EXECUTOR_IDENTITY_NOT_FOUND', 'EXECUTOR_IDENTITY_EXPIRED'].includes(error.code)) throw error;
+    return resolveForwardingExecutor(dataRoot, workspace, agentId, { continuation: true, durableProvenance: true });
+  }
+}
+
+/** @param {{dataRoot:string,caller:any,cwd:string,source:'explicit'|'proactive',executor:any,argv:string[],output:any}} input */
+async function saveRescuePendingChoice({ dataRoot, caller, cwd, source, executor, argv, output }) {
+  const route = rescueChoiceRoutes.get(output);
+  if (!route) throw new PluginError('RESCUE_CHOICE_ROUTE_INVALID', 'The private Rescue choice route is unavailable.', { category: 'authorization', remedy: 'Repeat the Rescue command.' });
+  await createInvocationStore({ dataRoot }).savePending({ sessionId: caller.sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode, command: 'rescue', source, executorAgentId: executor.agentId, spec: { argv }, ...route });
 }
 
 /** @param {any} executor @param {any} caller */
@@ -261,15 +288,38 @@ function rescuePreparationInterruption(signal) {
 /** @param {any} context */
 async function startPublic(context) {
   const { parsed, caller, cwd, dataRoot, identity, store, controller } = context;
-  let candidate = null;
+  /** @type {any} */ let candidate = null; /** @type {any} */ let binding = null;
   if (parsed.command === 'rescue') {
-    candidate = await controller.resumeCandidate(cwd, caller.sessionId);
-    if (!parsed.options.resume && candidate) return { type: 'needs-choice', candidate, choices: ['--resume', '--fresh'] };
-    if (parsed.options.resume === 'resume' && !candidate) throw new PluginError('RESUME_CANDIDATE_NOT_FOUND', 'No eligible rescue session can be resumed.', { category: 'state', remedy: 'Use --fresh to start a new ZCode session.' });
+    if (context.executor) {
+      if (parsed.options.resume !== 'fresh') {
+        const resolved = await store.resolveRescueBinding({ ...bindingLookup(context.executor, cwd), ...(parsed.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}) });
+        binding = resolved.kind === 'bound' ? resolved.binding : null;
+        if (context.rescueRoute?.routeKind === 'bound' && !binding) throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
+        if (context.rescueRoute?.routeKind === 'legacy' && binding) throw new PluginError('RESCUE_BINDING_STALE', 'The Rescue operation generation changed.', { category: 'state', remedy: 'Repeat the Rescue choice.' });
+      }
+      if (!parsed.options.resume && binding) return boundNeedsChoice(binding);
+      if (!binding && parsed.options.resume !== 'fresh') candidate = context.rescueRoute?.candidateJobId ? await store.readJob(cwd, context.rescueRoute.candidateJobId) : await controller.resumeCandidate(cwd, caller.sessionId);
+      if (!parsed.options.resume && candidate) return legacyNeedsChoice(candidate, Boolean(context.executor));
+    } else candidate = await controller.resumeCandidate(cwd, caller.sessionId);
+    if (!context.executor && !parsed.options.resume && candidate) return { type: 'needs-choice', candidate, choices: ['--resume', '--fresh'] };
+    if (parsed.options.resume === 'resume' && !binding && !candidate) throw new PluginError('RESUME_CANDIDATE_NOT_FOUND', 'No eligible rescue session can be resumed.', { category: 'state', remedy: 'Use --fresh to start a new ZCode session.' });
   }
   const permissionSnapshot = Object.freeze({ permissionMode: caller.permissionMode });
   const transferSource = parsed.command === 'transfer' ? resolveTransferSource(parsed.options, caller) : undefined;
-  const job = await reservePublicJob(context, { workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) });
+  const reservation = { workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) };
+  let job;
+  if (parsed.command === 'rescue' && context.executor) {
+    let reserved;
+    if (parsed.options.resume === 'fresh' || !binding && !candidate) reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, executor: context.executor, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
+    else if (binding) {
+      const resolved = await store.resolveRescueBindingForResume({ ...bindingLookup(context.executor, cwd), permissionMode: caller.permissionMode });
+      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, executor: context.executor, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
+      candidate = reserved.anchorJob;
+    } else {
+      reserved = await reservePublicRescueJob(context, () => store.adoptRescueCandidate({ workspace: cwd, reservation, executor: context.executor, candidateJobId: candidate.id })); candidate = reserved.anchorJob;
+    }
+    job = reserved.job;
+  } else job = await reservePublicJob(context, reservation);
   if (parsed.command === 'transfer') {
     return executeTransfer({ job, workspace: job.workspace, dataRoot, store, sourceThreadId: /** @type {string} */ (transferSource), signal: context.signal, resolveLaunch: () => discoverLaunch(context.env),
       readThread: () => (context.dependencies?.readCodexThread ?? readCodexThread)(transferSource, codexAppServerOptions(context.env, job.workspace)),
@@ -282,9 +332,12 @@ async function startPublic(context) {
     const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', specDigest };
     let capability;
     try {
+      context.signal?.throwIfAborted();
       await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, spec, specDigest);
+      context.signal?.throwIfAborted();
       capability = await (context.dependencies?.createExecutionCapability ?? ((/** @type {any} */ input) => identity.createExecutionCapability(input)))({ ...binding, permissionSnapshot });
       if (context.autoLaunchBackground) {
+        context.signal?.throwIfAborted();
         await (context.dependencies?.startBackgroundWorker ?? startBackgroundWorker)({ companionPath: fileURLToPath(import.meta.url), jobId: job.id, executionCapability: capability, cwd, env: context.env });
         return { type: 'background', job };
       }
@@ -298,6 +351,35 @@ async function startPublic(context) {
     }
   }
   return executeWithWorkerLease({ ...context, job, spec });
+}
+
+/** @param {any} binding */
+function boundNeedsChoice(binding) { const output = { type: 'needs-choice', choices: ['--resume', '--fresh'] }; rescueChoiceRoutes.set(output, { routeKind: 'bound', candidateJobId: binding.anchorJobId, expectedOperationId: binding.operationId, expectedCurrentJobId: binding.currentJobId }); return output; }
+/** @param {any} candidate @param {boolean} privateRoute */
+function legacyNeedsChoice(candidate, privateRoute) { const output = { type: 'needs-choice', ...(privateRoute ? {} : { candidate }), choices: ['--resume', '--fresh'] }; if (privateRoute) rescueChoiceRoutes.set(output, { routeKind: 'legacy', candidateJobId: candidate.id }); return output; }
+
+/** @param {any} executor @param {string} workspace */
+function bindingLookup(executor, workspace) {
+  return { workspace, parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId, executorAgentType: executor.agentType,
+    executorParentTurnId: executor.parentTurnId, executorParentPermissionMode: executor.parentPermissionMode };
+}
+
+/** @param {any} context @param {()=>Promise<any>} reserve */
+async function reservePublicRescueJob(context, reserve) {
+  context.signal?.throwIfAborted();
+  try { return await reserve(); }
+  catch (error) {
+    if (!(error instanceof PluginError) || error.code !== 'WRITABLE_JOB_EXISTS') throw error;
+    context.signal?.throwIfAborted();
+    await scavengeWritableJobs({ store: context.store, dataRoot: context.dataRoot, workspace: context.cwd, signal: context.signal, createClient: async (job) => {
+      context.signal?.throwIfAborted();
+      const launch = await discoverLaunch(context.env, context.dependencies);
+      context.signal?.throwIfAborted();
+      return (context.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot: context.dataRoot, workspace: job.workspace, launch, ownerId: ownerIdForSession(job.ownerSessionId), env: context.env, ...managedWireOptionsForJob(job) });
+    } });
+    context.signal?.throwIfAborted();
+    return reserve();
+  }
 }
 
 /** @param {any} context @param {any} reservation */
@@ -366,6 +448,7 @@ async function executeReserved(context) {
   try {
     context.signal?.throwIfAborted();
     const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
+    context.signal?.throwIfAborted();
     client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId, env });
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
