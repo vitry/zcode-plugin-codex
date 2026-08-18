@@ -23,6 +23,7 @@ import {
   rescueBindingKey,
   rescueBindingPartitionKey,
   RESCUE_BINDING_MAX_RECORDS,
+  RESCUE_BINDING_PARTITION_MAX_BYTES,
   validateRescueBinding,
 } from './rescue-binding.mjs';
 import {
@@ -65,11 +66,11 @@ const TRANSITIONS = new Map([
   ['cancelling', new Set(['cancelled', 'running', 'succeeded', 'failed'])],
 ]);
 
-/** @param {{ dataRoot: string, testOnlyPublicationHook?:(seam:string)=>void|Promise<void> }} options `testOnlyPublicationHook` is a deterministic test seam; production callers must omit it. */
+/** @param {{ dataRoot: string, testOnlyPublicationHook?:(seam:string)=>void|Promise<void>, testOnlyBindingPartitionMaxBytes?:number }} options Test-only fields are deterministic seams; production callers must omit them. */
 export function createStateStore(options) {
   const validOptions = options !== null && typeof options === 'object' && !Array.isArray(options)
     && [Object.prototype, null].includes(Object.getPrototypeOf(options))
-    && Object.keys(options).every((key) => key === 'dataRoot' || key === 'testOnlyPublicationHook');
+    && Object.keys(options).every((key) => ['dataRoot', 'testOnlyBindingPartitionMaxBytes', 'testOnlyPublicationHook'].includes(key));
   const dataRoot = validOptions ? options.dataRoot : undefined;
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) {
     throw new PluginError('DATA_ROOT_REQUIRED', 'A plugin data root must be provided explicitly.', {
@@ -78,7 +79,10 @@ export function createStateStore(options) {
     });
   }
   if (options.testOnlyPublicationHook !== undefined && typeof options.testOnlyPublicationHook !== 'function') throw new TypeError('testOnlyPublicationHook must be a function');
+  if (options.testOnlyBindingPartitionMaxBytes !== undefined && (!Number.isSafeInteger(options.testOnlyBindingPartitionMaxBytes)
+    || options.testOnlyBindingPartitionMaxBytes < 1 || options.testOnlyBindingPartitionMaxBytes > RESCUE_BINDING_PARTITION_MAX_BYTES)) throw new TypeError('testOnlyBindingPartitionMaxBytes must be a positive bounded integer');
   const publicationHook = options.testOnlyPublicationHook ?? (async () => {});
+  const bindingPartitionMaxBytes = options.testOnlyBindingPartitionMaxBytes ?? RESCUE_BINDING_PARTITION_MAX_BYTES;
 
   return {
     dataRoot,
@@ -137,6 +141,7 @@ export function createStateStore(options) {
         const job = makeReservedJob(storage, jobs, input.reservation);
         const binding = createRescueBinding({ ...exactIdentity, anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex') });
         const afterSnapshot = bindingSnapshotWith(beforeSnapshot, binding);
+        if (!beforeSnapshot.records.has(binding.key)) ensureProspectiveBindingCapacity(storage, binding.parentSessionId, afterSnapshot, bindingPartitionMaxBytes);
         await publishRescueReservation(storage, job, binding, { bindingFirst: true, beforeSnapshot, afterSnapshot, lockIdentity, publicationHook, route: 'fresh' });
         await publicationCheckpoint(publicationHook, 'fresh:final'); await assertPublicationGuard(storage, lockIdentity, afterSnapshot, binding.parentSessionId);
         return { job, binding };
@@ -180,6 +185,7 @@ export function createStateStore(options) {
         const job = makeReservedJob(storage, jobs, input.reservation);
         const base = createRescueBinding({ ...exactIdentity, anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex') });
         const baseSnapshot = bindingSnapshotWith(beforeSnapshot, base);
+        ensureProspectiveBindingCapacity(storage, base.parentSessionId, baseSnapshot, bindingPartitionMaxBytes);
         await publicationCheckpoint(publicationHook, 'adopt:base-binding');
         await writeBindingPartitionGuarded(storage, base.parentSessionId, beforeSnapshot, baseSnapshot, lockIdentity);
         await publishJobRecord(storage, job, { lockIdentity, expectedSnapshot: baseSnapshot, publicationHook, route: 'adopt', parentSessionId: base.parentSessionId });
@@ -569,6 +575,13 @@ async function readBindingPartitionSnapshot(storage, parentSessionId, allowMissi
 /** @param {any} storage @param {string} parentSessionId @param {Map<string,any>} records */
 function partitionEnvelope(storage, parentSessionId, records) { return createRescueBindingPartition({ parentSessionId, workspace: storage.workspacePath, records: [...records.values()] }); }
 
+/** @param {any} storage @param {string} parentSessionId @param {any} snapshot @param {number} maximumBytes */
+function ensureProspectiveBindingCapacity(storage, parentSessionId, snapshot, maximumBytes) {
+  let envelope;
+  try { envelope = partitionEnvelope(storage, parentSessionId, snapshot.records); } catch { throw rescueBindingCapacity(); }
+  if (Buffer.byteLength(`${JSON.stringify(envelope, null, 2)}\n`) > maximumBytes) throw rescueBindingCapacity();
+}
+
 /** @param {any} snapshot @param {any} binding */
 function bindingSnapshotWith(snapshot, binding) { const records = new Map(snapshot.records); records.set(binding.key, binding); return { authority: snapshot.authority, exists: true, records }; }
 
@@ -592,7 +605,7 @@ async function prepareBindingSlot(storage, identity, lockIdentity) {
   const cutoff = Date.now() - RESCUE_BINDING_CLOSED_GC_MS;
   const retained = new Map([...snapshot.records].filter(([, record]) => record.state !== 'closed' || Date.parse(record.closedAt) >= cutoff));
   if (retained.size !== snapshot.records.size) { const after = { authority: snapshot.authority, exists: true, records: retained }; await writeBindingPartitionGuarded(storage, identity.parentSessionId, snapshot, after, lockIdentity); snapshot = after; }
-  if (snapshot.records.size >= RESCUE_BINDING_MAX_RECORDS) throw new PluginError('RESCUE_BINDING_CAPACITY', 'The Rescue binding capacity is exhausted.', { category: 'state', remedy: 'End or clean up old Rescue operations before retrying.' });
+  if (snapshot.records.size >= RESCUE_BINDING_MAX_RECORDS) throw rescueBindingCapacity();
   return { record: null, snapshot };
 }
 /** @param {import('node:fs').BigIntStats} left @param {import('node:fs').BigIntStats} right */
@@ -648,6 +661,7 @@ function validateCurrentJob(job, parentSessionId, workspace) {
 function invalidRescueBinding() { return new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' }); }
 function closedRescueBinding() { return new PluginError('RESCUE_BINDING_CLOSED', 'The Rescue operation binding is closed.', { category: 'state', remedy: 'Start a fresh Rescue operation from the active parent turn.' }); }
 function staleRescueBinding() { return new PluginError('RESCUE_BINDING_STALE', 'The Rescue operation generation changed.', { category: 'state', remedy: 'Reload the exact Rescue binding before retrying.' }); }
+function rescueBindingCapacity() { return new PluginError('RESCUE_BINDING_CAPACITY', 'The Rescue binding capacity is exhausted.', { category: 'state', remedy: 'End or clean up old Rescue operations before retrying.' }); }
 
 /**
  * Validate and repair the owner index under the workspace state lock. The

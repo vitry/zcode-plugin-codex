@@ -13,6 +13,7 @@ import {
   parseRescueBinding,
   parseRescueBindingAuthority,
   parseRescueBindingPartition,
+  RESCUE_BINDING_AUTHORITY_MAX_BYTES,
   RESCUE_BINDING_PARTITION_MAX_BYTES,
   rescueBindingKey,
 } from '../scripts/lib/rescue-binding.mjs';
@@ -95,7 +96,12 @@ test('partition codec enforces one exact bounded parent-session envelope and uni
   assert.equal(parseRescueBindingPartition(boundary, identity).records.length, 1);
   assert.throws(() => parseRescueBindingPartition(`${boundary.slice(0, -1)} \n`, identity), { code: 'RESCUE_BINDING_INVALID' });
   const authority = createRescueBindingAuthority(identity); assert.equal(parseRescueBindingAuthority(`${JSON.stringify(authority)}\n`, identity).key, partition.key);
-  assert.throws(() => parseRescueBindingAuthority(`${JSON.stringify({ ...authority, workspace: '/foreign' })}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
+  for (const invalid of [
+    { ...authority, version: 2 }, { ...authority, workspace: '/foreign' }, { ...authority, parentSessionId: 'foreign' },
+    { ...authority, createdAt: authority.createdAt.replace('Z', '+00:00') }, { ...authority, unknown: true },
+  ]) assert.throws(() => parseRescueBindingAuthority(`${JSON.stringify(invalid)}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
+  assert.throws(() => parseRescueBindingAuthority(`${JSON.stringify(authority).replace('"version":1', '"version":1,"version":1')}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
+  assert.throws(() => parseRescueBindingAuthority(Buffer.alloc(RESCUE_BINDING_AUTHORITY_MAX_BYTES + 1, 0x20), identity), { code: 'RESCUE_BINDING_INVALID' });
 });
 
 async function fixture(options = {}) {
@@ -276,52 +282,39 @@ test('publication rejects binding-partition and state-lock replacement without a
   }
 });
 
-test('every post-partition publication checkpoint and final return rejects partition replacement durably', async () => {
+test('every post-binding checkpoint rejects every authority and partition mutation durably', async () => {
   const scenarios = [
     ...['fresh:owner-binding', 'fresh:job', 'fresh:marker', 'fresh:final'].map((seam) => ({ route: 'fresh', seam })),
     ...['continuation:owner-binding', 'continuation:job', 'continuation:marker', 'continuation:current-advance', 'continuation:final'].map((seam) => ({ route: 'continuation', seam })),
-    ...['adopt:base-binding', 'adopt:owner-binding', 'adopt:job', 'adopt:marker', 'adopt:current-advance', 'adopt:final'].map((seam) => ({ route: 'adopt', seam })),
+    ...['adopt:owner-binding', 'adopt:job', 'adopt:marker', 'adopt:current-advance', 'adopt:final'].map((seam) => ({ route: 'adopt', seam })),
   ];
   for (const scenario of scenarios) {
-    const base = await fixture(); const trusted = executor(base.workspace); let anchor;
-    if (scenario.route !== 'fresh') {
-      anchor = await base.store.reserveJob(reservation(base.workspace)); await makeEligible(base.store, base.workspace, anchor, 'stable-session'); await base.store.finishJob(base.workspace, anchor.id, ['running'], 'failed');
-      if (scenario.route === 'continuation') {
-        const adopted = await base.store.adoptRescueCandidate({ workspace: base.workspace, reservation: reservation(base.workspace, 'seed'), executor: trusted, candidateJobId: anchor.id });
-        await base.store.finishJob(base.workspace, adopted.job.id, ['queued'], 'failed'); anchor = adopted;
+    await Promise.all(['authority', 'session'].flatMap((kind) => ['delete', 'replace', 'corrupt', 'symlink'].map(async (mutation) => {
+      const base = await fixture(); const trusted = executor(base.workspace); let anchor;
+      if (scenario.route !== 'fresh') {
+        anchor = await base.store.reserveJob(reservation(base.workspace)); await makeEligible(base.store, base.workspace, anchor, 'stable-session'); await base.store.finishJob(base.workspace, anchor.id, ['running'], 'failed');
+        if (scenario.route === 'continuation') {
+          const adopted = await base.store.adoptRescueCandidate({ workspace: base.workspace, reservation: reservation(base.workspace, 'seed'), executor: trusted, candidateJobId: anchor.id });
+          await base.store.finishJob(base.workspace, adopted.job.id, ['queued'], 'failed'); anchor = adopted;
+        }
       }
-    }
-    const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace }); let replaced = false;
-    const store = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
-      if (replaced || seam !== scenario.seam) return; replaced = true;
-      const [partition] = await bindingFiles(storage.directory);
-      if (partition) { await rename(partition, `${partition}.replaced`); await writeFile(partition, '{}'); }
-      else { const [authority] = (await readdir(storage.directory)).filter((name) => /^rescue-binding-authority-/u.test(name)); await writeFile(join(storage.directory, authority), '{}'); }
-    } });
-    const operation = scenario.route === 'fresh'
-      ? store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted })
-      : scenario.route === 'continuation'
-        ? store.reserveBoundRescueContinuation({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted, operationId: anchor.binding.operationId })
-        : store.adoptRescueCandidate({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted, candidateJobId: anchor.id });
-    await assert.rejects(operation, { code: 'RESCUE_BINDING_INVALID' }, `${scenario.seam} must reject replacement`);
-    await assert.rejects(createStateStore({ dataRoot: base.dataRoot }).resolveRescueBinding(bindingExpected(base.workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' }, `${scenario.seam} must not become missing`);
-  }
-});
-
-test('delete, replace, corrupt, or symlink mutations of authority and partition fail current and next calls', async () => {
-  for (const kind of ['authority', 'session']) for (const mutation of ['delete', 'replace', 'corrupt', 'symlink']) {
-    const base = await fixture(); const trusted = executor(base.workspace); const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace }); let mutated = false;
-    const store = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
-      if (mutated || seam !== 'fresh:final') return; mutated = true;
-      const prefix = `rescue-binding-${kind}-`; const [name] = (await readdir(storage.directory)).filter((entry) => entry.startsWith(prefix)); const path = join(storage.directory, name);
-      const { unlink } = await import('node:fs/promises');
-      if (mutation === 'delete') await unlink(path);
-      else if (mutation === 'replace') { await rename(path, `${path}.replaced`); await writeFile(path, '{}'); }
-      else if (mutation === 'corrupt') await writeFile(path, '{broken');
-      else { const outside = join(base.root, `${kind}.json`); await writeFile(outside, '{}'); await unlink(path); await symlink(outside, path); }
-    } });
-    await assert.rejects(store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace), executor: trusted }), { code: 'RESCUE_BINDING_INVALID' });
-    await assert.rejects(createStateStore({ dataRoot: base.dataRoot }).resolveRescueBinding(bindingExpected(base.workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
+      const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace }); let mutated = false;
+      const store = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
+        if (mutated || seam !== scenario.seam) return; mutated = true;
+        const [name] = (await readdir(storage.directory)).filter((entry) => entry.startsWith(`rescue-binding-${kind}-`)); const path = join(storage.directory, name); const { unlink } = await import('node:fs/promises');
+        if (mutation === 'delete') await unlink(path);
+        else if (mutation === 'replace') { await rename(path, `${path}.replaced`); await writeFile(path, '{}'); }
+        else if (mutation === 'corrupt') await writeFile(path, '{broken');
+        else { const outside = join(base.root, `${kind}.json`); await writeFile(outside, '{}'); await unlink(path); await symlink(outside, path); }
+      } });
+      const operation = scenario.route === 'fresh'
+        ? store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted })
+        : scenario.route === 'continuation'
+          ? store.reserveBoundRescueContinuation({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted, operationId: anchor.binding.operationId })
+          : store.adoptRescueCandidate({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted, candidateJobId: anchor.id });
+      await assert.rejects(operation, { code: 'RESCUE_BINDING_INVALID' }, `${scenario.seam}/${kind}/${mutation}`);
+      await assert.rejects(createStateStore({ dataRoot: base.dataRoot }).resolveRescueBinding(bindingExpected(base.workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' }, `${scenario.seam}/${kind}/${mutation} next resolve`);
+    })));
   }
 });
 
@@ -331,6 +324,15 @@ test('oversized persisted binding records fail closed before allocation or parsi
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory);
   await writeFile(path, Buffer.alloc(16 * 1024 * 1024 + 1, 0x20));
   await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
+});
+
+test('a valid prospective new record that exceeds the partition byte budget reports capacity', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted }); await store.finishJob(workspace, first.job.id, ['queued'], 'failed');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory); const maximumBytes = (await stat(path)).size;
+  const bounded = createStateStore({ dataRoot, testOnlyBindingPartitionMaxBytes: maximumBytes }); const second = executor(workspace, { agentId: 'second-child' });
+  await assert.rejects(bounded.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'second'), executor: second }), { code: 'RESCUE_BINDING_CAPACITY' });
+  assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, trusted))).kind, 'bound');
 });
 
 test('legacy-style job readers observe unchanged job schema and ignore Rescue binding storage', async () => {

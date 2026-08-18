@@ -121,10 +121,12 @@ export function parseRescueBindingAuthority(bytes, expected) {
   let text; try { text = Buffer.isBuffer(bytes) ? new TextDecoder('utf-8', { fatal: true }).decode(bytes) : bytes; } catch { throw invalidBinding(); }
   if (typeof text !== 'string' || !text.endsWith('\n') || Buffer.byteLength(text) > RESCUE_BINDING_AUTHORITY_MAX_BYTES) throw invalidBinding(); rejectDuplicateObjectKeys(text);
   let parsed; try { parsed = JSON.parse(text); } catch { throw invalidBinding(); }
-  const valid = createRescueBindingAuthority(parsed); validatePartitionIdentity(expected);
-  if (Object.keys(parsed).sort().join('\0') !== ['createdAt', 'key', 'parentSessionId', 'version', 'workspace'].sort().join('\0')
-    || valid.key !== parsed.key || valid.parentSessionId !== expected.parentSessionId || valid.workspace !== expected.workspace) throw invalidBinding();
-  return { ...valid };
+  validatePartitionIdentity(expected);
+  if (!plain(parsed) || Object.keys(parsed).sort().join('\0') !== ['createdAt', 'key', 'parentSessionId', 'version', 'workspace'].sort().join('\0')
+    || parsed.version !== RESCUE_BINDING_PARTITION_VERSION || parsed.key !== rescueBindingPartitionKey(expected)
+    || parsed.parentSessionId !== expected.parentSessionId || parsed.workspace !== expected.workspace
+    || !canonicalTimestamp(parsed.createdAt)) throw invalidBinding();
+  return { ...parsed };
 }
 
 /** @param {string|Buffer} bytes @param {{parentSessionId:string,executorAgentId:string,executorAgentType?:string,workspace:string,permissionMode?:string}} [expected] */
