@@ -14,6 +14,7 @@ import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
+import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
 import {
   assertCodexRescueDisplayName,
   CodexRescueEvidenceMismatchError,
@@ -791,6 +792,32 @@ test('installed Rescue uses one isolated native child for initial and choice con
     }
     throw error;
   }
+
+  const initialParentIds = [...new Set(frames.filter((frame) => frame?.type === 'thread.started').map((frame) => frame.thread_id))];
+  assert.equal(initialParentIds.length, 1, 'initial installed Rescue must expose one resumable parent thread');
+  const originalSessionId = zcodeCalls.find((call) => call.method === 'session/create')?.result?.session?.sessionId;
+  assert.ok(originalSessionId, 'initial installed Rescue must capture its exact fake-peer session');
+  await writeFile(zcodeRecord, '');
+  const proactive = await runHeldChoiceSegment('proactive-bound-continuation', expectedCommand,
+    (segmentEnv) => controlledCodex([
+      'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+      '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all',
+      initialParentIds[0], 'Continue the exact same stopped Rescue child and its existing ZCode operation proactively. This is a clear continuation, not fresh work.',
+    ], workspace, segmentEnv, 240_000));
+  if (skipExternalFailure(t, proactive.rescue)) return;
+  assert.equal(proactive.rescue.code, 0, `proactive bound continuation failed\n${proactive.rescue.stdout}\n${proactive.rescue.stderr}`);
+  assert.equal(proactive.endedBeforeGate, false, 'proactive continuation must poll its exact yielded invoke-prepared process');
+  const proactiveRollouts = await loadCodexRollouts(codexHome);
+  const proactiveParent = proactiveRollouts.find((events) => events.some((event) => event?.type === 'session_meta' && event.payload?.id === initialParentIds[0]));
+  assert.ok(proactiveParent, 'proactive continuation parent rollout is missing');
+  assert.equal(proactiveParent.filter((event) => event?.payload?.name === 'spawn_agent').length, 1, 'proactive continuation must retain only the original spawn');
+  assert.equal(proactiveParent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started').length, 1, 'proactive continuation must expose no second SubagentStart');
+  assert.equal(proactiveParent.filter((event) => event?.payload?.name === 'followup_task').length, 1, 'proactive continuation must follow up the exact stopped child once');
+  const proactivePeer = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const resumed = proactivePeer.filter((call) => call.method === 'session/resume');
+  assert.equal(resumed.length, 1, 'proactive continuation must resume exactly one fake-peer session');
+  assert.equal(resumed[0].params?.sessionId, originalSessionId, 'proactive continuation must resume the original exact fake-peer session');
+  assert.equal(proactivePeer.filter((call) => call.method === 'session/send').length, 1, 'proactive continuation must send exactly one new ZCode turn');
 
   for (const choice of ['resume', 'fresh']) {
     await writeFile(zcodeRecord, '');
@@ -1663,41 +1690,43 @@ function installedPreparedContinuationCapture(route) {
   const childThreadId = '019fe6e0-4764-7192-83ba-0b0cc2c48660';
   const parentSessionId = '019fe6df-faa2-7851-8edb-55f1be7d5489';
   const message = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage;
+  const workspace = '/repo'; const anchorJobId = 'a'.repeat(64); const currentJobId = 'c'.repeat(64);
+  const binding = createRescueBinding({ parentSessionId, executorAgentId: childThreadId, executorAgentType: route === 'named' ? 'zcode-rescue' : 'default',
+    executorParentTurnId: 'turn-original', executorParentPermissionMode: 'acceptEdits', workspace, permissionMode: 'acceptEdits',
+    anchorJobId, currentJobId, operationId: 'd'.repeat(64), now: '2026-08-10T00:00:00.000Z' });
+  const parent = [
+    { type: 'session_meta', payload: { id: parentSessionId, session_id: parentSessionId, thread_source: 'user', source: 'exec' } },
+    { ...installedToolCall('prepare-1', installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue')), timestamp: '2026-08-10T00:00:00.500Z' },
+    { ...installedToolOutput('prepare-1', { output: 'prepared\n', exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:01.000Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ task_name: 'zcode_rescue_continue', message, fork_turns: 'none', ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) }) } },
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_continue', parent_turn_id: 'turn-original' } },
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_continue', parent_turn_id: 'turn-original' } },
+    { ...installedToolCall('prepare-2', installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue')), timestamp: '2026-08-10T00:00:06.000Z' },
+    { ...installedToolOutput('prepare-2', { output: 'prepared\n', exit_code: 0 }), timestamp: '2026-08-10T00:00:07.000Z' },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:08.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childThreadId, message }) } },
+  ];
+  const command = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-prepared rescue';
+  const child = [
+    { type: 'session_meta', payload: { id: childThreadId, parent_thread_id: parentSessionId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentSessionId, agent_path: '/root/zcode_rescue_continue', agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
+    installedToolCall('invoke-1', installedExecInput(command)), installedToolOutput('invoke-1', { output: 'initial done\n', exit_code: 0 }),
+    installedToolCall('invoke-2', installedExecInput(command)), installedToolOutput('invoke-2', { output: 'continued\n', exit_code: 0 }),
+  ];
+  child[1].timestamp = '2026-08-10T00:00:03.000Z'; child[2].timestamp = '2026-08-10T00:00:04.000Z'; child[3].timestamp = '2026-08-10T00:00:10.000Z'; child[4].timestamp = '2026-08-10T00:00:11.000Z';
   return {
-    route,
-    execution: 'foreground',
-    workspace: '/repo',
-    permissionMode: 'acceptEdits',
-    parentSessionId,
-    childThreadId,
-    agentPath: '/root/zcode_rescue_continue',
-    publicOutput: 'continued',
-    privateSentinels: ['binding-private', 'job-private', 'zcode-session-original'],
-    preparations: [
-      { parentTurnId: 'turn-original', resume: 'fresh', executorAgentId: childThreadId },
-      { parentTurnId: 'turn-fresh', resume: 'resume', executorAgentId: childThreadId },
-    ],
-    parentEvents: [
-      { kind: 'spawn', childThreadId, parentTurnId: 'turn-original' },
-      { kind: 'start', childThreadId, parentTurnId: 'turn-original' },
-      { kind: 'stop', childThreadId, parentTurnId: 'turn-original', state: 'stopped', stoppedAt: '2026-08-10T00:00:00.000Z' },
-      { kind: 'followup', target: childThreadId, parentTurnId: 'turn-fresh', message },
-    ],
-    childEvents: [
-      { kind: 'invoke-prepared', childThreadId, parentTurnId: 'turn-original' },
-      { kind: 'invoke-prepared', childThreadId, parentTurnId: 'turn-original' },
-    ],
-    peerEvents: [
-      { kind: 'session/create', sessionId: 'zcode-session-original' },
-      { kind: 'session/resume', sessionId: 'zcode-session-original' },
-      { kind: 'session/turn', sessionId: 'zcode-session-original' },
-    ],
-    binding: {
-      valid: true, recordCount: 1, serializedBytes: 4096, executorAgentId: childThreadId,
-      parentSessionId, workspace: '/repo', permissionMode: 'acceptEdits', operationId: 'operation-current',
-      expectedOperationId: 'operation-current', currentJobId: 'current-job', expectedCurrentJobId: 'current-job',
-      anchorStatus: 'succeeded', anchorSessionId: 'zcode-session-original',
-    },
+    route, execution: 'foreground', expected: { parentSessionId, childThreadId, agentPath: '/root/zcode_rescue_continue', workspace,
+      permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-fresh' },
+    parentRolloutJson: JSON.stringify(parent), childRolloutJson: JSON.stringify(child),
+    hookLifecycleJson: JSON.stringify([
+      { hook_event_name: 'SubagentStart', session_id: parentSessionId, turn_id: 'child-turn', cwd: workspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },
+      { hook_event_name: 'SubagentStop', session_id: parentSessionId, turn_id: 'child-turn', cwd: workspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },
+      { hook_event_name: 'UserPromptSubmit', session_id: parentSessionId, turn_id: 'turn-fresh', cwd: workspace, permission_mode: 'acceptEdits' },
+    ]),
+    executorRecordBytes: `${JSON.stringify({ kind: 'subagent-executor', agentId: childThreadId, agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', workspace, active: false, createdAt: '2026-08-08T00:00:00.000Z' })}\n`,
+    bindingAuthorityBytes: `${JSON.stringify(createRescueBindingAuthority({ parentSessionId, workspace, createdAt: '2026-08-10T00:00:00.000Z' }))}\n`,
+    bindingPartitionBytes: `${JSON.stringify(createRescueBindingPartition({ parentSessionId, workspace, records: [binding] }))}\n`,
+    jobsJson: JSON.stringify([{ id: anchorJobId, status: 'succeeded', zcodeSessionId: 'zcode-session-original' }, { id: currentJobId, status: 'succeeded', zcodeSessionId: null }]),
+    fakePeerJson: JSON.stringify([{ method: 'session/create', sessionId: 'zcode-session-original' }, { method: 'session/resume', sessionId: 'zcode-session-original' }, { method: 'session/turn', sessionId: 'zcode-session-original' }]),
+    publicSurfaces: { assignment: message, argv: command, env: {}, stdout: 'continued', stderr: '', progress: [], status: 'succeeded', agentPath: '/root/zcode_rescue_continue', callMetadata: ['spawn-1', 'followup-1'] },
   };
 }
 

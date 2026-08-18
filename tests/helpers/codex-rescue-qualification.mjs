@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
+import { parseRescueBindingAuthority, parseRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
 import { expectedGenericRescueMessage, expectedNamedRescueMessage } from './rescue-skill-contract.mjs';
 
 const MAX_EXEC_FRAMES = 2_048;
@@ -71,77 +72,83 @@ export function qualifyCodexRescueEvidence(input, options) {
  * protocol effects while the companion remains the binding authority.
  */
 export function qualifyCodexRescuePreparedContinuationEvidence(input) {
-  if (!input || !['named', 'generic'].includes(input.route)) mismatch('continuation-route', 'Prepared continuation route must be named or generic.');
-  if (!['foreground', 'background'].includes(input.execution)) mismatch('continuation-execution', 'Prepared continuation execution must be foreground or background.');
-  const parentSessionId = boundedString(input.parentSessionId);
-  const childThreadId = boundedString(input.childThreadId);
-  const agentPath = boundedString(input.agentPath);
-  if (!parentSessionId || !childThreadId || !agentPath) mismatch('continuation-identity', 'Prepared continuation identity is incomplete.');
-  const preparations = boundedArray(input.preparations, 2, 'continuation-preparation-count');
-  if (preparations.length !== 2) mismatch('continuation-preparation-count', 'Prepared continuation requires exactly two parent preparations.');
-  const [initialPreparation, continuationPreparation] = preparations;
-  const originalParentTurnId = boundedString(initialPreparation?.parentTurnId);
-  const continuationParentTurnId = boundedString(continuationPreparation?.parentTurnId);
-  if (!originalParentTurnId || !continuationParentTurnId || originalParentTurnId === continuationParentTurnId
-    || initialPreparation.resume !== 'fresh' || continuationPreparation.resume !== 'resume'
-    || initialPreparation.executorAgentId !== childThreadId || continuationPreparation.executorAgentId !== childThreadId) {
-    mismatch('continuation-preparation-turn', 'Continuation must be freshly prepared for resume in a distinct parent turn for the exact child.');
+  if (!input || !['named', 'generic'].includes(input.route) || !['foreground', 'background'].includes(input.execution)
+    || typeof input.parentRolloutJson !== 'string' || typeof input.childRolloutJson !== 'string'
+    || typeof input.hookLifecycleJson !== 'string' || typeof input.executorRecordBytes !== 'string'
+    || typeof input.bindingAuthorityBytes !== 'string' || typeof input.bindingPartitionBytes !== 'string'
+    || typeof input.jobsJson !== 'string' || typeof input.fakePeerJson !== 'string' || !input.expected || !input.publicSurfaces) {
+    mismatch('continuation-raw-contract', 'Prepared continuation qualification requires bounded raw captured artifacts.');
   }
-
-  const parentEvents = boundedArray(input.parentEvents, 64, 'continuation-parent-events');
-  const byKind = (kind) => parentEvents.filter((event) => event?.kind === kind);
-  const spawns = byKind('spawn'); const starts = byKind('start'); const stops = byKind('stop'); const followups = byKind('followup');
-  if (spawns.length !== 1 || spawns[0].parentTurnId !== originalParentTurnId || spawns[0].childThreadId !== childThreadId) {
-    mismatch('continuation-spawn-count', 'Prepared continuation must retain one original spawn and perform zero continuation spawns.');
-  }
-  if (starts.length !== 1 || starts[0].parentTurnId !== originalParentTurnId || starts[0].childThreadId !== childThreadId) {
-    mismatch('continuation-start-count', 'Prepared continuation must expose exactly one original SubagentStart and no second start.');
-  }
-  if (stops.length !== 1 || stops[0].parentTurnId !== originalParentTurnId || stops[0].childThreadId !== childThreadId) {
-    mismatch('continuation-stop-count', 'Prepared continuation must expose exactly one original SubagentStop.');
-  }
-  if (stops[0].state !== 'stopped' || !boundedString(stops[0].stoppedAt)) mismatch('continuation-stop-state', 'Prepared continuation must retain stopped lifecycle provenance.');
-  if (followups.length !== 1) mismatch('continuation-followup-count', 'Prepared continuation must expose exactly one same-child follow-up.');
-  const followup = followups[0];
-  if (followup.target !== childThreadId || followup.parentTurnId !== continuationParentTurnId) {
-    mismatch('continuation-followup-target', 'Prepared continuation follow-up must target the exact retained child in the fresh parent turn.');
-  }
+  const expected = input.expected; const parentSessionId = boundedString(expected.parentSessionId); const childThreadId = boundedString(expected.childThreadId);
+  const agentPath = boundedString(expected.agentPath); const originalParentTurnId = boundedString(expected.originalParentTurnId);
+  const continuationParentTurnId = boundedString(expected.continuationParentTurnId);
+  if (!parentSessionId || !childThreadId || !agentPath || !originalParentTurnId || !continuationParentTurnId || originalParentTurnId === continuationParentTurnId) mismatch('continuation-identity', 'Prepared continuation identity is incomplete.');
+  const parseArray = (text, code) => { if (Buffer.byteLength(text) > MAX_ROLLOUT_BYTES) mismatch(code, 'Captured evidence exceeds its byte bound.'); let value; try { value = JSON.parse(text); } catch { mismatch(code, 'Captured evidence is malformed.'); } return boundedArray(value, MAX_EVENTS_PER_ROLLOUT, code); };
+  const parent = parseArray(input.parentRolloutJson, 'continuation-parent-events'); const child = parseArray(input.childRolloutJson, 'continuation-child-events');
+  const hooks = parseArray(input.hookLifecycleJson, 'continuation-hook-events'); const jobs = parseArray(input.jobsJson, 'continuation-jobs'); const peer = parseArray(input.fakePeerJson, 'continuation-peer-events');
+  const spawns = namedCalls(parent, 'spawn_agent'); const followups = namedCalls(parent, 'followup_task');
+  const parentExecs = parent.filter((event) => event?.payload?.type === 'custom_tool_call' && event.payload.name === 'exec');
+  const parentOutputs = parent.filter((event) => event?.payload?.type === 'custom_tool_call_output');
+  const starts = parent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
+  const stops = parent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'stopped');
+  if (spawns.length !== 1) mismatch('continuation-spawn-count', 'Captured continuation must contain one original spawn only.');
+  if (starts.length !== 1) mismatch('continuation-start-count', 'Captured continuation must contain one original SubagentStart only.');
+  if (stops.length !== 1) mismatch('continuation-stop-count', 'Captured continuation must contain one SubagentStop only.');
+  if (followups.length !== 1) mismatch('continuation-followup-count', 'Captured continuation must contain one follow-up only.');
+  const preparations = parentExecs.filter((event) => parseCapturedHostCall(event.payload.input).envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" prepare rescue'));
+  if (preparations.length !== 2 || preparations.some((call) => parentOutputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)) mismatch('continuation-preparation-count', 'Captured continuation must contain two linked raw parent preparations.');
+  const spawn = parseObject(spawns[0].payload.arguments, 'continuation-spawn-arguments'); const followup = parseObject(followups[0].payload.arguments, 'continuation-followup-arguments');
   const expectedMessage = input.route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage;
-  if (followup.message !== expectedMessage) mismatch('continuation-followup-message', 'Prepared continuation follow-up must reuse the route-specific exact original assignment.');
-
-  const childEvents = boundedArray(input.childEvents, 16, 'continuation-child-events');
-  const invocations = childEvents.filter((event) => event?.kind === 'invoke-prepared');
-  if (invocations.length !== 2 || invocations.some((event) => event.childThreadId !== childThreadId)) {
-    mismatch('continuation-child-invocations', 'The retained child must perform exactly one invoke-prepared execution per turn.');
-  }
-  if (invocations.some((event) => event.parentTurnId !== originalParentTurnId)) {
-    mismatch('continuation-executor-provenance', 'The stopped executor must retain its original parent-turn provenance.');
-  }
-
-  const binding = input.binding;
-  if (!binding || binding.valid !== true || binding.recordCount !== 1 || !Number.isSafeInteger(binding.serializedBytes)
-    || binding.serializedBytes < 1 || binding.serializedBytes > 16 * 1024 * 1024) mismatch('continuation-binding-invalid', 'Prepared continuation binding is invalid.');
-  if (binding.executorAgentId !== childThreadId || binding.parentSessionId !== parentSessionId
-    || binding.workspace !== input.workspace || binding.permissionMode !== input.permissionMode) {
-    mismatch('continuation-binding-identity', 'Prepared continuation binding identity or permission does not match the exact caller.');
-  }
-  if (binding.operationId !== binding.expectedOperationId) mismatch('continuation-generation-stale', 'Prepared continuation binding generation is stale.');
-  if (binding.currentJobId !== binding.expectedCurrentJobId) mismatch('continuation-current-job-stale', 'Prepared continuation current job is stale.');
-  if (binding.anchorStatus === 'cancelled' || !boundedString(binding.anchorSessionId)) mismatch('continuation-anchor-invalid', 'Prepared continuation anchor is not resumable.');
-
-  const peerEvents = boundedArray(input.peerEvents, 16, 'continuation-peer-events');
-  const creates = peerEvents.filter((event) => event?.kind === 'session/create');
-  const resumes = peerEvents.filter((event) => event?.kind === 'session/resume');
-  const turns = peerEvents.filter((event) => event?.kind === 'session/turn');
-  if (creates.length !== 1 || resumes.length !== 1 || resumes[0].sessionId !== creates[0].sessionId
-    || resumes[0].sessionId !== binding.anchorSessionId) mismatch('continuation-session-mismatch', 'Fake peer did not resume the exact original bound ZCode session.');
-  if (turns.length !== 1 || turns[0].sessionId !== binding.anchorSessionId) mismatch('continuation-peer-turn-count', 'Prepared continuation must send exactly one new turn to the resumed peer session.');
-
-  const publicOutput = boundedString(input.publicOutput);
-  const sentinels = boundedArray(input.privateSentinels ?? [], 32, 'continuation-private-sentinels');
-  if (publicOutput === undefined || sentinels.some((sentinel) => typeof sentinel === 'string' && sentinel && publicOutput.includes(sentinel))) {
-    mismatch('continuation-private-leak', 'Prepared continuation public output leaks a private binding, job, session, or provenance identifier.');
-  }
+  if (starts[0].payload.event_id !== spawns[0].payload.call_id || starts[0].payload.agent_thread_id !== childThreadId
+    || stops[0].payload.agent_thread_id !== childThreadId || starts[0].payload.parent_turn_id !== originalParentTurnId
+    || stops[0].payload.parent_turn_id !== originalParentTurnId) mismatch('continuation-start-count', 'Captured lifecycle does not link the exact original child.');
+  if (followup.target !== childThreadId) mismatch('continuation-followup-target', 'Captured follow-up targets a sibling child.');
+  if (followup.message !== expectedMessage || spawn.message !== expectedMessage) mismatch('continuation-followup-message', 'Captured assignments are not the route-specific exact original message.');
+  const preparationTimes = preparations.map(eventTimestamp).sort();
+  if (!(preparationTimes[0] < eventTimestamp(spawns[0]) && eventTimestamp(spawns[0]) < eventTimestamp(starts[0])
+    && eventTimestamp(starts[0]) < eventTimestamp(stops[0]) && eventTimestamp(stops[0]) < preparationTimes[1]
+    && preparationTimes[1] < eventTimestamp(followups[0]))) mismatch('continuation-event-order', 'Captured lifecycle chronology is invalid.');
+  if (!RESCUE_TASK_NAME_PATTERN.test(spawn.task_name) || starts[0].payload.agent_path !== agentPath || stops[0].payload.agent_path !== agentPath) mismatch('continuation-presentation', 'Captured child presentation uses task-name or path substitution.');
+  const executor = parseObject(input.executorRecordBytes, 'continuation-executor-provenance');
+  const exactExecutorKeys = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+  assertExactKeys(executor, exactExecutorKeys, 'continuation-executor-provenance');
+  if (executor.kind !== 'subagent-executor' || executor.active !== false || executor.agentId !== childThreadId || executor.parentSessionId !== parentSessionId
+    || executor.parentTurnId !== originalParentTurnId || executor.parentPermissionMode !== expected.permissionMode || executor.workspace !== expected.workspace
+    || executor.agentType !== (input.route === 'named' ? 'zcode-rescue' : 'default')) mismatch('continuation-executor-provenance', 'Raw stopped executor provenance is invalid.');
+  if (Date.parse(executor.createdAt) > Date.parse('2026-08-10T00:00:00.000Z')) mismatch('continuation-executor-provenance', 'Raw executor creation time is invalid.');
+  const startHooks = hooks.filter((event) => event?.hook_event_name === 'SubagentStart'); const stopHooks = hooks.filter((event) => event?.hook_event_name === 'SubagentStop');
+  const freshHooks = hooks.filter((event) => event?.hook_event_name === 'UserPromptSubmit');
+  if (startHooks.length !== 1 || stopHooks.length !== 1 || freshHooks.length !== 1 || freshHooks[0].turn_id !== continuationParentTurnId
+    || startHooks[0].agent_id !== childThreadId || stopHooks[0].agent_id !== childThreadId
+    || startHooks[0].session_id !== parentSessionId || stopHooks[0].session_id !== parentSessionId
+    || startHooks[0].agent_type !== executor.agentType || stopHooks[0].agent_type !== executor.agentType
+    || startHooks[0].permission_mode !== expected.permissionMode || stopHooks[0].permission_mode !== expected.permissionMode
+    || freshHooks[0].permission_mode !== expected.permissionMode || startHooks[0].cwd !== expected.workspace
+    || stopHooks[0].cwd !== expected.workspace || freshHooks[0].cwd !== expected.workspace) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle does not prove one Start/Stop and a fresh parent turn.');
+  let authority; let partition; try { authority = parseRescueBindingAuthority(input.bindingAuthorityBytes, { parentSessionId, workspace: expected.workspace }); partition = parseRescueBindingPartition(input.bindingPartitionBytes, { parentSessionId, workspace: expected.workspace }); } catch { mismatch('continuation-binding-invalid', 'Raw Rescue binding files are invalid.'); }
+  if (authority.key !== partition.key || partition.records.length !== 1) mismatch('continuation-binding-invalid', 'Raw Rescue binding authority and partition do not match.');
+  const binding = partition.records[0];
+  if (binding.executorAgentId !== childThreadId || binding.executorParentTurnId !== originalParentTurnId || binding.permissionMode !== expected.permissionMode
+    || binding.state !== 'active') mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
+  const anchor = jobs.find((job) => job?.id === binding.anchorJobId); const current = jobs.find((job) => job?.id === binding.currentJobId);
+  if (!current) mismatch('continuation-current-job-stale', 'Raw current job evidence is absent.');
+  if (!anchor || anchor.status === 'cancelled' || !boundedString(anchor.zcodeSessionId)) mismatch('continuation-anchor-invalid', 'Raw anchor job is not resumable.');
+  if (!['queued', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled'].includes(current.status)) mismatch('continuation-current-job-stale', 'Raw current job status is invalid.');
+  if (input.execution === 'background' && (!boundedString(current.capabilityId) || !boundedString(current.workerLeaseId) || current.status !== 'queued')) mismatch('continuation-background-evidence', 'Background continuation lacks raw capability, job, and worker evidence.');
+  const creates = peer.filter((event) => event?.method === 'session/create'); const resumes = peer.filter((event) => event?.method === 'session/resume'); const turns = peer.filter((event) => event?.method === 'session/turn');
+  if (creates.length !== 1 || resumes.length !== 1 || creates[0].sessionId !== anchor.zcodeSessionId || resumes[0].sessionId !== anchor.zcodeSessionId) mismatch('continuation-session-mismatch', 'Raw fake peer did not resume the exact anchor session.');
+  if (turns.length !== 1 || turns[0].sessionId !== anchor.zcodeSessionId) mismatch('continuation-peer-turn-count', 'Raw fake peer does not contain exactly one new resumed turn.');
+  const childMeta = sessionMeta(child); const calls = child.filter((event) => event?.payload?.type === 'custom_tool_call'); const outputs = child.filter((event) => event?.payload?.type === 'custom_tool_call_output');
+  const childCommands = calls.map((call) => parseCapturedHostCall(call.payload.input).envelope.get('cmd'));
+  if (childMeta?.id !== childThreadId || childMeta?.parent_thread_id !== parentSessionId || calls.length !== 2 || outputs.length !== 2
+    || childCommands.some((command) => typeof command !== 'string' || !command.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue'))
+    || new Set(childCommands).size !== 1
+    || calls.some((call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)) mismatch('continuation-child-invocations', 'Raw child rollout does not prove two exact linked invoke-prepared turns.');
+  const privateValues = [binding.key, binding.operationId, binding.anchorJobId, binding.currentJobId, anchor.zcodeSessionId,
+    current.capabilityId, current.workerLeaseId, executor.childTurnId].filter((value) => typeof value === 'string' && value);
+  if (privateValues.length < 6) mismatch('continuation-private-sentinels', 'Raw artifacts do not provide mandatory private sentinels.');
+  const publicText = JSON.stringify([input.publicSurfaces, parent, child]);
+  if (privateValues.some((value) => publicText.includes(value))) mismatch('continuation-private-leak', 'A public or host surface leaks a private identifier.');
   return {
     route: input.route, parentSessionId, childThreadId, agentPath, originalParentTurnId, continuationParentTurnId,
     spawnCount: 1, startCount: 1, stopCount: 1, followupCount: 1, continuationSpawnCount: 0,

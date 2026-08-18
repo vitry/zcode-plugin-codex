@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition } from '../scripts/lib/rescue-binding.mjs';
 
 import {
   assertCodexRescueDisplayName,
@@ -63,28 +64,17 @@ test('qualifies named and generic foreground/background prepared continuation on
   }
 });
 
-test('prepared continuation qualification fails closed on lifecycle, routing, peer, and privacy mutations', () => {
+test('prepared continuation qualification rejects normalized claims and fails closed on raw artifact mutations', () => {
+  assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence({ valid: true, peerResumeChecked: true }),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-raw-contract');
   const mutations = [
-    ['continuation-spawn-count', (input) => input.parentEvents.push({ kind: 'spawn', childThreadId: 'other', parentTurnId: 'turn-fresh' })],
-    ['continuation-start-count', (input) => input.parentEvents.push({ kind: 'start', childThreadId: childId, parentTurnId: 'turn-fresh' })],
-    ['continuation-stop-count', (input) => { input.parentEvents = input.parentEvents.filter((event) => event.kind !== 'stop'); }],
-    ['continuation-stop-state', (input) => { input.parentEvents.find((event) => event.kind === 'stop').state = 'active'; }],
-    ['continuation-followup-target', (input) => { input.parentEvents.find((event) => event.kind === 'followup').target = 'sibling'; }],
-    ['continuation-followup-message', (input) => { input.parentEvents.find((event) => event.kind === 'followup').message = 'resume latest'; }],
-    ['continuation-preparation-turn', (input) => { input.preparations[1].parentTurnId = 'turn-original'; }],
-    ['continuation-executor-provenance', (input) => { input.childEvents[0].parentTurnId = 'turn-fresh'; }],
-    ['continuation-session-mismatch', (input) => { input.peerEvents[1].sessionId = 'latest-wrong-session'; }],
-    ['continuation-peer-turn-count', (input) => input.peerEvents.push({ kind: 'session/turn', sessionId: 'zcode-session-original' })],
-    ['continuation-private-leak', (input) => { input.publicOutput = `done ${input.privateSentinels[0]}`; }],
-    ['continuation-binding-invalid', (input) => { input.binding.valid = false; }],
-    ['continuation-binding-invalid', (input) => { input.binding.recordCount = 2; }],
-    ['continuation-binding-invalid', (input) => { input.binding.serializedBytes = 16 * 1024 * 1024 + 1; }],
-    ['continuation-binding-identity', (input) => { input.binding.executorAgentId = 'sibling'; }],
-    ['continuation-binding-identity', (input) => { input.binding.parentSessionId = 'wrong-parent'; }],
-    ['continuation-binding-identity', (input) => { input.binding.workspace = '/wrong'; }],
-    ['continuation-binding-identity', (input) => { input.binding.permissionMode = 'read-only'; }],
-    ['continuation-generation-stale', (input) => { input.binding.expectedOperationId = 'stale'; }],
-    ['continuation-anchor-invalid', (input) => { input.binding.anchorStatus = 'cancelled'; }],
+    ['continuation-start-count', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.push(rows.find((row) => row?.payload?.kind === 'started')); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-followup-target', (input) => { const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((row) => row?.payload?.name === 'followup_task'); const args = JSON.parse(call.payload.arguments); args.target = 'sibling'; call.payload.arguments = JSON.stringify(args); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-session-mismatch', (input) => { const rows = JSON.parse(input.fakePeerJson); rows.find((row) => row.method === 'session/resume').sessionId = 'latest-wrong-session'; input.fakePeerJson = JSON.stringify(rows); }],
+    ['continuation-private-leak', (input) => { input.publicSurfaces.stdout = `done ${JSON.parse(input.fakePeerJson)[0].sessionId}`; }],
+    ['continuation-binding-invalid', (input) => { input.bindingPartitionBytes = `${input.bindingPartitionBytes.slice(0, -2)},"valid":true}\n`; }],
+    ['continuation-current-job-stale', (input) => { const jobs = JSON.parse(input.jobsJson); jobs.splice(1, 1); input.jobsJson = JSON.stringify(jobs); }],
+    ['continuation-anchor-invalid', (input) => { const jobs = JSON.parse(input.jobsJson); jobs[0].status = 'cancelled'; input.jobsJson = JSON.stringify(jobs); }],
   ];
   for (const [code, mutate] of mutations) {
     const input = preparedContinuationFixture('named'); mutate(input);
@@ -93,6 +83,25 @@ test('prepared continuation qualification fails closed on lifecycle, routing, pe
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
       code,
     );
+  }
+});
+
+test('raw prepared continuation keeps queued failed and cancelled current jobs reportable while requiring a resumable anchor', () => {
+  for (const status of ['queued', 'failed', 'cancelled']) {
+    const input = preparedContinuationFixture('named'); const jobs = JSON.parse(input.jobsJson); jobs[1].status = status; input.jobsJson = JSON.stringify(jobs);
+    assert.equal(qualifyCodexRescuePreparedContinuationEvidence(input).peerResumeChecked, true, status);
+  }
+  const missing = preparedContinuationFixture('named'); missing.bindingPartitionBytes = '';
+  assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(missing),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-binding-invalid');
+});
+
+test('raw prepared continuation scans every declared public and host surface for derived private identifiers', () => {
+  for (const field of ['assignment', 'argv', 'env', 'stdout', 'stderr', 'progress', 'status', 'agentPath', 'callMetadata']) {
+    const input = preparedContinuationFixture('named'); const privateId = JSON.parse(input.fakePeerJson)[0].sessionId;
+    input.publicSurfaces[field] = typeof input.publicSurfaces[field] === 'string' ? `${input.publicSurfaces[field]} ${privateId}` : { leaked: privateId };
+    assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(input),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-private-leak', field);
   }
 });
 
@@ -1737,50 +1746,46 @@ function choiceFixture(choice) {
 
 function preparedContinuationFixture(route, execution = 'foreground') {
   const message = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage;
+  const anchorJobId = 'a'.repeat(64); const currentJobId = 'c'.repeat(64); const operationId = 'd'.repeat(64);
+  const binding = createRescueBinding({ parentSessionId: parentId, executorAgentId: childId,
+    executorAgentType: route === 'named' ? 'zcode-rescue' : 'default', executorParentTurnId: 'turn-original',
+    executorParentPermissionMode: 'acceptEdits', workspace: expectedWorkspace, permissionMode: 'acceptEdits',
+    anchorJobId, currentJobId, operationId, now: '2026-08-10T00:00:00.000Z' });
+  const parent = [
+    { type: 'session_meta', payload: { id: parentId, session_id: parentId, thread_source: 'user', source: 'exec' } },
+    { ...structuredExecResult(expectedPreparationCommand, 'prepare-1'), timestamp: '2026-08-10T00:00:00.500Z' },
+    { ...capturedResultEvent('prepare-1', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:01.000Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ task_name: taskName, message, fork_turns: 'none', ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) }) } },
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, parent_turn_id: 'turn-original' } },
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childId, agent_path: agentPath, parent_turn_id: 'turn-original' } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:06.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'prepare-2', input: structuredExecResult(expectedPreparationCommand, 'unused').payload.input } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:07.000Z', payload: { type: 'custom_tool_call_output', call_id: 'prepare-2', output: capturedResult({ output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }) } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:08.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childId, message }) } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:09.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: 'accepted' } },
+  ];
+  const child = [
+    { type: 'session_meta', payload: { id: childId, parent_thread_id: parentId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentId, agent_path: agentPath, agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
+    structuredExecResult(expectedCommand, 'invoke-1'), capturedResultEvent('invoke-1', { output: 'initial done\n', exit_code: 0 }),
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:04.000Z', payload: { type: 'agent_message', phase: 'final_answer', message: 'initial done' } },
+    structuredExecResult(expectedCommand, 'invoke-2'), capturedResultEvent('invoke-2', { output: 'continued\n', exit_code: 0 }),
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:12.000Z', payload: { type: 'agent_message', phase: 'final_answer', message: 'continued' } },
+  ];
+  child[1].timestamp = '2026-08-10T00:00:03.000Z'; child[2].timestamp = '2026-08-10T00:00:03.500Z'; child[4].timestamp = '2026-08-10T00:00:10.000Z'; child[5].timestamp = '2026-08-10T00:00:11.000Z';
   return {
-    route,
-    execution,
-    workspace: expectedWorkspace,
-    permissionMode: 'acceptEdits',
-    parentSessionId: parentId,
-    childThreadId: childId,
-    agentPath,
-    publicOutput: 'continued',
-    privateSentinels: ['binding-private', 'anchor-job-private', 'zcode-session-original'],
-    preparations: [
-      { parentTurnId: 'turn-original', resume: 'fresh', executorAgentId: childId },
-      { parentTurnId: 'turn-fresh', resume: 'resume', executorAgentId: childId },
-    ],
-    parentEvents: [
-      { kind: 'spawn', childThreadId: childId, parentTurnId: 'turn-original' },
-      { kind: 'start', childThreadId: childId, parentTurnId: 'turn-original' },
-      { kind: 'stop', childThreadId: childId, parentTurnId: 'turn-original', state: 'stopped', stoppedAt: '2026-08-10T00:00:00.000Z' },
-      { kind: 'followup', target: childId, parentTurnId: 'turn-fresh', message },
-    ],
-    childEvents: [
-      { kind: 'invoke-prepared', childThreadId: childId, parentTurnId: 'turn-original' },
-      { kind: 'invoke-prepared', childThreadId: childId, parentTurnId: 'turn-original' },
-    ],
-    peerEvents: [
-      { kind: 'session/create', sessionId: 'zcode-session-original' },
-      { kind: 'session/resume', sessionId: 'zcode-session-original' },
-      { kind: 'session/turn', sessionId: 'zcode-session-original' },
-    ],
-    binding: {
-      valid: true,
-      recordCount: 1,
-      serializedBytes: 4096,
-      executorAgentId: childId,
-      parentSessionId: parentId,
-      workspace: expectedWorkspace,
-      permissionMode: 'acceptEdits',
-      operationId: 'operation-current',
-      expectedOperationId: 'operation-current',
-      currentJobId: 'current-job',
-      expectedCurrentJobId: 'current-job',
-      anchorStatus: 'succeeded',
-      anchorSessionId: 'zcode-session-original',
-    },
+    route, execution, expected: { parentSessionId: parentId, childThreadId: childId, agentPath, workspace: expectedWorkspace,
+      permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-fresh' },
+    parentRolloutJson: JSON.stringify(parent), childRolloutJson: JSON.stringify(child),
+    hookLifecycleJson: JSON.stringify([
+      { hook_event_name: 'SubagentStart', session_id: parentId, turn_id: 'child-turn', parent_turn_id: 'turn-original', cwd: expectedWorkspace, permission_mode: 'acceptEdits', agent_id: childId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },
+      { hook_event_name: 'SubagentStop', session_id: parentId, turn_id: 'child-turn', parent_turn_id: 'turn-original', cwd: expectedWorkspace, permission_mode: 'acceptEdits', agent_id: childId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },
+      { hook_event_name: 'UserPromptSubmit', session_id: parentId, turn_id: 'turn-fresh', cwd: expectedWorkspace, permission_mode: 'acceptEdits' },
+    ]),
+    executorRecordBytes: `${JSON.stringify({ kind: 'subagent-executor', agentId: childId, agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId: parentId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', workspace: expectedWorkspace, active: false, createdAt: '2026-08-08T00:00:00.000Z' })}\n`,
+    bindingAuthorityBytes: `${JSON.stringify(createRescueBindingAuthority({ parentSessionId: parentId, workspace: expectedWorkspace, createdAt: '2026-08-10T00:00:00.000Z' }))}\n`,
+    bindingPartitionBytes: `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: expectedWorkspace, records: [binding] }))}\n`,
+    jobsJson: JSON.stringify([{ id: anchorJobId, status: 'succeeded', zcodeSessionId: 'zcode-session-original' }, { id: currentJobId, status: execution === 'background' ? 'queued' : 'succeeded', zcodeSessionId: null, ...(execution === 'background' ? { capabilityId: 'capability-private', workerLeaseId: 'worker-private' } : {}) }]),
+    fakePeerJson: JSON.stringify([{ method: 'session/create', sessionId: 'zcode-session-original' }, { method: 'session/resume', sessionId: 'zcode-session-original' }, { method: 'session/turn', sessionId: 'zcode-session-original' }]),
+    publicSurfaces: { assignment: message, argv: expectedCommand, env: {}, stdout: 'continued', stderr: '', progress: [], status: execution === 'background' ? 'queued' : 'succeeded', agentPath, callMetadata: ['spawn-1', 'followup-1'] },
   };
 }
 
