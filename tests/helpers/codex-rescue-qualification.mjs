@@ -155,7 +155,8 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
     || startHooks[0].agent_id !== childThreadId || stopHooks[0].agent_id !== childThreadId
     || startHooks[0].session_id !== parentSessionId || stopHooks[0].session_id !== parentSessionId
     || freshHooks[0].session_id !== parentSessionId || startHooks[0].turn_id !== executor.childTurnId || stopHooks[0].turn_id !== executor.childTurnId
-    || startHooks[0].parent_turn_id !== originalParentTurnId || stopHooks[0].parent_turn_id !== originalParentTurnId
+    || startHooks[0].parent_turn_id !== undefined && startHooks[0].parent_turn_id !== originalParentTurnId
+    || stopHooks[0].parent_turn_id !== undefined && stopHooks[0].parent_turn_id !== originalParentTurnId
     || startHooks[0].agent_type !== executor.agentType || stopHooks[0].agent_type !== executor.agentType
     || startHooks[0].permission_mode !== expected.permissionMode || stopHooks[0].permission_mode !== expected.permissionMode
     || freshHooks[0].permission_mode !== expected.permissionMode || startHooks[0].cwd !== expected.workspace

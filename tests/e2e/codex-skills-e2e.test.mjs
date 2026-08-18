@@ -646,6 +646,35 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
   }
 });
 
+test('deterministic installed observer artifacts flow through the live continuation capture path', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-live-capture-characterization-')); t.after(() => rm(temporary, { recursive: true, force: true }));
+  const workspaceDirectory = join(temporary, 'workspace'); const dataRoot = join(temporary, 'data'); const captures = join(temporary, 'captures');
+  await Promise.all([mkdir(workspaceDirectory), mkdir(dataRoot), mkdir(captures)]); const workspace = await realpath(workspaceDirectory);
+  const fixture = installedPreparedContinuationCapture('named', { workspace });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const preparations = JSON.parse(fixture.preparationRecordBytesJson); const preparationValues = preparations.map(JSON.parse);
+  const executor = JSON.parse(fixture.executorRecordBytes); const authority = JSON.parse(fixture.bindingAuthorityBytes); const partition = JSON.parse(fixture.bindingPartitionBytes);
+  await Promise.all([mkdir(join(storage.directory, 'hook-state')), mkdir(join(storage.directory, 'invocations', 'prepared'), { recursive: true }), mkdir(join(storage.directory, 'jobs'))]);
+  await Promise.all([
+    writeFile(join(storage.directory, 'hook-state', 'executor-characterization.json'), fixture.executorRecordBytes),
+    writeFile(join(storage.directory, 'rescue-binding-authority-characterization.json'), fixture.bindingAuthorityBytes),
+    writeFile(join(storage.directory, 'rescue-binding-session-characterization.json'), fixture.bindingPartitionBytes),
+    writeFile(join(storage.directory, 'invocations', 'prepared', `${preparationValues[1].key}.json`), preparations[1]),
+    ...JSON.parse(fixture.jobRecordBytesJson).map((bytes) => writeFile(join(storage.directory, 'jobs', `${JSON.parse(bytes).id}.json`), bytes)),
+  ]);
+  const hooks = JSON.parse(fixture.hookLifecycleJson);
+  for (let index = 0; index < hooks.length; index += 1) {
+    const artifacts = index === 2 ? [{ path: `workspaces/${storage.workspaceKey}/invocations/prepared/${preparationValues[0].key}.json`, bytesBase64: Buffer.from(preparations[0]).toString('base64') }] : [];
+    await writeFile(join(captures, `${String(index + 1).padStart(6, '0')}-1.json`), JSON.stringify({ version: 1, sequence: index + 1, entry: hooks[index].hook_event_name === 'UserPromptSubmit' ? 'user-prompt-hook.mjs' : 'subagent-hook.mjs', stdinBase64: Buffer.from(JSON.stringify(hooks[index])).toString('base64'), artifacts }));
+  }
+  const captured = await captureInstalledPreparedContinuationEvidence({ route: 'named', execution: 'foreground', parentSessionId: fixture.expected.parentSessionId,
+    workspace, rollouts: [JSON.parse(fixture.parentRolloutJson), JSON.parse(fixture.childRolloutJson)], execFrames: JSON.parse(fixture.execFramesJson),
+    peer: JSON.parse(fixture.fakePeerJson), installedDataRoot: dataRoot, hookCaptureDirectory: captures });
+  const evidence = await qualifyCodexRescuePreparedContinuationEvidence(captured);
+  assert.equal(evidence.childThreadId, executor.agentId); assert.equal(evidence.peerResumeChecked, true);
+  assert.equal(partition.records[0].currentJobId, JSON.parse(JSON.parse(fixture.jobRecordBytesJson)[1]).id); assert.equal(authority.key, partition.key);
+});
+
 test('installed choice qualification requires yielded same-handle terminal evidence in both logical segments', () => {
   const fixture = installedChoiceYieldFixture();
   assert.deepEqual(installedChoiceYieldFacts(fixture.rollouts, fixture.childThreadId, fixture.commands), {
@@ -744,8 +773,6 @@ test('installed Rescue uses one isolated native child for initial and choice con
   for (const args of [['plugin', 'marketplace', 'add', marketplace, '--json'], ['plugin', 'add', 'zcode@vitry', '--json']]) { const result = await codex(args, temporary, env); assert.equal(result.code, 0, result.stderr || result.stdout); }
   const installedPluginRoot = await findInstalledPluginRoot(codexHome);
   const installedDataRoot = join(codexHome, 'plugins', 'data', 'zcode-vitry');
-  const rescueArtifactObserver = await installRescueArtifactObserver(installedPluginRoot, installedDataRoot, temporary);
-  Object.assign(env, rescueArtifactObserver.env);
   await git(['init', '-q'], workspace); await writeFile(join(workspace, 'tracked.txt'), 'base\n'); await git(['add', 'tracked.txt'], workspace); await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], workspace); await writeFile(join(workspace, 'tracked.txt'), 'changed\n');
   const commonArgs = ['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all', '-C', workspace];
   let setupReady = false;
@@ -757,6 +784,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
   }
   assert.equal(setupReady, true, 'four successful setup turns did not establish a fresh-session ready Rescue Role');
   await qualifyInstalledIdentityFailures({ installedPluginRoot, installedDataRoot: join(codexHome, 'plugins', 'data', 'zcode-vitry'), temporary, env, zcodeRecord });
+  const rescueArtifactObserver = await installRescueArtifactObserver(installedPluginRoot, installedDataRoot, temporary);
+  Object.assign(env, rescueArtifactObserver.env);
   const foregroundGate = join(temporary, 'foreground-long-completion.gate'); const foregroundGateReached = join(temporary, 'foreground-long-completion.reached'); const foregroundProcess = join(temporary, 'foreground-long-process.json'); const foregroundNonce = randomBytes(32).toString('hex');
   await Promise.all([writeFile(zcodeRecord, ''), writeFile(foregroundGate, 'hold'), writeFile(foregroundGateReached, ''), writeFile(foregroundProcess, '')]);
   const longEnv = { ...env, FAKE_ZCODE_COMPLETION_GATE: foregroundGate, FAKE_ZCODE_COMPLETION_GATE_REACHED: foregroundGateReached, FAKE_ZCODE_PROCESS_FILE: foregroundProcess, FAKE_ZCODE_PROCESS_NONCE: foregroundNonce };
