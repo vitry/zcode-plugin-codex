@@ -23,6 +23,7 @@ import {
   qualifyCodexRescueBackgroundEvidence,
   qualifyCodexRescueChoiceEvidence,
   qualifyCodexRescueEvidence,
+  qualifyCodexRescuePreparedContinuationEvidence,
 } from '../helpers/codex-rescue-qualification.mjs';
 import {
   assertRescueRouteContract,
@@ -127,6 +128,13 @@ function installedRescueQualificationBody(source) {
 
 function assertInstalledRescueQualificationSource(source) {
   const installedQualification = installedRescueQualificationBody(source);
+  assert.doesNotMatch(installedQualification, /continuation-artifacts-not-captured/u, 'credentialed continuation may not be unconditionally marked unqualified');
+  assertSourceOrder(installedQualification, [
+    'const proactivePeer =',
+    'captureInstalledPreparedContinuationEvidence({',
+    'qualifyCodexRescuePreparedContinuationEvidence(preparedCapture);',
+    "for (const choice of ['resume', 'fresh'])",
+  ], 'credentialed prepared continuation qualification');
   assert.doesNotMatch(installedQualification, /expected(?:TaskName|AgentPath)\s*:/u, 'installed qualification must not pin model-selected display identity');
   const foreground = exactSourceRegion(installedQualification,
     '  try {\n    const evidence = qualifyCodexRescueEvidence(', '\n\n  for (const choice', 'foreground qualifier');
@@ -256,6 +264,31 @@ test('foreground Rescue waits for relay observation before releasing the exact c
   });
   assert.equal(foreground.endedBeforeGate, false);
   assert.deepEqual(events, ['completion-held', 'relay-observed', 'yield-proved', 'release']);
+});
+
+test('installed hook capture wrapper preserves raw stdin, stdout, stderr, exit, and the pre-forward private snapshot', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-hook-capture-characterization-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const hooks = join(temporary, 'hooks'); const privateRoot = join(temporary, 'private'); const captures = join(temporary, 'captures');
+  await Promise.all([mkdir(hooks), mkdir(privateRoot), mkdir(captures)]);
+  const entry = join(hooks, 'user-prompt-hook.mjs'); const production = join(hooks, 'user-prompt-hook-production.mjs');
+  await cp(join(root, 'tests', 'fixtures', 'capture-installed-hook-wrapper.mjs'), entry);
+  await writeFile(production, [
+    "import { unlink } from 'node:fs/promises';",
+    "import process from 'node:process';",
+    "let input = ''; for await (const chunk of process.stdin) input += chunk;",
+    "await unlink(`${process.env.ZCODE_TEST_PRIVATE_DATA_ROOT}/consumed.json`);",
+    "process.stdout.write(`forwarded:${input}`); process.stderr.write('production-stderr'); process.exitCode = 23;",
+    '',
+  ].join('\n'));
+  await writeFile(join(privateRoot, 'consumed.json'), '{"private":true}\n', { mode: 0o600 });
+  const input = { hook_event_name: 'UserPromptSubmit', prompt: 'raw' }; const rawInput = JSON.stringify(input);
+  const result = await runChild(process.execPath, [entry], { ordinaryInput: true, input, env: { ...process.env, ZCODE_TEST_HOOK_CAPTURE_DIRECTORY: captures, ZCODE_TEST_PRIVATE_DATA_ROOT: privateRoot } });
+  assert.equal(result.code, 23); assert.equal(result.stdout, `forwarded:${rawInput}`); assert.equal(result.stderr, 'production-stderr');
+  await assert.rejects(readFile(join(privateRoot, 'consumed.json')), { code: 'ENOENT' });
+  const records = await readInstalledHookCaptures(captures);
+  assert.equal(records.length, 1); assert.equal(Buffer.from(records[0].stdinBase64, 'base64').toString('utf8'), rawInput);
+  assert.deepEqual(records[0].artifacts.map((artifact) => [artifact.path, Buffer.from(artifact.bytesBase64, 'base64').toString('utf8')]), [['consumed.json', '{"private":true}\n']]);
 });
 
 test('installed relay gate accepts only a strict fixed record paired with its root message', () => {
@@ -710,6 +743,9 @@ test('installed Rescue uses one isolated native child for initial and choice con
   await buildMarketplaceSnapshot({ root, output: marketplace, sourceRef: sourceSha, sourceSha, npmExecPath: process.env.NPM_CLI_JS ?? npmLaunch([]).args[0], env });
   for (const args of [['plugin', 'marketplace', 'add', marketplace, '--json'], ['plugin', 'add', 'zcode@vitry', '--json']]) { const result = await codex(args, temporary, env); assert.equal(result.code, 0, result.stderr || result.stdout); }
   const installedPluginRoot = await findInstalledPluginRoot(codexHome);
+  const installedDataRoot = join(codexHome, 'plugins', 'data', 'zcode-vitry');
+  const rescueArtifactObserver = await installRescueArtifactObserver(installedPluginRoot, installedDataRoot, temporary);
+  Object.assign(env, rescueArtifactObserver.env);
   await git(['init', '-q'], workspace); await writeFile(join(workspace, 'tracked.txt'), 'base\n'); await git(['add', 'tracked.txt'], workspace); await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], workspace); await writeFile(join(workspace, 'tracked.txt'), 'changed\n');
   const commonArgs = ['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '--enable', 'hooks', '-c', 'shell_environment_policy.inherit=all', '-C', workspace];
   let setupReady = false;
@@ -750,6 +786,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const canonicalWorkspace = await realpath(workspace);
   const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(zcodeCalls.filter((call) => call.method === 'session/send').length, 1, 'one ZCode send after one native child spawn');
+  let initialRescueEvidence;
   try {
     const evidence = qualifyCodexRescueEvidence(
       { execFrames: frames, rollouts: await loadCodexRollouts(codexHome) },
@@ -793,6 +830,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
     assert.ok(evidence.yieldedExecution.pollCount >= 1);
     assert.equal(evidence.yieldedExecution.sameHandleChecked, true);
     assert.equal(evidence.yieldedExecution.terminalExitCode, 0);
+    initialRescueEvidence = evidence;
     t.diagnostic(`qualified native Rescue route: ${evidence.route}`);
   } catch (error) {
     if (error instanceof CodexRescueUnqualifiedError && error.code === 'spawn-message-encrypted') {
@@ -813,7 +851,6 @@ test('installed Rescue uses one isolated native child for initial and choice con
   assert.equal(initialParentIds.length, 1, 'initial installed Rescue must expose one resumable parent thread');
   const originalSessionId = zcodeCalls.find((call) => call.method === 'session/send')?.params?.sessionId;
   assert.ok(originalSessionId, 'initial installed Rescue must capture its exact fake-peer session');
-  await writeFile(zcodeRecord, '');
   const proactive = await runHeldChoiceSegment('proactive-bound-continuation', expectedCommand,
     (segmentEnv) => controlledCodex([
       'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
@@ -833,9 +870,20 @@ test('installed Rescue uses one isolated native child for initial and choice con
   const resumed = proactivePeer.filter((call) => call.method === 'session/resume');
   assert.equal(resumed.length, 1, 'proactive continuation must resume exactly one fake-peer session');
   assert.equal(resumed[0].params?.sessionId, originalSessionId, 'proactive continuation must resume the original exact fake-peer session');
-  assert.equal(proactivePeer.filter((call) => call.method === 'session/send').length, 1, 'proactive continuation must send exactly one new ZCode turn');
-  markUnqualified(t, unqualified('continuation-artifacts-not-captured',
-    'The credentialed harness captured the real peer and Codex rollouts, but cannot yet capture every private hook, preparation, state, lease, and public execution artifact required by the continuation oracle.'));
+  assert.equal(proactivePeer.filter((call) => call.method === 'session/send').length, 2, 'proactive capture must retain one initial and one resumed ZCode turn');
+  const proactiveFrames = proactive.rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const preparedCapture = await captureInstalledPreparedContinuationEvidence({
+    route: initialRescueEvidence.route === 'named' ? 'named' : 'generic', execution: 'foreground',
+    parentSessionId: initialParentIds[0], workspace: canonicalWorkspace, permissionMode: 'danger-full-access',
+    rollouts: proactiveRollouts, execFrames: [...frames, ...proactiveFrames], peer: proactivePeer,
+    installedDataRoot, hookCaptureDirectory: rescueArtifactObserver.captureDirectory,
+  });
+  const preparedEvidence = await qualifyCodexRescuePreparedContinuationEvidence(preparedCapture);
+  assert.equal(preparedEvidence.parentSessionId, initialParentIds[0]);
+  assert.equal(preparedEvidence.childThreadId, initialRescueEvidence.childThreadId);
+  assert.equal(preparedEvidence.spawnCount, 1); assert.equal(preparedEvidence.followupCount, 1);
+  assert.equal(preparedEvidence.continuationSpawnCount, 0); assert.equal(preparedEvidence.peerResumeChecked, true);
+  t.diagnostic(`qualified cross-parent Rescue continuation: ${preparedEvidence.route}/${preparedEvidence.childThreadId}`);
 
   for (const choice of ['resume', 'fresh']) {
     await writeFile(zcodeRecord, '');
@@ -913,7 +961,6 @@ test('installed Rescue uses one isolated native child for initial and choice con
   }
 
   await writeFile(zcodeRecord, '');
-  const installedDataRoot = join(codexHome, 'plugins', 'data', 'zcode-vitry');
   const backgroundWorkspace = join(temporary, 'privworkcanary'); await initializeGitWorkspace(backgroundWorkspace); const backgroundCanonicalWorkspace = await realpath(backgroundWorkspace);
   const privateCapabilityEvidence = await installPrivateCapabilityObserver(installedPluginRoot, temporary);
   const backgroundGate = join(temporary, 'background-completion.gate'); const backgroundGateReached = join(temporary, 'background-completion.reached');
@@ -1252,6 +1299,122 @@ async function installPrivateCapabilityObserver(installedPluginRoot, temporary) 
     '',
   ].join('\n'), { mode: 0o600 });
   return evidencePath;
+}
+
+async function installRescueArtifactObserver(installedPluginRoot, installedDataRoot, temporary) {
+  const captureDirectory = join(temporary, 'rescue-hook-captures');
+  await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
+  const wrapper = join(root, 'tests', 'fixtures', 'capture-installed-hook-wrapper.mjs');
+  for (const name of ['user-prompt-hook.mjs', 'subagent-hook.mjs']) {
+    const entry = join(installedPluginRoot, 'hooks', name);
+    const production = join(installedPluginRoot, 'hooks', name.replace('.mjs', '-production.mjs'));
+    await rename(entry, production);
+    await cp(wrapper, entry);
+    await chmod(entry, 0o700);
+  }
+  return { captureDirectory, env: { ZCODE_TEST_HOOK_CAPTURE_DIRECTORY: captureDirectory, ZCODE_TEST_PRIVATE_DATA_ROOT: installedDataRoot } };
+}
+
+async function readInstalledHookCaptures(captureDirectory) {
+  const names = (await readdir(captureDirectory)).filter((name) => /^\d{6}-\d+\.json$/u.test(name)).sort();
+  const records = await Promise.all(names.map(async (name) => JSON.parse(await readFile(join(captureDirectory, name), 'utf8'))));
+  assert.deepEqual(records.map((record) => record.sequence), records.map((_, index) => index + 1), 'hook capture sequence must be exact and contiguous');
+  return records;
+}
+
+function capturedArtifactBytes(captures, predicate) {
+  const matches = [];
+  for (const capture of captures) for (const artifact of capture.artifacts ?? []) {
+    if (predicate(artifact.path, capture)) matches.push({ path: artifact.path, bytes: Buffer.from(artifact.bytesBase64, 'base64').toString('utf8'), sequence: capture.sequence });
+  }
+  return matches;
+}
+
+async function captureInstalledPreparedContinuationEvidence(input) {
+  const parent = input.rollouts.find((events) => events.some((event) => event?.type === 'session_meta' && event.payload?.id === input.parentSessionId));
+  assert.ok(parent, 'raw continuation capture requires the exact parent rollout');
+  const spawn = parent.find((event) => event?.payload?.type === 'function_call' && event.payload.name === 'spawn_agent');
+  const start = parent.find((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
+  const stop = parent.find((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'stopped');
+  const followup = parent.find((event) => event?.payload?.type === 'function_call' && event.payload.name === 'followup_task');
+  assert.ok(spawn && start && stop && followup, 'raw continuation capture requires spawn/start/stop/follow-up lifecycle events');
+  const childThreadId = start.payload.agent_thread_id;
+  const child = input.rollouts.find((events) => events.some((event) => event?.type === 'session_meta' && event.payload?.id === childThreadId));
+  assert.ok(child, 'raw continuation capture requires the exact retained child rollout');
+  const originalParentTurnId = start.payload.parent_turn_id;
+  const continuationParentTurnId = followup.turn_id;
+  assert.ok(originalParentTurnId && continuationParentTurnId && originalParentTurnId !== continuationParentTurnId, 'raw continuation capture requires two parent turns');
+
+  const isPreparation = (event) => event?.payload?.type === 'custom_tool_call' && typeof event.payload.input === 'string'
+    && event.payload.input.includes('exec_command') && event.payload.input.includes('prepare rescue');
+  const isPreparationWrite = (event) => event?.payload?.type === 'custom_tool_call' && typeof event.payload.input === 'string'
+    && event.payload.input.includes('write_stdin') && event.payload.input.includes('version') && event.payload.input.includes('source');
+  const parentCalls = parent.filter((event) => isPreparation(event) || isPreparationWrite(event) || event === spawn || event === followup);
+  const parentCallIds = new Set(parentCalls.map((event) => event.payload.call_id));
+  const parentProjection = parent.filter((event) => event?.type === 'session_meta' || parentCalls.includes(event)
+    || event === start || event === stop
+    || ['custom_tool_call_output', 'function_call_output'].includes(event?.payload?.type) && parentCallIds.has(event.payload.call_id));
+
+  const invocationCalls = child.filter((event) => event?.payload?.type === 'custom_tool_call' && typeof event.payload.input === 'string'
+    && event.payload.input.includes('invoke-prepared rescue') && !event.payload.input.includes('invoke-status'));
+  assert.equal(invocationCalls.length, 2, 'raw retained child must contain two invoke-prepared calls');
+  const invocationIds = new Set(invocationCalls.map((event) => event.payload.call_id));
+  const childProjection = child.filter((event) => event?.type === 'session_meta' || invocationCalls.includes(event)
+    || event?.payload?.type === 'custom_tool_call_output' && invocationIds.has(event.payload.call_id)
+    || event?.payload?.type === 'agent_message');
+
+  const captures = await readInstalledHookCaptures(input.hookCaptureDirectory);
+  const hookEvents = captures.map((capture) => {
+    try { return JSON.parse(Buffer.from(capture.stdinBase64, 'base64').toString('utf8')); } catch { return null; }
+  }).filter((event) => event?.session_id === input.parentSessionId && event.cwd === input.workspace);
+  const lifecycle = [
+    hookEvents.find((event) => event.hook_event_name === 'SubagentStart' && event.agent_id === childThreadId),
+    hookEvents.find((event) => event.hook_event_name === 'SubagentStop' && event.agent_id === childThreadId),
+    hookEvents.find((event) => event.hook_event_name === 'UserPromptSubmit' && event.turn_id === continuationParentTurnId),
+  ];
+  assert.ok(lifecycle.every(Boolean), 'raw hook observer must capture Start, Stop, and the fresh continuation prompt');
+  const permissionMode = lifecycle[0].permission_mode;
+
+  const storage = await resolveWorkspaceStorage({ dataRoot: input.installedDataRoot, workspace: input.workspace });
+  const currentFiles = await recursiveFiles(storage.directory);
+  const currentArtifacts = await Promise.all(currentFiles.map(async (path) => ({ path: relative(storage.directory, path), bytes: await readFile(path, 'utf8') })));
+  const snapshotArtifacts = capturedArtifactBytes(captures, (path) => path.startsWith(`workspaces/${storage.workspaceKey}/`))
+    .map((artifact) => ({ ...artifact, path: artifact.path.slice(`workspaces/${storage.workspaceKey}/`.length) }));
+  const artifacts = [...snapshotArtifacts, ...currentArtifacts];
+  const parsed = artifacts.map((artifact) => { try { return { ...artifact, value: JSON.parse(artifact.bytes) }; } catch { return { ...artifact, value: null }; } });
+  const preparations = uniqueArtifacts(parsed.filter((artifact) => artifact.path.includes('invocations/prepared/')
+    && artifact.value?.sessionId === input.parentSessionId && artifact.value?.executorAgentId === childThreadId && artifact.value?.consumedAt), 'turnId');
+  assert.equal(preparations.length, 2, 'raw private snapshots must retain both consumed preparation records');
+  const executor = uniqueArtifacts(parsed.filter((artifact) => artifact.path.includes('hook-state/executor-') && artifact.value?.agentId === childThreadId), 'agentId').at(-1);
+  assert.ok(executor, 'raw private snapshot must retain the stopped executor');
+  const authority = parsed.findLast((artifact) => basename(artifact.path).startsWith('rescue-binding-authority-'));
+  const partitionArtifact = parsed.findLast((artifact) => basename(artifact.path).startsWith('rescue-binding-session-'));
+  assert.ok(authority && partitionArtifact, 'raw private snapshot must retain binding authority and partition');
+  const binding = partitionArtifact.value.records.find((record) => record.executorAgentId === childThreadId);
+  assert.ok(binding, 'raw binding partition must retain the exact child');
+  const jobs = [binding.anchorJobId, binding.currentJobId].map((jobId) => parsed.findLast((artifact) => artifact.path === `jobs/${jobId}.json`));
+  assert.ok(jobs.every(Boolean), 'raw private snapshot must retain anchor and current jobs');
+
+  const creates = input.peer.filter((event) => event.method === 'session/create');
+  const sends = input.peer.filter((event) => event.method === 'session/send');
+  const resumes = input.peer.filter((event) => event.method === 'session/resume');
+  assert.ok(creates.length >= 1 && sends.length === 2 && resumes.length === 1, 'raw fake peer must retain create/send and resume/send');
+  const peerProjection = [creates[0], sends[0], resumes[0], sends[1]];
+  return {
+    route: input.route, execution: input.execution,
+    expected: { parentSessionId: input.parentSessionId, childThreadId, workspace: input.workspace, permissionMode, originalParentTurnId, continuationParentTurnId },
+    parentRolloutJson: JSON.stringify(parentProjection), childRolloutJson: JSON.stringify(childProjection),
+    execFramesJson: JSON.stringify(input.execFrames), hookLifecycleJson: JSON.stringify(lifecycle),
+    executorRecordBytes: executor.bytes, bindingAuthorityBytes: authority.bytes, bindingPartitionBytes: partitionArtifact.bytes,
+    preparationRecordBytesJson: JSON.stringify(preparations.map((artifact) => artifact.bytes)),
+    jobRecordBytesJson: JSON.stringify(jobs.map((artifact) => artifact.bytes)), fakePeerJson: JSON.stringify(peerProjection),
+  };
+}
+
+function uniqueArtifacts(artifacts, key) {
+  const selected = new Map();
+  for (const artifact of artifacts) selected.set(artifact.value?.[key], artifact);
+  return [...selected.values()].filter((artifact) => artifact.value?.[key]);
 }
 
 async function codex(args, cwd, env, timeoutMs = 60_000) { return runProcess(codexLaunch(args, { root, env }), { cwd, env, timeoutMs, maxOutputBytes: 16 * 1024 * 1024 }); }

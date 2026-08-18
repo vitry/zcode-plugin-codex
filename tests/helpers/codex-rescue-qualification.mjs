@@ -185,7 +185,10 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   if (peer.length !== 4) mismatch('continuation-peer-method', 'Raw fake peer contains an unaccounted method.');
   if (peer.some((event) => !event || Object.keys(event).sort().join('\0') !== ['id', 'method', 'params'].sort().join('\0')
     || !Number.isSafeInteger(event.id) || !event.params || typeof event.params !== 'object' || Array.isArray(event.params))) mismatch('continuation-peer-method', 'Raw fake peer is not an exact inbound JSON-RPC request capture.');
-  if (new Set(peer.map((event) => event.id)).size !== peer.length) mismatch('continuation-peer-method', 'Raw fake-peer request IDs are not globally unique.');
+  // Initial and resumed turns use two independently spawned peer processes, so
+  // JSON-RPC IDs may restart. They must remain unique inside each captured peer
+  // lifecycle, where create/send and resume/send are the two exact pairs.
+  if (creates[0]?.id === turns[0]?.id || resumes[0]?.id === turns[1]?.id) mismatch('continuation-peer-method', 'Raw fake-peer request IDs collide inside one peer lifecycle.');
   const createParams = creates[0]?.params ?? {}; const createKeys = Object.keys(createParams);
   if (!createKeys.includes('workspace') || createKeys.some((key) => !['workspace', 'sessionId', 'model', 'importedHistory'].includes(key))
     || Object.keys(createParams.workspace ?? {}).sort().join('\0') !== ['workspaceKey', 'workspacePath'].sort().join('\0')
