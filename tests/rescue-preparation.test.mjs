@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
-import { withFileLock } from '../scripts/lib/fs.mjs';
+import { samePathHandleFileSnapshot, withFileLock } from '../scripts/lib/fs.mjs';
 import {
   RESCUE_ENVELOPE_MAX_BYTES,
   RESCUE_PREPARATION_VERSION,
@@ -48,6 +48,17 @@ test('exports the versioned Rescue preparation byte bounds', () => {
   assert.equal(RESCUE_PREPARATION_VERSION, 1);
   assert.equal(RESCUE_TASK_MAX_BYTES, 64 * 1024);
   assert.equal(RESCUE_ENVELOPE_MAX_BYTES, 64 * 1024 + 4096);
+});
+
+test('path-to-handle snapshots tolerate only the Windows device split', () => {
+  const pathStats = { dev: 41n, ino: 73n, size: 101n, mtimeNs: 107n, ctimeNs: 109n };
+  const handleStats = { ...pathStats, dev: 43n };
+  assert.equal(samePathHandleFileSnapshot(pathStats, handleStats, 'win32'), true);
+  assert.equal(samePathHandleFileSnapshot(pathStats, handleStats, 'linux'), false);
+  assert.equal(samePathHandleFileSnapshot(pathStats, { ...handleStats, ino: 79n }, 'win32'), false);
+  for (const field of ['size', 'mtimeNs', 'ctimeNs']) {
+    assert.equal(samePathHandleFileSnapshot(pathStats, { ...handleStats, [field]: 127n }, 'win32'), false);
+  }
 });
 
 test('reads exactly one LF-terminated preparation envelope and defensively copies it', async () => {
@@ -276,7 +287,11 @@ test('prepared cleanup rejects directory replacement while waiting for its works
   assert.deepEqual(await readdir(prepared), []);
 });
 
-test('save rejects replacement of the workspace-root lock while waiting', async () => {
+test('save rejects replacement of the workspace-root lock while waiting', {
+  skip: process.platform === 'win32'
+    ? 'Windows forbids renaming the lock directory while its advisory lock file is open'
+    : false,
+}, async () => {
   const { dataRoot, root, store, workspaceA } = await storeFixture();
   await store.save({
     sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,

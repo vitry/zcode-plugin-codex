@@ -9,6 +9,7 @@ import {
   ensurePrivateDirectoryWithin,
   readBoundedJsonFile,
   readPrivateDirectory,
+  samePathHandleFileSnapshot,
   withFileLock,
 } from './fs.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
@@ -320,7 +321,8 @@ async function readPrivatePreparationJson(storage, path) {
       handle.stat({ bigint: true }), lstat(path, { bigint: true }),
     ]);
     if (current.isSymbolicLink() || !current.isFile()
-      || !sameFileIdentity(before, after) || !sameFileIdentity(before, current)) throw invalidRecord();
+      || !sameFileIdentity(before, after)
+      || !samePathHandleFileSnapshot(current, before)) throw invalidRecord();
     let text;
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
     catch { throw invalidRecord(); }
