@@ -115,11 +115,41 @@ The key is derived from the version marker, parent session ID, executor agent ID
 and the already-partitioned canonical workspace. Records are stored inside one
 exact, bounded, atomically replaced parent-session partition file in the existing
 trusted workspace state root. The filename contains only a hash of the parent
-session. This avoids introducing a nested directory/marker identity that cannot
+session. A separate immutable root-level authority file records that this exact
+session partition has existed; it distinguishes true legacy absence from a
+partition deleted after binding-first publication. This avoids introducing a
+nested directory/marker identity that cannot
 be portably held with `openat` across rename-ABA on every supported Node platform,
 while still preventing one abandoned session from consuming another session's
 capacity. The partition envelope has an exact version/session/workspace/records
-schema and rejects duplicate child keys. `operationId` is a random
+schema and rejects duplicate child keys. The exact persisted envelopes are:
+
+```json
+{
+  "version": 1,
+  "key": "session partition digest",
+  "parentSessionId": "root session",
+  "workspace": "canonical workspace",
+  "records": []
+}
+```
+
+```json
+{
+  "version": 1,
+  "key": "session partition digest",
+  "parentSessionId": "root session",
+  "workspace": "canonical workspace",
+  "createdAt": "ISO timestamp"
+}
+```
+
+The first is `rescue-binding-session-<digest>.json`; the second is the immutable
+`rescue-binding-authority-<digest>.json`. `records` is an array sorted by binding
+key. It contains at most 1,024 exact binding records and rejects duplicate keys
+or executor IDs. The complete partition file, including the serializer's final
+LF, is at most 16 MiB; its bounded reader rejects byte 16 MiB + 1 before JSON
+parsing. The authority file is at most 16 KiB. `operationId` is a random
 generation token used for compare-and-swap updates and ABA protection. Closed
 records are tombstones whose reason is `fresh`, `session-ended`, or
 `invalidated`.
@@ -168,6 +198,15 @@ explicit safe publication order:
 
 Tests assert that partial states are safe and recoverable or fail closed, not
 that multi-file publication is physically atomic.
+
+Every successful route re-reads the exact authority and partition after each
+later publication checkpoint and immediately before return. The observed
+generation/current pair must equal the state expected at that checkpoint.
+Deleting, replacing, corrupting, or symlinking either file after publication
+therefore makes the current call fail. On the next call, authority-without-
+partition is invalid state rather than legacy missing; only neither file ever
+having existed is true absence. An authorized fresh route may repair the narrow
+authority-only crash remnant, but not a corrupt or identity-mismatched file.
 
 The anchor is stable for the operation. Continuation jobs may fail before or
 after contacting ZCode without changing the exact session identity. Status reads
@@ -281,8 +320,8 @@ does not authorize any other prepared invocation.
 - Closed tombstones are retained for bounded cleanup rather than immediately
   deleted, preventing stale writers from recreating an earlier generation.
 
-Each parent-session partition file is capped at 1,024 child slots and a bounded
-serialized byte size. Closed tombstones become GC-eligible after 30 days; active
+Each parent-session partition file is capped at 1,024 child slots and 16 MiB of
+serialized UTF-8 JSON. Closed tombstones become GC-eligible after 30 days; active
 records are never age-GCed. Before adding a new slot, StateStore validates the
 whole exact partition and removes eligible closed tombstones under `.state.lock`;
 if that session remains full it fails without publication. A corrupt sibling
@@ -290,6 +329,11 @@ poisons only that exact session partition and cannot be deleted by ordinary GC.
 SessionEnd may report an advisory close failure, but removal of session/executor
 authority still prevents that binding from being used, and an abandoned session
 cannot consume capacity in a new or sibling session.
+
+SessionEnd closes all active records for the exact session by one whole-partition
+atomic replacement. A failure leaves either the previous whole partition or the
+new whole partition; retry is idempotent, existing tombstones and jobs remain,
+and no sibling session file is touched.
 
 ## Failure and Crash Semantics
 
@@ -320,7 +364,7 @@ ZCode session identity.
 ## Compatibility and Upgrade
 
 Existing job files remain byte/schema compatible. Older plugin versions ignore
-the new binding directory and retain their historical behavior. After upgrade:
+the new binding partition files and retain their historical behavior. After upgrade:
 
 - old jobs without bindings continue through the existing explicit choice or
   clear proactive resume route;

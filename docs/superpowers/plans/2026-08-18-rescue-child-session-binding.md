@@ -64,24 +64,42 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   sibling, symlink/path replacement, scan bound, session/agent/workspace/
   permission mismatch, and no unsafe partial published job/binding state.
 - [ ] Preserve existing `reserveJob` behavior and persisted job schema; prove an
-  old reader ignores `rescue-bindings/` and existing job fixtures remain valid.
+  old jobs-only reader ignores `rescue-binding-session-*.json` partition files
+  and existing job fixtures remain valid.
 - [ ] Implement private storage as one exact bounded
   `<workspace-store>/rescue-binding-session-<hash>.json` partition file per
   parent session, using existing storage resolution, restrictive modes, bounded
   reads, atomic exact JSON replacement, and the StateStore lock. The partition
-  envelope contains exact version/session/workspace/records keys and rejects
-  duplicate child keys. Do not introduce a nested partition directory/marker:
+  envelope is exactly `{version:1,key,parentSessionId,workspace,records}` where
+  records is key-sorted, has at most 1,024 exact binding records, and rejects
+  duplicate binding keys/executor IDs. The complete LF-terminated file is capped
+  at 16 MiB and byte 16 MiB + 1 is rejected before JSON parsing. Publish one
+  immutable root-level exact
+  `{version:1,key,parentSessionId,workspace,createdAt}` authority file (16 KiB
+  maximum) before the first partition; authority-without-partition is a known
+  crash remnant, never legacy missing. Do not introduce a nested partition directory/marker:
   portable Node lacks `openat`, so pathname pre/post checks cannot close a
   rename-away/operate/rename-back ABA window. Reuse the established workspace
   state-root and platform-aware path/handle validation.
+- [ ] After every post-partition publication checkpoint and immediately before
+  success, guarded-reread the authority plus partition and verify the exact
+  expected `operationId/currentJobId` state. Inject delete/replace/corrupt/symlink
+  mutations of each file at fresh/continue/adopt post-binding and final seams;
+  the current call must reject, and the next resolve must be invalid rather than
+  missing. Only neither file ever existing returns missing. Authorized fresh may
+  repair an exact authority-only crash remnant, not corrupt state.
 - [ ] Implement exact SessionEnd close tombstones with CAS-safe generation and
   bounded cleanup; do not close on job terminal or child stop. Store slots in
   the hashed parent-session partition file and cap each session at 1,024 records
-  plus a serialized byte bound, GC only valid closed tombstones older than 30 days under
+  plus 16 MiB serialized UTF-8 JSON, with exact boundary/overflow tests. GC only
+  valid closed tombstones older than 30 days under
   the state lock before new-slot creation, never age-GC active records, and fail
   closed on same-session corrupt siblings or remaining capacity exhaustion.
   Prove an abandoned/advisory-close-failed session cannot consume sibling
   session capacity.
+- [ ] Make SessionEnd one whole-partition atomic rewrite: all exact-session active
+  entries close together, failure leaves old-or-new whole state, retry is
+  idempotent, tombstones/jobs remain, and sibling session files are untouched.
 - [ ] Run focused tests, lint, typecheck, and `git diff --check`; commit:
   `feat: persist exact Rescue operation bindings`.
 
