@@ -76,15 +76,15 @@ test('prepared continuation qualification rejects normalized claims and fails cl
     ['continuation-presentation', (input) => { const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((row) => row?.payload?.name === 'spawn_agent'); const args = JSON.parse(call.payload.arguments); args.task_name = 'sibling_task'; call.payload.arguments = JSON.stringify(args); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-presentation', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.kind === 'started').payload.agent_path = '/root/sibling_task'; input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-child-turns', (input) => { const rows = JSON.parse(input.childRolloutJson); for (const row of rows.filter((item) => item?.payload?.type === 'custom_tool_call')) row.turn_id = 'one-turn'; for (const row of rows.filter((item) => item?.payload?.type === 'custom_tool_call_output')) row.turn_id = 'one-turn'; input.childRolloutJson = JSON.stringify(rows); }],
-    ['continuation-session-mismatch', (input) => { const rows = JSON.parse(input.fakePeerJson); rows.find((row) => row.method === 'session/resume').sessionId = 'latest-wrong-session'; input.fakePeerJson = JSON.stringify(rows); }],
-    ['continuation-peer-order', (input) => { const rows = JSON.parse(input.fakePeerJson); input.fakePeerJson = JSON.stringify([rows[1], rows[0], rows[2]]); }],
-    ['continuation-private-leak', (input) => { input.publicSurfaces.stdout = `done ${JSON.parse(input.fakePeerJson)[0].sessionId}`; }],
+    ['continuation-session-mismatch', (input) => { const rows = JSON.parse(input.fakePeerJson); rows.find((row) => row.method === 'session/resume').params.sessionId = 'latest-wrong-session'; input.fakePeerJson = JSON.stringify(rows); }],
+    ['continuation-peer-order', (input) => { const rows = JSON.parse(input.fakePeerJson); input.fakePeerJson = JSON.stringify([rows[2], rows[1], rows[0], rows[3]]); }],
+    ['continuation-private-leak', (input) => { input.publicSurfaces.stdout = `done ${JSON.parse(input.fakePeerJson)[0].result.session.sessionId}`; }],
     ['continuation-binding-invalid', (input) => { input.bindingPartitionBytes = `${input.bindingPartitionBytes.slice(0, -2)},"valid":true}\n`; }],
-    ['continuation-current-job-stale', (input) => { const jobs = JSON.parse(input.jobsJson); jobs.splice(1, 1); input.jobsJson = JSON.stringify(jobs); }],
-    ['continuation-job-identity', (input) => { const jobs = JSON.parse(input.jobsJson); jobs.push({ ...jobs[1] }); input.jobsJson = JSON.stringify(jobs); }],
+    ['continuation-job-identity', (input) => { const jobs = rawJobs(input); jobs.splice(1, 1); setRawJobs(input, jobs); }],
+    ['continuation-job-identity', (input) => { const jobs = rawJobs(input); jobs.push({ ...jobs[1] }); setRawJobs(input, jobs); }],
     ['continuation-hook-lifecycle', (input) => { const hooks = JSON.parse(input.hookLifecycleJson); hooks[0].agent_type = 'default'; input.hookLifecycleJson = JSON.stringify(hooks); }],
-    ['continuation-anchor-invalid', (input) => { const jobs = JSON.parse(input.jobsJson); delete jobs[0].zcodeSessionId; input.jobsJson = JSON.stringify(jobs); }],
-    ['continuation-anchor-invalid', (input) => { const jobs = JSON.parse(input.jobsJson); jobs[0].status = 'cancelled'; input.jobsJson = JSON.stringify(jobs); }],
+    ['continuation-anchor-invalid', (input) => { const jobs = rawJobs(input); delete jobs[0].zcodeSessionId; setRawJobs(input, jobs); }],
+    ['continuation-anchor-invalid', (input) => { const jobs = rawJobs(input); jobs[0].status = 'cancelled'; setRawJobs(input, jobs); }],
   ];
   for (const [code, mutate] of mutations) {
     const input = preparedContinuationFixture('named'); mutate(input);
@@ -98,24 +98,98 @@ test('prepared continuation qualification rejects normalized claims and fails cl
 
 test('raw prepared continuation keeps queued failed and cancelled current jobs reportable while requiring a resumable anchor', () => {
   for (const status of ['queued', 'failed', 'cancelled']) {
-    const input = preparedContinuationFixture('named'); const jobs = JSON.parse(input.jobsJson); jobs[1].status = status; input.jobsJson = JSON.stringify(jobs);
+    const input = preparedContinuationFixture('named'); const jobs = rawJobs(input); jobs[1].status = status; setRawJobs(input, jobs);
     assert.equal(qualifyCodexRescuePreparedContinuationEvidence(input).peerResumeChecked, true, status);
   }
   const missing = preparedContinuationFixture('named'); missing.bindingPartitionBytes = '';
   assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(missing),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-binding-invalid');
-  const background = preparedContinuationFixture('generic', 'background'); const backgroundJobs = JSON.parse(background.jobsJson); delete backgroundJobs[1].workerLeaseId; background.jobsJson = JSON.stringify(backgroundJobs);
+  const background = preparedContinuationFixture('generic', 'background'); const observer = JSON.parse(background.backgroundObserverJson); delete observer.workerLeaseId; background.backgroundObserverJson = JSON.stringify(observer);
   assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(background),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-background-evidence');
 });
 
+test('exact bound stopped provenance survives thirty minutes while an unbound legacy executor cannot auto-latest', () => {
+  const bound = preparedContinuationFixture('named'); const executor = JSON.parse(bound.executorRecordBytes); executor.createdAt = '2026-08-01T00:00:00.000Z'; bound.executorRecordBytes = `${JSON.stringify(executor)}\n`;
+  assert.equal(qualifyCodexRescuePreparedContinuationEvidence(bound).peerResumeChecked, true);
+  const unbound = structuredClone(bound); unbound.bindingAuthorityBytes = ''; unbound.bindingPartitionBytes = '';
+  assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(unbound),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-binding-invalid');
+});
+
 test('raw prepared continuation scans every declared public and host surface for derived private identifiers', () => {
   for (const field of ['assignment', 'argv', 'env', 'stdout', 'stderr', 'progress', 'status', 'agentPath', 'callMetadata']) {
-    const input = preparedContinuationFixture('named'); const privateId = JSON.parse(input.fakePeerJson)[0].sessionId;
+    const input = preparedContinuationFixture('named'); const privateId = JSON.parse(input.fakePeerJson)[0].result.session.sessionId;
     input.publicSurfaces[field] = typeof input.publicSurfaces[field] === 'string' ? `${input.publicSurfaces[field]} ${privateId}` : { leaked: privateId };
     assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(input),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-private-leak', field);
   }
+  for (const mutate of [
+    (input) => { delete input.publicSurfaces.assignment; },
+    (input) => { input.publicSurfaces.env = {}; },
+  ]) { const input = preparedContinuationFixture('named'); mutate(input);
+    assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(input),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-public-surfaces'); }
+});
+
+test('raw prepared continuation treats display metadata as non-authoritative while binding remains mandatory', () => {
+  const renamed = preparedContinuationFixture('named');
+  const parent = JSON.parse(renamed.parentRolloutJson); const child = JSON.parse(renamed.childRolloutJson);
+  const spawn = parent.find((row) => row?.payload?.name === 'spawn_agent'); const args = JSON.parse(spawn.payload.arguments);
+  args.task_name = 'ordinary_helper'; spawn.payload.arguments = JSON.stringify(args);
+  for (const row of parent.filter((item) => item?.payload?.agent_path)) row.payload.agent_path = '/root/ordinary_helper';
+  child[0].payload.source.subagent.thread_spawn.agent_path = '/root/ordinary_helper';
+  renamed.parentRolloutJson = JSON.stringify(parent); renamed.childRolloutJson = JSON.stringify(child);
+  assert.equal(qualifyCodexRescuePreparedContinuationEvidence(renamed).agentPath, '/root/ordinary_helper');
+  renamed.bindingPartitionBytes = '';
+  assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(renamed),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-binding-invalid');
+});
+
+test('raw prepared continuation rejects metadata and job authority substitutions', () => {
+  const mutations = [
+    ['continuation-parent-metadata', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows[0].payload.source = 'subagent'; input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-parent-metadata', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.shift(); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-spawn-contract', (input) => { const rows = JSON.parse(input.parentRolloutJson); const spawn = rows.find((row) => row?.payload?.name === 'spawn_agent'); const args = JSON.parse(spawn.payload.arguments); delete args.agent_type; spawn.payload.arguments = JSON.stringify(args); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-child-metadata', (input) => { const rows = JSON.parse(input.childRolloutJson); rows[0].payload.source.subagent.thread_spawn.agent_role = 'default'; input.childRolloutJson = JSON.stringify(rows); }],
+    ['continuation-child-metadata', (input) => { const rows = JSON.parse(input.childRolloutJson); rows[0].payload.source.subagent.thread_spawn.agent_path = '/root/sibling'; input.childRolloutJson = JSON.stringify(rows); }],
+    ['continuation-call-linkage', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.call_id === 'spawn-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ agent_id: 'sibling' }); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-call-linkage', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.call_id === 'followup-1' && row.payload.type === 'function_call_output').payload.output = JSON.stringify({ accepted: false, target: childId }); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-job-record', (input) => { const jobs = rawJobs(input); jobs[0].ownerSessionId = 'foreign'; setRawJobs(input, jobs); }],
+  ];
+  for (const [code, mutate] of mutations) {
+    const input = preparedContinuationFixture('named'); mutate(input);
+    assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(input),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
+  }
+  const generic = preparedContinuationFixture('generic'); const genericRows = JSON.parse(generic.parentRolloutJson); const genericSpawn = genericRows.find((row) => row?.payload?.name === 'spawn_agent'); const genericArgs = JSON.parse(genericSpawn.payload.arguments); genericArgs.agent_type = 'zcode-rescue'; genericSpawn.payload.arguments = JSON.stringify(genericArgs); generic.parentRolloutJson = JSON.stringify(genericRows);
+  assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(generic),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-spawn-contract');
+});
+
+test('raw prepared continuation requires both exact TTY preparation handshakes and consumed records', () => {
+  const missing = preparedContinuationFixture('named'); delete missing.preparationRecordBytesJson;
+  assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(missing),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-preparation-records');
+  const badWrite = preparedContinuationFixture('named'); const rows = JSON.parse(badWrite.parentRolloutJson);
+  const write = rows.find((row) => row?.payload?.call_id === 'prepare-write-2'); write.payload.input = structuredPoll(72, 'prepare-write-2', `${JSON.stringify({ version: 1, source: 'proactive', task: 'continue', options: { execution: 'foreground', resume: 'fresh' } })}\n`).payload.input;
+  badWrite.parentRolloutJson = JSON.stringify(rows);
+  assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(badWrite),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-preparation-route');
+});
+
+test('raw prepared continuation accounts for every event and preserves captured order', () => {
+  const mutations = [
+    ['continuation-call-linkage', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.push({ type: 'response_item', turn_id: 'turn-fresh', payload: { type: 'function_call_output', call_id: 'orphan', output: '{}' } }); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-parent-events', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.push({ type: 'response_item', turn_id: 'turn-fresh', payload: { type: 'function_call', name: 'wait_agent', call_id: 'sibling-call', arguments: '{}' } }, { type: 'response_item', turn_id: 'turn-fresh', payload: { type: 'function_call_output', call_id: 'sibling-call', output: '{}' } }); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-job-identity', (input) => { const jobs = rawJobs(input); jobs.push(rawJob('f'.repeat(64), 'foreign-turn', 'failed')); setRawJobs(input, jobs); }],
+    ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows.push({ method: 'session/list', result: [] }); input.fakePeerJson = JSON.stringify(rows); }],
+    ['continuation-event-order', (input) => { const rows = JSON.parse(input.parentRolloutJson); const start = rows.findIndex((row) => row?.payload?.kind === 'started'); const stop = rows.findIndex((row) => row?.payload?.kind === 'stopped'); [rows[start], rows[stop]] = [rows[stop], rows[start]]; input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-child-order', (input) => { const rows = JSON.parse(input.childRolloutJson); rows[1].timestamp = '2026-08-10T00:00:11.500Z'; input.childRolloutJson = JSON.stringify(rows); }],
+  ];
+  for (const [code, mutate] of mutations) { const input = preparedContinuationFixture('named'); mutate(input);
+    assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(input),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code); }
 });
 
 test('qualifies named Rescue from linked parent and child rollout metadata', () => {
@@ -1766,21 +1840,24 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     anchorJobId, currentJobId, operationId, now: '2026-08-10T00:00:00.000Z' });
   const parent = [
     { type: 'session_meta', payload: { id: parentId, session_id: parentId, thread_source: 'user', source: 'exec' } },
-    { ...structuredExecResult(expectedPreparationCommand, 'prepare-1'), timestamp: '2026-08-10T00:00:00.500Z' },
-    { ...capturedResultEvent('prepare-1', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
+    { ...structuredExecResult(expectedPreparationCommand, 'prepare-1', { tty: true }), timestamp: '2026-08-10T00:00:00.250Z' },
+    { ...capturedResultEvent('prepare-1', { output: PREPARATION_READY, session_id: 71 }), timestamp: '2026-08-10T00:00:00.400Z' },
+    { ...structuredPoll(71, 'prepare-write-1', `${JSON.stringify(preparationEnvelope('explicit', 'fresh', execution))}\n`), timestamp: '2026-08-10T00:00:00.500Z' },
+    { ...capturedResultEvent('prepare-write-1', { output: PREPARED_ACK, exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
     { type: 'response_item', timestamp: '2026-08-10T00:00:01.000Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ task_name: taskName, message, fork_turns: 'none', ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, parent_turn_id: 'turn-original' } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ agent_id: childId }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childId, agent_path: agentPath, parent_turn_id: 'turn-original' } },
-    { type: 'response_item', timestamp: '2026-08-10T00:00:06.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'prepare-2', input: structuredExecResult(expectedPreparationCommand, 'unused').payload.input } },
-    { type: 'response_item', timestamp: '2026-08-10T00:00:07.000Z', payload: { type: 'custom_tool_call_output', call_id: 'prepare-2', output: capturedResult({ output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }) } },
+    { ...structuredExecResult(expectedPreparationCommand, 'prepare-2', { tty: true }), timestamp: '2026-08-10T00:00:06.000Z' },
+    { ...capturedResultEvent('prepare-2', { output: PREPARATION_READY, session_id: 72 }), timestamp: '2026-08-10T00:00:06.250Z' },
+    { ...structuredPoll(72, 'prepare-write-2', `${JSON.stringify(preparationEnvelope('proactive', 'resume', execution))}\n`), timestamp: '2026-08-10T00:00:06.500Z' },
+    { ...capturedResultEvent('prepare-write-2', { output: PREPARED_ACK, exit_code: 0 }), timestamp: '2026-08-10T00:00:07.000Z' },
     { type: 'response_item', timestamp: '2026-08-10T00:00:08.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childId, message }) } },
-    { type: 'response_item', timestamp: '2026-08-10T00:00:09.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: 'accepted' } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:09.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: childId }) } },
   ];
-  for (const event of parent.slice(1, 7)) event.turn_id = 'turn-original';
-  for (const event of parent.slice(7)) event.turn_id = 'turn-fresh';
+  for (const event of parent.slice(1)) event.turn_id = Date.parse(event.timestamp) < Date.parse('2026-08-10T00:00:06.000Z') ? 'turn-original' : 'turn-fresh';
   const child = [
-    { type: 'session_meta', payload: { id: childId, parent_thread_id: parentId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentId, agent_path: agentPath, agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
+    { type: 'session_meta', payload: { id: childId, session_id: parentId, parent_thread_id: parentId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentId, agent_path: agentPath, agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
     structuredExecResult(expectedCommand, 'invoke-1'), capturedResultEvent('invoke-1', { output: 'initial done\n', exit_code: 0 }),
     { type: 'event_msg', timestamp: '2026-08-10T00:00:04.000Z', payload: { type: 'agent_message', phase: 'final_answer', message: 'initial done' } },
     structuredExecResult(expectedCommand, 'invoke-2'), capturedResultEvent('invoke-2', { output: 'continued\n', exit_code: 0 }),
@@ -1800,11 +1877,34 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     executorRecordBytes: `${JSON.stringify({ kind: 'subagent-executor', agentId: childId, agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId: parentId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', workspace: expectedWorkspace, active: false, createdAt: '2026-08-08T00:00:00.000Z' })}\n`,
     bindingAuthorityBytes: `${JSON.stringify(createRescueBindingAuthority({ parentSessionId: parentId, workspace: expectedWorkspace, createdAt: '2026-08-10T00:00:00.000Z' }))}\n`,
     bindingPartitionBytes: `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: expectedWorkspace, records: [binding] }))}\n`,
-    jobsJson: JSON.stringify([{ id: anchorJobId, status: 'succeeded', zcodeSessionId: 'zcode-session-original' }, { id: currentJobId, status: execution === 'background' ? 'queued' : 'succeeded', zcodeSessionId: null, ...(execution === 'background' ? { capabilityId: 'capability-private', workerLeaseId: 'worker-private' } : {}) }]),
-    fakePeerJson: JSON.stringify([{ method: 'session/create', sessionId: 'zcode-session-original' }, { method: 'session/resume', sessionId: 'zcode-session-original' }, { method: 'session/turn', sessionId: 'zcode-session-original' }]),
-    publicSurfaces: { assignment: message, argv: expectedCommand, env: {}, stdout: 'continued', stderr: '', progress: [], status: execution === 'background' ? 'queued' : 'succeeded', agentPath, callMetadata: ['spawn-1', 'followup-1'] },
+    preparationRecordBytesJson: JSON.stringify([
+      `${JSON.stringify(preparationRecord('turn-original', 'explicit', 'fresh', execution, childId, '1'.repeat(64)))}\n`,
+      `${JSON.stringify(preparationRecord('turn-fresh', 'proactive', 'resume', execution, childId, '2'.repeat(64)))}\n`,
+    ]),
+    jobRecordBytesJson: JSON.stringify([
+      `${JSON.stringify(rawJob(anchorJobId, 'turn-original', 'succeeded', { zcodeSessionId: 'zcode-session-original' }))}\n`,
+      `${JSON.stringify(rawJob(currentJobId, 'turn-fresh', execution === 'background' ? 'queued' : 'succeeded'))}\n`,
+    ]),
+    fakePeerJson: JSON.stringify([{ method: 'session/create', result: { session: { sessionId: 'zcode-session-original' } } }, { method: 'session/send', params: { sessionId: 'zcode-session-original' } }, { method: 'session/resume', params: { sessionId: 'zcode-session-original' } }, { method: 'session/send', params: { sessionId: 'zcode-session-original' } }]),
+    ...(execution === 'background' ? { backgroundObserverJson: JSON.stringify({ capabilityId: 'capability-private', jobId: currentJobId, workerLeaseId: 'e'.repeat(64) }) } : {}),
+    publicSurfaces: { assignment: message, argv: expectedCommand, env: { PATH: '/usr/bin' }, stdout: 'continued', stderr: '', progress: ['running'], status: execution === 'background' ? 'queued' : 'succeeded', agentPath, callMetadata: ['spawn-1', 'followup-1'] },
   };
 }
+
+const PREPARATION_READY = `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`;
+const PREPARED_ACK = `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`;
+function preparationEnvelope(source, resume, execution) { return { version: 1, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution, resume } }; }
+function preparationRecord(turnId, source, resume, execution, executorAgentId, key) {
+  return { version: 1, key, sessionId: parentId, turnId, workspace: expectedWorkspace, permissionMode: 'acceptEdits', source,
+    envelope: preparationEnvelope(source, resume, execution), createdAt: '2026-08-10T00:00:00.000Z', expiresAt: '2026-08-10T00:30:00.000Z', consumedAt: '2026-08-10T00:00:01.000Z', executorAgentId };
+}
+
+function rawJob(id, ownerTurnId, status, extra = {}) {
+  return { id, workspace: expectedWorkspace, ownerSessionId: parentId, ownerTurnId, command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'acceptEdits' }, status, createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:01:00.000Z', ...extra };
+}
+function rawJobs(input) { return JSON.parse(input.jobRecordBytesJson).map((bytes) => JSON.parse(bytes)); }
+function setRawJobs(input, jobs) { input.jobRecordBytesJson = JSON.stringify(jobs.map((job) => `${JSON.stringify(job)}\n`)); }
 
 function relayedChoiceFixture({ withStatus = false } = {}) {
   const input = choiceFixture('resume');

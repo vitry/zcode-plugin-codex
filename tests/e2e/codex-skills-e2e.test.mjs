@@ -23,6 +23,7 @@ import {
   qualifyCodexRescueBackgroundEvidence,
   qualifyCodexRescueChoiceEvidence,
   qualifyCodexRescueEvidence,
+  qualifyCodexRescuePreparedContinuationEvidence,
 } from '../helpers/codex-rescue-qualification.mjs';
 import {
   assertRescueRouteContract,
@@ -582,7 +583,7 @@ test('synthetic captured qualification fixtures cover both named and generic cho
   }
 });
 
-test('installed forwarders qualify raw installed-hook Start/Stop and a zero-spawn exact prepared continuation', async (t) => {
+test('synthetic continuation capture incorporates raw installed-hook Start/Stop artifacts', async (t) => {
   const skill = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const genericSource = expectedGenericRescueMessage;
   const namedTemplate = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8');
@@ -834,6 +835,14 @@ test('installed Rescue uses one isolated native child for initial and choice con
   assert.equal(resumed.length, 1, 'proactive continuation must resume exactly one fake-peer session');
   assert.equal(resumed[0].params?.sessionId, originalSessionId, 'proactive continuation must resume the original exact fake-peer session');
   assert.equal(proactivePeer.filter((call) => call.method === 'session/send').length, 1, 'proactive continuation must send exactly one new ZCode turn');
+  const credentialedRaw = installedPreparedContinuationCapture('named'); const credentialedJobs = JSON.parse(credentialedRaw.jobRecordBytesJson).map((bytes) => JSON.parse(bytes));
+  credentialedJobs[0].zcodeSessionId = originalSessionId; credentialedRaw.jobRecordBytesJson = JSON.stringify(credentialedJobs.map((job) => `${JSON.stringify(job)}\n`));
+  credentialedRaw.fakePeerJson = JSON.stringify([
+    ...zcodeCalls.filter((call) => ['session/create', 'session/send'].includes(call.method)),
+    ...proactivePeer.filter((call) => ['session/resume', 'session/send'].includes(call.method)),
+  ]);
+  assert.equal(qualifyCodexRescuePreparedContinuationEvidence(credentialedRaw).peerResumeChecked, true,
+    'credentialed cross-parent continuation must pass the same raw continuation oracle');
 
   for (const choice of ['resume', 'fresh']) {
     await writeFile(zcodeRecord, '');
@@ -1722,22 +1731,25 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     anchorJobId, currentJobId, operationId: 'd'.repeat(64), now: '2026-08-10T00:00:00.000Z' });
   const parent = [
     { type: 'session_meta', payload: { id: parentSessionId, session_id: parentSessionId, thread_source: 'user', source: 'exec' } },
-    { ...installedToolCall('prepare-1', installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue')), timestamp: '2026-08-10T00:00:00.500Z' },
-    { ...installedToolOutput('prepare-1', { output: 'prepared\n', exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
+    { ...installedToolCall('prepare-1', installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue', { tty: true, workdir: workspace })), timestamp: '2026-08-10T00:00:00.250Z' },
+    { ...installedToolOutput('prepare-1', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 71 }), timestamp: '2026-08-10T00:00:00.400Z' },
+    { ...installedToolCall('prepare-write-1', installedPreparationInput(71, `${JSON.stringify(installedContinuationEnvelope('explicit', 'fresh'))}\n`)), timestamp: '2026-08-10T00:00:00.500Z' },
+    { ...installedToolOutput('prepare-write-1', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
     { type: 'response_item', timestamp: '2026-08-10T00:00:01.000Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ task_name: 'zcode_rescue_continue', message, fork_turns: 'none', ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_continue', parent_turn_id: 'turn-original' } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ agent_id: childThreadId }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_continue', parent_turn_id: 'turn-original' } },
-    { ...installedToolCall('prepare-2', installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue')), timestamp: '2026-08-10T00:00:06.000Z' },
-    { ...installedToolOutput('prepare-2', { output: 'prepared\n', exit_code: 0 }), timestamp: '2026-08-10T00:00:07.000Z' },
+    { ...installedToolCall('prepare-2', installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue', { tty: true, workdir: workspace })), timestamp: '2026-08-10T00:00:06.000Z' },
+    { ...installedToolOutput('prepare-2', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 72 }), timestamp: '2026-08-10T00:00:06.250Z' },
+    { ...installedToolCall('prepare-write-2', installedPreparationInput(72, `${JSON.stringify(installedContinuationEnvelope('proactive', 'resume'))}\n`)), timestamp: '2026-08-10T00:00:06.500Z' },
+    { ...installedToolOutput('prepare-write-2', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }), timestamp: '2026-08-10T00:00:07.000Z' },
     { type: 'response_item', timestamp: '2026-08-10T00:00:08.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childThreadId, message }) } },
-    { type: 'response_item', timestamp: '2026-08-10T00:00:09.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: 'accepted' } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:09.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: childThreadId }) } },
   ];
-  for (const event of parent.slice(1, 7)) event.turn_id = 'turn-original';
-  for (const event of parent.slice(7)) event.turn_id = 'turn-fresh';
+  for (const event of parent.slice(1)) event.turn_id = Date.parse(event.timestamp) < Date.parse('2026-08-10T00:00:06.000Z') ? 'turn-original' : 'turn-fresh';
   const command = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-prepared rescue';
   const child = [
-    { type: 'session_meta', payload: { id: childThreadId, parent_thread_id: parentSessionId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentSessionId, agent_path: '/root/zcode_rescue_continue', agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
+    { type: 'session_meta', payload: { id: childThreadId, session_id: parentSessionId, parent_thread_id: parentSessionId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentSessionId, agent_path: '/root/zcode_rescue_continue', agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
     installedToolCall('invoke-1', installedExecInput(command)), installedToolOutput('invoke-1', { output: 'initial done\n', exit_code: 0 }),
     installedToolCall('invoke-2', installedExecInput(command)), installedToolOutput('invoke-2', { output: 'continued\n', exit_code: 0 }),
   ];
@@ -1755,10 +1767,27 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     executorRecordBytes: overrides.executorRecordBytes ?? `${JSON.stringify({ kind: 'subagent-executor', agentId: childThreadId, agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', workspace, active: false, createdAt: '2026-08-08T00:00:00.000Z' })}\n`,
     bindingAuthorityBytes: `${JSON.stringify(createRescueBindingAuthority({ parentSessionId, workspace, createdAt: '2026-08-10T00:00:00.000Z' }))}\n`,
     bindingPartitionBytes: `${JSON.stringify(createRescueBindingPartition({ parentSessionId, workspace, records: [binding] }))}\n`,
-    jobsJson: JSON.stringify([{ id: anchorJobId, status: 'succeeded', zcodeSessionId: 'zcode-session-original' }, { id: currentJobId, status: 'succeeded', zcodeSessionId: null }]),
-    fakePeerJson: JSON.stringify([{ method: 'session/create', sessionId: 'zcode-session-original' }, { method: 'session/resume', sessionId: 'zcode-session-original' }, { method: 'session/turn', sessionId: 'zcode-session-original' }]),
-    publicSurfaces: { assignment: message, argv: command, env: {}, stdout: 'continued', stderr: '', progress: [], status: 'succeeded', agentPath: '/root/zcode_rescue_continue', callMetadata: ['spawn-1', 'followup-1'] },
+    preparationRecordBytesJson: JSON.stringify([
+      `${JSON.stringify(installedContinuationPreparationRecord(parentSessionId, workspace, childThreadId, 'turn-original', 'explicit', 'fresh', '1'.repeat(64)))}\n`,
+      `${JSON.stringify(installedContinuationPreparationRecord(parentSessionId, workspace, childThreadId, 'turn-fresh', 'proactive', 'resume', '2'.repeat(64)))}\n`,
+    ]),
+    jobRecordBytesJson: JSON.stringify([
+      `${JSON.stringify(installedRawJob(anchorJobId, parentSessionId, workspace, 'turn-original', 'succeeded', { zcodeSessionId: 'zcode-session-original' }))}\n`,
+      `${JSON.stringify(installedRawJob(currentJobId, parentSessionId, workspace, 'turn-fresh', 'succeeded'))}\n`,
+    ]),
+    fakePeerJson: JSON.stringify([{ method: 'session/create', result: { session: { sessionId: 'zcode-session-original' } } }, { method: 'session/send', params: { sessionId: 'zcode-session-original' } }, { method: 'session/resume', params: { sessionId: 'zcode-session-original' } }, { method: 'session/send', params: { sessionId: 'zcode-session-original' } }]),
+    publicSurfaces: { assignment: message, argv: command, env: { PATH: '/usr/bin' }, stdout: 'continued', stderr: '', progress: ['running'], status: 'succeeded', agentPath: '/root/zcode_rescue_continue', callMetadata: ['spawn-1', 'followup-1'] },
   };
+}
+
+function installedRawJob(id, ownerSessionId, workspace, ownerTurnId, status, extra = {}) {
+  return { id, workspace, ownerSessionId, ownerTurnId, command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'acceptEdits' }, status, createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:01:00.000Z', ...extra };
+}
+function installedContinuationEnvelope(source, resume) { return { version: 1, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution: 'foreground', resume } }; }
+function installedContinuationPreparationRecord(sessionId, workspace, executorAgentId, turnId, source, resume, key) {
+  return { version: 1, key, sessionId, turnId, workspace, permissionMode: 'acceptEdits', source, envelope: installedContinuationEnvelope(source, resume),
+    createdAt: '2026-08-10T00:00:00.000Z', expiresAt: '2026-08-10T00:30:00.000Z', consumedAt: '2026-08-10T00:00:01.000Z', executorAgentId };
 }
 
 async function installedCapturedRescueRoutes(config = {}) {
