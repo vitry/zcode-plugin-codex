@@ -22,7 +22,8 @@
 
 - [ ] Write failing tests for a pure exact binding codec/key API. Cover exact
   keys, version/state enums, canonical workspace, safe identifiers, persisted
-  approved `executorAgentType` provenance, timestamps,
+  approved `executorAgentType`, original `executorParentTurnId`, and original
+  `executorParentPermissionMode` provenance, timestamps,
   `operationId`, active/closed nullability, duplicate JSON keys, unknown keys,
   byte/count bounds, defensive copies, and fixed secret-free errors.
 - [ ] Run `node --test tests/rescue-binding.test.mjs` and record the expected
@@ -162,7 +163,10 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   merely for age. Initial/unbound routes keep the 30-minute TTL. Only a bound
   continuation with matching fresh preparation, binding, parent session,
   workspace, permission, stopped state, and persisted approved agent type may
-  use provenance older than 30 minutes. Test long-running and terminal
+  use provenance older than 30 minutes. Cross-check the stopped record's original
+  turn and permission against immutable binding provenance; after an authorized
+  fresh permission rotation, compare the current caller to binding
+  `permissionMode`, not the historical executor permission. Test long-running and terminal
   greater-than-30-minute continuations plus expired unbound rejection.
 - [ ] Version the private pending-choice schema to hold `candidateJobId` without
   exposing it in output. Add `routeKind` and, for bound choices,
@@ -171,7 +175,8 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   originating pending record/permission. Do not require historical parentTurnId
   to equal the new active turn. Bound choices may use durable stopped provenance
   only while their candidate, expected generation, and expected current job still
-  match in the same StateStore lock transaction.
+  match in the same StateStore lock transaction. Both bound fresh and resume also
+  require `candidateJobId === anchorJobId` under that lock.
 - [ ] Select routing as follows: bound+resume → exact continuation transaction;
   bound+fresh → fresh transaction; bound+omitted explicit → exact-anchor
   `needs-choice`; missing binding → existing legacy candidate behavior; invalid
@@ -182,6 +187,11 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   every structural/identity corruption remain fail closed.
 - [ ] Preserve execution-time TOCTOU validation of the exact anchor job/session.
   Never call latest-candidate selection on a valid or invalid binding.
+- [ ] Mirror the generic reservation path's abort fences in exact Rescue
+  reservation: before/after launch discovery, before client creation, after
+  scavenging, before reservation/spec publication, and before background worker
+  launch. Add an executor-bound background conflict cancellation test proving no
+  client, job, capability, spec, or worker is created after abort.
 - [ ] Replace parent-turn unique-job “bound status” lookup with exact binding
   `currentJobId`; keep public status/history behavior unchanged.
 - [ ] Add SessionEnd binding close to its existing advisory cleanup without

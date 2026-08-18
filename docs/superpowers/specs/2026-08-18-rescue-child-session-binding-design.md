@@ -100,6 +100,8 @@ Each record has an exact versioned schema:
   "parentSessionId": "root session",
   "executorAgentId": "trusted rescue child",
   "executorAgentType": "zcode-rescue",
+  "executorParentTurnId": "original trusted parent turn",
+  "executorParentPermissionMode": "workspace-write",
   "workspace": "canonical workspace",
   "permissionMode": "workspace-write",
   "anchorJobId": "job that owns the ZCode session",
@@ -244,7 +246,7 @@ rollout. For a bound candidate it also snapshots the expected `operationId`. A
 bound snapshot also records `expectedCurrentJobId`, because ordinary continuation
 advances current without changing the operation generation. A requested resume
 consumes that record and either CAS-continues the same bound generation/current
-pair or, for a still-missing legacy slot, revalidates and adopts precisely the
+pair with `candidateJobId === anchorJobId`, or, for a still-missing legacy slot, revalidates and adopts precisely the
 selected candidate. A later job cannot replace the presented candidate, and a
 fresh or continued operation created while the answer is pending invalidates the
 stale choice rather than changing its meaning.
@@ -268,7 +270,8 @@ executor to match:
 A same-child prepared continuation does not require or fabricate a new
 SubagentStart. It instead requires the exact original executor record to be
 stopped and structurally valid, with matching parent session, canonical
-workspace, role, and permission. Its historical `parentTurnId` and creation time
+workspace, role, original parent turn, and original permission provenance. Its
+historical `parentTurnId`, `parentPermissionMode`, and creation time
 remain unchanged; only this exact bound path may accept provenance older than
 the ordinary 30-minute executor TTL. Authorization
 for the new parent turn comes exclusively from the newly stored preparation,
@@ -277,7 +280,7 @@ executor ID, plus the exact durable binding. Missing any one of these proofs
 fails before candidate selection or job reservation.
 
 Automatic exact continuation additionally requires the binding's parent
-session, executor ID, workspace, and permission mode to match. A permission
+session, executor ID, workspace, and current permission mode to match. A permission
 change cannot silently inherit an older automatic authorization. An explicit
 legacy resume may adopt the selected historical job under the current trusted
 permission mode; subsequent automatic continuation must match that adopted
@@ -286,7 +289,10 @@ mode.
 A structurally valid same-slot binding with an older permission mode blocks
 resume, but does not block a newly authorized `fresh` preparation. Fresh inherits
 no old ZCode authority, so it may replace that generation under the current
-trusted permission. Structural corruption, workspace/session/executor mismatch,
+trusted permission while carrying forward the immutable original executor turn,
+role, and permission provenance. Later bound continuation compares the current
+caller permission to binding `permissionMode`, not to the historical executor
+permission snapshot. Structural corruption, workspace/session/executor/provenance mismatch,
 or ambiguous records still fail closed even for fresh.
 
 Neither preparation records nor pending-choice records carry the binding or
