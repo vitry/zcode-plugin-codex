@@ -1053,11 +1053,12 @@ function boundedOutputContainsTask(text, task) {
   if (Buffer.byteLength(text, 'utf8') > MAX_LEGACY_JSON_DECODE_BYTES) {
     mismatch('preparation-task-exclusivity', 'The bounded parent output decoding budget was exceeded.');
   }
+  const escapedTask = JSON.stringify(task).slice(1, -1);
   const pending = [{ text, depth: 0 }]; const seen = new Set();
   let candidateCount = 0; let decodedBytes = 0;
   while (pending.length > 0) {
     const current = pending.pop();
-    if (current.text.includes(task)) return true;
+    if (current.text.includes(task) || current.text.includes(escapedTask)) return true;
     if (current.depth >= MAX_LEGACY_JSON_DEPTH) {
       for (const candidate of jsonTextCandidates(current.text)) {
         try {

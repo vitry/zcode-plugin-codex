@@ -1006,6 +1006,30 @@ test('structured task scanning recursively decodes every non-output string leaf'
   );
 });
 
+for (const [name, structured, output, chunkId] of [
+  ['legacy item text', false, `legacy prefix {"diagnostic":${JSON.stringify('repair the "quoted" \\route\nnow').slice(0, -1)}`],
+  ['structured result output', true, `structured prefix [${JSON.stringify('repair the "quoted" \\route\nnow').slice(0, -1)}`],
+  ['structured non-output leaf', true, '', `metadata=${JSON.stringify('repair the "quoted" \\route\nnow').slice(0, -1)}`],
+]) {
+  test(`task scanning detects a truncated JSON-escaped task string in ${name}`, () => {
+    const task = 'repair the "quoted" \\route\nnow';
+    const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structured ? structuredExecResult('true', `truncated-${name}`) : structuredExec('true', `truncated-${name}`),
+      structured
+        ? capturedResultEvent(`truncated-${name}`, { output, exit_code: 0, ...(chunkId === undefined ? {} : { chunk_id: chunkId }) })
+        : toolOutput(`truncated-${name}`, output));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+      name,
+    );
+  });
+}
+
 test('binds child stdout to the unique exec call and terminal sentinel', () => {
   const cases = [
     { code: 'child-output-count', mutate: (input) => input.rollouts[1].splice(2, 1) },
