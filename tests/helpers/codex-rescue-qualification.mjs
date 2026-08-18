@@ -1138,6 +1138,7 @@ function jsonTextCandidates(text) {
     }
     add(text.slice(opening.offset, offset + 1));
   }
+  if (stringStart !== undefined && !escaped) add(`${text.slice(stringStart)}"`);
   return candidates;
 }
 

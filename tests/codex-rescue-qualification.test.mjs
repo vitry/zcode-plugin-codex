@@ -1030,6 +1030,52 @@ for (const [name, structured, output, chunkId] of [
   });
 }
 
+for (const [name, structured, output, chunkId] of (() => {
+  const task = 'repair the "quoted" \\route\nnow';
+  const unicodeEscaped = `"${task.split('').map((character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`).join('')}`;
+  return [
+    ['legacy item text', false, `legacy unicode=${unicodeEscaped}`],
+    ['structured result output', true, `structured unicode=${unicodeEscaped}`],
+    ['structured non-output leaf', true, '', `metadata=${unicodeEscaped}`],
+  ];
+})()) {
+  test(`task scanning decodes a truncated per-character Unicode JSON string in ${name}`, () => {
+    const task = 'repair the "quoted" \\route\nnow';
+    const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structured ? structuredExecResult('true', `unicode-${name}`) : structuredExec('true', `unicode-${name}`),
+      structured
+        ? capturedResultEvent(`unicode-${name}`, { output, exit_code: 0, ...(chunkId === undefined ? {} : { chunk_id: chunkId }) })
+        : toolOutput(`unicode-${name}`, output));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+      name,
+    );
+  });
+}
+
+test('task scanning recursively decodes a truncated outer JSON string around an escaped task string', () => {
+  const task = 'repair the "quoted" \\route\nnow';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  input.rollouts[0].splice(7, 0,
+    structuredExecResult('true', 'truncated-double-escaped'),
+    capturedResultEvent('truncated-double-escaped', {
+      output: `nested=${JSON.stringify(JSON.stringify(task)).slice(0, -1)}`,
+      exit_code: 0,
+    }));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+  );
+});
+
 test('binds child stdout to the unique exec call and terminal sentinel', () => {
   const cases = [
     { code: 'child-output-count', mutate: (input) => input.rollouts[1].splice(2, 1) },
