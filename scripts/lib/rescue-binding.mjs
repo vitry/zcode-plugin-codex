@@ -246,6 +246,15 @@ function sameSnapshot(left, right) { return left.dev === right.dev && left.ino =
 
 /** @param {string} text */
 function rejectDuplicateObjectKeys(text) {
+  try {
+    scanDuplicateObjectKeys(text);
+  } catch {
+    throw invalidBinding();
+  }
+}
+
+/** @param {string} text */
+function scanDuplicateObjectKeys(text) {
   let offset = 0;
   const whitespace = () => { while (/\s/u.test(text[offset] ?? '')) offset += 1; };
   const string = () => { if (text[offset] !== '"') throw invalidBinding(); const start = offset++; let escaped = false; while (offset < text.length) { const character = text[offset++]; if (escaped) { escaped = false; continue; } if (character === '\\') { escaped = true; continue; } if (character === '"') { try { return JSON.parse(text.slice(start, offset)); } catch { throw invalidBinding(); } } } throw invalidBinding(); };

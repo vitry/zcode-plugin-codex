@@ -104,6 +104,15 @@ test('partition codec enforces one exact bounded parent-session envelope and uni
   assert.throws(() => parseRescueBindingAuthority(Buffer.alloc(RESCUE_BINDING_AUTHORITY_MAX_BYTES + 1, 0x20), identity), { code: 'RESCUE_BINDING_INVALID' });
 });
 
+test('all binding parsers map deeply nested JSON scanner exhaustion to one secret-free fixed error', () => {
+  const nested = `${'['.repeat(6_000)}"do-not-leak"${']'.repeat(6_000)}\n`;
+  for (const parse of [
+    () => parseRescueBinding(nested),
+    () => parseRescueBindingPartition(nested, identity),
+    () => parseRescueBindingAuthority(nested, identity),
+  ]) assert.throws(parse, (error) => error?.code === 'RESCUE_BINDING_INVALID' && !error.message.includes('do-not-leak'));
+});
+
 async function fixture(options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'zcode-rescue-binding-'));
   const dataRoot = join(root, 'data'); const workspace = join(root, 'workspace');
