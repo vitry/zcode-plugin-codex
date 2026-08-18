@@ -69,11 +69,21 @@ test('prepared continuation qualification rejects normalized claims and fails cl
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-raw-contract');
   const mutations = [
     ['continuation-start-count', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.push(rows.find((row) => row?.payload?.kind === 'started')); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-event-order', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.kind === 'stopped').timestamp = '2026-08-10T00:00:01.500Z'; input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-call-linkage', (input) => { const rows = JSON.parse(input.parentRolloutJson).filter((row) => !(row?.payload?.type === 'function_call_output' && row.payload.call_id === 'spawn-1')); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-followup-target', (input) => { const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((row) => row?.payload?.name === 'followup_task'); const args = JSON.parse(call.payload.arguments); args.target = 'sibling'; call.payload.arguments = JSON.stringify(args); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-parent-turns', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.name === 'followup_task').turn_id = 'turn-original'; input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-presentation', (input) => { const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((row) => row?.payload?.name === 'spawn_agent'); const args = JSON.parse(call.payload.arguments); args.task_name = 'sibling_task'; call.payload.arguments = JSON.stringify(args); input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-presentation', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.kind === 'started').payload.agent_path = '/root/sibling_task'; input.parentRolloutJson = JSON.stringify(rows); }],
+    ['continuation-child-turns', (input) => { const rows = JSON.parse(input.childRolloutJson); for (const row of rows.filter((item) => item?.payload?.type === 'custom_tool_call')) row.turn_id = 'one-turn'; for (const row of rows.filter((item) => item?.payload?.type === 'custom_tool_call_output')) row.turn_id = 'one-turn'; input.childRolloutJson = JSON.stringify(rows); }],
     ['continuation-session-mismatch', (input) => { const rows = JSON.parse(input.fakePeerJson); rows.find((row) => row.method === 'session/resume').sessionId = 'latest-wrong-session'; input.fakePeerJson = JSON.stringify(rows); }],
+    ['continuation-peer-order', (input) => { const rows = JSON.parse(input.fakePeerJson); input.fakePeerJson = JSON.stringify([rows[1], rows[0], rows[2]]); }],
     ['continuation-private-leak', (input) => { input.publicSurfaces.stdout = `done ${JSON.parse(input.fakePeerJson)[0].sessionId}`; }],
     ['continuation-binding-invalid', (input) => { input.bindingPartitionBytes = `${input.bindingPartitionBytes.slice(0, -2)},"valid":true}\n`; }],
     ['continuation-current-job-stale', (input) => { const jobs = JSON.parse(input.jobsJson); jobs.splice(1, 1); input.jobsJson = JSON.stringify(jobs); }],
+    ['continuation-job-identity', (input) => { const jobs = JSON.parse(input.jobsJson); jobs.push({ ...jobs[1] }); input.jobsJson = JSON.stringify(jobs); }],
+    ['continuation-hook-lifecycle', (input) => { const hooks = JSON.parse(input.hookLifecycleJson); hooks[0].agent_type = 'default'; input.hookLifecycleJson = JSON.stringify(hooks); }],
+    ['continuation-anchor-invalid', (input) => { const jobs = JSON.parse(input.jobsJson); delete jobs[0].zcodeSessionId; input.jobsJson = JSON.stringify(jobs); }],
     ['continuation-anchor-invalid', (input) => { const jobs = JSON.parse(input.jobsJson); jobs[0].status = 'cancelled'; input.jobsJson = JSON.stringify(jobs); }],
   ];
   for (const [code, mutate] of mutations) {
@@ -94,6 +104,9 @@ test('raw prepared continuation keeps queued failed and cancelled current jobs r
   const missing = preparedContinuationFixture('named'); missing.bindingPartitionBytes = '';
   assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(missing),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-binding-invalid');
+  const background = preparedContinuationFixture('generic', 'background'); const backgroundJobs = JSON.parse(background.jobsJson); delete backgroundJobs[1].workerLeaseId; background.jobsJson = JSON.stringify(backgroundJobs);
+  assert.throws(() => qualifyCodexRescuePreparedContinuationEvidence(background),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-background-evidence');
 });
 
 test('raw prepared continuation scans every declared public and host surface for derived private identifiers', () => {
@@ -1757,12 +1770,15 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     { ...capturedResultEvent('prepare-1', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
     { type: 'response_item', timestamp: '2026-08-10T00:00:01.000Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ task_name: taskName, message, fork_turns: 'none', ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, parent_turn_id: 'turn-original' } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ agent_id: childId }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childId, agent_path: agentPath, parent_turn_id: 'turn-original' } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:06.000Z', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'prepare-2', input: structuredExecResult(expectedPreparationCommand, 'unused').payload.input } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:07.000Z', payload: { type: 'custom_tool_call_output', call_id: 'prepare-2', output: capturedResult({ output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }) } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:08.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childId, message }) } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:09.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: 'accepted' } },
   ];
+  for (const event of parent.slice(1, 7)) event.turn_id = 'turn-original';
+  for (const event of parent.slice(7)) event.turn_id = 'turn-fresh';
   const child = [
     { type: 'session_meta', payload: { id: childId, parent_thread_id: parentId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentId, agent_path: agentPath, agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
     structuredExecResult(expectedCommand, 'invoke-1'), capturedResultEvent('invoke-1', { output: 'initial done\n', exit_code: 0 }),
@@ -1771,6 +1787,7 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     { type: 'event_msg', timestamp: '2026-08-10T00:00:12.000Z', payload: { type: 'agent_message', phase: 'final_answer', message: 'continued' } },
   ];
   child[1].timestamp = '2026-08-10T00:00:03.000Z'; child[2].timestamp = '2026-08-10T00:00:03.500Z'; child[4].timestamp = '2026-08-10T00:00:10.000Z'; child[5].timestamp = '2026-08-10T00:00:11.000Z';
+  child[1].turn_id = child[2].turn_id = 'invoke-original'; child[4].turn_id = child[5].turn_id = 'invoke-continuation';
   return {
     route, execution, expected: { parentSessionId: parentId, childThreadId: childId, agentPath, workspace: expectedWorkspace,
       permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-fresh' },

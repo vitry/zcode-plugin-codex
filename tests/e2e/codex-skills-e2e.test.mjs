@@ -37,6 +37,7 @@ import {
   installedCommandPathMutations,
   installedLifecycleContractMutations,
 } from '../helpers/installed-rescue-lifecycle-contract.mjs';
+import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
@@ -581,7 +582,7 @@ test('synthetic captured qualification fixtures cover both named and generic cho
   }
 });
 
-test('installed forwarders qualify one Start/Stop and a zero-spawn exact prepared continuation', async () => {
+test('installed forwarders qualify raw installed-hook Start/Stop and a zero-spawn exact prepared continuation', async (t) => {
   const skill = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const genericSource = expectedGenericRescueMessage;
   const namedTemplate = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8');
@@ -590,8 +591,23 @@ test('installed forwarders qualify one Start/Stop and a zero-spawn exact prepare
     ['named', namedSource, '{{PLUGIN_ROOT}}'],
     ['generic', genericSource, '<canonical-plugin-root>'],
   ]) {
+    const temporary = await mkdtemp(join(tmpdir(), 'zcode-raw-continuation-')); t.after(() => rm(temporary, { recursive: true, force: true }));
+    const workspaceDirectory = join(temporary, 'workspace'); const dataRoot = join(temporary, 'data'); await Promise.all([mkdir(workspaceDirectory), mkdir(dataRoot)]); const workspace = await realpath(workspaceDirectory);
+    const installedHooks = join(root, 'marketplace', 'plugins', 'zcode', 'hooks'); const hookEnv = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+    const hook = async (script, input) => runChild(process.execPath, [join(installedHooks, script)], { cwd: workspace, env: hookEnv, ordinaryInput: true, input });
+    assert.equal((await hook('session-lifecycle-hook.mjs', { session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' })).code, 0);
+    assert.equal((await hook('user-prompt-hook.mjs', { session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', turn_id: 'turn-original', cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue --fresh repair' })).code, 0);
+    const agentType = route === 'named' ? 'zcode-rescue' : 'default';
+    const lifecycle = (event) => ({ session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', turn_id: 'child-turn', cwd: workspace, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: '019fe6e0-4764-7192-83ba-0b0cc2c48660', agent_type: agentType, ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
+    assert.equal((await hook('subagent-hook.mjs', lifecycle('SubagentStart'))).code, 0);
+    assert.equal((await hook('subagent-hook.mjs', lifecycle('SubagentStop'))).code, 0);
+    const executorPath = (await recursiveFiles(dataRoot)).find((path) => basename(path).startsWith('executor-'));
+    assert.ok(executorPath, 'installed hooks must persist the exact stopped executor record');
     assert.match(skill, /stopped exact same-operation child/i);
-    const evidence = assertInstalledPreparedContinuationContract(source, installedPreparedContinuationCapture(route), { expectedRoot });
+    const evidence = assertInstalledPreparedContinuationContract(source, installedPreparedContinuationCapture(route, {
+      workspace, executorRecordBytes: await readFile(executorPath, 'utf8'),
+      hookLifecycleJson: JSON.stringify([lifecycle('SubagentStart'), lifecycle('SubagentStop'), { hook_event_name: 'UserPromptSubmit', session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', turn_id: 'turn-fresh', cwd: workspace, permission_mode: 'acceptEdits' }]),
+    }), { expectedRoot });
     assert.equal(evidence.continuationSpawnCount, 0);
     assert.equal(evidence.peerResumeChecked, true);
   }
@@ -1565,6 +1581,16 @@ function pathWithin(root, path) {
   return descendant === '' || descendant !== '..' && !descendant.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(descendant);
 }
 
+async function recursiveFiles(directory, found = []) {
+  let entries; try { entries = await readdir(directory, { withFileTypes: true }); } catch { return found; }
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) await recursiveFiles(path, found);
+    else if (entry.isFile()) found.push(path);
+  }
+  return found;
+}
+
 function unqualified(code, detail) { return `codex-skills-unqualified ${JSON.stringify({ qualified: false, code, detail })}`; }
 function observation(code, qualificationScope, detail) { return `codex-skills-observation ${JSON.stringify({ observed: false, code, qualificationScope, detail })}`; }
 function markUnqualified(t, message) { if (qualificationRequired) assert.fail(message); t.skip(message); }
@@ -1686,11 +1712,11 @@ function installedChoiceYieldFixture() {
   ]] };
 }
 
-function installedPreparedContinuationCapture(route) {
+function installedPreparedContinuationCapture(route, overrides = {}) {
   const childThreadId = '019fe6e0-4764-7192-83ba-0b0cc2c48660';
   const parentSessionId = '019fe6df-faa2-7851-8edb-55f1be7d5489';
   const message = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage;
-  const workspace = '/repo'; const anchorJobId = 'a'.repeat(64); const currentJobId = 'c'.repeat(64);
+  const workspace = overrides.workspace ?? '/repo'; const anchorJobId = 'a'.repeat(64); const currentJobId = 'c'.repeat(64);
   const binding = createRescueBinding({ parentSessionId, executorAgentId: childThreadId, executorAgentType: route === 'named' ? 'zcode-rescue' : 'default',
     executorParentTurnId: 'turn-original', executorParentPermissionMode: 'acceptEdits', workspace, permissionMode: 'acceptEdits',
     anchorJobId, currentJobId, operationId: 'd'.repeat(64), now: '2026-08-10T00:00:00.000Z' });
@@ -1700,11 +1726,15 @@ function installedPreparedContinuationCapture(route) {
     { ...installedToolOutput('prepare-1', { output: 'prepared\n', exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
     { type: 'response_item', timestamp: '2026-08-10T00:00:01.000Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ task_name: 'zcode_rescue_continue', message, fork_turns: 'none', ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_continue', parent_turn_id: 'turn-original' } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ agent_id: childThreadId }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_continue', parent_turn_id: 'turn-original' } },
     { ...installedToolCall('prepare-2', installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue')), timestamp: '2026-08-10T00:00:06.000Z' },
     { ...installedToolOutput('prepare-2', { output: 'prepared\n', exit_code: 0 }), timestamp: '2026-08-10T00:00:07.000Z' },
     { type: 'response_item', timestamp: '2026-08-10T00:00:08.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childThreadId, message }) } },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:09.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: 'accepted' } },
   ];
+  for (const event of parent.slice(1, 7)) event.turn_id = 'turn-original';
+  for (const event of parent.slice(7)) event.turn_id = 'turn-fresh';
   const command = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-prepared rescue';
   const child = [
     { type: 'session_meta', payload: { id: childThreadId, parent_thread_id: parentSessionId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentSessionId, agent_path: '/root/zcode_rescue_continue', agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
@@ -1712,16 +1742,17 @@ function installedPreparedContinuationCapture(route) {
     installedToolCall('invoke-2', installedExecInput(command)), installedToolOutput('invoke-2', { output: 'continued\n', exit_code: 0 }),
   ];
   child[1].timestamp = '2026-08-10T00:00:03.000Z'; child[2].timestamp = '2026-08-10T00:00:04.000Z'; child[3].timestamp = '2026-08-10T00:00:10.000Z'; child[4].timestamp = '2026-08-10T00:00:11.000Z';
+  child[1].turn_id = child[2].turn_id = 'invoke-original'; child[3].turn_id = child[4].turn_id = 'invoke-continuation';
   return {
     route, execution: 'foreground', expected: { parentSessionId, childThreadId, agentPath: '/root/zcode_rescue_continue', workspace,
       permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-fresh' },
     parentRolloutJson: JSON.stringify(parent), childRolloutJson: JSON.stringify(child),
-    hookLifecycleJson: JSON.stringify([
+    hookLifecycleJson: overrides.hookLifecycleJson ?? JSON.stringify([
       { hook_event_name: 'SubagentStart', session_id: parentSessionId, turn_id: 'child-turn', cwd: workspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },
       { hook_event_name: 'SubagentStop', session_id: parentSessionId, turn_id: 'child-turn', cwd: workspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },
       { hook_event_name: 'UserPromptSubmit', session_id: parentSessionId, turn_id: 'turn-fresh', cwd: workspace, permission_mode: 'acceptEdits' },
     ]),
-    executorRecordBytes: `${JSON.stringify({ kind: 'subagent-executor', agentId: childThreadId, agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', workspace, active: false, createdAt: '2026-08-08T00:00:00.000Z' })}\n`,
+    executorRecordBytes: overrides.executorRecordBytes ?? `${JSON.stringify({ kind: 'subagent-executor', agentId: childThreadId, agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', workspace, active: false, createdAt: '2026-08-08T00:00:00.000Z' })}\n`,
     bindingAuthorityBytes: `${JSON.stringify(createRescueBindingAuthority({ parentSessionId, workspace, createdAt: '2026-08-10T00:00:00.000Z' }))}\n`,
     bindingPartitionBytes: `${JSON.stringify(createRescueBindingPartition({ parentSessionId, workspace, records: [binding] }))}\n`,
     jobsJson: JSON.stringify([{ id: anchorJobId, status: 'succeeded', zcodeSessionId: 'zcode-session-original' }, { id: currentJobId, status: 'succeeded', zcodeSessionId: null }]),
