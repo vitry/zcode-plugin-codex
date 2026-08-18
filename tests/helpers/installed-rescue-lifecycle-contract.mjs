@@ -5,7 +5,7 @@ import { isAbsolute, win32 } from 'node:path';
 import { expectedGenericRescueMessage } from './rescue-skill-contract.mjs';
 
 const markers = [
-  ['foreground owner', 'Exactly one `exec_command` companion process may own the foreground Rescue execution'],
+  ['foreground owner', 'Each exact assignment and child turn may start at most one mapped foreground `exec_command` companion process.'],
   ['terminal exit', 'A companion result containing an exit code is terminal.'],
   ['relay start', 'For every result yielded by the original foreground handle'],
   ['relay validation', 'Before relay, require JSON with exact keys'],
@@ -20,7 +20,7 @@ const markers = [
   ['terminal return', "Return only the original foreground execution's terminal public stdout. Never substitute relay output, status output, intermediate output, or child-authored text."],
 ];
 
-const initialCommand = 'invoke rescue';
+const initialCommand = 'invoke-prepared rescue';
 const routeOpenings = Object.freeze({
   named: 'You are the installed ZCode Rescue forwarder.',
   generic: 'Act only as the installed ZCode Rescue forwarder.',
@@ -29,13 +29,9 @@ const canonicalPrivacy = 'Never relay detailed `[zcode]` lines, arbitrary stderr
 const canonicalTerminalTail = 'Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output.';
 const canonicalChoiceTerminal = 'A needs-choice response with exit code 3 is terminal for the current child turn.';
 const genericCanonicalLines = expectedGenericRescueMessage.split('\n');
-const canonicalRelay = genericCanonicalLines[4];
-const canonicalPhasePairs = genericCanonicalLines[5];
 const canonicalNamedTerminal = 'A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.';
-const canonicalStatusTail = 'Return its bounded status to that requesting child transcript, then resume polling the same original handle. Reject status arguments and every other spelling. Status is liveness only: it does not replace or complete the original handle, does not change terminal authority, and must never be returned as final output.';
-const canonicalTerminalReturn = markers.at(-1)[1];
-const canonicalNamedRoleDigest = 'e8e72753cefba759de6e5cc5eab68f413db01137515ffd2f1a01efa274665dcf';
-const companionCommandLine = /^node "(?<root>[^"\r\n]{1,2048})\/scripts\/zcode-companion\.mjs" (?<command>invoke rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
+const canonicalNamedRoleDigest = 'a763d0d3526910bf3dbf4470bc55a1870360d7ee03accf45d435b5fbc24e7d5a';
+const companionCommandLine = /^node "(?<root>[^"\r\n]{1,2048})\/scripts\/zcode-companion\.mjs" (?<command>invoke-prepared rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
 
 export function installedCanonicalContradictionMutations(source, route) {
   const privacyBoundary = route === 'named' ? '\n\nWhile the original foreground handle' : '\nWhile the original foreground handle';
@@ -61,7 +57,7 @@ export function installedCommandPathMutations(source) {
     ['uniform wrong root', source.replaceAll(root, wrongRoot)],
     ['divergent root', replaceLastInstalledLifecycleMarker(source, root, wrongRoot)],
     ['quote and argument injection', source.replaceAll(root, `${root}" --inspect "`)],
-    ['appended companion option', source.replace('invoke rescue', 'invoke rescue --detail')],
+    ['appended companion option', source.replace('invoke-prepared rescue', 'invoke-prepared rescue --detail')],
     ['control in root', source.replaceAll(root, `${root}\tunsafe`)],
     ['newline in root', source.replaceAll(root, `${root}\nunsafe`)],
   ];
@@ -133,7 +129,7 @@ function assertExactCommandPaths(source, expectedRoot, prefix) {
   assert.ok(commands.every((match) => match.groups.root === encodedExpectedRoot),
     `${prefix} trusted expected root and exact argv must match every renderer-substituted command root`);
   assert.deepEqual(new Set(commands.map((match) => match.groups.command)), new Set([
-    'invoke rescue', 'invoke-status rescue', 'invoke-choice rescue resume', 'invoke-choice rescue fresh',
+    'invoke-prepared rescue', 'invoke-status rescue', 'invoke-choice rescue resume', 'invoke-choice rescue fresh',
   ]), `${prefix} trusted expected root and exact argv must retain all four fixed companion commands`);
   return source.replace(companionCommandLine,
     (_line, _root, command) => `node "{{PLUGIN_ROOT}}/scripts/zcode-companion.mjs" ${command}`);
@@ -143,15 +139,6 @@ function assertCanonicalOperativeRoute(source, normalized, route, prefix) {
   if (route === 'generic') {
     assert.equal(source, expectedGenericRescueMessage, `${prefix} exact canonical operative route must remain byte-for-byte fixed`);
     return;
-  }
-  const exactSegments = [
-    `${canonicalNamedTerminal}\n\n${canonicalRelay}`,
-    `${canonicalRelay}\n${canonicalPhasePairs}\n\n${canonicalPrivacy}\n\nWhile the original foreground handle`,
-    `${canonicalStatusTail}\n\nFor the exact initial assignment`,
-    `invoke-choice rescue fresh\n\n${canonicalTerminalReturn}`,
-  ];
-  for (const segment of exactSegments) {
-    assert.equal(occurrences(source, segment), 1, `${prefix} exact canonical operative route must preserve complete privacy and terminal-authority paragraphs with strict adjacency`);
   }
   assert.equal(createHash('sha256').update(normalized).digest('hex'), canonicalNamedRoleDigest,
     `${prefix} exact canonical operative route must match the independent normalized managed Role digest`);

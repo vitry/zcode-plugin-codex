@@ -172,7 +172,7 @@ test('pending invocation choices preserve the exact originating turn, workspace,
   const { createInvocationStore } = await import('../scripts/lib/invocation.mjs');
   const pending = createInvocationStore({ dataRoot });
   const now = new Date('2026-08-04T00:00:00.000Z');
-  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] }, now });
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', source: 'proactive', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] }, now });
   await assert.rejects(
     pending.consumePending({ sessionId: 'session-b', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child', now }),
     (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_NOT_FOUND' && error.remedy === 'Repeat the original command in this Codex thread.',
@@ -184,6 +184,7 @@ test('pending invocation choices preserve the exact originating turn, workspace,
   await assert.rejects(pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'sibling-child', now }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
   assert.deepEqual(await pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child', now }), {
     argv: ['rescue', '--resume', 'literal task'],
+    source: 'proactive',
     caller: { sessionId: 'session-a', turnId: 'turn-a', workspace: await realpath(workspaceA), permissionMode: 'workspace-write' },
   });
   await assert.rejects(
@@ -214,12 +215,25 @@ test('legacy pending Rescue without an executor binding is atomically rejected a
   const pending = createInvocationStore({ dataRoot });
   await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] } });
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory);
-  const legacy = JSON.parse(await readFile(join(directory, name), 'utf8')); delete legacy.executorAgentId; await atomicWriteJson(join(directory, name), legacy);
+  const legacy = JSON.parse(await readFile(join(directory, name), 'utf8')); delete legacy.version; delete legacy.source; delete legacy.executorAgentId; await atomicWriteJson(join(directory, name), legacy);
   await assert.rejects(
     pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child' }),
     (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_INCOMPATIBLE' && /Repeat the original Rescue command/.test(error.remedy),
   );
   await assert.rejects(pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+});
+
+test('legacy executor-bound pending Rescue without source remains explicit', async () => {
+  const { dataRoot, workspaceA } = await fixture();
+  const { createInvocationStore } = await import('../scripts/lib/invocation.mjs');
+  const pending = createInvocationStore({ dataRoot });
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', source: 'proactive', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] } });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory);
+  const legacy = JSON.parse(await readFile(join(directory, name), 'utf8')); delete legacy.version; delete legacy.source; await atomicWriteJson(join(directory, name), legacy);
+  assert.deepEqual(await pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', executorAgentId: 'rescue-child' }), {
+    argv: ['rescue', '--fresh', 'literal task'], source: 'explicit',
+    caller: { sessionId: 'session-a', turnId: 'turn-a', workspace: await realpath(workspaceA), permissionMode: 'workspace-write' },
+  });
 });
 
 test('ending an active turn does not hide corrupted private identity state', async () => {

@@ -249,15 +249,29 @@ test('conversation compatibility progress never parses raw session logs or synth
   assert.doesNotMatch(readFileSync(new URL('scripts/lib/session-progress.mjs', root), 'utf8'), /v4\/conversation\/frame/, 'session fallback must not synthesize conversation frames');
 });
 
-test('marketplace runtime mirrors the progress compatibility implementation byte for byte', () => {
+test('marketplace mirrors every critical prepared Rescue source byte for byte', () => {
   for (const relativePath of [
+    'CHANGELOG.md',
+    'README.md',
+    'README.zh-CN.md',
+    'SECURITY.md',
+    'agents/zcode-rescue.toml.template',
+    'hooks/hooks.json',
+    'hooks/session-end-hook.mjs',
+    'hooks/session-lifecycle-hook.mjs',
+    'hooks/stop-review-gate-hook.mjs',
+    'hooks/subagent-hook.mjs',
+    'hooks/user-prompt-hook.mjs',
     'scripts/lib/conversation-progress.mjs',
+    'scripts/lib/invocation.mjs',
     'scripts/lib/progress.mjs',
+    'scripts/lib/rescue-preparation.mjs',
     'scripts/lib/render.mjs',
     'scripts/lib/review.mjs',
     'scripts/lib/session-progress.mjs',
     'scripts/lib/state.mjs',
     'scripts/zcode-companion.mjs',
+    'skills/rescue/SKILL.md',
   ]) {
     const source = readFileSync(new URL(relativePath, root));
     const marketplace = readFileSync(new URL(`marketplace/plugins/zcode/${relativePath}`, root));

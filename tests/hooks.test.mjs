@@ -14,6 +14,7 @@ import { createManagedZCodeClient, createZCodeClient, releaseManagedZCodeOwner }
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
+import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { cleanupSession, resolveForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -534,6 +535,58 @@ test('Stop suppresses continuation, forwarding and external sessions before star
   await runHook('session-lifecycle-hook.mjs', { session_id: 'parent', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env); const prompt = { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'x' }; await runHook('user-prompt-hook.mjs', prompt, env); await writeFile(join(cwd, 'tracked.txt'), 'changed\n');
   const stop = { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'Stop', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', stop_hook_active: true, last_assistant_message: 'done' }; const continuation = await runHook('stop-review-gate-hook.mjs', stop, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: record }); assert.deepEqual(continuation.json, {});
   await runHook('subagent-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', agent_id: 'agent', agent_type: 'zcode-rescue' }, env); const forwarding = await runHook('stop-review-gate-hook.mjs', { ...stop, stop_hook_active: false }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: record }); assert.deepEqual(forwarding.json, {}); assert.equal(await readFile(record, 'utf8'), '');
+});
+
+test('prompt, Root Stop, and SessionEnd clean only their exact prepared Rescue lifecycle', async (t) => {
+  await t.test('new top-level prompt removes only older turns in the same session and workspace', async () => {
+    const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); const prepared = createRescuePreparationStore({ dataRoot: data });
+    for (const sessionId of ['owner', 'sibling']) await runHook('session-lifecycle-hook.mjs', { session_id: sessionId, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+    await identity.beginCallerTurn({ sessionId: 'owner', turnId: 'old-turn', workspace: cwd, permissionMode: 'default', prompt: 'old proactive objective' });
+    await prepared.save({ sessionId: 'owner', turnId: 'old-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: 'old proactive objective', envelope: { version: 1, source: 'proactive', task: 'old objective', options: {} } });
+    await identity.beginCallerTurn({ sessionId: 'sibling', turnId: 'sibling-turn', workspace: cwd, permissionMode: 'default', prompt: 'sibling proactive objective' });
+    await prepared.save({ sessionId: 'sibling', turnId: 'sibling-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: 'sibling proactive objective', envelope: { version: 1, source: 'proactive', task: 'sibling objective', options: {} } });
+    const submitted = await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 'new-turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'new prompt' }, env);
+    assert.equal(submitted.code, 0, submitted.stderr);
+    await assert.rejects(prepared.consume({ sessionId: 'owner', turnId: 'old-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
+    assert.equal((await prepared.consume({ sessionId: 'sibling', turnId: 'sibling-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'sibling-child' })).envelope.task, 'sibling objective');
+  });
+
+  await t.test('storage-level cleanup failure does not mint a new active caller turn', async () => {
+    const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd });
+    await runHook('session-lifecycle-hook.mjs', { session_id: 'cleanup-failure-owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+    await mkdir(join(storage.directory, 'invocations'), { recursive: true }); await writeFile(join(storage.directory, 'invocations', 'prepared'), 'unsafe non-directory');
+    const submitted = await runHook('user-prompt-hook.mjs', { session_id: 'cleanup-failure-owner', turn_id: 'must-not-mint', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'private prompt bytes' }, env);
+    assert.notEqual(submitted.code, 0); assert.match(submitted.stderr, /ZCode prompt hook failed safely:/); assert.doesNotMatch(submitted.stderr, /private prompt bytes|must-not-mint|cleanup-failure-owner/);
+    await assert.rejects(identity.resolveActiveTurn({ sessionId: 'cleanup-failure-owner', workspace: cwd }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+  });
+
+  await t.test('Root Stop deletes its exact preparation while a forwarding Stop preserves the parent preparation', async () => {
+    const { cwd, data, env } = await workspace(); const prepared = createRescuePreparationStore({ dataRoot: data });
+    await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+    const prompt = { session_id: 'owner', turn_id: 'root-turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'root proactive objective' };
+    await runHook('user-prompt-hook.mjs', prompt, env);
+    await prepared.save({ sessionId: 'owner', turnId: 'root-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: prompt.prompt, envelope: { version: 1, source: 'proactive', task: 'root objective', options: {} } });
+    const stopped = await runHook('stop-review-gate-hook.mjs', { ...stopFields(prompt), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, env);
+    assert.equal(stopped.code, 0, stopped.stderr);
+    await assert.rejects(prepared.consume({ sessionId: 'owner', turnId: 'root-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
+
+    const forwardingPrompt = { ...prompt, turn_id: 'forwarding-turn', prompt: 'forwarding proactive objective' }; await runHook('user-prompt-hook.mjs', forwardingPrompt, env);
+    await prepared.save({ sessionId: 'owner', turnId: 'forwarding-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: forwardingPrompt.prompt, envelope: { version: 1, source: 'proactive', task: 'forwarding objective', options: {} } });
+    await runHook('subagent-hook.mjs', { session_id: 'owner', turn_id: 'forwarding-turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'default', agent_id: 'forward-child', agent_type: 'zcode-rescue' }, env);
+    assert.deepEqual((await runHook('stop-review-gate-hook.mjs', { ...stopFields(forwardingPrompt), hook_event_name: 'Stop', stop_hook_active: true, last_assistant_message: 'done' }, env)).json, {});
+    assert.equal((await prepared.consume({ sessionId: 'owner', turnId: 'forwarding-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'forward-child' })).envelope.task, 'forwarding objective');
+  });
+
+  await t.test('SessionEnd removes one session without touching its sibling', async () => {
+    const { cwd, data, env } = await workspace(); const prepared = createRescuePreparationStore({ dataRoot: data });
+    for (const sessionId of ['owner', 'sibling']) {
+      await prepared.save({ sessionId, turnId: `${sessionId}-turn`, workspace: cwd, permissionMode: 'default', recordedPrompt: `${sessionId} proactive objective`, envelope: { version: 1, source: 'proactive', task: `${sessionId} objective`, options: {} } });
+    }
+    const ended = await runHook('session-end-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
+    assert.equal(ended.code, 0, ended.stderr);
+    await assert.rejects(prepared.consume({ sessionId: 'owner', turnId: 'owner-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
+    assert.equal((await prepared.consume({ sessionId: 'sibling', turnId: 'sibling-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'sibling-child' })).envelope.task, 'sibling objective');
+  });
 });
 
 test('Stop gate skips unchanged and atomically consumes exact changed baseline', async () => {

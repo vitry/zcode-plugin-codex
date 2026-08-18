@@ -497,7 +497,7 @@ test('installed named and generic foreground and choice policies independently b
   }
 });
 
-test('installed named and generic routes independently execute captured Codex 0.147 foreground rollouts', async () => {
+test('synthetic captured qualification fixtures cover named and generic Codex 0.147 foreground rollouts', async () => {
   const routes = await installedCapturedRescueRoutes();
   for (const route of routes) {
     const evidence = qualifyInstalledCapturedForeground(route);
@@ -515,7 +515,38 @@ test('installed named and generic routes independently execute captured Codex 0.
   }
 });
 
-test('captured installed route wiring mutations fail only the mutated foreground route', async () => {
+test('synthetic captured qualification fixtures keep proactive clear fresh and resume routes one-shot', async () => {
+  for (const resume of ['fresh', 'resume']) {
+    const routes = await installedCapturedRescueRoutes({ source: 'proactive', options: { execution: 'foreground', resume } });
+    for (const route of routes) {
+      assert.equal(qualifyInstalledCapturedForeground(route).route, route.expectedEvidenceRoute);
+      assert.deepEqual(JSON.parse(route.preparationPayload), {
+        version: 1,
+        source: 'proactive',
+        task: `repair captured ${route.name} route`,
+        options: { execution: 'foreground', resume },
+      });
+      const emittedNeedsChoice = route.fixture.rollouts.flat().some((event) => event?.payload?.type === 'custom_tool_call_output'
+        && JSON.stringify(event.payload.output).includes('"type":"needs-choice"'));
+      assert.equal(emittedNeedsChoice, false);
+      assert.equal(route.fixture.rollouts[0].some((event) => event?.payload?.name === 'followup_task'), false);
+    }
+  }
+});
+
+test('synthetic captured qualification fixtures cover named and generic background routes', async () => {
+  const routes = await installedCapturedRescueRoutes({ options: { execution: 'background', resume: 'fresh' } });
+  for (const route of routes) {
+    const background = installedCapturedBackgroundRoute(route);
+    const evidence = qualifyInstalledCapturedBackground(background);
+    assert.equal(evidence.route, route.expectedEvidenceRoute);
+    assert.equal(evidence.jobId, background.jobId);
+    assert.equal(evidence.capabilityChecked, true);
+    assert.equal(installedCapturedRunningHandles(background.fixture).size, 0);
+  }
+});
+
+test('synthetic captured qualification wiring mutations fail only the mutated foreground route', async () => {
   const routes = await installedCapturedRescueRoutes();
   for (const route of routes) {
     const other = routes.find((candidate) => candidate !== route);
@@ -530,7 +561,7 @@ test('captured installed route wiring mutations fail only the mutated foreground
   }
 });
 
-test('installed named and generic routes independently execute both captured choice segments', async () => {
+test('synthetic captured qualification fixtures cover both named and generic choice segments', async () => {
   const routes = await installedCapturedRescueRoutes();
   for (const route of routes) {
     for (const requested of ['resume', 'fresh']) {
@@ -675,8 +706,10 @@ test('installed Rescue uses one isolated native child for initial and choice con
   assert.equal(rescue.code, 0, `codex Rescue failed\n${rescue.stdout}\n${rescue.stderr}`);
   assert.equal(processAliveWhileHeld, true, 'the exact fake-ZCode process must remain alive beyond the maximum initial host yield');
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  const expectedCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke rescue`;
+  const expectedCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-prepared rescue`;
   const expectedPreflightCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" role-status rescue`;
+  const expectedPreparationCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" prepare rescue`;
+  const expectedPreparationPayload = JSON.stringify({ version: 1, source: 'explicit', task: 'repaircanary', options: { execution: 'foreground', resume: 'fresh' } });
   const expectedStatusCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-status rescue`;
   const expectedNamedSpawnMessage = expectedNamedRescueMessage;
   const expectedGenericSpawnMessage = expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', installedPluginRoot);
@@ -691,6 +724,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
         expectedWorkspace: canonicalWorkspace,
         expectedCommand,
         expectedPreflightCommand,
+        expectedPreparationCommand,
+        expectedPreparationPayload,
         expectedNamedSpawnMessage,
         expectedGenericSpawnMessage,
         expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
@@ -782,6 +817,8 @@ test('installed Rescue uses one isolated native child for initial and choice con
           expectedChoiceCommand: choiceCommand,
           expectedFollowupMessage: followupMessage,
           expectedPreflightCommand,
+          expectedPreparationCommand,
+          expectedPreparationPayload,
           expectedPublicOutput: 'ZCODE_RESCUE_PUBLIC_SENTINEL_7C9C',
           includeExecutionFacts: true,
           requireProgressRelay: true,
@@ -1590,7 +1627,7 @@ function installedYieldedCommandPairs(rollouts, command) {
 
 function installedChoiceYieldFixture() {
   const childThreadId = 'installed-choice-child';
-  const commands = { initial: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke rescue', continuation: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue resume', status: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-status rescue' };
+  const commands = { initial: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-prepared rescue', continuation: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue resume', status: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-status rescue' };
   const segment = (name, command, handle, exitCode) => [
     installedToolCall(`${name}-exec`, installedExecInput(command)), installedToolOutput(`${name}-exec`, { output: 'partial\n', session_id: handle }),
     ...(name === 'initial' ? [installedToolCall('initial-status', installedExecInput(commands.status)), installedToolOutput('initial-status', { output: '{"type":"rescue-status"}\n', exit_code: 0 })] : []),
@@ -1605,7 +1642,7 @@ function installedChoiceYieldFixture() {
   ]] };
 }
 
-async function installedCapturedRescueRoutes() {
+async function installedCapturedRescueRoutes(config = {}) {
   const installedRoot = '/captured/installed/zcode';
   const installedSnapshot = join(root, 'marketplace', 'plugins', 'zcode');
   const namedTemplate = extractInstalledRoleInstructions(await readFile(join(installedSnapshot, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
@@ -1618,17 +1655,19 @@ async function installedCapturedRescueRoutes() {
   // The generic template itself is the spawn assignment; rendering is verified by
   // the fixed command evidence and exact expected spawn message below.
   return [
-    installedCapturedRescueRoute('named', namedPolicy, expectedNamedRescueMessage, installedRoot),
-    installedCapturedRescueRoute('generic', genericPolicy, genericPolicy, installedRoot),
+    installedCapturedRescueRoute('named', namedPolicy, expectedNamedRescueMessage, installedRoot, config),
+    installedCapturedRescueRoute('generic', genericPolicy, genericPolicy, installedRoot, config),
   ];
 }
 
-function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, installedRoot) {
+function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, installedRoot, config = {}) {
   const parentThreadId = name === 'named' ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222';
   const childThreadId = name === 'named' ? '33333333-3333-4333-8333-333333333333' : '44444444-4444-4444-8444-444444444444';
   const taskName = `zcode_rescue_captured_${name}`; const agentPath = `/root/${taskName}`;
-  const command = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke rescue`;
+  const command = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-prepared rescue`;
   const preflightCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" role-status rescue`;
+  const preparationCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" prepare rescue`;
+  const preparationPayload = JSON.stringify({ version: 1, source: config.source ?? 'explicit', task: config.task ?? `repair captured ${name} route`, options: config.options ?? { execution: 'foreground', resume: 'fresh' } });
   const statusCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-status rescue`;
   for (const expected of [command, statusCommand,
     `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue resume`,
@@ -1661,8 +1700,12 @@ function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, instal
   ];
   const parent = [
     { type: 'session_meta', payload: { session_id: parentThreadId, id: parentThreadId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
-    installedToolCall(`${name}-preflight`, installedCapturedLegacyExecInput(preflightCommand)),
-    installedCapturedLegacyOutput(`${name}-preflight`, `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+    installedToolCall(`${name}-preflight`, installedExecInput(preflightCommand)),
+    installedToolOutput(`${name}-preflight`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }),
+    installedToolCall(`${name}-prepare`, installedExecInput(preparationCommand, { tty: true })),
+    installedToolOutput(`${name}-prepare`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: name === 'named' ? 171 : 181 }),
+    installedToolCall(`${name}-prepare-write`, installedPreparationInput(name === 'named' ? 171 : 181, `${preparationPayload}\n`)),
+    installedToolOutput(`${name}-prepare-write`, { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }),
     { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: `${name}-spawn`, arguments: JSON.stringify(spawnArgs) } },
     { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: `${name}-spawn`, agent_thread_id: childThreadId, agent_path: agentPath, kind: 'started' } },
     installedCapturedParentRelay(agentPath, 'started', name === 'named' ? 'a' : 'c', name === 'named' ? 'a' : 'c'),
@@ -1684,18 +1727,55 @@ function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, instal
     { type: 'item.completed', item: { id: `${name}-final`, type: 'agent_message', text: publicOutput } },
     { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 10, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 5 } },
   ], rollouts: [parent, child] };
-  return { name, fixture, expectedEvidenceRoute: name === 'named' ? 'named' : 'generic-schema-hidden', installedRoot, renderedPolicy, command, preflightCommand, statusCommand, spawnMessage, publicOutput, semantic };
+  return { name, fixture, expectedEvidenceRoute: name === 'named' ? 'named' : 'generic-schema-hidden', installedRoot, renderedPolicy, command, preflightCommand, preparationCommand, preparationPayload, statusCommand, spawnMessage, publicOutput, semantic };
 }
 
 function qualifyInstalledCapturedForeground(route) {
   return qualifyCodexRescueEvidence(route.fixture, {
     expectedAgentType: 'zcode-rescue', expectedWorkspace: '/installed/workspace', expectedCommand: route.command,
     expectedPreflightCommand: route.preflightCommand, expectedNamedSpawnMessage: expectedNamedRescueMessage,
+    expectedPreparationCommand: route.preparationCommand, expectedPreparationPayload: route.preparationPayload,
     expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
     expectedPublicOutput: route.publicOutput, expectedSemanticProgress: route.semantic,
     requireYieldedExecution: true, requireProgressRelay: true, requireStatusSidecar: true, expectedStatusCommand: route.statusCommand,
     statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
     forbiddenParentText: [route.semantic.start, route.semantic.terminal, 'raw output must stay private', 'reasoning must stay private'],
+  });
+}
+
+function installedCapturedBackgroundRoute(route) {
+  const jobId = (route.name === 'named' ? 'a' : 'b').repeat(64);
+  const publicOutput = `Reserved background job ${jobId}.`;
+  const fixture = JSON.parse(JSON.stringify(route.fixture).replaceAll(route.publicOutput, publicOutput));
+  const child = fixture.rollouts[1];
+  const commandCall = child.find((event) => event?.payload?.type === 'custom_tool_call'
+    && event.payload.call_id === `${route.name}-exec`);
+  commandCall.payload.input = `const r = await tools.exec_command({cmd:${JSON.stringify(route.command)},workdir:"/installed/workspace"});\ntext(r.output);\n`;
+  const commandOutput = child.find((event) => event?.payload?.type === 'custom_tool_call_output'
+    && event.payload.call_id === `${route.name}-exec`);
+  commandOutput.payload.output = [{ type: 'input_text', text: `${publicOutput}\n` }];
+  fixture.rollouts[1] = [child[0], commandCall, commandOutput, child.at(-1)];
+  return {
+    ...route,
+    fixture,
+    jobId,
+    privateExecutionCapability: `private-background-capability-${route.name}`,
+    publicOutput,
+  };
+}
+
+function qualifyInstalledCapturedBackground(route) {
+  return qualifyCodexRescueBackgroundEvidence(route.fixture, {
+    expectedJobId: route.jobId,
+    privateExecutionCapability: route.privateExecutionCapability,
+    publicLogs: ['captured public background log'],
+    expectedAgentType: 'zcode-rescue', expectedWorkspace: '/installed/workspace', expectedCommand: route.command,
+    expectedPreflightCommand: route.preflightCommand, expectedNamedSpawnMessage: expectedNamedRescueMessage,
+    expectedPreparationCommand: route.preparationCommand, expectedPreparationPayload: route.preparationPayload,
+    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
+    expectedSemanticProgress: undefined,
+    statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
+    forbiddenParentText: ['raw output must stay private', 'reasoning must stay private'],
   });
 }
 
@@ -1732,8 +1812,12 @@ function installedCapturedChoiceRoute(route, choice) {
   const secondEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${route.publicOutput}`;
   const parent = [
     structuredClone(route.fixture.rollouts[0][0]),
-    installedToolCall(`${route.name}-choice-preflight`, installedCapturedLegacyExecInput(route.preflightCommand)),
-    installedCapturedLegacyOutput(`${route.name}-choice-preflight`, `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+    installedToolCall(`${route.name}-choice-preflight`, installedExecInput(route.preflightCommand)),
+    installedToolOutput(`${route.name}-choice-preflight`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }),
+    installedToolCall(`${route.name}-choice-prepare`, installedExecInput(route.preparationCommand, { tty: true })),
+    installedToolOutput(`${route.name}-choice-prepare`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: route.name === 'named' ? 191 : 192 }),
+    installedToolCall(`${route.name}-choice-prepare-write`, installedPreparationInput(route.name === 'named' ? 191 : 192, `${route.preparationPayload}\n`)),
+    installedToolOutput(`${route.name}-choice-prepare-write`, { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }),
     spawn, start,
     installedCapturedParentRelay(agentPath, 'started', route.name === 'named' ? 'e' : '1', route.name === 'named' ? 'e' : '1'),
     ...installedCapturedWait(`${route.name}-initial-wait`, false),
@@ -1747,13 +1831,22 @@ function installedCapturedChoiceRoute(route, choice) {
     { type: 'event_msg', payload: { type: 'agent_message', message: route.publicOutput, phase: 'final_answer' } },
   ];
   const child = [childMeta, ...initial, ...continuation];
+  const parentReturns = parent.filter((event) => event?.payload?.author === agentPath
+    && event.payload.content?.[0]?.type === 'input_text'
+    && event.payload.content[0].text.startsWith('Message Type: FINAL_ANSWER\n'));
+  const parentFinals = parent.filter((event) => event?.payload?.phase === 'final_answer');
+  const followup = parent.find((event) => event?.payload?.name === 'followup_task');
+  const followupOutput = parent.find((event) => event?.payload?.type === 'function_call_output' && event.payload.call_id === followup.payload.call_id);
   const timeline = [
-    initial[0], initial.at(-2), initial.at(-1), parent[8], parent[9], parent[10], parent[11],
-    continuation[0], continuation.at(-2), continuation.at(-1), parent.at(-2), parent.at(-1),
+    initial[0], initial.at(-2), initial.at(-1), parentReturns[0], parentFinals[0], followup, followupOutput,
+    continuation[0], continuation.at(-2), continuation.at(-1), parentReturns[1], parentFinals[1],
   ];
   timeline.forEach((event, index) => { event.timestamp = `2026-08-17T01:00:${String(index + 1).padStart(2, '0')}.000Z`; });
-  initial[2].timestamp = '2026-08-17T01:00:01.100Z'; parent[5].timestamp = '2026-08-17T01:00:01.200Z';
-  continuation[2].timestamp = '2026-08-17T01:00:08.100Z'; parent[12].timestamp = '2026-08-17T01:00:08.200Z';
+  const parentRelays = parent.filter((event) => event?.payload?.content?.some((item) => item?.type === 'encrypted_content'));
+  initial[2].timestamp = '2026-08-17T01:00:01.100Z';
+  parentRelays[0].timestamp = '2026-08-17T01:00:01.200Z';
+  continuation[2].timestamp = '2026-08-17T01:00:08.100Z';
+  parentRelays[1].timestamp = '2026-08-17T01:00:08.200Z';
   return { ...route, fixture: { rollouts: [parent, child] }, parentThreadId, childThreadId, choice, choiceCommand, followupMessage,
     commands: { initial: route.command, continuation: choiceCommand, status: route.statusCommand } };
 }
@@ -1765,6 +1858,7 @@ function qualifyInstalledCapturedChoice(route) {
     expectedNamedSpawnMessage: expectedNamedRescueMessage,
     expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
     expectedPreflightCommand: route.preflightCommand, expectedFollowupMessage: route.followupMessage,
+    expectedPreparationCommand: route.preparationCommand, expectedPreparationPayload: route.preparationPayload,
     expectedPublicOutput: route.publicOutput, requireProgressRelay: true, requireStatusSidecar: true,
     expectedStatusCommand: route.statusCommand, includeExecutionFacts: true,
     statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
@@ -1779,7 +1873,7 @@ function installedCapturedRunningHandles(fixture) {
     for (const event of events.filter((candidate) => candidate?.payload?.type === 'custom_tool_call')) {
       let call; let result;
       try { call = parseInstalledToolInput(event.payload.input); result = parseInstalledHostOutput(outputs.get(event.payload.call_id)); } catch { continue; }
-      if (call.kind === 'exec_command' && / invoke rescue$/u.test(call.value.cmd) && Number.isSafeInteger(result.session_id)) active.add(result.session_id);
+      if (call.kind === 'exec_command' && / invoke-prepared rescue$/u.test(call.value.cmd) && Number.isSafeInteger(result.session_id)) active.add(result.session_id);
       if (call.kind === 'write_stdin' && Object.hasOwn(result, 'exit_code')) active.delete(call.value.session_id);
     }
   }
@@ -1795,9 +1889,6 @@ function installedCapturedWait(callId, timedOut) { return [
   { type: 'response_item', payload: { type: 'function_call', name: 'wait_agent', call_id: callId, arguments: JSON.stringify({ timeout_ms: 30000 }) } },
   { type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: JSON.stringify({ message: timedOut ? 'Wait timed out.' : 'Wait completed.', timed_out: timedOut }) } },
 ]; }
-function installedCapturedLegacyExecInput(cmd) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace' })});\ntext(r.output);\n`; }
-function installedCapturedLegacyOutput(callId, text) { return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text }] } }; }
-
 function installedChoiceYieldFacts(rollouts, childThreadId, commands) {
   try {
     const child = rollouts.filter((events) => events?.[0]?.payload?.id === childThreadId);
@@ -1844,8 +1935,9 @@ function installedYieldSegmentFacts(events, expectedCommand, statusCommand, expe
 
 function installedToolCall(callId, input) { return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input } }; }
 function installedToolOutput(callId, result) { return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: installedHostOutput(result) } }; }
-function installedExecInput(cmd) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace' })}); text(JSON.stringify(r))\n`; }
+function installedExecInput(cmd, fields = {}) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace', ...fields })}); text(JSON.stringify(r))\n`; }
 function installedPollInput(sessionId) { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 30000 })}); text(JSON.stringify(r))\n`; }
+function installedPreparationInput(sessionId, chars) { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars })}); text(JSON.stringify(r))\n`; }
 function installedHostOutput(result) { return [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }]; }
 function parseInstalledToolInput(source) {
   for (const [kind, prefix] of [['exec_command', 'const r = await tools.exec_command('], ['write_stdin', 'const r = await tools.write_stdin(']]) {

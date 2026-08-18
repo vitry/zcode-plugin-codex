@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
+import { runDirectInvocation } from '../../scripts/zcode-companion.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -147,16 +149,20 @@ test('legacy protected companion calls remain isolated after real hooks stop exp
 test('real prompt hooks keep direct ambient-thread invocation exact in one workspace', async (t) => {
   const ctx = await fixture(t);
   for (const session of [
-    { id: 'session-a', child: 'child-a', turn: 'turn-a', prompt: '$zcode:rescue --fresh --wait repair alpha' },
-    { id: 'session-b', child: 'child-b', turn: 'turn-b', prompt: '$zcode:rescue --fresh --wait repair beta' },
+    { id: 'session-a', child: 'child-a', turn: 'turn-a', task: 'repair alpha', prompt: '$zcode:rescue --fresh --wait repair alpha' },
+    { id: 'session-b', child: 'child-b', turn: 'turn-b', task: 'repair beta', prompt: '$zcode:rescue --fresh --wait repair beta' },
   ]) {
     await hook(ctx, 'session-lifecycle-hook.mjs', { session_id: session.id, cwd: ctx.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' });
     const output = await hook(ctx, 'user-prompt-hook.mjs', { session_id: session.id, turn_id: session.turn, cwd: ctx.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: session.prompt });
     assert.doesNotMatch(JSON.stringify(output), /ZCODE_CALLER_CONTEXT|callerContext/);
+    assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], {
+      cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: session.id },
+      input: Readable.from([`${JSON.stringify({ version: 1, source: 'explicit', task: session.task, options: { execution: 'foreground', resume: 'fresh' } })}\n`]),
+    }), { type: 'prepared', command: 'rescue' });
     await hook(ctx, 'subagent-hook.mjs', { session_id: session.id, turn_id: `${session.turn}-child`, cwd: ctx.workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: session.child, agent_type: 'zcode-rescue' });
   }
-  const a = await child(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'child-a' } });
-  const b = await child(process.execPath, [cli, 'invoke', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'child-b' } });
+  const a = await child(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'child-a' } });
+  const b = await child(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'child-b' } });
   assert.equal(a.code, 0, a.stderr || a.stdout); assert.equal(b.code, 0, b.stderr || b.stdout);
   const jobs = await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace);
   assert.equal(jobs.filter((job) => job.ownerSessionId === 'session-a').length, 1);

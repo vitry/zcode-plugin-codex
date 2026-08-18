@@ -67,6 +67,46 @@ test('release docs explain progress reporting and supported interruption boundar
   assert.match(chinese, /原始 PTY.{0,200}凭据.{0,80}capabilit/is);
 });
 
+test('release docs explain automatic Rescue routing and private prepared rollout', () => {
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  assert.match(english, /explicit `?\$zcode:rescue`?.{0,180}proactive|proactive.{0,180}explicit `?\$zcode:rescue`/is);
+  assert.match(english, /automatic routing.{0,120}no `?--auto`?/i);
+  assert.match(english, /private stdin.{0,180}prepared state/is);
+  assert.match(english, /raw-capable TTY[\s\S]+task-free readiness[\s\S]+one JSON line[\s\S]+LF/i);
+  assert.match(english, /readiness[\s\S]+nonterminal[\s\S]+no (?:EOF|U\+0004)/i);
+  assert.match(english, /active `?rescueChildId`?.{0,180}rejoin|rejoin.{0,180}active Rescue child/is);
+  assert.match(english, /task-independent[^\n]+`zcode_rescue_task`/i);
+  assert.doesNotMatch(english, /task-specific native display names/i);
+  assert.match(english, /rerun `?\$zcode:setup`?.{0,180}(?:digest|Role upgrade)|(?:digest|Role upgrade).{0,180}rerun `?\$zcode:setup`?/is);
+  assert.match(chinese, /显式 `?\$zcode:rescue`?.{0,180}主动|主动.{0,180}显式 `?\$zcode:rescue`/is);
+  assert.match(chinese, /自动路由.{0,120}(?:没有|不提供) `?--auto`?/i);
+  assert.match(chinese, /私有 stdin.{0,180}prepared state/is);
+  assert.match(chinese, /raw-capable TTY[\s\S]+不含 task 的 readiness[\s\S]+一行 JSON[\s\S]+LF/i);
+  assert.match(chinese, /readiness[\s\S]+非终态[\s\S]+不发送 (?:EOF|U\+0004)/i);
+  assert.match(chinese, /活动的 `?rescueChildId`?.{0,180}重新加入|重新加入.{0,180}活动的 Rescue child/is);
+  assert.match(chinese, /与任务无关[^\n]+`zcode_rescue_task`/i);
+  assert.doesNotMatch(chinese, /任务相关的原生显示名称/);
+  assert.match(chinese, /重新运行 `?\$zcode:setup`?.{0,180}(?:digest|Role 升级)|(?:digest|Role 升级).{0,180}重新运行 `?\$zcode:setup`?/is);
+});
+
+test('security confines task material to exact single-consume prepared state', () => {
+  const security = read('SECURITY.md');
+  assert.match(security, /task.{0,180}parent.{0,120}write_stdin/is);
+  for (const term of ['session', 'turn', 'workspace', 'executor', 'single consume', 'expiry', 'cleanup']) {
+    assert.match(security, new RegExp(term, 'i'));
+  }
+  assert.match(security, /(?:must not|never)[\s\S]+argv[\s\S]+environment[\s\S]+output[\s\S]+log[\s\S]+artifact[\s\S]+child/i);
+  assert.match(security, /raw mode[\s\S]+before[^\n]+readiness[\s\S]+before[^\n]+task bytes/i);
+  assert.match(security, /tool output[\s\S]+(?:must not|never)[^\n]+payload/i);
+  assert.doesNotMatch(security, /session history cleanup|conversation history cleanup/i);
+  const changelog = read('CHANGELOG.md');
+  assert.match(changelog, /automatic proactive Rescue routing/i);
+  assert.match(changelog, /private stdin.{0,180}prepared state/is);
+  assert.match(changelog, /active-child rejoin/i);
+  assert.match(changelog, /raw TTY readiness[\s\S]+without EOF/i);
+});
+
 test('Unreleased changelog records progress and interruption behavior without a version bump', () => {
   const changelog = read('CHANGELOG.md');
   assert.match(changelog, /foreground activity/i);

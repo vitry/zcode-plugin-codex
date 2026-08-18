@@ -14,9 +14,17 @@ const moduleRoot = fileURLToPath(new URL('..', import.meta.url));
 
 export const REQUIRED_RESCUE_PAYLOAD = Object.freeze([
   'agents/zcode-rescue.toml.template',
+  'skills/rescue/SKILL.md',
+  'scripts/zcode-companion.mjs',
+  'scripts/lib/rescue-preparation.mjs',
   'scripts/lib/conversation-progress.mjs',
   'scripts/lib/managed-agent-role.mjs',
   'scripts/lib/progress.mjs',
+  'hooks/subagent-hook.mjs',
+  'hooks/session-lifecycle-hook.mjs',
+  'hooks/user-prompt-hook.mjs',
+  'hooks/session-end-hook.mjs',
+  'hooks/stop-review-gate-hook.mjs',
 ]);
 
 /** @param {{packageVersion:string,pluginVersion:string,sourceRef:string,sourceSha:string,releaseTag?:string,dependencyLock:{file:string,sha256:string}}} input */

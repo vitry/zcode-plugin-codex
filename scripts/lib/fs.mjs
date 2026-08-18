@@ -128,10 +128,10 @@ export async function readBoundedJsonFile(root, path, maximumBytes, options = {}
     const [pathAfter, parentAfter] = await Promise.all([lstat(path, { bigint: true }), safeContainedDirectoryStats(root, parent)]);
     if (pathAfter.isSymbolicLink() || !pathAfter.isFile() || pathAfter.size > maximumFileSize
       || !handleAfter.isFile() || handleAfter.size > maximumFileSize || !current.isFile() || current.size > maximumFileSize
-      || !sameIdentity(pathBefore, pathAfter) || !sameIdentity(handleBefore, handleAfter)
-      || !sameIdentity(handleBefore, current)
-      || !samePathHandleIdentity(pathBefore, handleBefore, platform)
-      || !samePathHandleIdentity(pathAfter, current, platform)
+      || !sameFileSnapshot(pathBefore, pathAfter) || !sameFileSnapshot(handleBefore, handleAfter)
+      || !sameFileSnapshot(handleBefore, current)
+      || !samePathHandleFileSnapshot(pathBefore, handleBefore, platform)
+      || !samePathHandleFileSnapshot(pathAfter, current, platform)
       || !sameIdentity(parentBefore, parentAfter)) throw unsafePrivatePath(path);
     return JSON.parse(bytes.subarray(0, offset).toString('utf8'));
   } finally { await handle?.close().catch(() => {}); }
@@ -454,13 +454,31 @@ function sameIdentity(left, right) {
  * FileHandle.stat on the same file. The inode remains stable across those two
  * APIs, while the separately validated parent keeps the comparison on one
  * volume. Other platforms retain the full device-and-inode comparison.
- * @param {{dev:number|bigint,ino:number|bigint}} pathStats
- * @param {{dev:number|bigint,ino:number|bigint}} handleStats
- * @param {NodeJS.Platform} platform
+ * The size and modification snapshots remain strict on every platform.
+ * @param {{dev:number|bigint,ino:number|bigint,size:number|bigint,mtimeNs:bigint,ctimeNs:bigint}} pathStats
+ * @param {{dev:number|bigint,ino:number|bigint,size:number|bigint,mtimeNs:bigint,ctimeNs:bigint}} handleStats
+ * @param {NodeJS.Platform} [platform]
  */
-function samePathHandleIdentity(pathStats, handleStats, platform) {
+export function samePathHandleFileSnapshot(pathStats, handleStats, platform = process.platform) {
   return pathStats.ino === handleStats.ino
-    && (platform === 'win32' || pathStats.dev === handleStats.dev);
+    && (platform === 'win32' || pathStats.dev === handleStats.dev)
+    && sameFileMetadata(pathStats, handleStats);
+}
+
+/**
+ * @param {{dev:number|bigint,ino:number|bigint,size:number|bigint,mtimeNs:bigint,ctimeNs:bigint}} left
+ * @param {{dev:number|bigint,ino:number|bigint,size:number|bigint,mtimeNs:bigint,ctimeNs:bigint}} right
+ */
+function sameFileSnapshot(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && sameFileMetadata(left, right);
+}
+
+/**
+ * @param {{size:number|bigint,mtimeNs:bigint,ctimeNs:bigint}} left
+ * @param {{size:number|bigint,mtimeNs:bigint,ctimeNs:bigint}} right
+ */
+function sameFileMetadata(left, right) {
+  return left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
 }
 
 /** @param {string} path @param {string} kind */

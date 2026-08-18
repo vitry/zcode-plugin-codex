@@ -4,6 +4,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { resolvePluginDataRoot } from '../scripts/lib/plugin-data.mjs';
 import { settleEndedOwnerWritableJob } from '../scripts/lib/recovery.mjs';
@@ -81,6 +82,7 @@ try {
   await Promise.allSettled([
     cleanupSession(dataRoot, input.cwd, ownerSessionId),
     createIdentityStore({ dataRoot }).cleanupSession(input.cwd, ownerSessionId),
+    createRescuePreparationStore({ dataRoot }).cleanupSession({ sessionId: ownerSessionId, workspace: input.cwd }),
   ]);
 } catch (error) {
   process.stderr.write(`ZCode session cleanup advisory failed: ${error?.code ?? 'HOOK_FAILED'}\n`);

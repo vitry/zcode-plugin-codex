@@ -22,8 +22,11 @@ const childId = '019fe6e0-4764-7192-83ba-0b0cc2c48660';
 const taskName = 'zcode_rescue_fix_progress';
 const agentPath = `/root/${taskName}`;
 const expectedWorkspace = '/repo';
-const expectedCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke rescue';
+const expectedCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-prepared rescue';
 const expectedPreflightCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" role-status rescue';
+const expectedPreparationCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue';
+const expectedPreparationEnvelope = Object.freeze({ version: 1, source: 'explicit', task: 'repair the qualification fixture', options: { execution: 'foreground', resume: 'fresh' } });
+const expectedPreparationPayload = JSON.stringify(expectedPreparationEnvelope);
 const expectedStatusCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-status rescue';
 const expectedPublicOutput = 'done';
 const expectedSemanticProgress = Object.freeze({
@@ -336,6 +339,34 @@ test('child host evidence requires exact exec tool names and one-to-one unique c
   for (const { code, mutate } of cases) {
     const input = yieldedFixture(); mutate(input);
     assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
+  }
+});
+
+test('forwarder child rollout rejects every unaccounted response and non-allowlisted function call', () => {
+  const cases = [
+    (input) => input.rollouts[1].splice(-1, 0, { type: 'response_item', payload: { type: 'reasoning', summary: 'unaccounted' } }),
+    (input) => input.rollouts[1].splice(-1, 0, { type: 'response_item', payload: { type: 'function_call', name: 'web_search', call_id: 'unknown-child-call', arguments: '{}' } }),
+  ];
+  for (const mutate of cases) {
+    const input = fixture(); mutate(input);
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-event-accounting',
+    );
+  }
+});
+
+test('forwarder child rejects function-call exec shapes even beside one valid custom exec', () => {
+  for (const name of ['exec', 'exec_command']) {
+    const input = fixture();
+    input.rollouts[1].splice(-1, 0, {
+      type: 'response_item', payload: { type: 'function_call', name, call_id: `extra-${name}`, arguments: JSON.stringify({ cmd: expectedCommand }) },
+    });
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options()),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'child-command-shape-mismatch',
+      name,
+    );
   }
 });
 
@@ -710,20 +741,406 @@ test('does not self-report generic compatibility and lets named metadata work on
   assert.equal(qualifyCodexRescueEvidence(named, options()).route, 'named');
 });
 
-test('requires one exact ready parent preflight before spawn', () => {
+test('requires exact Role readiness and one private same-handle preparation before spawn', () => {
   const cases = [
-    { code: 'preflight-count', mutate: (input) => input.rollouts[0].splice(1, 1) },
-    { code: 'preflight-count', mutate: (input) => input.rollouts[0].splice(2, 0, structuredExec(expectedPreflightCommand, 'preflight-2')) },
-    { code: 'preflight-command-mismatch', mutate: (input) => { preflightEvent(input).payload.input = structuredExec(`${expectedPreflightCommand} && true`, 'preflight-1').payload.input; } },
+    { code: 'preflight-count', mutate: (input) => { removeParentCall(input, 'preflight-1'); } },
+    { code: 'preflight-count', mutate: (input) => input.rollouts[0].splice(1, 0, ...parentPreparationEvents('duplicate-').slice(0, 2)) },
+    { code: 'preflight-command-mismatch', mutate: (input) => { preflightEvent(input).payload.input = structuredExecResult(`${expectedPreflightCommand} && true`, 'preflight-1').payload.input; } },
     { code: 'preflight-output-link', mutate: (input) => { preflightOutput(input).payload.call_id = 'wrong-call'; } },
-    { code: 'preflight-output-link', mutate: (input) => input.rollouts[0].splice(2, 1) },
-    { code: 'preflight-output-link', mutate: (input) => input.rollouts[0].splice(3, 0, toolOutput('preflight-1', '{"type":"role-status","role":"zcode-rescue","status":"ready"}\n')) },
-    { code: 'preflight-status-mismatch', mutate: (input) => { preflightOutput(input).payload.output = toolOutput('preflight-1', `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'drift' })}\n`).payload.output; } },
-    { code: 'preflight-order', mutate: (input) => { const spawn = input.rollouts[0].splice(3, 1)[0]; input.rollouts[0].splice(2, 0, spawn); } },
+    { code: 'preflight-status-mismatch', mutate: (input) => { preflightOutput(input).payload.output = capturedResult({ output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'drift' })}\n`, exit_code: 0 }); } },
+    { code: 'preflight-status-mismatch', mutate: (input) => { preflightOutput(input).payload.output = capturedResult({ output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 1 }); } },
+    { code: 'preparation-count', mutate: (input) => { removeParentCall(input, 'prepare-1'); } },
+    { code: 'preparation-count', mutate: (input) => input.rollouts[0].splice(3, 0, structuredExecResult(expectedPreparationCommand, 'prepare-2', { tty: true })) },
+    { code: 'preparation-ready-count', mutate: (input) => { removeParentOutput(input, 'prepare-1'); } },
+    { code: 'preparation-ready-count', mutate: (input) => input.rollouts[0].splice(5, 0, capturedResultEvent('prepare-1', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 44 })) },
+    { code: 'preparation-order', mutate: (input) => { const write = parentCall(input, 'prepare-write-1'); input.rollouts[0].splice(input.rollouts[0].indexOf(write), 1); input.rollouts[0].splice(input.rollouts[0].indexOf(parentOutput(input, 'prepare-1')), 0, write); } },
+    { code: 'preparation-write-handle', mutate: (input) => { parentCall(input, 'prepare-write-1').payload.input = structuredPoll(999, 'prepare-write-1', `${expectedPreparationPayload}\n`).payload.input; } },
+    { code: 'preparation-write-count', mutate: (input) => input.rollouts[0].splice(7, 0, structuredPoll(44, 'prepare-write-2', `${expectedPreparationPayload}\n`), capturedResultEvent('prepare-write-2', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 })) },
+    { code: 'preparation-write-frame', mutate: (input) => { parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${expectedPreparationPayload}\n\u0004`).payload.input; } },
+    { code: 'preparation-payload-echo', mutate: (input) => { parentOutput(input, 'prepare-1').payload.output = capturedResult({ output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n${expectedPreparationPayload}`, session_id: 44 }); } },
+    { code: 'preparation-order', mutate: (input) => { const prepare = parentCall(input, 'prepare-1'); const ready = parentOutput(input, 'prepare-1'); input.rollouts[0].splice(input.rollouts[0].indexOf(ready), 1); input.rollouts[0].splice(input.rollouts[0].indexOf(prepare), 1); const spawn = spawnEvent(input); input.rollouts[0].splice(input.rollouts[0].indexOf(spawn) + 1, 0, prepare, ready); } },
+    { code: 'preparation-write-frame', mutate: (input) => { const changed = { ...expectedPreparationEnvelope, source: 'proactive' }; parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${JSON.stringify(changed)}\n`).payload.input; } },
+    { code: 'child-command-mismatch', mutate: (input) => { childExec(input).payload.input = structuredExec('node "/installed/zcode/scripts/zcode-companion.mjs" invoke rescue').payload.input; } },
   ];
   for (const { code, mutate } of cases) {
     const input = fixture(); mutate(input);
-    assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
+    assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => {
+      assert.doesNotMatch(error.message, new RegExp(expectedPreparationEnvelope.task, 'u'));
+      return error instanceof CodexRescueEvidenceMismatchError && error.code === code;
+    });
+  }
+});
+
+test('foreground and background parent calls own globally unique one-to-one call IDs', () => {
+  for (const callId of ['preflight-1', 'prepare-1', 'prepare-write-1']) {
+    for (const background of [false, true]) {
+      const input = background ? backgroundFixture() : fixture();
+      spawnEvent(input).payload.call_id = callId;
+      startEvent(input).payload.event_id = callId;
+      const qualify = background
+        ? () => qualifyCodexRescueBackgroundEvidence(input, backgroundOptions())
+        : () => qualifyCodexRescueEvidence(input, options());
+      assert.throws(
+        qualify,
+        (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'parent-call-id',
+        `${background ? 'background' : 'foreground'} spawn reused ${callId}`,
+      );
+    }
+  }
+});
+
+test('preparation qualification independently validates task and every bounded option value', () => {
+  const invalidEnvelopes = [
+    { ...expectedPreparationEnvelope, task: ' ' },
+    { ...expectedPreparationEnvelope, task: 't'.repeat(64 * 1024 + 1) },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, unknown: true } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, execution: null } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, execution: 'detached' } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, resume: 'maybe' } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, effort: 'extreme' } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, model: '' } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, model: 'm'.repeat(513) } },
+    { ...expectedPreparationEnvelope, options: { ...expectedPreparationEnvelope.options, model: 'provider/model\nsecret' } },
+  ];
+  for (const envelope of invalidEnvelopes) {
+    const preparationPayload = JSON.stringify(envelope);
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-payload-contract'
+        && (envelope.task.trim().length === 0 || !error.message.includes(envelope.task)),
+    );
+  }
+  const valid = { ...expectedPreparationEnvelope, options: { execution: 'background', resume: 'resume', effort: 'xhigh', model: 'provider/model' } };
+  const preparationPayload = JSON.stringify(valid); const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  assert.equal(qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })).publicOutput, expectedPublicOutput);
+});
+
+test('preparation qualification rejects duplicate raw keys and an oversized escaped frame', () => {
+  const optionsJson = JSON.stringify(expectedPreparationEnvelope.options);
+  const cases = [
+    `{"version":1,"source":"explicit","task":"decoy","task":${JSON.stringify(expectedPreparationEnvelope.task)},"options":${optionsJson}}`,
+    `{"version":1,"source":"explicit","task":${JSON.stringify(expectedPreparationEnvelope.task)},"options":{"execution":"background","execution":"foreground","resume":"fresh"}}`,
+    JSON.stringify({ ...expectedPreparationEnvelope, task: `objective:${'\u0000'.repeat(12_000)}` }),
+  ];
+  assert.ok(Buffer.byteLength(cases[2], 'utf8') + 1 > 64 * 1024 + 4096);
+  for (const preparationPayload of cases) {
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'preparation-payload-contract'
+        && !error.message.includes(expectedPreparationEnvelope.task) && !error.message.includes('execution'),
+    );
+  }
+});
+
+test('preparation qualification rejects a raw LF before the frame terminator', () => {
+  const preparationPayload = JSON.stringify(expectedPreparationEnvelope, null, 2);
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'preparation-write-frame'
+      && !error.message.includes(expectedPreparationEnvelope.task),
+  );
+});
+
+test('confines the exact preparation task to the one same-handle parent write chars field', () => {
+  const task = expectedPreparationEnvelope.task;
+  const cases = [
+    ['parent commentary', (input) => input.rollouts[0].splice(-2, 0, { type: 'event_msg', payload: { type: 'agent_message', message: task, phase: 'commentary' } })],
+    ['unrelated exec argv', (input) => input.rollouts[0].splice(7, 0, structuredExec(`printf %s ${JSON.stringify(task)}`, 'unrelated-task-argv'), toolOutput('unrelated-task-argv', ''))],
+    ['unrelated exec env', (input) => input.rollouts[0].splice(7, 0, structuredExec('true', 'unrelated-task-env', { env: { PRIVATE_TASK: task } }), toolOutput('unrelated-task-env', ''))],
+    ['unrelated tool output', (input) => input.rollouts[0].splice(7, 0, structuredExec('true', 'unrelated-task-output'), toolOutput('unrelated-task-output', task))],
+    ['write event metadata', (input) => { parentCall(input, 'prepare-write-1').payload.private_task = task; }],
+    ['prepared ack task echo', (input) => { parentOutput(input, 'prepare-write-1').payload.output = capturedResult({ output: `${JSON.stringify({ type: 'prepared', command: 'rescue', task })}\n`, exit_code: 0 }); }],
+    ['spawn message', (input) => { const args = JSON.parse(spawnEvent(input).payload.arguments); args.message = `${args.message} ${task}`; spawnEvent(input).payload.arguments = JSON.stringify(args); }],
+    ['parent relay', (input) => input.rollouts[0].splice(-2, 0, { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: task }] } })],
+    ['parent status output', (input) => input.rollouts[0].splice(-2, 0, structuredExec(expectedStatusCommand, 'parent-status-task'), toolOutput('parent-status-task', task))],
+  ];
+  for (const [name, mutate] of cases) {
+    const input = fixture(); mutate(input);
+    assert.throws(() => qualifyCodexRescueEvidence(input, options()), (error) => {
+      assert.doesNotMatch(error.message, new RegExp(task, 'u'), name);
+      return error instanceof CodexRescueEvidenceMismatchError && error.code === 'preparation-task-exclusivity';
+    }, name);
+  }
+  assert.equal(qualifyCodexRescueEvidence(fixture(), options()).publicOutput, expectedPublicOutput);
+  const recordedUserInput = fixture();
+  recordedUserInput.rollouts[0].splice(1, 0, { type: 'event_msg', payload: { type: 'user_message', message: task } });
+  assert.equal(qualifyCodexRescueEvidence(recordedUserInput, options()).publicOutput, expectedPublicOutput);
+});
+
+test('detects escaped private task text in parent commentary and decoded tool envelopes', () => {
+  const cases = [
+    ['repair the "quoted" route', (input, task) => input.rollouts[0].splice(-2, 0, { type: 'event_msg', payload: { type: 'agent_message', message: `leaked: ${task}`, phase: 'commentary' } })],
+    ['repair the \\backslash route', (input, task) => input.rollouts[0].splice(7, 0, structuredExec('true', 'escaped-task-env', { env: { PRIVATE_TASK: task } }), toolOutput('escaped-task-env', ''))],
+    ['repair the\nmultiline route', (input, task) => { parentOutput(input, 'prepare-write-1').payload.output = capturedResult({ output: `${JSON.stringify({ type: 'prepared', command: 'rescue', task })}\n`, exit_code: 0 }); }],
+  ];
+  for (const [task, leak] of cases) {
+    const envelope = { ...expectedPreparationEnvelope, task };
+    const preparationPayload = JSON.stringify(envelope);
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    leak(input, task);
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => {
+        assert.doesNotMatch(error.message, new RegExp(task.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+        return error instanceof CodexRescueEvidenceMismatchError && error.code === 'preparation-task-exclusivity';
+      },
+    );
+  }
+});
+
+test('detects escaped private task text inside unrelated legacy host output', () => {
+  for (const task of ['repair the "quoted" route', 'repair the \\backslash route', 'repair the\nmultiline route']) {
+    const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structuredExec('true', 'escaped-legacy-output'),
+      toolOutput('escaped-legacy-output', JSON.stringify({ diagnostic: task })));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+    );
+  }
+});
+
+test('bounded legacy output decoding detects prefixed JSON, JSONL, and nested JSON strings', () => {
+  const cases = [
+    ['repair the "quoted" route', (task) => `legacy prefix: ${JSON.stringify({ diagnostic: task })}`],
+    ['repair the \\backslash route', (task) => `${JSON.stringify({ type: 'diagnostic' })}\n${JSON.stringify({ diagnostic: task })}\n`],
+    ['repair the\nmultiline route', (task) => JSON.stringify(JSON.stringify(JSON.stringify({ diagnostic: task })))],
+    ['repair bounded "depth" route', (task) => { let value = JSON.stringify({ diagnostic: task }); for (let depth = 0; depth < 10; depth += 1) value = JSON.stringify(value); return value; }],
+  ];
+  for (const [task, legacyOutput] of cases) {
+    const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structuredExec('true', 'encoded-legacy-output'),
+      toolOutput('encoded-legacy-output', legacyOutput(task)));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+    );
+  }
+});
+
+test('bounded task scanning covers balanced JSON tokens in legacy and structured captured output', () => {
+  const task = 'repair the "quoted" \\route\nnow';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const cases = [
+    ['legacy prefix and suffix', false, `prefix ${JSON.stringify({ diagnostic: task })} suffix`],
+    ['legacy sibling tokens', false, `context={} payload=${JSON.stringify(task)}`],
+    ['structured prefix', true, `prefix ${JSON.stringify({ diagnostic: task })}`],
+    ['structured JSONL', true, `${JSON.stringify({ context: {} })}\n${JSON.stringify({ diagnostic: task })}\n`],
+    ['structured multilayer', true, JSON.stringify(JSON.stringify(JSON.stringify({ diagnostic: task })))],
+    ['structured prefix and suffix', true, `before ${JSON.stringify({ diagnostic: task })} after`],
+  ];
+  for (const [name, structured, output] of cases) {
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structured ? structuredExecResult('true', `balanced-${name}`) : structuredExec('true', `balanced-${name}`),
+      structured ? capturedResultEvent(`balanced-${name}`, { output, exit_code: 0 }) : toolOutput(`balanced-${name}`, output));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+      name,
+    );
+  }
+});
+
+test('fails closed within the candidate budget on a flood of unmatched JSON delimiters', () => {
+  const task = 'repair the bounded delimiter scanner';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  input.rollouts[0].splice(7, 0,
+    structuredExec('true', 'unmatched-delimiter-flood'),
+    toolOutput('unmatched-delimiter-flood', '{'.repeat(4_096)));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+  );
+});
+
+test('structured task scanning retains parsed non-output result fields', () => {
+  const task = 'repair the "quoted" \\route\nnow';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  input.rollouts[0].splice(7, 0,
+    structuredExecResult('true', 'structured-result-field'),
+    capturedResultEvent('structured-result-field', { output: '', exit_code: 0, chunk_id: task }));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+  );
+});
+
+test('structured task scanning recursively decodes every non-output string leaf', () => {
+  const task = 'repair the "quoted" \\route\nnow';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  input.rollouts[0].splice(7, 0,
+    structuredExecResult('true', 'structured-encoded-result-field'),
+    capturedResultEvent('structured-encoded-result-field', { output: '', exit_code: 0, chunk_id: JSON.stringify(task) }));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+  );
+});
+
+for (const [name, structured, output, chunkId] of [
+  ['legacy item text', false, `legacy prefix {"diagnostic":${JSON.stringify('repair the "quoted" \\route\nnow').slice(0, -1)}`],
+  ['structured result output', true, `structured prefix [${JSON.stringify('repair the "quoted" \\route\nnow').slice(0, -1)}`],
+  ['structured non-output leaf', true, '', `metadata=${JSON.stringify('repair the "quoted" \\route\nnow').slice(0, -1)}`],
+]) {
+  test(`task scanning detects a truncated JSON-escaped task string in ${name}`, () => {
+    const task = 'repair the "quoted" \\route\nnow';
+    const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structured ? structuredExecResult('true', `truncated-${name}`) : structuredExec('true', `truncated-${name}`),
+      structured
+        ? capturedResultEvent(`truncated-${name}`, { output, exit_code: 0, ...(chunkId === undefined ? {} : { chunk_id: chunkId }) })
+        : toolOutput(`truncated-${name}`, output));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+      name,
+    );
+  });
+}
+
+for (const [name, structured, output, chunkId] of (() => {
+  const task = 'repair the "quoted" \\route\nnow';
+  const unicodeEscaped = unicodeEscapeEveryChar(task);
+  return [
+    ['legacy item text', false, `legacy unicode=${unicodeEscaped}`],
+    ['structured result output', true, `structured unicode=${unicodeEscaped}`],
+    ['structured non-output leaf', true, '', `metadata=${unicodeEscaped}`],
+  ];
+})()) {
+  test(`task scanning decodes a truncated per-character Unicode JSON string in ${name}`, () => {
+    const task = 'repair the "quoted" \\route\nnow';
+    const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structured ? structuredExecResult('true', `unicode-${name}`) : structuredExec('true', `unicode-${name}`),
+      structured
+        ? capturedResultEvent(`unicode-${name}`, { output, exit_code: 0, ...(chunkId === undefined ? {} : { chunk_id: chunkId }) })
+        : toolOutput(`unicode-${name}`, output));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+      name,
+    );
+  });
+}
+
+test('task scanning recursively decodes a truncated outer JSON string around an escaped task string', () => {
+  const task = 'repair the "quoted" \\route\nnow';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  input.rollouts[0].splice(7, 0,
+    structuredExecResult('true', 'truncated-double-escaped'),
+    capturedResultEvent('truncated-double-escaped', {
+      output: `nested=${JSON.stringify(JSON.stringify(task)).slice(0, -1)}`,
+      exit_code: 0,
+    }));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+  );
+});
+
+for (const [suffixName, suffix] of [['trailing backslash', '\\'], ['partial Unicode escape', '\\u12'], ['invalid escape', '\\q']]) {
+  for (const [surface, structured] of [['legacy item text', false], ['structured result output', true], ['structured non-output leaf', true]]) {
+    test(`task scanning retains a fully decoded Unicode task prefix before ${suffixName} in ${surface}`, () => {
+      const task = 'repair the "quoted" \\route\nnow';
+      const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+      const encoded = `${unicodeEscapeEveryChar(task)}${suffix}`;
+      const output = surface === 'structured non-output leaf' ? '' : `${surface}=${encoded}`;
+      const input = fixture();
+      parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+      input.rollouts[0].splice(7, 0,
+        structured ? structuredExecResult('true', `malformed-${suffixName}-${surface}`) : structuredExec('true', `malformed-${suffixName}-${surface}`),
+        structured
+          ? capturedResultEvent(`malformed-${suffixName}-${surface}`, {
+            output,
+            exit_code: 0,
+            ...(surface === 'structured non-output leaf' ? { chunk_id: `metadata=${encoded}` } : {}),
+          })
+          : toolOutput(`malformed-${suffixName}-${surface}`, output));
+      assert.throws(
+        () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+        (error) => error instanceof CodexRescueEvidenceMismatchError
+          && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+      );
+    });
+  }
+}
+
+for (const [suffixName, suffix] of [['trailing backslash', '\\'], ['partial Unicode escape', '\\u12'], ['invalid escape', '\\q']]) {
+  test(`task scanning retains a decoded inner task before a malformed outer ${suffixName}`, () => {
+    const task = 'repair the "quoted" \\route\nnow';
+    const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+    const malformedOuter = `${JSON.stringify(JSON.stringify(task)).slice(0, -1)}${suffix}`;
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structuredExecResult('true', `malformed-outer-${suffixName}`),
+      capturedResultEvent(`malformed-outer-${suffixName}`, { output: `nested=${malformedOuter}`, exit_code: 0 }));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+    );
+  });
+}
+
+test('task scanning preserves a Unicode surrogate pair before a malformed JSON string suffix', () => {
+  const task = 'repair the 😀 route';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  input.rollouts[0].splice(7, 0,
+    structuredExec('true', 'malformed-surrogate-prefix'),
+    toolOutput('malformed-surrogate-prefix', `unicode=${unicodeEscapeEveryChar(task)}\\q`));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+  );
+});
+
+test('ordinary malformed unterminated JSON string prefixes remain non-sensitive evidence', () => {
+  for (const [name, output] of [['trailing backslash', 'log="ordinary\\'], ['partial Unicode escape', 'log="ordinary\\u12'], ['invalid escape', 'log="ordinary\\q']]) {
+    const input = fixture();
+    input.rollouts[0].splice(7, 0, structuredExec('true', `ordinary-${name}`), toolOutput(`ordinary-${name}`, output));
+    assert.equal(qualifyCodexRescueEvidence(input, options()).publicOutput, expectedPublicOutput, name);
   }
 });
 
@@ -794,6 +1211,13 @@ test('requires exact spawn keys and safe exec envelopes in the canonical workspa
   }
   const bounded = fixture(); childExec(bounded).payload.input = structuredExec(expectedCommand, 'exec-1', { yield_time_ms: 10_000, max_output_tokens: 100 }).payload.input;
   assert.equal(qualifyCodexRescueEvidence(bounded, options()).publicOutput, expectedPublicOutput);
+  const privateKey = 'private_task_key'; const keyed = fixture();
+  childExec(keyed).payload.input = structuredExec(expectedCommand, 'exec-1', { [privateKey]: true }).payload.input;
+  assert.throws(
+    () => qualifyCodexRescueEvidence(keyed, options()),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'child-exec-envelope-mismatch' && !error.message.includes(privateKey),
+  );
 });
 
 test('requires the exact fixed spawn message for named and generic routes', () => {
@@ -1035,6 +1459,8 @@ function options(overrides = {}) {
     expectedWorkspace,
     expectedCommand,
     expectedPreflightCommand,
+    expectedPreparationCommand,
+    expectedPreparationPayload,
     expectedPublicOutput,
     expectedSemanticProgress,
     expectedNamedSpawnMessage: 'fixed named forwarder',
@@ -1063,8 +1489,7 @@ function fixture(publicOutput = expectedPublicOutput) {
     ];
   const parent = [
       { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
-      structuredExec(expectedPreflightCommand, 'preflight-1'),
-      toolOutput('preflight-1', `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+      ...parentPreparationEvents(),
       { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ agent_type: 'zcode-rescue', fork_turns: 'none', message: 'fixed named forwarder', task_name: taskName }) } },
       { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
       { type: 'response_item', payload: { type: 'agent_message', author: agentPath, recipient: '/root', content: [{ type: 'input_text', text: childEnvelope }] } },
@@ -1077,7 +1502,8 @@ function fixture(publicOutput = expectedPublicOutput) {
       { type: 'event_msg', payload: { type: 'agent_message', message: publicOutput, phase: 'final_answer' } },
   ];
   child[2].timestamp = '2026-08-10T00:00:00.000006Z'; child[3].timestamp = '2026-08-10T00:00:00.000007Z';
-  parent[5].timestamp = '2026-08-10T00:00:00.000008Z'; parent[6].timestamp = '2026-08-10T00:00:00.000009Z';
+  parent.find((event) => event?.payload?.author === agentPath).timestamp = '2026-08-10T00:00:00.000008Z';
+  parent.find((event) => event?.payload?.phase === 'final_answer').timestamp = '2026-08-10T00:00:00.000009Z';
   return { execFrames, rollouts: [parent, child] };
 }
 
@@ -1201,6 +1627,8 @@ function choiceOptions(choice, overrides = {}) {
     expectedNamedSpawnMessage: 'fixed named forwarder',
     expectedGenericSpawnMessage: 'fixed generic forwarder',
     expectedPreflightCommand,
+    expectedPreparationCommand,
+    expectedPreparationPayload,
     expectedChoiceCommand: `node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`,
     expectedFollowupMessage: `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`,
     expectedPublicOutput,
@@ -1215,8 +1643,7 @@ function choiceFixture(choice) {
   const secondEnvelope = `Message Type: FINAL_ANSWER\nTask name: /root\nSender: ${agentPath}\nPayload:\n${expectedPublicOutput}`;
   const parent = [
     { type: 'session_meta', payload: { session_id: parentId, id: parentId, cli_version: '0.147.0', thread_source: 'user', source: 'exec' } },
-    structuredExec(expectedPreflightCommand, 'preflight-1'),
-    toolOutput('preflight-1', `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`),
+    ...parentPreparationEvents(),
     structuredSpawn('spawn-1'),
     { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, kind: 'started' } },
     structuredWait('wait-1'),
@@ -1240,8 +1667,14 @@ function choiceFixture(choice) {
     { type: 'event_msg', payload: { type: 'agent_message', message: expectedPublicOutput, phase: 'final_answer' } },
   ];
   const at = (event, offset) => { event.timestamp = new Date(Date.parse('2026-08-10T00:00:00.000Z') + offset).toISOString(); };
-  at(child[1], 4); at(child[2], 5); at(child[3], 6); at(parent[7], 7); at(parent[8], 8);
-  at(parent[9], 9); at(parent[10], 10); at(child[4], 11); at(child[5], 12); at(child[6], 13); at(parent[13], 14); at(parent[14], 15);
+  const childFinals = child.filter((event) => event?.payload?.phase === 'final_answer');
+  const parentReturns = parent.filter((event) => event?.payload?.author === agentPath);
+  const parentFinals = parent.filter((event) => event?.payload?.phase === 'final_answer');
+  at(child[1], 4); at(child[2], 5); at(childFinals[0], 6); at(parentReturns[0], 7); at(parentFinals[0], 8);
+  at(choiceFollowup({ rollouts: [parent, child] }), 9); at(followupResult({ rollouts: [parent, child] }), 10);
+  at(child.find((event) => event?.payload?.call_id === 'exec-2' && event.payload.type === 'custom_tool_call'), 11);
+  at(child.find((event) => event?.payload?.call_id === 'exec-2' && event.payload.type === 'custom_tool_call_output'), 12);
+  at(childFinals[1], 13); at(parentReturns[1], 14); at(parentFinals[1], 15);
   return { rollouts: [parent, child] };
 }
 
@@ -1323,8 +1756,8 @@ function structuredExec(command, callId = 'exec-1', fields = {}) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace, ...fields })});\ntext(r.output);\n` } };
 }
 
-function structuredExecResult(command, callId) {
-  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace })}); text(JSON.stringify(r))\n` } };
+function structuredExecResult(command, callId, fields = {}) {
+  return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: `const r = await tools.exec_command(${JSON.stringify({ cmd: command, workdir: expectedWorkspace, ...fields })}); text(JSON.stringify(r))\n` } };
 }
 
 function structuredPoll(sessionId, callId, chars = '') {
@@ -1339,6 +1772,18 @@ function capturedResultEvent(callId, result) {
   return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: capturedResult(result) } };
 }
 
+function parentPreparationEvents(prefix = '') {
+  const handle = prefix ? 45 : 44;
+  return [
+    structuredExecResult(expectedPreflightCommand, `${prefix}preflight-1`),
+    capturedResultEvent(`${prefix}preflight-1`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }),
+    structuredExecResult(expectedPreparationCommand, `${prefix}prepare-1`, { tty: true }),
+    capturedResultEvent(`${prefix}prepare-1`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: handle }),
+    structuredPoll(handle, `${prefix}prepare-write-1`, `${expectedPreparationPayload}\n`),
+    capturedResultEvent(`${prefix}prepare-write-1`, { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }),
+  ];
+}
+
 function childPolls(input) { return input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call').slice(1); }
 function childPollOutputs(input) { return input.rollouts[1].filter((event) => event.payload?.type === 'custom_tool_call_output').slice(1); }
 
@@ -1348,6 +1793,10 @@ function structuredExecUnquoted(command) {
 
 function structuredExecUnquotedInline(command) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-1', input: `const r = await tools.exec_command({cmd:${JSON.stringify(command)},workdir:"/repo"}); text(r.output);\n` } };
+}
+
+function unicodeEscapeEveryChar(value) {
+  return `"${value.split('').map((character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`).join('')}`;
 }
 
 function toolOutput(callId, terminalText) {
@@ -1362,6 +1811,10 @@ function childMeta(input) { return input.rollouts[1][0]; }
 function parentMeta(input) { return input.rollouts[0][0]; }
 function preflightEvent(input) { return input.rollouts[0].find((event) => event.payload?.type === 'custom_tool_call' && event.payload.call_id === 'preflight-1'); }
 function preflightOutput(input) { return input.rollouts[0].find((event) => event.payload?.type === 'custom_tool_call_output' && event.payload.call_id === 'preflight-1'); }
+function parentCall(input, callId) { return input.rollouts[0].find((event) => event.payload?.type === 'custom_tool_call' && event.payload.call_id === callId); }
+function parentOutput(input, callId) { return input.rollouts[0].find((event) => event.payload?.type === 'custom_tool_call_output' && event.payload.call_id === callId); }
+function removeParentCall(input, callId) { const call = parentCall(input, callId); const output = parentOutput(input, callId); input.rollouts[0] = input.rollouts[0].filter((event) => event !== call && event !== output); }
+function removeParentOutput(input, callId) { const output = parentOutput(input, callId); input.rollouts[0] = input.rollouts[0].filter((event) => event !== output); }
 function childExec(input) { return input.rollouts[1].find((event) => event.payload?.type === 'custom_tool_call'); }
 function childOutput(input) { return input.rollouts[1].find((event) => event.payload?.type === 'custom_tool_call_output'); }
 function choiceFollowup(input) { return input.rollouts[0].find((event) => event.payload?.name === 'followup_task'); }

@@ -12,6 +12,7 @@ import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { readJsonFile } from '../scripts/lib/fs.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { resolvePluginDataRoot } from '../scripts/lib/plugin-data.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { fingerprintWorkspace, finishGateRun, isForwarding, isOwnedSession, writeGateRun } from './lib/hook-state.mjs';
@@ -22,10 +23,10 @@ const root = resolve(fileURLToPath(new URL('../', import.meta.url))); const MAX_
 export async function runStopReviewGate(input, options) {
   const dataRoot = options?.dataRoot; const env = options?.env ?? process.env; const timeoutMs = options?.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS; const discover = options?.discoverZCode ?? discoverZCode;
   if (!dataRoot || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEFAULT_GATE_TIMEOUT_MS) throw new Error('invalid stop gate runtime options');
-  const identity = createIdentityStore({ dataRoot }); const turn = { sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd }; const end = async (response) => { await identity.endCallerTurn(turn); return response; };
-  if (input.stop_hook_active) return end({});
+  const identity = createIdentityStore({ dataRoot }); const preparations = createRescuePreparationStore({ dataRoot }); const turn = { sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd }; const end = async (response) => { await Promise.all([identity.endCallerTurn(turn), preparations.cleanupTurn(turn)]); return response; };
   if (!await isOwnedSession(dataRoot, input)) return {};
   if (await isForwarding(dataRoot, input)) return {};
+  if (input.stop_hook_active) return end({});
   let baseline;
   try { baseline = await identity.consumeGateBaseline(turn); }
   catch (error) { if (error?.code === 'GATE_BASELINE_NOT_FOUND') return end({}); if (error?.code === 'GATE_BASELINE_CONSUMED') return {}; throw error; }
