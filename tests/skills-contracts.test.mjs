@@ -219,6 +219,16 @@ test('Root routes active, stopped same-operation, and fresh Rescue child states 
   assert.match(source, /Preparation authorizes exactly one next action:[^\n]+followup_task[^\n]+spawn[^\n]+never both/i);
 });
 
+test('stale spawn-only prose cannot contradict stopped-child continuation', () => {
+  const source = skill('rescue');
+  for (const stale of [
+    'Preparation authorizes exactly one named or generic spawn.',
+    'An explicit continuation proceeds through prepare and spawn.',
+  ]) {
+    assert.throws(() => assertExactChildContinuationContract(`${source}\n${stale}\n`));
+  }
+});
+
 test('Root prepares exactly one private Rescue envelope before one selected followup or spawn', () => {
   const source = skill('rescue');
   assert.match(source, /node "<plugin-root>\/scripts\/zcode-companion\.mjs" prepare rescue/);

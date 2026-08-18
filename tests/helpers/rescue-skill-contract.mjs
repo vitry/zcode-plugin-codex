@@ -116,6 +116,8 @@ export function assertExactChildContinuationContract(source, { assertionPrefix =
   assert.match(source, /Preparation authorizes exactly one next action:[^\n]+stopped-child `followup_task`[^\n]+new child, never both/i);
   assert.match(source, /Only when the selected next action is a new-child spawn[^\n]+choose `rescueTaskName`/i);
   assert.match(source, /A stopped-child followup never chooses or changes a task name/i);
+  assert.doesNotMatch(source, /Preparation authorizes exactly one (?:named or generic )?spawn\./i);
+  assert.doesNotMatch(source, /explicit continuation[^.\n]*proceeds through prepare and spawn\./i);
   assert.doesNotMatch(source, /preparation (?:succeeds|success)[^\n]{0,180}(?:always|must)[^\n]{0,80}spawn/i);
   return { active, stopped, fresh, block };
 }
