@@ -510,7 +510,14 @@ test('adoption publication seams pin only the explicit candidate and concurrent 
     if (seam === 'adopt:base-binding') await assert.rejects(clean.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
     else { binding = await clean.resolveRescueBinding(bindingExpected(workspace, trusted)); assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.anchorJobId, candidate.id); if (seam === 'adopt:final') assert.notEqual(binding.binding.currentJobId, candidate.id); else assert.equal(binding.binding.currentJobId, candidate.id); }
     assert.equal((await clean.listJobs(workspace)).length, ['adopt:marker', 'adopt:current-advance', 'adopt:final'].includes(seam) ? 2 : 1);
-    if (seam === 'adopt:base-binding') assert.equal((await clean.adoptRescueCandidate({ workspace, reservation: reservation(workspace, 'retry'), executor: trusted, candidateJobId: candidate.id })).anchorJob.id, candidate.id);
+    if (seam === 'adopt:base-binding') {
+      await assert.rejects(
+        clean.adoptRescueCandidate({ workspace, reservation: reservation(workspace, 'retry'), executor: trusted, candidateJobId: candidate.id }),
+        { code: 'RESCUE_BINDING_INVALID' },
+      );
+      const repaired = await clean.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'fresh-repair'), executor: trusted });
+      assert.equal(repaired.binding.anchorJobId, repaired.job.id);
+    }
     else {
       const retry = clean.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'retry'), executor: trusted, operationId: binding.binding.operationId });
       if (['adopt:marker', 'adopt:current-advance', 'adopt:final'].includes(seam)) await assert.rejects(retry, { code: 'WRITABLE_JOB_EXISTS' });
