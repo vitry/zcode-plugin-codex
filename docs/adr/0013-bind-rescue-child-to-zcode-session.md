@@ -7,7 +7,7 @@ supersedes: stopped-rescue-choice-continuation-in-adr-0010
 
 ## Decision
 
-Root may send the constant `invoke-prepared rescue` assignment to the same stopped child after privately preparing a new turn. The durable binding keeps the original `anchorJobId` and advances `currentJobId` only after a successful continuation. Those identifiers, the task, permissions, workspace identity, and executor provenance remain private plugin state and never enter a child assignment.
+Root may send the constant `invoke-prepared rescue` assignment to the same stopped child after privately preparing a new turn. The durable binding keeps the original `anchorJobId` and advances `currentJobId` when the continuation job is durably reserved and published, even if that job later queues, fails, or is cancelled. Those identifiers, the task, permissions, workspace identity, and executor provenance remain private plugin state and never enter a child assignment.
 
 An active exact child is rejoined without preparation or invocation. A stopped exact same-operation child is re-authorized by the new prepared turn and followed up without another spawn or `SubagentStart`. A fresh or independent operation prepares `fresh` and creates a new child. Root alone decides these semantics; the child only executes its fixed assignment once per child turn.
 
