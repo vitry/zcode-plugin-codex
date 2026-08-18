@@ -1,7 +1,13 @@
 // @ts-nocheck
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
 import { parseRescueBindingAuthority, parseRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
-import { validateRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
+import { createRescuePreparationStore, readRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
+import { createStateStore } from '../../scripts/lib/state.mjs';
+import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { expectedGenericRescueMessage, expectedNamedRescueMessage } from './rescue-skill-contract.mjs';
 
 const MAX_EXEC_FRAMES = 2_048;
@@ -71,13 +77,13 @@ export function qualifyCodexRescueEvidence(input, options) {
  * for a clear proactive continuation. Every reported count is derived here;
  * caller-authored normalized verdicts are deliberately outside this contract.
  */
-export function qualifyCodexRescuePreparedContinuationEvidence(input) {
+export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   if (!input || !['named', 'generic'].includes(input.route) || !['foreground', 'background'].includes(input.execution)
     || typeof input.parentRolloutJson !== 'string' || typeof input.childRolloutJson !== 'string'
     || typeof input.hookLifecycleJson !== 'string' || typeof input.executorRecordBytes !== 'string'
     || typeof input.bindingAuthorityBytes !== 'string' || typeof input.bindingPartitionBytes !== 'string'
     || typeof input.jobRecordBytesJson !== 'string' || typeof input.fakePeerJson !== 'string'
-    || !input.expected || !input.publicSurfaces) {
+    || !input.expected) {
     mismatch('continuation-raw-contract', 'Prepared continuation qualification requires bounded raw captured artifacts.');
   }
   const expected = input.expected; const parentSessionId = boundedString(expected.parentSessionId); const childThreadId = boundedString(expected.childThreadId);
@@ -87,7 +93,6 @@ export function qualifyCodexRescuePreparedContinuationEvidence(input) {
   const parseArray = (text, code) => { if (Buffer.byteLength(text) > MAX_ROLLOUT_BYTES) mismatch(code, 'Captured evidence exceeds its byte bound.'); let value; try { value = JSON.parse(text); } catch { mismatch(code, 'Captured evidence is malformed.'); } return boundedArray(value, MAX_EVENTS_PER_ROLLOUT, code); };
   const parent = parseArray(input.parentRolloutJson, 'continuation-parent-events'); const child = parseArray(input.childRolloutJson, 'continuation-child-events');
   const hooks = parseArray(input.hookLifecycleJson, 'continuation-hook-events'); const jobBytes = parseArray(input.jobRecordBytesJson, 'continuation-jobs'); const peer = parseArray(input.fakePeerJson, 'continuation-peer-events');
-  const jobs = jobBytes.map((bytes) => { if (typeof bytes !== 'string' || !bytes.endsWith('\n')) mismatch('continuation-job-record', 'Raw persisted job bytes are invalid.'); let job; try { job = JSON.parse(bytes); } catch { mismatch('continuation-job-record', 'Raw persisted job bytes are malformed.'); } return job; });
   const spawns = namedCalls(parent, 'spawn_agent'); const followups = namedCalls(parent, 'followup_task');
   const parentExecs = parent.filter((event) => event?.payload?.type === 'custom_tool_call' && event.payload.name === 'exec');
   const parentOutputs = parent.filter((event) => ['custom_tool_call_output', 'function_call_output'].includes(event?.payload?.type));
@@ -127,7 +132,7 @@ export function qualifyCodexRescuePreparedContinuationEvidence(input) {
     && parent.indexOf(preparations[1]) < parent.indexOf(followups[0]))) mismatch('continuation-event-order', 'Captured raw parent event order is invalid.');
   const originalEvents = [preparations[0], spawns[0], starts[0], stops[0]]; const continuationEvents = [preparations[1], followups[0]];
   if (originalEvents.some((event) => event?.turn_id !== originalParentTurnId) || continuationEvents.some((event) => event?.turn_id !== continuationParentTurnId)) mismatch('continuation-parent-turns', 'Raw parent events do not prove a fresh continuation turn.');
-  validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution });
+  await validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution });
   const observedAgentPath = boundedString(starts[0].payload.agent_path); const observedTaskName = boundedString(spawn.task_name);
   if (!observedTaskName || !observedAgentPath || observedAgentPath !== `/root/${observedTaskName}`
     || stops[0].payload.agent_path !== observedAgentPath) mismatch('continuation-presentation', 'Captured child presentation is internally inconsistent.');
@@ -147,10 +152,13 @@ export function qualifyCodexRescuePreparedContinuationEvidence(input) {
   if (startHooks.length !== 1 || stopHooks.length !== 1 || freshHooks.length !== 1 || freshHooks[0].turn_id !== continuationParentTurnId
     || startHooks[0].agent_id !== childThreadId || stopHooks[0].agent_id !== childThreadId
     || startHooks[0].session_id !== parentSessionId || stopHooks[0].session_id !== parentSessionId
+    || freshHooks[0].session_id !== parentSessionId || startHooks[0].turn_id !== executor.childTurnId || stopHooks[0].turn_id !== executor.childTurnId
+    || startHooks[0].parent_turn_id !== originalParentTurnId || stopHooks[0].parent_turn_id !== originalParentTurnId
     || startHooks[0].agent_type !== executor.agentType || stopHooks[0].agent_type !== executor.agentType
     || startHooks[0].permission_mode !== expected.permissionMode || stopHooks[0].permission_mode !== expected.permissionMode
     || freshHooks[0].permission_mode !== expected.permissionMode || startHooks[0].cwd !== expected.workspace
     || stopHooks[0].cwd !== expected.workspace || freshHooks[0].cwd !== expected.workspace) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle does not prove one Start/Stop and a fresh parent turn.');
+  if (!(hooks.indexOf(startHooks[0]) < hooks.indexOf(stopHooks[0]) && hooks.indexOf(stopHooks[0]) < hooks.indexOf(freshHooks[0]))) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle order is invalid.');
   let authority; let partition; try { authority = parseRescueBindingAuthority(input.bindingAuthorityBytes, { parentSessionId, workspace: expected.workspace }); partition = parseRescueBindingPartition(input.bindingPartitionBytes, { parentSessionId, workspace: expected.workspace }); } catch { mismatch('continuation-binding-invalid', 'Raw Rescue binding files are invalid.'); }
   if (authority.key !== partition.key || partition.records.length !== 1) mismatch('continuation-binding-invalid', 'Raw Rescue binding authority and partition do not match.');
   const binding = partition.records[0];
@@ -158,20 +166,24 @@ export function qualifyCodexRescuePreparedContinuationEvidence(input) {
     || binding.executorParentPermissionMode !== expected.permissionMode || binding.permissionMode !== expected.permissionMode
     || binding.state !== 'active') mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
   if (!boundedString(binding.operationId)) mismatch('continuation-binding-identity', 'Raw Rescue binding generation is absent.');
+  const jobs = await parseRawJobsWithProduction(jobBytes, expected);
   if (jobs.length !== 2 || new Set(jobs.map((job) => job?.id)).size !== jobs.length) mismatch('continuation-job-identity', 'Raw job evidence contains extra or duplicate identities.');
-  for (const job of jobs) validateRawJobRecord(job, expected);
   const anchor = jobs.find((job) => job?.id === binding.anchorJobId); const current = jobs.find((job) => job?.id === binding.currentJobId);
   if (!current) mismatch('continuation-current-job-stale', 'Raw current job evidence is absent.');
   if (!anchor || anchor.status === 'cancelled' || !boundedString(anchor.zcodeSessionId)) mismatch('continuation-anchor-invalid', 'Raw anchor job is not resumable.');
+  if (anchor.ownerTurnId !== originalParentTurnId || current.ownerTurnId !== continuationParentTurnId) mismatch('continuation-job-record', 'Raw job owner turns do not match the two parent turns.');
   if (!['queued', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled'].includes(current.status)) mismatch('continuation-current-job-stale', 'Raw current job status is invalid.');
   let backgroundObserver;
   if (input.execution === 'background') { try { backgroundObserver = parseObject(input.backgroundObserverJson, 'continuation-background-evidence'); } catch { mismatch('continuation-background-evidence', 'Background continuation lacks raw private observer evidence.'); }
-    assertExactKeys(backgroundObserver, ['capabilityId', 'jobId', 'workerLeaseId'], 'continuation-background-evidence');
-    if (!boundedString(backgroundObserver.capabilityId) || !boundedString(backgroundObserver.workerLeaseId)
-      || backgroundObserver.jobId !== current.id || current.status !== 'queued') mismatch('continuation-background-evidence', 'Background continuation lacks raw capability, job, and worker evidence.'); }
+    assertExactKeys(backgroundObserver, ['executionCapability', 'jobId'], 'continuation-background-evidence');
+    if (!boundedString(backgroundObserver.executionCapability) || Buffer.byteLength(backgroundObserver.executionCapability) > 4096
+      || backgroundObserver.jobId !== current.id || current.status !== 'queued' || !Number.isSafeInteger(current.childPid) || current.childPid <= 0
+      || !/^[a-f0-9]{64}$/u.test(current.workerLeaseId)) mismatch('continuation-background-evidence', 'Background continuation lacks raw capability, job, and worker evidence.'); }
   const creates = peer.filter((event) => event?.method === 'session/create'); const resumes = peer.filter((event) => event?.method === 'session/resume'); const turns = peer.filter((event) => event?.method === 'session/send');
   if (peer.length !== 4) mismatch('continuation-peer-method', 'Raw fake peer contains an unaccounted method.');
-  if (creates.length !== 1 || resumes.length !== 1 || creates[0]?.result?.session?.sessionId !== anchor.zcodeSessionId || resumes[0]?.params?.sessionId !== anchor.zcodeSessionId) mismatch('continuation-session-mismatch', 'Raw fake peer did not resume the exact anchor session.');
+  if (peer.some((event) => !event || Object.keys(event).sort().join('\0') !== ['id', 'method', 'params'].sort().join('\0')
+    || !Number.isSafeInteger(event.id) || !event.params || typeof event.params !== 'object' || Array.isArray(event.params))) mismatch('continuation-peer-method', 'Raw fake peer is not an exact inbound JSON-RPC request capture.');
+  if (creates.length !== 1 || resumes.length !== 1 || turns[0]?.params?.sessionId !== anchor.zcodeSessionId || resumes[0]?.params?.sessionId !== anchor.zcodeSessionId) mismatch('continuation-session-mismatch', 'Raw fake peer did not resume the exact created session inferred from its first send.');
   if (turns.length !== 2 || turns.some((turn) => turn?.params?.sessionId !== anchor.zcodeSessionId)) mismatch('continuation-peer-turn-count', 'Raw fake peer does not contain one initial and one resumed turn.');
   if (!(peer.indexOf(creates[0]) < peer.indexOf(turns[0]) && peer.indexOf(turns[0]) < peer.indexOf(resumes[0])
     && peer.indexOf(resumes[0]) < peer.indexOf(turns[1]))) mismatch('continuation-peer-order', 'Raw fake-peer create, initial turn, resume, and new turn chronology is invalid.');
@@ -191,13 +203,13 @@ export function qualifyCodexRescuePreparedContinuationEvidence(input) {
   const firstOutput = outputs.find((output) => output.payload.call_id === calls[0].payload.call_id); const secondOutput = outputs.find((output) => output.payload.call_id === calls[1].payload.call_id);
   if (!(child.indexOf(calls[0]) < child.indexOf(firstOutput) && child.indexOf(firstOutput) < child.indexOf(calls[1]) && child.indexOf(calls[1]) < child.indexOf(secondOutput)
     && eventTimestamp(calls[0]) < eventTimestamp(firstOutput) && eventTimestamp(firstOutput) < eventTimestamp(calls[1]) && eventTimestamp(calls[1]) < eventTimestamp(secondOutput))) mismatch('continuation-child-order', 'Raw child invocation chronology is invalid.');
-  const requiredSurfaces = ['assignment', 'argv', 'env', 'stdout', 'stderr', 'progress', 'status', 'agentPath', 'callMetadata'];
-  if (!input.publicSurfaces || typeof input.publicSurfaces !== 'object' || requiredSurfaces.some((key) => !Object.hasOwn(input.publicSurfaces, key))
-    || !input.publicSurfaces.env || Object.keys(input.publicSurfaces.env).length === 0) mismatch('continuation-public-surfaces', 'Mandatory public surfaces are absent.');
+  if (!(eventTimestamp(starts[0]) < eventTimestamp(calls[0]) && eventTimestamp(firstOutput) < eventTimestamp(stops[0])
+    && eventTimestamp(followups[0]) < eventTimestamp(calls[1]))) mismatch('continuation-child-order', 'Cross-rollout child chronology is invalid.');
+  const publicSurfaces = deriveContinuationPublicSurfaces(parent, child, jobs, observedAgentPath);
   const privateValues = [binding.key, binding.operationId, binding.anchorJobId, binding.currentJobId, anchor.zcodeSessionId,
-    backgroundObserver?.capabilityId, backgroundObserver?.workerLeaseId, executor.childTurnId].filter((value) => typeof value === 'string' && value);
+    backgroundObserver?.executionCapability, current.workerLeaseId, executor.childTurnId].filter((value) => typeof value === 'string' && value);
   if (privateValues.length < 6) mismatch('continuation-private-sentinels', 'Raw artifacts do not provide mandatory private sentinels.');
-  const publicText = JSON.stringify([input.publicSurfaces, parent, child]);
+  const publicText = JSON.stringify(publicSurfaces);
   if (privateValues.some((value) => publicText.includes(value))) mismatch('continuation-private-leak', 'A public or host surface leaks a private identifier.');
   return {
     route: input.route, parentSessionId, childThreadId, agentPath: observedAgentPath, originalParentTurnId, continuationParentTurnId,
@@ -985,31 +997,31 @@ function assertGlobalCallOwnership(...rollouts) {
   const ids = calls.map((event) => boundedString(event.payload.call_id));
   if (ids.some((id) => !id) || new Set(ids).size !== ids.length || outputs.length !== calls.length
     || outputs.some((output) => calls.filter((call) => call.payload.call_id === output.payload.call_id).length !== 1)
-    || calls.some((call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)) {
+    || calls.some((call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)
+    || [...calls, ...outputs].some((event) => event.type !== 'response_item')
+    || calls.some((call) => outputs.find((output) => output.payload.call_id === call.payload.call_id)?.payload.type
+      !== (call.payload.type === 'function_call' ? 'function_call_output' : 'custom_tool_call_output'))) {
     mismatch('continuation-call-linkage', 'Raw host calls and outputs do not have global one-to-one ownership.');
   }
 }
 
-function validateRawJobRecord(job, expected) {
-  const required = ['command', 'createdAt', 'id', 'ownerSessionId', 'ownerTurnId', 'permissionSnapshot', 'readOnly', 'status', 'updatedAt', 'workspace'];
-  const optional = new Set(['beforeMessageIds', 'childPid', 'effort', 'error', 'exitCode', 'finishedAt', 'inputId', 'lastActivityAt', 'lastCancelError',
-    'model', 'phase', 'progressPreview', 'progressProbe', 'promptArtifact', 'resultArtifact', 'startedAt', 'startRevision', 'workerLeaseId', 'zcodeSessionId']);
-  if (!job || typeof job !== 'object' || Array.isArray(job) || required.some((key) => !Object.hasOwn(job, key))
-    || Object.keys(job).some((key) => !required.includes(key) && !optional.has(key))
-    || typeof job.id !== 'string' || !/^[a-f0-9]{64}$/u.test(job.id) || job.ownerSessionId !== expected.parentSessionId
-    || job.workspace !== expected.workspace || job.command !== 'rescue' || job.readOnly !== false
-    || !job.permissionSnapshot || Object.keys(job.permissionSnapshot).length !== 1 || job.permissionSnapshot.permissionMode !== expected.permissionMode
-    || !PUBLIC_JOB_STATUSES.has(job.status) || !Number.isFinite(Date.parse(job.createdAt)) || !Number.isFinite(Date.parse(job.updatedAt))
-    || Date.parse(job.updatedAt) < Date.parse(job.createdAt) || typeof job.ownerTurnId !== 'string' || !job.ownerTurnId
-    || Object.hasOwn(job, 'zcodeSessionId') && !boundedString(job.zcodeSessionId)
-    || Object.hasOwn(job, 'workerLeaseId') && !/^[a-f0-9]{64}$/u.test(job.workerLeaseId)
-    || Object.hasOwn(job, 'childPid') && (!Number.isSafeInteger(job.childPid) || job.childPid <= 0)
-    || Object.hasOwn(job, 'startedAt') && !Number.isFinite(Date.parse(job.startedAt))
-    || Object.hasOwn(job, 'finishedAt') && !Number.isFinite(Date.parse(job.finishedAt))
-    || Object.hasOwn(job, 'exitCode') && job.exitCode !== null && !Number.isSafeInteger(job.exitCode)) mismatch('continuation-job-record', 'Raw persisted job record is invalid.');
+async function parseRawJobsWithProduction(jobBytes, expected) {
+  if (!Array.isArray(jobBytes) || jobBytes.length !== 2) mismatch('continuation-job-identity', 'Exactly two raw persisted job files are required.');
+  if (jobBytes.some((bytes) => typeof bytes !== 'string' || !bytes.endsWith('\n'))) mismatch('continuation-job-record', 'Raw persisted job file bytes are invalid.');
+  const routed = jobBytes.map((bytes) => { let value; try { value = JSON.parse(bytes); } catch { mismatch('continuation-job-record', 'Raw persisted job bytes are malformed.'); } if (!/^[a-f0-9]{64}$/u.test(value?.id)) mismatch('continuation-job-record', 'Raw persisted job identity is invalid.'); return { bytes, id: value.id }; });
+  const dataRoot = await mkdtemp(join(tmpdir(), 'zcode-qualification-state-'));
+  try {
+    const storage = await resolveWorkspaceStorage({ dataRoot, workspace: expected.workspace }); await mkdir(storage.directory, { recursive: true }); const jobsDirectory = join(storage.directory, 'jobs'); await mkdir(jobsDirectory, { recursive: true });
+    await Promise.all(routed.map(({ bytes, id }) => writeFile(join(jobsDirectory, `${id}.json`), bytes)));
+    const store = createStateStore({ dataRoot });
+    const jobs = []; for (const { id } of routed) { try { jobs.push(await store.readJob(expected.workspace, id)); } catch { mismatch('continuation-job-record', 'Production StateStore rejected raw persisted job bytes.'); } }
+    for (const job of jobs) if (job.ownerSessionId !== expected.parentSessionId || job.workspace !== expected.workspace || job.command !== 'rescue'
+      || job.readOnly !== false || job.permissionSnapshot?.permissionMode !== expected.permissionMode) mismatch('continuation-job-record', 'Production job authority does not match the continuation.');
+    return jobs;
+  } finally { await rm(dataRoot, { recursive: true, force: true }); }
 }
 
-function validateContinuationPreparations(parent, rawRecordsJson, expected) {
+async function validateContinuationPreparations(parent, rawRecordsJson, expected) {
   if (typeof rawRecordsJson !== 'string' || Buffer.byteLength(rawRecordsJson) > MAX_ROLLOUT_BYTES) mismatch('continuation-preparation-records', 'Raw consumed preparation records are absent.');
   let recordBytes; try { recordBytes = JSON.parse(rawRecordsJson); } catch { mismatch('continuation-preparation-records', 'Raw consumed preparation records are malformed.'); }
   if (!Array.isArray(recordBytes) || recordBytes.length !== 2 || recordBytes.some((bytes) => typeof bytes !== 'string' || !bytes.endsWith('\n'))) mismatch('continuation-preparation-records', 'Exactly two raw consumed preparation records are required.');
@@ -1037,7 +1049,7 @@ function validateContinuationPreparations(parent, rawRecordsJson, expected) {
       || !(prepare.index < readyOutput[0].index && readyOutput[0].index < write.index && write.index < ackOutput[0].index)) mismatch('continuation-preparation-protocol', 'TTY readiness, one LF write, or prepared acknowledgement is invalid.');
     const chars = write.host.envelope.get('chars');
     if (!chars.endsWith('\n') || chars.slice(0, -1).includes('\n')) mismatch('continuation-preparation-route', 'Preparation is not one LF-terminated envelope.');
-    let envelope; try { envelope = validateRescuePreparation(JSON.parse(chars.slice(0, -1))); } catch { mismatch('continuation-preparation-route', 'Preparation envelope is invalid.'); }
+    let envelope; try { envelope = await readRescuePreparation(Readable.from([chars])); } catch { mismatch('continuation-preparation-route', 'Production preparation parser rejected the raw LF envelope.'); }
     if (envelope.source !== specification.source || envelope.options.resume !== specification.resume || (envelope.options.execution ?? 'foreground') !== expected.execution) mismatch('continuation-preparation-route', 'Preparation source or exact route is invalid.');
     const record = parsedRecords.find((candidate) => candidate?.turnId === specification.turnId);
     const keys = ['consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'key', 'permissionMode', 'sessionId', 'source', 'turnId', 'version', 'workspace'];
@@ -1047,7 +1059,39 @@ function validateContinuationPreparations(parent, rawRecordsJson, expected) {
       || !Number.isFinite(Date.parse(record.createdAt)) || Date.parse(record.expiresAt) - Date.parse(record.createdAt) !== 30 * 60_000
       || !Number.isFinite(Date.parse(record.consumedAt)) || Date.parse(record.consumedAt) < Date.parse(record.createdAt)
       || Date.parse(record.consumedAt) >= Date.parse(record.expiresAt)) mismatch('continuation-preparation-records', 'Consumed preparation identity or single-consume state is invalid.');
+    await assertConsumedPreparationWithProduction(recordBytes[parsedRecords.indexOf(record)], record, expected);
   }
+}
+
+async function assertConsumedPreparationWithProduction(rawBytes, record, expected) {
+  const dataRoot = await mkdtemp(join(tmpdir(), 'zcode-qualification-preparation-'));
+  try {
+    const store = createRescuePreparationStore({ dataRoot });
+    await store.save({ sessionId: record.sessionId, turnId: record.turnId, workspace: expected.workspace, permissionMode: record.permissionMode,
+      envelope: record.envelope, recordedPrompt: record.source === 'explicit' ? '$zcode:rescue fixture' : 'proactive fixture', now: record.createdAt });
+    const storage = await resolveWorkspaceStorage({ dataRoot, workspace: expected.workspace });
+    await writeFile(join(storage.directory, 'invocations', 'prepared', `${record.key}.json`), rawBytes);
+    try { await store.consume({ sessionId: record.sessionId, turnId: record.turnId, workspace: expected.workspace, permissionMode: record.permissionMode, executorAgentId: record.executorAgentId, now: record.consumedAt }); }
+    catch (error) { if (error?.code === 'RESCUE_PREPARATION_CONSUMED') return; mismatch('continuation-preparation-records', 'Production preparation store rejected the consumed record.'); }
+    mismatch('continuation-preparation-records', 'Consumed preparation record was reusable.');
+  } finally { await rm(dataRoot, { recursive: true, force: true }); }
+}
+
+function deriveContinuationPublicSurfaces(parent, child, jobs, agentPath) {
+  const calls = [...parent, ...child].filter((event) => event?.payload?.type === 'custom_tool_call');
+  const hosts = calls.map((event) => parseCapturedHostCall(event.payload.input));
+  const argv = hosts.map((host) => host.envelope.get('cmd')).filter((value) => typeof value === 'string');
+  const env = hosts.map((host) => host.envelope.get('env')).filter((value) => value && typeof value === 'object' && !Array.isArray(value));
+  const rawToolOutputs = [...parent, ...child].filter((event) => event?.payload?.type === 'custom_tool_call_output').map((event) => event.payload.output);
+  const toolResults = rawToolOutputs.map((output) => parseCapturedHostResult(output));
+  const stdout = toolResults.filter((result) => Object.hasOwn(result, 'output')).map((result) => result.output);
+  const stderr = rawToolOutputs.map((output) => output?.[0]?.text).filter((value) => typeof value === 'string');
+  const progress = child.filter((event) => event?.payload?.type === 'agent_message').map((event) => event.payload.message);
+  const assignment = namedCalls(parent, 'spawn_agent').concat(namedCalls(parent, 'followup_task')).map((event) => parseObject(event.payload.arguments, 'continuation-assignment').message);
+  const callMetadata = [...parent, ...child].filter((event) => ['custom_tool_call', 'function_call'].includes(event?.payload?.type)).map((event) => event.payload.call_id);
+  const surfaces = { assignment, argv, env, stdout, stderr, progress, status: jobs.map((job) => job.status), agentPath: [agentPath], callMetadata };
+  if ([assignment, argv, env, stdout, stderr, progress, surfaces.status, surfaces.agentPath, callMetadata].some((values) => values.length === 0)) mismatch('continuation-public-surfaces', 'Mandatory raw public surfaces are absent.');
+  return surfaces;
 }
 
 function eventTimestamp(event) {

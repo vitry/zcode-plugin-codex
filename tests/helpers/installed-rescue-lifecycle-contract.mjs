@@ -182,7 +182,7 @@ export function assertInstalledForwarderLifecycleContract(source, route, options
 }
 
 /** Qualify both the installed forwarder bytes and its captured same-child continuation effects. */
-export function assertInstalledPreparedContinuationContract(source, capture, options = {}) {
+export async function assertInstalledPreparedContinuationContract(source, capture, options = {}) {
   assertInstalledForwarderLifecycleContract(source, capture?.route, options);
   return qualifyCodexRescuePreparedContinuationEvidence(capture);
 }
