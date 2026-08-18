@@ -84,6 +84,7 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
 **Files:**
 - Modify: `scripts/zcode-companion.mjs`
 - Modify: `scripts/lib/job-control.mjs`
+- Modify: `hooks/lib/hook-state.mjs`
 - Modify: `hooks/session-end-hook.mjs`
 - Modify: `tests/integration/skills.test.mjs`
 - Modify: `tests/integration/companion.test.mjs`
@@ -95,7 +96,7 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   the trusted executor internally into `runCompanion`; no executor/binding/session
   identity may appear in argv, env, output, progress, or task. The private
   pending record admits only its exact-schema executor, route kind, candidate,
-  and expected-generation fields.
+  expected-generation, and expected-current-job fields.
 - [ ] Reproduce the real Codex 0.147 lifecycle: one SubagentStart creates the
   executor, SubagentStop marks it inactive, a later `followup_task` produces no
   second SubagentStart, and the executor retains its historical parent turn.
@@ -120,8 +121,9 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   stores the exact bound `anchorJobId` as its private candidate. Inserting a
   later job cannot change it. Resume choice CAS-reserves an exact bound
   continuation; fresh choice creates a new generation. It never legacy-adopts
-  or calls latest-candidate selection. A generation change while waiting rejects
-  the stale choice for both resume and fresh rather than retargeting it.
+  or calls latest-candidate selection. A generation or `currentJobId` change
+  while waiting rejects the stale choice for both resume and fresh rather than
+  retargeting it; neither failure may reserve a job.
 - [ ] Run focused tests and record RED before production changes.
 - [ ] Pass trusted executor context from both `invoke-prepared` and
   `invoke-choice` into `runCompanion`/`startPublic` without changing public argv.
@@ -138,11 +140,12 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   greater-than-30-minute continuations plus expired unbound rejection.
 - [ ] Version the private pending-choice schema to hold `candidateJobId` without
   exposing it in output. Add `routeKind` and, for bound choices,
-  `expectedOperationId`. Preserve the existing narrow `invoke-choice` authority:
+  `expectedOperationId` plus `expectedCurrentJobId`. Preserve the existing narrow `invoke-choice` authority:
   unexpired stopped executor + same parent session/workspace/executor + single-use
   originating pending record/permission. Do not require historical parentTurnId
   to equal the new active turn. Bound choices may use durable stopped provenance
-  only while their candidate and expected generation still match.
+  only while their candidate, expected generation, and expected current job still
+  match in the same StateStore lock transaction.
 - [ ] Select routing as follows: bound+resume → exact continuation transaction;
   bound+fresh → fresh transaction; bound+omitted explicit → exact-anchor
   `needs-choice`; missing binding → existing legacy candidate behavior; invalid
@@ -252,6 +255,9 @@ git diff --check
   jobs remain reportable while a valid anchor resumes; cancelled/no-session
   anchor does not. Add candidate-insertion-between-choice-and-followup and old
   pending-without-candidate upgrade cases.
+- [ ] Add stale bound-choice fixtures where an intervening same-operation
+  continuation advances `currentJobId` without changing `operationId`; both old
+  resume and fresh answers must fail before reservation.
 - [ ] Add greater-than-30-minute fixtures: exact bound stopped provenance succeeds
   only with fresh preparation and matching generation; expired unbound/legacy
   executor, active executor, role mismatch, and missing provenance fail closed.

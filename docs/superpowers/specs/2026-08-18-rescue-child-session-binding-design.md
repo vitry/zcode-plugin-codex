@@ -197,11 +197,13 @@ available. When presenting `needs-choice`, the companion persists the exact
 candidate job ID and a fixed route kind in the private, executor-bound,
 single-use pending record; it never emits that identity to the child or Root
 rollout. For a bound candidate it also snapshots the expected `operationId`. A
-requested resume consumes that record and either CAS-continues the same bound
-generation or, for a still-missing legacy slot, revalidates and adopts precisely
-the selected candidate. A later job cannot replace the presented candidate, and
-a fresh or continued generation created while the answer is pending invalidates
-the stale choice rather than changing its meaning.
+bound snapshot also records `expectedCurrentJobId`, because ordinary continuation
+advances current without changing the operation generation. A requested resume
+consumes that record and either CAS-continues the same bound generation/current
+pair or, for a still-missing legacy slot, revalidates and adopts precisely the
+selected candidate. A later job cannot replace the presented candidate, and a
+fresh or continued operation created while the answer is pending invalidates the
+stale choice rather than changing its meaning.
 Pending records created by an older plugin version without an exact candidate
 cannot safely resume after upgrade and fail with an instruction to rerun the
 explicit command; a fresh choice remains safe. Only a truly missing binding may
