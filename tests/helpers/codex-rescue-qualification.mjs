@@ -95,6 +95,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   const parent = parseArray(input.parentRolloutJson, 'continuation-parent-events'); const child = parseArray(input.childRolloutJson, 'continuation-child-events');
   const hooks = parseArray(input.hookLifecycleJson, 'continuation-hook-events'); const jobBytes = parseArray(input.jobRecordBytesJson, 'continuation-jobs'); const peer = parseArray(input.fakePeerJson, 'continuation-peer-events');
   const execFrames = parseArray(input.execFramesJson, 'continuation-exec-frames');
+  const rawCapture = validateLiveRawContinuationCapture(input, { parent, child, hooks, peer, expected });
   const spawns = namedCalls(parent, 'spawn_agent'); const followups = namedCalls(parent, 'followup_task');
   const parentExecs = parent.filter((event) => event?.payload?.type === 'custom_tool_call' && event.payload.name === 'exec');
   const parentOutputs = parent.filter((event) => ['custom_tool_call_output', 'function_call_output'].includes(event?.payload?.type));
@@ -229,13 +230,65 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   const privateValues = [binding.key, binding.operationId, binding.anchorJobId, binding.currentJobId, anchor.zcodeSessionId,
     backgroundObserver?.executionCapability, current.workerLeaseId, executor.childTurnId].filter((value) => typeof value === 'string' && value);
   if (privateValues.length < 6) mismatch('continuation-private-sentinels', 'Raw artifacts do not provide mandatory private sentinels.');
-  const publicText = JSON.stringify({ parent: redactValidatedPreparationInputs(parent), child, execFrames });
+  const publicText = JSON.stringify({ parent: redactValidatedPreparationInputs(parent), child, execFrames, rawCapture: rawCapture?.publicEvidence });
   if (privateValues.some((value) => publicText.includes(value))) mismatch('continuation-private-leak', 'A public or host surface leaks a private identifier.');
   return {
     route: input.route, parentSessionId, childThreadId, agentPath: observedAgentPath, originalParentTurnId, continuationParentTurnId,
     spawnCount: 1, startCount: 1, stopCount: 1, followupCount: 1, continuationSpawnCount: 0,
     childInvocationCount: 2, peerResumeChecked: true, execution: input.execution,
   };
+}
+
+function validateLiveRawContinuationCapture(input, core) {
+  const fields = ['rawParentRolloutJson', 'rawChildRolloutJson', 'rawHookLifecycleJson', 'rawFakePeerJson', 'artifactHistoryJson'];
+  if (fields.every((field) => input[field] === undefined)) return null;
+  if (fields.some((field) => typeof input[field] !== 'string')) mismatch('continuation-raw-capture', 'Live continuation evidence must include every complete raw capture.');
+  const parse = (field) => { let value; try { value = JSON.parse(input[field]); } catch { mismatch('continuation-raw-capture', `Live ${field} is malformed.`); }
+    if (!Array.isArray(value) || value.length > MAX_EVENTS_PER_ROLLOUT) mismatch('continuation-raw-capture', `Live ${field} exceeds its bound.`); return value; };
+  const rawParent = parse('rawParentRolloutJson'); const rawChild = parse('rawChildRolloutJson'); const rawHooks = parse('rawHookLifecycleJson'); const rawPeer = parse('rawFakePeerJson'); const history = parse('artifactHistoryJson');
+  assertRawSubset(core.parent, rawParent, 'parent'); assertRawSubset(core.child, rawChild, 'child'); assertRawSubset(core.hooks, rawHooks, 'hooks'); assertRawSubset(core.peer, rawPeer, 'peer');
+  const parentFunctions = rawParent.filter((event) => event?.payload?.type === 'function_call');
+  if (parentFunctions.filter((event) => event.payload.name === 'spawn_agent').length !== 1 || parentFunctions.filter((event) => event.payload.name === 'followup_task').length !== 1
+    || parentFunctions.some((event) => !['spawn_agent', 'followup_task'].includes(event.payload.name))) mismatch('continuation-raw-parent-events', 'Complete parent capture contains an extra orchestration call.');
+  assertAllowedRawHostCalls(rawParent, 'parent'); assertAllowedRawHostCalls(rawChild, 'child');
+  const starts = rawHooks.filter((event) => event?.hook_event_name === 'SubagentStart'); const stops = rawHooks.filter((event) => event?.hook_event_name === 'SubagentStop');
+  const prompts = rawHooks.filter((event) => event?.hook_event_name === 'UserPromptSubmit');
+  if (starts.length !== 1 || stops.length !== 1 || prompts.length < 1 || prompts.length > 2 || rawHooks.some((event) => !['SubagentStart', 'SubagentStop', 'UserPromptSubmit'].includes(event?.hook_event_name))
+    || !(rawHooks.indexOf(starts[0]) < rawHooks.indexOf(stops[0]) && rawHooks.indexOf(stops[0]) < rawHooks.indexOf(prompts.at(-1)))) mismatch('continuation-raw-hook-events', 'Complete hook capture contains duplicates, extras, or invalid order.');
+  if (rawPeer.length !== 4 || rawPeer.filter((event) => event?.method === 'session/create').length !== 1 || rawPeer.filter((event) => event?.method === 'session/resume').length !== 1
+    || rawPeer.filter((event) => event?.method === 'session/send').length !== 2) mismatch('continuation-raw-peer-events', 'Complete fake-peer capture contains an extra or missing request.');
+  validateImmutableArtifactHistory(history);
+  return { publicEvidence: { parent: redactValidatedPreparationInputs(rawParent), child: rawChild } };
+}
+
+function assertRawSubset(projected, raw, label) {
+  const counts = new Map(); for (const event of raw) { const key = JSON.stringify(event); counts.set(key, (counts.get(key) ?? 0) + 1); }
+  for (const event of projected) { const key = JSON.stringify(event); const remaining = counts.get(key) ?? 0; if (remaining < 1) mismatch('continuation-raw-capture', `Projected ${label} evidence was not captured raw.`); counts.set(key, remaining - 1); }
+}
+
+function assertAllowedRawHostCalls(events, role) {
+  const calls = events.filter((event) => event?.payload?.type === 'custom_tool_call');
+  for (const call of calls) {
+    const host = parseCapturedHostCall(call.payload.input); const command = host.envelope.get('cmd');
+    const allowed = role === 'parent'
+      ? host.kind === 'write_stdin' || typeof command === 'string' && (command.endsWith('/scripts/zcode-companion.mjs" prepare rescue') || command.endsWith('/scripts/zcode-companion.mjs" role-status rescue') || command.endsWith('/scripts/zcode-companion.mjs" invoke-status rescue'))
+      : host.kind === 'write_stdin' || typeof command === 'string' && (command.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue') || command.endsWith('/scripts/zcode-companion.mjs" invoke-status rescue'));
+    if (!allowed) mismatch(`continuation-raw-${role}-events`, `Complete ${role} capture contains an extra host call.`);
+  }
+}
+
+function validateImmutableArtifactHistory(history) {
+  const immutable = new Map();
+  for (const artifact of history) {
+    if (!artifact || typeof artifact.path !== 'string' || typeof artifact.bytes !== 'string' || artifact.sequence !== null && !Number.isSafeInteger(artifact.sequence)) mismatch('continuation-artifact-history', 'Raw artifact history is malformed.');
+    let value; try { value = JSON.parse(artifact.bytes); } catch { continue; }
+    let identity;
+    if (artifact.path.includes('invocations/prepared/') && value?.consumedAt) identity = `prepared:${value.turnId}`;
+    else if (artifact.path.includes('rescue-binding-authority-')) identity = `authority:${value.key}`;
+    if (!identity) continue;
+    const previous = immutable.get(identity); if (previous !== undefined && previous !== artifact.bytes) mismatch('continuation-artifact-history', 'An immutable captured artifact changed across phases.');
+    immutable.set(identity, artifact.bytes);
+  }
 }
 
 function validCapturedPeerModel(value) {

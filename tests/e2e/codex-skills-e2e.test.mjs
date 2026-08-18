@@ -673,6 +673,20 @@ test('deterministic installed observer artifacts flow through the live continuat
   const evidence = await qualifyCodexRescuePreparedContinuationEvidence(captured);
   assert.equal(evidence.childThreadId, executor.agentId); assert.equal(evidence.peerResumeChecked, true);
   assert.equal(partition.records[0].currentJobId, JSON.parse(JSON.parse(fixture.jobRecordBytesJson)[1]).id); assert.equal(authority.key, partition.key);
+  for (const [code, mutate] of [
+    ['continuation-raw-parent-events', (value) => JSON.parse(value.rawParentRolloutJson).concat({ payload: { type: 'function_call', name: 'spawn_agent' } })],
+    ['continuation-raw-child-events', (value) => JSON.parse(value.rawChildRolloutJson).concat(installedToolCall('extra-tool', installedExecInput('node unexpected.mjs')))],
+    ['continuation-raw-hook-events', (value) => JSON.parse(value.rawHookLifecycleJson).concat(JSON.parse(value.rawHookLifecycleJson)[1])],
+    ['continuation-raw-peer-events', (value) => JSON.parse(value.rawFakePeerJson).concat(JSON.parse(value.rawFakePeerJson)[0])],
+  ]) {
+    const mutated = structuredClone(captured); const field = code.includes('parent') ? 'rawParentRolloutJson' : code.includes('child') ? 'rawChildRolloutJson' : code.includes('hook') ? 'rawHookLifecycleJson' : 'rawFakePeerJson';
+    mutated[field] = JSON.stringify(mutate(mutated));
+    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(mutated), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
+  }
+  const leaked = structuredClone(captured); const rawParent = JSON.parse(leaked.rawParentRolloutJson); rawParent.push({ type: 'event_msg', payload: { type: 'agent_message', message: partition.records[0].operationId } }); leaked.rawParentRolloutJson = JSON.stringify(rawParent);
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(leaked), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-private-leak');
+  const rewritten = structuredClone(captured); const history = JSON.parse(rewritten.artifactHistoryJson); history.push({ ...history.find((artifact) => artifact.path.includes('rescue-binding-authority-')), bytes: `${JSON.stringify({ ...authority, createdAt: '2026-08-11T00:00:00.000Z' })}\n` }); rewritten.artifactHistoryJson = JSON.stringify(history);
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(rewritten), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-history');
 });
 
 test('installed choice qualification requires yielded same-handle terminal evidence in both logical segments', () => {
@@ -1433,7 +1447,10 @@ async function captureInstalledPreparedContinuationEvidence(input) {
     route: input.route, execution: input.execution,
     expected: { parentSessionId: input.parentSessionId, childThreadId, workspace: input.workspace, permissionMode, originalParentTurnId, continuationParentTurnId },
     parentRolloutJson: JSON.stringify(parentProjection), childRolloutJson: JSON.stringify(childProjection),
+    rawParentRolloutJson: JSON.stringify(parent), rawChildRolloutJson: JSON.stringify(child),
     execFramesJson: JSON.stringify(input.execFrames), hookLifecycleJson: JSON.stringify(lifecycle),
+    rawHookLifecycleJson: JSON.stringify(hookEvents), rawFakePeerJson: JSON.stringify(input.peer),
+    artifactHistoryJson: JSON.stringify(artifacts.map(({ path, bytes, sequence }) => ({ path, bytes, sequence: sequence ?? null }))),
     executorRecordBytes: executor.bytes, bindingAuthorityBytes: authority.bytes, bindingPartitionBytes: partitionArtifact.bytes,
     preparationRecordBytesJson: JSON.stringify(preparations.map((artifact) => artifact.bytes)),
     jobRecordBytesJson: JSON.stringify(jobs.map((artifact) => artifact.bytes)), fakePeerJson: JSON.stringify(peerProjection),

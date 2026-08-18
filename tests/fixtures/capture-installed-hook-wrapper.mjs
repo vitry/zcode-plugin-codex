@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -32,21 +32,19 @@ for await (const chunk of process.stdin) {
 }
 const stdin = Buffer.concat(chunks);
 await mkdir(captureDirectory, { recursive: true, mode: 0o700 });
-const sequencePath = join(captureDirectory, 'sequence');
-let sequence = 0;
-try { sequence = Number.parseInt(await readFile(sequencePath, 'utf8'), 10); } catch { /* first capture */ }
-if (!Number.isSafeInteger(sequence) || sequence < 0) process.exit(99);
-sequence += 1;
-await writeFile(sequencePath, `${sequence}\n`, { mode: 0o600 });
-const artifacts = await snapshotFiles(privateDataRoot);
-const capture = {
-  version: 1,
-  sequence,
-  entry: basename(production).replace('-production.mjs', '.mjs'),
-  stdinBase64: stdin.toString('base64'),
-  artifacts,
-};
-await writeFile(join(captureDirectory, `${String(sequence).padStart(6, '0')}-${process.pid}.json`), `${JSON.stringify(capture)}\n`, { mode: 0o600, flag: 'wx' });
+const allocationLock = join(captureDirectory, '.allocation-lock');
+await acquireAllocationLock(allocationLock);
+try {
+  const sequencePath = join(captureDirectory, 'sequence');
+  let sequence = 0;
+  try { sequence = Number.parseInt(await readFile(sequencePath, 'utf8'), 10); } catch { /* first capture */ }
+  if (!Number.isSafeInteger(sequence) || sequence < 0) process.exit(99);
+  sequence += 1;
+  await writeFile(sequencePath, `${sequence}\n`, { mode: 0o600 });
+  const artifacts = await snapshotFiles(privateDataRoot);
+  const capture = { version: 1, sequence, entry: basename(production).replace('-production.mjs', '.mjs'), stdinBase64: stdin.toString('base64'), artifacts };
+  await writeFile(join(captureDirectory, `${String(sequence).padStart(6, '0')}-${process.pid}.json`), `${JSON.stringify(capture)}\n`, { mode: 0o600, flag: 'wx' });
+} finally { await rm(allocationLock, { recursive: true, force: true }); }
 
 const child = spawn(process.execPath, [production, ...process.argv.slice(2)], {
   cwd: process.cwd(), env: process.env, stdio: ['pipe', 'pipe', 'pipe'],
@@ -85,4 +83,12 @@ async function snapshotFiles(root) {
     }
   }
   return files.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function acquireAllocationLock(path) {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    try { await mkdir(path, { mode: 0o700 }); return; } catch (error) { if (error?.code !== 'EEXIST') throw error; }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  throw new Error('installed hook capture allocation lock timed out');
 }
