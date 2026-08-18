@@ -187,6 +187,31 @@ test('StateStore continuation keeps the stable anchor and CAS-advances only curr
   await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-c'), executor: trusted, operationId: 'f'.repeat(64) }), { code: 'RESCUE_BINDING_STALE' });
 });
 
+test('bound choice reservations atomically reject stale operation or current snapshots without publishing a job', async () => {
+  const { workspace, store } = await fixture(); const trusted = executor(workspace);
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
+  await makeEligible(store, workspace, fresh.job, 'zcode-session-a');
+  await store.finishJob(workspace, fresh.job.id, ['running'], 'succeeded');
+  const continued = await store.reserveBoundRescueContinuation({
+    workspace, reservation: reservation(workspace, 'turn-b'), executor: trusted,
+    operationId: fresh.binding.operationId,
+    expectedCurrentJobId: fresh.binding.currentJobId,
+  });
+  await store.finishJob(workspace, continued.job.id, ['queued'], 'failed');
+  const before = (await store.listJobs(workspace)).map((job) => job.id).sort();
+  await assert.rejects(store.reserveBoundRescueContinuation({
+    workspace, reservation: reservation(workspace, 'stale-resume'), executor: trusted,
+    operationId: fresh.binding.operationId,
+    expectedCurrentJobId: fresh.binding.currentJobId,
+  }), { code: 'RESCUE_BINDING_STALE' });
+  await assert.rejects(store.reserveFreshRescueJob({
+    workspace, reservation: reservation(workspace, 'stale-fresh'), executor: trusted,
+    expectedOperationId: fresh.binding.operationId,
+    expectedCurrentJobId: fresh.binding.currentJobId,
+  }), { code: 'RESCUE_BINDING_STALE' });
+  assert.deepEqual((await store.listJobs(workspace)).map((job) => job.id).sort(), before);
+});
+
 test('StateStore adopts only an exact eligible legacy candidate into a new generation', async () => {
   const { workspace, store } = await fixture(); const trusted = executor(workspace);
   const legacy = await store.reserveJob(reservation(workspace));

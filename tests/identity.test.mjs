@@ -9,6 +9,7 @@ import test from 'node:test';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { createInvocationStore } from '../scripts/lib/invocation.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 const identityModuleUrl = new URL('../scripts/lib/identity.mjs', import.meta.url).href;
@@ -172,7 +173,8 @@ test('pending invocation choices preserve the exact originating turn, workspace,
   const { createInvocationStore } = await import('../scripts/lib/invocation.mjs');
   const pending = createInvocationStore({ dataRoot });
   const now = new Date('2026-08-04T00:00:00.000Z');
-  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', source: 'proactive', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] }, now });
+  const candidateJobId = 'd'.repeat(64);
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue', source: 'proactive', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'literal task'] }, routeKind: 'legacy', candidateJobId, now });
   await assert.rejects(
     pending.consumePending({ sessionId: 'session-b', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child', now }),
     (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_NOT_FOUND' && error.remedy === 'Repeat the original command in this Codex thread.',
@@ -186,11 +188,36 @@ test('pending invocation choices preserve the exact originating turn, workspace,
     argv: ['rescue', '--resume', 'literal task'],
     source: 'proactive',
     caller: { sessionId: 'session-a', turnId: 'turn-a', workspace: await realpath(workspaceA), permissionMode: 'workspace-write' },
+    route: { routeKind: 'legacy', candidateJobId },
   });
   await assert.rejects(
     pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'fresh', executorAgentId: 'rescue-child', now }),
     (error) => error instanceof PluginError && error.code === 'PENDING_INVOCATION_NOT_FOUND' && error.remedy === 'Repeat the original command in this Codex thread.',
   );
+});
+
+test('pending bound Rescue choices persist exact private route snapshots and return them only internally', async () => {
+  const { dataRoot, workspaceA } = await fixture(); const pending = createInvocationStore({ dataRoot });
+  const candidateJobId = 'a'.repeat(64); const expectedOperationId = 'b'.repeat(64); const expectedCurrentJobId = 'c'.repeat(64);
+  await pending.savePending({
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'rescue',
+    source: 'explicit', executorAgentId: 'rescue-child', spec: { argv: ['rescue', 'task'] }, routeKind: 'bound',
+    candidateJobId, expectedOperationId, expectedCurrentJobId,
+  });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory);
+  const record = JSON.parse(await readFile(join(directory, name), 'utf8'));
+  assert.equal(record.version, 2); assert.equal(record.routeKind, 'bound'); assert.equal(record.candidateJobId, candidateJobId);
+  assert.equal(record.expectedOperationId, expectedOperationId); assert.equal(record.expectedCurrentJobId, expectedCurrentJobId);
+  const consumed = await pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'rescue', choice: 'resume', executorAgentId: 'rescue-child' });
+  assert.deepEqual(consumed.route, { routeKind: 'bound', candidateJobId, expectedOperationId, expectedCurrentJobId });
+});
+
+test('non-Rescue pending choices retain their public schema across the pending version upgrade', async () => {
+  const { dataRoot, workspaceA } = await fixture(); const pending = createInvocationStore({ dataRoot });
+  await pending.savePending({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', command: 'review', spec: { argv: ['review'] } });
+  assert.deepEqual(await pending.consumePending({ sessionId: 'session-a', workspace: workspaceA, command: 'review', choice: 'wait' }), {
+    argv: ['review', '--wait'], caller: { sessionId: 'session-a', turnId: 'turn-a', workspace: await realpath(workspaceA), permissionMode: 'workspace-write' },
+  });
 });
 
 test('expired pending Rescue choice is deleted and fails with an actionable recovery', async () => {

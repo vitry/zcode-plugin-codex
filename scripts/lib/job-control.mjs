@@ -13,31 +13,23 @@ const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 /**
  * Read the one Rescue job bound to a trusted forwarding executor without
  * exposing any durable identity or execution metadata.
- * @param {{store:any,workspace:string,executor:{parentSessionId:string,parentTurnId:string}}} input
+ * @param {{store:any,workspace:string,executor:{parentSessionId:string,agentId:string}}} input
  */
 export async function readBoundRescueStatus(input) {
-  if (!input?.store || typeof input.store.listOwnedJobs !== 'function'
+  if (!input?.store || typeof input.store.readBoundRescueCurrentJob !== 'function'
     || typeof input.workspace !== 'string' || input.workspace.length === 0
     || typeof input.executor?.parentSessionId !== 'string' || input.executor.parentSessionId.length === 0
-    || typeof input.executor?.parentTurnId !== 'string' || input.executor.parentTurnId.length === 0) {
+    || typeof input.executor?.agentId !== 'string' || input.executor.agentId.length === 0) {
     throw new PluginError('BOUND_RESCUE_STATUS_INPUT_INVALID', 'The bound Rescue status input is invalid.', {
       category: 'authorization', remedy: 'Invoke status only from the active Rescue child.',
     });
   }
-  let jobs;
-  try { jobs = await input.store.listOwnedJobs(input.workspace, input.executor.parentSessionId); }
-  catch { throw boundRescueStatusUnavailable(); }
-  if (!Array.isArray(jobs)) throw boundRescueStatusUnavailable();
-  const matches = jobs.filter((/** @type {any} */ job) => job.workspace === input.workspace
-    && job.ownerSessionId === input.executor.parentSessionId
-    && job.ownerTurnId === input.executor.parentTurnId
-    && job.command === 'rescue');
-  if (matches.length !== 1) {
-    throw new PluginError('BOUND_RESCUE_STATUS_NOT_FOUND', 'No unique bound Rescue status is available.', {
-      category: 'authorization', remedy: 'Continue waiting on the original Rescue foreground execution.',
-    });
+  let job;
+  try { job = await input.store.readBoundRescueCurrentJob({ workspace: input.workspace, parentSessionId: input.executor.parentSessionId, executorAgentId: input.executor.agentId }); }
+  catch (error) {
+    if (error instanceof PluginError && error.code === 'RESCUE_BINDING_CLOSED') throw new PluginError('BOUND_RESCUE_STATUS_NOT_FOUND', 'No exact bound Rescue status is available.', { category: 'authorization', remedy: 'Continue waiting on the original Rescue foreground execution.' });
+    throw boundRescueStatusUnavailable();
   }
-  const job = matches[0];
   const progressPreview = Array.isArray(job.progressPreview)
     ? job.progressPreview.filter((/** @type {unknown} */ value) => typeof value === 'string').slice(-4)
     : [];

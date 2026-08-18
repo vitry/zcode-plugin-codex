@@ -305,6 +305,20 @@ test('executor records enforce exact schema, byte, time, TTL, and file-count bou
   await assert.rejects(resolveForwardingExecutor(data, cwd, 'bounded-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
 });
 
+test('expired stopped executor provenance is retained and available only through the durable bound path', async () => {
+  const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'durable-parent', turnId: 'origin', workspace: cwd, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh durable' });
+  const input = { session_id: 'durable-parent', turn_id: 'child-turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'durable-child', agent_type: 'zcode-rescue' };
+  assert.equal((await runHook('subagent-hook.mjs', input, env)).code, 0);
+  assert.equal((await runHook('subagent-hook.mjs', { ...input, hook_event_name: 'SubagentStop', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env)).code, 0);
+  const original = await resolveForwardingExecutor(data, cwd, 'durable-child', { continuation: true });
+  const expiredAt = new Date(Date.parse(original.createdAt) + 31 * 60_000);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'durable-child', { continuation: true, now: expiredAt }), { code: 'EXECUTOR_IDENTITY_EXPIRED' });
+  const retained = await resolveForwardingExecutor(data, cwd, 'durable-child', { continuation: true, durableProvenance: true, now: expiredAt });
+  assert.equal(retained.agentId, 'durable-child'); assert.equal(retained.active, false); assert.equal(retained.parentTurnId, 'origin');
+  await assert.rejects(resolveForwardingExecutor(data, cwd, 'durable-child', { continuation: true, now: expiredAt }), { code: 'EXECUTOR_IDENTITY_EXPIRED' }, 'ordinary expiry must not delete retained provenance');
+});
+
 test('SessionEnd removes only its session contexts and leaves sibling jobs/session ownership', async () => {
   const { cwd, data, env } = await workspace();
   for (const session_id of ['a', 'b']) {
@@ -316,6 +330,18 @@ test('SessionEnd removes only its session contexts and leaves sibling jobs/sessi
   const contents = (await Promise.all((await jsonFiles(data)).map((path) => readFile(path, 'utf8')))).join('\n');
   assert.doesNotMatch(contents, /"sessionId": "a"/); assert.match(contents, /"sessionId": "b"/);
   const inventedModel = await runHook('session-end-hook.mjs', { session_id: 'b', cwd, hook_event_name: 'SessionEnd', transcript_path: null, model: 'gpt', reason: 'other' }, env); assert.notEqual(inventedModel.code, 0, 'SessionEnd must keep an exact native field contract');
+});
+
+test('SessionEnd closes exact Rescue bindings while retaining their durable jobs', async () => {
+  const { cwd, data, env } = await workspace(); const store = createStateStore({ dataRoot: data });
+  await runHook('session-lifecycle-hook.mjs', { session_id: 'bound-parent', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+  const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: 'bound-parent', parentPermissionMode: 'workspace-write', workspace: cwd };
+  const reserved = await store.reserveFreshRescueJob({ workspace: cwd, reservation: { workspace: cwd, ownerSessionId: 'bound-parent', ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }, executor });
+  await store.finishJob(cwd, reserved.job.id, ['queued'], 'failed');
+  const ended = await runHook('session-end-hook.mjs', { session_id: 'bound-parent', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
+  assert.equal(ended.code, 0, ended.stderr || ended.stdout);
+  await assert.rejects(store.resolveRescueBinding({ workspace: cwd, parentSessionId: 'bound-parent', executorAgentId: 'bound-child', executorAgentType: 'zcode-rescue', permissionMode: 'workspace-write' }), { code: 'RESCUE_BINDING_CLOSED' });
+  assert.equal((await store.readJob(cwd, reserved.job.id)).id, reserved.job.id);
 });
 
 test('SessionEnd releases only its broker owner sessions and lets the idle broker exit', async () => {

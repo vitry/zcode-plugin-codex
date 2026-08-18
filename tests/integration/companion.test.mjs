@@ -1250,6 +1250,20 @@ test('rescue requires an explicit choice when an owned resumable session exists'
   assert.equal(resumed.json.job.zcodeSessionId, fresh.json.job.zcodeSessionId);
 });
 
+test('trusted bound routing keeps choice identity private and permits only fresh permission replacement', async () => {
+  const context = await fixture(); const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: 'bound-parent', parentPermissionMode: 'workspace-write', workspace: context.workspace };
+  const initial = await runCompanion(['rescue', '--fresh', 'bound first'], { cwd: context.workspace, env: context.env, caller: caller('bound-parent', 'turn-a'), executor });
+  assert.equal(initial.job.status, 'succeeded');
+  const choice = await runCompanion(['rescue', 'bound next'], { cwd: context.workspace, env: context.env, caller: caller('bound-parent', 'turn-b'), executor });
+  assert.deepEqual(choice, { type: 'needs-choice', choices: ['--resume', '--fresh'] });
+  assert.doesNotMatch(JSON.stringify(choice), /bound-child|bound-parent|[a-f0-9]{64}/u);
+  const changed = { ...executor, parentPermissionMode: 'read-only' }; const changedCaller = { ...caller('bound-parent', 'turn-c'), permissionMode: 'read-only' };
+  await assert.rejects(runCompanion(['rescue', '--resume', 'wrong permission'], { cwd: context.workspace, env: context.env, caller: changedCaller, executor: changed }), { code: 'RESCUE_BINDING_INVALID' });
+  const replaced = await runCompanion(['rescue', '--fresh', 'authorized replacement'], { cwd: context.workspace, env: context.env, caller: changedCaller, executor: changed });
+  assert.equal(replaced.job.status, 'succeeded'); assert.notEqual(replaced.job.zcodeSessionId, initial.job.zcodeSessionId);
+  assert.equal((await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({ workspace: context.workspace, parentSessionId: 'bound-parent', executorAgentId: 'bound-child', executorAgentType: 'zcode-rescue', permissionMode: 'read-only' })).kind, 'bound');
+});
+
 test('resumed rescue cannot reuse a historical visible result when the current turn is hidden', async () => {
   const context = await fixture(); const fresh = await companion(context, ['rescue', '--fresh', 'historical visible']);
   assert.equal(fresh.code, 0, `${fresh.stderr}${fresh.stdout}`);

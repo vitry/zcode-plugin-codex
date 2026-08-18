@@ -35,21 +35,21 @@ test('owner IDs are stable, opaque and session-confined', () => {
   assert.doesNotMatch(ownerIdForSession('session-a'), /session-a/);
 });
 
-test('bound Rescue status selects the exact parent turn and returns only the fixed safe projection', async () => {
+test('bound Rescue status selects the exact binding current job and returns only the fixed safe projection', async () => {
   const preview = ['one', 'two', 'three', 'four', 'five'];
   const jobs = [
     { id: 'job-wrong-turn', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'other-turn', command: 'rescue', status: 'running' },
     { id: 'job-wrong-command', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'review', status: 'running' },
     { id: 'job-bound', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'rescue', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:00.000Z', progressPreview: preview, workerLeaseId: 'PRIVATE_WORKER', resultArtifact: 'PRIVATE_ARTIFACT' },
   ];
-  let listed;
+  let requested;
   const result = await readBoundRescueStatus({
-    store: { listOwnedJobs: async (/** @type {string} */ workspace, /** @type {string} */ ownerSessionId) => { listed = { workspace, ownerSessionId }; return jobs; } },
+    store: { readBoundRescueCurrentJob: async (/** @type {any} */ input) => { requested = input; return jobs[2]; } },
     workspace: '/repo',
-    executor: { parentSessionId: 'parent', parentTurnId: 'parent-turn' },
+    executor: { parentSessionId: 'parent', agentId: 'child' },
   });
 
-  assert.deepEqual(listed, { workspace: '/repo', ownerSessionId: 'parent' });
+  assert.deepEqual(requested, { workspace: '/repo', parentSessionId: 'parent', executorAgentId: 'child' });
   assert.deepEqual(Object.keys(result), ['type', 'status', 'phase', 'lastActivityAt', 'progressPreview', 'terminal']);
   assert.deepEqual(result, {
     type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:00.000Z',
@@ -59,32 +59,21 @@ test('bound Rescue status selects the exact parent turn and returns only the fix
   assert.doesNotMatch(JSON.stringify(result), /job-|parent|repo|worker|artifact|PRIVATE/i);
 
   const terminal = await readBoundRescueStatus({
-    store: { listOwnedJobs: async () => [{ ...jobs[2], status: 'succeeded', phase: 'finalizing' }] },
-    workspace: '/repo', executor: { parentSessionId: 'parent', parentTurnId: 'parent-turn' },
+    store: { readBoundRescueCurrentJob: async () => ({ ...jobs[2], status: 'succeeded', phase: 'finalizing' }) },
+    workspace: '/repo', executor: { parentSessionId: 'parent', agentId: 'child' },
   });
   assert.equal(terminal.terminal, true);
   assert.equal(terminal.status, 'succeeded');
 });
 
-test('bound Rescue status fails closed unless exactly one workspace and turn match exists', async () => {
-  const executor = { parentSessionId: 'parent', parentTurnId: 'parent-turn' };
+test('bound Rescue status maps exact binding lookup failures to fixed safe errors', async () => {
+  const executor = { parentSessionId: 'parent', agentId: 'child' };
   const matching = { id: 'job-bound', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'rescue', status: 'succeeded', updatedAt: '2026-08-17T00:00:00.000Z' };
-  for (const jobs of [
-    [],
-    [matching, { ...matching, id: 'job-second' }],
-    [{ ...matching, workspace: '/foreign' }],
-    [{ ...matching, ownerTurnId: 'other-turn' }],
-    [{ ...matching, command: 'review' }],
-  ]) {
-    await assert.rejects(
-      readBoundRescueStatus({ store: { listOwnedJobs: async () => jobs }, workspace: '/repo', executor }),
-      { code: 'BOUND_RESCUE_STATUS_NOT_FOUND' },
-    );
-  }
+  await assert.rejects(readBoundRescueStatus({ store: { readBoundRescueCurrentJob: async () => { throw new PluginError('RESCUE_BINDING_CLOSED', 'private'); } }, workspace: '/repo', executor }), { code: 'BOUND_RESCUE_STATUS_NOT_FOUND' });
   await assert.rejects(readBoundRescueStatus({ store: {}, workspace: '/repo', executor }), { code: 'BOUND_RESCUE_STATUS_INPUT_INVALID' });
-  await assert.rejects(readBoundRescueStatus({ store: { listOwnedJobs: async () => [matching] }, workspace: '/repo', executor: /** @type {any} */ ({}) }), { code: 'BOUND_RESCUE_STATUS_INPUT_INVALID' });
+  await assert.rejects(readBoundRescueStatus({ store: { readBoundRescueCurrentJob: async () => matching }, workspace: '/repo', executor: /** @type {any} */ ({}) }), { code: 'BOUND_RESCUE_STATUS_INPUT_INVALID' });
   await assert.rejects(
-    readBoundRescueStatus({ store: { listOwnedJobs: async () => { throw new PluginError('PRIVATE_STATE_FAILURE', 'PRIVATE_JOB_ID'); } }, workspace: '/repo', executor }),
+    readBoundRescueStatus({ store: { readBoundRescueCurrentJob: async () => { throw new PluginError('PRIVATE_STATE_FAILURE', 'PRIVATE_JOB_ID'); } }, workspace: '/repo', executor }),
     (/** @type {any} */ error) => error?.code === 'BOUND_RESCUE_STATUS_UNAVAILABLE' && error.message === 'Bound Rescue status is unavailable.' && Object.keys(error.details).length === 0,
   );
 });

@@ -264,6 +264,7 @@ test('prepared explicit candidate choice preserves source and normalized argv fo
   assert.deepEqual(await createInvocationStore({ dataRoot: ctx.dataRoot }).consumePending({ sessionId: 'choice-parent', workspace: ctx.workspace, command: 'rescue', choice: 'resume', executorAgentId: 'prepared-choice-child' }), {
     argv: ['rescue', '--resume', '--model', 'model', '--effort', 'high', '--', 'choose continuation'], source: 'explicit',
     caller: { sessionId: 'choice-parent', turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write' },
+    route: { routeKind: 'legacy', candidateJobId: (await storeCandidate(ctx, 'choice-parent')).id },
   });
 });
 
@@ -299,7 +300,7 @@ test('bound Rescue status sidecar exposes only safe fixed fields and starts no Z
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
   await identity.beginCallerTurn({ sessionId: 'status-parent', turnId: 'status-parent-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
   await startRescueChild(ctx, 'status-parent', 'status-child', 'status-child-turn');
-  const job = await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'status-parent', ownerTurnId: 'status-parent-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const reserved = await store.reserveFreshRescueJob({ workspace: ctx.workspace, ownerSessionId: 'status-parent', reservation: { workspace: ctx.workspace, ownerSessionId: 'status-parent', ownerTurnId: 'status-parent-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }, executor: { agentId: 'status-child', agentType: 'zcode-rescue', parentSessionId: 'status-parent', parentPermissionMode: 'workspace-write', workspace: ctx.workspace } }); const job = reserved.job;
   await store.transitionJob(ctx.workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'PRIVATE_SESSION' });
   const observedAt = new Date().toISOString();
   await store.updateJobProgress(ctx.workspace, job.id, { phase: 'running', message: 'ZCode is working with a tool.', observedAt });
@@ -340,7 +341,7 @@ test('bound Rescue status maps corrupt durable state to one metadata-free error'
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
   await identity.beginCallerTurn({ sessionId: 'corrupt-parent', turnId: 'corrupt-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
   await startRescueChild(ctx, 'corrupt-parent', 'corrupt-child', 'corrupt-child-turn');
-  const job = await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'corrupt-parent', ownerTurnId: 'corrupt-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const job = (await store.reserveFreshRescueJob({ workspace: ctx.workspace, reservation: { workspace: ctx.workspace, ownerSessionId: 'corrupt-parent', ownerTurnId: 'corrupt-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }, executor: { agentId: 'corrupt-child', agentType: 'zcode-rescue', parentSessionId: 'corrupt-parent', parentPermissionMode: 'workspace-write', workspace: ctx.workspace } })).job;
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
   await writeFile(join(storage.directory, 'jobs', `${job.id}.json`), JSON.stringify({ ...job, workspace: 'PRIVATE_CORRUPT_WORKSPACE' }));
   const protocolRecord = join(ctx.directory, 'corrupt-status-protocol.jsonl');
@@ -363,7 +364,7 @@ test('bound Rescue status sidecar rejects missing, sibling, stale-turn and ambig
 
   await identity.beginCallerTurn({ sessionId: 'side-parent', turnId: 'bound-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
   await startRescueChild(ctx, 'side-parent', 'bound-child', 'bound-child-turn');
-  await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'side-parent', ownerTurnId: 'bound-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.reserveFreshRescueJob({ workspace: ctx.workspace, reservation: { workspace: ctx.workspace, ownerSessionId: 'side-parent', ownerTurnId: 'bound-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }, executor: { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: 'side-parent', parentPermissionMode: 'workspace-write', workspace: ctx.workspace } });
   await startRescueChild(ctx, 'side-parent', 'same-turn-sibling', 'same-turn-sibling-turn');
   const sameTurnSibling = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-child' } });
   assert.notEqual(sameTurnSibling.code, 0); assert.match(sameTurnSibling.stdout, /EXECUTOR_IDENTITY_AMBIGUOUS/);
@@ -377,9 +378,10 @@ test('bound Rescue status sidecar rejects missing, sibling, stale-turn and ambig
 
   await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'side-parent', ownerTurnId: 'bound-turn', command: 'rescue', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await identity.beginCallerTurn({ sessionId: 'side-parent', turnId: 'bound-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
-  const ambiguous = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-child' } });
-  assert.notEqual(ambiguous.code, 0); assert.match(ambiguous.stdout, /BOUND_RESCUE_STATUS_NOT_FOUND/);
+  const exact = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-child' } });
+  assert.equal(exact.code, 0, exact.stderr || exact.stdout);
 });
+async function storeCandidate(ctx, sessionId) { return (await createStateStore({ dataRoot: ctx.dataRoot }).listOwnedJobs(ctx.workspace, sessionId)).find((job) => job.command === 'rescue'); }
 async function stopRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
   const result = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], { cwd: ctx.workspace, env: ctx.env, ordinaryInput: true, input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: agentType, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } });
   assert.equal(result.code, 0, result.stderr || result.stdout);
@@ -559,6 +561,29 @@ test('invoke-choice consumes only the same session pending rescue once', async (
   assert.equal(accepted.code, 0, accepted.stderr || accepted.stdout);
   const replay = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-child-a' } });
   assert.notEqual(replay.code, 0); assert.match(replay.stdout, /PENDING_INVOCATION_NOT_FOUND/);
+});
+
+test('a stopped Rescue child resumes its exact bound peer session on a later parent turn without a second SubagentStart', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const record = join(ctx.directory, 'exact-bound-resume.jsonl'); await writeFile(record, '');
+  await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'turn-a', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh first' });
+  await startRescueChild(ctx, 'shared-parent', 'child-a', 'child-a-only-start');
+  const first = await invokePreparedRescue(ctx, 'shared-parent', 'child-a', 'first', { execution: 'foreground', resume: 'fresh' }, { ...ctx.env, FAKE_ZCODE_RECORD: record });
+  assert.equal(first.code, 0, first.stderr || first.stdout); await stopRescueChild(ctx, 'shared-parent', 'child-a', 'child-a-only-start');
+
+  await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'turn-b', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh second' });
+  await startRescueChild(ctx, 'shared-parent', 'child-b', 'child-b-start');
+  const second = await invokePreparedRescue(ctx, 'shared-parent', 'child-b', 'second', { execution: 'foreground', resume: 'fresh' }, { ...ctx.env, FAKE_ZCODE_RECORD: record });
+  assert.equal(second.code, 0, second.stderr || second.stdout); await stopRescueChild(ctx, 'shared-parent', 'child-b', 'child-b-start');
+
+  await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'turn-a-followup', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'continue first' });
+  await prepareRescue(ctx, 'shared-parent', { version: 1, source: 'proactive', task: 'continue first', options: { execution: 'foreground', resume: 'resume' } });
+  const resumed = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'child-a', FAKE_ZCODE_RECORD: record } });
+  assert.equal(resumed.code, 0, resumed.stderr || resumed.stdout); assert.doesNotMatch(resumed.stdout, /needs-choice/);
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const created = requests.filter((frame) => frame.method === 'session/create').map((frame) => frame.result?.session?.sessionId ?? frame.params?.sessionId).filter(Boolean);
+  const resume = requests.filter((frame) => frame.method === 'session/resume').at(-1);
+  assert.ok(resume, 'the stopped child must resume instead of creating a third session');
+  assert.notEqual(resume.params.sessionId, created.at(-1), 'child A must never resume child B\'s later session');
 });
 
 test('same-parent sibling cannot consume a pending Rescue choice without trusted executor identity', async (t) => {
