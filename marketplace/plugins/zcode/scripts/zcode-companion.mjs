@@ -130,7 +130,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
       if (binding.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
     }
     const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
-    const output = await runCompanion(preparedArgv, { cwd, env, caller, executor, originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+    const output = await runCompanion(preparedArgv, { cwd: caller.workspace, env, caller, executor, originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
     if (output?.type === 'needs-choice') await saveRescuePendingChoice({ dataRoot, caller, cwd, source: prepared.envelope.source, executor, argv: preparedArgv, output });
     return output;
   }
@@ -168,7 +168,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
       return { type: 'needs-choice', choices: ['wait', 'background'] };
     }
   }
-  const output = await runCompanion(invocation.argv, { cwd, env, caller: executionCaller, executor, rescueRoute: invocation.route, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+  const output = await runCompanion(invocation.argv, { cwd: command === 'rescue' ? executionCaller.workspace : cwd, env, caller: executionCaller, executor, rescueRoute: invocation.route, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
   if (output?.type === 'needs-choice') {
     if (command === 'rescue') await saveRescuePendingChoice({ dataRoot, caller: executionCaller, cwd, source: invocation.source ?? 'explicit', executor, argv: invocation.argv, output });
     else await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv } });
