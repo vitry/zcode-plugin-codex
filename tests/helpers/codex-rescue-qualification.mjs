@@ -1006,7 +1006,7 @@ function assertParentPreparationTaskExclusivity(parent, writeEvent, task, calls,
     }
     let result;
     try { result = parseCapturedHostResult(event.payload.output); } catch { continue; }
-    if (stringLeafContains(result, task) || boundedOutputContainsTask(result.output, task)) {
+    if (boundedStringLeavesContainTask(result, task)) {
       mismatch('preparation-task-exclusivity', 'The private Rescue task escaped the single authorized preparation write.');
     }
   }
@@ -1085,6 +1085,13 @@ function boundedOutputContainsTask(text, task) {
   return false;
 }
 
+function boundedStringLeavesContainTask(value, task) {
+  for (const leaf of stringLeaves(value)) {
+    if (boundedOutputContainsTask(leaf, task)) return true;
+  }
+  return false;
+}
+
 function jsonTextCandidates(text) {
   const candidates = new Set();
   const add = (value) => {
@@ -1096,43 +1103,41 @@ function jsonTextCandidates(text) {
     }
   };
   add(text);
+  const containers = [];
+  let stringStart;
+  let escaped = false;
   for (let offset = 0; offset < text.length; offset += 1) {
-    if (!['"', '{', '['].includes(text[offset])) continue;
-    const end = balancedJsonTokenEnd(text, offset);
-    if (end !== undefined) add(text.slice(offset, end));
-    if (text[offset] === '"' && end !== undefined) offset = end - 1;
-  }
-  return candidates;
-}
-
-function balancedJsonTokenEnd(text, start) {
-  if (text[start] === '"') {
-    let escaped = false;
-    for (let offset = start + 1; offset < text.length; offset += 1) {
-      if (escaped) { escaped = false; continue; }
-      if (text[offset] === '\\') { escaped = true; continue; }
-      if (text[offset] === '"') return offset + 1;
-    }
-    return undefined;
-  }
-  const stack = [text[start]]; let inString = false; let escaped = false;
-  for (let offset = start + 1; offset < text.length; offset += 1) {
     const character = text[offset];
-    if (inString) {
+    if (stringStart !== undefined) {
       if (escaped) escaped = false;
       else if (character === '\\') escaped = true;
-      else if (character === '"') inString = false;
+      else if (character === '"') {
+        add(text.slice(stringStart, offset + 1));
+        stringStart = undefined;
+      }
       continue;
     }
-    if (character === '"') { inString = true; continue; }
-    if (character === '{' || character === '[') stack.push(character);
-    else if (character === '}' || character === ']') {
-      const opening = stack.pop();
-      if ((opening === '{') !== (character === '}')) return undefined;
-      if (stack.length === 0) return offset + 1;
+    if (character === '"') {
+      stringStart = offset;
+      continue;
     }
+    if (character === '{' || character === '[') {
+      containers.push({ character, offset });
+      if (containers.length > MAX_LEGACY_JSON_CANDIDATES) {
+        mismatch('preparation-task-exclusivity', 'The bounded parent output decoding budget was exceeded.');
+      }
+      continue;
+    }
+    if (character !== '}' && character !== ']') continue;
+    const opening = containers.pop();
+    if (!opening) continue;
+    if ((opening.character === '{') !== (character === '}')) {
+      containers.length = 0;
+      continue;
+    }
+    add(text.slice(opening.offset, offset + 1));
   }
-  return undefined;
+  return candidates;
 }
 
 function stringLeaves(value) {

@@ -961,6 +961,21 @@ test('bounded task scanning covers balanced JSON tokens in legacy and structured
   }
 });
 
+test('fails closed within the candidate budget on a flood of unmatched JSON delimiters', () => {
+  const task = 'repair the bounded delimiter scanner';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  input.rollouts[0].splice(7, 0,
+    structuredExec('true', 'unmatched-delimiter-flood'),
+    toolOutput('unmatched-delimiter-flood', '{'.repeat(4_096)));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+  );
+});
+
 test('structured task scanning retains parsed non-output result fields', () => {
   const task = 'repair the "quoted" \\route\nnow';
   const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
@@ -969,6 +984,21 @@ test('structured task scanning retains parsed non-output result fields', () => {
   input.rollouts[0].splice(7, 0,
     structuredExecResult('true', 'structured-result-field'),
     capturedResultEvent('structured-result-field', { output: '', exit_code: 0, chunk_id: task }));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+  );
+});
+
+test('structured task scanning recursively decodes every non-output string leaf', () => {
+  const task = 'repair the "quoted" \\route\nnow';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  input.rollouts[0].splice(7, 0,
+    structuredExecResult('true', 'structured-encoded-result-field'),
+    capturedResultEvent('structured-encoded-result-field', { output: '', exit_code: 0, chunk_id: JSON.stringify(task) }));
   assert.throws(
     () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
     (error) => error instanceof CodexRescueEvidenceMismatchError
