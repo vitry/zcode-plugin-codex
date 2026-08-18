@@ -138,7 +138,7 @@ export function createStateStore(options) {
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
         const job = makeReservedJob(storage, jobs, input.reservation);
         const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
-        const { record: previous, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity);
+        const { record: previous, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity, { allowAuthorityOnlyRepair: true });
         if (input.expectedOperationId !== undefined
           && (previous?.state !== 'active' || previous.operationId !== input.expectedOperationId
             || previous.anchorJobId !== input.expectedAnchorJobId || previous.currentJobId !== input.expectedCurrentJobId)) throw staleRescueBinding();
@@ -604,9 +604,9 @@ function sameBindingSnapshot(left, right) {
   return JSON.stringify([...left.records].sort()) === JSON.stringify([...right.records].sort());
 }
 
-/** Validate one session partition, GC old closed slots only for new-slot creation, and return this slot. @param {any} storage @param {any} identity @param {any} lockIdentity */
-async function prepareBindingSlot(storage, identity, lockIdentity) {
-  let snapshot = await readBindingPartitionSnapshot(storage, identity.parentSessionId, true, true); const key = rescueBindingKey(identity);
+/** Validate one session partition, GC old closed slots only for new-slot creation, and return this slot. @param {any} storage @param {any} identity @param {any} lockIdentity @param {{allowAuthorityOnlyRepair?:boolean}} [options] */
+async function prepareBindingSlot(storage, identity, lockIdentity, options = {}) {
+  let snapshot = await readBindingPartitionSnapshot(storage, identity.parentSessionId, true, options.allowAuthorityOnlyRepair === true); const key = rescueBindingKey(identity);
   if (snapshot.authority === null) {
     const authority = createRescueBindingAuthority({ parentSessionId: identity.parentSessionId, workspace: storage.workspacePath });
     await assertStateLockIdentity(storage, lockIdentity);
