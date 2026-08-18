@@ -110,6 +110,11 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   asking. Old pending records lacking candidate identity must reject resume after
   upgrade (fresh remains safe). Explicit fresh establishes a new generation.
   Invalid binding never falls back.
+- [ ] Add the bound explicit no-flag route: it also returns `needs-choice` and
+  stores the exact bound `anchorJobId` as its private candidate. Inserting a
+  later job cannot change it. Resume choice CAS-reserves an exact bound
+  continuation; fresh choice creates a new generation. It never legacy-adopts
+  or calls latest-candidate selection.
 - [ ] Run focused tests and record RED before production changes.
 - [ ] Pass trusted executor context from both `invoke-prepared` and
   `invoke-choice` into `runCompanion`/`startPublic` without changing public argv.
@@ -124,9 +129,10 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   originating pending record/permission. Do not require historical parentTurnId
   to equal the new active turn.
 - [ ] Select routing as follows: bound+resume → exact continuation transaction;
-  bound+fresh → fresh transaction; missing binding → existing legacy candidate
-  behavior; invalid binding → fixed failure. Require Root to materialize the
-  bound route; do not let the child infer it.
+  bound+fresh → fresh transaction; bound+omitted explicit → exact-anchor
+  `needs-choice`; missing binding → existing legacy candidate behavior; invalid
+  binding → fixed failure. Require Root to materialize the bound route; do not
+  let the child infer it.
 - [ ] Permit a current trusted `fresh` route to replace a structurally valid
   same-slot binding with an older permission mode. Resume with that mismatch and
   every structural/identity corruption remain fail closed.
@@ -167,10 +173,12 @@ git diff --check
 - Modify: `SECURITY.md`
 - Modify: `CHANGELOG.md`
 
-- [ ] Write contract RED tests for three Root states:
-  active child → rejoin only; stopped same-operation child → preflight, private
-  prepare with `resume`, exact followup, zero spawn; independent/fresh operation
-  → prepare and spawn a new Rescue child.
+- [ ] Write contract RED tests for Root states: active child → rejoin only;
+  stopped proactive clear same-operation child → preflight, private prepare with
+  `resume`, exact followup, zero spawn; stopped explicit bound candidate without
+  a flag → prepare without a route, exact followup, `needs-choice`, then same-child
+  `invoke-choice`; independent/fresh operation → prepare and spawn a new Rescue
+  child.
 - [ ] Preserve exact precedence for explicit choices, one-time `needs-choice`
   for every explicit bound-or-legacy candidate without a flag, proactive clear
   routes, and proactive ambiguity. Assert Root, not the child, owns every
