@@ -38,7 +38,7 @@ try {
   const sequencePath = join(captureDirectory, 'sequence');
   let sequence = 0;
   try { sequence = Number.parseInt(await readFile(sequencePath, 'utf8'), 10); } catch { /* first capture */ }
-  if (!Number.isSafeInteger(sequence) || sequence < 0) process.exit(99);
+  if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error('installed hook capture sequence is invalid');
   sequence += 1;
   await writeFile(sequencePath, `${sequence}\n`, { mode: 0o600 });
   const artifacts = await snapshotFiles(privateDataRoot);

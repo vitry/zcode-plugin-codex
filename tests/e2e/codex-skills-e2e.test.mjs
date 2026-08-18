@@ -683,10 +683,26 @@ test('deterministic installed observer artifacts flow through the live continuat
     mutated[field] = JSON.stringify(mutate(mutated));
     await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(mutated), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
   }
+  for (const [field, code, output] of [
+    ['rawParentRolloutJson', 'continuation-raw-parent-events', { type: 'response_item', payload: { type: 'function_call_output', call_id: 'orphan', output: '{}' } }],
+    ['rawChildRolloutJson', 'continuation-raw-child-events', { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'orphan', output: '{}' } }],
+  ]) { const mutated = structuredClone(captured); mutated[field] = JSON.stringify([...JSON.parse(mutated[field]), output]); await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(mutated), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code); }
   const leaked = structuredClone(captured); const rawParent = JSON.parse(leaked.rawParentRolloutJson); rawParent.push({ type: 'event_msg', payload: { type: 'agent_message', message: partition.records[0].operationId } }); leaked.rawParentRolloutJson = JSON.stringify(rawParent);
   await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(leaked), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-private-leak');
   const rewritten = structuredClone(captured); const history = JSON.parse(rewritten.artifactHistoryJson); history.push({ ...history.find((artifact) => artifact.path.includes('rescue-binding-authority-')), bytes: `${JSON.stringify({ ...authority, createdAt: '2026-08-11T00:00:00.000Z' })}\n` }); rewritten.artifactHistoryJson = JSON.stringify(history);
   await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(rewritten), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-history');
+  const absentHistory = structuredClone(captured); absentHistory.artifactHistoryJson = '[]'; await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(absentHistory), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-history');
+  const rekeyedPreparation = structuredClone(captured); const preparationHistory = JSON.parse(rekeyedPreparation.artifactHistoryJson); const preparedArtifact = preparationHistory.find((artifact) => artifact.path.includes('invocations/prepared/')); const preparedValue = JSON.parse(preparedArtifact.bytes); preparationHistory.push({ ...preparedArtifact, bytes: `${JSON.stringify({ ...preparedValue, turnId: 'forged-turn' })}\n` }); rekeyedPreparation.artifactHistoryJson = JSON.stringify(preparationHistory);
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(rekeyedPreparation), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-history');
+  for (const [pathPart, mutate] of [
+    ['hook-state/executor-', (value) => ({ ...value, parentTurnId: 'forged-turn' })],
+    ['rescue-binding-session-', (value) => ({ ...value, records: value.records.map((record) => ({ ...record, anchorJobId: 'f'.repeat(64) })) })],
+    ['jobs/', (value) => ({ ...value, ownerTurnId: 'forged-turn' })],
+  ]) {
+    const changed = structuredClone(captured); const copies = JSON.parse(changed.artifactHistoryJson); const source = copies.find((artifact) => artifact.path.includes(pathPart));
+    copies.push({ ...source, bytes: `${JSON.stringify(mutate(JSON.parse(source.bytes)))}\n` }); changed.artifactHistoryJson = JSON.stringify(copies);
+    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(changed), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-history', pathPart);
+  }
 });
 
 test('installed choice qualification requires yielded same-handle terminal evidence in both logical segments', () => {

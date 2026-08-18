@@ -251,13 +251,21 @@ function validateLiveRawContinuationCapture(input, core) {
   if (parentFunctions.filter((event) => event.payload.name === 'spawn_agent').length !== 1 || parentFunctions.filter((event) => event.payload.name === 'followup_task').length !== 1
     || parentFunctions.some((event) => !['spawn_agent', 'followup_task'].includes(event.payload.name))) mismatch('continuation-raw-parent-events', 'Complete parent capture contains an extra orchestration call.');
   assertAllowedRawHostCalls(rawParent, 'parent'); assertAllowedRawHostCalls(rawChild, 'child');
+  const rawParentCommands = rawParent.filter((event) => event?.payload?.type === 'custom_tool_call').map((event) => parseCapturedHostCall(event.payload.input));
+  if (rawParentCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" prepare rescue')).length !== 2
+    || rawParentCommands.filter((host) => host.kind === 'write_stdin' && typeof host.envelope.get('chars') === 'string' && host.envelope.get('chars').includes('"source"')).length !== 2
+    || rawParent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started').length !== 1
+    || rawParent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'stopped').length !== 1) mismatch('continuation-raw-parent-events', 'Complete parent capture duplicates or omits a required lifecycle event.');
+  const rawChildCommands = rawChild.filter((event) => event?.payload?.type === 'custom_tool_call').map((event) => parseCapturedHostCall(event.payload.input));
+  if (rawChildCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue')).length !== 2
+    || rawChildCommands.filter((host) => host.kind === 'write_stdin').length > MAX_CHILD_POLLS) mismatch('continuation-raw-child-events', 'Complete child capture duplicates or omits invoke-prepared evidence.');
   const starts = rawHooks.filter((event) => event?.hook_event_name === 'SubagentStart'); const stops = rawHooks.filter((event) => event?.hook_event_name === 'SubagentStop');
   const prompts = rawHooks.filter((event) => event?.hook_event_name === 'UserPromptSubmit');
   if (starts.length !== 1 || stops.length !== 1 || prompts.length < 1 || prompts.length > 2 || rawHooks.some((event) => !['SubagentStart', 'SubagentStop', 'UserPromptSubmit'].includes(event?.hook_event_name))
     || !(rawHooks.indexOf(starts[0]) < rawHooks.indexOf(stops[0]) && rawHooks.indexOf(stops[0]) < rawHooks.indexOf(prompts.at(-1)))) mismatch('continuation-raw-hook-events', 'Complete hook capture contains duplicates, extras, or invalid order.');
   if (rawPeer.length !== 4 || rawPeer.filter((event) => event?.method === 'session/create').length !== 1 || rawPeer.filter((event) => event?.method === 'session/resume').length !== 1
     || rawPeer.filter((event) => event?.method === 'session/send').length !== 2) mismatch('continuation-raw-peer-events', 'Complete fake-peer capture contains an extra or missing request.');
-  validateImmutableArtifactHistory(history);
+  validateImmutableArtifactHistory(history, input);
   return { publicEvidence: { parent: redactValidatedPreparationInputs(rawParent), child: rawChild } };
 }
 
@@ -275,20 +283,49 @@ function assertAllowedRawHostCalls(events, role) {
       : host.kind === 'write_stdin' || typeof command === 'string' && (command.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue') || command.endsWith('/scripts/zcode-companion.mjs" invoke-status rescue'));
     if (!allowed) mismatch(`continuation-raw-${role}-events`, `Complete ${role} capture contains an extra host call.`);
   }
+  const allCalls = events.filter((event) => ['custom_tool_call', 'function_call'].includes(event?.payload?.type));
+  const outputs = events.filter((event) => ['custom_tool_call_output', 'function_call_output'].includes(event?.payload?.type));
+  const callIds = allCalls.map((event) => event.payload.call_id);
+  if (new Set(callIds).size !== callIds.length || allCalls.some((call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)
+    || outputs.some((output) => allCalls.filter((call) => call.payload.call_id === output.payload.call_id).length !== 1)) mismatch(`continuation-raw-${role}-events`, `Complete ${role} capture contains an orphan or duplicate host result.`);
 }
 
-function validateImmutableArtifactHistory(history) {
-  const immutable = new Map();
+function validateImmutableArtifactHistory(history, input) {
+  const immutable = new Map(); const executorHistory = new Map(); const bindingHistory = new Map(); const jobHistory = new Map();
+  let previousSequence = 0;
   for (const artifact of history) {
-    if (!artifact || typeof artifact.path !== 'string' || typeof artifact.bytes !== 'string' || artifact.sequence !== null && !Number.isSafeInteger(artifact.sequence)) mismatch('continuation-artifact-history', 'Raw artifact history is malformed.');
+    if (!artifact || typeof artifact.path !== 'string' || Buffer.byteLength(artifact.path) > 4096 || typeof artifact.bytes !== 'string' || Buffer.byteLength(artifact.bytes) > MAX_ROLLOUT_BYTES
+      || artifact.sequence !== null && (!Number.isSafeInteger(artifact.sequence) || artifact.sequence < previousSequence)) mismatch('continuation-artifact-history', 'Raw artifact history is malformed.');
+    if (artifact.sequence !== null) previousSequence = artifact.sequence;
     let value; try { value = JSON.parse(artifact.bytes); } catch { continue; }
     let identity;
-    if (artifact.path.includes('invocations/prepared/') && value?.consumedAt) identity = `prepared:${value.turnId}`;
-    else if (artifact.path.includes('rescue-binding-authority-')) identity = `authority:${value.key}`;
-    if (!identity) continue;
-    const previous = immutable.get(identity); if (previous !== undefined && previous !== artifact.bytes) mismatch('continuation-artifact-history', 'An immutable captured artifact changed across phases.');
-    immutable.set(identity, artifact.bytes);
+    if (artifact.path.includes('invocations/prepared/') && value?.consumedAt) identity = `prepared-path:${artifact.path}`;
+    else if (artifact.path.includes('rescue-binding-authority-')) identity = `authority-path:${artifact.path}`;
+    if (identity) { const previous = immutable.get(identity); if (previous !== undefined && previous !== artifact.bytes) mismatch('continuation-artifact-history', 'An immutable captured artifact changed across phases.');
+      immutable.set(identity, artifact.bytes); }
+    if (artifact.path.includes('hook-state/executor-') && value?.agentId) appendHistory(executorHistory, value.agentId, value);
+    if (artifact.path.includes('rescue-binding-session-') && Array.isArray(value?.records)) for (const record of value.records) appendHistory(bindingHistory, record.key, record);
+    if (artifact.path.startsWith('jobs/') && value?.id) appendHistory(jobHistory, value.id, value);
   }
+  if (immutable.size < 3 || executorHistory.size !== 1 || bindingHistory.size !== 1 || jobHistory.size !== 2) mismatch('continuation-artifact-history', 'Complete artifact history is missing mandatory authority records.');
+  let preparations; let jobs; try { preparations = JSON.parse(input.preparationRecordBytesJson); jobs = JSON.parse(input.jobRecordBytesJson); } catch { mismatch('continuation-artifact-history', 'Selected artifact bytes are malformed.'); }
+  for (const selected of [input.executorRecordBytes, input.bindingAuthorityBytes, input.bindingPartitionBytes, ...preparations, ...jobs]) {
+    if (history.filter((artifact) => artifact.bytes === selected).length < 1) mismatch('continuation-artifact-history', 'Selected authority bytes are absent from complete artifact history.');
+  }
+  for (const versions of executorHistory.values()) assertStableVersions(versions, ['active'], 'executor');
+  for (const versions of bindingHistory.values()) assertStableVersions(versions, ['currentJobId', 'permissionMode', 'updatedAt'], 'binding');
+  for (const versions of jobHistory.values()) assertStableFields(versions, ['id', 'workspace', 'ownerSessionId', 'ownerTurnId', 'command', 'readOnly', 'permissionSnapshot'], 'job');
+}
+
+function appendHistory(map, key, value) { const versions = map.get(key) ?? []; versions.push(value); map.set(key, versions); }
+function assertStableVersions(versions, mutableKeys, label) {
+  const stable = (value) => Object.fromEntries(Object.entries(value).filter(([key]) => !mutableKeys.includes(key)));
+  const expected = JSON.stringify(stable(versions[0]));
+  if (versions.some((value) => JSON.stringify(stable(value)) !== expected)) mismatch('continuation-artifact-history', `Captured ${label} authority was rewritten across phases.`);
+}
+function assertStableFields(versions, keys, label) {
+  const expected = JSON.stringify(Object.fromEntries(keys.map((key) => [key, versions[0]?.[key]])));
+  if (versions.some((value) => JSON.stringify(Object.fromEntries(keys.map((key) => [key, value?.[key]]))) !== expected)) mismatch('continuation-artifact-history', `Captured ${label} identity was rewritten across phases.`);
 }
 
 function validCapturedPeerModel(value) {
@@ -301,7 +338,7 @@ function validCapturedPeerModel(value) {
 
 function validCapturedImportedHistory(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const keys = Object.keys(value); if (!keys.includes('messages') || keys.some((key) => !['title', 'createdAt', 'updatedAt', 'messages'].includes(key))
+  const keys = Object.keys(value); if (!keys.includes('messages') || value.source !== 'claudeCode' || keys.some((key) => !['source', 'title', 'createdAt', 'updatedAt', 'messages'].includes(key))
     || !Array.isArray(value.messages) || value.messages.length === 0 || value.messages.length > 10_000) return false;
   if (value.title !== undefined && !boundedString(value.title)) return false;
   if ([value.createdAt, value.updatedAt].some((entry) => entry !== undefined && (!Number.isSafeInteger(entry) || entry < 0))) return false;
