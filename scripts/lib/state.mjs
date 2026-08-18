@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { readdir, unlink } from 'node:fs/promises';
+import { lstat, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
@@ -12,6 +12,15 @@ import {
   withFileLock,
 } from './fs.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
+import { PERMISSION_MODES } from './identity.mjs';
+import {
+  closeRescueBinding,
+  createRescueBinding,
+  readRescueBindingFile,
+  rescueBindingKey,
+  RESCUE_BINDING_MAX_RECORDS,
+  validateRescueBinding,
+} from './rescue-binding.mjs';
 import {
   MAX_PROGRESS_PROBE_COUNT,
   MAX_PROGRESS_MESSAGE_BYTES,
@@ -40,6 +49,7 @@ const OWNER_SESSION_ID_MAX_BYTES = 4 * 1024;
 const OWNER_BINDING_MAX_BYTES = 8 * 1024;
 const OWNER_INDEX_MARKER_MAX_BYTES = 1024;
 const OWNER_JOB_ENTRIES_MAX = 10_000;
+const RESCUE_BINDING_CLOSED_GC_MS = 30 * 24 * 60 * 60_000;
 const JOB_PATCH_FIELDS = new Set([
   'beforeMessageIds', 'childPid', 'effort', 'error', 'exitCode', 'finishedAt', 'inputId',
   'lastCancelError', 'model', 'promptArtifact', 'resultArtifact', 'startedAt', 'startRevision',
@@ -70,33 +80,110 @@ export function createStateStore(options) {
       return withFileLock(storage.lockPath, async () => {
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         await ensureOwnerIndex(storage, jobs);
-        if (!reservation.readOnly && jobs.some(isActiveWritableJob)) {
-          throw new PluginError('WRITABLE_JOB_EXISTS', 'This workspace already has an active writable rescue job.', {
-            category: 'state',
-            remedy: 'Retry later or inspect the redacted workspace list with $zcode:status --all.',
-            details: { workspaceKey: storage.workspaceKey },
-          });
+        return reserveJobLocked(storage, jobs, reservation);
+      });
+    },
+
+    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,permissionMode:string}} input */
+    async resolveRescueBinding(input) {
+      validateBindingIdentityInput(input);
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const binding = await readBindingLocked(storage, bindingIdentity(input, storage.workspacePath));
+        if (binding === null) return { kind: 'missing' };
+        if (binding.state !== 'active') throw closedRescueBinding();
+        return { kind: 'bound', binding: { ...binding } };
+      });
+    },
+
+    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,permissionMode:string}} input */
+    async resolveRescueBindingForResume(input) {
+      validateBindingIdentityInput(input); const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, () => resolveBindingForResumeLocked(storage, bindingIdentity(input, storage.workspacePath)));
+    },
+
+    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string}} input */
+    async readBoundRescueCurrentJob(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.parentSessionId) || !isNonEmptyString(input.executorAgentId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const binding = await readBindingLocked(storage, bindingIdentity(input, storage.workspacePath));
+        if (binding === null || binding.state !== 'active') throw binding === null ? invalidRescueBinding() : closedRescueBinding();
+        const current = await readExactBindingJob(storage, binding.currentJobId);
+        validateCurrentJob(current, binding.parentSessionId, storage.workspacePath);
+        return structuredClone(current);
+      });
+    },
+
+    /** @param {{workspace:string,reservation:JobReservation,executor:any}} input */
+    async reserveFreshRescueJob(input) {
+      validateRescueReservationInput(input);
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
+        const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath);
+        const previous = await prepareBindingSlot(storage, exactIdentity);
+        if (previous && previous.executorAgentType !== exactIdentity.executorAgentType) throw invalidRescueBinding();
+        const job = makeReservedJob(storage, jobs, input.reservation);
+        const binding = createRescueBinding({ ...exactIdentity, anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex') });
+        await publishRescueReservation(storage, job, binding, true);
+        return { job, binding };
+      });
+    },
+
+    /** @param {{workspace:string,reservation:JobReservation,executor:any,operationId:string}} input */
+    async reserveBoundRescueContinuation(input) {
+      validateRescueReservationInput(input);
+      if (!isDigest(input.operationId)) throw staleRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
+        const resolved = await resolveBindingForResumeLocked(storage, executorBindingIdentity(input.executor, storage.workspacePath));
+        if (resolved.kind !== 'bound' || resolved.operationId !== input.operationId) throw staleRescueBinding();
+        const job = makeReservedJob(storage, jobs, input.reservation);
+        const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
+        const binding = validateRescueBinding({ ...resolved.binding, currentJobId: job.id, updatedAt: now });
+        await publishRescueReservation(storage, job, binding, false);
+        return { job, binding, anchorJob: resolved.anchorJob };
+      });
+    },
+
+    /** @param {{workspace:string,reservation:JobReservation,executor:any,candidateJobId:string}} input */
+    async adoptRescueCandidate(input) {
+      validateRescueReservationInput(input);
+      if (!isDigest(input.candidateJobId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
+        const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath);
+        const existing = await prepareBindingSlot(storage, exactIdentity);
+        if (existing !== null) throw invalidRescueBinding();
+        const anchorJob = jobs.find((job) => job.id === input.candidateJobId);
+        validateAnchorJob(anchorJob, input.executor.parentSessionId, storage.workspacePath);
+        const job = makeReservedJob(storage, jobs, input.reservation);
+        const base = createRescueBinding({ ...exactIdentity, anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex') });
+        await assertRescueBindingsRoot(storage);
+        await atomicWriteJson(bindingPath(storage, base), base, { privateRoot: storage.directory });
+        await publishJobRecord(storage, job);
+        const binding = validateRescueBinding({ ...base, currentJobId: job.id, updatedAt: new Date(Math.max(Date.now(), Date.parse(base.updatedAt))).toISOString() });
+        await atomicWriteJson(bindingPath(storage, binding), binding, { privateRoot: storage.directory });
+        return { job, binding, anchorJob };
+      });
+    },
+
+    /** @param {{workspace:string,parentSessionId:string,reason:'session-ended'}} input */
+    async closeRescueBindingsForSession(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.parentSessionId) || input.reason !== 'session-ended') throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const records = await readBindingLayout(storage, input.parentSessionId, true); let closed = 0;
+        for (const record of records.values()) {
+          if (record.parentSessionId !== input.parentSessionId || record.state !== 'active') continue;
+          await assertRescueBindingsRoot(storage);
+          await atomicWriteJson(bindingPath(storage, record), closeRescueBinding(record, { operationId: record.operationId, reason: input.reason }), { privateRoot: storage.directory });
+          closed += 1;
         }
-        const timestamp = new Date().toISOString();
-        const job = {
-          id: randomBytes(32).toString('hex'),
-          workspace: storage.workspacePath,
-          ownerSessionId: reservation.ownerSessionId,
-          ownerTurnId: reservation.ownerTurnId,
-          command: reservation.command,
-          readOnly: reservation.readOnly,
-          permissionSnapshot: reservation.permissionSnapshot,
-          ...(reservation.codexThreadId === undefined ? {} : { codexThreadId: reservation.codexThreadId }),
-          status: 'queued',
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        };
-        // Publish the trusted owner binding first. A crash can then leave only a
-        // harmless dangling binding, never an unindexed canonical job.
-        await writeOwnerBinding(storage, job);
-        await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), job);
-        await publishOwnerIndexMarker(storage);
-        return job;
+        return closed;
       });
     },
 
@@ -310,18 +397,202 @@ async function jobStorage(dataRoot, workspace) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const jobsDirectory = join(storage.directory, 'jobs');
   const ownerIndexDirectory = join(storage.directory, 'job-owners');
+  const rescueBindingsDirectory = join(storage.directory, 'rescue-bindings');
   try {
     await ensurePrivateDirectoryWithin(storage.directory, jobsDirectory);
     await ensurePrivateDirectoryWithin(storage.directory, ownerIndexDirectory);
+    await ensurePrivateDirectoryWithin(storage.directory, rescueBindingsDirectory);
   } catch { throw ownedJobIndexInvalid(); }
   return {
     ...storage,
     jobsDirectory,
     ownerIndexDirectory,
+    rescueBindingsDirectory,
+    rescueBindingsIdentity: await lstat(rescueBindingsDirectory, { bigint: true }),
     ownerIndexMarkerPath: join(ownerIndexDirectory, 'index.json'),
     lockPath: join(storage.directory, '.state.lock'),
   };
 }
+
+/** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation */
+async function reserveJobLocked(storage, jobs, reservation) {
+  const job = makeReservedJob(storage, jobs, reservation);
+  await writeOwnerBinding(storage, job);
+  await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), job);
+  await publishOwnerIndexMarker(storage);
+  return job;
+}
+
+/** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation */
+function makeReservedJob(storage, jobs, reservation) {
+  validateReservation(reservation);
+  if (!reservation.readOnly && jobs.some(isActiveWritableJob)) {
+    throw new PluginError('WRITABLE_JOB_EXISTS', 'This workspace already has an active writable rescue job.', {
+      category: 'state', remedy: 'Retry later or inspect the redacted workspace list with $zcode:status --all.', details: { workspaceKey: storage.workspaceKey },
+    });
+  }
+  const timestamp = new Date().toISOString();
+  return {
+    id: randomBytes(32).toString('hex'), workspace: storage.workspacePath,
+    ownerSessionId: reservation.ownerSessionId, ownerTurnId: reservation.ownerTurnId,
+    command: reservation.command, readOnly: reservation.readOnly,
+    permissionSnapshot: reservation.permissionSnapshot,
+    ...(reservation.codexThreadId === undefined ? {} : { codexThreadId: reservation.codexThreadId }),
+    status: 'queued', createdAt: timestamp, updatedAt: timestamp,
+  };
+}
+
+/** @param {any} storage @param {any} job @param {any} binding @param {boolean} bindingFirst */
+async function publishRescueReservation(storage, job, binding, bindingFirst) {
+  const path = bindingPath(storage, binding);
+  await assertRescueBindingsRoot(storage);
+  if (bindingFirst) await atomicWriteJson(path, binding, { privateRoot: storage.directory });
+  await publishJobRecord(storage, job);
+  if (!bindingFirst) await atomicWriteJson(path, binding, { privateRoot: storage.directory });
+}
+
+/** @param {any} storage @param {any} job */
+async function publishJobRecord(storage, job) {
+  await writeOwnerBinding(storage, job);
+  await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), job);
+  await publishOwnerIndexMarker(storage);
+}
+
+/** @param {any} storage @param {any} expected */
+async function resolveBindingForResumeLocked(storage, expected) {
+  const binding = await readBindingLocked(storage, expected);
+  if (binding === null) return { kind: 'missing' };
+  if (binding.state !== 'active') throw closedRescueBinding();
+  const anchorJob = await readExactBindingJob(storage, binding.anchorJobId);
+  const currentJob = binding.currentJobId === binding.anchorJobId ? anchorJob
+    : await readExactBindingJob(storage, binding.currentJobId);
+  validateAnchorJob(anchorJob, binding.parentSessionId, storage.workspacePath);
+  validateCurrentJob(currentJob, binding.parentSessionId, storage.workspacePath);
+  return { kind: 'bound', operationId: binding.operationId, anchorJob: structuredClone(anchorJob), currentJob: structuredClone(currentJob), binding: { ...binding } };
+}
+
+/** @param {any} storage @param {any} expected */
+async function readBindingLocked(storage, expected) {
+  const records = await readBindingLayout(storage, expected.parentSessionId, true);
+  const record = records.get(rescueBindingKey(expected)) ?? null;
+  if (record && (expected.permissionMode !== undefined && record.permissionMode !== expected.permissionMode
+    || expected.executorAgentType !== undefined && record.executorAgentType !== expected.executorAgentType)) throw invalidRescueBinding();
+  return record;
+}
+
+/** @param {any} storage @param {string} jobId */
+async function readExactBindingJob(storage, jobId) { try { return await readJobRecord(jobPath(storage.jobsDirectory, jobId), jobId, storage.workspacePath); } catch { throw invalidRescueBinding(); } }
+
+/** @param {any} storage @param {string} path */
+async function readBindingPath(storage, path) {
+  try { return await readRescueBindingFile(storage.directory, path); } catch { throw invalidRescueBinding(); }
+}
+
+/** @param {any} storage @param {string} parentSessionId @param {boolean} allowMissing */
+async function readBindingLayout(storage, parentSessionId, allowMissing) {
+  const directory = bindingPartition(storage, parentSessionId); let names;
+  await assertRescueBindingsRoot(storage);
+  let directoryBefore;
+  try { directoryBefore = await lstat(directory, { bigint: true }); }
+  catch (error) { if (allowMissing && /** @type {any} */ (error)?.code === 'ENOENT') return new Map(); throw invalidRescueBinding(); }
+  if (!directoryBefore.isDirectory()) throw invalidRescueBinding();
+  try { names = await bindingRecordNames(storage, directory); }
+  catch (error) { if (allowMissing && /** @type {any} */ (error)?.code === 'ENOENT') return new Map(); throw invalidRescueBinding(); }
+  const records = new Map();
+  for (const name of names) {
+    const record = await readBindingPath(storage, join(directory, name));
+    if (record.parentSessionId !== parentSessionId || name !== `${record.key}.json` || records.has(record.key)) throw invalidRescueBinding();
+    records.set(record.key, record);
+  }
+  const directoryAfter = await lstat(directory, { bigint: true }).catch(() => { throw invalidRescueBinding(); });
+  await assertRescueBindingsRoot(storage);
+  if (!sameDirectoryIdentity(directoryBefore, directoryAfter)) throw invalidRescueBinding();
+  return records;
+}
+
+/** @param {any} storage @param {string} directory */
+async function bindingRecordNames(storage, directory) {
+  const entries = await readPrivateDirectory(storage.rescueBindingsDirectory, directory, RESCUE_BINDING_MAX_RECORDS + 1);
+  if (entries.length > RESCUE_BINDING_MAX_RECORDS || entries.some((entry) => !entry.isFile() || !/^[a-f0-9]{64}\.json$/u.test(entry.name))) throw invalidRescueBinding();
+  return entries.map((entry) => entry.name);
+}
+
+/** @param {any} storage @param {any} identity */
+function bindingPath(storage, identity) { return join(bindingPartition(storage, identity.parentSessionId), `${rescueBindingKey(identity)}.json`); }
+/** @param {any} storage @param {string} parentSessionId */
+function bindingPartition(storage, parentSessionId) { return join(storage.rescueBindingsDirectory, createHash('sha256').update(`rescue-binding-parent-v1\0${parentSessionId}`).digest('hex')); }
+
+/** Validate one session partition, GC old closed slots only for new-slot creation, and return this slot. @param {any} storage @param {any} identity */
+async function prepareBindingSlot(storage, identity) {
+  const directory = bindingPartition(storage, identity.parentSessionId);
+  await assertRescueBindingsRoot(storage);
+  await ensurePrivateDirectoryWithin(storage.rescueBindingsDirectory, directory);
+  const records = await readBindingLayout(storage, identity.parentSessionId, false); const key = rescueBindingKey(identity);
+  if (records.has(key)) return records.get(key);
+  const cutoff = Date.now() - RESCUE_BINDING_CLOSED_GC_MS;
+  for (const [recordKey, record] of records) if (record.state === 'closed' && Date.parse(record.closedAt) < cutoff) { await unlink(join(directory, `${recordKey}.json`)); records.delete(recordKey); }
+  if (records.size >= RESCUE_BINDING_MAX_RECORDS) throw new PluginError('RESCUE_BINDING_CAPACITY', 'The Rescue binding capacity is exhausted.', { category: 'state', remedy: 'End or clean up old Rescue operations before retrying.' });
+  return null;
+}
+
+/** @param {any} storage */
+async function assertRescueBindingsRoot(storage) {
+  const current = await lstat(storage.rescueBindingsDirectory, { bigint: true }).catch(() => { throw invalidRescueBinding(); });
+  if (!sameDirectoryIdentity(storage.rescueBindingsIdentity, current)) throw invalidRescueBinding();
+}
+/** @param {import('node:fs').BigIntStats} left @param {import('node:fs').BigIntStats} right */
+function sameDirectoryIdentity(left, right) { return left.isDirectory() && right.isDirectory() && left.dev === right.dev && left.ino === right.ino; }
+
+/** @param {any} input */
+function validateRescueReservationInput(input) {
+  if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isPlainJsonObject(input.reservation) || !isPlainJsonObject(input.executor)) throw invalidRescueBinding();
+  validateReservation(input.reservation); validateExecutorBindingInput(input.executor);
+  if (input.reservation.command !== 'rescue' || input.reservation.readOnly !== false
+    || !['zcode-rescue', 'default'].includes(input.executor.agentType)
+    || input.workspace !== input.reservation.workspace || input.workspace !== input.executor.workspace
+    || input.reservation.ownerSessionId !== input.executor.parentSessionId
+    || input.reservation.permissionSnapshot?.permissionMode !== input.executor.parentPermissionMode) throw invalidRescueBinding();
+}
+
+/** @param {any} input */
+function validateExecutorBindingInput(input) {
+  if (!isPlainJsonObject(input) || !isNonEmptyString(input.parentSessionId) || !isNonEmptyString(input.agentId)
+    || !isNonEmptyString(input.agentType) || !isNonEmptyString(input.workspace)
+    || !PERMISSION_MODES.includes(input.parentPermissionMode)) throw invalidRescueBinding();
+  try { rescueBindingKey(executorBindingIdentity(input, input.workspace)); } catch { throw invalidRescueBinding(); }
+}
+
+/** @param {any} input */
+function validateBindingIdentityInput(input) {
+  try { rescueBindingKey(input); } catch { throw invalidRescueBinding(); }
+  if (!PERMISSION_MODES.includes(input.permissionMode)) throw invalidRescueBinding();
+}
+
+/** @param {any} input @param {string} workspace */
+function bindingIdentity(input, workspace) {
+  return { parentSessionId: input.parentSessionId, executorAgentId: input.executorAgentId, workspace,
+    ...(input.executorAgentType === undefined ? {} : { executorAgentType: input.executorAgentType }),
+    ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }) };
+}
+
+/** Map the trusted SubagentStart executor record to persisted binding terminology. @param {any} executor @param {string} workspace */
+function executorBindingIdentity(executor, workspace) {
+  return { parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId, executorAgentType: executor.agentType,
+    workspace, permissionMode: executor.parentPermissionMode };
+}
+
+/** @param {any} job @param {string} parentSessionId @param {string} workspace */
+function validateAnchorJob(job, parentSessionId, workspace) {
+  if (!job || job.workspace !== workspace || job.ownerSessionId !== parentSessionId || job.command !== 'rescue'
+    || typeof job.zcodeSessionId !== 'string' || !['running', 'succeeded', 'failed'].includes(job.status)) throw invalidRescueBinding();
+}
+/** @param {any} job @param {string} parentSessionId @param {string} workspace */
+function validateCurrentJob(job, parentSessionId, workspace) {
+  if (!job || job.workspace !== workspace || job.ownerSessionId !== parentSessionId || job.command !== 'rescue') throw invalidRescueBinding();
+}
+function invalidRescueBinding() { return new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' }); }
+function closedRescueBinding() { return new PluginError('RESCUE_BINDING_CLOSED', 'The Rescue operation binding is closed.', { category: 'state', remedy: 'Start a fresh Rescue operation from the active parent turn.' }); }
+function staleRescueBinding() { return new PluginError('RESCUE_BINDING_STALE', 'The Rescue operation generation changed.', { category: 'state', remedy: 'Reload the exact Rescue binding before retrying.' }); }
 
 /**
  * Validate and repair the owner index under the workspace state lock. The
