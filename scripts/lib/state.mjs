@@ -15,9 +15,13 @@ import { isSafeIdentifier } from './identifier.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
 import {
   closeRescueBinding,
+  createRescueBindingAuthority,
+  createRescueBindingPartition,
   createRescueBinding,
-  readRescueBindingFile,
+  readRescueBindingAuthorityFile,
+  readRescueBindingPartitionFile,
   rescueBindingKey,
+  rescueBindingPartitionKey,
   RESCUE_BINDING_MAX_RECORDS,
   validateRescueBinding,
 } from './rescue-binding.mjs';
@@ -49,9 +53,6 @@ const OWNER_SESSION_ID_MAX_BYTES = 4 * 1024;
 const OWNER_BINDING_MAX_BYTES = 8 * 1024;
 const OWNER_INDEX_MARKER_MAX_BYTES = 1024;
 const OWNER_JOB_ENTRIES_MAX = 10_000;
-const RESCUE_BINDING_PARTITION_MARKER = '.partition.json';
-const RESCUE_BINDING_PARTITION_VERSION = 1;
-const RESCUE_BINDING_PARTITION_MAX_BYTES = 16 * 1024;
 const RESCUE_BINDING_CLOSED_GC_MS = 30 * 24 * 60 * 60_000;
 const JOB_PATCH_FIELDS = new Set([
   'beforeMessageIds', 'childPid', 'effort', 'error', 'exitCode', 'finishedAt', 'inputId',
@@ -131,12 +132,13 @@ export function createStateStore(options) {
         const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
         const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath);
-        const { record: previous, partitionIdentity } = await prepareBindingSlot(storage, exactIdentity);
+        const { record: previous, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity);
         if (previous && previous.executorAgentType !== exactIdentity.executorAgentType) throw invalidRescueBinding();
         const job = makeReservedJob(storage, jobs, input.reservation);
         const binding = createRescueBinding({ ...exactIdentity, anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex') });
-        await publishRescueReservation(storage, job, binding, { bindingFirst: true, lockIdentity, partitionIdentity, publicationHook, route: 'fresh' });
-        await publicationCheckpoint(publicationHook, 'fresh:final'); await assertPublicationGuard(storage, lockIdentity, partitionIdentity, binding.parentSessionId);
+        const afterSnapshot = bindingSnapshotWith(beforeSnapshot, binding);
+        await publishRescueReservation(storage, job, binding, { bindingFirst: true, beforeSnapshot, afterSnapshot, lockIdentity, publicationHook, route: 'fresh' });
+        await publicationCheckpoint(publicationHook, 'fresh:final'); await assertPublicationGuard(storage, lockIdentity, afterSnapshot, binding.parentSessionId);
         return { job, binding };
       });
     },
@@ -151,12 +153,13 @@ export function createStateStore(options) {
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
         const resolved = await resolveBindingForResumeLocked(storage, executorBindingIdentity(input.executor, storage.workspacePath));
         if (resolved.kind !== 'bound' || resolved.operationId !== input.operationId) throw staleRescueBinding();
-        const partitionIdentity = await lstat(bindingPartition(storage, resolved.binding.parentSessionId), { bigint: true }).catch(() => { throw invalidRescueBinding(); });
+        const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
         const job = makeReservedJob(storage, jobs, input.reservation);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
         const binding = validateRescueBinding({ ...resolved.binding, currentJobId: job.id, updatedAt: now });
-        await publishRescueReservation(storage, job, binding, { bindingFirst: false, lockIdentity, partitionIdentity, publicationHook, route: 'continuation' });
-        await publicationCheckpoint(publicationHook, 'continuation:final'); await assertPublicationGuard(storage, lockIdentity, partitionIdentity, binding.parentSessionId);
+        const afterSnapshot = bindingSnapshotWith(beforeSnapshot, binding);
+        await publishRescueReservation(storage, job, binding, { bindingFirst: false, beforeSnapshot, afterSnapshot, lockIdentity, publicationHook, route: 'continuation' });
+        await publicationCheckpoint(publicationHook, 'continuation:final'); await assertPublicationGuard(storage, lockIdentity, afterSnapshot, binding.parentSessionId);
         return { job, binding, anchorJob: resolved.anchorJob };
       });
     },
@@ -170,19 +173,21 @@ export function createStateStore(options) {
         const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
         const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath);
-        const { record: existing, partitionIdentity } = await prepareBindingSlot(storage, exactIdentity);
+        const { record: existing, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity);
         if (existing !== null) throw invalidRescueBinding();
         const anchorJob = jobs.find((job) => job.id === input.candidateJobId);
         validateAnchorJob(anchorJob, input.executor.parentSessionId, storage.workspacePath);
         const job = makeReservedJob(storage, jobs, input.reservation);
         const base = createRescueBinding({ ...exactIdentity, anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex') });
+        const baseSnapshot = bindingSnapshotWith(beforeSnapshot, base);
         await publicationCheckpoint(publicationHook, 'adopt:base-binding');
-        await writeBindingGuarded(storage, base, lockIdentity, partitionIdentity);
-        await publishJobRecord(storage, job, { lockIdentity, partitionIdentity, publicationHook, route: 'adopt', parentSessionId: base.parentSessionId });
+        await writeBindingPartitionGuarded(storage, base.parentSessionId, beforeSnapshot, baseSnapshot, lockIdentity);
+        await publishJobRecord(storage, job, { lockIdentity, expectedSnapshot: baseSnapshot, publicationHook, route: 'adopt', parentSessionId: base.parentSessionId });
         const binding = validateRescueBinding({ ...base, currentJobId: job.id, updatedAt: new Date(Math.max(Date.now(), Date.parse(base.updatedAt))).toISOString() });
+        const afterSnapshot = bindingSnapshotWith(baseSnapshot, binding);
         await publicationCheckpoint(publicationHook, 'adopt:current-advance');
-        await writeBindingGuarded(storage, binding, lockIdentity, partitionIdentity);
-        await publicationCheckpoint(publicationHook, 'adopt:final'); await assertPublicationGuard(storage, lockIdentity, partitionIdentity, binding.parentSessionId);
+        await writeBindingPartitionGuarded(storage, binding.parentSessionId, baseSnapshot, afterSnapshot, lockIdentity);
+        await publicationCheckpoint(publicationHook, 'adopt:final'); await assertPublicationGuard(storage, lockIdentity, afterSnapshot, binding.parentSessionId);
         return { job, binding, anchorJob };
       });
     },
@@ -193,14 +198,9 @@ export function createStateStore(options) {
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
         const lockIdentity = await captureStateLockIdentity(storage);
-        const records = await readBindingLayout(storage, input.parentSessionId, true); let closed = 0;
-        const partitionIdentity = records.size === 0 ? null : await lstat(bindingPartition(storage, input.parentSessionId), { bigint: true }).catch(() => { throw invalidRescueBinding(); });
-        for (const record of records.values()) {
-          if (record.parentSessionId !== input.parentSessionId || record.state !== 'active') continue;
-          await publicationCheckpoint(publicationHook, 'close:binding');
-          await writeBindingGuarded(storage, closeRescueBinding(record, { operationId: record.operationId, reason: input.reason }), lockIdentity, partitionIdentity);
-          closed += 1;
-        }
+        const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, true); let closed = 0; let after = snapshot;
+        for (const record of snapshot.records.values()) if (record.state === 'active') { after = bindingSnapshotWith(after, closeRescueBinding(record, { operationId: record.operationId, reason: input.reason })); closed += 1; }
+        if (closed > 0) { await publicationCheckpoint(publicationHook, 'close:binding'); await writeBindingPartitionGuarded(storage, input.parentSessionId, snapshot, after, lockIdentity); }
         return closed;
       });
     },
@@ -415,18 +415,14 @@ async function jobStorage(dataRoot, workspace) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const jobsDirectory = join(storage.directory, 'jobs');
   const ownerIndexDirectory = join(storage.directory, 'job-owners');
-  const rescueBindingsDirectory = join(storage.directory, 'rescue-bindings');
   try {
     await ensurePrivateDirectoryWithin(storage.directory, jobsDirectory);
     await ensurePrivateDirectoryWithin(storage.directory, ownerIndexDirectory);
-    await ensurePrivateDirectoryWithin(storage.directory, rescueBindingsDirectory);
   } catch { throw ownedJobIndexInvalid(); }
   return {
     ...storage,
     jobsDirectory,
     ownerIndexDirectory,
-    rescueBindingsDirectory,
-    rescueBindingsIdentity: await lstat(rescueBindingsDirectory, { bigint: true }),
     ownerIndexMarkerPath: join(ownerIndexDirectory, 'index.json'),
     lockPath: join(storage.directory, '.state.lock'),
   };
@@ -464,27 +460,27 @@ function makeReservedJob(storage, jobs, reservation) {
 async function publishRescueReservation(storage, job, binding, options) {
   if (options.bindingFirst) {
     await publicationCheckpoint(options.publicationHook, `${options.route}:binding`);
-    await writeBindingGuarded(storage, binding, options.lockIdentity, options.partitionIdentity);
+    await writeBindingPartitionGuarded(storage, binding.parentSessionId, options.beforeSnapshot, options.afterSnapshot, options.lockIdentity);
   }
-  await publishJobRecord(storage, job, { ...options, parentSessionId: binding.parentSessionId });
+  await publishJobRecord(storage, job, { ...options, expectedSnapshot: options.bindingFirst ? options.afterSnapshot : options.beforeSnapshot, parentSessionId: binding.parentSessionId });
   if (!options.bindingFirst) {
     await publicationCheckpoint(options.publicationHook, `${options.route}:current-advance`);
-    await writeBindingGuarded(storage, binding, options.lockIdentity, options.partitionIdentity);
+    await writeBindingPartitionGuarded(storage, binding.parentSessionId, options.beforeSnapshot, options.afterSnapshot, options.lockIdentity);
   }
 }
 
 /** @param {any} storage @param {any} job @param {any} options */
 async function publishJobRecord(storage, job, options) {
   await publicationCheckpoint(options.publicationHook, `${options.route}:owner-binding`);
-  await assertPublicationGuard(storage, options.lockIdentity, options.partitionIdentity, options.parentSessionId);
+  await assertPublicationGuard(storage, options.lockIdentity, options.expectedSnapshot, options.parentSessionId);
   await writeOwnerBinding(storage, job);
   await publicationCheckpoint(options.publicationHook, `${options.route}:job`);
-  await assertPublicationGuard(storage, options.lockIdentity, options.partitionIdentity, options.parentSessionId);
+  await assertPublicationGuard(storage, options.lockIdentity, options.expectedSnapshot, options.parentSessionId);
   await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), job);
   await publicationCheckpoint(options.publicationHook, `${options.route}:marker`);
-  await assertPublicationGuard(storage, options.lockIdentity, options.partitionIdentity, options.parentSessionId);
+  await assertPublicationGuard(storage, options.lockIdentity, options.expectedSnapshot, options.parentSessionId);
   await publishOwnerIndexMarker(storage);
-  await assertPublicationGuard(storage, options.lockIdentity, options.partitionIdentity, options.parentSessionId);
+  await assertPublicationGuard(storage, options.lockIdentity, options.expectedSnapshot, options.parentSessionId);
 }
 
 /** @param {(seam:string)=>void|Promise<void>} hook @param {string} seam */
@@ -493,18 +489,18 @@ async function publicationCheckpoint(hook, seam) {
   catch { throw new PluginError('RESCUE_PUBLICATION_TEST_FAULT', 'The test-only Rescue publication fault was injected.', { category: 'state', remedy: 'Retry without the test-only publication hook.' }); }
 }
 
-/** @param {any} storage @param {any} binding @param {any} lockIdentity @param {any} partitionIdentity */
-async function writeBindingGuarded(storage, binding, lockIdentity, partitionIdentity) {
-  await assertPublicationGuard(storage, lockIdentity, partitionIdentity, binding.parentSessionId);
-  await atomicWriteJson(bindingPath(storage, binding), binding, { privateRoot: storage.directory });
-  await assertPublicationGuard(storage, lockIdentity, partitionIdentity, binding.parentSessionId);
+/** @param {any} storage @param {string} parentSessionId @param {any} before @param {any} after @param {any} lockIdentity */
+async function writeBindingPartitionGuarded(storage, parentSessionId, before, after, lockIdentity) {
+  await assertPublicationGuard(storage, lockIdentity, before, parentSessionId);
+  await atomicWriteJson(bindingPartitionPath(storage, parentSessionId), partitionEnvelope(storage, parentSessionId, after.records), { privateRoot: storage.directory });
+  await assertPublicationGuard(storage, lockIdentity, after, parentSessionId);
 }
 
-/** @param {any} storage @param {any} lockIdentity @param {any} partitionIdentity @param {string} parentSessionId */
-async function assertPublicationGuard(storage, lockIdentity, partitionIdentity, parentSessionId) {
-  await assertStateLockIdentity(storage, lockIdentity); await assertRescueBindingsRoot(storage);
-  const current = await lstat(bindingPartition(storage, parentSessionId), { bigint: true }).catch(() => { throw invalidRescueBinding(); });
-  if (!sameDirectoryIdentity(partitionIdentity, current)) throw invalidRescueBinding();
+/** @param {any} storage @param {any} lockIdentity @param {any} expectedSnapshot @param {string} parentSessionId */
+async function assertPublicationGuard(storage, lockIdentity, expectedSnapshot, parentSessionId) {
+  await assertStateLockIdentity(storage, lockIdentity);
+  const current = await readBindingPartitionSnapshot(storage, parentSessionId, true, !expectedSnapshot.exists);
+  if (!sameBindingSnapshot(expectedSnapshot, current)) throw invalidRescueBinding();
 }
 
 /** @param {any} storage */
@@ -539,8 +535,8 @@ async function resolveBindingForResumeLocked(storage, expected) {
 
 /** @param {any} storage @param {any} expected */
 async function readBindingLocked(storage, expected) {
-  const records = await readBindingLayout(storage, expected.parentSessionId, true);
-  const record = records.get(rescueBindingKey(expected)) ?? null;
+  const snapshot = await readBindingPartitionSnapshot(storage, expected.parentSessionId, true);
+  const record = snapshot.records.get(rescueBindingKey(expected)) ?? null;
   if (record && (expected.permissionMode !== undefined && record.permissionMode !== expected.permissionMode
     || expected.executorAgentType !== undefined && record.executorAgentType !== expected.executorAgentType)) throw invalidRescueBinding();
   return record;
@@ -549,98 +545,55 @@ async function readBindingLocked(storage, expected) {
 /** @param {any} storage @param {string} jobId */
 async function readExactBindingJob(storage, jobId) { try { return await readJobRecord(jobPath(storage.jobsDirectory, jobId), jobId, storage.workspacePath); } catch { throw invalidRescueBinding(); } }
 
-/** @param {any} storage @param {string} path */
-async function readBindingPath(storage, path) {
-  try { return await readRescueBindingFile(storage.directory, path); } catch { throw invalidRescueBinding(); }
-}
-
-/** @param {any} storage @param {string} parentSessionId @param {boolean} allowMissing */
-async function readBindingLayout(storage, parentSessionId, allowMissing) {
-  const directory = bindingPartition(storage, parentSessionId); let names;
-  await assertRescueBindingsRoot(storage);
-  let directoryBefore;
-  try { directoryBefore = await lstat(directory, { bigint: true }); }
-  catch (error) { if (allowMissing && /** @type {any} */ (error)?.code === 'ENOENT') return new Map(); throw invalidRescueBinding(); }
-  if (!directoryBefore.isDirectory()) throw invalidRescueBinding();
-  await validateBindingPartitionMarker(storage, directory, parentSessionId, directoryBefore);
-  try { names = await bindingRecordNames(storage, directory); }
-  catch (error) { if (allowMissing && /** @type {any} */ (error)?.code === 'ENOENT') return new Map(); throw invalidRescueBinding(); }
-  const records = new Map();
-  for (const name of names) {
-    const record = await readBindingPath(storage, join(directory, name));
-    if (record.parentSessionId !== parentSessionId || record.workspace !== storage.workspacePath
-      || name !== `${record.key}.json` || records.has(record.key)) throw invalidRescueBinding();
-    records.set(record.key, record);
-  }
-  const directoryAfter = await lstat(directory, { bigint: true }).catch(() => { throw invalidRescueBinding(); });
-  await assertRescueBindingsRoot(storage);
-  if (!sameDirectoryIdentity(directoryBefore, directoryAfter)) throw invalidRescueBinding();
-  return records;
-}
-
-/** @param {any} storage @param {string} directory */
-async function bindingRecordNames(storage, directory) {
-  const entries = await readPrivateDirectory(storage.rescueBindingsDirectory, directory, RESCUE_BINDING_MAX_RECORDS + 2);
-  const records = entries.filter((entry) => entry.name !== RESCUE_BINDING_PARTITION_MARKER);
-  if (records.length > RESCUE_BINDING_MAX_RECORDS || records.some((entry) => !entry.isFile() || !/^[a-f0-9]{64}\.json$/u.test(entry.name))
-    || entries.filter((entry) => entry.name === RESCUE_BINDING_PARTITION_MARKER).length !== 1) throw invalidRescueBinding();
-  return records.map((entry) => entry.name);
-}
-
-/** @param {any} storage @param {any} identity */
-function bindingPath(storage, identity) { return join(bindingPartition(storage, identity.parentSessionId), `${rescueBindingKey(identity)}.json`); }
 /** @param {any} storage @param {string} parentSessionId */
-function bindingPartition(storage, parentSessionId) { return join(storage.rescueBindingsDirectory, createHash('sha256').update(`rescue-binding-parent-v1\0${parentSessionId}`).digest('hex')); }
+function bindingPartitionPath(storage, parentSessionId) { return join(storage.directory, `rescue-binding-session-${rescueBindingPartitionKey({ parentSessionId, workspace: storage.workspacePath })}.json`); }
+/** @param {any} storage @param {string} parentSessionId */
+function bindingAuthorityPath(storage, parentSessionId) { return join(storage.directory, `rescue-binding-authority-${rescueBindingPartitionKey({ parentSessionId, workspace: storage.workspacePath })}.json`); }
 
-/** Validate one session partition, GC old closed slots only for new-slot creation, and return this slot. @param {any} storage @param {any} identity */
-async function prepareBindingSlot(storage, identity) {
-  const directory = bindingPartition(storage, identity.parentSessionId);
-  await assertRescueBindingsRoot(storage);
-  await ensurePrivateDirectoryWithin(storage.rescueBindingsDirectory, directory);
-  const partitionIdentity = await lstat(directory, { bigint: true }).catch(() => { throw invalidRescueBinding(); });
-  await ensureBindingPartitionMarker(storage, directory, identity.parentSessionId, partitionIdentity);
-  const records = await readBindingLayout(storage, identity.parentSessionId, false); const key = rescueBindingKey(identity);
-  if (records.has(key)) return { record: records.get(key), partitionIdentity };
+/** @param {any} storage @param {string} parentSessionId @param {boolean} allowMissing @param {boolean} [allowAuthorityOnly] */
+async function readBindingPartitionSnapshot(storage, parentSessionId, allowMissing, allowAuthorityOnly = false) {
+  const expected = { parentSessionId, workspace: storage.workspacePath }; const authorityPath = bindingAuthorityPath(storage, parentSessionId); const partitionPath = bindingPartitionPath(storage, parentSessionId);
+  const [authorityExists, partitionExists] = await Promise.all([authorityPath, partitionPath].map(async (path) => {
+    try { await lstat(path); return true; } catch (error) { if (/** @type {any} */ (error)?.code === 'ENOENT') return false; throw invalidRescueBinding(); }
+  }));
+  if (!authorityExists && !partitionExists) { if (!allowMissing) throw invalidRescueBinding(); return { authority: null, exists: false, records: new Map() }; }
+  if (!authorityExists || !partitionExists && !allowAuthorityOnly) throw invalidRescueBinding();
+  let authority; let partition;
+  try {
+    authority = await readRescueBindingAuthorityFile(storage.directory, authorityPath, expected);
+    if (partitionExists) partition = await readRescueBindingPartitionFile(storage.directory, partitionPath, expected);
+  } catch { throw invalidRescueBinding(); }
+  return { authority, exists: partitionExists, records: new Map((partition?.records ?? []).map((record) => [record.key, record])) };
+}
+
+/** @param {any} storage @param {string} parentSessionId @param {Map<string,any>} records */
+function partitionEnvelope(storage, parentSessionId, records) { return createRescueBindingPartition({ parentSessionId, workspace: storage.workspacePath, records: [...records.values()] }); }
+
+/** @param {any} snapshot @param {any} binding */
+function bindingSnapshotWith(snapshot, binding) { const records = new Map(snapshot.records); records.set(binding.key, binding); return { authority: snapshot.authority, exists: true, records }; }
+
+/** @param {any} left @param {any} right */
+function sameBindingSnapshot(left, right) {
+  if (left.exists !== right.exists || JSON.stringify(left.authority) !== JSON.stringify(right.authority)) return false;
+  return JSON.stringify([...left.records].sort()) === JSON.stringify([...right.records].sort());
+}
+
+/** Validate one session partition, GC old closed slots only for new-slot creation, and return this slot. @param {any} storage @param {any} identity @param {any} lockIdentity */
+async function prepareBindingSlot(storage, identity, lockIdentity) {
+  let snapshot = await readBindingPartitionSnapshot(storage, identity.parentSessionId, true, true); const key = rescueBindingKey(identity);
+  if (snapshot.authority === null) {
+    const authority = createRescueBindingAuthority({ parentSessionId: identity.parentSessionId, workspace: storage.workspacePath });
+    await assertStateLockIdentity(storage, lockIdentity);
+    await atomicWriteJson(bindingAuthorityPath(storage, identity.parentSessionId), authority, { privateRoot: storage.directory });
+    await assertStateLockIdentity(storage, lockIdentity);
+    snapshot = { authority, exists: false, records: new Map() };
+  }
+  if (snapshot.records.has(key)) return { record: snapshot.records.get(key), snapshot };
   const cutoff = Date.now() - RESCUE_BINDING_CLOSED_GC_MS;
-  for (const [recordKey, record] of records) if (record.state === 'closed' && Date.parse(record.closedAt) < cutoff) { await unlink(join(directory, `${recordKey}.json`)); records.delete(recordKey); }
-  if (records.size >= RESCUE_BINDING_MAX_RECORDS) throw new PluginError('RESCUE_BINDING_CAPACITY', 'The Rescue binding capacity is exhausted.', { category: 'state', remedy: 'End or clean up old Rescue operations before retrying.' });
-  return { record: null, partitionIdentity };
-}
-
-/** @param {any} storage @param {string} directory @param {string} parentSessionId @param {import('node:fs').BigIntStats} directoryIdentity */
-async function ensureBindingPartitionMarker(storage, directory, parentSessionId, directoryIdentity) {
-  const path = join(directory, RESCUE_BINDING_PARTITION_MARKER);
-  let present;
-  try { await lstat(path); present = true; }
-  catch (error) { if (/** @type {any} */ (error)?.code !== 'ENOENT') throw invalidRescueBinding(); present = false; }
-  if (present) { await validateBindingPartitionMarker(storage, directory, parentSessionId, directoryIdentity); return; }
-  const entries = await readPrivateDirectory(storage.rescueBindingsDirectory, directory, 1);
-  if (entries.length !== 0) throw invalidRescueBinding();
-  await atomicWriteJson(path, bindingPartitionMarker(storage, parentSessionId, directoryIdentity), { privateRoot: storage.directory });
-  const after = await lstat(directory, { bigint: true }).catch(() => { throw invalidRescueBinding(); });
-  if (!sameDirectoryIdentity(directoryIdentity, after)) throw invalidRescueBinding();
-}
-
-/** @param {any} storage @param {string} directory @param {string} parentSessionId @param {import('node:fs').BigIntStats} directoryIdentity */
-async function validateBindingPartitionMarker(storage, directory, parentSessionId, directoryIdentity) {
-  let marker;
-  try { marker = await readBoundedJsonFile(storage.rescueBindingsDirectory, join(directory, RESCUE_BINDING_PARTITION_MARKER), RESCUE_BINDING_PARTITION_MAX_BYTES); }
-  catch { throw invalidRescueBinding(); }
-  const expected = /** @type {Record<string, any>} */ (bindingPartitionMarker(storage, parentSessionId, directoryIdentity));
-  if (!isPlainJsonObject(marker) || Object.keys(marker).sort().join('\0') !== Object.keys(expected).sort().join('\0')
-    || Object.keys(expected).some((key) => marker[key] !== expected[key])) throw invalidRescueBinding();
-}
-
-/** @param {any} storage @param {string} parentSessionId @param {import('node:fs').BigIntStats} directoryIdentity */
-function bindingPartitionMarker(storage, parentSessionId, directoryIdentity) {
-  return { version: RESCUE_BINDING_PARTITION_VERSION, parentSessionId, workspace: storage.workspacePath,
-    device: directoryIdentity.dev.toString(), inode: directoryIdentity.ino.toString() };
-}
-
-/** @param {any} storage */
-async function assertRescueBindingsRoot(storage) {
-  const current = await lstat(storage.rescueBindingsDirectory, { bigint: true }).catch(() => { throw invalidRescueBinding(); });
-  if (!sameDirectoryIdentity(storage.rescueBindingsIdentity, current)) throw invalidRescueBinding();
+  const retained = new Map([...snapshot.records].filter(([, record]) => record.state !== 'closed' || Date.parse(record.closedAt) >= cutoff));
+  if (retained.size !== snapshot.records.size) { const after = { authority: snapshot.authority, exists: true, records: retained }; await writeBindingPartitionGuarded(storage, identity.parentSessionId, snapshot, after, lockIdentity); snapshot = after; }
+  if (snapshot.records.size >= RESCUE_BINDING_MAX_RECORDS) throw new PluginError('RESCUE_BINDING_CAPACITY', 'The Rescue binding capacity is exhausted.', { category: 'state', remedy: 'End or clean up old Rescue operations before retrying.' });
+  return { record: null, snapshot };
 }
 /** @param {import('node:fs').BigIntStats} left @param {import('node:fs').BigIntStats} right */
 function sameDirectoryIdentity(left, right) { return left.isDirectory() && right.isDirectory() && left.dev === right.dev && left.ino === right.ino; }

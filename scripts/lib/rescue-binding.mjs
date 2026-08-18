@@ -10,6 +10,9 @@ import { PERMISSION_MODES } from './identity.mjs';
 export const RESCUE_BINDING_VERSION = 1;
 export const RESCUE_BINDING_MAX_BYTES = 16 * 1024;
 export const RESCUE_BINDING_MAX_RECORDS = 1024;
+export const RESCUE_BINDING_PARTITION_MAX_BYTES = 16 * 1024 * 1024;
+export const RESCUE_BINDING_PARTITION_VERSION = 1;
+export const RESCUE_BINDING_AUTHORITY_MAX_BYTES = 16 * 1024;
 
 const KEYS = [
   'anchorJobId', 'closeReason', 'closedAt', 'createdAt', 'currentJobId',
@@ -28,6 +31,12 @@ export function rescueBindingKey(input) {
     input.executorAgentId,
     input.workspace,
   ])).digest('hex');
+}
+
+/** @param {{parentSessionId:string,workspace:string}} input */
+export function rescueBindingPartitionKey(input) {
+  validatePartitionIdentity(input);
+  return createHash('sha256').update(JSON.stringify(['rescue-binding-session-v1', input.parentSessionId, input.workspace])).digest('hex');
 }
 
 /** @param {any} input */
@@ -64,6 +73,60 @@ export function closeRescueBinding(record, input) {
   return { ...active, state: 'closed', updatedAt: now, closedAt: now, closeReason: input.reason };
 }
 
+/** @param {{parentSessionId:string,workspace:string,records:any[]}} input */
+export function createRescueBindingPartition(input) {
+  validatePartitionIdentity(input);
+  if (!Array.isArray(input.records) || input.records.length > RESCUE_BINDING_MAX_RECORDS) throw invalidBinding();
+  const records = []; const keys = new Set(); const executors = new Set();
+  for (const candidate of input.records) {
+    const record = validateRescueBinding(candidate);
+    if (record.parentSessionId !== input.parentSessionId || record.workspace !== input.workspace || keys.has(record.key) || executors.has(record.executorAgentId)) throw invalidBinding();
+    keys.add(record.key); executors.add(record.executorAgentId); records.push(record);
+  }
+  records.sort((left, right) => left.key.localeCompare(right.key));
+  const partition = { version: RESCUE_BINDING_PARTITION_VERSION, key: rescueBindingPartitionKey(input), parentSessionId: input.parentSessionId, workspace: input.workspace, records };
+  if (persistedBytes(partition) > RESCUE_BINDING_PARTITION_MAX_BYTES) throw invalidBinding();
+  return structuredClone(partition);
+}
+
+/** @param {string|Buffer} bytes @param {{parentSessionId:string,workspace:string}} expected */
+export function parseRescueBindingPartition(bytes, expected) {
+  let text;
+  try { text = Buffer.isBuffer(bytes) ? new TextDecoder('utf-8', { fatal: true }).decode(bytes) : bytes; } catch { throw invalidBinding(); }
+  if (typeof text !== 'string' || !text.endsWith('\n') || Buffer.byteLength(text) > RESCUE_BINDING_PARTITION_MAX_BYTES) throw invalidBinding();
+  rejectDuplicateObjectKeys(text);
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { throw invalidBinding(); }
+  validatePartitionIdentity(expected);
+  if (!plain(parsed) || Object.keys(parsed).sort().join('\0') !== ['key', 'parentSessionId', 'records', 'version', 'workspace'].sort().join('\0')
+    || parsed.version !== RESCUE_BINDING_PARTITION_VERSION || parsed.parentSessionId !== expected.parentSessionId
+    || parsed.workspace !== expected.workspace || parsed.key !== rescueBindingPartitionKey(expected) || !Array.isArray(parsed.records)) throw invalidBinding();
+  const entries = /** @type {any[]} */ (parsed.records);
+  if (entries.length > RESCUE_BINDING_MAX_RECORDS) throw invalidBinding();
+  if (entries.some((record, index) => index > 0 && entries[index - 1]?.key >= record?.key)) throw invalidBinding();
+  return createRescueBindingPartition({ parentSessionId: parsed.parentSessionId, workspace: parsed.workspace,
+    records: entries });
+}
+
+/** @param {{parentSessionId:string,workspace:string,createdAt?:string}} input */
+export function createRescueBindingAuthority(input) {
+  validatePartitionIdentity(input); const createdAt = timestamp(input.createdAt);
+  const authority = { version: RESCUE_BINDING_PARTITION_VERSION, key: rescueBindingPartitionKey(input), parentSessionId: input.parentSessionId, workspace: input.workspace, createdAt };
+  if (persistedBytes(authority) > RESCUE_BINDING_AUTHORITY_MAX_BYTES) throw invalidBinding();
+  return authority;
+}
+
+/** @param {string|Buffer} bytes @param {{parentSessionId:string,workspace:string}} expected */
+export function parseRescueBindingAuthority(bytes, expected) {
+  let text; try { text = Buffer.isBuffer(bytes) ? new TextDecoder('utf-8', { fatal: true }).decode(bytes) : bytes; } catch { throw invalidBinding(); }
+  if (typeof text !== 'string' || !text.endsWith('\n') || Buffer.byteLength(text) > RESCUE_BINDING_AUTHORITY_MAX_BYTES) throw invalidBinding(); rejectDuplicateObjectKeys(text);
+  let parsed; try { parsed = JSON.parse(text); } catch { throw invalidBinding(); }
+  const valid = createRescueBindingAuthority(parsed); validatePartitionIdentity(expected);
+  if (Object.keys(parsed).sort().join('\0') !== ['createdAt', 'key', 'parentSessionId', 'version', 'workspace'].sort().join('\0')
+    || valid.key !== parsed.key || valid.parentSessionId !== expected.parentSessionId || valid.workspace !== expected.workspace) throw invalidBinding();
+  return { ...valid };
+}
+
 /** @param {string|Buffer} bytes @param {{parentSessionId:string,executorAgentId:string,executorAgentType?:string,workspace:string,permissionMode?:string}} [expected] */
 export function parseRescueBinding(bytes, expected) {
   let text;
@@ -86,28 +149,43 @@ export function parseRescueBinding(bytes, expected) {
 
 /** Read one exact binding without following symlinks or accepting replacement races. @param {string} root @param {string} path @param {any} [expected] */
 export async function readRescueBindingFile(root, path, expected) {
+  return parseRescueBinding(await readExactPrivateFile(root, path, RESCUE_BINDING_MAX_BYTES), expected);
+}
+
+/** @param {string} root @param {string} path @param {{parentSessionId:string,workspace:string}} expected */
+export async function readRescueBindingPartitionFile(root, path, expected) {
+  return parseRescueBindingPartition(await readExactPrivateFile(root, path, RESCUE_BINDING_PARTITION_MAX_BYTES), expected);
+}
+
+/** @param {string} root @param {string} path @param {{parentSessionId:string,workspace:string}} expected */
+export async function readRescueBindingAuthorityFile(root, path, expected) {
+  return parseRescueBindingAuthority(await readExactPrivateFile(root, path, RESCUE_BINDING_AUTHORITY_MAX_BYTES), expected);
+}
+
+/** @param {string} root @param {string} path @param {number} maximumBytes */
+async function readExactPrivateFile(root, path, maximumBytes) {
   const parent = dirname(path);
   const [canonicalRoot, canonicalParent, rootBefore, parentBefore, pathBefore] = await Promise.all([
     realpath(root), realpath(parent), lstat(root, { bigint: true }), lstat(parent, { bigint: true }), lstat(path, { bigint: true }),
   ]);
   const descendant = relative(canonicalRoot, canonicalParent);
   if (!rootBefore.isDirectory() || !parentBefore.isDirectory() || pathBefore.isSymbolicLink() || !pathBefore.isFile()
-    || pathBefore.size > BigInt(RESCUE_BINDING_MAX_BYTES) || descendant === '..' || descendant.startsWith(`..${sep}`) || isAbsolute(descendant)) throw invalidBinding();
+    || pathBefore.size > BigInt(maximumBytes) || descendant === '..' || descendant.startsWith(`..${sep}`) || isAbsolute(descendant)) throw invalidBinding();
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const handleBefore = await handle.stat({ bigint: true });
-    if (!handleBefore.isFile() || handleBefore.size > BigInt(RESCUE_BINDING_MAX_BYTES)
+    if (!handleBefore.isFile() || handleBefore.size > BigInt(maximumBytes)
       || !samePathHandleFileSnapshot(pathBefore, handleBefore)) throw invalidBinding();
-    const bytes = Buffer.alloc(RESCUE_BINDING_MAX_BYTES + 1); let offset = 0;
+    const bytes = Buffer.alloc(maximumBytes + 1); let offset = 0;
     while (offset < bytes.length) { const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset); if (!bytesRead) break; offset += bytesRead; }
     const [handleAfter, pathAfter, parentAfter, rootAfter] = await Promise.all([
       handle.stat({ bigint: true }), lstat(path, { bigint: true }), lstat(parent, { bigint: true }), lstat(root, { bigint: true }),
     ]);
-    if (offset > RESCUE_BINDING_MAX_BYTES || pathAfter.isSymbolicLink() || !pathAfter.isFile()
+    if (offset > maximumBytes || pathAfter.isSymbolicLink() || !pathAfter.isFile()
       || !sameSnapshot(handleBefore, handleAfter) || !sameSnapshot(pathBefore, pathAfter)
       || !samePathHandleFileSnapshot(pathAfter, handleAfter) || !sameDirectory(rootBefore, rootAfter) || !sameDirectory(parentBefore, parentAfter)) throw invalidBinding();
-    return parseRescueBinding(bytes.subarray(0, offset), expected);
+    return bytes.subarray(0, offset);
   } finally { await handle?.close().catch(() => {}); }
 }
 
@@ -137,6 +215,13 @@ function validateIdentity(input) {
     || input.permissionMode !== undefined && !PERMISSION_MODES.includes(input.permissionMode)) throw invalidBinding();
 }
 
+/** @param {any} input */
+function validatePartitionIdentity(input) {
+  if (!plain(input) || !safeIdentifier(input.parentSessionId, 4096)
+    || typeof input.workspace !== 'string' || !isAbsolute(input.workspace) || normalize(input.workspace) !== input.workspace
+    || Buffer.byteLength(input.workspace) > 4096 || /[\0\r\n]/u.test(input.workspace)) throw invalidBinding();
+}
+
 /** @param {unknown} value @param {number} maximumBytes */
 function safeIdentifier(value, maximumBytes) {
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= maximumBytes
@@ -146,6 +231,8 @@ function safeIdentifier(value, maximumBytes) {
 function digest(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value); }
 /** @param {unknown} value */
 function canonicalTimestamp(value) { return typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value; }
+/** @param {unknown} value */
+function persistedBytes(value) { return Buffer.byteLength(`${JSON.stringify(value, null, 2)}\n`); }
 /** @param {unknown} value */
 function plain(value) { if (!value || typeof value !== 'object' || Array.isArray(value)) return false; const prototype = Object.getPrototypeOf(value); return prototype === Object.prototype || prototype === null; }
 /** @param {Date|number|string|undefined} value */

@@ -7,8 +7,13 @@ import { join } from 'node:path';
 
 import {
   closeRescueBinding,
+  createRescueBindingAuthority,
+  createRescueBindingPartition,
   createRescueBinding,
   parseRescueBinding,
+  parseRescueBindingAuthority,
+  parseRescueBindingPartition,
+  RESCUE_BINDING_PARTITION_MAX_BYTES,
   rescueBindingKey,
 } from '../scripts/lib/rescue-binding.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
@@ -78,6 +83,21 @@ test('binding key and codec enforce bounded safe identity, digest, timestamp, an
   assert.throws(() => parseRescueBinding(Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d])), { code: 'RESCUE_BINDING_INVALID' });
 });
 
+test('partition codec enforces one exact bounded parent-session envelope and unique child keys', () => {
+  const record = createRescueBinding({ ...identity, anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: 'c'.repeat(64) });
+  const partition = createRescueBindingPartition({ parentSessionId: identity.parentSessionId, workspace: identity.workspace, records: [record] });
+  assert.deepEqual(Object.keys(partition).sort(), ['key', 'parentSessionId', 'records', 'version', 'workspace']);
+  assert.equal(partition.records.length, 1);
+  assert.throws(() => parseRescueBindingPartition(`${JSON.stringify({ ...partition, workspace: '/foreign' })}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
+  assert.throws(() => parseRescueBindingPartition(`${JSON.stringify({ ...partition, parentSessionId: 'foreign-session' })}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
+  assert.throws(() => parseRescueBindingPartition(`${JSON.stringify({ ...partition, records: [record, record] })}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
+  const compact = `${JSON.stringify(partition)}\n`; const boundary = `${compact.slice(0, -1)}${' '.repeat(RESCUE_BINDING_PARTITION_MAX_BYTES - Buffer.byteLength(compact))}\n`;
+  assert.equal(parseRescueBindingPartition(boundary, identity).records.length, 1);
+  assert.throws(() => parseRescueBindingPartition(`${boundary.slice(0, -1)} \n`, identity), { code: 'RESCUE_BINDING_INVALID' });
+  const authority = createRescueBindingAuthority(identity); assert.equal(parseRescueBindingAuthority(`${JSON.stringify(authority)}\n`, identity).key, partition.key);
+  assert.throws(() => parseRescueBindingAuthority(`${JSON.stringify({ ...authority, workspace: '/foreign' })}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
+});
+
 async function fixture(options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'zcode-rescue-binding-'));
   const dataRoot = join(root, 'data'); const workspace = join(root, 'workspace');
@@ -102,12 +122,9 @@ async function makeEligible(store, workspace, job, sessionId) {
 }
 
 async function bindingFiles(directory) {
-  const files = [];
-  for (const partition of await readdir(directory, { withFileTypes: true })) {
-    if (!partition.isDirectory()) continue;
-    for (const name of await readdir(join(directory, partition.name))) if (/^[a-f0-9]{64}\.json$/u.test(name)) files.push(join(directory, partition.name, name));
-  }
-  return files;
+  return (await readdir(directory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && /^rescue-binding-session-[a-f0-9]{64}\.json$/u.test(entry.name))
+    .map((entry) => join(directory, entry.name));
 }
 
 function throwingAt(expected) {
@@ -132,8 +149,8 @@ test('StateStore atomically reserves and resolves an exact fresh Rescue generati
   assert.equal(resolved.anchorJob.zcodeSessionId, 'zcode-session-a');
   assert.equal(resolved.currentJob.id, reserved.job.id);
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
-  assert.equal((await stat(join(storage.directory, 'rescue-bindings'))).mode & 0o777, 0o700);
-  assert.equal((await bindingFiles(join(storage.directory, 'rescue-bindings'))).length, 1);
+  const [partitionPath] = await bindingFiles(storage.directory); assert.equal((await stat(partitionPath)).mode & 0o777, 0o600);
+  assert.equal((await bindingFiles(storage.directory)).length, 1);
 });
 
 test('Rescue reservation methods require one explicit workspace matching reservation and executor', async () => {
@@ -170,22 +187,25 @@ test('StateStore adopts only an exact eligible legacy candidate into a new gener
 test('StateStore closes exact session bindings as tombstones without deleting jobs', async () => {
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
-  await makeEligible(store, workspace, fresh.job, 'zcode-session-a');
+  await makeEligible(store, workspace, fresh.job, 'zcode-session-a'); await store.finishJob(workspace, fresh.job.id, ['running'], 'succeeded');
+  const siblingExecutor = executor(workspace, { parentSessionId: 'sibling-session', agentId: 'sibling-child' });
+  const siblingReservation = { ...reservation(workspace, 'sibling-turn'), ownerSessionId: 'sibling-session' };
+  const sibling = await store.reserveFreshRescueJob({ workspace, reservation: siblingReservation, executor: siblingExecutor }); await store.finishJob(workspace, sibling.job.id, ['queued'], 'failed');
   const closed = await store.closeRescueBindingsForSession({ workspace, parentSessionId: trusted.parentSessionId, reason: 'session-ended' });
   assert.equal(closed, 1);
   await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_CLOSED' });
+  assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, siblingExecutor))).kind, 'bound');
   assert.equal((await store.readJob(workspace, fresh.job.id)).id, fresh.job.id);
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
-  const [path] = await bindingFiles(join(storage.directory, 'rescue-bindings'));
-  assert.equal(JSON.parse(await readFile(path, 'utf8')).closeReason, 'session-ended');
+  const paths = await bindingFiles(storage.directory); const partitions = await Promise.all(paths.map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
+  assert.equal(partitions.find((partition) => partition.parentSessionId === trusted.parentSessionId).records[0].closeReason, 'session-ended');
 });
 
 test('StateStore treats only true absence as missing and fails closed for invalid binding state', async () => {
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
-  const directory = join(storage.directory, 'rescue-bindings');
-  const [path] = await bindingFiles(directory);
+  const [path] = await bindingFiles(storage.directory);
   await writeFile(path, '{"version":1,"version":1}\n');
   await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
 });
@@ -193,10 +213,9 @@ test('StateStore treats only true absence as missing and fails closed for invali
 test('StateStore fails closed when a same-session sibling claims a foreign canonical workspace', async () => {
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const root = join(storage.directory, 'rescue-bindings');
-  const directory = join(root, (await readdir(root))[0]);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory);
   const foreign = createRescueBinding({ ...identity, workspace: '/foreign/workspace', executorAgentId: 'foreign-child', anchorJobId: fresh.job.id, currentJobId: fresh.job.id, operationId: 'e'.repeat(64) });
-  await writeFile(join(directory, `${foreign.key}.json`), `${JSON.stringify(foreign)}\n`);
+  const partition = JSON.parse(await readFile(path, 'utf8')); partition.records.push(foreign); await writeFile(path, `${JSON.stringify(partition)}\n`);
   await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, executor(workspace, { agentId: 'absent-child' }))), { code: 'RESCUE_BINDING_INVALID' });
 });
 
@@ -204,8 +223,7 @@ test('StateStore rejects a persisted exact-shape binding with a duplicate JSON k
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
   await makeEligible(store, workspace, fresh.job, 'zcode-session-a');
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const directory = join(storage.directory, 'rescue-bindings');
-  const [path] = await bindingFiles(directory); const text = await readFile(path, 'utf8');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory); const text = await readFile(path, 'utf8');
   await writeFile(path, text.replace('"version": 1,', '"version": 1,\n  "version": 1,'));
   await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
 });
@@ -223,29 +241,26 @@ test('StateStore rejects permission changes, sessionless and cancelled anchors w
 test('StateStore rejects a symlinked binding and bounds SessionEnd scans', async () => {
   const { dataRoot, root, workspace, store } = await fixture(); const trusted = executor(workspace);
   await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const directory = join(storage.directory, 'rescue-bindings');
-  const [path] = await bindingFiles(directory);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory);
   const outside = join(root, 'outside.json'); await writeFile(outside, await readFile(path));
   await import('node:fs/promises').then(({ unlink }) => unlink(path)); await symlink(outside, path);
   await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
   await assert.rejects(store.closeRescueBindingsForSession({ workspace, parentSessionId: trusted.parentSessionId, reason: 'session-ended' }), { code: 'RESCUE_BINDING_INVALID' });
 });
 
-test('atomic temp remnants fail closed instead of masquerading as missing bindings', async () => {
+test('unpublished atomic temp remnants are harmless beside the exact partition file', async () => {
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const root = join(storage.directory, 'rescue-bindings');
-  const directory = join(root, (await readdir(root))[0]); await writeFile(join(directory, '.binding.interrupted.tmp'), '{}');
-  await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); await writeFile(join(storage.directory, '.rescue-binding-session-interrupted.tmp'), '{}');
+  assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, trusted))).kind, 'bound');
 });
 
 test('publication rejects binding-partition and state-lock replacement without authorizing partial state', async () => {
   {
     const base = await fixture(); const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace }); let replaced = false;
     const store = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
-      if (replaced || seam !== 'fresh:binding') return; replaced = true;
-      const root = join(storage.directory, 'rescue-bindings'); const [partition] = await readdir(root);
-      await rename(join(root, partition), join(root, `${partition}.replaced`)); await mkdir(join(root, partition), { mode: 0o700 });
+      if (replaced || seam !== 'fresh:owner-binding') return; replaced = true;
+      const [partition] = await bindingFiles(storage.directory); await rename(partition, `${partition}.replaced`); await writeFile(partition, '{}');
     } });
     await assert.rejects(store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace), executor: executor(base.workspace) }), { code: 'RESCUE_BINDING_INVALID' });
   }
@@ -279,8 +294,9 @@ test('every post-partition publication checkpoint and final return rejects parti
     const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace }); let replaced = false;
     const store = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
       if (replaced || seam !== scenario.seam) return; replaced = true;
-      const root = join(storage.directory, 'rescue-bindings'); const [partition] = (await readdir(root)).filter((name) => /^[a-f0-9]{64}$/u.test(name));
-      await rename(join(root, partition), join(root, `${partition}.replaced`)); await mkdir(join(root, partition), { mode: 0o700 });
+      const [partition] = await bindingFiles(storage.directory);
+      if (partition) { await rename(partition, `${partition}.replaced`); await writeFile(partition, '{}'); }
+      else { const [authority] = (await readdir(storage.directory)).filter((name) => /^rescue-binding-authority-/u.test(name)); await writeFile(join(storage.directory, authority), '{}'); }
     } });
     const operation = scenario.route === 'fresh'
       ? store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted })
@@ -292,11 +308,28 @@ test('every post-partition publication checkpoint and final return rejects parti
   }
 });
 
+test('delete, replace, corrupt, or symlink mutations of authority and partition fail current and next calls', async () => {
+  for (const kind of ['authority', 'session']) for (const mutation of ['delete', 'replace', 'corrupt', 'symlink']) {
+    const base = await fixture(); const trusted = executor(base.workspace); const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace }); let mutated = false;
+    const store = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
+      if (mutated || seam !== 'fresh:final') return; mutated = true;
+      const prefix = `rescue-binding-${kind}-`; const [name] = (await readdir(storage.directory)).filter((entry) => entry.startsWith(prefix)); const path = join(storage.directory, name);
+      const { unlink } = await import('node:fs/promises');
+      if (mutation === 'delete') await unlink(path);
+      else if (mutation === 'replace') { await rename(path, `${path}.replaced`); await writeFile(path, '{}'); }
+      else if (mutation === 'corrupt') await writeFile(path, '{broken');
+      else { const outside = join(base.root, `${kind}.json`); await writeFile(outside, '{}'); await unlink(path); await symlink(outside, path); }
+    } });
+    await assert.rejects(store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace), executor: trusted }), { code: 'RESCUE_BINDING_INVALID' });
+    await assert.rejects(createStateStore({ dataRoot: base.dataRoot }).resolveRescueBinding(bindingExpected(base.workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
+  }
+});
+
 test('oversized persisted binding records fail closed before allocation or parsing', async () => {
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(join(storage.directory, 'rescue-bindings'));
-  await writeFile(path, Buffer.alloc(16 * 1024 + 1, 0x20));
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory);
+  await writeFile(path, Buffer.alloc(16 * 1024 * 1024 + 1, 0x20));
   await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
 });
 
@@ -308,10 +341,10 @@ test('legacy-style job readers observe unchanged job schema and ignore Rescue bi
   const legacyRead = async () => Promise.all((await readdir(jobsDirectory)).filter((name) => /^[a-f0-9]{64}\.json$/u.test(name)).map(async (name) => JSON.parse(await readFile(join(jobsDirectory, name), 'utf8'))));
   const jobs = await legacyRead(); assert.equal(jobs.length, 2);
   assert.deepEqual(Object.keys(jobs.find((job) => job.id === fresh.job.id)).sort(), Object.keys(legacy).sort());
-  assert.equal((await bindingFiles(join(storage.directory, 'rescue-bindings'))).length, 1);
+  assert.equal((await bindingFiles(storage.directory)).length, 1);
 });
 
-test('legacy reservation ignores Rescue publication hooks and close resumes safely after a partial scan', async () => {
+test('legacy reservation ignores Rescue publication hooks and SessionEnd closes one whole partition idempotently', async () => {
   const { dataRoot, workspace } = await fixture();
   const legacy = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt('fresh:binding') });
   assert.equal((await legacy.reserveJob({ ...reservation(workspace), command: 'review', readOnly: true })).command, 'review');
@@ -320,9 +353,12 @@ test('legacy reservation ignores Rescue publication hooks and close resumes safe
   await makeEligible(clean, workspace, first.job, 'first-session'); await clean.finishJob(workspace, first.job.id, ['running'], 'succeeded');
   const secondExecutor = executor(workspace, { agentId: 'second-child' }); const second = await clean.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'second'), executor: secondExecutor });
   await makeEligible(clean, workspace, second.job, 'second-session'); await clean.finishJob(workspace, second.job.id, ['running'], 'succeeded');
-  let writes = 0; const partial = createStateStore({ dataRoot, testOnlyPublicationHook: async (seam) => { if (seam === 'close:binding' && ++writes === 2) throw new Error('injected close:binding'); } });
+  const partial = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt('close:binding') });
   await assert.rejects(partial.closeRescueBindingsForSession({ workspace, parentSessionId: firstExecutor.parentSessionId, reason: 'session-ended' }), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
-  assert.equal(await clean.closeRescueBindingsForSession({ workspace, parentSessionId: firstExecutor.parentSessionId, reason: 'session-ended' }), 1);
+  assert.equal((await clean.resolveRescueBinding(bindingExpected(workspace, firstExecutor))).kind, 'bound');
+  assert.equal((await clean.resolveRescueBinding(bindingExpected(workspace, secondExecutor))).kind, 'bound');
+  assert.equal(await clean.closeRescueBindingsForSession({ workspace, parentSessionId: firstExecutor.parentSessionId, reason: 'session-ended' }), 2);
+  assert.equal(await clean.closeRescueBindingsForSession({ workspace, parentSessionId: firstExecutor.parentSessionId, reason: 'session-ended' }), 0);
   await assert.rejects(clean.resolveRescueBinding(bindingExpected(workspace, firstExecutor)), { code: 'RESCUE_BINDING_CLOSED' });
   await assert.rejects(clean.resolveRescueBinding(bindingExpected(workspace, secondExecutor)), { code: 'RESCUE_BINDING_CLOSED' });
 });
@@ -338,34 +374,35 @@ test('concurrent fresh reservations publish one job and one exact generation', a
 });
 
 test('fresh publication seams leave only safe fail-closed state and deterministic retries', async () => {
-  for (const seam of ['fresh:binding', 'fresh:owner-binding', 'fresh:job', 'fresh:marker']) {
+  for (const seam of ['fresh:binding', 'fresh:owner-binding', 'fresh:job', 'fresh:marker', 'fresh:final']) {
     const { dataRoot, workspace, store } = await fixture({ testOnlyPublicationHook: throwingAt(seam) }); const trusted = executor(workspace);
     await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted }), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
     const clean = createStateStore({ dataRoot }); const jobs = await clean.listJobs(workspace);
-    const binding = await clean.resolveRescueBinding(bindingExpected(workspace, trusted));
-    if (seam === 'fresh:binding') assert.deepEqual(binding, { kind: 'missing' });
+    if (seam === 'fresh:binding') await assert.rejects(clean.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
     else {
+      const binding = await clean.resolveRescueBinding(bindingExpected(workspace, trusted));
       assert.equal(binding.kind, 'bound');
-      await assert.rejects(clean.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
+      if (seam !== 'fresh:final') await assert.rejects(clean.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
     }
-    assert.equal(jobs.length, seam === 'fresh:marker' ? 1 : 0);
-    if (seam === 'fresh:marker') await assert.rejects(clean.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'retry'), executor: trusted }), { code: 'WRITABLE_JOB_EXISTS' });
+    assert.equal(jobs.length, ['fresh:marker', 'fresh:final'].includes(seam) ? 1 : 0);
+    if (['fresh:marker', 'fresh:final'].includes(seam)) await assert.rejects(clean.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'retry'), executor: trusted }), { code: 'WRITABLE_JOB_EXISTS' });
     else assert.equal((await clean.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'retry'), executor: trusted })).job.status, 'queued');
   }
 });
 
 test('continuation publication seams retain the stable prior binding and serialize two writers', async () => {
-  for (const seam of ['continuation:owner-binding', 'continuation:job', 'continuation:marker', 'continuation:current-advance']) {
+  for (const seam of ['continuation:owner-binding', 'continuation:job', 'continuation:marker', 'continuation:current-advance', 'continuation:final']) {
     const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
     const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
     await makeEligible(store, workspace, fresh.job, 'stable-session'); await store.finishJob(workspace, fresh.job.id, ['running'], 'succeeded');
     const faulted = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt(seam) });
     await assert.rejects(faulted.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'next'), executor: trusted, operationId: fresh.binding.operationId }), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
     const clean = createStateStore({ dataRoot }); const resolved = await clean.resolveRescueBindingForResume(bindingExpected(workspace, trusted));
-    assert.equal(resolved.currentJob.id, fresh.job.id); assert.equal(resolved.anchorJob.zcodeSessionId, 'stable-session');
-    const jobs = await clean.listJobs(workspace); assert.equal(jobs.length, ['continuation:marker', 'continuation:current-advance'].includes(seam) ? 2 : 1);
+    if (seam === 'continuation:final') assert.notEqual(resolved.currentJob.id, fresh.job.id); else assert.equal(resolved.currentJob.id, fresh.job.id);
+    assert.equal(resolved.anchorJob.zcodeSessionId, 'stable-session');
+    const jobs = await clean.listJobs(workspace); assert.equal(jobs.length, ['continuation:marker', 'continuation:current-advance', 'continuation:final'].includes(seam) ? 2 : 1);
     const retry = clean.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'retry'), executor: trusted, operationId: fresh.binding.operationId });
-    if (['continuation:marker', 'continuation:current-advance'].includes(seam)) await assert.rejects(retry, { code: 'WRITABLE_JOB_EXISTS' });
+    if (['continuation:marker', 'continuation:current-advance', 'continuation:final'].includes(seam)) await assert.rejects(retry, { code: 'WRITABLE_JOB_EXISTS' });
     else assert.equal((await retry).binding.anchorJobId, fresh.job.id);
   }
   const { workspace, store } = await fixture(); const trusted = executor(workspace);
@@ -377,19 +414,19 @@ test('continuation publication seams retain the stable prior binding and seriali
 });
 
 test('adoption publication seams pin only the explicit candidate and concurrent adoption has one winner', async () => {
-  for (const seam of ['adopt:base-binding', 'adopt:owner-binding', 'adopt:job', 'adopt:marker', 'adopt:current-advance']) {
+  for (const seam of ['adopt:base-binding', 'adopt:owner-binding', 'adopt:job', 'adopt:marker', 'adopt:current-advance', 'adopt:final']) {
     const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
     const candidate = await store.reserveJob(reservation(workspace)); await makeEligible(store, workspace, candidate, 'candidate-session'); await store.finishJob(workspace, candidate.id, ['running'], 'failed');
     const faulted = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt(seam) });
     await assert.rejects(faulted.adoptRescueCandidate({ workspace, reservation: reservation(workspace, 'adopt'), executor: trusted, candidateJobId: candidate.id }), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
-    const clean = createStateStore({ dataRoot }); const binding = await clean.resolveRescueBinding(bindingExpected(workspace, trusted));
-    if (seam === 'adopt:base-binding') assert.deepEqual(binding, { kind: 'missing' });
-    else { assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.anchorJobId, candidate.id); assert.equal(binding.binding.currentJobId, candidate.id); }
-    assert.equal((await clean.listJobs(workspace)).length, ['adopt:marker', 'adopt:current-advance'].includes(seam) ? 2 : 1);
+    const clean = createStateStore({ dataRoot }); let binding;
+    if (seam === 'adopt:base-binding') await assert.rejects(clean.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
+    else { binding = await clean.resolveRescueBinding(bindingExpected(workspace, trusted)); assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.anchorJobId, candidate.id); if (seam === 'adopt:final') assert.notEqual(binding.binding.currentJobId, candidate.id); else assert.equal(binding.binding.currentJobId, candidate.id); }
+    assert.equal((await clean.listJobs(workspace)).length, ['adopt:marker', 'adopt:current-advance', 'adopt:final'].includes(seam) ? 2 : 1);
     if (seam === 'adopt:base-binding') assert.equal((await clean.adoptRescueCandidate({ workspace, reservation: reservation(workspace, 'retry'), executor: trusted, candidateJobId: candidate.id })).anchorJob.id, candidate.id);
     else {
       const retry = clean.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'retry'), executor: trusted, operationId: binding.binding.operationId });
-      if (['adopt:marker', 'adopt:current-advance'].includes(seam)) await assert.rejects(retry, { code: 'WRITABLE_JOB_EXISTS' });
+      if (['adopt:marker', 'adopt:current-advance', 'adopt:final'].includes(seam)) await assert.rejects(retry, { code: 'WRITABLE_JOB_EXISTS' });
       else assert.equal((await retry).anchorJob.id, candidate.id);
     }
   }
@@ -426,15 +463,15 @@ test('binding capacity is isolated per parent session and active slots are never
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
   await makeEligible(store, workspace, first.job, 'zcode-session-a'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const root = join(storage.directory, 'rescue-bindings');
-  const [partition] = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()); const directory = join(root, partition.name);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory); const partition = JSON.parse(await readFile(path, 'utf8'));
   for (let index = 1; index < 1024; index += 1) {
     const item = createRescueBinding({ ...identity, workspace: storage.workspacePath, executorAgentId: `child-${index}`, anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: index.toString(16).padStart(64, '0'), now: '2020-01-01T00:00:00.000Z' });
-    await writeFile(join(directory, `${item.key}.json`), `${JSON.stringify(item)}\n`);
+    partition.records.push(item);
   }
+  await writeFile(path, `${JSON.stringify(createRescueBindingPartition({ parentSessionId: identity.parentSessionId, workspace: storage.workspacePath, records: partition.records }), null, 2)}\n`);
   await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), executor: executor(workspace, { agentId: 'overflow-child' }) }), { code: 'RESCUE_BINDING_CAPACITY' });
   const overflow = createRescueBinding({ ...identity, workspace: storage.workspacePath, executorAgentId: 'physical-overflow-child', anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: 'f'.repeat(64), now: '2020-01-01T00:00:00.000Z' });
-  await writeFile(join(directory, `${overflow.key}.json`), `${JSON.stringify(overflow)}\n`);
+  partition.records.push(overflow); await writeFile(path, `${JSON.stringify({ ...partition, records: partition.records })}\n`);
   await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
   const siblingExecutor = executor(workspace, { parentSessionId: 'sibling-session', agentId: 'sibling-child' });
   const siblingReservation = { ...reservation(workspace, 'sibling-turn'), ownerSessionId: 'sibling-session' };
@@ -446,15 +483,15 @@ test('new-slot creation GCs only valid closed tombstones older than thirty days'
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
   await makeEligible(store, workspace, first.job, 'zcode-session-a'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
   await store.closeRescueBindingsForSession({ workspace, parentSessionId: trusted.parentSessionId, reason: 'session-ended' });
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const root = join(storage.directory, 'rescue-bindings'); const [closedPath] = await bindingFiles(root);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [closedPath] = await bindingFiles(storage.directory);
   const old = createRescueBinding({ ...identity, workspace: storage.workspacePath, anchorJobId: first.job.id, currentJobId: first.job.id, operationId: first.binding.operationId, now: '2020-01-01T00:00:00.000Z' });
-  await writeFile(closedPath, `${JSON.stringify(closeRescueBinding(old, { operationId: old.operationId, reason: 'session-ended', now: '2020-01-02T00:00:00.000Z' }))}\n`);
-  const directory = join(root, (await readdir(root))[0]);
+  const records = [closeRescueBinding(old, { operationId: old.operationId, reason: 'session-ended', now: '2020-01-02T00:00:00.000Z' })];
   for (let index = 1; index < 1024; index += 1) {
     const item = createRescueBinding({ ...identity, workspace: storage.workspacePath, executorAgentId: `child-${index}`, anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: index.toString(16).padStart(64, '0'), now: '2020-01-01T00:00:00.000Z' });
-    await writeFile(join(directory, `${item.key}.json`), `${JSON.stringify(item)}\n`);
+    records.push(item);
   }
+  await writeFile(closedPath, `${JSON.stringify(createRescueBindingPartition({ parentSessionId: identity.parentSessionId, workspace: storage.workspacePath, records }), null, 2)}\n`);
   const replacement = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), executor: executor(workspace, { agentId: 'replacement-child' }) });
   assert.equal(replacement.binding.executorAgentId, 'replacement-child');
-  await assert.rejects(readFile(closedPath), { code: 'ENOENT' });
+  assert.equal(JSON.parse(await readFile(closedPath, 'utf8')).records.some((record) => record.key === old.key), false);
 });
