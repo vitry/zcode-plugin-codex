@@ -325,7 +325,13 @@ function validateImmutableArtifactHistory(history, input) {
     ...preparations.map((bytes) => [`invocations/prepared/${JSON.parse(bytes).key}.json`, bytes]),
     ...jobs.map((bytes) => [`jobs/${JSON.parse(bytes).id}.json`, bytes]),
   ];
-  if (history.some((artifact) => !/^(?:hook-state\/executor-[a-f0-9]{64}|rescue-binding-(?:authority|session)-[a-f0-9]{64}|invocations\/prepared\/[a-f0-9]{64}|jobs\/[a-f0-9]{64})\.json$/u.test(artifact.path))) mismatch('continuation-artifact-history', 'Raw artifact history contains a non-authoritative path.');
+  const corePath = /^(?:hook-state\/executor-[a-f0-9]{64}|rescue-binding-(?:authority|session)-[a-f0-9]{64}|invocations\/prepared\/[a-f0-9]{64}|jobs\/[a-f0-9]{64})\.json$/u;
+  for (const artifact of history) {
+    const safe = artifact.path.length > 0 && !artifact.path.startsWith('/') && !artifact.path.includes('\\') && !artifact.path.includes('//')
+      && artifact.path.split('/').every((segment) => segment && segment !== '.' && segment !== '..' && /^[A-Za-z0-9._-]+$/u.test(segment));
+    const coreNearMiss = /^(?:hook-state\/executor-|rescue-binding-(?:authority|session)-|invocations\/prepared\/[a-f0-9]+\.json$|jobs\/[a-f0-9]+\.json$)/u.test(artifact.path);
+    if (!safe || coreNearMiss && !corePath.test(artifact.path)) mismatch('continuation-artifact-history', 'Raw artifact history contains an unsafe or malformed authority path.');
+  }
   for (const [path, bytes] of expectedArtifacts) if (!history.some((artifact) => artifact.path === path && artifact.bytes === bytes)) mismatch('continuation-artifact-history', 'Selected authority bytes are absent from their exact captured path.');
   for (const versions of executorHistory.values()) assertStableVersions(versions, ['active'], 'executor');
   for (const versions of bindingHistory.values()) assertStableVersions(versions, ['currentJobId', 'permissionMode', 'updatedAt'], 'binding');

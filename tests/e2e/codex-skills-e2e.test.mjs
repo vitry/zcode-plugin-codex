@@ -671,6 +671,10 @@ test('deterministic installed observer artifacts flow through the live continuat
   const captured = await captureInstalledPreparedContinuationEvidence({ route: 'named', execution: 'foreground', parentSessionId: fixture.expected.parentSessionId,
     workspace, rollouts: [JSON.parse(fixture.parentRolloutJson), JSON.parse(fixture.childRolloutJson)], execFrames: JSON.parse(fixture.execFramesJson),
     peer: JSON.parse(fixture.fakePeerJson), installedDataRoot: dataRoot, hookCaptureDirectory: captures });
+  const completeHistory = JSON.parse(captured.artifactHistoryJson);
+  completeHistory.push({ path: `hook-state/forward-${'a'.repeat(64)}.json`, bytes: '{"kind":"forwarding"}\n', sequence: null });
+  completeHistory.push({ path: `identity/active-turns/${'b'.repeat(64)}.json`, bytes: '{"kind":"active-turn"}\n', sequence: null });
+  captured.artifactHistoryJson = JSON.stringify(completeHistory);
   const evidence = await qualifyCodexRescuePreparedContinuationEvidence(captured);
   assert.equal(evidence.childThreadId, executor.agentId); assert.equal(evidence.peerResumeChecked, true);
   assert.equal(partition.records[0].currentJobId, JSON.parse(JSON.parse(fixture.jobRecordBytesJson)[1]).id); assert.equal(authority.key, partition.key);
@@ -693,6 +697,8 @@ test('deterministic installed observer artifacts flow through the live continuat
   const rewritten = structuredClone(captured); const history = JSON.parse(rewritten.artifactHistoryJson); history.push({ ...history.find((artifact) => artifact.path.includes('rescue-binding-authority-')), bytes: `${JSON.stringify({ ...authority, createdAt: '2026-08-11T00:00:00.000Z' })}\n` }); rewritten.artifactHistoryJson = JSON.stringify(history);
   await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(rewritten), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-history');
   const absentHistory = structuredClone(captured); absentHistory.artifactHistoryJson = '[]'; await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(absentHistory), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-history');
+  const laundered = structuredClone(captured); const launderedHistory = JSON.parse(laundered.artifactHistoryJson); const authorityArtifact = launderedHistory.find((artifact) => artifact.path.includes('rescue-binding-authority-')); authorityArtifact.path = 'identity/selected-authority.json'; laundered.artifactHistoryJson = JSON.stringify(launderedHistory);
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(laundered), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-history');
   const rekeyedPreparation = structuredClone(captured); const preparationHistory = JSON.parse(rekeyedPreparation.artifactHistoryJson); const preparedArtifact = preparationHistory.find((artifact) => artifact.path.includes('invocations/prepared/')); const preparedValue = JSON.parse(preparedArtifact.bytes); preparationHistory.push({ ...preparedArtifact, bytes: `${JSON.stringify({ ...preparedValue, turnId: 'forged-turn' })}\n` }); rekeyedPreparation.artifactHistoryJson = JSON.stringify(preparationHistory);
   await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(rekeyedPreparation), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-history');
   for (const [pathPart, mutate] of [
