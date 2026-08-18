@@ -126,9 +126,8 @@ export async function runDirectInvocation(argv, runtime = {}) {
     if (executor.active) assertExecutorMatchesCaller(executor, caller);
     const prepared = await createRescuePreparationStore({ dataRoot }).consume({ ...caller, executorAgentId: executor.agentId });
     if (!executor.active) {
-      const binding = await createStateStore({ dataRoot }).resolveRescueBinding({ workspace: cwd, parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId, executorAgentType: executor.agentType, permissionMode: executor.parentPermissionMode });
+      const binding = await createStateStore({ dataRoot }).resolveRescueBinding({ ...bindingLookup(executor, cwd), ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}) });
       if (binding.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
-      if (prepared.envelope.options.resume === 'resume' && caller.permissionMode !== executor.parentPermissionMode) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The stopped Rescue child permission no longer matches its exact binding.', { category: 'authorization', remedy: 'Prepare a fresh Rescue operation under the current permission.' });
     }
     const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
     const output = await runCompanion(preparedArgv, { cwd, env, caller, executor, originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
@@ -293,7 +292,7 @@ async function startPublic(context) {
   if (parsed.command === 'rescue') {
     if (context.executor) {
       if (parsed.options.resume !== 'fresh') {
-        const resolved = await store.resolveRescueBinding({ workspace: cwd, parentSessionId: context.executor.parentSessionId, executorAgentId: context.executor.agentId, executorAgentType: context.executor.agentType, permissionMode: context.executor.parentPermissionMode });
+        const resolved = await store.resolveRescueBinding({ ...bindingLookup(context.executor, cwd), ...(parsed.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}) });
         binding = resolved.kind === 'bound' ? resolved.binding : null;
         if (context.rescueRoute?.routeKind === 'bound' && !binding) throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
         if (context.rescueRoute?.routeKind === 'legacy' && binding) throw new PluginError('RESCUE_BINDING_STALE', 'The Rescue operation generation changed.', { category: 'state', remedy: 'Repeat the Rescue choice.' });
@@ -310,12 +309,11 @@ async function startPublic(context) {
   const reservation = { workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) };
   let job;
   if (parsed.command === 'rescue' && context.executor) {
-    const reservationExecutor = parsed.options.resume === 'fresh' ? { ...context.executor, parentPermissionMode: caller.permissionMode } : context.executor;
     let reserved;
-    if (parsed.options.resume === 'fresh' || !binding && !candidate) reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, executor: reservationExecutor, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId } : {}) }));
+    if (parsed.options.resume === 'fresh' || !binding && !candidate) reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, executor: context.executor, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
     else if (binding) {
-      const resolved = await store.resolveRescueBindingForResume({ workspace: cwd, parentSessionId: context.executor.parentSessionId, executorAgentId: context.executor.agentId, executorAgentType: context.executor.agentType, permissionMode: context.executor.parentPermissionMode });
-      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, executor: context.executor, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId } : {}) }));
+      const resolved = await store.resolveRescueBindingForResume({ ...bindingLookup(context.executor, cwd), permissionMode: caller.permissionMode });
+      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, executor: context.executor, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
       candidate = reserved.anchorJob;
     } else {
       reserved = await reservePublicRescueJob(context, () => store.adoptRescueCandidate({ workspace: cwd, reservation, executor: context.executor, candidateJobId: candidate.id })); candidate = reserved.anchorJob;
@@ -334,9 +332,12 @@ async function startPublic(context) {
     const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', specDigest };
     let capability;
     try {
+      context.signal?.throwIfAborted();
       await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, spec, specDigest);
+      context.signal?.throwIfAborted();
       capability = await (context.dependencies?.createExecutionCapability ?? ((/** @type {any} */ input) => identity.createExecutionCapability(input)))({ ...binding, permissionSnapshot });
       if (context.autoLaunchBackground) {
+        context.signal?.throwIfAborted();
         await (context.dependencies?.startBackgroundWorker ?? startBackgroundWorker)({ companionPath: fileURLToPath(import.meta.url), jobId: job.id, executionCapability: capability, cwd, env: context.env });
         return { type: 'background', job };
       }
@@ -357,16 +358,26 @@ function boundNeedsChoice(binding) { const output = { type: 'needs-choice', choi
 /** @param {any} candidate @param {boolean} privateRoute */
 function legacyNeedsChoice(candidate, privateRoute) { const output = { type: 'needs-choice', ...(privateRoute ? {} : { candidate }), choices: ['--resume', '--fresh'] }; if (privateRoute) rescueChoiceRoutes.set(output, { routeKind: 'legacy', candidateJobId: candidate.id }); return output; }
 
+/** @param {any} executor @param {string} workspace */
+function bindingLookup(executor, workspace) {
+  return { workspace, parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId, executorAgentType: executor.agentType,
+    executorParentTurnId: executor.parentTurnId, executorParentPermissionMode: executor.parentPermissionMode };
+}
+
 /** @param {any} context @param {()=>Promise<any>} reserve */
 async function reservePublicRescueJob(context, reserve) {
+  context.signal?.throwIfAborted();
   try { return await reserve(); }
   catch (error) {
     if (!(error instanceof PluginError) || error.code !== 'WRITABLE_JOB_EXISTS') throw error;
     context.signal?.throwIfAborted();
     await scavengeWritableJobs({ store: context.store, dataRoot: context.dataRoot, workspace: context.cwd, signal: context.signal, createClient: async (job) => {
+      context.signal?.throwIfAborted();
       const launch = await discoverLaunch(context.env, context.dependencies);
+      context.signal?.throwIfAborted();
       return (context.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot: context.dataRoot, workspace: job.workspace, launch, ownerId: ownerIdForSession(job.ownerSessionId), env: context.env, ...managedWireOptionsForJob(job) });
     } });
+    context.signal?.throwIfAborted();
     return reserve();
   }
 }
@@ -437,6 +448,7 @@ async function executeReserved(context) {
   try {
     context.signal?.throwIfAborted();
     const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
+    context.signal?.throwIfAborted();
     client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId, env });
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;

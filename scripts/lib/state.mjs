@@ -97,7 +97,7 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,permissionMode:string}} input */
+    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,executorParentTurnId?:string,executorParentPermissionMode?:string,permissionMode?:string}} input */
     async resolveRescueBinding(input) {
       validateBindingIdentityInput(input);
       const storage = await jobStorage(dataRoot, input.workspace);
@@ -109,7 +109,7 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,permissionMode:string}} input */
+    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,executorParentTurnId?:string,executorParentPermissionMode?:string,permissionMode?:string}} input */
     async resolveRescueBindingForResume(input) {
       validateBindingIdentityInput(input); const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, () => resolveBindingForResumeLocked(storage, bindingIdentity(input, storage.workspacePath)));
@@ -128,7 +128,7 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor:any,expectedOperationId?:string,expectedCurrentJobId?:string}} input */
+    /** @param {{workspace:string,reservation:JobReservation,executor:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string}} input */
     async reserveFreshRescueJob(input) {
       validateRescueReservationInput(input);
       validateOptionalBindingExpectation(input);
@@ -136,14 +136,18 @@ export function createStateStore(options) {
       return withFileLock(storage.lockPath, async () => {
         const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
-        const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath);
+        const job = makeReservedJob(storage, jobs, input.reservation);
+        const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
         const { record: previous, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity);
         if (input.expectedOperationId !== undefined
           && (previous?.state !== 'active' || previous.operationId !== input.expectedOperationId
-            || previous.currentJobId !== input.expectedCurrentJobId)) throw staleRescueBinding();
-        if (previous && previous.executorAgentType !== exactIdentity.executorAgentType) throw invalidRescueBinding();
-        const job = makeReservedJob(storage, jobs, input.reservation);
-        const binding = createRescueBinding({ ...exactIdentity, anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex') });
+            || previous.anchorJobId !== input.expectedAnchorJobId || previous.currentJobId !== input.expectedCurrentJobId)) throw staleRescueBinding();
+        if (previous && (previous.executorAgentType !== exactIdentity.executorAgentType
+          || previous.executorParentTurnId !== exactIdentity.executorParentTurnId
+          || previous.executorParentPermissionMode !== exactIdentity.executorParentPermissionMode)) throw invalidRescueBinding();
+        const binding = createRescueBinding({ ...exactIdentity,
+          ...(previous ? { executorAgentType: previous.executorAgentType, executorParentTurnId: previous.executorParentTurnId, executorParentPermissionMode: previous.executorParentPermissionMode } : {}),
+          anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex') });
         const afterSnapshot = bindingSnapshotWith(beforeSnapshot, binding);
         if (!beforeSnapshot.records.has(binding.key)) ensureProspectiveBindingCapacity(storage, binding.parentSessionId, afterSnapshot, bindingPartitionMaxBytes);
         await publishRescueReservation(storage, job, binding, { bindingFirst: true, beforeSnapshot, afterSnapshot, lockIdentity, publicationHook, route: 'fresh' });
@@ -152,7 +156,7 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor:any,operationId:string,expectedCurrentJobId?:string}} input */
+    /** @param {{workspace:string,reservation:JobReservation,executor:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string}} input */
     async reserveBoundRescueContinuation(input) {
       validateRescueReservationInput(input);
       if (!isDigest(input.operationId)) throw staleRescueBinding();
@@ -161,9 +165,10 @@ export function createStateStore(options) {
       return withFileLock(storage.lockPath, async () => {
         const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
-        const resolved = await resolveBindingForResumeLocked(storage, executorBindingIdentity(input.executor, storage.workspacePath));
+        const resolved = await resolveBindingForResumeLocked(storage, executorBindingIdentity(input.executor, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode));
         if (resolved.kind !== 'bound' || resolved.operationId !== input.operationId
-          || input.expectedCurrentJobId !== undefined && resolved.binding.currentJobId !== input.expectedCurrentJobId) throw staleRescueBinding();
+          || input.expectedCurrentJobId !== undefined && resolved.binding.currentJobId !== input.expectedCurrentJobId
+          || input.expectedAnchorJobId !== undefined && resolved.binding.anchorJobId !== input.expectedAnchorJobId) throw staleRescueBinding();
         const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
         const job = makeReservedJob(storage, jobs, input.reservation);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
@@ -183,12 +188,12 @@ export function createStateStore(options) {
       return withFileLock(storage.lockPath, async () => {
         const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
-        const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath);
+        const job = makeReservedJob(storage, jobs, input.reservation);
+        const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
         const { record: existing, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity);
         if (existing !== null) throw invalidRescueBinding();
         const anchorJob = jobs.find((job) => job.id === input.candidateJobId);
         validateAnchorJob(anchorJob, input.executor.parentSessionId, storage.workspacePath);
-        const job = makeReservedJob(storage, jobs, input.reservation);
         const base = createRescueBinding({ ...exactIdentity, anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex') });
         const baseSnapshot = bindingSnapshotWith(beforeSnapshot, base);
         ensureProspectiveBindingCapacity(storage, base.parentSessionId, baseSnapshot, bindingPartitionMaxBytes);
@@ -624,19 +629,18 @@ function validateRescueReservationInput(input) {
   if (input.reservation.command !== 'rescue' || input.reservation.readOnly !== false
     || !['zcode-rescue', 'default'].includes(input.executor.agentType)
     || input.workspace !== input.reservation.workspace || input.workspace !== input.executor.workspace
-    || input.reservation.ownerSessionId !== input.executor.parentSessionId
-    || input.reservation.permissionSnapshot?.permissionMode !== input.executor.parentPermissionMode) throw invalidRescueBinding();
+    || input.reservation.ownerSessionId !== input.executor.parentSessionId) throw invalidRescueBinding();
 }
 
 /** Optional exact snapshot used only by a previously presented bound choice. @param {any} input */
 function validateOptionalBindingExpectation(input) {
-  const hasOperation = input.expectedOperationId !== undefined; const hasCurrent = input.expectedCurrentJobId !== undefined;
-  if (hasOperation !== hasCurrent || hasOperation && (!isDigest(input.expectedOperationId) || !isDigest(input.expectedCurrentJobId))) throw staleRescueBinding();
+  const hasOperation = input.expectedOperationId !== undefined; const hasCurrent = input.expectedCurrentJobId !== undefined; const hasAnchor = input.expectedAnchorJobId !== undefined;
+  if (hasOperation !== hasCurrent || hasOperation !== hasAnchor || hasOperation && (!isDigest(input.expectedOperationId) || !isDigest(input.expectedCurrentJobId) || !isDigest(input.expectedAnchorJobId))) throw staleRescueBinding();
 }
 
 /** @param {any} input */
 function validateExecutorBindingInput(input) {
-  if (!isPlainJsonObject(input) || !isNonEmptyString(input.parentSessionId) || !isNonEmptyString(input.agentId)
+  if (!isPlainJsonObject(input) || !isNonEmptyString(input.parentSessionId) || !isNonEmptyString(input.parentTurnId) || !isNonEmptyString(input.agentId)
     || !isNonEmptyString(input.agentType) || !isNonEmptyString(input.workspace)
     || !PERMISSION_MODES.includes(input.parentPermissionMode)) throw invalidRescueBinding();
   try { rescueBindingKey(executorBindingIdentity(input, input.workspace)); } catch { throw invalidRescueBinding(); }
@@ -645,20 +649,23 @@ function validateExecutorBindingInput(input) {
 /** @param {any} input */
 function validateBindingIdentityInput(input) {
   try { rescueBindingKey(input); } catch { throw invalidRescueBinding(); }
-  if (!PERMISSION_MODES.includes(input.permissionMode)) throw invalidRescueBinding();
+  if (input.permissionMode !== undefined && !PERMISSION_MODES.includes(input.permissionMode)) throw invalidRescueBinding();
 }
 
 /** @param {any} input @param {string} workspace */
 function bindingIdentity(input, workspace) {
   return { parentSessionId: input.parentSessionId, executorAgentId: input.executorAgentId, workspace,
     ...(input.executorAgentType === undefined ? {} : { executorAgentType: input.executorAgentType }),
+    ...(input.executorParentTurnId === undefined ? {} : { executorParentTurnId: input.executorParentTurnId }),
+    ...(input.executorParentPermissionMode === undefined ? {} : { executorParentPermissionMode: input.executorParentPermissionMode }),
     ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }) };
 }
 
 /** Map the trusted SubagentStart executor record to persisted binding terminology. @param {any} executor @param {string} workspace */
-function executorBindingIdentity(executor, workspace) {
+function executorBindingIdentity(executor, workspace, permissionMode = executor.parentPermissionMode) {
   return { parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId, executorAgentType: executor.agentType,
-    workspace, permissionMode: executor.parentPermissionMode };
+    executorParentTurnId: executor.parentTurnId, executorParentPermissionMode: executor.parentPermissionMode,
+    workspace, permissionMode };
 }
 
 /** @param {any} job @param {string} parentSessionId @param {string} workspace */

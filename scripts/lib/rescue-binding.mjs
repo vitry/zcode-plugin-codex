@@ -16,7 +16,7 @@ export const RESCUE_BINDING_AUTHORITY_MAX_BYTES = 16 * 1024;
 
 const KEYS = [
   'anchorJobId', 'closeReason', 'closedAt', 'createdAt', 'currentJobId',
-  'executorAgentId', 'executorAgentType', 'key', 'operationId', 'parentSessionId', 'permissionMode',
+  'executorAgentId', 'executorAgentType', 'executorParentPermissionMode', 'executorParentTurnId', 'key', 'operationId', 'parentSessionId', 'permissionMode',
   'state', 'updatedAt', 'version', 'workspace',
 ];
 const CLOSE_REASONS = new Set(['fresh', 'session-ended', 'invalidated']);
@@ -42,7 +42,9 @@ export function rescueBindingPartitionKey(input) {
 /** @param {any} input */
 export function createRescueBinding(input) {
   validateIdentity(input);
-  if (!PERMISSION_MODES.includes(input.permissionMode) || !EXECUTOR_AGENT_TYPES.has(input.executorAgentType) || !digest(input.anchorJobId) || !digest(input.currentJobId) || !digest(input.operationId)) throw invalidBinding();
+  if (!PERMISSION_MODES.includes(input.permissionMode) || !EXECUTOR_AGENT_TYPES.has(input.executorAgentType)
+    || !safeIdentifier(input.executorParentTurnId, 4096) || !PERMISSION_MODES.includes(input.executorParentPermissionMode)
+    || !digest(input.anchorJobId) || !digest(input.currentJobId) || !digest(input.operationId)) throw invalidBinding();
   const now = timestamp(input.now);
   return {
     version: RESCUE_BINDING_VERSION,
@@ -52,6 +54,8 @@ export function createRescueBinding(input) {
     parentSessionId: input.parentSessionId,
     executorAgentId: input.executorAgentId,
     executorAgentType: input.executorAgentType,
+    executorParentTurnId: input.executorParentTurnId,
+    executorParentPermissionMode: input.executorParentPermissionMode,
     workspace: input.workspace,
     permissionMode: input.permissionMode,
     anchorJobId: input.anchorJobId,
@@ -129,7 +133,7 @@ export function parseRescueBindingAuthority(bytes, expected) {
   return { ...parsed };
 }
 
-/** @param {string|Buffer} bytes @param {{parentSessionId:string,executorAgentId:string,executorAgentType?:string,workspace:string,permissionMode?:string}} [expected] */
+/** @param {string|Buffer} bytes @param {{parentSessionId:string,executorAgentId:string,executorAgentType?:string,executorParentTurnId?:string,executorParentPermissionMode?:string,workspace:string,permissionMode?:string}} [expected] */
 export function parseRescueBinding(bytes, expected) {
   let text;
   try { text = Buffer.isBuffer(bytes) ? new TextDecoder('utf-8', { fatal: true }).decode(bytes) : bytes; } catch { throw invalidBinding(); }
@@ -144,6 +148,8 @@ export function parseRescueBinding(bytes, expected) {
     || valid.parentSessionId !== identity.parentSessionId
     || valid.executorAgentId !== identity.executorAgentId
     || identity.executorAgentType !== undefined && valid.executorAgentType !== identity.executorAgentType
+    || identity.executorParentTurnId !== undefined && valid.executorParentTurnId !== identity.executorParentTurnId
+    || identity.executorParentPermissionMode !== undefined && valid.executorParentPermissionMode !== identity.executorParentPermissionMode
     || valid.workspace !== identity.workspace
     || identity.permissionMode !== undefined && valid.permissionMode !== identity.permissionMode) throw invalidBinding();
   return { ...valid };
@@ -196,6 +202,7 @@ export function validateRescueBinding(record) {
   if (!plain(record) || Object.keys(record).sort().join('\0') !== [...KEYS].sort().join('\0')
     || record.version !== RESCUE_BINDING_VERSION || !digest(record.key) || !digest(record.operationId)
     || !EXECUTOR_AGENT_TYPES.has(record.executorAgentType)
+    || !safeIdentifier(record.executorParentTurnId, 4096) || !PERMISSION_MODES.includes(record.executorParentPermissionMode)
     || !PERMISSION_MODES.includes(record.permissionMode)
     || !['active', 'closed'].includes(record.state) || !digest(record.anchorJobId) || !digest(record.currentJobId)
     || !canonicalTimestamp(record.createdAt) || !canonicalTimestamp(record.updatedAt)

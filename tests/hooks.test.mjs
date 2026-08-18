@@ -335,7 +335,7 @@ test('SessionEnd removes only its session contexts and leaves sibling jobs/sessi
 test('SessionEnd closes exact Rescue bindings while retaining their durable jobs', async () => {
   const { cwd, data, env } = await workspace(); const store = createStateStore({ dataRoot: data });
   await runHook('session-lifecycle-hook.mjs', { session_id: 'bound-parent', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
-  const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: 'bound-parent', parentPermissionMode: 'workspace-write', workspace: cwd };
+  const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: 'bound-parent', parentTurnId: 'turn-a', parentPermissionMode: 'workspace-write', workspace: cwd };
   const reserved = await store.reserveFreshRescueJob({ workspace: cwd, reservation: { workspace: cwd, ownerSessionId: 'bound-parent', ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }, executor });
   await store.finishJob(cwd, reserved.job.id, ['queued'], 'failed');
   const ended = await runHook('session-end-hook.mjs', { session_id: 'bound-parent', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
