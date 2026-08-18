@@ -105,7 +105,7 @@ async function bindingFiles(directory) {
   const files = [];
   for (const partition of await readdir(directory, { withFileTypes: true })) {
     if (!partition.isDirectory()) continue;
-    for (const name of await readdir(join(directory, partition.name))) if (name.endsWith('.json')) files.push(join(directory, partition.name, name));
+    for (const name of await readdir(join(directory, partition.name))) if (/^[a-f0-9]{64}\.json$/u.test(name)) files.push(join(directory, partition.name, name));
   }
   return files;
 }
@@ -259,6 +259,56 @@ test('publication rejects binding-partition and state-lock replacement without a
     const clean = createStateStore({ dataRoot: base.dataRoot });
     await assert.rejects(clean.resolveRescueBindingForResume(bindingExpected(base.workspace, executor(base.workspace))), { code: 'RESCUE_BINDING_INVALID' });
   }
+});
+
+test('every post-partition publication checkpoint and final return rejects partition replacement durably', async () => {
+  const scenarios = [
+    ...['fresh:owner-binding', 'fresh:job', 'fresh:marker', 'fresh:final'].map((seam) => ({ route: 'fresh', seam })),
+    ...['continuation:owner-binding', 'continuation:job', 'continuation:marker', 'continuation:current-advance', 'continuation:final'].map((seam) => ({ route: 'continuation', seam })),
+    ...['adopt:base-binding', 'adopt:owner-binding', 'adopt:job', 'adopt:marker', 'adopt:current-advance', 'adopt:final'].map((seam) => ({ route: 'adopt', seam })),
+  ];
+  for (const scenario of scenarios) {
+    const base = await fixture(); const trusted = executor(base.workspace); let anchor;
+    if (scenario.route !== 'fresh') {
+      anchor = await base.store.reserveJob(reservation(base.workspace)); await makeEligible(base.store, base.workspace, anchor, 'stable-session'); await base.store.finishJob(base.workspace, anchor.id, ['running'], 'failed');
+      if (scenario.route === 'continuation') {
+        const adopted = await base.store.adoptRescueCandidate({ workspace: base.workspace, reservation: reservation(base.workspace, 'seed'), executor: trusted, candidateJobId: anchor.id });
+        await base.store.finishJob(base.workspace, adopted.job.id, ['queued'], 'failed'); anchor = adopted;
+      }
+    }
+    const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace }); let replaced = false;
+    const store = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
+      if (replaced || seam !== scenario.seam) return; replaced = true;
+      const root = join(storage.directory, 'rescue-bindings'); const [partition] = (await readdir(root)).filter((name) => /^[a-f0-9]{64}$/u.test(name));
+      await rename(join(root, partition), join(root, `${partition}.replaced`)); await mkdir(join(root, partition), { mode: 0o700 });
+    } });
+    const operation = scenario.route === 'fresh'
+      ? store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted })
+      : scenario.route === 'continuation'
+        ? store.reserveBoundRescueContinuation({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted, operationId: anchor.binding.operationId })
+        : store.adoptRescueCandidate({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted, candidateJobId: anchor.id });
+    await assert.rejects(operation, { code: 'RESCUE_BINDING_INVALID' }, `${scenario.seam} must reject replacement`);
+    await assert.rejects(createStateStore({ dataRoot: base.dataRoot }).resolveRescueBinding(bindingExpected(base.workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' }, `${scenario.seam} must not become missing`);
+  }
+});
+
+test('oversized persisted binding records fail closed before allocation or parsing', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
+  await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(join(storage.directory, 'rescue-bindings'));
+  await writeFile(path, Buffer.alloc(16 * 1024 + 1, 0x20));
+  await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
+});
+
+test('legacy-style job readers observe unchanged job schema and ignore Rescue binding storage', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
+  const legacy = await store.reserveJob({ ...reservation(workspace, 'legacy'), command: 'review', readOnly: true });
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const jobsDirectory = join(storage.directory, 'jobs');
+  const legacyRead = async () => Promise.all((await readdir(jobsDirectory)).filter((name) => /^[a-f0-9]{64}\.json$/u.test(name)).map(async (name) => JSON.parse(await readFile(join(jobsDirectory, name), 'utf8'))));
+  const jobs = await legacyRead(); assert.equal(jobs.length, 2);
+  assert.deepEqual(Object.keys(jobs.find((job) => job.id === fresh.job.id)).sort(), Object.keys(legacy).sort());
+  assert.equal((await bindingFiles(join(storage.directory, 'rescue-bindings'))).length, 1);
 });
 
 test('legacy reservation ignores Rescue publication hooks and close resumes safely after a partial scan', async () => {
