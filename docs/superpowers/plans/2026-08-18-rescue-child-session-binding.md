@@ -48,7 +48,10 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   failed, or cancelled current job for status. Corrupt/mismatched records fail
   closed in all paths.
 - [ ] Require `reserveFreshRescueJob` to replace the generation and atomically
-  publish `anchorJobId === currentJobId === job.id` under `.state.lock`.
+  publish `anchorJobId === currentJobId === job.id` under `.state.lock`. An
+  authorized fresh route may replace a structurally valid exact same-slot
+  dangling generation left by binding-first failure; it must still reject every
+  corrupt, duplicate, or identity-mismatched record.
 - [ ] Require `reserveBoundRescueContinuation` to CAS `operationId`, validate the
   exact anchor session, reserve a new job that resumes it, retain `anchorJobId`,
   and atomically advance `currentJobId`.

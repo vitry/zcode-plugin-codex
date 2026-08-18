@@ -290,10 +290,12 @@ new or sibling session.
 ## Failure and Crash Semantics
 
 - Binding missing: preserve the legacy candidate/choice path.
-- Binding corrupt, duplicated, oversized, symlinked, identity-mismatched, or
-  dangling: fixed task-free failure; never guess. Permission mismatch rejects
-  resume but an otherwise valid same-slot generation may be replaced by an
-  authorized fresh route.
+- Binding corrupt, duplicated, oversized, symlinked, or identity-mismatched:
+  fixed task-free failure; never guess. A dangling binding rejects resume and
+  status, but an authorized fresh route may replace a structurally valid exact
+  same-slot dangling generation because fresh inherits no old session authority
+  and is the recovery path for binding-first crash remnants. Permission mismatch
+  likewise rejects resume but permits that exact same-slot fresh replacement.
 - Anchor without a persisted ZCode session: not resumable; never fall back to a
   different job.
 - Cancelled anchor: not resumable.
