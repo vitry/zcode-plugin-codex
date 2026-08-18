@@ -77,9 +77,15 @@ invoke-prepared rescue
 
 On a later parent turn, Root prepares a `resume` envelope and sends the same
 fixed assignment to the exact stopped Rescue child through `followup_task`.
-There is no second spawn. SubagentStart refreshes the trusted executor record;
-the companion consumes the new prepared envelope, resolves the binding, and
-resumes the anchor job's exact ZCode session.
+There is no second spawn and, on Codex 0.147, no second SubagentStart event.
+The original executor record remains stopped and retains its original parent
+turn. The companion uses a restricted stopped-continuation authorization path:
+it requires that exact stopped executor, a fresh preparation bound to the new
+active parent turn, and a durable operation binding whose parent session,
+executor, canonical workspace, and permission all match. It does not rewrite or
+pretend to refresh the old executor record. Only after all three independent
+pieces of private evidence agree may it resume the anchor job's exact ZCode
+session.
 
 ## Binding Record
 
@@ -112,16 +118,19 @@ records are tombstones whose reason is `fresh`, `session-ended`, or
 
 The storage uses the same private-directory, bounded-read, exact-schema,
 symlink-resistant, atomic-write, and lock-identity controls as existing durable
-state. Active bindings do not expire after 30 minutes: live authorization still
-requires a fresh trusted executor record for the current parent turn, while the
-durable binding must survive a long-running or terminal ZCode operation.
+state. Active bindings do not expire after 30 minutes: continuation authorization
+still requires the original trusted stopped executor record within its existing
+authorization lifetime plus a fresh preparation for the current parent turn,
+while the durable binding itself must survive a long-running or terminal ZCode
+operation. This feature does not silently extend executor authorization.
 
 ## Transaction Boundary
 
-Binding mutation is part of StateStore's existing `.state.lock` transaction.
+Binding mutation and job reservation are serialized by StateStore's existing
+`.state.lock` transaction.
 The public legacy `reserveJob` interface and job schema remain unchanged. New
-deep Rescue-only operations atomically validate and publish both the prospective
-job and binding state:
+deep Rescue-only operations validate and serialize publication of the
+prospective job and binding state:
 
 - reserve a fresh operation and replace the old generation;
 - reserve an exact continuation and advance only `currentJobId`;
@@ -129,9 +138,23 @@ job and binding state:
 - resolve the exact anchor/current jobs;
 - close the exact generation for SessionEnd.
 
-Binding publication must not occur as an independent post-reservation write.
-Otherwise a crash could publish a job without its identity or overwrite a valid
-old binding with a job that never acquires a ZCode session.
+The filesystem cannot atomically publish multiple files, so each route has an
+explicit safe publication order:
+
+- Fresh publishes a new binding generation pointing to the prospective job
+  first, then publishes owner binding, canonical job, and index marker. A crash
+  may leave a dangling new generation that fails closed; it can never return to
+  the discarded old session automatically.
+- Continuation publishes owner binding, canonical job, and index marker first,
+  then CAS-advances `currentJobId`. A crash may leave an extra job and stale
+  status, but the old binding and anchor remain safe and resumable.
+- Legacy adoption first publishes a binding whose anchor/current both identify
+  the explicitly chosen candidate, then publishes the continuation job, then
+  CAS-advances current. A crash can establish the chosen exact identity without
+  ever substituting a different candidate.
+
+Tests assert that partial states are safe and recoverable or fail closed, not
+that multi-file publication is physically atomic.
 
 The anchor is stable for the operation. Continuation jobs may fail before or
 after contacting ZCode without changing the exact session identity. Status reads
@@ -144,13 +167,14 @@ Routing precedence is:
 
 1. An active Rescue child is rejoined through its existing live handle. Root
    does not prepare, spawn, or invoke another companion process.
-2. For a stopped child that Root identifies as the same logical operation, Root
-   materializes `resume` in a new private preparation and follows up the exact
-   child. The plugin resolves only that child's binding.
-3. An explicit `--fresh` or `--resume` remains authoritative.
-4. An explicit legacy invocation with a candidate but no choice still returns
-   `needs-choice`; Root asks once and uses the same child for `invoke-choice`.
-5. A proactive clear continuation or independent task remains a Root decision,
+2. An explicit `--fresh` or `--resume` remains authoritative.
+3. Any explicit invocation with a bound or legacy candidate but no choice still
+   returns `needs-choice`; Root asks once and uses the same child for
+   `invoke-choice`.
+4. For a proactive request where a stopped child is clearly the same logical
+   operation, Root materializes `resume` in a new private preparation and
+   follows up the exact child. The plugin resolves only that child's binding.
+5. Other proactive clear continuation or independent-task routes remain a Root decision,
    materialized respectively as `resume` or `fresh`; genuine ambiguity is asked
    before prepare/spawn/followup.
 
@@ -161,20 +185,36 @@ runtime remains safe if an explicit fresh operation intentionally reuses the
 same child.
 
 When no binding exists, the existing legacy candidate behavior remains
-available. A requested legacy resume must revalidate the exact selected job and
-then atomically adopt it into the current child binding. Only a truly missing
-binding may use this compatibility path. A present but invalid binding never
-falls back to latest-job selection or `needs-choice`.
+available. When presenting `needs-choice`, the companion persists the exact
+candidate job ID in the private, executor-bound, single-use pending record; it
+never emits that identity to the child or Root rollout. A requested resume
+consumes that record, revalidates precisely that candidate, and adopts it into
+the current child binding. A later job cannot replace the presented candidate.
+Pending records created by an older plugin version without an exact candidate
+cannot safely resume after upgrade and fail with an instruction to rerun the
+explicit command; a fresh choice remains safe. Only a truly missing binding may
+enter this compatibility path. A present but invalid binding never falls back to
+latest-job selection or `needs-choice`.
 
 ## Trusted Identity and Authorization
 
-Every invocation still requires the hook-established Rescue executor to match:
+An initial prepared invocation still requires the hook-established active Rescue
+executor to match:
 
 - exact executor agent ID and Rescue role;
 - exact current parent session and active parent turn;
 - canonical workspace;
 - current permission mode;
-- executor freshness and active/continuation state required by the command.
+- executor freshness and active state required by the command.
+
+A same-child prepared continuation does not require or fabricate a new
+SubagentStart. It instead requires the exact original executor record to be
+stopped and unexpired, with matching parent session, canonical workspace, role,
+and permission. Its historical `parentTurnId` remains unchanged. Authorization
+for the new parent turn comes exclusively from the newly stored preparation,
+which must match the current active caller and can be consumed only by that
+executor ID, plus the exact durable binding. Missing any one of these proofs
+fails before candidate selection or job reservation.
 
 Automatic exact continuation additionally requires the binding's parent
 session, executor ID, workspace, and permission mode to match. A permission
@@ -183,9 +223,25 @@ legacy resume may adopt the selected historical job under the current trusted
 permission mode; subsequent automatic continuation must match that adopted
 mode.
 
+A structurally valid same-slot binding with an older permission mode blocks
+resume, but does not block a newly authorized `fresh` preparation. Fresh inherits
+no old ZCode authority, so it may replace that generation under the current
+trusted permission. Structural corruption, workspace/session/executor mismatch,
+or ambiguous records still fail closed even for fresh.
+
 Neither preparation records nor pending-choice records carry the binding or
-session identity in model-visible data. `invoke-prepared` and `invoke-choice`
-pass the trusted executor only through internal runtime context.
+session identity in model-visible data. The private pending-choice record may
+carry the exact candidate job ID solely to prevent candidate substitution.
+`invoke-prepared` and `invoke-choice` pass trusted identity only through internal
+runtime context.
+
+`invoke-choice` remains a separate narrow stopped-executor authorization path.
+It requires the same parent session/workspace/executor, the unexpired stopped
+executor record, and the single-use pending record from the originating turn and
+permission snapshot. It intentionally does not require the stopped executor's
+historical parent turn to equal the new active parent turn; the pending record is
+the authority for that one continuation. This exception does not authorize a
+general prepared invocation.
 
 ## Lifecycle
 
@@ -202,18 +258,30 @@ pass the trusted executor only through internal runtime context.
 - Closed tombstones are retained for bounded cleanup rather than immediately
   deleted, preventing stale writers from recreating an earlier generation.
 
+Binding enumeration is capped at 1,024 records per canonical workspace, with one
+extra entry read only to detect overflow. Closed tombstones become GC-eligible
+after 30 days; active records are never age-GCed. Before creating a new slot,
+StateStore validates the bounded set and removes eligible closed tombstones
+under `.state.lock`; if capacity remains full it fails without publication.
+Corrupt siblings fail closed and cannot be deleted by ordinary GC. SessionEnd
+may report an advisory close failure, but removal of session/executor authority
+still prevents that binding from being used.
+
 ## Failure and Crash Semantics
 
 - Binding missing: preserve the legacy candidate/choice path.
-- Binding corrupt, duplicated, oversized, symlinked, identity-mismatched,
-  permission-mismatched, or dangling: fixed task-free failure; never guess.
+- Binding corrupt, duplicated, oversized, symlinked, identity-mismatched, or
+  dangling: fixed task-free failure; never guess. Permission mismatch rejects
+  resume but an otherwise valid same-slot generation may be replaced by an
+  authorized fresh route.
 - Anchor without a persisted ZCode session: not resumable; never fall back to a
   different job.
 - Cancelled anchor: not resumable.
 - Fresh reservation crash: the new generation prevents automatic return to the
   old session.
 - Continuation reservation crash: the stable anchor still identifies the exact
-  session; current-job status may report the failed/queued continuation.
+  session; current-job status may remain stale or report the failed/queued
+  continuation depending on the completed publication point.
 - Remote ZCode session creation before job persistence remains the existing
   broker/recovery boundary. Binding logic never reconstructs that session from
   ordering or prose.
@@ -247,17 +315,21 @@ TDD coverage is required at five layers:
 1. Binding codec/store tests: exact key/schema, private storage, permission and
    identity mismatch, corruption, duplicate/oversized records, symlink and lock
    replacement, concurrent fresh/continue/adopt, operation-generation ABA,
-   lifecycle closing, and Windows path/handle compatibility.
+   lifecycle closing, 1,024-entry capacity, over-limit rejection, 30-day closed
+   tombstone GC, active-never-GC, and Windows path/handle compatibility.
 2. Runtime tests: executor propagation through `invoke-prepared` and
-   `invoke-choice`, fresh binding, exact continuation, legacy choice/adoption,
+   `invoke-choice`, fresh binding, exact continuation, immutable private
+   candidate selection across an intervening later job, legacy choice/adoption,
    invalid-binding no-fallback, background jobs, current-job status, replay,
    sibling/workspace/session/permission attacks, and unchanged public CLI/jobs.
 3. Skill/Role tests: active rejoin, stopped same-child followup with zero spawn,
    independent fresh spawn, explicit choice preservation, constant task-blind
    assignment, and no nested Rescue.
 4. Qualification/E2E tests: named and generic forwarders across two parent turns,
-   one child ID, exact ZCode `session/resume`, no `needs-choice` for a valid bound
-   continuation, and fail-closed mutations.
+   one original SubagentStart, one SubagentStop, no second SubagentStart, one
+   child ID, exact ZCode `session/resume`, no `needs-choice` for a valid proactive
+   bound continuation, explicit no-option `needs-choice`, and fail-closed
+   mutations. A forged refresh or historical-turn rewrite must be rejected.
 5. Installed marketplace, release, lint, typecheck, full test, qualification,
    and CI checks.
 

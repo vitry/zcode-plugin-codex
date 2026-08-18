@@ -31,16 +31,21 @@
 - [ ] Write failing StateStore tests for these wished-for deep methods:
 
 ```js
-state.resolveRescueBinding({ parentSessionId, executorAgentId, permissionMode })
-state.reserveFreshRescueJob({ reservation, executor })
-state.reserveBoundRescueContinuation({ reservation, executor, operationId })
-state.adoptRescueCandidate({ reservation, executor, candidateJobId })
-state.closeRescueBindingsForSession({ parentSessionId, reason: 'session-ended' })
+state.resolveRescueBinding({ workspace, parentSessionId, executorAgentId, permissionMode })
+state.resolveRescueBindingForResume({ workspace, parentSessionId, executorAgentId, permissionMode })
+state.readBoundRescueCurrentJob({ workspace, parentSessionId, executorAgentId })
+state.reserveFreshRescueJob({ workspace, reservation, executor })
+state.reserveBoundRescueContinuation({ workspace, reservation, executor, operationId })
+state.adoptRescueCandidate({ workspace, reservation, executor, candidateJobId })
+state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'session-ended' })
 ```
 
-- [ ] Require `resolveRescueBinding` to return `{kind:'missing'}` only for true
-  absence and `{kind:'bound', operationId, anchorJob, currentJob}` for a valid
-  record. All corrupt/mismatch/dangling/cancelled/no-session cases fail closed.
+- [ ] Keep record resolution separate from route-specific job validation.
+  `resolveRescueBinding` returns missing only for true absence or a typed valid
+  record; `resolveRescueBindingForResume` requires a non-cancelled anchor with an
+  exact persisted session; `readBoundRescueCurrentJob` accepts a valid queued,
+  failed, or cancelled current job for status. Corrupt/mismatched records fail
+  closed in all paths.
 - [ ] Require `reserveFreshRescueJob` to replace the generation and atomically
   publish `anchorJobId === currentJobId === job.id` under `.state.lock`.
 - [ ] Require `reserveBoundRescueContinuation` to CAS `operationId`, validate the
@@ -50,9 +55,10 @@ state.closeRescueBindingsForSession({ parentSessionId, reason: 'session-ended' }
   adopt it as anchor under current permission, reserve the continuation, and
   establish a new generation in the same transaction.
 - [ ] Add concurrency/fault tests: two fresh writers, two continuation writers,
-  stale generation, every publication failure seam, dangling record, corrupt
+  stale generation, every publication failure seam, safe partial-state matrix,
+  dangling record, corrupt
   sibling, symlink/path replacement, scan bound, session/agent/workspace/
-  permission mismatch, and no partial published job/binding state.
+  permission mismatch, and no unsafe partial published job/binding state.
 - [ ] Preserve existing `reserveJob` behavior and persisted job schema; prove an
   old reader ignores `rescue-bindings/` and existing job fixtures remain valid.
 - [ ] Implement private storage beneath `<workspace-store>/rescue-bindings/`
@@ -60,7 +66,10 @@ state.closeRescueBindingsForSession({ parentSessionId, reason: 'session-ended' }
   exact JSON writes, and the StateStore lock. Reuse platform-aware path/handle
   snapshot validation.
 - [ ] Implement exact SessionEnd close tombstones with CAS-safe generation and
-  bounded cleanup; do not close on job terminal or child stop.
+  bounded cleanup; do not close on job terminal or child stop. Cap each workspace
+  at 1,024 records (+1 overflow detection), GC only valid closed tombstones older
+  than 30 days under the state lock before new-slot creation, never age-GC active
+  records, and fail closed on corrupt siblings or remaining capacity exhaustion.
 - [ ] Run focused tests, lint, typecheck, and `git diff --check`; commit:
   `feat: persist exact Rescue operation bindings`.
 
@@ -81,6 +90,12 @@ state.closeRescueBindingsForSession({ parentSessionId, reason: 'session-ended' }
 - [ ] Write failing tests proving `invoke-prepared` and `invoke-choice` propagate
   the trusted executor internally into `runCompanion`; no executor/binding/session
   identity may appear in argv, env, output, progress, pending record, or task.
+- [ ] Reproduce the real Codex 0.147 lifecycle: one SubagentStart creates the
+  executor, SubagentStop marks it inactive, a later `followup_task` produces no
+  second SubagentStart, and the executor retains its historical parent turn.
+  Add RED tests for a restricted stopped `invoke-prepared` continuation using a
+  fresh preparation and exact binding; forged refresh/active state and historical
+  turn mutation must fail closed.
 - [ ] Add a two-candidate regression: child A creates session A, child B later
   creates session B, then child A in a new parent turn prepares `resume`; assert
   the fake peer receives `session/resume` for A, never B, with no `needs-choice`.
@@ -88,16 +103,33 @@ state.closeRescueBindingsForSession({ parentSessionId, reason: 'session-ended' }
   current-job status, cancelled anchor, wrong permission, wrong workspace,
   sibling executor, replay, and concurrent writable-job cases.
 - [ ] Add legacy tests: an old job without a binding still returns
-  `needs-choice` for explicit no-choice; `invoke-choice resume` validates/adopts
-  it; the next same-child continuation resumes exactly without asking. Explicit
-  fresh establishes a new generation. Invalid binding never falls back.
+  `needs-choice` for explicit no-choice and persists the exact candidate job ID
+  only in the private pending record; insert a later eligible job before
+  `invoke-choice resume` and prove the originally presented candidate is the one
+  validated/adopted. The next same-child continuation resumes exactly without
+  asking. Old pending records lacking candidate identity must reject resume after
+  upgrade (fresh remains safe). Explicit fresh establishes a new generation.
+  Invalid binding never falls back.
 - [ ] Run focused tests and record RED before production changes.
 - [ ] Pass trusted executor context from both `invoke-prepared` and
   `invoke-choice` into `runCompanion`/`startPublic` without changing public argv.
+- [ ] Extend `invoke-prepared` authorization without depending on a second
+  SubagentStart: initial execution requires an active same-turn executor; bound
+  continuation requires the exact unexpired stopped executor, fresh preparation
+  for the current active parent turn, and matching binding. Do not overwrite the
+  executor's old `parentTurnId`.
+- [ ] Version the private pending-choice schema to hold `candidateJobId` without
+  exposing it in output. Preserve the existing narrow `invoke-choice` authority:
+  unexpired stopped executor + same parent session/workspace/executor + single-use
+  originating pending record/permission. Do not require historical parentTurnId
+  to equal the new active turn.
 - [ ] Select routing as follows: bound+resume → exact continuation transaction;
   bound+fresh → fresh transaction; missing binding → existing legacy candidate
   behavior; invalid binding → fixed failure. Require Root to materialize the
   bound route; do not let the child infer it.
+- [ ] Permit a current trusted `fresh` route to replace a structurally valid
+  same-slot binding with an older permission mode. Resume with that mismatch and
+  every structural/identity corruption remain fail closed.
 - [ ] Preserve execution-time TOCTOU validation of the exact anchor job/session.
   Never call latest-candidate selection on a valid or invalid binding.
 - [ ] Replace parent-turn unique-job “bound status” lookup with exact binding
@@ -129,7 +161,7 @@ git diff --check
 - Modify: `tests/managed-agent-role.test.mjs`
 - Modify: `tests/setup.test.mjs`
 - Modify: `tests/release-contracts.test.mjs`
-- Create: `docs/adr/0011-bind-rescue-child-to-zcode-session.md`
+- Create: `docs/adr/0013-bind-rescue-child-to-zcode-session.md`
 - Modify: `README.md`
 - Modify: `README.zh-CN.md`
 - Modify: `SECURITY.md`
@@ -139,9 +171,10 @@ git diff --check
   active child → rejoin only; stopped same-operation child → preflight, private
   prepare with `resume`, exact followup, zero spawn; independent/fresh operation
   → prepare and spawn a new Rescue child.
-- [ ] Preserve exact precedence for explicit choices, legacy one-time
-  `needs-choice`, proactive clear routes, and proactive ambiguity. Assert Root,
-  not the child, owns every semantic choice.
+- [ ] Preserve exact precedence for explicit choices, one-time `needs-choice`
+  for every explicit bound-or-legacy candidate without a flag, proactive clear
+  routes, and proactive ambiguity. Assert Root, not the child, owns every
+  semantic choice.
 - [ ] Reuse the exact constant `invoke-prepared rescue` assignment for initial
   and same-child prepared continuation turns. Keep one foreground companion exec
   per assignment/child turn and retain the existing next-turn `invoke-choice`
@@ -154,7 +187,8 @@ git diff --check
   setup upgrades once, upgraded status is ready, and drift remains fail closed.
 - [ ] Document durable binding, same-child exact continuation, legacy adoption,
   permission/session lifecycle, compatibility, and failure semantics in EN/ZH,
-  SECURITY, CHANGELOG, and superseding ADR 0011. Keep task-boundary and project
+  SECURITY, CHANGELOG, and ADR 0013 superseding the stopped-continuation portion
+  of ADR 0010. Keep task-boundary and project
   failure semantics unchanged.
 - [ ] Run focused contract/release tests, lint, typecheck, diff check; commit:
   `docs: define exact Rescue child continuation`.
@@ -179,12 +213,22 @@ git diff --check
   parent turn prepares resume; Root performs zero new spawns and one exact
   followup; the child performs one new `invoke-prepared`; fake ZCode resumes the
   original exact session and sends one new turn.
+- [ ] Make the host lifecycle evidence explicit: exactly one original
+  SubagentStart, one SubagentStop, and no second SubagentStart before followup;
+  the stopped executor retains its old parent turn while the new preparation is
+  bound to the fresh parent turn. Reject a fabricated second Start, active-state
+  rewrite, or old-turn rewrite.
 - [ ] Add foreground/background and proactive/explicit fixtures while preserving
-  the distinct legacy `needs-choice → same child invoke-choice` qualifier.
+  both bound and legacy explicit `needs-choice → same child invoke-choice`
+  qualifiers. Only a clear proactive bound continuation skips the choice.
 - [ ] Add fail-closed mutations for sibling target, second spawn, task-name/path
   lookup, missing binding auto-latest, duplicate/corrupt/oversized binding,
   wrong parent session/workspace/executor/permission, stale generation, anchor/
   current job mismatch, cancelled/no-session anchor, and leaked private IDs.
+- [ ] Add resolver-specific fixtures: queued/pre-session-failed/cancelled current
+  jobs remain reportable while a valid anchor resumes; cancelled/no-session
+  anchor does not. Add candidate-insertion-between-choice-and-followup and old
+  pending-without-candidate upgrade cases.
 - [ ] Extend optional live installed qualification with a cross-parent-turn clear
   continuation and exact fake/real peer session evidence where credentials permit;
   retain structured opt-in skips without credentials.
