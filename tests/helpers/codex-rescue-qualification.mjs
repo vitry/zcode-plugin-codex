@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -243,8 +244,8 @@ function validateLiveRawContinuationCapture(input, core) {
   const fields = ['rawParentRolloutJson', 'rawChildRolloutJson', 'rawHookLifecycleJson', 'rawFakePeerJson', 'artifactHistoryJson'];
   if (fields.every((field) => input[field] === undefined)) return null;
   if (fields.some((field) => typeof input[field] !== 'string')) mismatch('continuation-raw-capture', 'Live continuation evidence must include every complete raw capture.');
-  const parse = (field) => { let value; try { value = JSON.parse(input[field]); } catch { mismatch('continuation-raw-capture', `Live ${field} is malformed.`); }
-    if (!Array.isArray(value) || value.length > MAX_EVENTS_PER_ROLLOUT) mismatch('continuation-raw-capture', `Live ${field} exceeds its bound.`); return value; };
+  const parse = (field) => { if (Buffer.byteLength(input[field]) > MAX_ROLLOUT_BYTES) mismatch('continuation-raw-capture', `Live ${field} exceeds its byte bound.`); let value; try { value = JSON.parse(input[field]); } catch { mismatch('continuation-raw-capture', `Live ${field} is malformed.`); }
+    if (!Array.isArray(value) || value.length > MAX_EVENTS_PER_ROLLOUT || value.some((event) => Buffer.byteLength(JSON.stringify(event)) > MAX_TEXT_BYTES)) mismatch('continuation-raw-capture', `Live ${field} exceeds its bound.`); return value; };
   const rawParent = parse('rawParentRolloutJson'); const rawChild = parse('rawChildRolloutJson'); const rawHooks = parse('rawHookLifecycleJson'); const rawPeer = parse('rawFakePeerJson'); const history = parse('artifactHistoryJson');
   assertRawSubset(core.parent, rawParent, 'parent'); assertRawSubset(core.child, rawChild, 'child'); assertRawSubset(core.hooks, rawHooks, 'hooks'); assertRawSubset(core.peer, rawPeer, 'peer');
   const parentFunctions = rawParent.filter((event) => event?.payload?.type === 'function_call');
@@ -253,12 +254,18 @@ function validateLiveRawContinuationCapture(input, core) {
   assertAllowedRawHostCalls(rawParent, 'parent'); assertAllowedRawHostCalls(rawChild, 'child');
   const rawParentCommands = rawParent.filter((event) => event?.payload?.type === 'custom_tool_call').map((event) => parseCapturedHostCall(event.payload.input));
   if (rawParentCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" prepare rescue')).length !== 2
-    || rawParentCommands.filter((host) => host.kind === 'write_stdin' && typeof host.envelope.get('chars') === 'string' && host.envelope.get('chars').includes('"source"')).length !== 2
+    || rawParentCommands.filter((host) => host.kind === 'write_stdin').length !== 2
     || rawParent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started').length !== 1
     || rawParent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'stopped').length !== 1) mismatch('continuation-raw-parent-events', 'Complete parent capture duplicates or omits a required lifecycle event.');
   const rawChildCommands = rawChild.filter((event) => event?.payload?.type === 'custom_tool_call').map((event) => parseCapturedHostCall(event.payload.input));
   if (rawChildCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue')).length !== 2
     || rawChildCommands.filter((host) => host.kind === 'write_stdin').length > MAX_CHILD_POLLS) mismatch('continuation-raw-child-events', 'Complete child capture duplicates or omits invoke-prepared evidence.');
+  for (const invoke of rawChild.filter((event) => event?.payload?.type === 'custom_tool_call' && parseCapturedHostCall(event.payload.input).envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue'))) {
+    const calls = rawChild.filter((event) => event?.turn_id === invoke.turn_id && event?.payload?.type === 'custom_tool_call'
+      && (event === invoke || parseCapturedHostCall(event.payload.input).kind === 'write_stdin'));
+    const ids = new Set(calls.map((event) => event.payload.call_id)); const outputs = rawChild.filter((event) => event?.turn_id === invoke.turn_id && event?.payload?.type === 'custom_tool_call_output' && ids.has(event.payload.call_id));
+    validateChildExecution(rawChild, calls, outputs, parseCapturedHostCall(invoke.payload.input).envelope.get('cmd'), core.expected.workspace, { codePrefix: 'continuation-raw-child', expectedExitCode: 0 });
+  }
   const starts = rawHooks.filter((event) => event?.hook_event_name === 'SubagentStart'); const stops = rawHooks.filter((event) => event?.hook_event_name === 'SubagentStop');
   const prompts = rawHooks.filter((event) => event?.hook_event_name === 'UserPromptSubmit');
   if (starts.length !== 1 || stops.length !== 1 || prompts.length < 1 || prompts.length > 2 || rawHooks.some((event) => !['SubagentStart', 'SubagentStop', 'UserPromptSubmit'].includes(event?.hook_event_name))
@@ -309,9 +316,17 @@ function validateImmutableArtifactHistory(history, input) {
   }
   if (immutable.size < 3 || executorHistory.size !== 1 || bindingHistory.size !== 1 || jobHistory.size !== 2) mismatch('continuation-artifact-history', 'Complete artifact history is missing mandatory authority records.');
   let preparations; let jobs; try { preparations = JSON.parse(input.preparationRecordBytesJson); jobs = JSON.parse(input.jobRecordBytesJson); } catch { mismatch('continuation-artifact-history', 'Selected artifact bytes are malformed.'); }
-  for (const selected of [input.executorRecordBytes, input.bindingAuthorityBytes, input.bindingPartitionBytes, ...preparations, ...jobs]) {
-    if (history.filter((artifact) => artifact.bytes === selected).length < 1) mismatch('continuation-artifact-history', 'Selected authority bytes are absent from complete artifact history.');
-  }
+  let executor; let authority; let partition; try { executor = JSON.parse(input.executorRecordBytes); authority = JSON.parse(input.bindingAuthorityBytes); partition = JSON.parse(input.bindingPartitionBytes); } catch { mismatch('continuation-artifact-history', 'Selected authority bytes are malformed.'); }
+  const executorKey = createHash('sha256').update(JSON.stringify(['executor', executor.agentId])).digest('hex');
+  const expectedArtifacts = [
+    [`hook-state/executor-${executorKey}.json`, input.executorRecordBytes],
+    [`rescue-binding-authority-${authority.key}.json`, input.bindingAuthorityBytes],
+    [`rescue-binding-session-${partition.key}.json`, input.bindingPartitionBytes],
+    ...preparations.map((bytes) => [`invocations/prepared/${JSON.parse(bytes).key}.json`, bytes]),
+    ...jobs.map((bytes) => [`jobs/${JSON.parse(bytes).id}.json`, bytes]),
+  ];
+  if (history.some((artifact) => !/^(?:hook-state\/executor-[a-f0-9]{64}|rescue-binding-(?:authority|session)-[a-f0-9]{64}|invocations\/prepared\/[a-f0-9]{64}|jobs\/[a-f0-9]{64})\.json$/u.test(artifact.path))) mismatch('continuation-artifact-history', 'Raw artifact history contains a non-authoritative path.');
+  for (const [path, bytes] of expectedArtifacts) if (!history.some((artifact) => artifact.path === path && artifact.bytes === bytes)) mismatch('continuation-artifact-history', 'Selected authority bytes are absent from their exact captured path.');
   for (const versions of executorHistory.values()) assertStableVersions(versions, ['active'], 'executor');
   for (const versions of bindingHistory.values()) assertStableVersions(versions, ['currentJobId', 'permissionMode', 'updatedAt'], 'binding');
   for (const versions of jobHistory.values()) assertStableFields(versions, ['id', 'workspace', 'ownerSessionId', 'ownerTurnId', 'command', 'readOnly', 'permissionSnapshot'], 'job');

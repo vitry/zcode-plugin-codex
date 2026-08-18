@@ -654,11 +654,12 @@ test('deterministic installed observer artifacts flow through the live continuat
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const preparations = JSON.parse(fixture.preparationRecordBytesJson); const preparationValues = preparations.map(JSON.parse);
   const executor = JSON.parse(fixture.executorRecordBytes); const authority = JSON.parse(fixture.bindingAuthorityBytes); const partition = JSON.parse(fixture.bindingPartitionBytes);
+  const executorKey = createHash('sha256').update(JSON.stringify(['executor', executor.agentId])).digest('hex');
   await Promise.all([mkdir(join(storage.directory, 'hook-state')), mkdir(join(storage.directory, 'invocations', 'prepared'), { recursive: true }), mkdir(join(storage.directory, 'jobs'))]);
   await Promise.all([
-    writeFile(join(storage.directory, 'hook-state', 'executor-characterization.json'), fixture.executorRecordBytes),
-    writeFile(join(storage.directory, 'rescue-binding-authority-characterization.json'), fixture.bindingAuthorityBytes),
-    writeFile(join(storage.directory, 'rescue-binding-session-characterization.json'), fixture.bindingPartitionBytes),
+    writeFile(join(storage.directory, 'hook-state', `executor-${executorKey}.json`), fixture.executorRecordBytes),
+    writeFile(join(storage.directory, `rescue-binding-authority-${authority.key}.json`), fixture.bindingAuthorityBytes),
+    writeFile(join(storage.directory, `rescue-binding-session-${partition.key}.json`), fixture.bindingPartitionBytes),
     writeFile(join(storage.directory, 'invocations', 'prepared', `${preparationValues[1].key}.json`), preparations[1]),
     ...JSON.parse(fixture.jobRecordBytesJson).map((bytes) => writeFile(join(storage.directory, 'jobs', `${JSON.parse(bytes).id}.json`), bytes)),
   ]);
@@ -1968,9 +1969,9 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
   const command = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-prepared rescue';
   const child = [
     { type: 'session_meta', payload: { id: childThreadId, session_id: parentSessionId, parent_thread_id: parentSessionId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentSessionId, agent_path: '/root/zcode_rescue_continue', agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
-    installedToolCall('invoke-1', installedExecInput(command)), installedToolOutput('invoke-1', { output: 'initial done\n', exit_code: 0 }),
+    installedToolCall('invoke-1', installedExecInput(command, { workdir: workspace })), installedToolOutput('invoke-1', { output: 'initial done\n', exit_code: 0 }),
     { type: 'event_msg', payload: { type: 'agent_message', message: 'initial done' } },
-    installedToolCall('invoke-2', installedExecInput(command)), installedToolOutput('invoke-2', { output: 'continued\n', exit_code: 0 }),
+    installedToolCall('invoke-2', installedExecInput(command, { workdir: workspace })), installedToolOutput('invoke-2', { output: 'continued\n', exit_code: 0 }),
     { type: 'event_msg', payload: { type: 'agent_message', message: 'continued' } },
   ];
   child[1].timestamp = '2026-08-10T00:00:03.000Z'; child[2].timestamp = '2026-08-10T00:00:04.000Z'; child[4].timestamp = '2026-08-10T00:00:10.000Z'; child[5].timestamp = '2026-08-10T00:00:11.000Z';
