@@ -1443,7 +1443,7 @@ async function captureInstalledPreparedContinuationEvidence(input) {
 
   const storage = await resolveWorkspaceStorage({ dataRoot: input.installedDataRoot, workspace: input.workspace });
   const currentFiles = await recursiveFiles(storage.directory);
-  const currentArtifacts = await Promise.all(currentFiles.map(async (path) => ({ path: relative(storage.directory, path), bytes: await readFile(path, 'utf8') })));
+  const currentArtifacts = await Promise.all(currentFiles.map(async (path) => ({ path: relative(storage.directory, path).split(process.platform === 'win32' ? '\\' : '/').join('/'), bytes: await readFile(path, 'utf8') })));
   const snapshotArtifacts = capturedArtifactBytes(captures, (path) => path.startsWith(`workspaces/${storage.workspaceKey}/`))
     .map((artifact) => ({ ...artifact, path: artifact.path.slice(`workspaces/${storage.workspaceKey}/`.length) }));
   const artifacts = [...snapshotArtifacts, ...currentArtifacts];

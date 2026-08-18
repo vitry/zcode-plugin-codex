@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, mkdir, readFile, readdir, rename, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import {
   closeRescueBinding,
@@ -20,13 +20,15 @@ import {
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
+const codecWorkspace = resolve(tmpdir(), 'zcode-canonical-codec-workspace');
+const foreignCodecWorkspace = resolve(tmpdir(), 'zcode-foreign-codec-workspace');
 const identity = {
   parentSessionId: 'parent-session',
   executorAgentId: 'rescue-child',
   executorAgentType: 'zcode-rescue',
   executorParentTurnId: 'origin-turn',
   executorParentPermissionMode: 'workspace-write',
-  workspace: '/canonical/workspace',
+  workspace: codecWorkspace,
   permissionMode: 'workspace-write',
 };
 
@@ -67,7 +69,7 @@ test('binding codec rejects unknown, duplicate, unsafe, and identity-mismatched 
   for (const text of [
     JSON.stringify({ ...active, secret: 'do-not-leak' }),
     JSON.stringify({ ...active, operationId: '' }),
-    JSON.stringify({ ...active, workspace: '/other' }),
+    JSON.stringify({ ...active, workspace: foreignCodecWorkspace }),
     JSON.stringify({ ...active, state: 'unknown' }),
     `{"version":1,"version":1}`,
   ]) assert.throws(() => parseRescueBinding(text, identity), (error) => error?.code === 'RESCUE_BINDING_INVALID' && !error.message.includes('do-not-leak'));
@@ -82,7 +84,7 @@ test('binding key and codec enforce bounded safe identity, digest, timestamp, an
     { operationId: 'c' }, { now: 'tomorrow' },
   ]) assert.throws(() => createRescueBinding({ ...identity, anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: 'c'.repeat(64), now: '2026-08-18T01:02:03.000Z', ...patch }), { code: 'RESCUE_BINDING_INVALID' });
   assert.throws(() => createRescueBinding({ ...identity, permissionMode: undefined, anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: 'c'.repeat(64) }), { code: 'RESCUE_BINDING_INVALID' });
-  assert.throws(() => createRescueBinding({ ...identity, workspace: '/canonical/../workspace', anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: 'c'.repeat(64) }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.throws(() => createRescueBinding({ ...identity, workspace: `${codecWorkspace}${sep}..${sep}workspace`, anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: 'c'.repeat(64) }), { code: 'RESCUE_BINDING_INVALID' });
   assert.throws(() => parseRescueBinding(Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d])), { code: 'RESCUE_BINDING_INVALID' });
 });
 
@@ -91,7 +93,7 @@ test('partition codec enforces one exact bounded parent-session envelope and uni
   const partition = createRescueBindingPartition({ parentSessionId: identity.parentSessionId, workspace: identity.workspace, records: [record] });
   assert.deepEqual(Object.keys(partition).sort(), ['key', 'parentSessionId', 'records', 'version', 'workspace']);
   assert.equal(partition.records.length, 1);
-  assert.throws(() => parseRescueBindingPartition(`${JSON.stringify({ ...partition, workspace: '/foreign' })}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
+  assert.throws(() => parseRescueBindingPartition(`${JSON.stringify({ ...partition, workspace: foreignCodecWorkspace })}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
   assert.throws(() => parseRescueBindingPartition(`${JSON.stringify({ ...partition, parentSessionId: 'foreign-session' })}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
   assert.throws(() => parseRescueBindingPartition(`${JSON.stringify({ ...partition, records: [record, record] })}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
   const compact = `${JSON.stringify(partition)}\n`; const boundary = `${compact.slice(0, -1)}${' '.repeat(RESCUE_BINDING_PARTITION_MAX_BYTES - Buffer.byteLength(compact))}\n`;
@@ -99,7 +101,7 @@ test('partition codec enforces one exact bounded parent-session envelope and uni
   assert.throws(() => parseRescueBindingPartition(`${boundary.slice(0, -1)} \n`, identity), { code: 'RESCUE_BINDING_INVALID' });
   const authority = createRescueBindingAuthority(identity); assert.equal(parseRescueBindingAuthority(`${JSON.stringify(authority)}\n`, identity).key, partition.key);
   for (const invalid of [
-    { ...authority, version: 2 }, { ...authority, workspace: '/foreign' }, { ...authority, parentSessionId: 'foreign' },
+    { ...authority, version: 2 }, { ...authority, workspace: foreignCodecWorkspace }, { ...authority, parentSessionId: 'foreign' },
     { ...authority, createdAt: authority.createdAt.replace('Z', '+00:00') }, { ...authority, unknown: true },
   ]) assert.throws(() => parseRescueBindingAuthority(`${JSON.stringify(invalid)}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
   assert.throws(() => parseRescueBindingAuthority(`${JSON.stringify(authority).replace('"version":1', '"version":1,"version":1')}\n`, identity), { code: 'RESCUE_BINDING_INVALID' });
@@ -167,7 +169,7 @@ test('StateStore atomically reserves and resolves an exact fresh Rescue generati
   assert.equal(resolved.anchorJob.zcodeSessionId, 'zcode-session-a');
   assert.equal(resolved.currentJob.id, reserved.job.id);
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
-  const [partitionPath] = await bindingFiles(storage.directory); assert.equal((await stat(partitionPath)).mode & 0o777, 0o600);
+  const [partitionPath] = await bindingFiles(storage.directory); const metadata = await stat(partitionPath); assert.equal(metadata.isFile(), true); if (process.platform !== 'win32') assert.equal(metadata.mode & 0o777, 0o600);
   assert.equal((await bindingFiles(storage.directory)).length, 1);
 });
 
@@ -287,7 +289,7 @@ test('StateStore fails closed when a same-session sibling claims a foreign canon
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory);
-  const foreign = createRescueBinding({ ...identity, workspace: '/foreign/workspace', executorAgentId: 'foreign-child', anchorJobId: fresh.job.id, currentJobId: fresh.job.id, operationId: 'e'.repeat(64) });
+  const foreign = createRescueBinding({ ...identity, workspace: foreignCodecWorkspace, executorAgentId: 'foreign-child', anchorJobId: fresh.job.id, currentJobId: fresh.job.id, operationId: 'e'.repeat(64) });
   const partition = JSON.parse(await readFile(path, 'utf8')); partition.records.push(foreign); await writeFile(path, `${JSON.stringify(partition)}\n`);
   await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, executor(workspace, { agentId: 'absent-child' }))), { code: 'RESCUE_BINDING_INVALID' });
 });
@@ -341,9 +343,11 @@ test('publication rejects binding-partition and state-lock replacement without a
     const base = await fixture(); const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace }); let replaced = false;
     const store = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
       if (replaced || seam !== 'fresh:owner-binding') return; replaced = true;
-      const lock = join(storage.directory, '.state.lock'); await rename(lock, `${lock}.replaced`); await mkdir(lock, { mode: 0o700 }); await writeFile(join(lock, 'advisory.lock'), '', { mode: 0o600 });
+      const lock = join(storage.directory, '.state.lock');
+      if (process.platform === 'win32') throw new Error('test-only Windows held state-lock replacement fault');
+      await rename(lock, `${lock}.replaced`); await mkdir(lock, { mode: 0o700 }); await writeFile(join(lock, 'advisory.lock'), '', { mode: 0o600 });
     } });
-    await assert.rejects(store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace), executor: executor(base.workspace) }), { code: 'RESCUE_BINDING_INVALID' });
+    await assert.rejects(store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace), executor: executor(base.workspace) }), { code: process.platform === 'win32' ? 'RESCUE_PUBLICATION_TEST_FAULT' : 'RESCUE_BINDING_INVALID' });
     const clean = createStateStore({ dataRoot: base.dataRoot });
     await assert.rejects(clean.resolveRescueBindingForResume(bindingExpected(base.workspace, executor(base.workspace))), { code: 'RESCUE_BINDING_INVALID' });
   }
