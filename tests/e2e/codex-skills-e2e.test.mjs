@@ -30,6 +30,7 @@ import {
 } from '../helpers/rescue-skill-contract.mjs';
 import {
   assertInstalledForwarderLifecycleContract,
+  assertInstalledPreparedContinuationContract,
   extractInstalledRoleInstructions,
   installedCanonicalContradictionMutations,
   installedCommandPathMutations,
@@ -576,6 +577,22 @@ test('synthetic captured qualification fixtures cover both named and generic cho
       });
       assert.equal(installedCapturedRunningHandles(choice.fixture).size, 0, `${route.name} ${requested} choice must leave no nonterminal handle orphaned`);
     }
+  }
+});
+
+test('installed forwarders qualify one Start/Stop and a zero-spawn exact prepared continuation', async () => {
+  const skill = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
+  const genericSource = expectedGenericRescueMessage;
+  const namedTemplate = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8');
+  const namedSource = extractInstalledRoleInstructions(namedTemplate);
+  for (const [route, source, expectedRoot] of [
+    ['named', namedSource, '{{PLUGIN_ROOT}}'],
+    ['generic', genericSource, '<canonical-plugin-root>'],
+  ]) {
+    assert.match(skill, /stopped exact same-operation child/i);
+    const evidence = assertInstalledPreparedContinuationContract(source, installedPreparedContinuationCapture(route), { expectedRoot });
+    assert.equal(evidence.continuationSpawnCount, 0);
+    assert.equal(evidence.peerResumeChecked, true);
   }
 });
 
@@ -1640,6 +1657,48 @@ function installedChoiceYieldFixture() {
     ...segment('initial', commands.initial, 51, 3),
     ...segment('continuation', commands.continuation, 61, 0),
   ]] };
+}
+
+function installedPreparedContinuationCapture(route) {
+  const childThreadId = '019fe6e0-4764-7192-83ba-0b0cc2c48660';
+  const parentSessionId = '019fe6df-faa2-7851-8edb-55f1be7d5489';
+  const message = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage;
+  return {
+    route,
+    execution: 'foreground',
+    workspace: '/repo',
+    permissionMode: 'acceptEdits',
+    parentSessionId,
+    childThreadId,
+    agentPath: '/root/zcode_rescue_continue',
+    publicOutput: 'continued',
+    privateSentinels: ['binding-private', 'job-private', 'zcode-session-original'],
+    preparations: [
+      { parentTurnId: 'turn-original', resume: 'fresh', executorAgentId: childThreadId },
+      { parentTurnId: 'turn-fresh', resume: 'resume', executorAgentId: childThreadId },
+    ],
+    parentEvents: [
+      { kind: 'spawn', childThreadId, parentTurnId: 'turn-original' },
+      { kind: 'start', childThreadId, parentTurnId: 'turn-original' },
+      { kind: 'stop', childThreadId, parentTurnId: 'turn-original', state: 'stopped', stoppedAt: '2026-08-10T00:00:00.000Z' },
+      { kind: 'followup', target: childThreadId, parentTurnId: 'turn-fresh', message },
+    ],
+    childEvents: [
+      { kind: 'invoke-prepared', childThreadId, parentTurnId: 'turn-original' },
+      { kind: 'invoke-prepared', childThreadId, parentTurnId: 'turn-original' },
+    ],
+    peerEvents: [
+      { kind: 'session/create', sessionId: 'zcode-session-original' },
+      { kind: 'session/resume', sessionId: 'zcode-session-original' },
+      { kind: 'session/turn', sessionId: 'zcode-session-original' },
+    ],
+    binding: {
+      valid: true, recordCount: 1, serializedBytes: 4096, executorAgentId: childThreadId,
+      parentSessionId, workspace: '/repo', permissionMode: 'acceptEdits', operationId: 'operation-current',
+      expectedOperationId: 'operation-current', currentJobId: 'current-job', expectedCurrentJobId: 'current-job',
+      anchorStatus: 'succeeded', anchorSessionId: 'zcode-session-original',
+    },
+  };
 }
 
 async function installedCapturedRescueRoutes(config = {}) {

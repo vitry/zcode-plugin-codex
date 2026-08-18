@@ -163,14 +163,20 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   for (const modulePath of [
     'skills/rescue/SKILL.md',
     'scripts/zcode-companion.mjs',
+    'scripts/lib/invocation.mjs',
+    'scripts/lib/job-control.mjs',
+    'scripts/lib/rescue-binding.mjs',
     'scripts/lib/rescue-preparation.mjs',
+    'scripts/lib/state.mjs',
     'scripts/lib/conversation-progress.mjs',
     'scripts/lib/managed-agent-role.mjs',
     'scripts/lib/progress.mjs',
     'scripts/lib/rescue-progress-relay.mjs',
     'hooks/user-prompt-hook.mjs',
+    'hooks/lib/hook-state.mjs',
     'hooks/session-end-hook.mjs',
     'hooks/stop-review-gate-hook.mjs',
+    'docs/adr/0013-bind-rescue-child-to-zcode-session.md',
   ]) assert.ok((await readFile(join(installedRoot, modulePath), 'utf8')).length > 0, `${modulePath} missing from installed marketplace payload`);
   const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const installedSections = assertInstalledRescueRoutingContract(installedRescue);

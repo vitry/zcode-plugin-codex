@@ -14,8 +14,10 @@ import {
   parseCodexRolloutJsonl,
   qualifyCodexRescueBackgroundEvidence,
   qualifyCodexRescueChoiceEvidence,
+  qualifyCodexRescuePreparedContinuationEvidence,
   qualifyCodexRescueEvidence,
 } from './helpers/codex-rescue-qualification.mjs';
+import { expectedGenericRescueMessage, expectedNamedRescueMessage } from './helpers/rescue-skill-contract.mjs';
 
 const parentId = '019fe6df-faa2-7851-8edb-55f1be7d5489';
 const childId = '019fe6e0-4764-7192-83ba-0b0cc2c48660';
@@ -38,6 +40,61 @@ const expectedSemanticProgress = Object.freeze({
 const backgroundJobId = 'b'.repeat(64);
 const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
 const executionCapability = 'qualification-capability-sentinel-private';
+
+test('qualifies named and generic foreground/background prepared continuation on one stopped child and exact peer session', () => {
+  for (const route of ['named', 'generic']) for (const execution of ['foreground', 'background']) {
+    const evidence = qualifyCodexRescuePreparedContinuationEvidence(preparedContinuationFixture(route, execution));
+    assert.deepEqual(evidence, {
+      route,
+      parentSessionId: parentId,
+      childThreadId: childId,
+      agentPath,
+      originalParentTurnId: 'turn-original',
+      continuationParentTurnId: 'turn-fresh',
+      spawnCount: 1,
+      startCount: 1,
+      stopCount: 1,
+      followupCount: 1,
+      continuationSpawnCount: 0,
+      childInvocationCount: 2,
+      peerResumeChecked: true,
+      execution,
+    });
+  }
+});
+
+test('prepared continuation qualification fails closed on lifecycle, routing, peer, and privacy mutations', () => {
+  const mutations = [
+    ['continuation-spawn-count', (input) => input.parentEvents.push({ kind: 'spawn', childThreadId: 'other', parentTurnId: 'turn-fresh' })],
+    ['continuation-start-count', (input) => input.parentEvents.push({ kind: 'start', childThreadId: childId, parentTurnId: 'turn-fresh' })],
+    ['continuation-stop-count', (input) => { input.parentEvents = input.parentEvents.filter((event) => event.kind !== 'stop'); }],
+    ['continuation-stop-state', (input) => { input.parentEvents.find((event) => event.kind === 'stop').state = 'active'; }],
+    ['continuation-followup-target', (input) => { input.parentEvents.find((event) => event.kind === 'followup').target = 'sibling'; }],
+    ['continuation-followup-message', (input) => { input.parentEvents.find((event) => event.kind === 'followup').message = 'resume latest'; }],
+    ['continuation-preparation-turn', (input) => { input.preparations[1].parentTurnId = 'turn-original'; }],
+    ['continuation-executor-provenance', (input) => { input.childEvents[0].parentTurnId = 'turn-fresh'; }],
+    ['continuation-session-mismatch', (input) => { input.peerEvents[1].sessionId = 'latest-wrong-session'; }],
+    ['continuation-peer-turn-count', (input) => input.peerEvents.push({ kind: 'session/turn', sessionId: 'zcode-session-original' })],
+    ['continuation-private-leak', (input) => { input.publicOutput = `done ${input.privateSentinels[0]}`; }],
+    ['continuation-binding-invalid', (input) => { input.binding.valid = false; }],
+    ['continuation-binding-invalid', (input) => { input.binding.recordCount = 2; }],
+    ['continuation-binding-invalid', (input) => { input.binding.serializedBytes = 16 * 1024 * 1024 + 1; }],
+    ['continuation-binding-identity', (input) => { input.binding.executorAgentId = 'sibling'; }],
+    ['continuation-binding-identity', (input) => { input.binding.parentSessionId = 'wrong-parent'; }],
+    ['continuation-binding-identity', (input) => { input.binding.workspace = '/wrong'; }],
+    ['continuation-binding-identity', (input) => { input.binding.permissionMode = 'read-only'; }],
+    ['continuation-generation-stale', (input) => { input.binding.expectedOperationId = 'stale'; }],
+    ['continuation-anchor-invalid', (input) => { input.binding.anchorStatus = 'cancelled'; }],
+  ];
+  for (const [code, mutate] of mutations) {
+    const input = preparedContinuationFixture('named'); mutate(input);
+    assert.throws(
+      () => qualifyCodexRescuePreparedContinuationEvidence(input),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code,
+      code,
+    );
+  }
+});
 
 test('qualifies named Rescue from linked parent and child rollout metadata', () => {
   const evidence = qualifyCodexRescueEvidence(fixture(), options());
@@ -1676,6 +1733,55 @@ function choiceFixture(choice) {
   at(child.find((event) => event?.payload?.call_id === 'exec-2' && event.payload.type === 'custom_tool_call_output'), 12);
   at(childFinals[1], 13); at(parentReturns[1], 14); at(parentFinals[1], 15);
   return { rollouts: [parent, child] };
+}
+
+function preparedContinuationFixture(route, execution = 'foreground') {
+  const message = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage;
+  return {
+    route,
+    execution,
+    workspace: expectedWorkspace,
+    permissionMode: 'acceptEdits',
+    parentSessionId: parentId,
+    childThreadId: childId,
+    agentPath,
+    publicOutput: 'continued',
+    privateSentinels: ['binding-private', 'anchor-job-private', 'zcode-session-original'],
+    preparations: [
+      { parentTurnId: 'turn-original', resume: 'fresh', executorAgentId: childId },
+      { parentTurnId: 'turn-fresh', resume: 'resume', executorAgentId: childId },
+    ],
+    parentEvents: [
+      { kind: 'spawn', childThreadId: childId, parentTurnId: 'turn-original' },
+      { kind: 'start', childThreadId: childId, parentTurnId: 'turn-original' },
+      { kind: 'stop', childThreadId: childId, parentTurnId: 'turn-original', state: 'stopped', stoppedAt: '2026-08-10T00:00:00.000Z' },
+      { kind: 'followup', target: childId, parentTurnId: 'turn-fresh', message },
+    ],
+    childEvents: [
+      { kind: 'invoke-prepared', childThreadId: childId, parentTurnId: 'turn-original' },
+      { kind: 'invoke-prepared', childThreadId: childId, parentTurnId: 'turn-original' },
+    ],
+    peerEvents: [
+      { kind: 'session/create', sessionId: 'zcode-session-original' },
+      { kind: 'session/resume', sessionId: 'zcode-session-original' },
+      { kind: 'session/turn', sessionId: 'zcode-session-original' },
+    ],
+    binding: {
+      valid: true,
+      recordCount: 1,
+      serializedBytes: 4096,
+      executorAgentId: childId,
+      parentSessionId: parentId,
+      workspace: expectedWorkspace,
+      permissionMode: 'acceptEdits',
+      operationId: 'operation-current',
+      expectedOperationId: 'operation-current',
+      currentJobId: 'current-job',
+      expectedCurrentJobId: 'current-job',
+      anchorStatus: 'succeeded',
+      anchorSessionId: 'zcode-session-original',
+    },
+  };
 }
 
 function relayedChoiceFixture({ withStatus = false } = {}) {

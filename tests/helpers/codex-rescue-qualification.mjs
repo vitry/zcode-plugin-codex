@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
+import { expectedGenericRescueMessage, expectedNamedRescueMessage } from './rescue-skill-contract.mjs';
 
 const MAX_EXEC_FRAMES = 2_048;
 const MAX_ROLLOUTS = 64;
@@ -61,6 +62,91 @@ export function parseCodexRolloutJsonl(value) {
 
 export function qualifyCodexRescueEvidence(input, options) {
   return qualifyCodexRescueEvidenceCore(input, options, false);
+}
+
+/**
+ * Qualify the bounded, privacy-filtered facts captured for a clear proactive
+ * continuation. This deliberately consumes normalized host/peer facts rather
+ * than private binding files: the installed harness observes lifecycle and
+ * protocol effects while the companion remains the binding authority.
+ */
+export function qualifyCodexRescuePreparedContinuationEvidence(input) {
+  if (!input || !['named', 'generic'].includes(input.route)) mismatch('continuation-route', 'Prepared continuation route must be named or generic.');
+  if (!['foreground', 'background'].includes(input.execution)) mismatch('continuation-execution', 'Prepared continuation execution must be foreground or background.');
+  const parentSessionId = boundedString(input.parentSessionId);
+  const childThreadId = boundedString(input.childThreadId);
+  const agentPath = boundedString(input.agentPath);
+  if (!parentSessionId || !childThreadId || !agentPath) mismatch('continuation-identity', 'Prepared continuation identity is incomplete.');
+  const preparations = boundedArray(input.preparations, 2, 'continuation-preparation-count');
+  if (preparations.length !== 2) mismatch('continuation-preparation-count', 'Prepared continuation requires exactly two parent preparations.');
+  const [initialPreparation, continuationPreparation] = preparations;
+  const originalParentTurnId = boundedString(initialPreparation?.parentTurnId);
+  const continuationParentTurnId = boundedString(continuationPreparation?.parentTurnId);
+  if (!originalParentTurnId || !continuationParentTurnId || originalParentTurnId === continuationParentTurnId
+    || initialPreparation.resume !== 'fresh' || continuationPreparation.resume !== 'resume'
+    || initialPreparation.executorAgentId !== childThreadId || continuationPreparation.executorAgentId !== childThreadId) {
+    mismatch('continuation-preparation-turn', 'Continuation must be freshly prepared for resume in a distinct parent turn for the exact child.');
+  }
+
+  const parentEvents = boundedArray(input.parentEvents, 64, 'continuation-parent-events');
+  const byKind = (kind) => parentEvents.filter((event) => event?.kind === kind);
+  const spawns = byKind('spawn'); const starts = byKind('start'); const stops = byKind('stop'); const followups = byKind('followup');
+  if (spawns.length !== 1 || spawns[0].parentTurnId !== originalParentTurnId || spawns[0].childThreadId !== childThreadId) {
+    mismatch('continuation-spawn-count', 'Prepared continuation must retain one original spawn and perform zero continuation spawns.');
+  }
+  if (starts.length !== 1 || starts[0].parentTurnId !== originalParentTurnId || starts[0].childThreadId !== childThreadId) {
+    mismatch('continuation-start-count', 'Prepared continuation must expose exactly one original SubagentStart and no second start.');
+  }
+  if (stops.length !== 1 || stops[0].parentTurnId !== originalParentTurnId || stops[0].childThreadId !== childThreadId) {
+    mismatch('continuation-stop-count', 'Prepared continuation must expose exactly one original SubagentStop.');
+  }
+  if (stops[0].state !== 'stopped' || !boundedString(stops[0].stoppedAt)) mismatch('continuation-stop-state', 'Prepared continuation must retain stopped lifecycle provenance.');
+  if (followups.length !== 1) mismatch('continuation-followup-count', 'Prepared continuation must expose exactly one same-child follow-up.');
+  const followup = followups[0];
+  if (followup.target !== childThreadId || followup.parentTurnId !== continuationParentTurnId) {
+    mismatch('continuation-followup-target', 'Prepared continuation follow-up must target the exact retained child in the fresh parent turn.');
+  }
+  const expectedMessage = input.route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage;
+  if (followup.message !== expectedMessage) mismatch('continuation-followup-message', 'Prepared continuation follow-up must reuse the route-specific exact original assignment.');
+
+  const childEvents = boundedArray(input.childEvents, 16, 'continuation-child-events');
+  const invocations = childEvents.filter((event) => event?.kind === 'invoke-prepared');
+  if (invocations.length !== 2 || invocations.some((event) => event.childThreadId !== childThreadId)) {
+    mismatch('continuation-child-invocations', 'The retained child must perform exactly one invoke-prepared execution per turn.');
+  }
+  if (invocations.some((event) => event.parentTurnId !== originalParentTurnId)) {
+    mismatch('continuation-executor-provenance', 'The stopped executor must retain its original parent-turn provenance.');
+  }
+
+  const binding = input.binding;
+  if (!binding || binding.valid !== true || binding.recordCount !== 1 || !Number.isSafeInteger(binding.serializedBytes)
+    || binding.serializedBytes < 1 || binding.serializedBytes > 16 * 1024 * 1024) mismatch('continuation-binding-invalid', 'Prepared continuation binding is invalid.');
+  if (binding.executorAgentId !== childThreadId || binding.parentSessionId !== parentSessionId
+    || binding.workspace !== input.workspace || binding.permissionMode !== input.permissionMode) {
+    mismatch('continuation-binding-identity', 'Prepared continuation binding identity or permission does not match the exact caller.');
+  }
+  if (binding.operationId !== binding.expectedOperationId) mismatch('continuation-generation-stale', 'Prepared continuation binding generation is stale.');
+  if (binding.currentJobId !== binding.expectedCurrentJobId) mismatch('continuation-current-job-stale', 'Prepared continuation current job is stale.');
+  if (binding.anchorStatus === 'cancelled' || !boundedString(binding.anchorSessionId)) mismatch('continuation-anchor-invalid', 'Prepared continuation anchor is not resumable.');
+
+  const peerEvents = boundedArray(input.peerEvents, 16, 'continuation-peer-events');
+  const creates = peerEvents.filter((event) => event?.kind === 'session/create');
+  const resumes = peerEvents.filter((event) => event?.kind === 'session/resume');
+  const turns = peerEvents.filter((event) => event?.kind === 'session/turn');
+  if (creates.length !== 1 || resumes.length !== 1 || resumes[0].sessionId !== creates[0].sessionId
+    || resumes[0].sessionId !== binding.anchorSessionId) mismatch('continuation-session-mismatch', 'Fake peer did not resume the exact original bound ZCode session.');
+  if (turns.length !== 1 || turns[0].sessionId !== binding.anchorSessionId) mismatch('continuation-peer-turn-count', 'Prepared continuation must send exactly one new turn to the resumed peer session.');
+
+  const publicOutput = boundedString(input.publicOutput);
+  const sentinels = boundedArray(input.privateSentinels ?? [], 32, 'continuation-private-sentinels');
+  if (publicOutput === undefined || sentinels.some((sentinel) => typeof sentinel === 'string' && sentinel && publicOutput.includes(sentinel))) {
+    mismatch('continuation-private-leak', 'Prepared continuation public output leaks a private binding, job, session, or provenance identifier.');
+  }
+  return {
+    route: input.route, parentSessionId, childThreadId, agentPath, originalParentTurnId, continuationParentTurnId,
+    spawnCount: 1, startCount: 1, stopCount: 1, followupCount: 1, continuationSpawnCount: 0,
+    childInvocationCount: 2, peerResumeChecked: true, execution: input.execution,
+  };
 }
 
 function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqualified) {
