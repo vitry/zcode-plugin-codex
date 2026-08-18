@@ -1138,8 +1138,50 @@ function jsonTextCandidates(text) {
     }
     add(text.slice(opening.offset, offset + 1));
   }
-  if (stringStart !== undefined && !escaped) add(`${text.slice(stringStart)}"`);
+  if (stringStart !== undefined) add(JSON.stringify(decodeJsonStringPrefix(text, stringStart + 1)));
   return candidates;
+}
+
+function decodeJsonStringPrefix(text, start) {
+  const chunks = [];
+  let literalStart = start;
+  let offset = start;
+  const finish = (end = offset) => {
+    if (literalStart < end) chunks.push(text.slice(literalStart, end));
+    return chunks.join('');
+  };
+  while (offset < text.length) {
+    const character = text[offset];
+    if (character.charCodeAt(0) <= 0x1f) return finish();
+    if (character !== '\\') {
+      offset += 1;
+      continue;
+    }
+    if (literalStart < offset) chunks.push(text.slice(literalStart, offset));
+    offset += 1;
+    if (offset >= text.length) return chunks.join('');
+    const escapedCharacter = text[offset];
+    const decodedEscape = escapedCharacter === '"' || escapedCharacter === '\\' || escapedCharacter === '/'
+      ? escapedCharacter
+      : { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' }[escapedCharacter];
+    if (decodedEscape !== undefined) {
+      chunks.push(decodedEscape);
+      offset += 1;
+      literalStart = offset;
+      continue;
+    }
+    if (escapedCharacter !== 'u' || offset + 4 >= text.length) return chunks.join('');
+    let codeUnit = 0;
+    for (let digitOffset = 1; digitOffset <= 4; digitOffset += 1) {
+      const digit = Number.parseInt(text[offset + digitOffset], 16);
+      if (!Number.isInteger(digit) || !/[0-9a-f]/iu.test(text[offset + digitOffset])) return chunks.join('');
+      codeUnit = codeUnit * 16 + digit;
+    }
+    chunks.push(String.fromCharCode(codeUnit));
+    offset += 5;
+    literalStart = offset;
+  }
+  return finish(text.length);
 }
 
 function stringLeaves(value) {

@@ -1032,7 +1032,7 @@ for (const [name, structured, output, chunkId] of [
 
 for (const [name, structured, output, chunkId] of (() => {
   const task = 'repair the "quoted" \\route\nnow';
-  const unicodeEscaped = `"${task.split('').map((character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`).join('')}`;
+  const unicodeEscaped = unicodeEscapeEveryChar(task);
   return [
     ['legacy item text', false, `legacy unicode=${unicodeEscaped}`],
     ['structured result output', true, `structured unicode=${unicodeEscaped}`],
@@ -1074,6 +1074,74 @@ test('task scanning recursively decodes a truncated outer JSON string around an 
     (error) => error instanceof CodexRescueEvidenceMismatchError
       && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
   );
+});
+
+for (const [suffixName, suffix] of [['trailing backslash', '\\'], ['partial Unicode escape', '\\u12'], ['invalid escape', '\\q']]) {
+  for (const [surface, structured] of [['legacy item text', false], ['structured result output', true], ['structured non-output leaf', true]]) {
+    test(`task scanning retains a fully decoded Unicode task prefix before ${suffixName} in ${surface}`, () => {
+      const task = 'repair the "quoted" \\route\nnow';
+      const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+      const encoded = `${unicodeEscapeEveryChar(task)}${suffix}`;
+      const output = surface === 'structured non-output leaf' ? '' : `${surface}=${encoded}`;
+      const input = fixture();
+      parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+      input.rollouts[0].splice(7, 0,
+        structured ? structuredExecResult('true', `malformed-${suffixName}-${surface}`) : structuredExec('true', `malformed-${suffixName}-${surface}`),
+        structured
+          ? capturedResultEvent(`malformed-${suffixName}-${surface}`, {
+            output,
+            exit_code: 0,
+            ...(surface === 'structured non-output leaf' ? { chunk_id: `metadata=${encoded}` } : {}),
+          })
+          : toolOutput(`malformed-${suffixName}-${surface}`, output));
+      assert.throws(
+        () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+        (error) => error instanceof CodexRescueEvidenceMismatchError
+          && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+      );
+    });
+  }
+}
+
+for (const [suffixName, suffix] of [['trailing backslash', '\\'], ['partial Unicode escape', '\\u12'], ['invalid escape', '\\q']]) {
+  test(`task scanning retains a decoded inner task before a malformed outer ${suffixName}`, () => {
+    const task = 'repair the "quoted" \\route\nnow';
+    const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+    const malformedOuter = `${JSON.stringify(JSON.stringify(task)).slice(0, -1)}${suffix}`;
+    const input = fixture();
+    parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+    input.rollouts[0].splice(7, 0,
+      structuredExecResult('true', `malformed-outer-${suffixName}`),
+      capturedResultEvent(`malformed-outer-${suffixName}`, { output: `nested=${malformedOuter}`, exit_code: 0 }));
+    assert.throws(
+      () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+      (error) => error instanceof CodexRescueEvidenceMismatchError
+        && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+    );
+  });
+}
+
+test('task scanning preserves a Unicode surrogate pair before a malformed JSON string suffix', () => {
+  const task = 'repair the 😀 route';
+  const preparationPayload = JSON.stringify({ ...expectedPreparationEnvelope, task });
+  const input = fixture();
+  parentCall(input, 'prepare-write-1').payload.input = structuredPoll(44, 'prepare-write-1', `${preparationPayload}\n`).payload.input;
+  input.rollouts[0].splice(7, 0,
+    structuredExec('true', 'malformed-surrogate-prefix'),
+    toolOutput('malformed-surrogate-prefix', `unicode=${unicodeEscapeEveryChar(task)}\\q`));
+  assert.throws(
+    () => qualifyCodexRescueEvidence(input, options({ expectedPreparationPayload: preparationPayload })),
+    (error) => error instanceof CodexRescueEvidenceMismatchError
+      && error.code === 'preparation-task-exclusivity' && !error.message.includes(task),
+  );
+});
+
+test('ordinary malformed unterminated JSON string prefixes remain non-sensitive evidence', () => {
+  for (const [name, output] of [['trailing backslash', 'log="ordinary\\'], ['partial Unicode escape', 'log="ordinary\\u12'], ['invalid escape', 'log="ordinary\\q']]) {
+    const input = fixture();
+    input.rollouts[0].splice(7, 0, structuredExec('true', `ordinary-${name}`), toolOutput(`ordinary-${name}`, output));
+    assert.equal(qualifyCodexRescueEvidence(input, options()).publicOutput, expectedPublicOutput, name);
+  }
 });
 
 test('binds child stdout to the unique exec call and terminal sentinel', () => {
@@ -1725,6 +1793,10 @@ function structuredExecUnquoted(command) {
 
 function structuredExecUnquotedInline(command) {
   return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'exec-1', input: `const r = await tools.exec_command({cmd:${JSON.stringify(command)},workdir:"/repo"}); text(r.output);\n` } };
+}
+
+function unicodeEscapeEveryChar(value) {
+  return `"${value.split('').map((character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`).join('')}`;
 }
 
 function toolOutput(callId, terminalText) {
