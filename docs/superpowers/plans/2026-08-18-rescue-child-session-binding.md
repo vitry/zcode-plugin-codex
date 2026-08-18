@@ -65,14 +65,19 @@ state.closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'sessi
   permission mismatch, and no unsafe partial published job/binding state.
 - [ ] Preserve existing `reserveJob` behavior and persisted job schema; prove an
   old reader ignores `rescue-bindings/` and existing job fixtures remain valid.
-- [ ] Implement private storage beneath `<workspace-store>/rescue-bindings/`
-  using existing storage resolution, restrictive modes, bounded reads, atomic
-  exact JSON writes, and the StateStore lock. Reuse platform-aware path/handle
-  snapshot validation.
+- [ ] Implement private storage as one exact bounded
+  `<workspace-store>/rescue-binding-session-<hash>.json` partition file per
+  parent session, using existing storage resolution, restrictive modes, bounded
+  reads, atomic exact JSON replacement, and the StateStore lock. The partition
+  envelope contains exact version/session/workspace/records keys and rejects
+  duplicate child keys. Do not introduce a nested partition directory/marker:
+  portable Node lacks `openat`, so pathname pre/post checks cannot close a
+  rename-away/operate/rename-back ABA window. Reuse the established workspace
+  state-root and platform-aware path/handle validation.
 - [ ] Implement exact SessionEnd close tombstones with CAS-safe generation and
-  bounded cleanup; do not close on job terminal or child stop. Store slots under
-  a hashed parent-session partition and cap each session at 1,024 records (+1
-  overflow detection), GC only valid closed tombstones older than 30 days under
+  bounded cleanup; do not close on job terminal or child stop. Store slots in
+  the hashed parent-session partition file and cap each session at 1,024 records
+  plus a serialized byte bound, GC only valid closed tombstones older than 30 days under
   the state lock before new-slot creation, never age-GC active records, and fail
   closed on same-session corrupt siblings or remaining capacity exhaustion.
   Prove an abandoned/advisory-close-failed session cannot consume sibling

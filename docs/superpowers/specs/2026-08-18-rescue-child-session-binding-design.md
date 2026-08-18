@@ -112,9 +112,14 @@ Each record has an exact versioned schema:
 ```
 
 The key is derived from the version marker, parent session ID, executor agent ID,
-and the already-partitioned canonical workspace. Records are stored beneath a
-hashed parent-session directory so one abandoned session cannot consume another
-session's capacity. `operationId` is a random
+and the already-partitioned canonical workspace. Records are stored inside one
+exact, bounded, atomically replaced parent-session partition file in the existing
+trusted workspace state root. The filename contains only a hash of the parent
+session. This avoids introducing a nested directory/marker identity that cannot
+be portably held with `openat` across rename-ABA on every supported Node platform,
+while still preventing one abandoned session from consuming another session's
+capacity. The partition envelope has an exact version/session/workspace/records
+schema and rejects duplicate child keys. `operationId` is a random
 generation token used for compare-and-swap updates and ABA protection. Closed
 records are tombstones whose reason is `fresh`, `session-ended`, or
 `invalidated`.
@@ -276,16 +281,15 @@ does not authorize any other prepared invocation.
 - Closed tombstones are retained for bounded cleanup rather than immediately
   deleted, preventing stale writers from recreating an earlier generation.
 
-Binding enumeration is capped at 1,024 child slots per parent session, with one
-extra entry read only to detect overflow. Closed tombstones become GC-eligible
-after 30 days; active records are never age-GCed. Before creating a new slot in
-that session partition, StateStore validates the bounded set and removes
-eligible closed tombstones under `.state.lock`; if the session capacity remains
-full it fails without publication. Corrupt siblings in the same session fail
-closed and cannot be deleted by ordinary GC. SessionEnd may report an advisory
-close failure, but removal of session/executor authority still prevents that
-binding from being used, and an abandoned session cannot consume capacity in a
-new or sibling session.
+Each parent-session partition file is capped at 1,024 child slots and a bounded
+serialized byte size. Closed tombstones become GC-eligible after 30 days; active
+records are never age-GCed. Before adding a new slot, StateStore validates the
+whole exact partition and removes eligible closed tombstones under `.state.lock`;
+if that session remains full it fails without publication. A corrupt sibling
+poisons only that exact session partition and cannot be deleted by ordinary GC.
+SessionEnd may report an advisory close failure, but removal of session/executor
+authority still prevents that binding from being used, and an abandoned session
+cannot consume capacity in a new or sibling session.
 
 ## Failure and Crash Semantics
 
