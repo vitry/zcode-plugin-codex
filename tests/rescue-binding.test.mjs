@@ -344,7 +344,6 @@ test('publication rejects binding-partition and state-lock replacement without a
     const store = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
       if (replaced || seam !== 'fresh:owner-binding') return; replaced = true;
       const lock = join(storage.directory, '.state.lock');
-      if (process.platform === 'win32') throw new Error('test-only Windows held state-lock replacement fault');
       await rename(lock, `${lock}.replaced`); await mkdir(lock, { mode: 0o700 }); await writeFile(join(lock, 'advisory.lock'), '', { mode: 0o600 });
     } });
     await assert.rejects(store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace), executor: executor(base.workspace) }), { code: process.platform === 'win32' ? 'RESCUE_PUBLICATION_TEST_FAULT' : 'RESCUE_BINDING_INVALID' });

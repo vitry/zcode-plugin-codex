@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { PassThrough } from 'node:stream';
@@ -784,11 +784,38 @@ test('prepared Rescue canonicalizes a resolvable cwd alias before exact binding 
     parentSessionId: 'aliased-parent', parentTurnId: 'aliased-origin', childId, childTurnId: 'aliased-child-turn',
     prompt: '$zcode:rescue --fresh --wait preserve canonical workspace identity',
   });
+  const aliasedWorkspace = `${context.workspace}${sep}nested${sep}..`;
+  const canonicalWorkspace = (await resolveWorkspaceStorage(context)).workspacePath;
+  assert.notEqual(aliasedWorkspace, canonicalWorkspace);
   const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
-    cwd: join(context.workspace, 'nested', '..'), env: { ...context.env, CODEX_THREAD_ID: childId },
+    cwd: aliasedWorkspace, env: { ...context.env, CODEX_THREAD_ID: childId },
   });
   assert.equal(output.job.status, 'succeeded');
-  assert.equal(output.job.workspace, (await resolveWorkspaceStorage(context)).workspacePath);
+  assert.equal(output.job.workspace, canonicalWorkspace);
+});
+
+test('bound Rescue choice canonicalizes the persisted caller workspace before reservation', async () => {
+  const context = await fixture(); const parentSessionId = 'aliased-choice-parent'; const childId = 'aliased-choice-child'; const childTurnId = 'aliased-choice-turn';
+  await mkdir(join(context.workspace, 'nested'));
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'aliased-choice-origin', childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait establish exact session',
+  });
+  const initial = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(initial.job.status, 'succeeded');
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: childTurnId, cwd: context.workspace, hook_event_name: 'SubagentStop',
+    agent_id: childId, agent_type: 'zcode-rescue',
+  });
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'aliased-choice-next', workspace: context.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue continue exact session' });
+  const preparation = new PassThrough(); preparation.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'continue exact session', options: { execution: 'foreground' } })}\n`);
+  await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId }, input: preparation });
+  assert.equal((await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } })).type, 'needs-choice');
+  const aliasedWorkspace = `${context.workspace}${sep}nested${sep}..`;
+  const resumed = await runDirectInvocation(['invoke-choice', 'rescue', 'resume'], { cwd: aliasedWorkspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(resumed.job.status, 'succeeded');
+  assert.equal(resumed.job.zcodeSessionId, initial.job.zcodeSessionId);
 });
 
 test('isolated child loss recovers the accepted parent-owned turn without another session send', { skip: windowsRealSignalSkip }, async (t) => {
