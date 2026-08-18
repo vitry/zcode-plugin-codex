@@ -811,7 +811,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
 
   const initialParentIds = [...new Set(frames.filter((frame) => frame?.type === 'thread.started').map((frame) => frame.thread_id))];
   assert.equal(initialParentIds.length, 1, 'initial installed Rescue must expose one resumable parent thread');
-  const originalSessionId = zcodeCalls.find((call) => call.method === 'session/create')?.result?.session?.sessionId;
+  const originalSessionId = zcodeCalls.find((call) => call.method === 'session/send')?.params?.sessionId;
   assert.ok(originalSessionId, 'initial installed Rescue must capture its exact fake-peer session');
   await writeFile(zcodeRecord, '');
   const proactive = await runHeldChoiceSegment('proactive-bound-continuation', expectedCommand,
