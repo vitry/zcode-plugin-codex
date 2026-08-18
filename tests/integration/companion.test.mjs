@@ -777,6 +777,20 @@ test('parent steering leaves one isolated Rescue child running with zero cancel 
   assert.equal(jobs.length, 1); assert.equal(jobs[0].ownerSessionId, parentSessionId); assert.equal(jobs[0].ownerTurnId, originalTurnId); assert.equal(jobs[0].status, 'succeeded');
 });
 
+test('prepared Rescue canonicalizes a resolvable cwd alias before exact binding reservation', async () => {
+  const context = await fixture(); const childId = 'aliased-rescue-child';
+  await mkdir(join(context.workspace, 'nested'));
+  await prepareDirectRescueChild(context, {
+    parentSessionId: 'aliased-parent', parentTurnId: 'aliased-origin', childId, childTurnId: 'aliased-child-turn',
+    prompt: '$zcode:rescue --fresh --wait preserve canonical workspace identity',
+  });
+  const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: join(context.workspace, 'nested', '..'), env: { ...context.env, CODEX_THREAD_ID: childId },
+  });
+  assert.equal(output.job.status, 'succeeded');
+  assert.equal(output.job.workspace, (await resolveWorkspaceStorage(context)).workspacePath);
+});
+
 test('isolated child loss recovers the accepted parent-owned turn without another session send', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const record = join(context.directory, 'child-loss-recovery.jsonl'); const recovery = join(context.directory, 'child-loss-recovery.json'); const workerProcess = join(context.directory, 'child-loss-worker.json');
   await Promise.all([writeFile(record, ''), writeFile(recovery, JSON.stringify({ mode: 'active' }))]);
