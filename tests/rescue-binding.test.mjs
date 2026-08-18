@@ -459,6 +459,24 @@ test('fresh publication seams leave only safe fail-closed state and deterministi
   }
 });
 
+test('legacy candidate adoption cannot repair an authority-only fresh crash remnant', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
+  const candidate = await store.reserveJob(reservation(workspace, 'candidate'));
+  await makeEligible(store, workspace, candidate, 'candidate-session');
+  await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
+  const faulted = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt('fresh:binding') });
+  await assert.rejects(
+    faulted.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'crashed-fresh'), executor: trusted }),
+    { code: 'RESCUE_PUBLICATION_TEST_FAULT' },
+  );
+  const before = await store.listJobs(workspace);
+  await assert.rejects(
+    store.adoptRescueCandidate({ workspace, reservation: reservation(workspace, 'adopt'), executor: trusted, candidateJobId: candidate.id }),
+    { code: 'RESCUE_BINDING_INVALID' },
+  );
+  assert.deepEqual(await store.listJobs(workspace), before);
+});
+
 test('continuation publication seams retain the stable prior binding and serialize two writers', async () => {
   for (const seam of ['continuation:owner-binding', 'continuation:job', 'continuation:marker', 'continuation:current-advance', 'continuation:final']) {
     const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
