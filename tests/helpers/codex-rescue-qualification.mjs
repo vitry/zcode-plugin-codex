@@ -186,10 +186,17 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   if (peer.some((event) => !event || Object.keys(event).sort().join('\0') !== ['id', 'method', 'params'].sort().join('\0')
     || !Number.isSafeInteger(event.id) || !event.params || typeof event.params !== 'object' || Array.isArray(event.params))) mismatch('continuation-peer-method', 'Raw fake peer is not an exact inbound JSON-RPC request capture.');
   if (new Set(peer.map((event) => event.id)).size !== peer.length) mismatch('continuation-peer-method', 'Raw fake-peer request IDs are not globally unique.');
-  if (Object.keys(creates[0]?.params ?? {}).join('\0') !== 'workspace'
-    || Object.keys(creates[0]?.params?.workspace ?? {}).join('\0') !== 'workspacePath'
-    || creates[0].params.workspace.workspacePath !== expected.workspace
-    || [...turns, ...resumes].some((event) => Object.keys(event?.params ?? {}).join('\0') !== 'sessionId')) {
+  const createParams = creates[0]?.params ?? {}; const createKeys = Object.keys(createParams);
+  if (!createKeys.includes('workspace') || createKeys.some((key) => !['workspace', 'sessionId', 'model', 'importedHistory'].includes(key))
+    || Object.keys(createParams.workspace ?? {}).sort().join('\0') !== ['workspaceKey', 'workspacePath'].sort().join('\0')
+    || createParams.workspace.workspacePath !== expected.workspace || createParams.workspace.workspaceKey !== expected.workspace
+    || createParams.sessionId !== undefined && !boundedString(createParams.sessionId)
+    || createParams.model !== undefined && !validCapturedPeerModel(createParams.model)
+    || createParams.importedHistory !== undefined && !validCapturedImportedHistory(createParams.importedHistory)
+    || resumes.some((event) => Object.keys(event?.params ?? {}).join('\0') !== 'sessionId')
+    || turns.some((event) => Object.keys(event?.params ?? {}).sort().join('\0') !== ['content', 'inputId', 'queryId', 'sessionId'].sort().join('\0'))
+    || turns.some((event) => !boundedString(event.params.sessionId) || !boundedString(event.params.inputId)
+      || event.params.inputId !== event.params.queryId || !boundedString(event.params.content))) {
     mismatch('continuation-peer-method', 'Raw fake-peer request parameters are not exact or target another workspace.');
   }
   if (creates.length !== 1 || resumes.length !== 1 || turns[0]?.params?.sessionId !== anchor.zcodeSessionId || resumes[0]?.params?.sessionId !== anchor.zcodeSessionId) mismatch('continuation-session-mismatch', 'Raw fake peer did not resume the exact created session inferred from its first send.');
@@ -225,6 +232,26 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
     spawnCount: 1, startCount: 1, stopCount: 1, followupCount: 1, continuationSpawnCount: 0,
     childInvocationCount: 2, peerResumeChecked: true, execution: input.execution,
   };
+}
+
+function validCapturedPeerModel(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value); return keys.includes('providerId') && keys.includes('modelId')
+    && keys.every((key) => ['providerId', 'modelId', 'variant'].includes(key))
+    && Boolean(boundedString(value.providerId)) && Boolean(boundedString(value.modelId))
+    && (value.variant === undefined || Boolean(boundedString(value.variant)));
+}
+
+function validCapturedImportedHistory(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value); if (!keys.includes('messages') || keys.some((key) => !['title', 'createdAt', 'updatedAt', 'messages'].includes(key))
+    || !Array.isArray(value.messages) || value.messages.length === 0 || value.messages.length > 10_000) return false;
+  if (value.title !== undefined && !boundedString(value.title)) return false;
+  if ([value.createdAt, value.updatedAt].some((entry) => entry !== undefined && (!Number.isSafeInteger(entry) || entry < 0))) return false;
+  return value.messages.every((message) => message && typeof message === 'object' && !Array.isArray(message)
+    && Object.keys(message).every((key) => ['role', 'content', 'timestamp'].includes(key))
+    && ['user', 'assistant'].includes(message.role) && Boolean(boundedString(message.content))
+    && (message.timestamp === undefined || Number.isSafeInteger(message.timestamp) && message.timestamp >= 0));
 }
 
 function qualifyCodexRescueEvidenceCore(input, options, deferEncryptedSpawnUnqualified) {

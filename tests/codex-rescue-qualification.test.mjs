@@ -81,6 +81,9 @@ test('prepared continuation qualification rejects normalized claims and fails cl
     ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows[3].id = rows[2].id; input.fakePeerJson = JSON.stringify(rows); }],
     ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows[0].params.workspace.workspacePath = '/foreign'; input.fakePeerJson = JSON.stringify(rows); }],
     ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows[1].params.extra = true; input.fakePeerJson = JSON.stringify(rows); }],
+    ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); delete rows[0].params.workspace.workspaceKey; input.fakePeerJson = JSON.stringify(rows); }],
+    ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows[1].params.queryId = 'another-input'; input.fakePeerJson = JSON.stringify(rows); }],
+    ['continuation-peer-method', (input) => { const rows = JSON.parse(input.fakePeerJson); rows[3].params.content = ''; input.fakePeerJson = JSON.stringify(rows); }],
     ['continuation-peer-order', (input) => { const rows = JSON.parse(input.fakePeerJson); input.fakePeerJson = JSON.stringify([rows[2], rows[1], rows[0], rows[3]]); }],
     ['continuation-private-leak', (input) => { const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((row) => row?.payload?.call_id === 'prepare-1'); const host = parseFixtureHostInput(call.payload.input); host.env.LEAK = JSON.parse(input.fakePeerJson)[1].params.sessionId; call.payload.input = fixtureExecInput(host); input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-binding-invalid', (input) => { input.bindingPartitionBytes = `${input.bindingPartitionBytes.slice(0, -2)},"valid":true}\n`; }],
@@ -1911,7 +1914,7 @@ function preparedContinuationFixture(route, execution = 'foreground') {
       `${JSON.stringify(rawJob(anchorJobId, 'turn-original', 'succeeded', { zcodeSessionId: 'zcode-session-original' }))}\n`,
       `${JSON.stringify(rawJob(currentJobId, 'turn-fresh', execution === 'background' ? 'queued' : 'succeeded', execution === 'background' ? { childPid: 12345, workerLeaseId: 'e'.repeat(64) } : {}))}\n`,
     ]),
-    fakePeerJson: JSON.stringify([{ id: 1, method: 'session/create', params: { workspace: { workspacePath: expectedWorkspace } } }, { id: 2, method: 'session/send', params: { sessionId: 'zcode-session-original' } }, { id: 3, method: 'session/resume', params: { sessionId: 'zcode-session-original' } }, { id: 4, method: 'session/send', params: { sessionId: 'zcode-session-original' } }]),
+    fakePeerJson: JSON.stringify([{ id: 1, method: 'session/create', params: { workspace: { workspacePath: expectedWorkspace, workspaceKey: expectedWorkspace } } }, { id: 2, method: 'session/send', params: { sessionId: 'zcode-session-original', inputId: 'input-original', queryId: 'input-original', content: 'initial objective' } }, { id: 3, method: 'session/resume', params: { sessionId: 'zcode-session-original' } }, { id: 4, method: 'session/send', params: { sessionId: 'zcode-session-original', inputId: 'input-continuation', queryId: 'input-continuation', content: 'continuation objective' } }]),
     ...(execution === 'background' ? { backgroundObserverJson: JSON.stringify({ executionCapability: 'capability-private', jobId: currentJobId }) } : {}),
   };
 }
