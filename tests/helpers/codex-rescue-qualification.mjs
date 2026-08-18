@@ -260,12 +260,18 @@ function validateLiveRawContinuationCapture(input, core) {
   const rawChildCommands = rawChild.filter((event) => event?.payload?.type === 'custom_tool_call').map((event) => parseCapturedHostCall(event.payload.input));
   if (rawChildCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue')).length !== 2
     || rawChildCommands.filter((host) => host.kind === 'write_stdin').length > MAX_CHILD_POLLS) mismatch('continuation-raw-child-events', 'Complete child capture duplicates or omits invoke-prepared evidence.');
+  const consumedChildWriteIds = new Set();
   for (const invoke of rawChild.filter((event) => event?.payload?.type === 'custom_tool_call' && parseCapturedHostCall(event.payload.input).envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue'))) {
     const calls = rawChild.filter((event) => event?.turn_id === invoke.turn_id && event?.payload?.type === 'custom_tool_call'
       && (event === invoke || parseCapturedHostCall(event.payload.input).kind === 'write_stdin'));
+    for (const call of calls.filter((event) => parseCapturedHostCall(event.payload.input).kind === 'write_stdin')) {
+      if (consumedChildWriteIds.has(call.payload.call_id)) mismatch('continuation-raw-child-events', 'A child poll belongs to more than one invoke segment.'); consumedChildWriteIds.add(call.payload.call_id);
+    }
     const ids = new Set(calls.map((event) => event.payload.call_id)); const outputs = rawChild.filter((event) => event?.turn_id === invoke.turn_id && event?.payload?.type === 'custom_tool_call_output' && ids.has(event.payload.call_id));
     validateChildExecution(rawChild, calls, outputs, parseCapturedHostCall(invoke.payload.input).envelope.get('cmd'), core.expected.workspace, { codePrefix: 'continuation-raw-child', expectedExitCode: 0 });
   }
+  const allChildWriteIds = rawChild.filter((event) => event?.payload?.type === 'custom_tool_call' && parseCapturedHostCall(event.payload.input).kind === 'write_stdin').map((event) => event.payload.call_id);
+  if (allChildWriteIds.length !== consumedChildWriteIds.size || allChildWriteIds.some((id) => !consumedChildWriteIds.has(id))) mismatch('continuation-raw-child-events', 'A raw child poll is not owned by exactly one invoke segment.');
   const starts = rawHooks.filter((event) => event?.hook_event_name === 'SubagentStart'); const stops = rawHooks.filter((event) => event?.hook_event_name === 'SubagentStop');
   const prompts = rawHooks.filter((event) => event?.hook_event_name === 'UserPromptSubmit');
   if (starts.length !== 1 || stops.length !== 1 || prompts.length < 1 || prompts.length > 2 || rawHooks.some((event) => !['SubagentStart', 'SubagentStop', 'UserPromptSubmit'].includes(event?.hook_event_name))
