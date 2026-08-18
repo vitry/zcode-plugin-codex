@@ -569,17 +569,27 @@ test('conversation online progress sent before the subscribe response is buffere
   assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: echo prebind/);
 });
 
-test('conversation subscribe and unsubscribe failures are observational and preserve the exact result', async () => {
-  for (const failure of ['subscribe', 'unsubscribe']) {
-    const context = await fixture();
-    const result = await companion(context, ['rescue', '--fresh', `${failure} failure`], { [`FAKE_ZCODE_CONVERSATION_${failure.toUpperCase()}_FAIL`]: '1' });
-    assert.equal(result.code, 0, `${failure}: ${result.stderr}${result.stdout}`);
-    assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
-    assert.match(result.stderr, failure === 'subscribe' ? /ZCode conversation progress is unavailable\./ : /ZCode conversation progress cleanup was incomplete\./);
-    assert.doesNotMatch(result.stderr, /unsupported conversation subscription|unsubscribe failed|-32601|-32099/);
-    const status = await companion(context, ['status', result.json.job.id]);
-    assert.match(JSON.stringify(status.json.job.progressPreview), failure === 'subscribe' ? /conversation progress is unavailable/ : /conversation progress cleanup was incomplete/);
-  }
+test('conversation subscribe failure is observational, durable, and preserves the exact result', async () => {
+  const context = await fixture();
+  const result = await companion(context, ['rescue', '--fresh', 'subscribe failure'], { FAKE_ZCODE_CONVERSATION_SUBSCRIBE_FAIL: '1' });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
+  assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
+  assert.equal(result.stderr, '[zcode] ZCode started the delegated turn.\n[zcode] ZCode conversation progress is unavailable.\n[zcode] ZCode completed the delegated turn.\n');
+  assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsupported conversation subscription|-32601/);
+  const status = await companion(context, ['status', result.json.job.id]);
+  assert.equal(status.json.job.status, 'succeeded');
+  assert.match(JSON.stringify(status.json.job.progressPreview), /conversation progress is unavailable/);
+});
+
+test('conversation unsubscribe failure is observational and preserves the exact result', async () => {
+  const context = await fixture();
+  const result = await companion(context, ['rescue', '--fresh', 'unsubscribe failure'], { FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_FAIL: '1' });
+  assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
+  assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
+  assert.equal(result.stderr, '[zcode] ZCode started the delegated turn.\n[zcode] ZCode completed the delegated turn.\n[zcode] ZCode conversation progress cleanup was incomplete.\n');
+  assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsubscribe failed|-32099/);
+  const status = await companion(context, ['status', result.json.job.id]);
+  assert.equal(status.json.job.status, 'succeeded');
 });
 
 test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves no running job', { skip: windowsRealSignalSkip }, async (t) => {
@@ -612,12 +622,14 @@ test('prepare Rescue exits on SIGTERM while stdin remains open', { skip: windows
   const context = await fixture(); const ttyRecord = join(context.directory, 'prepare-signal-tty.txt'); await writeFile(ttyRecord, ''); await context.identity.beginCallerTurn({ sessionId: 'prepare-signal-parent', turnId: 'prepare-signal-turn', workspace: context.workspace, permissionMode: 'workspace-write', prompt: 'proactive signal objective' });
   const child = spawn(process.execPath, [cli, 'prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: 'prepare-signal-parent', NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
   let stdout = ''; let stderr = ''; let exited = false;
-  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdin?.write('{');
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
   const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
-  await new Promise((resolve) => setTimeout(resolve, 100)); child.kill('SIGTERM');
+  const readiness = '{"type":"preparation-input-ready","command":"rescue"}\n';
+  await waitFor(async () => stdout === readiness, 'private preparation readiness was not emitted');
+  child.kill('SIGTERM');
   const bounded = await Promise.race([exit, new Promise((_, reject) => setTimeout(() => reject(new Error('prepare did not exit after SIGTERM')), 1_000))]);
-  assert.deepEqual(bounded, { code: 143, signal: null }); assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n'); assert.match(stderr, /Interrupted by SIGTERM\./); assert.doesNotMatch(stderr, /proactive signal objective|prepare-signal/); assert.equal(await readFile(ttyRecord, 'utf8'), 'true\nfalse\n');
+  assert.deepEqual(bounded, { code: 143, signal: null }); assert.equal(stdout, readiness); assert.match(stderr, /Interrupted by SIGTERM\./); assert.doesNotMatch(stderr, /proactive signal objective|prepare-signal/); assert.equal(await readFile(ttyRecord, 'utf8'), 'true\nfalse\n');
 });
 
 test('main prepare rejects piped stdin before task input and emits no readiness', async () => {
@@ -636,18 +648,22 @@ test('main private prepare consumes one LF frame and exits without stdin EOF', a
   assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n{"type":"prepared","command":"rescue"}\n'); assert.equal(stderr, ''); assert.equal(await readFile(ttyRecord, 'utf8'), 'true\nfalse\n');
 });
 
-test('prepare Rescue exits on SIGTERM while its decoded envelope waits for the save lock', { skip: windowsRealSignalSkip }, async (t) => {
+test('prepare Rescue exits on SIGTERM after readiness and frame delivery while the save lock is held', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const ttyRecord = join(context.directory, 'prepare-save-tty.txt'); await writeFile(ttyRecord, ''); await context.identity.beginCallerTurn({ sessionId: 'prepare-save-parent', turnId: 'prepare-save-turn', workspace: context.workspace, permissionMode: 'workspace-write', prompt: 'proactive locked objective' });
   const storage = await resolveWorkspaceStorage(context); const holder = spawn(process.execPath, [lockHolder, join(storage.directory, '.rescue-preparation-lock')], { stdio: ['pipe', 'pipe', 'pipe'], shell: false }); let holderStdout = ''; let holderExited = false;
   holder.stdout?.on('data', (chunk) => { holderStdout += chunk; }); const holderExit = new Promise((resolve, reject) => { holder.once('error', reject); holder.once('exit', (code) => { holderExited = true; resolve(code); }); });
   await waitFor(async () => holderStdout.includes('acquired\n'), 'preparation lock holder did not acquire the lock');
   const child = spawn(process.execPath, [cli, 'prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: 'prepare-save-parent', NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord }, stdio: ['pipe', 'pipe', 'pipe'], shell: false }); let stdout = ''; let stderr = ''; let exited = false;
-  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); child.stdin?.end(`${JSON.stringify({ version: 1, source: 'proactive', task: 'locked objective', options: {} })}\n`);
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
   const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
   t.after(() => { if (!exited) child.kill('SIGKILL'); if (!holderExited) holder.kill('SIGKILL'); });
-  await new Promise((resolve) => setTimeout(resolve, 100)); child.kill('SIGTERM');
+  const readiness = '{"type":"preparation-input-ready","command":"rescue"}\n';
+  await waitFor(async () => stdout === readiness, 'contended preparation readiness was not emitted');
+  const frame = `${JSON.stringify({ version: 1, source: 'proactive', task: 'locked objective', options: {} })}\n`;
+  await new Promise((resolve, reject) => child.stdin?.write(frame, (error) => error ? reject(error) : resolve(undefined)));
+  child.kill('SIGTERM');
   const bounded = await Promise.race([exit, new Promise((_, reject) => setTimeout(() => reject(new Error('contended prepare did not exit after SIGTERM')), 1_000))]);
-  assert.deepEqual(bounded, { code: 143, signal: null }); assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n'); assert.match(stderr, /Interrupted by SIGTERM\./); assert.doesNotMatch(stderr, /locked objective|prepare-save/); assert.equal(await readFile(ttyRecord, 'utf8'), 'true\nfalse\n');
+  assert.deepEqual(bounded, { code: 143, signal: null }); assert.equal(stdout, readiness); assert.match(stderr, /Interrupted by SIGTERM\./); assert.doesNotMatch(stderr, /locked objective|prepare-save/); assert.equal(await readFile(ttyRecord, 'utf8'), 'true\nfalse\n');
   holder.stdin?.end('release\n'); assert.equal(await holderExit, 0);
   await assert.rejects(createRescuePreparationStore({ dataRoot: context.dataRoot }).consume({ sessionId: 'prepare-save-parent', turnId: 'prepare-save-turn', workspace: context.workspace, permissionMode: 'workspace-write', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
 });
