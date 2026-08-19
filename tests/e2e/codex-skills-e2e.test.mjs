@@ -519,16 +519,16 @@ test('installed named and generic foreground and choice policies independently b
   const skill = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const generic = assertRescueRouteContract(skill).genericMessage.text;
   for (const [route, source] of [['named', role], ['generic', generic]]) {
-    const expectedRoot = route === 'named' ? '{{PLUGIN_ROOT}}' : '<canonical-plugin-root>';
-    assertInstalledForwarderLifecycleContract(source, route, { expectedRoot });
-    for (const [mutation, mutated] of installedLifecycleContractMutations(source, route, expectedRoot)) {
-      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedRoot }), /unique operative lifecycle region/u, `${route}: ${mutation}`);
+    const expectedLauncherCommand = route === 'named' ? '{{RESCUE_LAUNCHER_COMMAND}}' : '<rescue-launcher-command>';
+    assertInstalledForwarderLifecycleContract(source, route, { expectedLauncherCommand });
+    for (const [mutation, mutated] of installedLifecycleContractMutations(source, route, expectedLauncherCommand)) {
+      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedLauncherCommand }), /unique operative lifecycle region/u, `${route}: ${mutation}`);
     }
     for (const [mutation, mutated] of installedCanonicalContradictionMutations(source, route)) {
-      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedRoot }), /exact canonical operative route/u, `${route}: ${mutation}`);
+      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedLauncherCommand }), /exact canonical operative route/u, `${route}: ${mutation}`);
     }
     for (const [mutation, mutated] of installedCommandPathMutations(source)) {
-      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedRoot }), /trusted expected root and exact argv/u, `${route}: ${mutation}`);
+      assert.throws(() => assertInstalledForwarderLifecycleContract(mutated, route, { expectedLauncherCommand }), /trusted expected launcher command/u, `${route}: ${mutation}`);
     }
   }
 });
@@ -620,9 +620,9 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
   const genericSource = expectedGenericRescueMessage;
   const namedTemplate = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8');
   const namedSource = extractInstalledRoleInstructions(namedTemplate);
-  for (const [route, source, expectedRoot] of [
-    ['named', namedSource, '{{PLUGIN_ROOT}}'],
-    ['generic', genericSource, '<canonical-plugin-root>'],
+  for (const [route, source, expectedLauncherCommand] of [
+    ['named', namedSource, '{{RESCUE_LAUNCHER_COMMAND}}'],
+    ['generic', genericSource, '<rescue-launcher-command>'],
   ]) {
     const temporary = await mkdtemp(join(tmpdir(), 'zcode-raw-continuation-')); t.after(() => rm(temporary, { recursive: true, force: true }));
     const workspaceDirectory = join(temporary, 'workspace'); const dataRoot = join(temporary, 'data'); await Promise.all([mkdir(workspaceDirectory), mkdir(dataRoot)]); const workspace = await realpath(workspaceDirectory);
@@ -640,7 +640,7 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
     const evidence = await assertInstalledPreparedContinuationContract(source, installedPreparedContinuationCapture(route, {
       workspace, executorRecordBytes: await readFile(executorPath, 'utf8'),
       hookLifecycleJson: JSON.stringify([{ ...lifecycle('SubagentStart'), parent_turn_id: 'turn-original' }, { ...lifecycle('SubagentStop'), parent_turn_id: 'turn-original' }, { hook_event_name: 'UserPromptSubmit', session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', turn_id: 'turn-fresh', cwd: workspace, permission_mode: 'acceptEdits' }]),
-    }), { expectedRoot });
+    }), { expectedLauncherCommand });
     assert.equal(evidence.continuationSpawnCount, 0);
     assert.equal(evidence.peerResumeChecked, true);
   }
@@ -842,13 +842,14 @@ test('installed Rescue uses one isolated native child for initial and choice con
   assert.equal(rescue.code, 0, `codex Rescue failed\n${rescue.stdout}\n${rescue.stderr}`);
   assert.equal(processAliveWhileHeld, true, 'the exact fake-ZCode process must remain alive beyond the maximum initial host yield');
   const frames = rescue.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  const expectedCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-prepared rescue`;
-  const expectedPreflightCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" role-status rescue`;
-  const expectedPreparationCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" prepare rescue`;
+  const expectedLauncherCommand = `node "${installedPluginRoot}/skills/rescue/launcher.mjs"`;
+  const expectedCommand = `${expectedLauncherCommand} invoke-prepared rescue`;
+  const expectedPreflightCommand = `${expectedLauncherCommand} role-status rescue`;
+  const expectedPreparationCommand = `${expectedLauncherCommand} prepare rescue`;
   const expectedPreparationPayload = JSON.stringify({ version: 1, source: 'explicit', task: 'repaircanary', options: { execution: 'foreground', resume: 'fresh' } });
-  const expectedStatusCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-status rescue`;
+  const expectedStatusCommand = `${expectedLauncherCommand} invoke-status rescue`;
   const expectedNamedSpawnMessage = expectedNamedRescueMessage;
-  const expectedGenericSpawnMessage = expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', installedPluginRoot);
+  const expectedGenericSpawnMessage = expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', expectedLauncherCommand);
   const canonicalWorkspace = await realpath(workspace);
   const zcodeCalls = (await readFile(zcodeRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(zcodeCalls.filter((call) => call.method === 'session/send').length, 1, 'one ZCode send after one native child spawn');
@@ -965,7 +966,7 @@ test('installed Rescue uses one isolated native child for initial and choice con
     assert.equal(parentIds.length, 1, 'pending Rescue must expose exactly one resumable parent thread ID');
     const pendingRollouts = await loadCodexRollouts(codexHome);
     const pendingIdentity = captureInstalledRescueChoiceIdentity(pendingRollouts, parentIds[0]);
-    const choiceCommand = `node "${installedPluginRoot}/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`;
+    const choiceCommand = `node "${installedPluginRoot}/skills/rescue/launcher.mjs" invoke-choice rescue ${choice}`;
     const answerSegment = await runHeldChoiceSegment(`${choice}-continuation`, choiceCommand,
       (segmentEnv) => controlledCodex([
         'exec', 'resume', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
@@ -1931,7 +1932,7 @@ function installedYieldedCommandPairs(rollouts, command) {
 
 function installedChoiceYieldFixture() {
   const childThreadId = 'installed-choice-child';
-  const commands = { initial: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-prepared rescue', continuation: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue resume', status: 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-status rescue' };
+  const commands = { initial: 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue', continuation: 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-choice rescue resume', status: 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-status rescue' };
   const segment = (name, command, handle, exitCode) => [
     installedToolCall(`${name}-exec`, installedExecInput(command)), installedToolOutput(`${name}-exec`, { output: 'partial\n', session_id: handle }),
     ...(name === 'initial' ? [installedToolCall('initial-status', installedExecInput(commands.status)), installedToolOutput('initial-status', { output: '{"type":"rescue-status"}\n', exit_code: 0 })] : []),
@@ -1956,7 +1957,7 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     anchorJobId, currentJobId, operationId: 'd'.repeat(64), now: '2026-08-10T00:00:00.000Z' });
   const parent = [
     { type: 'session_meta', payload: { id: parentSessionId, session_id: parentSessionId, thread_source: 'user', source: 'exec' } },
-    { ...installedToolCall('prepare-1', installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue', { tty: true, workdir: workspace, env: { PATH: '/usr/bin' } })), timestamp: '2026-08-10T00:00:00.250Z' },
+    { ...installedToolCall('prepare-1', installedExecInput('node "/installed/zcode/skills/rescue/launcher.mjs" prepare rescue', { tty: true, workdir: workspace, env: { PATH: '/usr/bin' } })), timestamp: '2026-08-10T00:00:00.250Z' },
     { ...installedToolOutput('prepare-1', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 71 }), timestamp: '2026-08-10T00:00:00.400Z' },
     { ...installedToolCall('prepare-write-1', installedPreparationInput(71, `${JSON.stringify(installedContinuationEnvelope('explicit', 'fresh'))}\n`)), timestamp: '2026-08-10T00:00:00.500Z' },
     { ...installedToolOutput('prepare-write-1', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
@@ -1964,7 +1965,7 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_continue', parent_turn_id: 'turn-original' } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ agent_id: childThreadId }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_continue', parent_turn_id: 'turn-original' } },
-    { ...installedToolCall('prepare-2', installedExecInput('node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue', { tty: true, workdir: workspace })), timestamp: '2026-08-10T00:00:06.000Z' },
+    { ...installedToolCall('prepare-2', installedExecInput('node "/installed/zcode/skills/rescue/launcher.mjs" prepare rescue', { tty: true, workdir: workspace })), timestamp: '2026-08-10T00:00:06.000Z' },
     { ...installedToolOutput('prepare-2', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 72 }), timestamp: '2026-08-10T00:00:06.250Z' },
     { ...installedToolCall('prepare-write-2', installedPreparationInput(72, `${JSON.stringify(installedContinuationEnvelope('proactive', 'resume'))}\n`)), timestamp: '2026-08-10T00:00:06.500Z' },
     { ...installedToolOutput('prepare-write-2', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }), timestamp: '2026-08-10T00:00:07.000Z' },
@@ -1972,7 +1973,7 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     { type: 'response_item', timestamp: '2026-08-10T00:00:09.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: childThreadId }) } },
   ];
   for (const event of parent.slice(1)) event.turn_id = Date.parse(event.timestamp) < Date.parse('2026-08-10T00:00:06.000Z') ? 'turn-original' : 'turn-fresh';
-  const command = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-prepared rescue';
+  const command = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
   const child = [
     { type: 'session_meta', payload: { id: childThreadId, session_id: parentSessionId, parent_thread_id: parentSessionId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentSessionId, agent_path: '/root/zcode_rescue_continue', agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
     installedToolCall('invoke-1', installedExecInput(command, { workdir: workspace })), installedToolOutput('invoke-1', { output: 'initial done\n', exit_code: 0 }),
@@ -2027,11 +2028,12 @@ async function installedCapturedRescueRoutes(config = {}) {
   const installedSnapshot = join(root, 'marketplace', 'plugins', 'zcode');
   const namedTemplate = extractInstalledRoleInstructions(await readFile(join(installedSnapshot, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
   const genericTemplate = assertRescueRouteContract(await readFile(join(installedSnapshot, 'skills', 'rescue', 'SKILL.md'), 'utf8')).genericMessage.text;
-  assertInstalledForwarderLifecycleContract(namedTemplate, 'named', { expectedRoot: '{{PLUGIN_ROOT}}' });
-  assertInstalledForwarderLifecycleContract(genericTemplate, 'generic', { expectedRoot: '<canonical-plugin-root>' });
-  const namedPolicy = namedTemplate.replaceAll('{{PLUGIN_ROOT}}', installedRoot);
-  const genericPolicy = genericTemplate.replaceAll('<canonical-plugin-root>', installedRoot);
-  assertInstalledForwarderLifecycleContract(namedPolicy, 'named', { expectedRoot: installedRoot });
+  assertInstalledForwarderLifecycleContract(namedTemplate, 'named', { expectedLauncherCommand: '{{RESCUE_LAUNCHER_COMMAND}}' });
+  assertInstalledForwarderLifecycleContract(genericTemplate, 'generic', { expectedLauncherCommand: '<rescue-launcher-command>' });
+  const launcherCommand = `node "${installedRoot}/skills/rescue/launcher.mjs"`;
+  const namedPolicy = namedTemplate.replaceAll('{{RESCUE_LAUNCHER_COMMAND}}', launcherCommand);
+  const genericPolicy = genericTemplate.replaceAll('<rescue-launcher-command>', launcherCommand);
+  assertInstalledForwarderLifecycleContract(namedPolicy, 'named', { expectedLauncherCommand: launcherCommand });
   // The generic template itself is the spawn assignment; rendering is verified by
   // the fixed command evidence and exact expected spawn message below.
   return [
@@ -2044,14 +2046,14 @@ function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, instal
   const parentThreadId = name === 'named' ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222';
   const childThreadId = name === 'named' ? '33333333-3333-4333-8333-333333333333' : '44444444-4444-4444-8444-444444444444';
   const taskName = `zcode_rescue_captured_${name}`; const agentPath = `/root/${taskName}`;
-  const command = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-prepared rescue`;
-  const preflightCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" role-status rescue`;
-  const preparationCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" prepare rescue`;
+  const command = `node "${installedRoot}/skills/rescue/launcher.mjs" invoke-prepared rescue`;
+  const preflightCommand = `node "${installedRoot}/skills/rescue/launcher.mjs" role-status rescue`;
+  const preparationCommand = `node "${installedRoot}/skills/rescue/launcher.mjs" prepare rescue`;
   const preparationPayload = JSON.stringify({ version: 1, source: config.source ?? 'explicit', task: config.task ?? `repair captured ${name} route`, options: config.options ?? { execution: 'foreground', resume: 'fresh' } });
-  const statusCommand = `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-status rescue`;
+  const statusCommand = `node "${installedRoot}/skills/rescue/launcher.mjs" invoke-status rescue`;
   for (const expected of [command, statusCommand,
-    `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue resume`,
-    `node "${installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue fresh`]) {
+    `node "${installedRoot}/skills/rescue/launcher.mjs" invoke-choice rescue resume`,
+    `node "${installedRoot}/skills/rescue/launcher.mjs" invoke-choice rescue fresh`]) {
     assert.ok(renderedPolicy.includes(expected), `${name} rendered installed policy must own ${expected}`);
   }
   const publicOutput = `captured-${name}-done`; const handle = name === 'named' ? 71 : 81;
@@ -2115,7 +2117,7 @@ function qualifyInstalledCapturedForeground(route) {
     expectedAgentType: 'zcode-rescue', expectedWorkspace: '/installed/workspace', expectedCommand: route.command,
     expectedPreflightCommand: route.preflightCommand, expectedNamedSpawnMessage: expectedNamedRescueMessage,
     expectedPreparationCommand: route.preparationCommand, expectedPreparationPayload: route.preparationPayload,
-    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
+    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', `node "${route.installedRoot}/skills/rescue/launcher.mjs"`),
     expectedPublicOutput: route.publicOutput, expectedSemanticProgress: route.semantic,
     requireYieldedExecution: true, requireProgressRelay: true, requireStatusSidecar: true, expectedStatusCommand: route.statusCommand,
     statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
@@ -2152,7 +2154,7 @@ function qualifyInstalledCapturedBackground(route) {
     expectedAgentType: 'zcode-rescue', expectedWorkspace: '/installed/workspace', expectedCommand: route.command,
     expectedPreflightCommand: route.preflightCommand, expectedNamedSpawnMessage: expectedNamedRescueMessage,
     expectedPreparationCommand: route.preparationCommand, expectedPreparationPayload: route.preparationPayload,
-    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
+    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', `node "${route.installedRoot}/skills/rescue/launcher.mjs"`),
     expectedSemanticProgress: undefined,
     statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],
     forbiddenParentText: ['raw output must stay private', 'reasoning must stay private'],
@@ -2166,7 +2168,7 @@ function installedCapturedChoiceRoute(route, choice) {
   const spawn = structuredClone(route.fixture.rollouts[0].find((event) => event?.payload?.name === 'spawn_agent'));
   const start = structuredClone(route.fixture.rollouts[0].find((event) => event?.payload?.type === 'sub_agent_activity'));
   const agentPath = start.payload.agent_path;
-  const choiceCommand = `node "${route.installedRoot}/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`;
+  const choiceCommand = `node "${route.installedRoot}/skills/rescue/launcher.mjs" invoke-choice rescue ${choice}`;
   const followupMessage = `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`;
   const needsChoice = `${JSON.stringify({ type: 'needs-choice', candidate: { sessionId: `captured-${route.name}-session` }, choices: ['--resume', '--fresh'] })}\n`;
   const handles = route.name === 'named' ? [91, 92] : [93, 94];
@@ -2236,7 +2238,7 @@ function qualifyInstalledCapturedChoice(route) {
     expectedChoice: route.choice, expectedParentThreadId: route.parentThreadId, expectedAgentType: 'zcode-rescue',
     expectedWorkspace: '/installed/workspace', expectedInitialCommand: route.command, expectedChoiceCommand: route.choiceCommand,
     expectedNamedSpawnMessage: expectedNamedRescueMessage,
-    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<canonical-plugin-root>', route.installedRoot),
+    expectedGenericSpawnMessage: route.name === 'generic' ? route.spawnMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', `node "${route.installedRoot}/skills/rescue/launcher.mjs"`),
     expectedPreflightCommand: route.preflightCommand, expectedFollowupMessage: route.followupMessage,
     expectedPreparationCommand: route.preparationCommand, expectedPreparationPayload: route.preparationPayload,
     expectedPublicOutput: route.publicOutput, requireProgressRelay: true, requireStatusSidecar: true,

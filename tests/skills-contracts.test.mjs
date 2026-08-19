@@ -84,7 +84,7 @@ test('skills use their fixed installed entrypoint without exposing private proto
     const source = skill(name);
     if (name === 'rescue') {
       assertRescueLauncherGate(source);
-      assert.match(source, /node "<rescue-launcher-path>" invoke-prepared rescue/);
+      assert.match(source, /<rescue-launcher-command> invoke-prepared rescue/);
     } else {
       assert.match(source, /two directories above this `SKILL\.md`/);
       assert.match(source, /absolute canonical plugin root/);
@@ -139,8 +139,8 @@ test('Rescue uses only its machine-bound launcher and treats root diagnostics as
   const { block } = assertRescueLauncherGate(source);
   assert.doesNotMatch(source, /node\s+"<[^"]*(?:plugin-root|canonical-plugin-root)[^"]*>\/scripts\/zcode-companion\.mjs"/i);
   assert.doesNotMatch(source, /node\s+scripts\/zcode-companion\.mjs/i);
-  assert.match(source, /node "<rescueLauncherPath>" role-status rescue/);
-  assert.match(source, /node "<rescueLauncherPath>" prepare rescue/);
+  assert.match(source, /<rescueLauncherCommand> role-status rescue/);
+  assert.match(source, /<rescueLauncherCommand> prepare rescue/);
   assert.match(source, /`source-session-unproven`[\s\S]+terminal[\s\S]+exact remedy/i);
   const sourceFailure = /`source-session-unproven`[\s\S]+?(?=\n\n|$)/i.exec(source)?.[0] ?? '';
   assert.match(sourceFailure, /(?:do not|never)[^\n]+\$zcode:setup[\s\S]+prepare[\s\S]+follow[ -]?up[\s\S]+spawn/i);
@@ -251,7 +251,7 @@ test('stale spawn-only prose cannot contradict stopped-child continuation', () =
 
 test('Root prepares exactly one private Rescue envelope before one selected followup or spawn', () => {
   const source = skill('rescue');
-  assert.match(source, /node "<rescueLauncherPath>" prepare rescue/);
+  assert.match(source, /<rescueLauncherCommand> prepare rescue/);
   assert.match(source, /raw-capable TTY[\s\S]+setRawMode\(true\)/i);
   assert.match(source, /\{"type":"preparation-input-ready","command":"rescue"\}/);
   assert.match(source, /readiness[\s\S]+nonterminal[\s\S]+only after[\s\S]+write_stdin[\s\S]+exactly one JSON line[\s\S]+LF/i);
@@ -303,7 +303,7 @@ test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task
   const source = skill('rescue');
   assert.match(source, /Only after the preflight returned `ready`/);
   assert.match(source, /Act only as the installed ZCode Rescue forwarder\./);
-  assert.match(source, /node "<rescue-launcher-path>" invoke-prepared rescue/);
+  assert.match(source, /<rescue-launcher-command> invoke-prepared rescue/);
   assert.match(source, /Preserve stderr and return public stdout verbatim\./);
   assert.match(source, /Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request\/print\/persist authorization material\./);
   assert.match(source, /never issue a second spawn/i);
@@ -325,7 +325,7 @@ test('managed Rescue role is a fixed TOML forwarder without capability or task m
   assert.match(source, /^developer_instructions = """[\s\S]+"""\n$/);
   assert.equal((source.match(/^developer_instructions\s*=/gm) ?? []).length, 1);
   assert.match(source, /invoke-prepared rescue/);
-  assert.match(source, /node "\{\{PLUGIN_ROOT\}\}\/skills\/rescue\/launcher\.mjs" invoke-prepared rescue/);
+  assert.match(source, /\{\{RESCUE_LAUNCHER_COMMAND\}\} invoke-prepared rescue/);
   assert.doesNotMatch(source, /node[^\n]+scripts\/zcode-companion\.mjs/);
   assert.match(source, /invoke-choice rescue resume/);
   assert.match(source, /invoke-choice rescue fresh/);

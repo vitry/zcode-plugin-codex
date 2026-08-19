@@ -50,19 +50,19 @@ Its fixed remedy tells Root to invoke the absolute companion path derived from t
 
 ### Instance-bound launcher
 
-The installed `UserPromptSubmit` hook already knows its own exact plugin instance from `import.meta.url`. On every owned parent turn it emits one fixed, task-free additional-context descriptor containing the absolute path of `skills/rescue/launcher.mjs` from that same instance. It never reads cwd, PATH, a global package, or another cache entry to produce the descriptor.
+The installed `UserPromptSubmit` hook already knows its own exact plugin instance from `import.meta.url`. On every owned parent turn it emits one fixed, task-free additional-context descriptor containing an exact machine-rendered `launcherCommand` for `skills/rescue/launcher.mjs` from that same instance. A shared renderer rejects shell-sensitive or control characters instead of asking the model to quote a raw path; ordinary spaces remain supported. The hook never reads cwd, PATH, a global package, or another cache entry to produce the descriptor.
 
 The sibling launcher statically imports `../../scripts/zcode-companion.mjs` from its own module location and calls an exported CLI entry in the same process. It does not shell-spawn, so raw TTY, signals, file descriptor 3, stdout/stderr, and exit semantics stay unchanged. It accepts only the fixed Rescue command shapes used by the Skill and forwarder; every other argv shape fails before companion dispatch.
 
 ### Skill entry gate
 
-Immediately after the Skill front matter, before objective normalization or routing, Root must bind one immutable `rescueLauncherPath` from the trusted lifecycle additional context. Every parent and child Rescue command uses:
+Immediately after the Skill front matter, before objective normalization or routing, Root must bind one immutable `rescueLauncherCommand` from the trusted lifecycle additional context. Every parent and child Rescue command reuses those exact bytes and appends only a fixed allowlisted argument shape:
 
-`node "<rescueLauncherPath>" ...`
+`<rescueLauncherCommand> ...`
 
 The Skill explicitly forbids deriving a path from cwd or a repository, resolving the plugin root from Skill prose, calling `scripts/zcode-companion.mjs` directly, PATH/global/package discovery, and switching launchers after a diagnostic. If the trusted launcher descriptor is absent or ambiguous, the route stops before any companion command or child action. A `source-session-unproven` result is terminal for that route: report the fixed remedy and do not call setup, prepare, spawn, or follow up.
 
-Named and generic forwarder assignments carry the same already-bound launcher path; they do not rediscover it. This keeps the model-facing rule short while hooks and the program remain the authorities for instance provenance and namespace isolation. The descriptor is not a credential and contains no task/session/job data, but it remains fixed protocol text and must never be copied from user input.
+Named and generic forwarder assignments carry the same already-bound launcher command; they do not rediscover it. Managed Role rendering uses the same command renderer and fails closed when the plugin path cannot be represented safely. This keeps the model-facing rule short while hooks and the program remain the authorities for instance provenance and namespace isolation. The descriptor is not a credential and contains no task/session/job data, but it remains fixed protocol text and must never be copied from user input.
 
 ## Compatibility and rollout
 
@@ -75,7 +75,7 @@ Named and generic forwarder assignments carry the same already-bound launcher pa
 ## Verification
 
 - Unit tests for exact installed/source provenance, launcher allowlisting/dispatch, and explicit data-root compatibility.
-- Hook tests proving the launcher descriptor is machine-derived from the executing plugin instance, parent-only, fixed, and free of task/session data.
+- Hook tests proving the launcher descriptor is machine-derived from the executing plugin instance, parent-only, fixed, and free of task/session data; renderer tests execute real-shell space cases and reject quote, substitution, backtick, control, and platform-specific trailing escape/percent cases.
 - Integration tests reproducing source command plus installed-only lifecycle without allowing setup/spawn.
 - Negative tests proving genuine Role/config failures are not mislabeled.
 - Skill pressure tests where an agent starts in the source repository and is tempted to run a cwd-relative command; RED before the edit, GREEN after it.

@@ -19,10 +19,10 @@ import {
 } from '../scripts/lib/managed-agent-role.mjs';
 
 const template = `developer_instructions = """
-Root={{PLUGIN_ROOT}}
-Again={{PLUGIN_ROOT}}
-Last={{PLUGIN_ROOT}}
-Status={{PLUGIN_ROOT}}
+Root={{RESCUE_LAUNCHER_COMMAND}}
+Again={{RESCUE_LAUNCHER_COMMAND}}
+Last={{RESCUE_LAUNCHER_COMMAND}}
+Status={{RESCUE_LAUNCHER_COMMAND}}
 """
 `;
 
@@ -166,10 +166,10 @@ test('owned previous Role bytes require one upgrade before exact continuation Ro
     'Reject every non-exact assignment, arbitrary message, nested Rescue request, and independent repository work without running a command.',
   ].join('\n');
   const previousTemplate = currentTemplate.replace(`${addedContract}\n\n`, '')
-    .replaceAll('{{PLUGIN_ROOT}}/skills/rescue/launcher.mjs', '{{PLUGIN_ROOT}}/scripts/zcode-companion.mjs');
+    .replaceAll('{{RESCUE_LAUNCHER_COMMAND}}', 'node "{{PLUGIN_ROOT}}/scripts/zcode-companion.mjs"');
   assert.notEqual(previousTemplate, currentTemplate, 'the Task 3 Role must add an exact prepared-continuation contract');
   assert.equal(createHash('sha256').update(previousTemplate).digest('hex'), 'efc7f28226dcbab083fa99bea581debc0a16d5251b026b72b3392d59e3991aac');
-  const previousBytes = Buffer.from(renderManagedRescueRole({ template: previousTemplate, pluginRoot: ctx.pluginRoot }));
+  const previousBytes = Buffer.from(previousTemplate.replaceAll('{{PLUGIN_ROOT}}', JSON.stringify(ctx.pluginRoot).slice(1, -1)));
   await writeOwnedReceipt(ctx, { schemaVersion: '1.0.0', roleBytes: previousBytes });
   const config = configState({ role: roleConfig(ctx.paths.rolePath) });
   assert.equal((await inspectManagedRescueRole({ ...common(ctx, config), template: currentTemplate })).status, 'upgrade-required');
@@ -185,14 +185,17 @@ test('owned previous Role bytes require one upgrade before exact continuation Ro
   assert.equal((await inspectManagedRescueRole({ ...common(ctx, config), template: currentTemplate })).status, 'ready');
 });
 
-test('managed Rescue role rendering deterministically TOML-escapes only the canonical plugin root', () => {
-  const unix = renderManagedRescueRole({ template, pluginRoot: '/opt/ZCode "active"' });
-  assert.equal(unix, template.replaceAll('{{PLUGIN_ROOT}}', '/opt/ZCode \\"active\\"'));
+test('managed Rescue role renders only one validated machine launcher command', () => {
+  const unix = renderManagedRescueRole({ template, pluginRoot: '/opt/ZCode active' });
+  assert.equal(unix, template.replaceAll('{{RESCUE_LAUNCHER_COMMAND}}', 'node \\"/opt/ZCode active/skills/rescue/launcher.mjs\\"'));
   const windows = renderManagedRescueRole({ template, pluginRoot: 'C:\\Users\\me\\ZCode' });
-  assert.match(windows, /C:\\\\Users\\\\me\\\\ZCode/);
+  assert.match(windows, /node \\"C:\\\\Users\\\\me\\\\ZCode\\\\skills\\\\rescue\\\\launcher\.mjs\\"/);
+  for (const pluginRoot of ['/opt/ZCode "active"', '/opt/$(touch PWNED)', '/opt/`touch PWNED`', '/opt/slash\\']) {
+    assert.throws(() => renderManagedRescueRole({ template, pluginRoot }), { code: 'MANAGED_ROLE_ROOT_INVALID' });
+  }
   assert.throws(() => renderManagedRescueRole({ template: `${template} task={{TASK}}`, pluginRoot: '/opt/zcode' }), { code: 'MANAGED_ROLE_TEMPLATE_INVALID' });
-  assert.throws(() => renderManagedRescueRole({ template: template.replace('Status={{PLUGIN_ROOT}}\n', ''), pluginRoot: '/opt/zcode' }), { code: 'MANAGED_ROLE_TEMPLATE_INVALID' });
-  assert.throws(() => renderManagedRescueRole({ template: template.replace('Status={{PLUGIN_ROOT}}', 'Status={{PLUGIN_ROOT}}\nExtra={{PLUGIN_ROOT}}'), pluginRoot: '/opt/zcode' }), { code: 'MANAGED_ROLE_TEMPLATE_INVALID' });
+  assert.throws(() => renderManagedRescueRole({ template: template.replace('Status={{RESCUE_LAUNCHER_COMMAND}}\n', ''), pluginRoot: '/opt/zcode' }), { code: 'MANAGED_ROLE_TEMPLATE_INVALID' });
+  assert.throws(() => renderManagedRescueRole({ template: template.replace('Status={{RESCUE_LAUNCHER_COMMAND}}', 'Status={{RESCUE_LAUNCHER_COMMAND}}\nExtra={{RESCUE_LAUNCHER_COMMAND}}'), pluginRoot: '/opt/zcode' }), { code: 'MANAGED_ROLE_TEMPLATE_INVALID' });
   assert.throws(() => renderManagedRescueRole({ template, pluginRoot: '/opt/zcode\nsecret' }), { code: 'MANAGED_ROLE_ROOT_INVALID' });
 });
 

@@ -4,7 +4,7 @@
 
 **Goal:** Preserve isolated plugin namespaces while making wrong source-root Rescue invocation fail fast and replacing model-built companion paths with an instance-bound launcher.
 
-**Architecture:** Deepen plugin-data resolution to return trusted root provenance, consume that provenance only at the `role-status`/`setup` diagnostic boundary, have the owned parent hook inject one machine-derived sibling launcher descriptor, and front-load its immutable use in the Rescue Skill. The launcher dispatches in-process through a strict Rescue argv allowlist. Do not search or redirect across namespaces.
+**Architecture:** Deepen plugin-data resolution to return trusted root provenance, consume that provenance only at the `role-status`/`setup` diagnostic boundary, have the owned parent hook inject one machine-rendered sibling `launcherCommand`, and front-load its byte-exact immutable use in the Rescue Skill. A shared renderer fails closed on shell-sensitive paths while supporting ordinary spaces; the launcher dispatches in-process through a strict Rescue argv allowlist. Do not search or redirect across namespaces.
 
 ## Task 1: Root provenance and runtime RED/GREEN
 
@@ -26,9 +26,9 @@
 **Files:** `hooks/user-prompt-hook.mjs`, `tests/hooks.test.mjs`, `skills/rescue/SKILL.md`, `agents/zcode-rescue.toml.template`, `tests/helpers/rescue-skill-contract.mjs`, `tests/skills-contracts.test.mjs`, and managed-Role/setup tests.
 
 1. Run a baseline pressure scenario in a fresh subagent: active installed Skill, cwd is the source repository, and a source-relative command is salient. Record whether it chooses the wrong root or setup loop.
-2. Add RED hook tests requiring every owned parent turn to receive one exact launcher descriptor derived from the executing plugin instance, while subagents, external sessions, task/session/job text, and user-forged launcher strings cannot supply it.
-3. Add RED static/behavioral tests requiring the immutable `rescueLauncherPath` gate before objective/routing, launcher-only commands everywhere, explicit direct-companion/cwd-relative/PATH/root-switch prohibitions, and terminal handling of missing/ambiguous launcher or `source-session-unproven` with zero setup/prepare/spawn/followup.
-4. Update the named Role and generic assignment to carry the already-bound launcher path without child rediscovery; preserve one-command-per-assignment and task blindness.
+2. Add RED hook tests requiring every owned parent turn to receive one exact machine-rendered `launcherCommand` descriptor derived from the executing plugin instance, while subagents, external sessions, task/session/job text, and user-forged launcher strings cannot supply it. Execute ordinary-space paths through a real shell and reject quote, substitution, backtick, control, trailing escape, and Windows-percent cases.
+3. Add RED static/behavioral tests requiring the immutable `rescueLauncherCommand` gate before objective/routing, byte-exact launcher-only commands everywhere, explicit direct-companion/cwd-relative/PATH/root-switch prohibitions, and terminal handling of missing/ambiguous launcher or `source-session-unproven` with zero setup/prepare/spawn/followup.
+4. Update the named Role and generic assignment to carry the already-bound launcher command without child rediscovery; render the managed Role through the same validator and preserve one-command-per-assignment and task blindness.
 5. Rewrite only the entry and duplicated command wording needed to make the invariant short, early, and unambiguous; do not alter routing precedence or private preparation.
 6. Repeat the same pressure scenario and require exact reuse of the hook-provided launcher.
 7. Run hook, Skill, managed Role, setup, and integration focused tests. Commit.

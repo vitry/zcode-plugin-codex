@@ -180,29 +180,30 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   ]) assert.ok((await readFile(join(installedRoot, modulePath), 'utf8')).length > 0, `${modulePath} missing from installed marketplace payload`);
   const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const installedSections = assertInstalledRescueRoutingContract(installedRescue);
-  const installedNamedForwarder = extractInstalledRoleInstructions(installedRoleSource
-    .replaceAll('{{PLUGIN_ROOT}}', JSON.stringify(installedRoot).slice(1, -1)));
+  const installedLauncherCommand = `node "${installedRoot}/skills/rescue/launcher.mjs"`;
+  const installedNamedForwarder = extractInstalledRoleInstructions(installedRoleSource)
+    .replaceAll('{{RESCUE_LAUNCHER_COMMAND}}', installedLauncherCommand);
   for (const [routeName, forwarder] of [['named', installedNamedForwarder], ['generic', installedSections.genericMessage.text]]) {
-    const expectedRoot = routeName === 'named' ? installedRoot : '<canonical-plugin-root>';
-    assertInstalledForwarderLifecycleContract(forwarder, routeName, { assertionPrefix: 'installed ', expectedRoot });
-    for (const [mutation, mutated] of installedLifecycleContractMutations(forwarder, routeName, expectedRoot)) {
+    const expectedLauncherCommand = routeName === 'named' ? installedLauncherCommand : '<rescue-launcher-command>';
+    assertInstalledForwarderLifecycleContract(forwarder, routeName, { assertionPrefix: 'installed ', expectedLauncherCommand });
+    for (const [mutation, mutated] of installedLifecycleContractMutations(forwarder, routeName, expectedLauncherCommand)) {
       assert.throws(
-        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ', expectedRoot }),
+        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ', expectedLauncherCommand }),
         /unique operative lifecycle region/u,
         `installed ${routeName}: ${mutation}`,
       );
     }
     for (const [mutation, mutated] of installedCanonicalContradictionMutations(forwarder, routeName)) {
       assert.throws(
-        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ', expectedRoot }),
+        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ', expectedLauncherCommand }),
         /exact canonical operative route/u,
         `installed ${routeName}: ${mutation}`,
       );
     }
     for (const [mutation, mutated] of installedCommandPathMutations(forwarder)) {
       assert.throws(
-        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ', expectedRoot }),
-        /trusted expected root and exact argv/u,
+        () => assertInstalledForwarderLifecycleContract(mutated, routeName, { assertionPrefix: 'installed ', expectedLauncherCommand }),
+        /trusted expected launcher command/u,
         `installed ${routeName}: ${mutation}`,
       );
     }

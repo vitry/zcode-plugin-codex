@@ -15,6 +15,7 @@ const moduleRoot = fileURLToPath(new URL('..', import.meta.url));
 export const REQUIRED_RESCUE_PAYLOAD = Object.freeze([
   'agents/zcode-rescue.toml.template',
   'skills/rescue/SKILL.md',
+  'skills/rescue/launcher.mjs',
   'scripts/zcode-companion.mjs',
   'scripts/lib/invocation.mjs',
   'scripts/lib/job-control.mjs',
@@ -23,6 +24,7 @@ export const REQUIRED_RESCUE_PAYLOAD = Object.freeze([
   'scripts/lib/state.mjs',
   'scripts/lib/conversation-progress.mjs',
   'scripts/lib/managed-agent-role.mjs',
+  'scripts/lib/rescue-launcher-command.mjs',
   'scripts/lib/progress.mjs',
   'hooks/subagent-hook.mjs',
   'hooks/lib/hook-state.mjs',
