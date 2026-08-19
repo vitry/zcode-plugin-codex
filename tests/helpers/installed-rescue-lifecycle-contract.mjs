@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { isAbsolute, win32 } from 'node:path';
 import { expectedGenericRescueMessage } from './rescue-skill-contract.mjs';
+import { qualifyCodexRescuePreparedContinuationEvidence } from './codex-rescue-qualification.mjs';
 
 const markers = [
   ['foreground owner', 'Each exact assignment and child turn may start at most one mapped foreground `exec_command` companion process.'],
@@ -30,7 +31,7 @@ const canonicalTerminalTail = 'Partial stdout, stderr, heartbeat text, or an out
 const canonicalChoiceTerminal = 'A needs-choice response with exit code 3 is terminal for the current child turn.';
 const genericCanonicalLines = expectedGenericRescueMessage.split('\n');
 const canonicalNamedTerminal = 'A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.';
-const canonicalNamedRoleDigest = 'a763d0d3526910bf3dbf4470bc55a1870360d7ee03accf45d435b5fbc24e7d5a';
+const canonicalNamedRoleDigest = 'bc12bc4c76462e233299dbaad95b088fd5f39c46606c4d343b6a23cec1d0476b';
 const companionCommandLine = /^node "(?<root>[^"\r\n]{1,2048})\/scripts\/zcode-companion\.mjs" (?<command>invoke-prepared rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
 
 export function installedCanonicalContradictionMutations(source, route) {
@@ -178,6 +179,12 @@ export function parseInstalledForwarderLifecycleContract(source, input) {
 export function assertInstalledForwarderLifecycleContract(source, route, options = {}) {
   parseInstalledForwarderLifecycleContract(source, { route, expectedRoot: options.expectedRoot, assertionPrefix: options.assertionPrefix });
   return true;
+}
+
+/** Qualify both the installed forwarder bytes and its captured same-child continuation effects. */
+export async function assertInstalledPreparedContinuationContract(source, capture, options = {}) {
+  assertInstalledForwarderLifecycleContract(source, capture?.route, options);
+  return qualifyCodexRescuePreparedContinuationEvidence(capture);
 }
 
 export function moveInstalledRelayAfterTerminal(source, route, expectedRoot) {

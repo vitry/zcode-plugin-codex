@@ -25,6 +25,7 @@
     "scripts/",
     "skills/",
     "CHANGELOG.md",
+    "docs/adr/0013-bind-rescue-child-to-zcode-session.md",
     "docs/manual-uninstall.md",
     "NOTICE",
     "README.zh-CN.md",

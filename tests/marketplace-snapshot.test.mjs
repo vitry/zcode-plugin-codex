@@ -19,15 +19,25 @@ test('marketplace builder requires the complete isolated Rescue payload', () => 
     'agents/zcode-rescue.toml.template',
     'skills/rescue/SKILL.md',
     'scripts/zcode-companion.mjs',
+    'scripts/lib/invocation.mjs',
+    'scripts/lib/job-control.mjs',
+    'scripts/lib/rescue-binding.mjs',
     'scripts/lib/rescue-preparation.mjs',
+    'scripts/lib/state.mjs',
     'scripts/lib/conversation-progress.mjs',
     'scripts/lib/managed-agent-role.mjs',
     'scripts/lib/progress.mjs',
     'hooks/subagent-hook.mjs',
+    'hooks/lib/hook-state.mjs',
     'hooks/session-lifecycle-hook.mjs',
     'hooks/user-prompt-hook.mjs',
     'hooks/session-end-hook.mjs',
     'hooks/stop-review-gate-hook.mjs',
+    'CHANGELOG.md',
+    'README.md',
+    'README.zh-CN.md',
+    'SECURITY.md',
+    'docs/adr/0013-bind-rescue-child-to-zcode-session.md',
   ]);
 });
 
@@ -111,6 +121,8 @@ async function sourceFixture(t, options = {}) {
     mkdir(join(root, 'scripts', 'lib'), { recursive: true }),
     mkdir(join(root, 'skills', 'rescue'), { recursive: true }),
     mkdir(join(root, 'hooks'), { recursive: true }),
+    mkdir(join(root, 'hooks', 'lib'), { recursive: true }),
+    mkdir(join(root, 'docs', 'adr'), { recursive: true }),
     mkdir(join(root, 'marketplace', '.agents', 'plugins'), { recursive: true }),
   ]);
   await Promise.all([

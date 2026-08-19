@@ -98,11 +98,12 @@ export async function resolveForwardingExecutor(dataRoot, workspace, agentId, op
     const timestamp = options.now === undefined ? Date.now() : new Date(options.now).getTime();
     const selectedAge = timestamp - Date.parse(selected.createdAt);
     if (!Number.isFinite(timestamp) || selectedAge < 0) throw executorError('EXECUTOR_IDENTITY_INVALID', 'The trusted child executor record has a future creation time.');
-    if (selectedAge >= EXECUTOR_LIFETIME_MS) { await unlink(join(store.directory, canonicalName)).catch(() => {}); throw executorError('EXECUTOR_IDENTITY_EXPIRED', 'The trusted child executor record has expired.'); }
+    if (selectedAge >= EXECUTOR_LIFETIME_MS && options.durableProvenance !== true) throw executorError('EXECUTOR_IDENTITY_EXPIRED', 'The trusted child executor record has expired.');
     if (options.continuation === true) {
       if (selected.active !== false) throw executorError('EXECUTOR_STATE_MISMATCH', 'A pending Rescue choice requires the original child to be stopped.');
       return selected;
     }
+    if (options.durableProvenance === true) throw executorError('EXECUTOR_STATE_MISMATCH', 'Durable Rescue provenance is restricted to a stopped executor.');
     if (selected.active !== true) throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No active trusted SubagentStart record matches this executor.');
     const candidates = [];
     for (const name of names) {

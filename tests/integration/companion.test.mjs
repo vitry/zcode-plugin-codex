@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { PassThrough } from 'node:stream';
@@ -777,6 +777,47 @@ test('parent steering leaves one isolated Rescue child running with zero cancel 
   assert.equal(jobs.length, 1); assert.equal(jobs[0].ownerSessionId, parentSessionId); assert.equal(jobs[0].ownerTurnId, originalTurnId); assert.equal(jobs[0].status, 'succeeded');
 });
 
+test('prepared Rescue canonicalizes a resolvable cwd alias before exact binding reservation', async () => {
+  const context = await fixture(); const childId = 'aliased-rescue-child';
+  await mkdir(join(context.workspace, 'nested'));
+  await prepareDirectRescueChild(context, {
+    parentSessionId: 'aliased-parent', parentTurnId: 'aliased-origin', childId, childTurnId: 'aliased-child-turn',
+    prompt: '$zcode:rescue --fresh --wait preserve canonical workspace identity',
+  });
+  const aliasedWorkspace = `${context.workspace}${sep}nested${sep}..`;
+  const canonicalWorkspace = (await resolveWorkspaceStorage(context)).workspacePath;
+  assert.notEqual(aliasedWorkspace, canonicalWorkspace);
+  const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: aliasedWorkspace, env: { ...context.env, CODEX_THREAD_ID: childId },
+  });
+  assert.equal(output.job.status, 'succeeded');
+  assert.equal(output.job.workspace, canonicalWorkspace);
+});
+
+test('bound Rescue choice canonicalizes the persisted caller workspace before reservation', async () => {
+  const context = await fixture(); const parentSessionId = 'aliased-choice-parent'; const childId = 'aliased-choice-child'; const childTurnId = 'aliased-choice-turn';
+  await mkdir(join(context.workspace, 'nested'));
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'aliased-choice-origin', childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait establish exact session',
+  });
+  const initial = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(initial.job.status, 'succeeded');
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: childTurnId, cwd: context.workspace, hook_event_name: 'SubagentStop',
+    agent_id: childId, agent_type: 'zcode-rescue',
+  });
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'aliased-choice-next', workspace: context.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue continue exact session' });
+  const preparation = new PassThrough(); preparation.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'continue exact session', options: { execution: 'foreground' } })}\n`);
+  await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId }, input: preparation });
+  assert.equal((await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } })).type, 'needs-choice');
+  const aliasedWorkspace = `${context.workspace}${sep}nested${sep}..`;
+  const resumed = await runDirectInvocation(['invoke-choice', 'rescue', 'resume'], { cwd: aliasedWorkspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(resumed.job.status, 'succeeded');
+  assert.equal(resumed.job.zcodeSessionId, initial.job.zcodeSessionId);
+});
+
 test('isolated child loss recovers the accepted parent-owned turn without another session send', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const record = join(context.directory, 'child-loss-recovery.jsonl'); const recovery = join(context.directory, 'child-loss-recovery.json'); const workerProcess = join(context.directory, 'child-loss-worker.json');
   await Promise.all([writeFile(record, ''), writeFile(recovery, JSON.stringify({ mode: 'active' }))]);
@@ -1040,6 +1081,25 @@ test('an abort during writable-conflict scavenging propagates its reason before 
   assert.equal(clients, 0); const jobs = await store.listJobs(context.workspace); assert.equal(jobs.length, 1); assert.equal(jobs[0].id, orphan.id); assert.equal(jobs[0].status, 'running');
 });
 
+test('an executor-bound background conflict aborts after discovery with zero publication side effects', async () => {
+  const context = await fixture(); const { job: orphan, store } = await reserveOrphan(context); const controller = new AbortController();
+  const interruption = new PluginError('JOB_INTERRUPTED', 'bound abort after discovery'); const effects = { clients: 0, specs: 0, capabilities: 0, workers: 0 };
+  const boundCaller = caller('bound-new-owner', 'bound-origin');
+  const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: boundCaller.sessionId, parentTurnId: boundCaller.turnId, parentPermissionMode: boundCaller.permissionMode, workspace: context.workspace };
+  await assert.rejects(runCompanion(['rescue', '--background', '--fresh', 'stop bound retry'], {
+    cwd: context.workspace, env: context.env, caller: boundCaller, executor, signal: controller.signal,
+    dependencies: {
+      discoverLaunch: async () => { controller.abort(interruption); return { command: process.execPath, args: [fake], target: fake }; },
+      createManagedZCodeClient: async () => { effects.clients += 1; throw new Error('must not create'); },
+      writeJobSpec: async () => { effects.specs += 1; }, createExecutionCapability: async () => { effects.capabilities += 1; }, startBackgroundWorker: async () => { effects.workers += 1; },
+    },
+  }), (error) => error === interruption);
+  assert.deepEqual(effects, { clients: 0, specs: 0, capabilities: 0, workers: 0 });
+  assert.deepEqual(await store.listJobs(context.workspace), [orphan]);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+  assert.equal((await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-')).length, 0);
+});
+
 test('a live exact worker lease keeps a new owner blocked without remote inspection', async () => {
   const context = await fixture(); const { job: orphan, store, workerLeaseId } = await reserveOrphan(context); let discoveries = 0; let clients = 0;
   await withWorkerLease({ dataRoot: context.dataRoot, workspace: context.workspace, jobId: orphan.id, workerLeaseId }, async () => {
@@ -1248,6 +1308,20 @@ test('rescue requires an explicit choice when an owned resumable session exists'
   const resumed = await companion(context, ['rescue', '--resume', 'next task']);
   assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
   assert.equal(resumed.json.job.zcodeSessionId, fresh.json.job.zcodeSessionId);
+});
+
+test('trusted bound routing keeps choice identity private and permits only fresh permission replacement', async () => {
+  const context = await fixture(); const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: 'bound-parent', parentTurnId: 'turn-a', parentPermissionMode: 'workspace-write', workspace: context.workspace };
+  const initial = await runCompanion(['rescue', '--fresh', 'bound first'], { cwd: context.workspace, env: context.env, caller: caller('bound-parent', 'turn-a'), executor });
+  assert.equal(initial.job.status, 'succeeded');
+  const choice = await runCompanion(['rescue', 'bound next'], { cwd: context.workspace, env: context.env, caller: caller('bound-parent', 'turn-b'), executor });
+  assert.deepEqual(choice, { type: 'needs-choice', choices: ['--resume', '--fresh'] });
+  assert.doesNotMatch(JSON.stringify(choice), /bound-child|bound-parent|[a-f0-9]{64}/u);
+  const changedCaller = { ...caller('bound-parent', 'turn-c'), permissionMode: 'read-only' };
+  await assert.rejects(runCompanion(['rescue', '--resume', 'wrong permission'], { cwd: context.workspace, env: context.env, caller: changedCaller, executor }), { code: 'RESCUE_BINDING_INVALID' });
+  const replaced = await runCompanion(['rescue', '--fresh', 'authorized replacement'], { cwd: context.workspace, env: context.env, caller: changedCaller, executor });
+  assert.equal(replaced.job.status, 'succeeded'); assert.notEqual(replaced.job.zcodeSessionId, initial.job.zcodeSessionId);
+  assert.equal((await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({ workspace: context.workspace, parentSessionId: 'bound-parent', executorAgentId: 'bound-child', executorAgentType: 'zcode-rescue', executorParentTurnId: 'turn-a', executorParentPermissionMode: 'workspace-write', permissionMode: 'read-only' })).kind, 'bound');
 });
 
 test('resumed rescue cannot reuse a historical visible result when the current turn is hidden', async () => {

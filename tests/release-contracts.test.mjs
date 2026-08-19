@@ -76,6 +76,7 @@ test('release docs explain automatic Rescue routing and private prepared rollout
   assert.match(english, /raw-capable TTY[\s\S]+task-free readiness[\s\S]+one JSON line[\s\S]+LF/i);
   assert.match(english, /readiness[\s\S]+nonterminal[\s\S]+no (?:EOF|U\+0004)/i);
   assert.match(english, /active `?rescueChildId`?.{0,180}rejoin|rejoin.{0,180}active Rescue child/is);
+  assert.match(english, /`currentJobId`.{0,180}durably reserved and published.{0,180}(?:queues|fails|cancelled)/is);
   assert.match(english, /task-independent[^\n]+`zcode_rescue_task`/i);
   assert.doesNotMatch(english, /task-specific native display names/i);
   assert.match(english, /rerun `?\$zcode:setup`?.{0,180}(?:digest|Role upgrade)|(?:digest|Role upgrade).{0,180}rerun `?\$zcode:setup`?/is);
@@ -85,9 +86,16 @@ test('release docs explain automatic Rescue routing and private prepared rollout
   assert.match(chinese, /raw-capable TTY[\s\S]+不含 task 的 readiness[\s\S]+一行 JSON[\s\S]+LF/i);
   assert.match(chinese, /readiness[\s\S]+非终态[\s\S]+不发送 (?:EOF|U\+0004)/i);
   assert.match(chinese, /活动的 `?rescueChildId`?.{0,180}重新加入|重新加入.{0,180}活动的 Rescue child/is);
+  assert.match(chinese, /`currentJobId`.{0,180}持久预留并发布.{0,180}(?:排队|失败|取消)/is);
   assert.match(chinese, /与任务无关[^\n]+`zcode_rescue_task`/i);
   assert.doesNotMatch(chinese, /任务相关的原生显示名称/);
   assert.match(chinese, /重新运行 `?\$zcode:setup`?.{0,180}(?:digest|Role 升级)|(?:digest|Role 升级).{0,180}重新运行 `?\$zcode:setup`?/is);
+});
+
+test('binding ADR defines current status at durable continuation publication', () => {
+  const adr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');
+  assert.match(adr, /`currentJobId`.{0,180}durably reserved and published.{0,180}(?:queues|fails|cancelled)/is);
+  assert.doesNotMatch(adr, /advances `currentJobId` only after a successful continuation/i);
 });
 
 test('security confines task material to exact single-consume prepared state', () => {
@@ -375,6 +383,29 @@ test('isolated Rescue release guidance states exact inspection, privacy, recover
   assert.match(installedQualification, /codex-skills-observation/);
   assert.match(installedQualification, /Object\.hasOwn\(payload, 'qualified'\), false/);
   assert.match(read('tests/e2e/real-zcode.test.mjs'), /real-zcode-unqualified/);
+});
+
+test('release guidance documents exact stopped-child binding, lifecycle, upgrade, and legacy behavior bilingually', () => {
+  const english = read('README.md'); const chinese = read('README.zh-CN.md');
+  for (const source of [english, chinese]) {
+    assert.match(source, /anchorJobId|anchor job/i);
+    assert.match(source, /currentJobId|current job/i);
+    assert.match(source, /same (?:stopped )?(?:Rescue )?child|同一(?:个)?已停止的 Rescue child/i);
+    assert.match(source, /no second `?SubagentStart`?|不会.*第二次 `?SubagentStart`?/i);
+    assert.match(source, /legacy[\s\S]+(?:adopt|采用|接纳)/i);
+    assert.match(source, /permission[\s\S]+fresh|权限[\s\S]+fresh/i);
+    assert.match(source, /SessionEnd[\s\S]+(?:close|关闭)/i);
+    assert.match(source, /invalid[\s\S]+binding[\s\S]+fail closed|无效[\s\S]+binding[\s\S]+fail closed/i);
+    assert.match(source, /upgrade-required|升级.*required|需要升级/i);
+  }
+  const security = read('SECURITY.md'); const changelog = read('CHANGELOG.md'); const adr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');
+  assert.match(security, /durable Rescue binding[\s\S]+same stopped child[\s\S]+exact ZCode session/i);
+  assert.match(security, /private[\s\S]+anchorJobId[\s\S]+currentJobId/i);
+  assert.match(changelog, /exact stopped-child Rescue continuation/i);
+  assert.match(changelog, /no second `?SubagentStart`?/i);
+  assert.match(adr, /^---\nstatus: accepted\nsupersedes: stopped-rescue-choice-continuation-in-adr-0010\n---/);
+  assert.match(adr, /invoke-prepared rescue[\s\S]+same stopped child[\s\S]+anchorJobId[\s\S]+currentJobId/i);
+  assert.match(adr, /legacy[\s\S]+permission[\s\S]+SessionEnd[\s\S]+fail closed/i);
 });
 
 test('release package ships receipt-gated manual uninstall guidance', () => {

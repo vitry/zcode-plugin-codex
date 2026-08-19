@@ -4,6 +4,7 @@ All notable changes follow Semantic Versioning.
 
 ## Unreleased
 
+- Added exact stopped-child Rescue continuation: Root privately prepares the next bound turn and follows up the same stopped child, which reuses `invoke-prepared rescue` with no second `SubagentStart`; fresh work still creates a new child.
 - Added automatic proactive Rescue routing alongside explicit `$zcode:rescue`, with authoritative explicit choices, semantic objective normalization, active-child rejoin, and no `--auto` flag. Root now performs a raw TTY readiness handshake and sends one LF-terminated frame over private stdin without EOF into exact-bound, expiring, single-consume prepared state; task-blind named and generic children run only `invoke-prepared rescue`.
 - Added cc-style semantic progress in the selected Rescue child and fixed coarse root liveness relays without exposing raw PTY data, child stderr, tool output, file contents, reasoning, credentials, or capabilities. Progress remains observational: only the original foreground terminal exit and final stdout prove completion. The child also supports an exact bound no-argument status sidecar through `zcode status`, `$zcode:status`, or `/zcode:status` without selecting or replacing the foreground job.
 - Added deterministic installed Codex 0.147 captured-rollout qualification for both the named Role and generic fallback, independently covering yielded foreground and same-child choice continuations; authenticated live qualification still reports only the route Codex actually selected.

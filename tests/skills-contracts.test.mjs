@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
+  assertExactChildContinuationContract,
   assertRescueRouteContract,
   expectedGenericRescueMessage,
   expectedNamedRescueMessage,
@@ -128,7 +129,7 @@ test('review skills are read-only and Rescue is foreground by default', () => {
 
 test('Rescue naming clauses cannot be relocated outside the preflight-to-route section', () => {
   const source = skill('rescue');
-  const section = /After the readiness preflight succeeds[\s\S]+?(?=\nWhen the active `spawn_agent` tool schema exposes)/.exec(source)?.[0];
+  const section = /Only when the selected next action is a new-child spawn[\s\S]+?(?=\nFor a selected new-child spawn, when the active `spawn_agent` tool schema exposes)/.exec(source)?.[0];
   assert.ok(section);
   const misplaced = source.replace(section, '').concat(`\n${section}\n`);
   assert.throws(() => assertRescueNamingContract(misplaced));
@@ -199,11 +200,36 @@ test('active Rescue child rejoin is the first and exclusive Root action', () => 
   const prepare = source.indexOf('prepare rescue');
   const spawn = source.indexOf('spawn_agent({');
   assert.ok(active >= 0 && active < preflight && preflight < prepare && prepare < spawn);
-  assert.match(source.slice(active, preflight), /highest priority[\s\S]+(?:rejoin|wait|follow up)[\s\S]+exact[^\n]+child/i);
+  const activeBlock = source.slice(active, preflight);
+  assert.match(activeBlock, /highest priority[\s\S]+(?:rejoin|wait|poll)[\s\S]+exact[^\n]+child/i);
+  assert.match(activeBlock, /existing live handle/i);
+  assert.match(activeBlock, /Never call `followup_task`/i);
+  assert.doesNotMatch(activeBlock, /followup_task\s*\(/i);
   assert.match(source.slice(active, preflight), /(?:must not|never)[\s\S]+preflight[\s\S]+prepare[\s\S]+spawn[\s\S]+invoke/i);
 });
 
-test('Root prepares exactly one private Rescue envelope before exactly one spawn', () => {
+test('Root routes active, stopped same-operation, and fresh Rescue child states without session substitution', () => {
+  const source = skill('rescue');
+  const { block } = assertExactChildContinuationContract(source);
+  assert.match(block, /no second `SubagentStart`|does not emit a second `SubagentStart`/i);
+  assert.match(block, /reuse[^\n]+`invoke-prepared rescue`/i);
+  assert.match(block, /invalid[^\n]+binding[\s\S]+fail closed/i);
+  assert.match(block, /permission[^\n]+change[\s\S]+fresh/i);
+  assert.match(source, /expectedPreparedContinuationMessage[^\n]+exact original assignment[^\n]+named[^\n]+generic/i);
+  assert.match(source, /Preparation authorizes exactly one next action:[^\n]+followup_task[^\n]+spawn[^\n]+never both/i);
+});
+
+test('stale spawn-only prose cannot contradict stopped-child continuation', () => {
+  const source = skill('rescue');
+  for (const stale of [
+    'Preparation authorizes exactly one named or generic spawn.',
+    'An explicit continuation proceeds through prepare and spawn.',
+  ]) {
+    assert.throws(() => assertExactChildContinuationContract(`${source}\n${stale}\n`));
+  }
+});
+
+test('Root prepares exactly one private Rescue envelope before one selected followup or spawn', () => {
   const source = skill('rescue');
   assert.match(source, /node "<plugin-root>\/scripts\/zcode-companion\.mjs" prepare rescue/);
   assert.match(source, /raw-capable TTY[\s\S]+setRawMode\(true\)/i);
@@ -281,6 +307,8 @@ test('managed Rescue role is a fixed TOML forwarder without capability or task m
   assert.match(source, /invoke-prepared rescue/);
   assert.match(source, /invoke-choice rescue resume/);
   assert.match(source, /invoke-choice rescue fresh/);
+  assert.match(source, /same exact prepared assignment[\s\S]+initial turn[\s\S]+stopped same-child prepared continuation/i);
+  assert.match(source, /one-command-per-turn rule applies to both/i);
   assert.doesNotMatch(source, /--prompt-file|--write|spark|--force|\{\{(?:TASK|ARGS|JOB|SESSION|PERMISSION|CAPABILITY)[^}]*\}\}/i);
   assert.match(source, /return public stdout verbatim/i);
   assert.match(source, /preserve stderr/i);
