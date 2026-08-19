@@ -24,6 +24,7 @@ export const REQUIRED_RESCUE_PAYLOAD = Object.freeze([
   'scripts/lib/state.mjs',
   'scripts/lib/conversation-progress.mjs',
   'scripts/lib/managed-agent-role.mjs',
+  'scripts/lib/plugin-data.mjs',
   'scripts/lib/rescue-launcher-command.mjs',
   'scripts/lib/progress.mjs',
   'hooks/subagent-hook.mjs',

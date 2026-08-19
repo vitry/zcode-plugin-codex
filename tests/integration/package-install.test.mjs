@@ -52,9 +52,12 @@ test('packed production install loads and locks on Node 22.13', async (t) => {
   const pluginRoot = join(consumerDirectory, 'node_modules', 'zcode-plugin-codex');
   for (const path of [
     'agents/zcode-rescue.toml.template',
+    'skills/rescue/launcher.mjs',
     'scripts/lib/conversation-progress.mjs',
     'scripts/lib/managed-agent-role.mjs',
+    'scripts/lib/plugin-data.mjs',
     'scripts/lib/progress.mjs',
+    'scripts/lib/rescue-launcher-command.mjs',
   ]) await access(join(pluginRoot, path));
   assert.match(await readFile(join(pluginRoot, 'agents', 'zcode-rescue.toml.template'), 'utf8'), /^developer_instructions = """/);
   await assert.rejects(access(join(pluginRoot, 'agents', 'zcode-rescue.md')), { code: 'ENOENT' });

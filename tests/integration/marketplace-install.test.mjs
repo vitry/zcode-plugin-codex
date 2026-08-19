@@ -162,6 +162,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   await assert.rejects(readFile(join(installedRoot, 'agents', 'zcode-rescue.md'), 'utf8'), { code: 'ENOENT' });
   for (const modulePath of [
     'skills/rescue/SKILL.md',
+    'skills/rescue/launcher.mjs',
     'scripts/zcode-companion.mjs',
     'scripts/lib/invocation.mjs',
     'scripts/lib/job-control.mjs',
@@ -170,7 +171,9 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
     'scripts/lib/state.mjs',
     'scripts/lib/conversation-progress.mjs',
     'scripts/lib/managed-agent-role.mjs',
+    'scripts/lib/plugin-data.mjs',
     'scripts/lib/progress.mjs',
+    'scripts/lib/rescue-launcher-command.mjs',
     'scripts/lib/rescue-progress-relay.mjs',
     'hooks/user-prompt-hook.mjs',
     'hooks/lib/hook-state.mjs',
