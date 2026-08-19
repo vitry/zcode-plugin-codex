@@ -584,7 +584,7 @@ test('launcher descriptor and five terminal job notices stay below the declared 
 test('unsafe owned launcher path emits a fixed non-executable error before prompt mutations', async () => {
   const { cwd, data, env } = await workspace();
   await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
-  const unsafeRoot = join(await mkdtemp(join(tmpdir(), 'zpc-unsafe-root-')), 'plugin "unsafe');
+  const unsafeRoot = join(await mkdtemp(join(tmpdir(), 'zpc-unsafe-root-')), 'plugin $unsafe');
   await mkdir(unsafeRoot, { recursive: true });
   for (const directory of ['hooks', 'scripts', 'skills']) await cp(join(root, directory), join(unsafeRoot, directory), { recursive: true });
   const dependency = dirname(createRequire(import.meta.url).resolve('fs-native-extensions'));

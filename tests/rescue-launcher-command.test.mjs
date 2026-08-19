@@ -36,7 +36,7 @@ test('machine-rendered launcher command preserves ordinary spaces through a real
   assert.deepEqual(JSON.parse(result.stdout), ['role-status', 'rescue']);
 });
 
-test('machine-rendered launcher command preserves a POSIX apostrophe through a real shell', async () => {
+test('machine-rendered launcher command preserves a POSIX apostrophe through a real shell', { skip: process.platform === 'win32' }, async () => {
   const root = await mkdtemp(join(tmpdir(), "zcode O'Connor launcher "));
   const directory = join(root, 'skills', 'rescue'); await mkdir(directory, { recursive: true });
   const launcher = join(directory, 'launcher.mjs');
@@ -73,7 +73,7 @@ test('launcher renderer rejects relative, wrong-leaf, control, and oversized pat
 
 test('TOML renderer accepts only canonical machine-rendered launcher commands', () => {
   const safe = renderRescueLauncherCommand('/opt/ZCode active/skills/rescue/launcher.mjs', { platform: 'darwin' });
-  assert.equal(escapeRescueLauncherCommandForToml(safe), 'node \\"/opt/ZCode active/skills/rescue/launcher.mjs\\"');
+  assert.equal(escapeRescueLauncherCommandForToml(safe, { platform: 'darwin' }), 'node \\"/opt/ZCode active/skills/rescue/launcher.mjs\\"');
   const windows = renderRescueLauncherCommand('C:\\Users\\me\\ZCode Active\\skills\\rescue\\launcher.mjs', { platform: 'win32' });
   assert.equal(escapeRescueLauncherCommandForToml(windows, { platform: 'win32' }), 'node \\"C:\\\\Users\\\\me\\\\ZCode Active\\\\skills\\\\rescue\\\\launcher.mjs\\"');
   for (const command of [

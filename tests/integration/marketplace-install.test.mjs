@@ -10,6 +10,7 @@ import test from 'node:test';
 
 import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
 import { runProcess, terminateProcess } from '../../scripts/lib/process.mjs';
+import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import {
   assertRescueRouteContract,
@@ -183,7 +184,7 @@ test('isolated Codex marketplace lists and installs the eight-skill snapshot', a
   ]) assert.ok((await readFile(join(installedRoot, modulePath), 'utf8')).length > 0, `${modulePath} missing from installed marketplace payload`);
   const installedRescue = await readFile(join(installedRoot, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const installedSections = assertInstalledRescueRoutingContract(installedRescue);
-  const installedLauncherCommand = `node "${installedRoot}/skills/rescue/launcher.mjs"`;
+  const installedLauncherCommand = renderRescueLauncherCommand(join(installedRoot, 'skills', 'rescue', 'launcher.mjs'));
   const installedNamedForwarder = extractInstalledRoleInstructions(installedRoleSource)
     .replaceAll('{{RESCUE_LAUNCHER_COMMAND}}', installedLauncherCommand);
   for (const [routeName, forwarder] of [['named', installedNamedForwarder], ['generic', installedSections.genericMessage.text]]) {
