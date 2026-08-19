@@ -1,10 +1,11 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, realpath, writeFile, mkdir, readdir, rm, stat, symlink, unlink } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, realpath, writeFile, mkdir, readdir, rm, stat, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
@@ -15,6 +16,7 @@ import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeBrokerHealth, reconcileBrokerOwnership, writeBrokerIdentity } from '../scripts/zcode-broker.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
+import { USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
 import { cleanupSession, resolveForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -115,6 +117,7 @@ test('default hooks/hooks.json registers bounded native lifecycle hooks without 
     else assert.equal(Object.hasOwn(hook, 'additionalContextLimit'), false, `${eventName} cannot emit additionalContext`);
   }
   assert.equal(hooks.hooks.Stop[0].hooks[0].timeout, 900);
+  assert.equal(hooks.hooks.UserPromptSubmit[0].hooks[0].additionalContextLimit, USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT);
   assert.ok(hooks.hooks.SessionEnd[0].hooks[0].timeout <= 3);
   const manifest = JSON.parse(await readFile(join(root, '.codex-plugin/plugin.json'), 'utf8'));
   assert.equal(Object.hasOwn(manifest, 'hooks'), false);
@@ -560,6 +563,41 @@ test('terminal completion context is routed durably once to its exact owner', as
   const input = { session_id: 'owner', turn_id: 'new-1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'next' };
   const first = await runHook('user-prompt-hook.mjs', input, env); const second = await runHook('user-prompt-hook.mjs', { ...input, turn_id: 'new-2' }, env);
   assert.match(first.json.hookSpecificOutput.additionalContext, new RegExp(job.id)); assert.doesNotMatch(second.json?.hookSpecificOutput?.additionalContext ?? '', new RegExp(job.id));
+});
+
+test('launcher descriptor and five terminal job notices stay below the declared hook context limit', async () => {
+  const { cwd, data, env } = await workspace();
+  await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+  const store = createStateStore({ dataRoot: data });
+  const jobs = [];
+  for (let index = 0; index < 5; index += 1) {
+    const job = await store.reserveJob({ workspace: cwd, ownerSessionId: 'owner', ownerTurnId: `old-${index}`, command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'default' } });
+    jobs.push(await store.transitionJob(cwd, job.id, ['queued'], 'cancelled', { finishedAt: new Date().toISOString(), exitCode: null }));
+  }
+  const result = await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 'new', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'next' }, env);
+  const context = assertRescueLauncherContext(result);
+  const limit = JSON.parse(await readFile(join(root, 'hooks/hooks.json'), 'utf8')).hooks.UserPromptSubmit[0].hooks[0].additionalContextLimit;
+  assert.ok(Buffer.byteLength(context) <= limit);
+  for (const job of jobs) assert.match(context, new RegExp(job.id));
+});
+
+test('unsafe owned launcher path emits a fixed non-executable error before prompt mutations', async () => {
+  const { cwd, data, env } = await workspace();
+  await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+  const unsafeRoot = join(await mkdtemp(join(tmpdir(), 'zpc-unsafe-root-')), 'plugin "unsafe');
+  await mkdir(unsafeRoot, { recursive: true });
+  for (const directory of ['hooks', 'scripts', 'skills']) await cp(join(root, directory), join(unsafeRoot, directory), { recursive: true });
+  const dependency = dirname(createRequire(import.meta.url).resolve('fs-native-extensions'));
+  await mkdir(join(unsafeRoot, 'node_modules'), { recursive: true });
+  await symlink(dependency, join(unsafeRoot, 'node_modules/fs-native-extensions'), 'dir');
+  const before = Object.fromEntries(await Promise.all((await jsonFiles(data)).sort().map(async (path) => [path, await readFile(path, 'utf8')])));
+  const result = await runHook(join(unsafeRoot, 'hooks/user-prompt-hook.mjs'), { session_id: 'owner', turn_id: 'must-not-mint', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'private prompt' }, env, { absolute: true });
+  assert.equal(result.code, 0, result.stderr);
+  const context = result.json?.hookSpecificOutput?.additionalContext;
+  assert.equal(context, '[zcode-rescue-launcher-error] {"version":1,"code":"RESCUE_LAUNCHER_PATH_UNSAFE","remedy":"Reinstall the ZCode plugin and retry from a new owned parent turn."}');
+  assert.doesNotMatch(context, /launcherCommand|node |private prompt|must-not-mint/);
+  const after = Object.fromEntries(await Promise.all((await jsonFiles(data)).sort().map(async (path) => [path, await readFile(path, 'utf8')])));
+  assert.deepEqual(after, before);
 });
 
 test('caller contexts end at the earlier turn boundary without crossing sibling sessions', async (t) => {

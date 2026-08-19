@@ -6,7 +6,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { escapeRescueLauncherCommandForToml, renderRescueLauncherCommand } from '../scripts/lib/rescue-launcher-command.mjs';
+import {
+  USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT,
+  escapeRescueLauncherCommandForToml,
+  renderRescueLauncherCommand,
+  renderRescueUserPromptContext,
+} from '../scripts/lib/rescue-launcher-command.mjs';
 
 function shell(command, cwd) {
   return new Promise((resolve, reject) => {
@@ -31,14 +36,33 @@ test('machine-rendered launcher command preserves ordinary spaces through a real
   assert.deepEqual(JSON.parse(result.stdout), ['role-status', 'rescue']);
 });
 
+test('machine-rendered launcher command preserves a POSIX apostrophe through a real shell', async () => {
+  const root = await mkdtemp(join(tmpdir(), "zcode O'Connor launcher "));
+  const directory = join(root, 'skills', 'rescue'); await mkdir(directory, { recursive: true });
+  const launcher = join(directory, 'launcher.mjs');
+  await writeFile(launcher, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n');
+  const command = renderRescueLauncherCommand(launcher, { platform: 'linux' });
+  const result = await shell(`${command} role-status rescue`, root);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), ['role-status', 'rescue']);
+});
+
 test('launcher renderer fails closed on shell expansion and quoting characters', () => {
   const root = '/tmp/zcode';
-  for (const suffix of ['quote"', "single'", '$(touch PWNED)', '`touch PWNED`', 'slash\\']) {
+  for (const suffix of ['quote"', '$(touch PWNED)', '`touch PWNED`', 'slash\\']) {
     assert.throws(() => renderRescueLauncherCommand(`${root}/${suffix}/skills/rescue/launcher.mjs`), { code: 'RESCUE_LAUNCHER_PATH_UNSAFE' }, suffix);
   }
   for (const suffix of ['percent%TEMP%', 'bang!VAR!', 'caret^', 'trailing\\']) {
     assert.throws(() => renderRescueLauncherCommand(`C:\\zcode\\${suffix}\\skills\\rescue\\launcher.mjs`, { platform: 'win32' }), { code: 'RESCUE_LAUNCHER_PATH_UNSAFE' }, suffix);
   }
+});
+
+test('launcher descriptor and five maximum notices remain inside the hook context budget', () => {
+  const command = renderRescueLauncherCommand(`/opt/${'x'.repeat(900)}/skills/rescue/launcher.mjs`, { platform: 'linux' });
+  const jobs = Array.from({ length: 5 }, (_, index) => ({ id: `${index}`.repeat(64), status: 'cancelled' }));
+  const context = renderRescueUserPromptContext(command, jobs);
+  assert.ok(Buffer.byteLength(context) <= USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT);
+  assert.equal(context.match(/[0-4]{64}/gu)?.length, 5);
 });
 
 test('launcher renderer rejects relative, wrong-leaf, control, and oversized paths', () => {

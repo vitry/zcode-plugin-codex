@@ -190,6 +190,8 @@ test('managed Rescue role renders only one validated machine launcher command', 
   assert.equal(unix, template.replaceAll('{{RESCUE_LAUNCHER_COMMAND}}', 'node \\"/opt/ZCode active/skills/rescue/launcher.mjs\\"'));
   const windows = renderManagedRescueRole({ template, pluginRoot: 'C:\\Users\\me\\ZCode' });
   assert.match(windows, /node \\"C:\\\\Users\\\\me\\\\ZCode\\\\skills\\\\rescue\\\\launcher\.mjs\\"/);
+  const apostrophe = renderManagedRescueRole({ template, pluginRoot: "/opt/O'Connor/ZCode" });
+  assert.match(apostrophe, /node \\"\/opt\/O'Connor\/ZCode\/skills\/rescue\/launcher\.mjs\\"/);
   for (const pluginRoot of ['/opt/ZCode "active"', '/opt/$(touch PWNED)', '/opt/`touch PWNED`', '/opt/slash\\']) {
     assert.throws(() => renderManagedRescueRole({ template, pluginRoot }), { code: 'MANAGED_ROLE_ROOT_INVALID' });
   }

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath, unlink } from 'node:fs/promises';
-import { isAbsolute, join, resolve, win32 } from 'node:path';
+import { join, posix, resolve, win32 } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import { atomicWriteJson, atomicWritePrivateFile, withFileLock } from './fs.mjs';
@@ -34,7 +34,7 @@ export function managedRolePaths(dataRoot) {
 /** @param {{template:string,pluginRoot:string}} input */
 export function renderManagedRescueRole({ template, pluginRoot }) {
   if (typeof pluginRoot !== 'string' || !pluginRoot || hasControl(pluginRoot)
-    || !isAbsolute(pluginRoot) && !win32.isAbsolute(pluginRoot)) {
+    || !posix.isAbsolute(pluginRoot) && !win32.isAbsolute(pluginRoot)) {
     throw roleError('MANAGED_ROLE_ROOT_INVALID', 'The managed Role plugin root must be an absolute control-free path.');
   }
   if (typeof template !== 'string' || !template.trim()
@@ -42,15 +42,15 @@ export function renderManagedRescueRole({ template, pluginRoot }) {
     || /\{\{(?!RESCUE_LAUNCHER_COMMAND\}\})[^}]+\}\}/.test(template)) {
     throw roleError('MANAGED_ROLE_TEMPLATE_INVALID', 'The managed Role template contains unsupported placeholders.');
   }
-  const windows = win32.isAbsolute(pluginRoot) && !isAbsolute(pluginRoot);
+  const windows = win32.isAbsolute(pluginRoot) && !posix.isAbsolute(pluginRoot);
   let command;
   try {
-    const launcherPath = windows ? win32.join(pluginRoot, 'skills', 'rescue', 'launcher.mjs') : join(pluginRoot, 'skills', 'rescue', 'launcher.mjs');
-    command = renderRescueLauncherCommand(launcherPath, { platform: windows ? 'win32' : process.platform });
+    const launcherPath = windows ? win32.join(pluginRoot, 'skills', 'rescue', 'launcher.mjs') : posix.join(pluginRoot, 'skills', 'rescue', 'launcher.mjs');
+    command = renderRescueLauncherCommand(launcherPath, { platform: windows ? 'win32' : 'linux' });
   } catch (cause) {
     throw roleError('MANAGED_ROLE_ROOT_INVALID', 'The managed Role plugin root cannot produce a safe launcher command.', {}, cause);
   }
-  return template.replaceAll(PLACEHOLDER, escapeRescueLauncherCommandForToml(command, { platform: windows ? 'win32' : process.platform }));
+  return template.replaceAll(PLACEHOLDER, escapeRescueLauncherCommandForToml(command, { platform: windows ? 'win32' : 'linux' }));
 }
 
 /** @param {any} input */

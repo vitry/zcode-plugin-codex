@@ -45,6 +45,8 @@ export function assertRescueLauncherGate(source, { assertionPrefix = '' } = {}) 
   assert.match(block, /bind `rescueLauncherCommand` exactly once/i);
   assert.match(block, /immutable/i);
   assert.match(block, /missing[\s\S]+ambiguous[\s\S]+malformed[\s\S]+terminal/i);
+  assert.match(block, /\[zcode-rescue-launcher-error\][\s\S]+reinstall[\s\S]+terminal/i);
+  assert.match(block, /launcher-error[\s\S]+(?:do not|never)[^\n]+\$zcode:setup[\s\S]+prepare[\s\S]+follow[ -]?up[\s\S]+spawn/i);
   assert.match(block, /(?:do not|never)[^\n]+companion[\s\S]+\$zcode:setup[\s\S]+prepare[\s\S]+follow[ -]?up[\s\S]+spawn/i);
   assert.match(block, /every[^\n]+Rescue command[^\n]+exact `rescueLauncherCommand` bytes[^\n]+fixed allowlisted arguments/i);
   assert.match(block, /never[^\n]+quote[^\n]+escape[^\n]+parse[^\n]+rebuild[^\n]+raw path/i);
