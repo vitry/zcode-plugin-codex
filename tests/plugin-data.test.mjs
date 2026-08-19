@@ -13,6 +13,10 @@ test('explicit ZCODE_DATA_ROOT overrides every other plugin data location', () =
     env: { ZCODE_DATA_ROOT: explicit, PLUGIN_DATA: resolve('ignored-data-fixture'), CODEX_HOME: codexHome },
     pluginRoot: join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0'),
   }), explicit);
+  assert.equal(resolvePluginDataRoot({
+    env: { ZCODE_DATA_ROOT: explicit, CODEX_HOME: 'invalid\u0000home' },
+    pluginRoot: 'invalid\u0000plugin',
+  }), explicit);
 });
 
 test('plugin data context preserves explicit roots while reporting trusted installation provenance', () => {
@@ -20,11 +24,11 @@ test('plugin data context preserves explicit roots while reporting trusted insta
   assert.deepEqual(resolvePluginDataContext({
     env: { ZCODE_DATA_ROOT: explicit, CODEX_HOME: codexHome },
     pluginRoot: join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0'),
-  }), { dataRoot: explicit, installationKind: 'marketplace' });
+  }), { dataRoot: explicit, provenance: 'marketplace' });
   assert.deepEqual(resolvePluginDataContext({
     env: { ZCODE_DATA_ROOT: explicit, CODEX_HOME: codexHome },
     pluginRoot: resolve('source', 'zcode-plugin-codex'),
-  }), { dataRoot: explicit, installationKind: 'development' });
+  }), { dataRoot: explicit, provenance: 'source' });
 });
 
 test('installed plugins derive a marketplace-qualified data root without injected plugin data', () => {
@@ -55,7 +59,7 @@ test('source checkouts use the unqualified CODEX_HOME development root', () => {
   const codexHome = resolve('codex-home-fixture');
   assert.equal(resolvePluginDataRoot({ env: { CODEX_HOME: codexHome }, pluginRoot: resolve('source', 'zcode-plugin-codex') }), join(codexHome, 'plugins', 'data', 'zcode'));
   assert.deepEqual(resolvePluginDataContext({ env: { CODEX_HOME: codexHome }, pluginRoot: resolve('source', 'zcode-plugin-codex') }), {
-    dataRoot: join(codexHome, 'plugins', 'data', 'zcode'), installationKind: 'development',
+    dataRoot: join(codexHome, 'plugins', 'data', 'zcode'), provenance: 'source',
   });
 });
 
@@ -84,7 +88,7 @@ test('installed identity follows canonical symlinked plugin paths', async (t) =>
   const actualHome = await realpath(codexHome);
   assert.equal(resolvePluginDataRoot({ env: { CODEX_HOME: codexHome }, pluginRoot: link }), join(actualHome, 'plugins', 'data', 'zcode-vitry'));
   assert.deepEqual(resolvePluginDataContext({ env: { CODEX_HOME: codexHome }, pluginRoot: link }), {
-    dataRoot: join(actualHome, 'plugins', 'data', 'zcode-vitry'), installationKind: 'marketplace',
+    dataRoot: join(actualHome, 'plugins', 'data', 'zcode-vitry'), provenance: 'marketplace',
   });
   assert.equal(await realpath(link), await realpath(installed));
 });

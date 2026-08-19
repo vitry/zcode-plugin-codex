@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { basename, join, sep } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { PassThrough } from 'node:stream';
@@ -27,6 +28,7 @@ import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
+const rescueLauncher = join(root, 'skills', 'rescue', 'launcher.mjs');
 const fake = join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
 const completionSignalProbe = join(root, 'tests', 'fixtures', 'completion-signal-probe.cjs');
@@ -35,6 +37,7 @@ const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs')
 const sessionEndHook = join(root, 'hooks', 'session-end-hook.mjs');
 const lockHolder = join(root, 'tests', 'fixtures', 'lock-holder.mjs');
 const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
+const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
 const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
 /** @typedef {(pid:number,signal?:number|string)=>boolean} KillFn */
 
@@ -304,6 +307,31 @@ test('source role-status reports only exact pre-inspection session proof failure
   assert.doesNotMatch(rendered, new RegExp(privateThread));
   assert.doesNotMatch(rendered, new RegExp(context.workspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(rendered, /\$zcode:setup/);
+});
+
+test('source role-status without an ambient thread fails with the fixed terminal diagnostic', async () => {
+  const context = await fixture(); const env = /** @type {NodeJS.ProcessEnv} */ ({ ...context.env }); delete env.CODEX_THREAD_ID;
+  assert.deepEqual(await runCompanion(['role-status', 'rescue'], { cwd: context.workspace, env }), {
+    type: 'role-status', role: 'zcode-rescue', status: 'source-session-unproven',
+    remedy: 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.',
+  });
+});
+
+test('installed companion missing-turn behavior remains unsupported without crossing into source diagnostics', async (t) => {
+  const context = await fixture(); const codexHome = join(context.directory, 'installed-codex-home');
+  const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+  await mkdir(installed, { recursive: true });
+  await cp(join(root, 'scripts'), join(installed, 'scripts'), { recursive: true });
+  await cp(join(root, 'hooks'), join(installed, 'hooks'), { recursive: true });
+  await cp(join(root, 'schemas'), join(installed, 'schemas'), { recursive: true });
+  await symlink(dependencyNodeModules, join(installed, 'node_modules'), 'dir');
+  const result = await run(process.execPath, [join(installed, 'scripts', 'zcode-companion.mjs'), 'role-status', 'rescue'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_HOME: codexHome, CODEX_THREAD_ID: 'installed-missing-turn' },
+  });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+  t.diagnostic('Installed provenance retains the existing bounded unsupported result and never reads the isolated source namespace.');
 });
 
 test('source role-status does not relabel inspection and configuration failures', async () => {
@@ -655,9 +683,9 @@ test('foreground SIGINT stops the accepted ZCode session, exits 130, and leaves 
   assert.equal(stdout, ''); assert.equal(internal, ''); assert.match(stderr, /Interrupted by SIGINT\./); assert.doesNotMatch(stderr, /JOB_INTERRUPTED|"error"/);
 });
 
-test('prepare Rescue exits on SIGTERM while stdin remains open', { skip: windowsRealSignalSkip }, async (t) => {
+test('instance-bound launcher preserves prepare raw TTY and SIGTERM exit while stdin remains open', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const ttyRecord = join(context.directory, 'prepare-signal-tty.txt'); await writeFile(ttyRecord, ''); await context.identity.beginCallerTurn({ sessionId: 'prepare-signal-parent', turnId: 'prepare-signal-turn', workspace: context.workspace, permissionMode: 'workspace-write', prompt: 'proactive signal objective' });
-  const child = spawn(process.execPath, [cli, 'prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: 'prepare-signal-parent', NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+  const child = spawn(process.execPath, [rescueLauncher, 'prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: 'prepare-signal-parent', NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
   let stdout = ''; let stderr = ''; let exited = false;
   child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
   const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
@@ -675,9 +703,9 @@ test('main prepare rejects piped stdin before task input and emits no readiness'
   assert.notEqual(result.code, 0); assert.match(result.stdout, /PREPARATION_TTY_REQUIRED/); assert.doesNotMatch(`${result.stdout}${result.stderr}`, /private piped task|preparation-input-ready/);
 });
 
-test('main private prepare consumes one LF frame and exits without stdin EOF', async (t) => {
+test('instance-bound launcher preserves prepare stdin/stdout and exits without stdin EOF', async (t) => {
   const context = await fixture(); const ttyRecord = join(context.directory, 'prepare-frame-tty.txt'); await writeFile(ttyRecord, ''); await context.identity.beginCallerTurn({ sessionId: 'frame-parent', turnId: 'frame-turn', workspace: context.workspace, permissionMode: 'workspace-write', prompt: 'proactive frame objective' });
-  const child = spawn(process.execPath, [cli, 'prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: 'frame-parent', NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord }, stdio: ['pipe', 'pipe', 'pipe'], shell: false }); let stdout = ''; let stderr = ''; let exited = false;
+  const child = spawn(process.execPath, [rescueLauncher, 'prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: 'frame-parent', NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord }, stdio: ['pipe', 'pipe', 'pipe'], shell: false }); let stdout = ''; let stderr = ''; let exited = false;
   child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; }); const exit = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
   t.after(() => { if (!exited) child.kill('SIGKILL'); }); await waitFor(async () => stdout.includes('preparation-input-ready'), 'private preparation readiness was not emitted');
   child.stdin?.write(`${JSON.stringify({ version: 1, source: 'proactive', task: 'frame objective', options: {} })}\n`);
@@ -848,7 +876,9 @@ test('bound Rescue choice canonicalizes the persisted caller workspace before re
   await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'aliased-choice-next', workspace: context.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue continue exact session' });
   const preparation = new PassThrough(); preparation.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'continue exact session', options: { execution: 'foreground' } })}\n`);
   await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId }, input: preparation });
-  assert.equal((await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } })).type, 'needs-choice');
+  // Launcher-allowed entries are direct commands: run() still supplies fd3 and captures fd4, proving this route does not use the protected public-command transport.
+  const undecided = await run(process.execPath, [rescueLauncher, 'invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
+  assert.equal(undecided.code, 3); assert.equal(JSON.parse(undecided.stdout).type, 'needs-choice'); assert.equal(undecided.internal, '');
   const aliasedWorkspace = `${context.workspace}${sep}nested${sep}..`;
   const resumed = await runDirectInvocation(['invoke-choice', 'rescue', 'resume'], { cwd: aliasedWorkspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
   assert.equal(resumed.job.status, 'succeeded');

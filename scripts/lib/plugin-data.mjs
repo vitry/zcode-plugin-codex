@@ -12,6 +12,8 @@ import { PluginError } from './errors.mjs';
  * @param {{env?:NodeJS.ProcessEnv,pluginRoot?:string}} input
  */
 export function resolvePluginDataRoot({ env = process.env, pluginRoot } = {}) {
+  const explicit = nonEmpty(env.ZCODE_DATA_ROOT);
+  if (explicit) return canonicalPath(explicit);
   return resolvePluginDataContext({ env, pluginRoot }).dataRoot;
 }
 
@@ -21,24 +23,24 @@ export function resolvePluginDataRoot({ env = process.env, pluginRoot } = {}) {
  * plugin installation identity.
  *
  * @param {{env?:NodeJS.ProcessEnv,pluginRoot?:string}} input
- * @returns {{dataRoot:string,installationKind:'marketplace'|'development'}}
+ * @returns {{dataRoot:string,provenance:'marketplace'|'source'}}
  */
 export function resolvePluginDataContext({ env = process.env, pluginRoot } = {}) {
   const explicit = nonEmpty(env.ZCODE_DATA_ROOT);
   const codexHome = canonicalPath(nonEmpty(env.CODEX_HOME) ?? join(homedir(), '.codex'));
   const installed = installedIdentity(pluginRoot, codexHome);
-  const installationKind = installed ? 'marketplace' : 'development';
-  if (explicit) return { dataRoot: canonicalPath(explicit), installationKind };
+  const provenance = installed ? 'marketplace' : 'source';
+  if (explicit) return { dataRoot: canonicalPath(explicit), provenance };
   if (installed) {
     const expected = join(codexHome, 'plugins', 'data', `zcode-${installed.marketplace}`);
     for (const injected of [nonEmpty(env.PLUGIN_DATA), nonEmpty(env.CLAUDE_PLUGIN_DATA)]) {
-      if (injected && canonicalPath(injected) === canonicalPath(expected)) return { dataRoot: canonicalPath(injected), installationKind };
+      if (injected && canonicalPath(injected) === canonicalPath(expected)) return { dataRoot: canonicalPath(injected), provenance };
     }
-    return { dataRoot: expected, installationKind };
+    return { dataRoot: expected, provenance };
   }
   return {
     dataRoot: canonicalPath(nonEmpty(env.PLUGIN_DATA) ?? nonEmpty(env.CLAUDE_PLUGIN_DATA) ?? join(codexHome, 'plugins', 'data', 'zcode')),
-    installationKind,
+    provenance,
   };
 }
 

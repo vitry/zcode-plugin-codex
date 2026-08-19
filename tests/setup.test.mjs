@@ -681,6 +681,19 @@ test('real companion setup is the only public command that needs no caller autho
   await assert.rejects(runCompanion(['status'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot } }), { code: 'INTERNAL_AUTHORIZATION_INVALID' });
 });
 
+test('real source lifecycle remains ready after setup under its own isolated namespace', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  await recordSetupSession(ctx, 'source-ready-session', 'Configure this source development namespace.');
+  const env = {
+    ...ctx.options.env, ZCODE_DATA_ROOT: ctx.dataRoot, CODEX_THREAD_ID: 'source-ready-session',
+    CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+  };
+  assert.equal((await runCompanion(['setup'], { cwd: ctx.cwd, env })).status, 'ready');
+  assert.deepEqual(await runCompanion(['role-status', 'rescue'], { cwd: ctx.cwd, env }), {
+    type: 'role-status', role: 'zcode-rescue', status: 'ready',
+  });
+});
+
 test('real companion setup fails closed when private active-session proof is missing or ambiguous', async (t) => {
   await t.test('missing', async () => {
     const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });

@@ -52,7 +52,7 @@ export async function runCompanion(argv, runtime = {}) {
   if (parsed.command === 'setup') {
     let activeTurn;
     try { activeTurn = await createIdentityStore({ dataRoot }).resolveOnlyActiveTurn({ workspace: cwd }); }
-    catch (error) { throw sourceSetupSessionError(error, pluginData.installationKind); }
+    catch (error) { throw sourceSetupSessionError(error, pluginData.provenance); }
     const session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId);
     return runSetup({ pluginRoot: activePluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
   }
@@ -61,14 +61,14 @@ export async function runCompanion(argv, runtime = {}) {
     try {
       if (runtime.dependencies?.inspectRescueRoleStatus) { inspectionStarted = true; inspection = await runtime.dependencies.inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, env }); }
       else {
-        if (typeof env.CODEX_THREAD_ID !== 'string' || !env.CODEX_THREAD_ID) throw new Error('ambient Codex thread unavailable');
+        if (typeof env.CODEX_THREAD_ID !== 'string' || !env.CODEX_THREAD_ID) throw new PluginError('AMBIENT_THREAD_UNAVAILABLE', 'The ambient Codex thread is unavailable.', { category: 'authorization', remedy: 'Invoke Rescue from one active Codex parent turn.' });
         const activeTurn = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: env.CODEX_THREAD_ID, workspace: cwd });
         const session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId);
         inspectionStarted = true;
         inspection = await inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd) });
       }
     } catch (error) {
-      sourceSessionUnproven = pluginData.installationKind === 'development' && !inspectionStarted && sourceRoleSessionFailure(error);
+      sourceSessionUnproven = pluginData.provenance === 'source' && !inspectionStarted && sourceRoleSessionFailure(error);
       inspection = { status: 'unsupported' };
     }
     const status = sourceSessionUnproven ? 'source-session-unproven' : MANAGED_ROLE_STATUSES.has(inspection?.status) ? inspection.status : 'unsupported';
@@ -700,13 +700,13 @@ function sameEntryPath(left, right) {
   catch { return left === right; }
 }
 
-/** @param {unknown} error @param {'marketplace'|'development'} installationKind */
-function sourceSetupSessionError(error, installationKind) {
-  if (installationKind !== 'development' || !(error instanceof PluginError) || error.code !== 'SETUP_SESSION_UNPROVEN' || error.details.activeTurnCount !== 0) return error;
+/** @param {unknown} error @param {'marketplace'|'source'} provenance */
+function sourceSetupSessionError(error, provenance) {
+  if (provenance !== 'source' || !(error instanceof PluginError) || error.code !== 'SETUP_SESSION_UNPROVEN' || error.details.activeTurnCount !== 0) return error;
   return new PluginError(error.code, error.message, { category: error.category, remedy: SOURCE_SESSION_REMEDY, details: error.details, cause: error });
 }
 
 /** @param {unknown} error */
 function sourceRoleSessionFailure(error) {
-  return ['ACTIVE_TURN_NOT_FOUND', 'ACTIVE_TURN_EXPIRED', 'SETUP_SESSION_UNPROVEN'].includes(/** @type {any} */ (error)?.code);
+  return ['AMBIENT_THREAD_UNAVAILABLE', 'ACTIVE_TURN_NOT_FOUND', 'ACTIVE_TURN_EXPIRED', 'SETUP_SESSION_UNPROVEN'].includes(/** @type {any} */ (error)?.code);
 }
