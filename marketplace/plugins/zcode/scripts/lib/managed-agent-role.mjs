@@ -1,16 +1,17 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath, unlink } from 'node:fs/promises';
-import { isAbsolute, join, resolve, win32 } from 'node:path';
+import { join, posix, resolve, win32 } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import { atomicWriteJson, atomicWritePrivateFile, withFileLock } from './fs.mjs';
+import { escapeRescueLauncherCommandForToml, renderRescueLauncherCommand } from './rescue-launcher-command.mjs';
 
 export const MANAGED_ROLE_NAME = 'zcode-rescue';
 export const MANAGED_ROLE_SCHEMA_VERSION = 1;
 export const MANAGED_ROLE_RECEIPT_SCHEMA_VERSION = '1.0.0';
 export const MANAGED_ROLE_DESCRIPTION = 'Runs the fixed ZCode Rescue forwarder in an isolated Codex subagent.';
 
-const PLACEHOLDER = '{{PLUGIN_ROOT}}';
+const PLACEHOLDER = '{{RESCUE_LAUNCHER_COMMAND}}';
 const MANAGED_SETUP_LEAF_PATHS = new Set(['features.hooks', 'hooks.state']);
 const MAX_ADDITIONAL_LEAVES = MANAGED_SETUP_LEAF_PATHS.size;
 
@@ -33,16 +34,23 @@ export function managedRolePaths(dataRoot) {
 /** @param {{template:string,pluginRoot:string}} input */
 export function renderManagedRescueRole({ template, pluginRoot }) {
   if (typeof pluginRoot !== 'string' || !pluginRoot || hasControl(pluginRoot)
-    || !isAbsolute(pluginRoot) && !win32.isAbsolute(pluginRoot)) {
+    || !posix.isAbsolute(pluginRoot) && !win32.isAbsolute(pluginRoot)) {
     throw roleError('MANAGED_ROLE_ROOT_INVALID', 'The managed Role plugin root must be an absolute control-free path.');
   }
   if (typeof template !== 'string' || !template.trim()
-    || (template.match(/\{\{PLUGIN_ROOT\}\}/g) ?? []).length !== 4
-    || /\{\{(?!PLUGIN_ROOT\}\})[^}]+\}\}/.test(template)) {
+    || (template.match(/\{\{RESCUE_LAUNCHER_COMMAND\}\}/g) ?? []).length !== 4
+    || /\{\{(?!RESCUE_LAUNCHER_COMMAND\}\})[^}]+\}\}/.test(template)) {
     throw roleError('MANAGED_ROLE_TEMPLATE_INVALID', 'The managed Role template contains unsupported placeholders.');
   }
-  const escapedRoot = JSON.stringify(pluginRoot).slice(1, -1);
-  return template.replaceAll(PLACEHOLDER, escapedRoot);
+  const windows = win32.isAbsolute(pluginRoot) && !posix.isAbsolute(pluginRoot);
+  let command;
+  try {
+    const launcherPath = windows ? win32.join(pluginRoot, 'skills', 'rescue', 'launcher.mjs') : posix.join(pluginRoot, 'skills', 'rescue', 'launcher.mjs');
+    command = renderRescueLauncherCommand(launcherPath, { platform: windows ? 'win32' : 'linux' });
+  } catch (cause) {
+    throw roleError('MANAGED_ROLE_ROOT_INVALID', 'The managed Role plugin root cannot produce a safe launcher command.', {}, cause);
+  }
+  return template.replaceAll(PLACEHOLDER, escapeRescueLauncherCommandForToml(command, { platform: windows ? 'win32' : 'linux' }));
 }
 
 /** @param {any} input */
