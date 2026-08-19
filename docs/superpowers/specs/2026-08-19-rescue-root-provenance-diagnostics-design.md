@@ -13,7 +13,8 @@ Today `role-status` collapses that identity failure into `unsupported` and recom
 - Preserve marketplace-qualified and source-development namespace isolation.
 - Detect an unbound source-checkout lifecycle accurately and fail before setup or child spawn.
 - Return a fixed, task-free diagnostic that tells Root to use the companion resolved from the active Skill.
-- Put the companion-root invariant before all Rescue classification and routing prose.
+- Give Root one instance-bound launcher descriptor so it never derives or concatenates an internal companion path.
+- Put the launcher invariant before all Rescue classification and routing prose.
 - Keep intentional source development usable when that source namespace has a proven active lifecycle.
 - Keep public output free of filesystem paths, data roots, session IDs, tasks, and authorization material.
 
@@ -47,27 +48,34 @@ Its fixed remedy tells Root to invoke the absolute companion path derived from t
 
 `setup` similarly preserves the underlying authorization failure but gives the same source-specific fixed remedy when its source namespace lacks a provable active lifecycle. It never reads or mutates the installed namespace.
 
+### Instance-bound launcher
+
+The installed `UserPromptSubmit` hook already knows its own exact plugin instance from `import.meta.url`. On every owned parent turn it emits one fixed, task-free additional-context descriptor containing the absolute path of `skills/rescue/launcher.mjs` from that same instance. It never reads cwd, PATH, a global package, or another cache entry to produce the descriptor.
+
+The sibling launcher statically imports `../../scripts/zcode-companion.mjs` from its own module location and calls an exported CLI entry in the same process. It does not shell-spawn, so raw TTY, signals, file descriptor 3, stdout/stderr, and exit semantics stay unchanged. It accepts only the fixed Rescue command shapes used by the Skill and forwarder; every other argv shape fails before companion dispatch.
+
 ### Skill entry gate
 
-Immediately after the Skill front matter, before objective normalization or routing, Root must bind one immutable `rescuePluginRoot` from the current `SKILL.md` location. Every parent and child companion command must use:
+Immediately after the Skill front matter, before objective normalization or routing, Root must bind one immutable `rescueLauncherPath` from the trusted lifecycle additional context. Every parent and child Rescue command uses:
 
-`node "<rescuePluginRoot>/scripts/zcode-companion.mjs" ...`
+`node "<rescueLauncherPath>" ...`
 
-The Skill explicitly forbids cwd-relative `node scripts/zcode-companion.mjs`, PATH/global/package discovery, repository-root inference, and switching plugin roots after a diagnostic. A `source-session-unproven` result is terminal for that route: report the fixed remedy and do not call setup, prepare, spawn, or follow up.
+The Skill explicitly forbids deriving a path from cwd or a repository, resolving the plugin root from Skill prose, calling `scripts/zcode-companion.mjs` directly, PATH/global/package discovery, and switching launchers after a diagnostic. If the trusted launcher descriptor is absent or ambiguous, the route stops before any companion command or child action. A `source-session-unproven` result is terminal for that route: report the fixed remedy and do not call setup, prepare, spawn, or follow up.
 
-This keeps the model-facing rule short while the program remains the authority for provenance and isolation.
+Named and generic forwarder assignments carry the same already-bound launcher path; they do not rediscover it. This keeps the model-facing rule short while hooks and the program remain the authorities for instance provenance and namespace isolation. The descriptor is not a credential and contains no task/session/job data, but it remains fixed protocol text and must never be copied from user input.
 
 ## Compatibility and rollout
 
 - Existing installed data and source-development data remain byte-for-byte in their current locations.
 - Existing ready/install/upgrade/drift/conflict statuses are unchanged.
 - Existing source development succeeds when its own hook lifecycle is present.
-- The Role template is unchanged unless implementation review proves a child-side entry rule is also required.
+- The managed Role digest changes because child-side direct companion commands also move behind the fixed launcher; normal setup ownership/upgrade rules apply.
 - Source changes are committed first; the marketplace snapshot is generated once from a clean exact source commit and committed separately with matching provenance.
 
 ## Verification
 
-- Unit tests for exact installed/source provenance and explicit data-root compatibility.
+- Unit tests for exact installed/source provenance, launcher allowlisting/dispatch, and explicit data-root compatibility.
+- Hook tests proving the launcher descriptor is machine-derived from the executing plugin instance, parent-only, fixed, and free of task/session data.
 - Integration tests reproducing source command plus installed-only lifecycle without allowing setup/spawn.
 - Negative tests proving genuine Role/config failures are not mislabeled.
 - Skill pressure tests where an agent starts in the source repository and is tempted to run a cwd-relative command; RED before the edit, GREEN after it.

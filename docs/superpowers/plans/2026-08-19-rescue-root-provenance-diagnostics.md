@@ -2,33 +2,37 @@
 
 > Execute with subagent-driven development, TDD, per-task spec review, then code-quality review.
 
-**Goal:** Preserve isolated plugin namespaces while making wrong source-root Rescue invocation fail fast and making the installed absolute-root Skill contract hard to misuse.
+**Goal:** Preserve isolated plugin namespaces while making wrong source-root Rescue invocation fail fast and replacing model-built companion paths with an instance-bound launcher.
 
-**Architecture:** Deepen plugin-data resolution to return trusted root provenance, consume that provenance only at the `role-status`/`setup` diagnostic boundary, and front-load one immutable companion-root rule in the Rescue Skill. Do not search or redirect across namespaces.
+**Architecture:** Deepen plugin-data resolution to return trusted root provenance, consume that provenance only at the `role-status`/`setup` diagnostic boundary, have the owned parent hook inject one machine-derived sibling launcher descriptor, and front-load its immutable use in the Rescue Skill. The launcher dispatches in-process through a strict Rescue argv allowlist. Do not search or redirect across namespaces.
 
 ## Task 1: Root provenance and runtime RED/GREEN
 
-**Files:** `scripts/lib/plugin-data.mjs`, `scripts/zcode-companion.mjs`, `tests/plugin-data.test.mjs`, `tests/integration/companion.test.mjs`.
+**Files:** `scripts/lib/plugin-data.mjs`, `scripts/zcode-companion.mjs`, `skills/rescue/launcher.mjs`, `tests/plugin-data.test.mjs`, `tests/integration/companion.test.mjs`, and a focused launcher test.
 
 1. Add RED unit tests for `{dataRoot, provenance}` across installed cache, source checkout, explicit `ZCODE_DATA_ROOT`, invalid cache-like paths, aliases, and Windows path normalization.
 2. Add RED integration tests reproducing an installed-only lifecycle followed by source `role-status`; require fixed `source-session-unproven`, no `$zcode:setup` loop, and no leaked path/task/session details.
 3. Add RED setup coverage for the source-specific fixed remedy while preserving the existing error code/category.
 4. Add controls: a proven source lifecycle remains ready; installed missing-turn behavior remains unchanged; Role/config/inspection failures are not relabeled.
-5. Implement the deep resolver while preserving `resolvePluginDataRoot()`.
-6. Narrowly classify only pre-inspection source lifecycle failures; keep all other error paths intact.
-7. Run focused tests and lint/typecheck/diff-check. Commit.
-8. Spec review, then quality/security review; fix and repeat until both approve.
+5. Add RED launcher tests for the exact Rescue argv allowlist, rejected extra/user text/setup/public commands, same-process TTY/stdin/stdout/signal/exit behavior, and self-bound companion import.
+6. Export the existing companion CLI entry without changing direct execution; add the sibling launcher that validates argv then dispatches in-process.
+7. Implement the deep resolver while preserving `resolvePluginDataRoot()`.
+8. Narrowly classify only pre-inspection source lifecycle failures; keep all other error paths intact.
+9. Run focused tests and lint/typecheck/diff-check. Commit.
+10. Spec review, then quality/security review; fix and repeat until both approve.
 
 ## Task 2: Rescue Skill entry contract RED/GREEN
 
-**Files:** `skills/rescue/SKILL.md`, `tests/helpers/rescue-skill-contract.mjs`, `tests/skills-contracts.test.mjs`, and only if required `agents/zcode-rescue.toml.template` plus managed-Role tests.
+**Files:** `hooks/user-prompt-hook.mjs`, `tests/hooks.test.mjs`, `skills/rescue/SKILL.md`, `agents/zcode-rescue.toml.template`, `tests/helpers/rescue-skill-contract.mjs`, `tests/skills-contracts.test.mjs`, and managed-Role/setup tests.
 
 1. Run a baseline pressure scenario in a fresh subagent: active installed Skill, cwd is the source repository, and a source-relative command is salient. Record whether it chooses the wrong root or setup loop.
-2. Add RED static/behavioral tests requiring the immutable `rescuePluginRoot` gate before objective/routing, absolute companion commands everywhere, explicit cwd-relative/PATH/root-switch prohibitions, and terminal handling of `source-session-unproven` with zero setup/prepare/spawn/followup.
-3. Rewrite only the entry and duplicated command wording needed to make the invariant short, early, and unambiguous; do not alter routing precedence or private preparation.
-4. Repeat the same pressure scenario and require correct absolute-root behavior.
-5. Run Skill, managed Role, setup, and integration focused tests. Commit.
-6. Spec review, then quality review; fix and repeat until approved.
+2. Add RED hook tests requiring every owned parent turn to receive one exact launcher descriptor derived from the executing plugin instance, while subagents, external sessions, task/session/job text, and user-forged launcher strings cannot supply it.
+3. Add RED static/behavioral tests requiring the immutable `rescueLauncherPath` gate before objective/routing, launcher-only commands everywhere, explicit direct-companion/cwd-relative/PATH/root-switch prohibitions, and terminal handling of missing/ambiguous launcher or `source-session-unproven` with zero setup/prepare/spawn/followup.
+4. Update the named Role and generic assignment to carry the already-bound launcher path without child rediscovery; preserve one-command-per-assignment and task blindness.
+5. Rewrite only the entry and duplicated command wording needed to make the invariant short, early, and unambiguous; do not alter routing precedence or private preparation.
+6. Repeat the same pressure scenario and require exact reuse of the hook-provided launcher.
+7. Run hook, Skill, managed Role, setup, and integration focused tests. Commit.
+8. Spec review, then quality review; fix and repeat until approved.
 
 ## Task 3: Public contract and marketplace snapshot
 
