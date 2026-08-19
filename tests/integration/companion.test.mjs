@@ -289,6 +289,43 @@ test('role-status rescue maps every non-ready managed state to the exact setup r
   assert.deepEqual(failed, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
 });
 
+test('source role-status reports only exact pre-inspection session proof failures without leaking private input', async () => {
+  const context = await fixture();
+  const privateThread = 'private-session-that-must-not-render';
+  const output = await runCompanion(['role-status', 'rescue'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_THREAD_ID: privateThread },
+  });
+  assert.deepEqual(output, {
+    type: 'role-status', role: 'zcode-rescue', status: 'source-session-unproven',
+    remedy: 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.',
+  });
+  const rendered = renderOutput(output);
+  assert.doesNotMatch(rendered, new RegExp(privateThread));
+  assert.doesNotMatch(rendered, new RegExp(context.workspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(rendered, /\$zcode:setup/);
+});
+
+test('source role-status does not relabel inspection and configuration failures', async () => {
+  const context = await fixture();
+  for (const error of [
+    new PluginError('ROLE_CONFIG_INVALID', 'private role detail', { category: 'configuration' }),
+    new Error('private unknown detail'),
+  ]) {
+    const output = await runCompanion(['role-status', 'rescue'], {
+      cwd: context.workspace,
+      env: context.env,
+      dependencies: { inspectRescueRoleStatus: async () => { throw error; } },
+    });
+    assert.deepEqual(output, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+  }
+  const forged = await runCompanion(['role-status', 'rescue'], {
+    cwd: context.workspace, env: context.env,
+    dependencies: { inspectRescueRoleStatus: async () => ({ status: 'source-session-unproven' }) },
+  });
+  assert.deepEqual(forged, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+});
+
 /** @param {any[]} [calls] */
 function missingRemoteDependencies(calls = []) {
   return {

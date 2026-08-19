@@ -684,7 +684,10 @@ test('real companion setup is the only public command that needs no caller autho
 test('real companion setup fails closed when private active-session proof is missing or ambiguous', async (t) => {
   await t.test('missing', async () => {
     const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
-    await assert.rejects(runCompanion(['setup'], { cwd: ctx.cwd, env: ctx.options.env }), { code: 'SETUP_SESSION_UNPROVEN' });
+    await assert.rejects(runCompanion(['setup'], { cwd: ctx.cwd, env: ctx.options.env }), {
+      code: 'SETUP_SESSION_UNPROVEN', category: 'authorization',
+      remedy: 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.',
+    });
   });
   await t.test('ambiguous', async () => {
     const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });

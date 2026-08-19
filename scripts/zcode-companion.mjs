@@ -14,7 +14,7 @@ import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
 import { createJobController, ownerIdForSession, readBoundRescueStatus, withJobCancellationLock } from './lib/job-control.mjs';
-import { resolvePluginDataRoot } from './lib/plugin-data.mjs';
+import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
@@ -36,6 +36,7 @@ const backgroundBindings = new WeakMap();
 const rescueChoiceRoutes = new WeakMap();
 const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
 const MANAGED_ROLE_STATUSES = new Set(['ready', 'restart-required', 'install-required', 'upgrade-required', 'drift', 'foreign-conflict', 'project-shadowed', 'higher-precedence-conflict', 'unsupported']);
+const SOURCE_SESSION_REMEDY = 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.';
 const SAFE_BOUND_STATUS_ERRORS = new Set([
   'ACTIVE_TURN_EXPIRED', 'ACTIVE_TURN_NOT_FOUND', 'BOUND_RESCUE_STATUS_INPUT_INVALID',
   'BOUND_RESCUE_STATUS_NOT_FOUND', 'BOUND_RESCUE_STATUS_UNAVAILABLE',
@@ -47,25 +48,31 @@ const SAFE_BOUND_STATUS_ERRORS = new Set([
 /** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,executor?:any,rescueRoute?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
-  const parsed = parseArgs(argv); const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
+  const parsed = parseArgs(argv); const pluginData = resolvePluginDataContext({ env, pluginRoot: activePluginRoot }); const { dataRoot } = pluginData;
   if (parsed.command === 'setup') {
-    const activeTurn = await createIdentityStore({ dataRoot }).resolveOnlyActiveTurn({ workspace: cwd });
+    let activeTurn;
+    try { activeTurn = await createIdentityStore({ dataRoot }).resolveOnlyActiveTurn({ workspace: cwd }); }
+    catch (error) { throw sourceSetupSessionError(error, pluginData.installationKind); }
     const session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId);
     return runSetup({ pluginRoot: activePluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
   }
   if (parsed.command === 'role-status') {
-    let inspection;
+    let inspection; let inspectionStarted = false; let sourceSessionUnproven = false;
     try {
-      if (runtime.dependencies?.inspectRescueRoleStatus) inspection = await runtime.dependencies.inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, env });
+      if (runtime.dependencies?.inspectRescueRoleStatus) { inspectionStarted = true; inspection = await runtime.dependencies.inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, env }); }
       else {
         if (typeof env.CODEX_THREAD_ID !== 'string' || !env.CODEX_THREAD_ID) throw new Error('ambient Codex thread unavailable');
         const activeTurn = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: env.CODEX_THREAD_ID, workspace: cwd });
         const session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId);
+        inspectionStarted = true;
         inspection = await inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd) });
       }
-    } catch { inspection = { status: 'unsupported' }; }
-    const status = MANAGED_ROLE_STATUSES.has(inspection?.status) ? inspection.status : 'unsupported';
-    return { type: 'role-status', role: 'zcode-rescue', status, ...(status === 'ready' ? {} : { remedy: '$zcode:setup' }) };
+    } catch (error) {
+      sourceSessionUnproven = pluginData.installationKind === 'development' && !inspectionStarted && sourceRoleSessionFailure(error);
+      inspection = { status: 'unsupported' };
+    }
+    const status = sourceSessionUnproven ? 'source-session-unproven' : MANAGED_ROLE_STATUSES.has(inspection?.status) ? inspection.status : 'unsupported';
+    return { type: 'role-status', role: 'zcode-rescue', status, ...(status === 'ready' ? {} : { remedy: status === 'source-session-unproven' ? SOURCE_SESSION_REMEDY : '$zcode:setup' }) };
   }
   const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies, signal: runtime.signal });
@@ -656,10 +663,10 @@ async function failQueuedJob(store, workspace, jobId, error) {
   await store.finishJob(workspace, jobId, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Background preparation failed' }, exitCode: 1 });
 }
 
-async function main() {
-  let output; const entry = process.argv[2]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = ['prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry); const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
-  const boundStatusDirect = process.argv.length === 4 && entry === 'invoke-status' && process.argv[3] === 'rescue';
-  const rescueDirect = direct && process.argv[3] === 'rescue';
+export async function runCompanionCli(argv = process.argv.slice(2)) {
+  let output; const entry = argv[0]; const setup = entry === 'setup'; const roleStatus = entry === 'role-status'; const direct = ['prepare', 'invoke-prepared', 'invoke', 'invoke-choice', 'invoke-status'].includes(entry); const worker = process.env.ZCODE_BACKGROUND_WORKER === '1';
+  const boundStatusDirect = argv.length === 2 && entry === 'invoke-status' && argv[1] === 'rescue';
+  const rescueDirect = direct && argv[1] === 'rescue';
   const signalController = !setup && !worker ? createForegroundSignalController({ process }) : null;
   try {
     const authorization = setup || roleStatus || direct ? undefined : await readInternalEnvelope(3, { signal: signalController?.signal });
@@ -670,7 +677,7 @@ async function main() {
       progressDependencies: { now: () => new Date().toISOString(), setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval },
       ...(signalController ? { signal: signalController.signal } : {}),
     };
-    output = direct ? await runDirectInvocation(process.argv.slice(2), foregroundProgress) : await runCompanion(process.argv.slice(2), { authorization, ...foregroundProgress, ...(worker ? { startupAck: acknowledgeBackgroundStartup } : {}) });
+    output = direct ? await runDirectInvocation(argv, foregroundProgress) : await runCompanion(argv, { authorization, ...foregroundProgress, ...(worker ? { startupAck: acknowledgeBackgroundStartup } : {}) });
     if (!setup && !roleStatus && !direct && !worker) await writeInternalResponse(output); if (!worker) process.stdout.write(renderOutput(output)); if (output?.type === 'needs-choice') process.exitCode = 3;
   }
   catch (error) {
@@ -685,10 +692,21 @@ async function main() {
   finally { signalController?.cleanup(); }
 }
 
-if (process.argv[1] && sameEntryPath(fileURLToPath(import.meta.url), resolve(process.argv[1]))) await main();
+if (process.argv[1] && sameEntryPath(fileURLToPath(import.meta.url), resolve(process.argv[1]))) await runCompanionCli();
 
 /** Treat marketplace symlink entrypoints as the installed companion itself. @param {string} left @param {string} right */
 function sameEntryPath(left, right) {
   try { return realpathSync(left) === realpathSync(right); }
   catch { return left === right; }
+}
+
+/** @param {unknown} error @param {'marketplace'|'development'} installationKind */
+function sourceSetupSessionError(error, installationKind) {
+  if (installationKind !== 'development' || !(error instanceof PluginError) || error.code !== 'SETUP_SESSION_UNPROVEN' || error.details.activeTurnCount !== 0) return error;
+  return new PluginError(error.code, error.message, { category: error.category, remedy: SOURCE_SESSION_REMEDY, details: error.details, cause: error });
+}
+
+/** @param {unknown} error */
+function sourceRoleSessionFailure(error) {
+  return ['ACTIVE_TURN_NOT_FOUND', 'ACTIVE_TURN_EXPIRED', 'SETUP_SESSION_UNPROVEN'].includes(/** @type {any} */ (error)?.code);
 }

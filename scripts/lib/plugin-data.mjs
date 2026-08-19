@@ -12,18 +12,34 @@ import { PluginError } from './errors.mjs';
  * @param {{env?:NodeJS.ProcessEnv,pluginRoot?:string}} input
  */
 export function resolvePluginDataRoot({ env = process.env, pluginRoot } = {}) {
+  return resolvePluginDataContext({ env, pluginRoot }).dataRoot;
+}
+
+/**
+ * Resolve the writable data root together with provenance derived only from
+ * the executing plugin location. Explicit data roots select storage, not the
+ * plugin installation identity.
+ *
+ * @param {{env?:NodeJS.ProcessEnv,pluginRoot?:string}} input
+ * @returns {{dataRoot:string,installationKind:'marketplace'|'development'}}
+ */
+export function resolvePluginDataContext({ env = process.env, pluginRoot } = {}) {
   const explicit = nonEmpty(env.ZCODE_DATA_ROOT);
-  if (explicit) return canonicalPath(explicit);
   const codexHome = canonicalPath(nonEmpty(env.CODEX_HOME) ?? join(homedir(), '.codex'));
   const installed = installedIdentity(pluginRoot, codexHome);
+  const installationKind = installed ? 'marketplace' : 'development';
+  if (explicit) return { dataRoot: canonicalPath(explicit), installationKind };
   if (installed) {
     const expected = join(codexHome, 'plugins', 'data', `zcode-${installed.marketplace}`);
     for (const injected of [nonEmpty(env.PLUGIN_DATA), nonEmpty(env.CLAUDE_PLUGIN_DATA)]) {
-      if (injected && canonicalPath(injected) === canonicalPath(expected)) return canonicalPath(injected);
+      if (injected && canonicalPath(injected) === canonicalPath(expected)) return { dataRoot: canonicalPath(injected), installationKind };
     }
-    return expected;
+    return { dataRoot: expected, installationKind };
   }
-  return canonicalPath(nonEmpty(env.PLUGIN_DATA) ?? nonEmpty(env.CLAUDE_PLUGIN_DATA) ?? join(codexHome, 'plugins', 'data', 'zcode'));
+  return {
+    dataRoot: canonicalPath(nonEmpty(env.PLUGIN_DATA) ?? nonEmpty(env.CLAUDE_PLUGIN_DATA) ?? join(codexHome, 'plugins', 'data', 'zcode')),
+    installationKind,
+  };
 }
 
 /** @param {string|undefined} pluginRoot @param {string} codexHome */
