@@ -53,7 +53,9 @@ export async function runCompanion(argv, runtime = {}) {
     let activeTurn;
     try { activeTurn = await createIdentityStore({ dataRoot }).resolveOnlyActiveTurn({ workspace: cwd }); }
     catch (error) { throw sourceSetupSessionError(error, pluginData.provenance); }
-    const session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId);
+    let session;
+    try { session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId); }
+    catch (error) { throw sourceSetupRecordedSessionError(error, pluginData.provenance); }
     return runSetup({ pluginRoot: activePluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
   }
   if (parsed.command === 'role-status') {
@@ -704,6 +706,16 @@ function sameEntryPath(left, right) {
 function sourceSetupSessionError(error, provenance) {
   if (provenance !== 'source' || !(error instanceof PluginError) || error.code !== 'SETUP_SESSION_UNPROVEN' || error.details.activeTurnCount !== 0) return error;
   return new PluginError(error.code, error.message, { category: error.category, remedy: SOURCE_SESSION_REMEDY, details: error.details, cause: error });
+}
+
+/** @param {unknown} error @param {'marketplace'|'source'} provenance */
+function sourceSetupRecordedSessionError(error, provenance) {
+  const cause = /** @type {any} */ (error)?.cause;
+  const missing = cause instanceof PluginError && cause.code === 'JSON_READ_FAILED' && /** @type {any} */ (cause.cause)?.code === 'ENOENT';
+  if (provenance !== 'source' || /** @type {any} */ (error)?.code !== 'SETUP_SESSION_UNPROVEN' || !missing) return error;
+  return new PluginError(/** @type {any} */ (error).code, /** @type {any} */ (error).message, {
+    category: /** @type {any} */ (error).category, remedy: SOURCE_SESSION_REMEDY, cause: error,
+  });
 }
 
 /** @param {unknown} error */
