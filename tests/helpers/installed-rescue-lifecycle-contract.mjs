@@ -58,9 +58,32 @@ export function installedCommandPathMutations(source) {
     ['divergent launcher', replaceLastInstalledLifecycleMarker(source, launcher, wrongLauncher)],
     ['quote and argument injection', source.replaceAll(launcher, `${launcher} --inspect`)],
     ['appended companion option', source.replace('invoke-prepared rescue', 'invoke-prepared rescue --detail')],
+    ['command substitution in launcher', source.replaceAll(launcher, 'node "/tmp/$(touch PWNED)/skills/rescue/launcher.mjs"')],
+    ['backtick substitution in launcher', source.replaceAll(launcher, 'node "/tmp/`touch PWNED`/skills/rescue/launcher.mjs"')],
+    ['POSIX backslash in launcher', source.replaceAll(launcher, 'node "/tmp/slash\\/skills/rescue/launcher.mjs"')],
+    ['Windows percent expansion in launcher', source.replaceAll(launcher, 'node "C:\\ZCode%TEMP%\\skills\\rescue\\launcher.mjs"')],
     ['control in launcher', source.replaceAll(launcher, `${launcher}\tunsafe`)],
     ['newline in launcher', source.replaceAll(launcher, `${launcher}\nunsafe`)],
   ];
+}
+
+function hasControlCharacter(value) {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code >= 127 && code <= 159;
+  });
+}
+
+function isSafeRenderedLauncherCommand(command) {
+  const match = /^node "(?<path>.+)"$/u.exec(command);
+  const launcherPath = match?.groups?.path;
+  if (!launcherPath || Buffer.byteLength(launcherPath) > 2048 || hasControlCharacter(launcherPath)) return false;
+  if (/^[A-Za-z]:\\/u.test(launcherPath)) {
+    return launcherPath.toLowerCase().endsWith('\\skills\\rescue\\launcher.mjs')
+      && !/["'`$%!^&|<>]/u.test(launcherPath) && !/\\{2,}|[\\/]$/u.test(launcherPath);
+  }
+  return launcherPath.startsWith('/') && launcherPath.endsWith('/skills/rescue/launcher.mjs')
+    && !/[\\"'`$]/u.test(launcherPath);
 }
 
 export function replaceLastInstalledLifecycleMarker(source, expected, replacement) {
@@ -109,8 +132,7 @@ function occurrences(source, marker) {
 function assertExactLauncherCommands(source, expectedLauncherCommand, prefix) {
   const placeholder = ['{{RESCUE_LAUNCHER_COMMAND}}', '<rescue-launcher-command>'].includes(expectedLauncherCommand);
   assert.ok(typeof expectedLauncherCommand === 'string' && expectedLauncherCommand && Buffer.byteLength(expectedLauncherCommand) <= 4096
-    && (placeholder || /^node "[^"\r\n]+\/skills\/rescue\/launcher\.mjs"$/u.test(expectedLauncherCommand)
-      || /^node "[A-Za-z]:\\[^"\r\n]+\\skills\\rescue\\launcher\.mjs"$/u.test(expectedLauncherCommand)),
+    && (placeholder || isSafeRenderedLauncherCommand(expectedLauncherCommand)),
   `${prefix} trusted expected launcher command must be one bounded machine-rendered command or canonical placeholder`);
   const commands = [...source.matchAll(launcherCommandLine)];
   assert.equal(commands.length, 4, `${prefix} trusted expected launcher command requires four strict launcher command lines`);

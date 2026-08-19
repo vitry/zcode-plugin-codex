@@ -47,7 +47,7 @@ For the stopped exact same-operation state, the child-facing continuation remain
 followup_task({ target: rescueChildId, message: expectedPreparedContinuationMessage })
 ```
 
-Here `expectedPreparedContinuationMessage` is the exact original assignment for that child's route: the named assignment literal for a named child, or the complete fixed generic message with the same immutable Rescue launcher path for a generic child. Retain the selected route and exact original assignment with `rescueChildId`; never substitute the named message for a generic child. This follows up the same `rescueChildId` with zero spawn calls.
+Here `expectedPreparedContinuationMessage` is the exact original assignment for that child's route: the named assignment literal for a named child, or the complete fixed generic message with the same immutable Rescue launcher command for a generic child. Retain the selected route and exact original assignment with `rescueChildId`; never substitute the named message for a generic child. This follows up the same `rescueChildId` with zero spawn calls.
 
 ## Entry classification and choice precedence
 

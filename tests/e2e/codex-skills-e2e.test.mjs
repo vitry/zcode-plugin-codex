@@ -533,6 +533,23 @@ test('installed named and generic foreground and choice policies independently b
   }
 });
 
+test('independent installed lifecycle validation rejects a caller-approved shell-injectable launcher', async () => {
+  const named = extractInstalledRoleInstructions(await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
+  for (const launcherCommand of [
+    'node "/tmp/$(touch PWNED)/skills/rescue/launcher.mjs"',
+    'node "/tmp/`touch PWNED`/skills/rescue/launcher.mjs"',
+    'node "/tmp/slash\\/skills/rescue/launcher.mjs"',
+    'node "C:\\ZCode%TEMP%\\skills\\rescue\\launcher.mjs"',
+  ]) {
+    const rendered = named.replaceAll('{{RESCUE_LAUNCHER_COMMAND}}', launcherCommand);
+    assert.throws(
+      () => assertInstalledForwarderLifecycleContract(rendered, 'named', { expectedLauncherCommand: launcherCommand }),
+      /trusted expected launcher command/u,
+      launcherCommand,
+    );
+  }
+});
+
 test('synthetic captured qualification fixtures cover named and generic Codex 0.147 foreground rollouts', async () => {
   const routes = await installedCapturedRescueRoutes();
   for (const route of routes) {

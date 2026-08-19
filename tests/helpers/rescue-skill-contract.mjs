@@ -133,7 +133,7 @@ export function assertExactChildContinuationContract(source, { assertionPrefix =
   assert.match(block, /Root[^\n]+owns[^\n]+semantic choice/i);
   assert.match(block, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*expectedPreparedContinuationMessage,?\s*\}\)/s);
   assert.doesNotMatch(block, /followup_task\([\s\S]{0,240}(?:task|jobId|sessionId|workspace|permission|binding)/i);
-  assert.match(block, /named assignment literal[\s\S]+complete fixed generic message[\s\S]+same immutable Rescue launcher path/i);
+  assert.match(block, /named assignment literal[\s\S]+complete fixed generic message[\s\S]+same immutable Rescue launcher command/i);
   assert.match(source, /Preparation authorizes exactly one next action:[^\n]+stopped-child `followup_task`[^\n]+new child, never both/i);
   assert.match(source, /Only when the selected next action is a new-child spawn[^\n]+choose `rescueTaskName`/i);
   assert.match(source, /A stopped-child followup never chooses or changes a task name/i);
