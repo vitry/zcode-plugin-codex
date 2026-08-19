@@ -23,7 +23,7 @@ import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { runCompanion, runDirectInvocation } from '../../scripts/zcode-companion.mjs';
-import { markForwarding } from '../../hooks/lib/hook-state.mjs';
+import { markForwarding, recordSession } from '../../hooks/lib/hook-state.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -315,6 +315,35 @@ test('source role-status without an ambient thread fails with the fixed terminal
     type: 'role-status', role: 'zcode-rescue', status: 'source-session-unproven',
     remedy: 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.',
   });
+});
+
+test('source role-status maps only a missing SessionStart record after an active turn', async () => {
+  const context = await fixture(); const sessionId = 'source-role-missing-start';
+  await context.identity.beginCallerTurn({
+    sessionId, turnId: 'source-role-missing-start-turn', workspace: context.workspace,
+    permissionMode: 'workspace-write', prompt: 'Check the source Rescue role.',
+  });
+  assert.deepEqual(await runCompanion(['role-status', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: sessionId },
+  }), {
+    type: 'role-status', role: 'zcode-rescue', status: 'source-session-unproven',
+    remedy: 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.',
+  });
+});
+
+test('source role-status does not relabel a corrupt SessionStart record as a wrong root', async () => {
+  const context = await fixture(); const sessionId = 'source-role-corrupt-start';
+  await recordSession(context.dataRoot, { session_id: sessionId, cwd: context.workspace });
+  await context.identity.beginCallerTurn({
+    sessionId, turnId: 'source-role-corrupt-start-turn', workspace: context.workspace,
+    permissionMode: 'workspace-write', prompt: 'Check the source Rescue role.',
+  });
+  const storage = await resolveWorkspaceStorage(context); const hookState = join(storage.directory, 'hook-state');
+  const [sessionRecord] = (await readdir(hookState)).filter((name) => name.startsWith('session-'));
+  assert.ok(sessionRecord); await writeFile(join(hookState, sessionRecord), '{}\n');
+  assert.deepEqual(await runCompanion(['role-status', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: sessionId },
+  }), { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
 });
 
 test('installed companion missing-turn behavior remains unsupported without crossing into source diagnostics', async (t) => {

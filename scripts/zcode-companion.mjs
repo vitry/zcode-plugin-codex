@@ -710,9 +710,7 @@ function sourceSetupSessionError(error, provenance) {
 
 /** @param {unknown} error @param {'marketplace'|'source'} provenance */
 function sourceSetupRecordedSessionError(error, provenance) {
-  const cause = /** @type {any} */ (error)?.cause;
-  const missing = cause instanceof PluginError && cause.code === 'JSON_READ_FAILED' && /** @type {any} */ (cause.cause)?.code === 'ENOENT';
-  if (provenance !== 'source' || /** @type {any} */ (error)?.code !== 'SETUP_SESSION_UNPROVEN' || !missing) return error;
+  if (provenance !== 'source' || !missingRecordedSessionStart(error)) return error;
   return new PluginError(/** @type {any} */ (error).code, /** @type {any} */ (error).message, {
     category: /** @type {any} */ (error).category, remedy: SOURCE_SESSION_REMEDY, cause: error,
   });
@@ -720,5 +718,15 @@ function sourceSetupRecordedSessionError(error, provenance) {
 
 /** @param {unknown} error */
 function sourceRoleSessionFailure(error) {
-  return ['AMBIENT_THREAD_UNAVAILABLE', 'ACTIVE_TURN_NOT_FOUND', 'ACTIVE_TURN_EXPIRED', 'SETUP_SESSION_UNPROVEN'].includes(/** @type {any} */ (error)?.code);
+  const code = /** @type {any} */ (error)?.code;
+  return ['AMBIENT_THREAD_UNAVAILABLE', 'ACTIVE_TURN_NOT_FOUND', 'ACTIVE_TURN_EXPIRED'].includes(code)
+    || code === 'SETUP_SESSION_UNPROVEN' && missingRecordedSessionStart(error);
+}
+
+/** @param {unknown} error */
+function missingRecordedSessionStart(error) {
+  const cause = /** @type {any} */ (error)?.cause;
+  return /** @type {any} */ (error)?.code === 'SETUP_SESSION_UNPROVEN'
+    && cause instanceof PluginError && cause.code === 'JSON_READ_FAILED'
+    && /** @type {any} */ (cause.cause)?.code === 'ENOENT';
 }
