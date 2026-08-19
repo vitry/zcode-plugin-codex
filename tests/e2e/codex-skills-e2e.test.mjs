@@ -12,6 +12,7 @@ import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapsh
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
+import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
@@ -547,6 +548,18 @@ test('independent installed lifecycle validation rejects a caller-approved shell
       /trusted expected launcher command/u,
       launcherCommand,
     );
+  }
+});
+
+test('independent installed lifecycle validation accepts machine-rendered apostrophe paths on POSIX and Windows', async () => {
+  const named = extractInstalledRoleInstructions(await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8'));
+  for (const [launcherPath, platform] of [
+    ["/opt/O'Connor/ZCode/skills/rescue/launcher.mjs", 'linux'],
+    ["C:\\Users\\O'Connor\\ZCode\\skills\\rescue\\launcher.mjs", 'win32'],
+  ]) {
+    const launcherCommand = renderRescueLauncherCommand(launcherPath, { platform });
+    const renderedRole = named.replaceAll('{{RESCUE_LAUNCHER_COMMAND}}', launcherCommand);
+    assert.equal(assertInstalledForwarderLifecycleContract(renderedRole, 'named', { expectedLauncherCommand: launcherCommand }), true);
   }
 });
 

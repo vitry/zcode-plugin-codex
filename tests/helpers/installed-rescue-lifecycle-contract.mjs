@@ -80,10 +80,10 @@ function isSafeRenderedLauncherCommand(command) {
   if (!launcherPath || Buffer.byteLength(launcherPath) > 2048 || hasControlCharacter(launcherPath)) return false;
   if (/^[A-Za-z]:\\/u.test(launcherPath)) {
     return launcherPath.toLowerCase().endsWith('\\skills\\rescue\\launcher.mjs')
-      && !/["'`$%!^&|<>]/u.test(launcherPath) && !/\\{2,}|[\\/]$/u.test(launcherPath);
+      && !/["`$%!^&|<>]/u.test(launcherPath) && !/\\{2,}|[\\/]$/u.test(launcherPath);
   }
   return launcherPath.startsWith('/') && launcherPath.endsWith('/skills/rescue/launcher.mjs')
-    && !/[\\"'`$]/u.test(launcherPath);
+    && !/[\\"`$]/u.test(launcherPath);
 }
 
 export function replaceLastInstalledLifecycleMarker(source, expected, replacement) {
