@@ -165,7 +165,8 @@ test('owned previous Role bytes require one upgrade before exact continuation Ro
     'The same exact prepared assignment is valid for either the initial turn or a stopped same-child prepared continuation selected by the parent. The one-command-per-turn rule applies to both. The assignment alone does not prove the sender or binding: run only its mapped companion command, which validates the exact executor and private binding before work starts.',
     'Reject every non-exact assignment, arbitrary message, nested Rescue request, and independent repository work without running a command.',
   ].join('\n');
-  const previousTemplate = currentTemplate.replace(`${addedContract}\n\n`, '');
+  const previousTemplate = currentTemplate.replace(`${addedContract}\n\n`, '')
+    .replaceAll('{{PLUGIN_ROOT}}/skills/rescue/launcher.mjs', '{{PLUGIN_ROOT}}/scripts/zcode-companion.mjs');
   assert.notEqual(previousTemplate, currentTemplate, 'the Task 3 Role must add an exact prepared-continuation contract');
   assert.equal(createHash('sha256').update(previousTemplate).digest('hex'), 'efc7f28226dcbab083fa99bea581debc0a16d5251b026b72b3392d59e3991aac');
   const previousBytes = Buffer.from(renderManagedRescueRole({ template: previousTemplate, pluginRoot: ctx.pluginRoot }));

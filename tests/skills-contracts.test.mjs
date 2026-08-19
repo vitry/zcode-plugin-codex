@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import {
   assertExactChildContinuationContract,
+  assertRescueLauncherGate,
   assertRescueRouteContract,
   expectedGenericRescueMessage,
   expectedNamedRescueMessage,
@@ -78,14 +79,19 @@ test('setup documents one-run Role reconciliation without owning host spawn meta
   assert.equal(existsSync(new URL('skills/uninstall/', root)), false);
 });
 
-test('skills resolve the installed plugin root and use constant direct companion commands', () => {
+test('skills use their fixed installed entrypoint without exposing private protocols', () => {
   for (const name of expected) {
     const source = skill(name);
-    assert.match(source, /two directories above this `SKILL\.md`/);
-    assert.match(source, /absolute canonical plugin root/);
+    if (name === 'rescue') {
+      assertRescueLauncherGate(source);
+      assert.match(source, /node "<rescue-launcher-path>" invoke-prepared rescue/);
+    } else {
+      assert.match(source, /two directories above this `SKILL\.md`/);
+      assert.match(source, /absolute canonical plugin root/);
+    }
     if (name === 'setup') assert.match(source, /preserve (?:the )?raw argument vector unchanged/i);
     else {
-      assert.match(source, new RegExp(`scripts/zcode-companion\\.mjs" ${name === 'rescue' ? 'invoke-prepared' : 'invoke'} ${name}`));
+      if (name !== 'rescue') assert.match(source, new RegExp(`scripts/zcode-companion\\.mjs" invoke ${name}`));
       assert.match(source, /available terminal tool/i);
       assert.doesNotMatch(source, /without a shell/i);
       assert.doesNotMatch(source, /raw argument vector|<raw-arguments>|protected descriptor|FD3|FD4/i);
@@ -112,6 +118,7 @@ test('review skills are read-only and Rescue is foreground by default', () => {
     assert.match(source, /do not (?:edit|modify|apply|fix)/i);
   }
   const source = skill('rescue');
+  assertRescueLauncherGate(source);
   assert.match(source, /defaults? to foreground/i);
   assert.match(source, /role-status rescue/);
   assertRescueNamingContract(source);
@@ -125,6 +132,19 @@ test('review skills are read-only and Rescue is foreground by default', () => {
   assert.match(source, /unknown\/unavailable\/invalid (?:value|Role value) `zcode-rescue`[\s\S]+\$zcode:setup/i);
   assert.match(source, /wait[\s\S]+same child/i);
   assert.doesNotMatch(source, /parent[^\n]{0,120}(?:run|execute)[^\n]{0,120}invoke rescue/i);
+});
+
+test('Rescue uses only its machine-bound launcher and treats root diagnostics as terminal', () => {
+  const source = skill('rescue');
+  const { block } = assertRescueLauncherGate(source);
+  assert.doesNotMatch(source, /node\s+"<[^"]*(?:plugin-root|canonical-plugin-root)[^"]*>\/scripts\/zcode-companion\.mjs"/i);
+  assert.doesNotMatch(source, /node\s+scripts\/zcode-companion\.mjs/i);
+  assert.match(source, /node "<rescueLauncherPath>" role-status rescue/);
+  assert.match(source, /node "<rescueLauncherPath>" prepare rescue/);
+  assert.match(source, /`source-session-unproven`[\s\S]+terminal[\s\S]+exact remedy/i);
+  const sourceFailure = /`source-session-unproven`[\s\S]+?(?=\n\n|$)/i.exec(source)?.[0] ?? '';
+  assert.match(sourceFailure, /(?:do not|never)[^\n]+\$zcode:setup[\s\S]+prepare[\s\S]+follow[ -]?up[\s\S]+spawn/i);
+  assert.doesNotMatch(block, /two directories above|<plugin-root>|canonical plugin root/i);
 });
 
 test('Rescue naming clauses cannot be relocated outside the preflight-to-route section', () => {
@@ -231,7 +251,7 @@ test('stale spawn-only prose cannot contradict stopped-child continuation', () =
 
 test('Root prepares exactly one private Rescue envelope before one selected followup or spawn', () => {
   const source = skill('rescue');
-  assert.match(source, /node "<plugin-root>\/scripts\/zcode-companion\.mjs" prepare rescue/);
+  assert.match(source, /node "<rescueLauncherPath>" prepare rescue/);
   assert.match(source, /raw-capable TTY[\s\S]+setRawMode\(true\)/i);
   assert.match(source, /\{"type":"preparation-input-ready","command":"rescue"\}/);
   assert.match(source, /readiness[\s\S]+nonterminal[\s\S]+only after[\s\S]+write_stdin[\s\S]+exactly one JSON line[\s\S]+LF/i);
@@ -271,7 +291,7 @@ test('private task envelope is confined to the parent write_stdin rollout', () =
 
 test('Rescue chooses its presentation name after readiness and before spawning', () => {
   const source = skill('rescue');
-  const readiness = source.indexOf('If its status is not `ready`');
+  const readiness = source.indexOf('For every other status that is not `ready`');
   const naming = source.indexOf('choose `rescueTaskName` exactly once');
   const namedSpawn = source.indexOf('spawn_agent({');
   assert.ok(readiness >= 0, 'readiness preflight outcome must exist');
@@ -283,7 +303,7 @@ test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task
   const source = skill('rescue');
   assert.match(source, /Only after the preflight returned `ready`/);
   assert.match(source, /Act only as the installed ZCode Rescue forwarder\./);
-  assert.match(source, /node "<canonical-plugin-root>\/scripts\/zcode-companion\.mjs" invoke-prepared rescue/);
+  assert.match(source, /node "<rescue-launcher-path>" invoke-prepared rescue/);
   assert.match(source, /Preserve stderr and return public stdout verbatim\./);
   assert.match(source, /Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request\/print\/persist authorization material\./);
   assert.match(source, /never issue a second spawn/i);
@@ -305,6 +325,8 @@ test('managed Rescue role is a fixed TOML forwarder without capability or task m
   assert.match(source, /^developer_instructions = """[\s\S]+"""\n$/);
   assert.equal((source.match(/^developer_instructions\s*=/gm) ?? []).length, 1);
   assert.match(source, /invoke-prepared rescue/);
+  assert.match(source, /node "\{\{PLUGIN_ROOT\}\}\/skills\/rescue\/launcher\.mjs" invoke-prepared rescue/);
+  assert.doesNotMatch(source, /node[^\n]+scripts\/zcode-companion\.mjs/);
   assert.match(source, /invoke-choice rescue resume/);
   assert.match(source, /invoke-choice rescue fresh/);
   assert.match(source, /same exact prepared assignment[\s\S]+initial turn[\s\S]+stopped same-child prepared continuation/i);

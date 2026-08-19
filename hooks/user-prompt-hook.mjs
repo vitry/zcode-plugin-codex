@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import process from 'node:process';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
@@ -14,12 +15,13 @@ try {
   if (input.agent_id !== undefined) { process.stdout.write('{}'); process.exit(0); }
   const dataRoot = resolvePluginDataRoot({ env: process.env, pluginRoot: resolve(fileURLToPath(new URL('../', import.meta.url))) });
   if (!await isOwnedSession(dataRoot, input)) { process.stdout.write('{}'); process.exit(0); }
+  const rescueLauncherPath = realpathSync(fileURLToPath(new URL('../skills/rescue/launcher.mjs', import.meta.url)));
   const identity = createIdentityStore({ dataRoot });
   await createRescuePreparationStore({ dataRoot }).cleanupOlderTurns({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd });
   await identity.beginCallerTurn({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd, permissionMode: input.permission_mode, prompt: input.prompt });
   try { const fingerprint = await fingerprintWorkspace(input.cwd); await identity.recordGateBaseline({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd, fingerprint, permissionSnapshot: { permissionMode: input.permission_mode } }); } catch (error) { if (error?.code === 'GATE_BASELINE_EXISTS') { /* another exact hook invocation already recorded it */ } else { /* review gating is optional; caller authorization is not */ } }
   const unread = await unreadJobs(dataRoot, input.cwd, input.session_id);
-  const context = [];
+  const context = [`[zcode-rescue-launcher] ${JSON.stringify({ version: 1, launcherPath: rescueLauncherPath })}`];
   if (unread.length) context.push(`Completed ZCode jobs are waiting: ${unread.map((job) => `${job.id} (${job.status})`).join(', ')}. Mention only these job IDs and suggest $zcode:status / $zcode:result when relevant.`);
   process.stdout.write(JSON.stringify(context.length ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context.join('\n') } } : {}));
 } catch (error) { process.stderr.write(`ZCode prompt hook failed safely: ${error?.code ?? 'HOOK_FAILED'}\n`); process.exitCode = 1; }
