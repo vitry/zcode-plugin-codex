@@ -128,6 +128,19 @@ test('release docs bind Rescue to its owned instance launcher without crossing n
   assert.match(changelog, /installed.{0,100}source-development namespaces.{0,160}isolated/is);
 });
 
+test('ADR 0010 records the Rescue launcher amendment without weakening direct authorization', () => {
+  const adr = read('docs/adr/0010-use-thread-bound-direct-companion.md');
+
+  assert.match(adr, /amended.{0,80}2026-08-20/is);
+  assert.match(adr, /2026-08-19-rescue-root-provenance-diagnostics-design\.md/i);
+  assert.match(adr, /Rescue.{0,180}instance-bound launcher/is);
+  assert.match(adr, /launcher.{0,180}same process.{0,180}(?:delegates|dispatches).{0,160}companion/is);
+  assert.match(adr, /(?:does not|is not).{0,120}(?:process hop|authorization boundary)/is);
+  assert.match(adr, /`CODEX_THREAD_ID`.{0,200}private active-turn record/is);
+  assert.match(adr, /single[- ]hop.{0,200}(?:preserved|remains)/is);
+  assert.match(adr, /fixed Rescue (?:argv|command).{0,180}(?:allowlist|shapes)/is);
+});
+
 test('binding ADR defines current status at durable continuation publication', () => {
   const adr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');
   assert.match(adr, /`currentJobId`.{0,180}durably reserved and published.{0,180}(?:queues|fails|cancelled)/is);
