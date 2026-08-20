@@ -103,7 +103,7 @@ Setup 会把以下 schema 写入 `$CODEX_HOME/plugins/data/zcode-<marketplace>/w
 
 `SessionEnd` 会对结束会话的可写 Rescue 执行 best-effort 结算。已 claim 的 queued reservation 在其 worker lease 仍被持有时保持不变。若进程在结算完成前退出，后续 Rescue 会执行预留时的崩溃回退，并可结算可证明的孤儿可写 job；结算不会转移 ownership，仍只有原 owner 能读取其结果。在这个预留时的崩溃回退中，仍被持有的精确 worker lease 会保留 writable guard。当精确 worker lease 已释放且现存 broker 控制通道不可用时，`SessionEnd` 或下一次 Rescue 会把孤儿归档为 `failed` 并释放 writable guard。这表示插件放弃追踪，不代表远端停止已确认。broker 仍可连接时，未确认的 `session/stop` 仍会保留 writable guard。其他会话只能通过 `$zcode:status --all` 查看脱敏后的 workspace 信息。
 
-前台运行会把 ZCode 活动流式显示在当前终端。如果没有新活动，则每 20 秒输出一次心跳，让耗时较长的模型请求或工具调用仍然可见。同一份安全活动也会持久化到 job；`$zcode:status <job-id>` 会显示阶段、最后活动时间和近期进度预览。例如：
+前台运行会把 ZCode 活动流式显示在当前终端。如果没有新活动，则每 20 秒输出一次心跳，让耗时较长的模型请求或工具调用仍然可见。现有有界 pipeline 成功派发的每个已接受安全语义进度事件，也会追加到私有、持久、便于人阅读的 `workspaces/<workspace-hash>/jobs/<job-id>.log`，它与 `<job-id>.json` 相邻；job 的 `progressPreview` 仍只保留最近 4 条。精确 owner 的详细 `$zcode:status <job-id>` 会显示进度预览、阶段和最后活动时间，以及 `Log: <absolute-private-path>`。例如：
 
 ```text
 $zcode:rescue --wait 修复失败的测试
@@ -115,7 +115,12 @@ Status: running
 Phase: running
 Progress:
   - ZCode started a tool call.
+Log: <absolute-private-path>
 ```
+
+每个 job 的日志还可以保存由现有精确 linkage 规则选出的当前 turn 的可见 assistant 文本，以及权威最终输出。原始命令 stdout/stderr、任意工具 input/output/error/metadata、文件内容、patch、环境值、凭据、capabilities、隐藏消息和原始推理仍全部排除。日志与进度只具观察性，不能建立或改变终态权威。
+
+只有精确 owner 的详细 status 会暴露私有路径。紧凑列表、外部 `--all` 投影、同级 sibling session、绑定的 Rescue status sidecar、Root relay 和终态通知都不会暴露 `logFile` 或日志路径。status 语法仍为 `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]`：不提供 `--log` 选项或日志读取命令。日志沿用现有持久保留策略，在卸载或选择性 runtime 清理后仍保留；没有日志轮转、过期、裁剪、逐日志删除、导出或搜索功能。仅在删除已证明属于本插件的工作区数据时才删除这些日志。
 
 后台任务有独立生命周期：启动它的前台命令或 Codex turn 结束时，后台任务不会自动取消。用 `$zcode:status <job-id>` 查看，用 `$zcode:cancel <job-id>` 显式取消；ownership 仍只属于预留该 job 的 Codex session。
 

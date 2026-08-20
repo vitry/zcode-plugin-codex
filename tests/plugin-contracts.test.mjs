@@ -245,6 +245,7 @@ test('conversation compatibility progress never parses raw session logs or synth
   for (const relativePath of ['scripts/lib/progress.mjs', 'scripts/lib/conversation-progress.mjs', 'scripts/lib/session-progress.mjs']) {
     const source = readFileSync(new URL(relativePath, root), 'utf8');
     assert.doesNotMatch(source, /(?:readFile|createReadStream).*zcode/si, `${relativePath} must not parse raw ZCode logs`);
+    assert.doesNotMatch(source, /(?:job[-_ ]?log|readJobLog|jobLogPath)/i, `${relativePath} must not parse durable per-job logs`);
   }
   assert.doesNotMatch(readFileSync(new URL('scripts/lib/session-progress.mjs', root), 'utf8'), /v4\/conversation\/frame/, 'session fallback must not synthesize conversation frames');
 });

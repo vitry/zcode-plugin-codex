@@ -67,6 +67,37 @@ test('release docs explain progress reporting and supported interruption boundar
   assert.match(chinese, /原始 PTY.{0,200}凭据.{0,80}capabilit/is);
 });
 
+test('release docs define private durable per-job history without adding a log command', () => {
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  const security = read('SECURITY.md');
+  const changelog = read('CHANGELOG.md');
+  const uninstall = read('docs/manual-uninstall.md');
+
+  for (const source of [english, chinese]) {
+    assert.match(source, /workspaces\/<workspace-hash>\/jobs\/<job-id>\.log/);
+    assert.match(source, /Log: <absolute-private-path>/);
+    assert.match(source, /progressPreview.{0,120}(?:last|最近|最后).{0,20}(?:four|4)/is);
+    assert.match(source, /(?:compact|紧凑).{0,160}(?:foreign|外部|非 owner).{0,160}(?:sibling|同级|兄弟).{0,240}(?:terminal|终态).{0,120}(?:do not|does not|不会|不).{0,120}(?:logFile|日志路径|log path)/is);
+    assert.match(source, /(?:current-turn visible assistant text|当前 turn 的可见 assistant 文本).{0,180}(?:authoritative final output|权威最终输出)/is);
+    assert.match(source, /(?:raw command stdout\/stderr|原始命令 stdout\/stderr).{0,260}(?:credentials|凭据).{0,120}(?:raw reasoning|原始推理)/is);
+    assert.match(source, /(?:observational|观察性).{0,160}(?:cannot|不能|不会).{0,120}(?:terminal authority|终态权威)/is);
+    assert.match(source, /(?:no|不提供|没有).{0,100}(?:rotation|轮转).{0,120}(?:expiry|过期).{0,120}(?:pruning|裁剪).{0,160}(?:delete|删除).{0,120}(?:export|导出).{0,120}(?:search|搜索)/is);
+    assert.doesNotMatch(source, /^\|[^\n]*\$zcode:status[^\n]*--log/m);
+  }
+
+  assert.match(english, /exact-owner detailed `?\$zcode:status <job-id>`?.{0,180}`?Log: <absolute-private-path>`?/is);
+  assert.match(chinese, /精确 owner.{0,120}`?\$zcode:status <job-id>`?.{0,180}`?Log: <absolute-private-path>`?/is);
+  assert.match(security, /durable per-job log.{0,220}safe semantic progress.{0,220}current-turn visible assistant text.{0,180}authoritative final output/is);
+  assert.match(security, /raw command stdout\/stderr.{0,320}credentials.{0,120}capabilities.{0,120}hidden messages.{0,120}raw reasoning/is);
+  assert.match(uninstall, /jobs\/<job-id>\.log.{0,200}retained.{0,160}selective runtime cleanup/is);
+  assert.match(uninstall, /jobs\/<job-id>\.log.{0,240}保留.{0,160}选择性清理/is);
+  assert.match(uninstall, /deleted only by proven plugin-owned workspace-data erasure|仅在删除已证明属于本插件的工作区数据时才删除/i);
+  assert.match(changelog, /durable per-job human-readable logs/i);
+  assert.match(changelog, /exact-owner detailed status.{0,160}private absolute path/is);
+  assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
+});
+
 test('release docs explain automatic Rescue routing and private prepared rollout', () => {
   const english = read('README.md');
   const chinese = read('README.zh-CN.md');
