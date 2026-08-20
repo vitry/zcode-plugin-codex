@@ -19,6 +19,11 @@ export function parseRecordedInvocation(command, prompt) {
   const marker = `$zcode:${command}`; const match = new RegExp(`(?:^|\\s)${escapeRegExp(marker)}(?=$|\\s)`).exec(prompt);
   if (match) {
     const rest = prompt.slice(match.index + match[0].length).trim();
+    const commandForm = new RegExp(`^${escapeRegExp(marker)}(?=$|\\s)`).test(prompt.trimStart());
+    if (['result', 'cancel'].includes(command) && !commandForm && !rest.startsWith('-') && !rest.startsWith('$zcode:')) {
+      const jobId = /^([a-f0-9]{64})(?=$|\s)/u.exec(rest)?.[1];
+      return { argv: [command, ...(jobId ? [jobId] : [])], explicit: true };
+    }
     return { argv: [command, ...tokenize(rest)], explicit: true };
   }
   if (command === 'rescue') return { argv: [command, prompt], explicit: false };
