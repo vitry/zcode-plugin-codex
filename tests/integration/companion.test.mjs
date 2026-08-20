@@ -1146,7 +1146,10 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
   await store.transitionJob(context.workspace, failed.id, ['running'], 'running', {
     inputId: 'private-input', startRevision: 77, beforeMessageIds: ['private-before-message'],
   });
-  await store.transitionJob(context.workspace, failed.id, ['running'], 'running', { lastCancelError: { message: 'PRIVATE_CANCEL_REASON' } });
+  await store.transitionJob(context.workspace, failed.id, ['running'], 'running', { lastCancelError: {
+    message: `Retry\u061c **stop**\u200e\u202e\nwith\u200f\tcontrols\u0000 ${'界'.repeat(800)}`,
+    code: 'PRIVATE_CANCEL_CODE', secretMarker: 'PRIVATE_CANCEL_SECRET', details: { token: 'PRIVATE_CANCEL_TOKEN' },
+  } });
   await store.updateJobProgress(context.workspace, failed.id, { phase: 'running', message: 'PRIVATE_PROGRESS_PREVIEW', observedAt: startedAt });
   await store.updateJobProgressProbe(context.workspace, failed.id, {
     state: 'online', subscriptionAcknowledged: true, framesReceived: 99,
@@ -1177,11 +1180,24 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
   const failedStatus = await companion(context, ['status', failed.id]);
   assert.equal(failedStatus.code, 0, `${failedStatus.stderr}${failedStatus.stdout}`);
   assert.deepEqual(failedStatus.json.job.error, failedResult.json.job.error);
-  assert.doesNotMatch(JSON.stringify(failedStatus.json.job.error), /PRIVATE_|secretMarker|details|code/u);
+  assert.deepEqual(Object.keys(failedStatus.json.job.lastCancelError), ['message']);
+  assert.match(failedStatus.json.job.lastCancelError.message, /^Retry \*\*stop\*\* with controls /u);
+  assert.match(failedStatus.json.job.lastCancelError.message, /\.\.\.$/u);
+  assert.ok(Buffer.byteLength(failedStatus.json.job.lastCancelError.message) <= 2_048);
+  assert.equal([...failedStatus.json.job.lastCancelError.message].some((character) => {
+    const code = character.codePointAt(0);
+    return code <= 0x1f || code >= 0x7f && code <= 0x9f || code === 0x061c || code === 0x200e || code === 0x200f
+      || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
+  }), false);
+  assert.doesNotMatch(JSON.stringify({ error: failedStatus.json.job.error, lastCancelError: failedStatus.json.job.lastCancelError }), /PRIVATE_|secretMarker|details|PRIVATE_CANCEL_CODE|PRIVATE_ERROR_CODE/u);
   const failedResultError = failedResult.stdout.split('\n').find((/** @type {string} */ line) => line.startsWith('Error: '));
   const failedStatusError = failedStatus.stdout.split('\n').find((/** @type {string} */ line) => line.startsWith('Error: '));
   assert.ok(failedResultError); assert.equal(failedStatusError, failedResultError);
   assert.match(failedStatusError, /^Error: Public \\\*\\\*failure\\\*\\\* with controls /u);
+  const lastCancelLine = failedStatus.stdout.split('\n').find((/** @type {string} */ line) => line.startsWith('Last cancellation error: '));
+  assert.ok(lastCancelLine); assert.ok(Buffer.byteLength(lastCancelLine.slice('Last cancellation error: '.length)) <= 2_048);
+  assert.match(lastCancelLine, /^Last cancellation error: Retry \\\*\\\*stop\\\*\\\* with controls /u);
+  assert.doesNotMatch(lastCancelLine, /PRIVATE_|[\u061C\u200E\u200F\u202E]/u);
 
   await new Promise((resolve) => setTimeout(resolve, 2));
   const succeeded = await reserve('succeeded-result'); const successfulContents = 'exact immutable result\n';
@@ -1236,6 +1252,25 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
     assert.doesNotMatch(output.stdout, /^Error:/mu);
     assert.doesNotMatch(`${output.internal}${output.stdout}`, /PRIVATE_EMPTY_CODE/u);
   }
+
+  const legacyCancel = await reserve('legacy-cancel-error');
+  await store.transitionJob(context.workspace, legacyCancel.id, ['queued'], 'running');
+  await store.transitionJob(context.workspace, legacyCancel.id, ['running'], 'running', {
+    lastCancelError: ' Legacy\u061c cancel\nreason\u0085 ',
+  });
+  const legacyStatus = await companion(context, ['status', legacyCancel.id]);
+  assert.equal(legacyStatus.json.job.lastCancelError, 'Legacy cancel reason');
+  assert.match(legacyStatus.stdout, /^Last cancellation error: Legacy cancel reason$/mu);
+
+  const emptyCancel = await reserve('empty-cancel-error');
+  await store.transitionJob(context.workspace, emptyCancel.id, ['queued'], 'running');
+  await store.transitionJob(context.workspace, emptyCancel.id, ['running'], 'running', {
+    lastCancelError: { message: ' \n\u0000\u0085\u061c\u200e\u200f\u202e\u2069 ', code: 'PRIVATE_EMPTY_CANCEL' },
+  });
+  const emptyCancelStatus = await companion(context, ['status', emptyCancel.id]);
+  assert.equal(Object.hasOwn(emptyCancelStatus.json.job, 'lastCancelError'), false);
+  assert.doesNotMatch(emptyCancelStatus.stdout, /^Last cancellation error:/mu);
+  assert.doesNotMatch(emptyCancelStatus.internal, /PRIVATE_EMPTY_CANCEL/u);
 });
 
 test('a new owner scavenges one orphan blocker and retries writable reservation exactly once', async () => {

@@ -535,6 +535,11 @@ function publicJob(job, ownerSessionId, includeProgressProbe = false) {
     const message = publicErrorMessage(visible.error);
     if (message === null) delete visible.error; else visible.error = { message };
   }
+  if (Object.hasOwn(visible, 'lastCancelError')) {
+    const message = publicErrorMessage(visible.lastCancelError);
+    if (message === null) delete visible.lastCancelError;
+    else visible.lastCancelError = typeof visible.lastCancelError === 'string' ? message : { message };
+  }
   if (includeProgressProbe && validProgressProbe(job.progressProbe)) visible.progressProbe = { ...job.progressProbe, rejected: { ...job.progressProbe.rejected } };
   return { ...visible, owned: true, owner: 'same-owner' };
 }
