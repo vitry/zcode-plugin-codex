@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readdir, readFile, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, realpath, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
@@ -213,6 +213,19 @@ test('resolveOnlyActiveTurn fails closed when current and unexpired legacy turns
   assert.equal((await identity.resolveOnlyActiveTurn({ workspace: workspaceA, now: new Date(now.getTime() + 60_000) })).turnId, 'current-turn');
 });
 
+test('resolveOnlyActiveTurn rejects every canonical slot identity mismatch', async () => {
+  for (const variant of ['filename', 'record-key', 'computed-key', 'workspace']) {
+    const { dataRoot, identity, workspaceA, workspaceB } = await fixture();
+    await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default', prompt: 'work' });
+    const path = await activeTurnPath(dataRoot, workspaceA, 'session-a'); const record = JSON.parse(await readFile(path, 'utf8')); const forgedKey = 'f'.repeat(64);
+    if (variant === 'filename') await rename(path, join(dirname(path), `${forgedKey}.json`));
+    if (variant === 'record-key') { record.key = forgedKey; await atomicWriteJson(path, record); }
+    if (variant === 'computed-key') { record.key = forgedKey; record.sessionId = 'forged-session'; await atomicWriteJson(join(dirname(path), `${forgedKey}.json`), record); await rename(path, `${path}.ignored`); }
+    if (variant === 'workspace') { record.workspace = await realpath(workspaceB); await atomicWriteJson(path, record); }
+    await assert.rejects(identity.resolveOnlyActiveTurn({ workspace: workspaceA }), { code: 'AUTHORIZATION_RECORD_INVALID' });
+  }
+});
+
 test('endCallerTurn accepts current and legacy records and deletes only the exact turn', async () => {
   for (const schema of ['current', 'legacy']) {
     const { dataRoot, identity, workspaceA } = await fixture(); const input = { sessionId: `${schema}-session`, turnId: `${schema}-turn`, workspace: workspaceA, permissionMode: 'default', prompt: schema }; const path = await activeTurnPath(dataRoot, workspaceA, input.sessionId);
@@ -223,6 +236,32 @@ test('endCallerTurn accepts current and legacy records and deletes only the exac
     await identity.endCallerTurn({ sessionId: input.sessionId, turnId: input.turnId, workspace: workspaceA });
     await assert.rejects(identity.resolveActiveTurn({ sessionId: input.sessionId, workspace: workspaceA }), { code: 'ACTIVE_TURN_NOT_FOUND' });
   }
+});
+
+test('endCallerTurn rejects mismatched slot identity without deleting the persisted record', async () => {
+  for (const field of ['key', 'sessionId', 'workspace']) {
+    const { dataRoot, identity, workspaceA, workspaceB } = await fixture(); const input = { sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default', prompt: 'work' };
+    await identity.beginCallerTurn(input); const path = await activeTurnPath(dataRoot, workspaceA, input.sessionId); const record = JSON.parse(await readFile(path, 'utf8'));
+    if (field === 'key') record.key = 'f'.repeat(64);
+    if (field === 'sessionId') record.sessionId = 'forged-session';
+    if (field === 'workspace') record.workspace = await realpath(workspaceB);
+    await atomicWriteJson(path, record); const before = await readFile(path, 'utf8');
+    await assert.rejects(identity.endCallerTurn({ sessionId: input.sessionId, turnId: input.turnId, workspace: workspaceA }), { code: 'AUTHORIZATION_RECORD_INVALID' });
+    assert.equal(await readFile(path, 'utf8'), before);
+  }
+});
+
+test('concurrent same-session replacements leave one exact active slot and one matching caller authorization', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture(); const workspace = await realpath(workspaceA);
+  const turns = Array.from({ length: 12 }, (_, index) => `turn-${index}`);
+  const tokens = await Promise.all(turns.map((turnId) => identity.beginCallerTurn({ sessionId: 'session-a', turnId, workspace: workspaceA, permissionMode: 'default', prompt: turnId })));
+  const active = await identity.resolveOnlyActiveTurn({ workspace: workspaceA }); const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA });
+  const activeFiles = await readdir(join(storage.directory, 'identity', 'active-turns')); assert.deepEqual(activeFiles, [`${createHash('sha256').update(JSON.stringify(['session-a', workspace])).digest('hex')}.json`]);
+  const attempts = await Promise.allSettled(tokens.map((token) => identity.consumeCallerContext(token, { workspace: workspaceA })));
+  const authorized = attempts.filter((attempt) => attempt.status === 'fulfilled'); assert.equal(authorized.length, 1); assert.equal(authorized[0].value.turnId, active.turnId);
+  const callerFiles = (await readdir(join(storage.directory, 'identity', 'callers'))).filter((name) => name.endsWith('.json')); assert.equal(callerFiles.length, 1);
+  const caller = JSON.parse(await readFile(join(storage.directory, 'identity', 'callers', callerFiles[0]), 'utf8'));
+  assert.equal(caller.sessionId, 'session-a'); assert.equal(caller.turnId, active.turnId); assert.equal(caller.workspace, workspace); assert.equal(callerFiles[0], `${caller.digest}.json`);
 });
 
 test('pending invocation choices preserve the exact originating turn, workspace, and permission snapshot', async () => {

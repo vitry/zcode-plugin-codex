@@ -80,7 +80,10 @@ export function createIdentityStore({ dataRoot }) {
           if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
           const record = await readJsonFile(join(storage.activeTurnsDirectory, name));
           if (!isActiveTurnRecord(record)) throw invalidAuthorizationRecord('active turn');
-          if (record.workspace === storage.workspacePath && (isCurrentActiveTurnRecord(record) || toTimestamp(expected.now) < Date.parse(record.expiresAt))) active.push(record);
+          const filenameKey = name.slice(0, -'.json'.length);
+          if (record.workspace !== storage.workspacePath || !safeEqual(record.key, filenameKey)
+            || !safeEqual(record.key, activeTurnKey(record.sessionId, storage.workspacePath))) throw invalidAuthorizationRecord('active turn');
+          if (isCurrentActiveTurnRecord(record) || toTimestamp(expected.now) < Date.parse(record.expiresAt)) active.push(record);
         }
         if (active.length !== 1) throw setupSessionUnproven(active.length);
         return publicRecord(active[0]);
@@ -91,9 +94,11 @@ export function createIdentityStore({ dataRoot }) {
     async endCallerTurn(input) {
       validateTurnIdentity(input); const storage = await identityStorage(dataRoot, input.workspace);
       await withFileLock(storage.lockPath, async () => {
-        await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId === input.turnId); const path = join(storage.activeTurnsDirectory, `${activeTurnKey(input.sessionId, storage.workspacePath)}.json`); let current;
+        await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId === input.turnId); const key = activeTurnKey(input.sessionId, storage.workspacePath); const path = join(storage.activeTurnsDirectory, `${key}.json`); let current;
         try { current = await readJsonFile(path); } catch (error) { if (error instanceof PluginError && error.code === 'JSON_READ_FAILED' && /** @type {any} */ (error.cause)?.code === 'ENOENT') return; throw error; }
         if (!isActiveTurnRecord(current)) throw invalidAuthorizationRecord('active turn');
+        if (!safeEqual(current.key, key) || !safeEqual(current.sessionId, input.sessionId)
+          || current.workspace !== storage.workspacePath) throw invalidAuthorizationRecord('active turn');
         if (current.turnId === input.turnId) await unlink(path);
       });
     },
