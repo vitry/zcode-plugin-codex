@@ -961,6 +961,104 @@ test('reports the in-flight event immediately, suppresses duplicates, and serial
   ]);
 });
 
+test('archives every safely dispatched semantic event in receive order beyond the preview bound', async () => {
+  const archived = [];
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', archive: async (event) => archived.push(event), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  for (const reason of [
+    'prompt_started', 'model_streaming', 'tool_call_started', 'api_retry',
+    'tool_call_progress', 'tool_call_result', 'prompt_completed',
+  ]) {
+    reporter.observe(notification(reason));
+    await Promise.resolve();
+  }
+  await reporter.flush();
+  assert.deepEqual(archived.map((event) => event.message), [
+    'ZCode started the delegated turn.',
+    'ZCode is generating a response.',
+    'ZCode started a tool call.',
+    'ZCode is retrying the model request.',
+    'ZCode tool work is still running.',
+    'ZCode completed a tool call.',
+    'ZCode completed the delegated turn.',
+  ]);
+  reporter.close();
+});
+
+test('throwing and rejecting archives disable only archive with one fixed safe diagnostic', async () => {
+  for (const archive of [
+    () => { throw new Error('PRIVATE_ARCHIVE_THROW'); },
+    async () => { throw new Error('PRIVATE_ARCHIVE_REJECTION'); },
+  ]) {
+    const lines = []; const persisted = []; const diagnostics = []; let attempts = 0;
+    const reporter = progressModule.createProgressReporter({
+      sessionId: 'session-a',
+      archive: (event) => { attempts += 1; return archive(event); },
+      write: (line) => lines.push(line), persist: async (event) => persisted.push(event),
+      onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+      setInterval: () => ({ unref() {} }), clearInterval: () => {},
+    });
+    reporter.observe(notification('prompt_started'));
+    await new Promise((resolve) => setImmediate(resolve));
+    reporter.observe(notification('prompt_completed'));
+    await reporter.flush();
+    assert.equal(attempts, 1);
+    assert.deepEqual(diagnostics, ['archive-disabled']);
+    assert.deepEqual(persisted.map((event) => event.message), [
+      'ZCode started the delegated turn.',
+      'ZCode progress archive was disabled.',
+      'ZCode completed the delegated turn.',
+    ]);
+    assert.doesNotMatch(lines.join('') + JSON.stringify(persisted), /PRIVATE_ARCHIVE/);
+    reporter.close();
+  }
+});
+
+test('bounds a stalled archive queue while retaining terminal progress', async () => {
+  const calls = []; let releaseFirst = () => {};
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a',
+    archive: async (event) => { calls.push(event); if (calls.length === 1) await firstBlocked; },
+    now: () => observedAt, setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  for (let index = 0; index < 100_000; index += 1) {
+    reporter.observe(notification(index % 2 === 0 ? 'tool_call_started' : 'api_retry'));
+  }
+  reporter.observe(notification('prompt_completed'));
+  await Promise.resolve();
+  assert.equal(calls.length, 1);
+  releaseFirst(); await reporter.flush();
+  assert.ok(calls.length <= 1 + progressModule.MAX_PROGRESS_PENDING_EVENTS, calls.length);
+  assert.equal(calls.at(-1).phase, 'finalizing');
+  reporter.close();
+});
+
+test('a never-settling archive cannot hold terminal flush or healthy sinks and close fences it', async () => {
+  const archived = []; const lines = []; const persisted = []; const diagnostics = [];
+  let releaseArchive = () => {};
+  const stalledArchive = new Promise((resolve) => { releaseArchive = resolve; });
+  const reporter = progressModule.createProgressReporter({
+    sessionId: 'session-a', archive: (event) => { archived.push(event); return stalledArchive; },
+    write: (line) => lines.push(line), persist: async (event) => persisted.push(event),
+    onDiagnostic: ({ kind }) => diagnostics.push(kind), now: () => observedAt,
+    setInterval: () => ({ unref() {} }), clearInterval: () => {},
+  });
+  reporter.observe(notification('prompt_started'));
+  reporter.observe(notification('prompt_completed'));
+  reporter.stopAccepting();
+  const started = Date.now(); await reporter.flush();
+  assert.ok(Date.now() - started < 1_000);
+  assert.deepEqual(diagnostics, ['progress-flush-timeout', 'archive-disabled']);
+  assert.equal(archived.length, 1);
+  assert.match(lines.join(''), /completed the delegated turn/);
+  assert.equal(persisted.filter((event) => event.phase === 'finalizing').length, 1);
+  reporter.close(); releaseArchive(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(archived.length, 1);
+});
+
 test('bounds pending persistence and output while retaining the latest event under flood', async () => {
   const calls = []; const persisted = []; const lines = [];
   let releaseFirst = () => {};
