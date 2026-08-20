@@ -20,6 +20,7 @@ export const REQUIRED_RESCUE_PAYLOAD = Object.freeze([
   'scripts/lib/invocation.mjs',
   'scripts/lib/job-control.mjs',
   'scripts/lib/job-log.mjs',
+  'scripts/lib/job-log-runtime.mjs',
   'scripts/lib/public-text.mjs',
   'scripts/lib/rescue-binding.mjs',
   'scripts/lib/rescue-preparation.mjs',
