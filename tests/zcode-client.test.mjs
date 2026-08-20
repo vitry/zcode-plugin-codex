@@ -1670,7 +1670,7 @@ test('broker release returns at its hard deadline while its tracked continuation
   let reads = 0; broker.readOwnerStore = async () => { reads += 1; if (reads === 1) await readGate; return { exists: true, sessions: { [sessionId]: ownerId } }; };
   let sendCalls = 0; let createCalls = 0; let stopCalls = 0; broker.protocol = { request: async (method) => { if (method === 'session/send') { sendCalls += 1; return { accepted: true, sessionId, stateRevision: 1 }; } if (method === 'session/create') { createCalls += 1; throw new Error('a fenced create reached ZCode'); } if (method === 'session/stop') { stopCalls += 1; return {}; } throw new Error(`unexpected ${method}`); }, beginTurn() {}, armTurn() {}, abortTurn() {}, cancelTurn() {} };
   const handling = broker.handleLocal(socket, JSON.stringify({ id: 83, method: 'broker/releaseOwner', params: { excludeSessionIds: [] } }));
-  await releaseResponseReady;
+  await withTestDeadlineKeepalive(() => releaseResponseReady);
   const releaseResponse = writes.find((frame) => frame.id === 83); assert.equal(releaseResponse?.error?.data?.pluginError?.code, 'ZCODE_OWNER_RELEASE_TIMEOUT'); assert.equal(reads, 1); assert.equal(broker.admission.ownerStates.get(ownerId)?.release?.ownerId, ownerId); assert.equal(broker.sessionOwners.get(sessionId)?.ownerId, ownerId);
   await broker.handleLocal(socket, JSON.stringify({ id: 84, method: 'session/send', params: { sessionId, inputId: 'release-fenced-send', queryId: 'release-fenced-send', content: 'must not reach ZCode' } }));
   await broker.handleLocal(socket, JSON.stringify({ id: 85, method: 'session/create', params: brokerCreateParams(directory, 'release-fenced-create') }));
