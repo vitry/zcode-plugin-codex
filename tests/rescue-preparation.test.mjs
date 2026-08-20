@@ -179,6 +179,41 @@ async function storeFixture() {
   };
 }
 
+test('preparation store validates and invokes only its private save-lock seam', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-rescue-prepared-seam-'));
+  const dataRoot = join(root, 'plugin-data');
+  const workspace = join(root, 'workspace');
+  await mkdir(workspace);
+  assert.throws(() => createRescuePreparationStore({
+    dataRoot, testOnlyBeforeSaveLockOpen: /** @type {any} */ (true),
+  }), { code: 'RESCUE_PREPARATION_INVALID' });
+  let calls = 0;
+  const store = createRescuePreparationStore({
+    dataRoot,
+    testOnlyBeforeSaveLockOpen: async () => { calls += 1; },
+  });
+  await store.save({
+    sessionId: 'parent', turnId: 'turn-a', workspace,
+    permissionMode: 'default', recordedPrompt: 'proactive',
+    envelope: { ...validEnvelope, source: 'proactive' },
+  });
+  assert.equal(calls, 1);
+
+  const sentinel = 'PRIVATE_SAVE_LOCK_SEAM_SENTINEL';
+  const throwing = createRescuePreparationStore({
+    dataRoot,
+    testOnlyBeforeSaveLockOpen: async () => { throw new Error(sentinel); },
+  });
+  await assert.rejects(throwing.save({
+    sessionId: 'parent', turnId: 'turn-b', workspace,
+    permissionMode: 'default', recordedPrompt: 'proactive',
+    envelope: { ...validEnvelope, source: 'proactive' },
+  }), (/** @type {any} */ error) => {
+    assert.doesNotMatch(errorChainText(error), new RegExp(sentinel));
+    return true;
+  });
+});
+
 /** @param {string} sessionId @param {string} turnId @param {string} workspace */
 function preparedKey(sessionId, turnId, workspace) {
   return createHash('sha256').update(JSON.stringify([sessionId, turnId, workspace, 'rescue'])).digest('hex');
@@ -430,6 +465,14 @@ test('replacement rechecks expiry after lock contention before writing', async (
   const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
   const before = await readFile(path);
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA });
+  /** @type {()=>void} */
+  let signalLockOpen = () => {};
+  /** @type {Promise<void>} */
+  const lockOpen = new Promise((resolve) => { signalLockOpen = resolve; });
+  const contendedStore = createRescuePreparationStore({
+    dataRoot,
+    testOnlyBeforeSaveLockOpen: async () => { signalLockOpen(); },
+  });
   const originalNow = Date.now;
   let clock = expiresAt - 1;
   Date.now = () => clock;
@@ -437,11 +480,11 @@ test('replacement rechecks expiry after lock contention before writing', async (
     /** @type {Promise<void>|undefined} */
     let pending;
     await withFileLock(join(storage.directory, '.rescue-preparation-lock'), async () => {
-      pending = store.save({
+      pending = contendedStore.save({
         ...base,
         envelope: { version: 1, source: 'proactive', task: 'continue', options: { resume: 'resume' } },
       });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await lockOpen;
       clock = expiresAt;
     });
     await assert.rejects(/** @type {Promise<void>} */ (pending), { code: 'RESCUE_PREPARATION_EXISTS' });

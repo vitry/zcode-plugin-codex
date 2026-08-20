@@ -94,11 +94,17 @@ export function hasRecordedRescueMarker(prompt) {
   return typeof prompt === 'string' && /(?:^|\s)\$zcode:rescue(?=$|\s)/u.test(prompt);
 }
 
-/** @param {{dataRoot:string}} options */
-export function createRescuePreparationStore({ dataRoot }) {
+/** @param {{dataRoot:string,testOnlyBeforeSaveLockOpen?:()=>Promise<void>}} options */
+export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockOpen }) {
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) throw preparationError(
     'RESCUE_PREPARATION_INVALID', 'A plugin data root is required.',
   );
+  if (testOnlyBeforeSaveLockOpen !== undefined && typeof testOnlyBeforeSaveLockOpen !== 'function') {
+    throw invalidPreparation();
+  }
+  const beforeSaveLockOpen = testOnlyBeforeSaveLockOpen === undefined ? undefined : async () => {
+    try { await testOnlyBeforeSaveLockOpen(); } catch { throw invalidPreparation(); }
+  };
   return {
     /** @param {any} input */
     async save(input) {
@@ -166,7 +172,7 @@ export function createRescuePreparationStore({ dataRoot }) {
           }
           cancellation.linearize();
           await atomicWriteJson(path, record, { privateRoot: storage.privateRoot });
-        }, { signal: cancellation.signal });
+        }, { beforeLockOpen: beforeSaveLockOpen, signal: cancellation.signal });
       } finally { cancellation.detach(); }
     },
 
@@ -464,7 +470,7 @@ async function preparationStorage(dataRoot, workspace) {
   };
 }
 
-/** @template T @param {any} storage @param {()=>Promise<T>} operation @param {{signal?:AbortSignal}} [options] @returns {Promise<T>} */
+/** @template T @param {any} storage @param {()=>Promise<T>} operation @param {{beforeLockOpen?:()=>Promise<void>,signal?:AbortSignal}} [options] @returns {Promise<T>} */
 async function withPreparationLock(storage, operation, options = {}) {
   return withFileLock(storage.lockPath, async () => {
     assertLockIdentity(storage);
