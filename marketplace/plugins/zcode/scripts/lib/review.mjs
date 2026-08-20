@@ -12,6 +12,7 @@ import { isBoundedPublicIdentifier } from './identifier.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { createDeferredConversationProgressObserver } from './conversation-progress.mjs';
 import { createSessionProgressDescriber } from './session-progress.mjs';
+import { publicErrorMessage } from './public-text.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { loadReviewOutputSchema, validateJsonSchema } from './review-schema.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
@@ -350,8 +351,7 @@ function terminalSnapshotStatus(snapshot, turnBoundary) {
 /** @param {any} snapshot @param {string} command @param {{beforeMessageIds?:Set<string>,inputId?:string,stateRevision?:number}} turnBoundary @param {unknown} status */
 function extractTerminalResultForStatus(snapshot, command, turnBoundary, status) {
   if (status === 'error') {
-    const providerMessage = snapshot?.projection?.lastError?.message;
-    const message = typeof providerMessage === 'string' && providerMessage.trim().length > 0 ? providerMessage : 'ZCode reported a terminal error.';
+    const message = publicErrorMessage(snapshot?.projection?.lastError?.message) ?? 'ZCode reported a terminal error.';
     throw new PluginError('ZCODE_TURN_FAILED', message, { category: 'runtime', remedy: 'Inspect the stored ZCode job status/result and retry after resolving the reported provider or runtime failure.' });
   }
   if (status !== 'completed' && status !== 'idle') throw invalidTerminalState();

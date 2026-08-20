@@ -32,7 +32,7 @@ ZCode Desktop 与 ZCode CLI 分别保存 model provider 设置。运行 `$zcode:
 | `$zcode:rescue [--background \| --wait] [--resume \| --fresh] [--model <provider/model\|alias>] [--effort none\|minimal\|low\|medium\|high\|xhigh] <task...>` | 委派调查或修改，默认前台。 |
 | `$zcode:transfer [--source <codex-thread-id>]` | 把可见 Codex 对话导入可恢复的 ZCode 会话。 |
 | `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]` | 查看持久任务；等待默认 240 秒。 |
-| `$zcode:result [job-id]` | 读取完整的已存储结果。 |
+| `$zcode:result [job-id]` | 不提供 ID 时，读取当前工作区中由当前 Codex 会话拥有的最新已结束 outcome；仍支持精确 job ID。成功 job 返回精确存储的 result artifact，失败或取消 job 返回有界的已存储 outcome 或失败报告。 |
 | `$zcode:cancel [job-id]` | 取消当前 Codex 会话拥有的排队或运行任务。 |
 | `$zcode:setup [--enable-review-gate \| --disable-review-gate]` | 诊断环境并控制可选 review gate。 |
 

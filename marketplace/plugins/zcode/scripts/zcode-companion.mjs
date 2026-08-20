@@ -15,7 +15,7 @@ import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
 import { createJobController, ownerIdForSession, readBoundRescueStatus, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
-import { boundUtf8, normalizePublicText } from './lib/public-text.mjs';
+import { publicErrorMessage } from './lib/public-text.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
@@ -531,6 +531,10 @@ function publicJob(job, ownerSessionId, includeProgressProbe = false) {
     };
   }
   const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe;
+  if (Object.hasOwn(visible, 'error')) {
+    const message = publicErrorMessage(visible.error);
+    if (message === null) delete visible.error; else visible.error = { message };
+  }
   if (includeProgressProbe && validProgressProbe(job.progressProbe)) visible.progressProbe = { ...job.progressProbe, rejected: { ...job.progressProbe.rejected } };
   return { ...visible, owned: true, owner: 'same-owner' };
 }
@@ -544,13 +548,8 @@ function terminalResultJob(job) {
     owned: true,
     owner: 'same-owner',
   };
-  const storedMessage = typeof job.error === 'string' ? job.error : typeof job.error?.message === 'string' ? job.error.message : '';
-  const message = sanitizeTerminalResultMessage(storedMessage);
+  const message = publicErrorMessage(job.error);
   return message ? { ...visible, error: { message } } : visible;
-}
-/** @param {string} message */
-function sanitizeTerminalResultMessage(message) {
-  return boundUtf8(normalizePublicText(message), 2_048);
 }
 /** @param {Record<string,any>} source @param {string[]} fields */
 function copyOptionalStringFields(source, fields) {

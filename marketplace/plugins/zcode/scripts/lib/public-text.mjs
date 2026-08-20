@@ -19,6 +19,16 @@ export function boundUtf8(value, maxBytes) {
   return `${result}${suffix}`;
 }
 
+/** @param {unknown} value @param {number} [maxBytes] */
+export function publicErrorMessage(value, maxBytes = 2_048) {
+  const stored = typeof value === 'string' ? value
+    : value && typeof value === 'object' && 'message' in value
+      && typeof value.message === 'string' ? value.message : null;
+  if (stored === null) return null;
+  const normalized = normalizePublicText(stored);
+  return normalized.length === 0 ? null : boundUtf8(normalized, maxBytes);
+}
+
 /** @param {number} code */
 function isBidiControl(code) {
   return code === 0x061c || code === 0x200e || code === 0x200f
