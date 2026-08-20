@@ -1,10 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, realpath, rename, unlink } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { link, lstat, open, realpath } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 
 import { PluginError } from './errors.mjs';
-import { ensurePrivateDirectoryWithin } from './fs.mjs';
+import { ensurePrivateDirectoryWithin, readPrivateDirectory, withFileLock } from './fs.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 export const MAX_JOB_LOG_EVENT_BYTES = 4 * 1024;
@@ -32,16 +32,14 @@ export async function resolveJobLogFile(input) {
 export async function createJobLog(input) {
   validateJobId(input?.jobId);
   const title = normalizedLine(input?.title, MAX_JOB_LOG_TITLE_BYTES);
+  const initialBytes = eventBytes(`Starting ${title}.`);
   return admitCanonical(async () => {
     try {
-      const opened = await createOrReopen(input);
+      const opened = await createOrReopen(input, initialBytes);
       return { key: canonicalQueueKey(opened), target: opened };
     } catch (error) { throw safeCreateError(error); }
   }, async (opened) => {
-    try {
-      if (opened.created) await appendAt(opened.root, opened.logFile, eventBytes(`Starting ${title}.`), opened.identity);
-      return opened.logFile;
-    } catch (error) { throw safeCreateError(error); }
+    return opened.logFile;
   });
 }
 
@@ -98,44 +96,56 @@ export async function createJobLogSink(input) {
 }
 
 /** @param {{dataRoot:string,workspace:string,jobId:string}} input */
-async function createOrReopen(input) {
+async function createOrReopen(input, initialBytes = Buffer.alloc(0)) {
   const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
   const root = await secureJobsRoot(storage.directory);
   const logFile = join(root, `${input.jobId}.log`);
-  let handle;
   try {
-    handle = await open(logFile, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
-  } catch (error) {
-    if (errorCode(error) !== 'EEXIST') throw error;
     const verified = await verifyExistingLog(root, logFile);
     return { root, logFile, identity: verified.identity, created: false };
-  }
+  } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
 
-  let identity;
-  try {
-    const before = await handle.stat({ bigint: true });
-    if (!before.isFile()) throw pathError();
-    identity = fileIdentity(before);
-    await handle.chmod(0o600);
-    await handle.sync();
-    const after = await handle.stat({ bigint: true });
-    if (!sameIdentity(before, after)) throw pathError();
-    identity = fileIdentity(after);
-  } catch (error) {
-    await handle.close().catch(() => {});
-    handle = undefined;
-    await quarantineAndRemoveIfIdentity(logFile, identity);
-    throw error;
-  } finally { await handle?.close().catch(() => {}); }
+  const locksRoot = join(root, '.job-log-publication-locks');
+  await ensurePrivateDirectoryWithin(root, locksRoot);
+  const lockPath = join(locksRoot, input.jobId);
+  return withFileLock(lockPath, async () => {
+    try {
+      const verified = await verifyExistingLog(root, logFile);
+      return { root, logFile, identity: verified.identity, created: false };
+    } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
 
-  try {
-    const verified = await verifyExistingLog(root, logFile, identity);
-    await syncDirectory(root);
-    return { root, logFile, identity: verified.identity, created: true };
-  } catch (error) {
-    await quarantineAndRemoveIfIdentity(logFile, identity);
-    throw error;
-  }
+    const entries = await readPrivateDirectory(root, lockPath, 2);
+    if (entries.some((entry) => entry.name !== 'advisory.lock')) throw pathError();
+    const temporaryRoot = await realpath(lockPath);
+    if (temporaryRoot !== lockPath) throw pathError();
+    const temporary = join(temporaryRoot, `.${input.jobId}.${randomBytes(16).toString('hex')}.tmp`);
+    let handle;
+    try {
+      handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
+      await handle.chmod(0o600);
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile() || !privateOwnerMode(before)) throw pathError();
+      if (initialBytes.byteLength > 0) await writeAll(handle, initialBytes);
+      await handle.sync();
+      const after = await handle.stat({ bigint: true });
+      if (!sameIdentity(before, after) || !privateOwnerMode(after)) throw pathError();
+      const identity = fileIdentity(after);
+      await verifyExistingLog(temporaryRoot, temporary, identity);
+      // Hard-link creation is atomic create-if-absent on both POSIX and
+      // Windows. Unsupported filesystems fail closed; rename is never a
+      // fallback because it can replace foreign data. The unpublished link
+      // remains in this per-job lock directory, bounding remnants to one.
+      try { await link(temporary, logFile); }
+      catch (error) {
+        if (errorCode(error) !== 'EEXIST') throw error;
+        const existing = await verifyExistingLog(root, logFile);
+        return { root, logFile, identity: existing.identity, created: false };
+      }
+      const published = await verifyExistingLog(root, logFile, identity);
+      await syncDirectory(root);
+      return { root, logFile, identity: published.identity, created: true };
+    } finally { await handle?.close().catch(() => {}); }
+  });
 }
 
 /** @param {{dataRoot:string,workspace:string,jobId:string}} input */
@@ -305,26 +315,6 @@ async function writeAll(handle, bytes) {
     const { bytesWritten } = await handle.write(bytes, offset, bytes.byteLength - offset);
     if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > bytes.byteLength - offset) throw new Error('Job log write made invalid progress.');
     offset += bytesWritten;
-  }
-}
-/** @param {string} path @param {{dev:bigint,ino:bigint}|undefined} identity */
-async function quarantineAndRemoveIfIdentity(path, identity) {
-  if (!identity) return;
-  const quarantine = join(dirname(path), `.${basename(path)}.${randomBytes(16).toString('hex')}.quarantine`);
-  let handle;
-  let confirmation;
-  try {
-    await rename(path, quarantine);
-    handle = await open(quarantine, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const opened = await handle.stat({ bigint: true });
-    confirmation = await open(quarantine, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const current = await confirmation.stat({ bigint: true });
-    if (!sameIdentity(opened, identity) || !sameIdentity(opened, current)) return;
-    await unlink(quarantine);
-  } catch { /* Cleanup is best-effort and only removes the captured identity. */ }
-  finally {
-    await confirmation?.close().catch(() => {});
-    await handle?.close().catch(() => {});
   }
 }
 /** @param {string} path */

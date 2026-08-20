@@ -88,6 +88,28 @@ test('rejects a symbolic-link leaf and never modifies its target', { skip: proce
   assert.equal(await readFile(target, 'utf8'), 'unchanged\n');
 }));
 
+test('foreign final installed immediately before publication remains canonical and unchanged', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const logFile = await resolveJobLogFile({ dataRoot, workspace, jobId: JOB_ID });
+  const displaced = `${logFile}.pre-publication`;
+  const probe = await open(join(dirname(logFile), '.publication-probe'), 'w+', 0o600);
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const originalSync = prototype.sync;
+  let injected = false;
+  prototype.sync = async function installForeignFinal(...args) {
+    if (!injected) {
+      injected = true;
+      try { await rename(logFile, displaced); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+      await writeFile(logFile, 'foreign final\n', { mode: 0o600 });
+    }
+    return originalSync.call(this, ...args);
+  };
+  try { await createJobLog({ dataRoot, workspace, jobId: JOB_ID, title: 'Publication race' }); }
+  finally { prototype.sync = originalSync; }
+  assert.equal(injected, true);
+  assert.equal(await readFile(logFile, 'utf8'), 'foreign final\n');
+}));
+
 test('verified reopening appends without truncating and rejects owner-accessible permissions', async () => withFixture(async ({ dataRoot, workspace }) => {
   const logFile = await createJobLog({ dataRoot, workspace, jobId: JOB_ID, title: 'Review' });
   const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
@@ -104,6 +126,22 @@ test('verified reopening appends without truncating and rejects owner-accessible
     await assert.rejects(appendJobLogEvent({ dataRoot, workspace, jobId: JOB_ID, event: 'must fail' }), { code: 'JOB_LOG_PATH_UNSAFE' });
     assert.doesNotMatch(await readFile(logFile, 'utf8'), /must fail/);
   }
+}));
+
+test('retains exactly one private unpublished temp per job without reopen amplification', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const first = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const publicationDirectory = join(storage.directory, 'jobs', '.job-log-publication-locks', JOB_ID);
+  const before = (await readdir(publicationDirectory)).sort();
+  assert.equal(before.filter((entry) => entry.endsWith('.tmp')).length, 1);
+  assert.deepEqual(before.filter((entry) => !entry.endsWith('.tmp')), ['advisory.lock']);
+  const temporary = join(publicationDirectory, before.find((entry) => entry.endsWith('.tmp')));
+  if (process.platform !== 'win32') assert.equal((await stat(temporary)).mode & 0o777, 0o600);
+
+  const reopened = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  assert.equal(reopened.logFile, first.logFile);
+  assert.deepEqual((await readdir(publicationDirectory)).sort(), before);
+  await Promise.all([first.close(), reopened.close()]);
 }));
 
 test('serializes concurrent sink appends in invocation order and separates blocks', async () => withFixture(async ({ dataRoot, workspace }) => {
@@ -387,35 +425,31 @@ test('a create failure returns a disabled non-throwing sink without a path', { s
   assert.deepEqual(await readdir(outside), []);
 }));
 
-test('failed creation cleanup never deletes a replacement installed after identity checking', async () => withFixture(async ({ dataRoot, workspace }) => {
+test('failed unpublished-temp creation never deletes a foreign temp replacement', async () => withFixture(async ({ dataRoot, workspace }) => {
   const logFile = await resolveJobLogFile({ dataRoot, workspace, jobId: JOB_ID });
-  const displaced = `${logFile}.cleanup-race`;
   const probe = await open(join(dirname(logFile), '.cleanup-probe'), 'w+', 0o600);
   const prototype = Object.getPrototypeOf(probe);
   await probe.close();
-  const originalStat = prototype.stat;
   const originalSync = prototype.sync;
-  let statCalls = 0;
-  let replacementInstalled = false;
-  prototype.sync = async () => { throw Object.assign(new Error('injected create durability failure'), { code: 'EIO' }); };
-  prototype.stat = async function replaceDuringCleanup(...args) {
-    const info = await originalStat.call(this, ...args);
-    statCalls += 1;
-    if (statCalls === 3) {
-      try { await rename(logFile, displaced); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
-      await writeFile(logFile, 'foreign replacement\n', { mode: 0o600 });
-      replacementInstalled = true;
+  let replacementPath;
+  prototype.sync = async function replaceUnpublishedTemp() {
+    if (replacementPath === undefined) {
+      const jobsDirectory = dirname(logFile);
+      const entries = await readdir(jobsDirectory);
+      replacementPath = entries
+        .filter((entry) => entry.includes(JOB_ID) && entry.endsWith('.tmp'))
+        .map((entry) => join(jobsDirectory, entry))[0] ?? logFile;
+      const displaced = `${replacementPath}.plugin-owned`;
+      try { await rename(replacementPath, displaced); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+      await writeFile(replacementPath, 'foreign temp replacement\n', { mode: 0o600 });
     }
-    return info;
+    throw Object.assign(new Error('injected unpublished durability failure'), { code: 'EIO' });
   };
   try {
     await assert.rejects(createJobLog({ dataRoot, workspace, jobId: JOB_ID, title: 'Cleanup race' }), { code: 'JOB_LOG_CREATE_FAILED' });
-  } finally {
-    prototype.stat = originalStat;
-    prototype.sync = originalSync;
-  }
-  assert.equal(replacementInstalled, true);
-  assert.equal(await readFile(logFile, 'utf8'), 'foreign replacement\n');
+  } finally { prototype.sync = originalSync; }
+  assert.ok(replacementPath);
+  assert.equal(await readFile(replacementPath, 'utf8'), 'foreign temp replacement\n');
 }));
 
 test('direct appends reject replacement races observed through handle identity', async () => withFixture(async ({ dataRoot, workspace }) => {
