@@ -1,4 +1,5 @@
 import { PluginError } from './errors.mjs';
+import { boundUtf8, normalizePublicText } from './public-text.mjs';
 import { validProgressProbe } from './state.mjs';
 
 /** @param {unknown} error */
@@ -84,40 +85,17 @@ function renderCancellationError(value) {
 /** @param {unknown} value */
 function safeInline(value) {
   if (typeof value !== 'string' || value.length === 0) return '—';
-  const controlFree = [...value].map((character) => {
-    const code = /** @type {number} */ (character.codePointAt(0));
-    if (isBidiControl(code)) return '';
-    return code <= 31 || code >= 127 && code <= 159 ? ' ' : character;
-  }).join('');
-  return escapeMarkdown(controlFree.replace(/\s+/g, ' ').trim());
+  return escapeMarkdown(normalizePublicText(value));
 }
 
 /** @param {string} message */
 function safeProgress(message) {
-  const bounded = boundUtf8(message, 256);
-  return safeInline(bounded);
+  return escapeMarkdown(boundUtf8(normalizePublicText(message), 256));
 }
 
 /** @param {string} value */
 function escapeMarkdown(value) {
   return value.replace(/([\\`*_{}[\]<>#!|~])/g, '\\$1').replace(/^([-+])/, '\\$1');
-}
-
-/** @param {number} code */
-function isBidiControl(code) {
-  return code === 0x061c || code === 0x200e || code === 0x200f
-    || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
-}
-
-/** @param {string} value @param {number} maxBytes */
-function boundUtf8(value, maxBytes) {
-  if (Buffer.byteLength(value) <= maxBytes) return value;
-  let result = '';
-  for (const character of value) {
-    if (Buffer.byteLength(result) + Buffer.byteLength(character) > maxBytes - 3) break;
-    result += character;
-  }
-  return `${result}...`;
 }
 
 /** @param {number} milliseconds */

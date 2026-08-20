@@ -15,6 +15,7 @@ import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
 import { createJobController, ownerIdForSession, readBoundRescueStatus, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
+import { boundUtf8, normalizePublicText } from './lib/public-text.mjs';
 import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
@@ -549,29 +550,7 @@ function terminalResultJob(job) {
 }
 /** @param {string} message */
 function sanitizeTerminalResultMessage(message) {
-  const normalized = [...message]
-    .map((character) => {
-      const code = /** @type {number} */ (character.codePointAt(0));
-      if (terminalResultBidiControl(code)) return '';
-      return code <= 0x1f || code >= 0x7f && code <= 0x9f ? ' ' : character;
-    })
-    .join('')
-    .replace(/\s+/gu, ' ')
-    .trim();
-  const limit = 2_048;
-  if (Buffer.byteLength(normalized) <= limit) return normalized;
-  const suffix = '...'; const budget = limit - Buffer.byteLength(suffix); let output = ''; let bytes = 0;
-  for (const character of normalized) {
-    const size = Buffer.byteLength(character);
-    if (bytes + size > budget) break;
-    output += character; bytes += size;
-  }
-  return `${output}${suffix}`;
-}
-/** @param {number} code */
-function terminalResultBidiControl(code) {
-  return code === 0x061c || code === 0x200e || code === 0x200f
-    || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
+  return boundUtf8(normalizePublicText(message), 2_048);
 }
 /** @param {Record<string,any>} source @param {string[]} fields */
 function copyOptionalStringFields(source, fields) {

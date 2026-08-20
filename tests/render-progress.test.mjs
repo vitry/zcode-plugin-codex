@@ -54,11 +54,11 @@ test('detailed status safely renders a bounded last cancellation error', () => {
     status: 'running',
     createdAt: '2026-08-08T00:00:00.000Z',
     updatedAt: '2026-08-08T00:00:01.000Z',
-    lastCancelError: 'stop **refused**\nretry \u202Esoon ~~later~~',
+    lastCancelError: 'stop\u061c **refused**\u200e\nretry \u202Esoon\u200F ~~later~~\u0000\u0085',
   };
   const output = renderOutput({ job });
   assert.match(output, /Last cancellation error: stop \\\*\\\*refused\\\*\\\* retry soon \\~\\~later\\~\\~/);
-  assert.doesNotMatch(output, /\u202E|\nretry/);
+  assert.doesNotMatch(output, /[\u061C\u200E\u200F\u202E]|\nretry/u);
 
   const raw = renderOutput({ job: { ...job, lastCancelError: 'x'.repeat(3_000) } });
   const line = raw.split('\n').find((/** @type {string} */ entry) => entry.startsWith('Last cancellation error: '));
