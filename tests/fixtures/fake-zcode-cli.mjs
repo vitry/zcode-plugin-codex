@@ -422,7 +422,16 @@ input.on('line', async (line) => {
         const tool = result.messages.flatMap((entry) => entry.parts).find((part) => part.type === 'tool');
         if (tool) tool.state.input.command = 'PRIVATE_LATE_SNAPSHOT';
         const subscriptionId = conversationSubscriptions.get(p.sessionId);
-        if (subscriptionId) send(conversationNotification({ sessionId: p.sessionId, subscriptionId, deliveryKind: 'online', ordinal: 2, deltas: [] }));
+        if (subscriptionId) send(conversationNotification({
+          sessionId: p.sessionId, subscriptionId, deliveryKind: 'online', ordinal: 2,
+          deltas: [{
+            op: 'row.upserted',
+            row: {
+              rowId: 70, turnId: 'turn-semantic-recovery', createdAt: 1_786_233_600_000, createdAtSeq: 70,
+              kind: 'turnHeader', origin: 'userInput', state: 'running', startedAt: 1_786_233_600_000,
+            },
+          }],
+        }));
         await new Promise((resolve) => setTimeout(resolve, 30));
       }
       if (readCount === 1 && ['running', 'terminal'].includes(process.env.FAKE_ZCODE_SESSION_PROGRESS)) {

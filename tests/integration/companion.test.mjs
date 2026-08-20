@@ -618,18 +618,19 @@ test('later accepted online recovery stops snapshot reads and discards a delayed
   });
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
   assert.equal(scenario.stored.progressProbe.state, 'online'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
+  assert.match(scenario.lines.join(''), /ZCode turn started\./, 'a production-shape turnHeader supplies semantic health');
   assert.doesNotMatch(visible, /PRIVATE_LATE_SNAPSHOT|Running tool: Bash\./);
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one late progress read plus one final authoritative read');
 });
 
-test('accepted zero-event online conversation frame prevents deterministic heartbeat fallback', async () => {
+test('accepted zero-event online conversation frame remains eligible for deterministic heartbeat fallback', async () => {
   const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'zero-online', { heartbeat: true });
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
-  assert.equal(scenario.stored.progressProbe.state, 'online'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
-  assert.doesNotMatch(scenario.lines.join(''), /ZCode (?:conversation frames were unavailable|semantic progress is unavailable)/);
+  assert.equal(scenario.stored.progressProbe.state, 'snapshot-fallback'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
+  assert.equal(scenario.lines.filter((line) => /ZCode conversation frames were unavailable/.test(line)).length, 1);
   assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
-  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one fallback progress read remains separate from the final authoritative read');
 });
 
 test('malformed conversation rejection burst degrades once without leaking rejected payloads or changing completion', async () => {
@@ -644,11 +645,11 @@ test('malformed conversation rejection burst degrades once without leaking rejec
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one progress read remains separate from the final authoritative read');
 });
 
-test('one sequence gap fences online frames until recovery restores progress', async () => {
+test('one sequence gap restores continuity without treating an empty online frame as semantic health', async () => {
   const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'sequence-gap');
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.stored.progressProbe.rejected.sequence, 1);
   assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
-  assert.equal(scenario.stored.progressProbe.state, 'online');
+  assert.equal(scenario.stored.progressProbe.state, 'probing');
   assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
   assert.equal(scenario.lines.filter((line) => /conversation frames were unavailable/.test(line)).length, 0);
   const visible = `${scenario.lines.join('')}${JSON.stringify(scenario.status)}`;
