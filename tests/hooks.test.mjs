@@ -147,6 +147,8 @@ test('two sessions in one workspace get isolated caller capabilities, permission
   assert.doesNotMatch(`${a.stdout}${b.stdout}`, /transcript_path|\/never\/read|brokerToken|executionCapability/);
   const files = await jsonFiles(join(data, 'workspaces'));
   const records = await Promise.all(files.map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
+  const active = records.filter((record) => record.kind === 'active-turn');
+  assert.equal(active.length, 2); assert.ok(active.every((record) => record.version === 2 && !('expiresAt' in record)));
   assert.ok(records.some((record) => record.sessionId === 'session-a' && record.permissionMode === 'plan'));
   assert.ok(records.some((record) => record.sessionId === 'session-b' && record.permissionMode === 'dontAsk'));
   assert.ok(records.filter((record) => record.kind === 'baseline').every((record) => /^[a-f0-9]{64}$/.test(record.fingerprint)));
@@ -606,6 +608,7 @@ test('caller contexts end at the earlier turn boundary without crossing sibling 
     for (const session_id of ['owner', 'sibling']) await runHook('session-lifecycle-hook.mjs', { session_id, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
     await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 't1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'one' }, env); await runHook('user-prompt-hook.mjs', { session_id: 'sibling', turn_id: 's1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'sibling' }, env); await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 't2', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'two' }, env);
     assert.equal((await identity.resolveActiveTurn({ sessionId: 'owner', workspace: cwd })).turnId, 't2'); assert.equal((await identity.resolveActiveTurn({ sessionId: 'sibling', workspace: cwd })).turnId, 's1');
+    await identity.endCallerTurn({ sessionId: 'owner', turnId: 't1', workspace: cwd }); assert.equal((await identity.resolveActiveTurn({ sessionId: 'owner', workspace: cwd })).turnId, 't2');
   });
   for (const mode of ['disabled', 'setup-not-ready', 'allow']) await t.test(`${mode} Stop ends the current caller turn`, async () => {
     const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
@@ -672,12 +675,15 @@ test('prompt, Root Stop, and SessionEnd clean only their exact prepared Rescue l
   });
 
   await t.test('SessionEnd removes one session without touching its sibling', async () => {
-    const { cwd, data, env } = await workspace(); const prepared = createRescuePreparationStore({ dataRoot: data });
+    const { cwd, data, env } = await workspace(); const prepared = createRescuePreparationStore({ dataRoot: data }); const identity = createIdentityStore({ dataRoot: data });
     for (const sessionId of ['owner', 'sibling']) {
+      await identity.beginCallerTurn({ sessionId, turnId: `${sessionId}-turn`, workspace: cwd, permissionMode: 'default', prompt: `${sessionId} prompt` });
       await prepared.save({ sessionId, turnId: `${sessionId}-turn`, workspace: cwd, permissionMode: 'default', recordedPrompt: `${sessionId} proactive objective`, envelope: { version: 1, source: 'proactive', task: `${sessionId} objective`, options: {} } });
     }
     const ended = await runHook('session-end-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
     assert.equal(ended.code, 0, ended.stderr);
+    await assert.rejects(identity.resolveActiveTurn({ sessionId: 'owner', workspace: cwd }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+    assert.equal((await identity.resolveActiveTurn({ sessionId: 'sibling', workspace: cwd })).turnId, 'sibling-turn');
     await assert.rejects(prepared.consume({ sessionId: 'owner', turnId: 'owner-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
     assert.equal((await prepared.consume({ sessionId: 'sibling', turnId: 'sibling-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'sibling-child' })).envelope.task, 'sibling objective');
   });
