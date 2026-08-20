@@ -145,6 +145,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
       const resolved = await createStateStore({ dataRoot }).resolveRescueBinding({ ...bindingLookup(executor, cwd), ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}) });
       if (resolved.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
       rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId, expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId };
+      await afterPreparedBindingResolution(runtime.dependencies);
     }
     const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
     const output = await runCompanion(preparedArgv, { cwd: caller.workspace, env, caller, executor, rescueRoute, originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
@@ -212,6 +213,15 @@ async function saveRescuePendingChoice({ dataRoot, caller, cwd, source, executor
 /** @param {any} executor @param {any} caller */
 function assertExecutorMatchesCaller(executor, caller) {
   if (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The Rescue child is not bound to the active parent turn.', { category: 'authorization', remedy: 'Retry from the original parent thread with one newly started Rescue child.' });
+}
+
+/** @param {any} dependencies */
+async function afterPreparedBindingResolution(dependencies) {
+  const callback = dependencies?.testOnlyAfterPreparedBindingResolution;
+  if (callback === undefined) return;
+  if (typeof callback !== 'function') throw new PluginError('DIRECT_INVOCATION_DEPENDENCY_INVALID', 'A private direct-invocation dependency is invalid.', { category: 'validation', remedy: 'Retry without private test dependencies.' });
+  try { await callback(); }
+  catch { throw new PluginError('PREPARED_BINDING_TEST_FAULT', 'The test-only prepared-binding fault was injected.', { category: 'state', remedy: 'Retry without the test-only prepared-binding callback.' }); }
 }
 
 /** @param {{task:string,options:{execution?:string,resume?:string,model?:string,effort?:string}}} envelope */
