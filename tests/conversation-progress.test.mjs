@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createConversationProgressDescriber as createStructuralDescriber, createDeferredConversationProgressObserver as createStructuralDeferredObserver, normalizePreview } from '../scripts/lib/conversation-progress.mjs';
-import { conversationFrame, toolRow, turnRow } from './fixtures/conversation-progress-frames.mjs';
+import { boundedSnapshotFixture, conversationFrame, toolRow, turnRow } from './fixtures/conversation-progress-frames.mjs';
 
 const observedAt = '2026-08-09T00:00:01.000Z';
 
@@ -46,6 +46,132 @@ test('returns fixed structural compatibility outcomes without retaining rejected
   }
 });
 
+test('accepts the 0.16.3 initial snapshot as an opaque baseline then keeps production delta operations contiguous', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const historical = toolRow({ rowId: 40, toolCallId: 'historical', input: { command: 'DO_NOT_REPLAY' } }).row;
+  const initial = await describer.observe(conversationFrame({
+    deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 484,
+    snapshot: boundedSnapshotFixture({ rows: { firstRowId: 1, totalCount: 60, window: [historical] } }),
+  }), observedAt);
+  const state = await describer.observe(conversationFrame({
+    ordinal: 2, fromSeq: 484, toSeq: 485,
+    deltas: [{ op: 'state.updated', patch: { usage: { privateCounter: 1 } } }],
+  }), observedAt);
+  const text = await describer.observe(conversationFrame({
+    ordinal: 3, fromSeq: 485, toSeq: 486,
+    deltas: [{ op: 'row.delta', rowId: 41, path: 'text', append: 'PRIVATE_REASONING' }],
+  }), observedAt);
+  const removed = await describer.observe(conversationFrame({
+    ordinal: 4, fromSeq: 486, toSeq: 487,
+    deltas: [{ op: 'row.removed', fromRowId: 39 }],
+  }), observedAt);
+  const appended = await describer.observe(conversationFrame({
+    ordinal: 5, fromSeq: 487, toSeq: 488,
+    deltas: [{ ...toolRow({ rowId: 42, toolCallId: 'current', toolName: 'Write', status: 'running' }), op: 'row.appended' }],
+  }), observedAt);
+  const upserted = await describer.observe(conversationFrame({
+    ordinal: 6, fromSeq: 488, toSeq: 489,
+    deltas: [toolRow({ rowId: 42, toolCallId: 'current', toolName: 'Write', status: 'success' })],
+  }), observedAt);
+
+  assert.deepEqual(initial, { disposition: 'accepted', phase: 'initial', events: [] });
+  assert.deepEqual(state, { disposition: 'accepted', phase: 'online', events: [] });
+  assert.deepEqual(text, { disposition: 'accepted', phase: 'online', events: [] });
+  assert.deepEqual(removed, { disposition: 'accepted', phase: 'online', events: [] });
+  assert.deepEqual(appended.events.map((event) => event.message), ['Running tool: Write.']);
+  assert.deepEqual(upserted.events.map((event) => event.message), ['Write completed.']);
+  assert.doesNotMatch(JSON.stringify([initial, state, text, removed, appended, upserted]), /DO_NOT_REPLAY|PRIVATE_/);
+
+  const overflowSnapshot = await describer.observe(conversationFrame({
+    deliveryKind: 'online', ordinal: 7, fromSeq: 0, toSeq: 500,
+    snapshot: boundedSnapshotFixture({ seq: 500, rows: { firstRowId: 1, totalCount: 60, window: [historical] } }),
+  }), observedAt);
+  const afterOverflow = await describer.observe(conversationFrame({
+    ordinal: 8, fromSeq: 500, toSeq: 501,
+    deltas: [toolRow({ rowId: 42, toolCallId: 'current', toolName: 'Write', status: 'running' })],
+  }), observedAt);
+  assert.deepEqual(overflowSnapshot, { disposition: 'accepted', phase: 'online', events: [] });
+  assert.deepEqual(afterOverflow.events.map((event) => event.message), ['Running tool: Write.']);
+
+  const removal = await describer.observe(conversationFrame({
+    ordinal: 9, fromSeq: 501, toSeq: 502, deltas: [{ op: 'row.removed', fromRowId: 42 }],
+  }), observedAt);
+  const afterRemoval = await describer.observe(conversationFrame({
+    ordinal: 10, fromSeq: 502, toSeq: 503,
+    deltas: [toolRow({ rowId: 42, toolCallId: 'current', toolName: 'Write', status: 'running' })],
+  }), observedAt);
+  assert.deepEqual(removal, { disposition: 'accepted', phase: 'online', events: [] });
+  assert.deepEqual(afterRemoval.events.map((event) => event.message), ['Running tool: Write.']);
+
+  describer.markGap();
+  assert.deepEqual(await describer.observe(conversationFrame({
+    deliveryKind: 'recovery', ordinal: 11, fromSeq: 503, toSeq: 503, deltas: [],
+  }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
+
+  const gapDescriber = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  await gapDescriber.observe(conversationFrame({ deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 484, snapshot: boundedSnapshotFixture() }), observedAt);
+  assert.deepEqual(await gapDescriber.observe(conversationFrame({ ordinal: 2, fromSeq: 485, toSeq: 486, deltas: [] }), observedAt), {
+    disposition: 'rejected', reason: 'sequence', events: [],
+  });
+});
+
+test('rejects malformed and oversized 0.16.3 snapshot and ignored delta variants without leaking their content', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const cases = [
+    (frame) => { frame.params.frame.payload.snapshot = ['NOT_AN_OBJECT']; },
+    (frame) => { frame.params.frame.payload.snapshot = { huge: 'S'.repeat(1_048_577) }; },
+    (frame) => { frame.params.frame.payload.hostile = 'EXTRA'; },
+    (frame) => { frame.params.frame.payload = { kind: 'snapshot', snapshot: { nested: { value: undefined } } }; },
+    (frame) => { frame.params.frame.payload.snapshot.protocolVersion = 2; },
+    (frame) => { frame.params.frame.payload.snapshot.sessionId = 'foreign'; },
+    (frame) => { frame.params.frame.payload.snapshot.logEpoch = 'unsafe\u0000epoch'; },
+    (frame) => { frame.params.frame.payload.snapshot.seq = 2; },
+    (frame) => { frame.params.frame.fromSeq = 1; },
+    (frame) => { frame.params.frame.payload.snapshot.rows.window = Array.from({ length: 61 }, () => ({})); },
+    (frame) => { frame.params.frame.payload.snapshot.hostile = 'EXTRA'; },
+  ];
+  for (const mutate of cases) {
+    const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const frame = conversationFrame({ deliveryKind: 'initial', fromSeq: 0, toSeq: 1, snapshot: boundedSnapshotFixture() });
+    mutate(frame);
+    assert.deepEqual(await describer.observe(frame, observedAt), { disposition: 'rejected', reason: 'envelope-shape', events: [] });
+  }
+
+  const deltaCases = [
+    [{ op: 'row.removed', fromRowId: '1' }, 'row-shape'],
+    [{ op: 'row.removed', fromRowId: 1, extra: 'SECRET_EXTRA' }, 'row-shape'],
+    [{ op: 'row.delta', rowId: 1, path: 'text\u0000SECRET_PATH', append: 'SECRET_APPEND' }, 'row-shape'],
+    [{ op: 'row.delta', rowId: 1, path: 'text', append: 'X'.repeat(1_048_577) }, 'envelope-shape'],
+    [{ op: 'state.updated', patch: ['SECRET_PATCH'] }, 'row-shape'],
+    [{ op: 'state.updated', patch: { nested: { value: undefined } } }, 'row-shape'],
+  ];
+  for (const [delta, reason] of deltaCases) {
+    const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+    const result = await describer.observe(conversationFrame({ deltas: [delta] }), observedAt);
+    assert.deepEqual(result, { disposition: 'rejected', reason, events: [] });
+    assert.doesNotMatch(JSON.stringify(result), /SECRET/);
+  }
+});
+
+test('accepts the 0.16.3 subscriber operation limit while enforcing the complete-frame byte bound', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const fresh = () => createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const bounded = Array.from({ length: 500 }, (_, index) => ({ op: 'state.updated', patch: { revision: index } }));
+  assert.deepEqual(await (await fresh()).observe(conversationFrame({ deltas: bounded }), observedAt), {
+    disposition: 'accepted', phase: 'online', events: [],
+  });
+  assert.deepEqual(await (await fresh()).observe(conversationFrame({ deltas: [...bounded, bounded[0]] }), observedAt), {
+    disposition: 'rejected', reason: 'envelope-shape', events: [],
+  });
+  const oversized = Array.from({ length: 500 }, (_, index) => ({
+    op: 'row.delta', rowId: index, path: 'text', append: 'PRIVATE'.repeat(500),
+  }));
+  assert.deepEqual(await (await fresh()).observe(conversationFrame({ deltas: oversized }), observedAt), {
+    disposition: 'rejected', reason: 'envelope-shape', events: [],
+  });
+});
+
 test('observed unknown rows and sequence gaps do not silence later known progress', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const describer = await createStructuralDescriber({
@@ -77,7 +203,7 @@ test('observed unknown rows and sequence gaps do not silence later known progres
     deltas: [toolRow({ rowId: 4, toolCallId: 'tool-safe', toolName: 'Read', status: 'running' })],
   }), observedAt);
   const later = await describer.observe(frame({
-    ordinal: 5, fromSeq: 5, toSeq: 5,
+    ordinal: 5, fromSeq: 4, toSeq: 5,
     deltas: [unknownRow(5, 'PRIVATE_INTERLEAVED_ROW'), toolRow({ rowId: 6, toolCallId: 'tool-safe', toolName: 'Read', status: 'success' })],
   }), observedAt);
 
@@ -87,14 +213,14 @@ test('observed unknown rows and sequence gaps do not silence later known progres
   assert.deepEqual(later.events.map((event) => event.message), ['Read completed.']);
   assert.doesNotMatch(JSON.stringify([first, duplicate, gap, later]), /PRIVATE_(?:UNKNOWN|STALE|INTERLEAVED)_ROW/);
 
-  for (const mutate of [
-    (row) => { row.turnId = 'unsafe\nturn'; },
-    (row) => { row.content = 'x'.repeat(1_048_577); },
+  for (const [mutate, reason] of [
+    [(row) => { row.turnId = 'unsafe\nturn'; }, 'row-shape'],
+    [(row) => { row.content = 'x'.repeat(1_048_577); }, 'envelope-shape'],
   ]) {
     const strict = await createStructuralDescriber({ sessionId: 'session-observed', subscriptionId: 'subscription-observed', workspace });
     const delta = unknownRow(1, 'PRIVATE_INVALID_UNKNOWN'); mutate(delta.row);
     const result = await strict.observe(frame({ ordinal: 1, deltas: [delta] }), observedAt);
-    assert.deepEqual(result, { disposition: 'rejected', reason: 'row-shape', events: [] });
+    assert.deepEqual(result, { disposition: 'rejected', reason, events: [] });
     assert.doesNotMatch(JSON.stringify(result), /PRIVATE_INVALID_UNKNOWN/);
   }
 });
@@ -308,9 +434,18 @@ test('bounds direct concurrent observations, path stalls, frame fanout, and trac
   assert.ok(pathCalls <= 5); assert.equal(settled.flat().length, 0);
 
   const bounded = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
-  const huge = conversationFrame({ ordinal: 1, deltas: Array.from({ length: 65 }, (_, rowId) => toolRow({ rowId: rowId + 1 })) });
-  assert.deepEqual(await bounded.observe(huge, observedAt), []);
-  assert.equal((await bounded.observe(conversationFrame({ ordinal: 1, deltas: [toolRow()] }), observedAt)).length, 1);
+  const huge = conversationFrame({ ordinal: 1, deltas: Array.from({ length: 500 }, (_, rowId) => toolRow({ rowId: rowId + 1 })) });
+  assert.equal((await bounded.observe(huge, observedAt)).length, 64);
+  assert.equal((await bounded.observe(conversationFrame({ ordinal: 2, deltas: [toolRow({ rowId: 501 })] }), observedAt)).length, 0);
+
+  let fanoutPathCalls = 0;
+  const boundedPathWork = await createConversationProgressDescriber(
+    { sessionId: 'session-1', subscriptionId: 'sub-1', workspace },
+    { resolvePath: async () => { fanoutPathCalls += 1; return null; } },
+  );
+  const readFanout = Array.from({ length: 500 }, (_, rowId) => toolRow({ rowId: rowId + 1, toolName: 'Read', input: { file_path: 'private' } }));
+  assert.equal((await boundedPathWork.observe(conversationFrame({ deltas: readFanout }), observedAt)).length, 64);
+  assert.equal(fanoutPathCalls, 64);
 
   const cardinality = await createConversationProgressDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
   for (let index = 1; index <= 256; index += 1) assert.equal((await cardinality.observe(conversationFrame({ ordinal: index, deltas: [toolRow({ rowId: index })] }), observedAt)).length, 1);
@@ -337,7 +472,7 @@ test('queue overflow requires an exact newer recovery baseline before continuous
   const staleRecovery = conversationFrame({ ordinal: 1, fromSeq: 1, toSeq: 1, deliveryKind: 'recovery', deltas: [] });
   assert.deepEqual(await describer.observe(staleRecovery, observedAt), []);
   assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 10, fromSeq: 10, toSeq: 10, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
-  const resumed = await describer.observe(conversationFrame({ ordinal: 11, fromSeq: 11, toSeq: 11, deltas: [toolRow({ rowId: 11, input: { command: 'echo recovered' } })] }), observedAt);
+  const resumed = await describer.observe(conversationFrame({ ordinal: 11, fromSeq: 10, toSeq: 11, deltas: [toolRow({ rowId: 11, input: { command: 'echo recovered' } })] }), observedAt);
   assert.equal(resumed[0].message, 'Running command: echo recovered.');
   describer.markTerminal();
   assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 12, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
@@ -367,6 +502,21 @@ test('recovery silently folds terminal turn states and permanently fences later 
     assert.deepEqual(await Promise.all([recovery, pendingLate]), [[], []]);
     assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 4, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
   }
+});
+
+test('accepts an equal-sequence empty recovery but ignores equal-sequence delta replay', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  assert.equal((await describer.observe(conversationFrame({ ordinal: 1, deltas: [toolRow({ status: 'running' })] }), observedAt)).events.length, 1);
+  assert.deepEqual(await describer.observe(conversationFrame({
+    deliveryKind: 'recovery', ordinal: 2, fromSeq: 1, toSeq: 1,
+    deltas: [toolRow({ status: 'success', endedAt: 1_786_233_600_010 })],
+  }), observedAt), { disposition: 'ignored', reason: 'stale', events: [] });
+  const completed = await describer.observe(conversationFrame({
+    ordinal: 3, fromSeq: 1, toSeq: 2,
+    deltas: [toolRow({ status: 'success', endedAt: 1_786_233_600_010 })],
+  }), observedAt);
+  assert.deepEqual(completed.events.map((event) => event.message), ['Bash completed (10ms).']);
 });
 
 test('turn terminal latching is not weakened when bounded row tracking is full', async () => {

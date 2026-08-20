@@ -141,6 +141,29 @@ The conversation describer changes from silent `null` rejection to an internal
 fixed rejection result. Valid-frame behavior and all existing public bounds stay
 unchanged.
 
+### ZCode 0.16.3 complete-frame compatibility
+
+The structural boundary accepts wire-version-3 complete frames with the exact
+outer topic and subscription binding. A bounded protocol-version-1 snapshot may
+arrive as an initial frame, an online overflow reset, or a recovery frame. Its
+session identity, log epoch, sequence, revision, and bounded 60-row window are
+validated, but its historical rows are never replayed or interpreted. The
+snapshot silently replaces the observational sequence and lifecycle baseline.
+
+Delta payloads follow ZCode 0.16.3's exclusive sequence baseline and accept at
+most 500 operations within the one-MiB complete-frame bound. The supported
+operations are `row.appended`, `row.upserted`, `row.removed`, `row.delta`, and
+`state.updated`. Only exact, allowlisted `toolCall` and `turnHeader` rows from
+append/upsert operations may produce public events. Removal updates local
+deduplication state silently; row text appends and state patches are bounded,
+validated, and ignored. No snapshot, patch, text append, unknown row, assistant
+draft, tool output, or historical terminal row is rendered. Public event fanout
+remains capped at 64 per frame and tracked lifecycle state at 256 rows.
+
+Fragment frames remain unsupported. Their rejection is observational and uses
+the existing bounded session-snapshot fallback; it cannot affect authoritative
+completion, cancellation, or result handling.
+
 ### Compatibility state
 
 Each foreground Rescue progress reporter has one of four observational states:

@@ -1,11 +1,11 @@
 // @ts-nocheck
-// ZCode 0.16.1 bundle evidence (zcode.cjs): Mg=3; oo=z.number(); X5e complete
-// wire requires the eight outer keys below; e9t requires the six inner keys;
-// v9n row upserts are {op,row}; nE/RFt/vsa define these exact row fields and
-// tool statuses inputStreaming|pendingApproval|running|success|error|cancelled.
+// ZCode 0.16.3 bundle evidence (zcode.cjs): wire version 3 complete frames use
+// the eight outer and six inner keys below. Snapshot frames use the bounded
+// protocol-version-1 body fixture; delta frames use the five production ops.
+// Tool rows retain these exact lifecycle fields and status values.
 export function conversationFrame({
   sessionId = 'session-1', subscriptionId = 'sub-1', deliveryKind = 'online',
-  ordinal = 1, fromSeq = ordinal, toSeq = ordinal, deltas = [],
+  ordinal = 1, fromSeq = Math.max(0, ordinal - 1), toSeq = ordinal, deltas = [], snapshot,
 } = {}) {
   const topic = `conversation/${sessionId}`;
   return {
@@ -14,8 +14,31 @@ export function conversationFrame({
       wireVersion: 3, kind: 'complete', deliveryKind,
       logicalFrameId: `frame-${ordinal}`, logicalFrameOrdinal: ordinal,
       topic, subscriptionId,
-      frame: { topic, subscriptionId, fromSeq, toSeq, sentAt: 1_786_233_600_000, payload: { kind: 'deltas', deltas } },
+      frame: {
+        topic, subscriptionId, fromSeq, toSeq, sentAt: 1_786_233_600_000,
+        payload: snapshot === undefined ? { kind: 'deltas', deltas } : { kind: 'snapshot', snapshot },
+      },
     },
+  };
+}
+
+// The snapshot body is deliberately opaque to the public progress projection.
+// These neutral values preserve only the captured 0.16.3 key names and bounded
+// JSON shape; tests must not turn private nested snapshot fields into a contract.
+export function boundedSnapshotFixture(overrides = {}) {
+  return {
+    availability: {}, backgroundWorks: [],
+    config: { provider: '', model: '', thought: '', thoughtLevels: [], followupMode: 'queue', mode: 'build' },
+    control: {
+      phase: 'draft', sessionEnded: false, canStop: false, stopState: 'idle',
+      stopTargetKind: 'unknown', activeWorks: [], lastError: null, apiRetry: null,
+    },
+    goal: null, inputRouting: {}, logEpoch: 'epoch-1', meta: { title: '', titleSource: 'default' }, modelTransition: null,
+    pendingCommands: [], pendingInteractions: [], plan: null, protocolVersion: 1,
+    queue: { items: [], autoDrain: true }, revision: 1, rows: { firstRowId: null, totalCount: 0, window: [] },
+    seq: 484, sessionId: 'session-1', subagents: { revision: 0, childSessionIds: [], running: [], endedTotal: 0 },
+    usage: { contextWindow: null, cumulative: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+    workspaceHookAdmission: null, ...overrides,
   };
 }
 

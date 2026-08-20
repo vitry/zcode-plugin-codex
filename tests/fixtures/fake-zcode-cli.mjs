@@ -175,8 +175,24 @@ function flushConcurrentStopSubscribe() {
   sendBatch([pendingConcurrentSubscribeResponse, pendingConcurrentStopResponse]);
   pendingConcurrentStopResponse = undefined; pendingConcurrentSubscribeResponse = undefined;
 }
-function conversationNotification({ sessionId, subscriptionId, deliveryKind, ordinal, fromSeq = ordinal, toSeq = ordinal, deltas, logicalFrameId = `frame-${ordinal}`, topic = `conversation/${sessionId}` }) {
-  return { method: 'v4/conversation/frame', params: { wireVersion: 3, kind: 'complete', deliveryKind, logicalFrameId, logicalFrameOrdinal: ordinal, topic, subscriptionId, frame: { topic, subscriptionId, fromSeq, toSeq, sentAt: 1_786_233_600_000, payload: { kind: 'deltas', deltas } } } };
+function conversationNotification({ sessionId, subscriptionId, deliveryKind, ordinal, fromSeq = Math.max(0, ordinal - 1), toSeq = ordinal, deltas, snapshot, logicalFrameId = `frame-${ordinal}`, topic = `conversation/${sessionId}` }) {
+  const payload = snapshot === undefined ? { kind: 'deltas', deltas } : { kind: 'snapshot', snapshot };
+  return { method: 'v4/conversation/frame', params: { wireVersion: 3, kind: 'complete', deliveryKind, logicalFrameId, logicalFrameOrdinal: ordinal, topic, subscriptionId, frame: { topic, subscriptionId, fromSeq, toSeq, sentAt: 1_786_233_600_000, payload } } };
+}
+
+function conversationSnapshot(sessionId, seq, rows = []) {
+  return {
+    protocolVersion: 1, sessionId, logEpoch: 'epoch-1', seq, revision: 1,
+    control: { phase: 'draft', sessionEnded: false, canStop: false, stopState: 'idle', stopTargetKind: 'unknown', activeWorks: [], lastError: null, apiRetry: null },
+    availability: {}, inputRouting: {}, meta: { title: '', titleSource: 'default' },
+    config: { provider: '', model: '', thought: '', thoughtLevels: [], followupMode: 'queue', mode: 'build' },
+    modelTransition: null,
+    usage: { contextWindow: null, cumulative: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+    queue: { items: [], autoDrain: true }, pendingInteractions: [], pendingCommands: [], backgroundWorks: [],
+    subagents: { revision: 0, childSessionIds: [], running: [], endedTotal: 0 }, goal: null, plan: null,
+    workspaceHookAdmission: null,
+    rows: { window: rows, totalCount: rows.length, firstRowId: rows[0]?.rowId ?? null },
+  };
 }
 
 function isUnsupportedRuntimePreferencesResponse(message, pending) {
@@ -360,9 +376,10 @@ input.on('line', async (line) => {
       else if (process.env.FAKE_ZCODE_CONCURRENT_STOP_SUBSCRIBE_BATCH === '1') { pendingConcurrentSubscribeResponse = response; flushConcurrentStopSubscribe(); }
       else send(response);
       if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'initial-only') {
+        const historical = { rowId: 43, turnId: 'PRIVATE_INITIAL_TURN_ID', createdAt: 1_786_233_600_000, createdAtSeq: 43, kind: 'toolCall', toolCallId: 'PRIVATE_INITIAL_TOOL_ID', toolName: 'Bash', status: 'running', inputText: '{"command":"PRIVATE_INITIAL_COMMAND"}', input: { command: 'PRIVATE_INITIAL_COMMAND', reasoning: 'PRIVATE_INITIAL_REASONING' }, startedAt: 1_786_233_600_000 };
         send(conversationNotification({
           sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, logicalFrameId: 'PRIVATE_INITIAL_FRAME_ID',
-          deltas: [{ op: 'row.upserted', row: { rowId: 43, turnId: 'PRIVATE_INITIAL_TURN_ID', createdAt: 1_786_233_600_000, createdAtSeq: 43, kind: 'toolCall', toolCallId: 'PRIVATE_INITIAL_TOOL_ID', toolName: 'Bash', status: 'running', inputText: '{"command":"PRIVATE_INITIAL_COMMAND"}', input: { command: 'PRIVATE_INITIAL_COMMAND', reasoning: 'PRIVATE_INITIAL_REASONING' }, startedAt: 1_786_233_600_000 } }],
+          snapshot: conversationSnapshot(sessionId, 1, [historical]),
         }));
       }
       if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'rejection-burst') {
@@ -379,7 +396,10 @@ input.on('line', async (line) => {
           sessionId, subscriptionId, deliveryKind: 'online', ordinal, logicalFrameId: `PRIVATE_SEQUENCE_FRAME_${ordinal}`, deltas: [],
         }));
       }
-      if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, deltas: [{ op: 'row.upserted', row: { rowId: 40, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: 1_786_233_600_000 } }] }));
+      if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') {
+        const historical = { rowId: 40, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: 1_786_233_600_000 };
+        send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'initial', ordinal: 1, snapshot: conversationSnapshot(sessionId, 1, [historical]) }));
+      }
       break;
     }
     case 'v4/conversation/unsubscribe':
