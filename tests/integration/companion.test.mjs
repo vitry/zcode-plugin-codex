@@ -18,6 +18,7 @@ import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparation.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
+import { writeResultArtifact } from '../../scripts/lib/review.mjs';
 import { createManagedZCodeClient, releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
@@ -1127,6 +1128,55 @@ test('status/list/result and queued cancellation enforce owned job semantics', a
   assert.equal(cancelled.code, 0); assert.equal(cancelled.json.job.status, 'cancelled');
   const status = await companion(context, ['status', id, '--wait', '--timeout-ms', '10']);
   assert.equal(status.code, 0); assert.equal(status.json.job.status, 'cancelled');
+});
+
+test('result exposes owned terminal outcomes, skips active jobs, and preserves successful artifacts', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  /** @param {string} ownerTurnId */
+  const reserve = (ownerTurnId) => store.reserveJob({
+    workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId,
+    command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'read-only' },
+  });
+  const failed = await reserve('failed-result');
+  const boundedError = { message: 'bounded stored failure' };
+  await store.finishJob(context.workspace, failed.id, ['queued'], 'failed', { error: boundedError, exitCode: 7 });
+  const failedResult = await companion(context, ['result', failed.id]);
+  assert.equal(failedResult.code, 0, `${failedResult.stderr}${failedResult.stdout}`);
+  const storedFailed = await store.readJob(context.workspace, failed.id);
+  const expectedFailed = { ...storedFailed, owned: true, owner: 'same-owner' };
+  delete expectedFailed.ownerSessionId; delete expectedFailed.ownerTurnId; delete expectedFailed.permissionSnapshot;
+  assert.deepEqual(failedResult.json, { job: expectedFailed });
+  assert.deepEqual(failedResult.json.job.error, boundedError);
+
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const succeeded = await reserve('succeeded-result'); const successfulContents = 'exact immutable result\n';
+  const resultArtifact = await writeResultArtifact({ dataRoot: context.dataRoot, workspace: context.workspace, jobId: succeeded.id, contents: successfulContents });
+  await store.transitionJob(context.workspace, succeeded.id, ['queued'], 'running');
+  await store.finishJob(context.workspace, succeeded.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const cancelled = await reserve('cancelled-result');
+  await store.finishJob(context.workspace, cancelled.id, ['queued'], 'cancelled', { error: { message: 'bounded cancellation' }, exitCode: null });
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const active = await reserve('active-result');
+
+  const implicit = await companion(context, ['result']);
+  assert.equal(implicit.code, 0, `${implicit.stderr}${implicit.stdout}`);
+  assert.equal(implicit.json.job.id, cancelled.id); assert.equal(implicit.json.job.status, 'cancelled');
+  assert.deepEqual(implicit.json.job.error, { message: 'bounded cancellation' });
+
+  const successful = await companion(context, ['result', succeeded.id]);
+  assert.equal(successful.code, 0, `${successful.stderr}${successful.stdout}`);
+  assert.equal(successful.json.result, successfulContents);
+
+  const unfinished = await companion(context, ['result', active.id]);
+  assert.notEqual(unfinished.code, 0); assert.equal(unfinished.json.error.code, 'JOB_RESULT_UNFINISHED');
+
+  const missing = await reserve('missing-result');
+  await store.transitionJob(context.workspace, missing.id, ['queued'], 'running');
+  await store.finishJob(context.workspace, missing.id, ['running'], 'succeeded', { exitCode: 0 });
+  const missingResult = await companion(context, ['result', missing.id]);
+  assert.notEqual(missingResult.code, 0); assert.equal(missingResult.json.error.code, 'ZCODE_RESULT_MISSING');
+  assert.match(missingResult.json.error.remedy, new RegExp(`\\$zcode:status ${missing.id}`));
 });
 
 test('a new owner scavenges one orphan blocker and retries writable reservation exactly once', async () => {

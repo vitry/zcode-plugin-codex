@@ -98,21 +98,33 @@ test('owned client selection ignores a corrupt foreign job through its trusted o
 });
 
 test('implicit cancel and result use command-specific eligibility while explicit IDs stay exact', async () => {
-  const { workspace, store, controller } = await setup();
+  const { root, workspace, store, controller } = await setup();
   const succeeded = await store.reserveJob({ workspace, ...reservation, readOnly: true, ownerTurnId: 'succeeded' });
   await store.transitionJob(workspace, succeeded.id, ['queued'], 'running');
   await store.transitionJob(workspace, succeeded.id, ['running'], 'succeeded', { resultArtifact: `results/${succeeded.id}.md` });
   await new Promise((resolve) => setTimeout(resolve, 2));
   const failed = await store.reserveJob({ workspace, ...reservation, readOnly: true, ownerTurnId: 'failed' });
   await store.transitionJob(workspace, failed.id, ['queued'], 'failed', { error: 'failed' });
+  assert.equal((await controller.selectOwned(workspace, 'session-a', undefined, 'result')).id, failed.id);
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const cancelled = await store.reserveJob({ workspace, ...reservation, readOnly: true, ownerTurnId: 'cancelled' });
+  await store.transitionJob(workspace, cancelled.id, ['queued'], 'cancelled');
   await new Promise((resolve) => setTimeout(resolve, 2));
   const active = await store.reserveJob({ workspace, ...reservation, readOnly: true, ownerTurnId: 'active' });
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const sibling = await store.reserveJob({ workspace, ...reservation, ownerSessionId: 'session-b', readOnly: true, ownerTurnId: 'sibling' });
+  await store.transitionJob(workspace, sibling.id, ['queued'], 'failed', { error: 'sibling failed' });
+  const otherWorkspace = join(root, 'other-workspace'); await mkdir(otherWorkspace);
+  const other = await store.reserveJob({ workspace: otherWorkspace, ...reservation, readOnly: true, ownerTurnId: 'other-workspace' });
+  await store.transitionJob(otherWorkspace, other.id, ['queued'], 'cancelled');
 
   assert.equal((await controller.selectOwned(workspace, 'session-a', undefined, 'cancel')).id, active.id);
-  assert.equal((await controller.selectOwned(workspace, 'session-a', undefined, 'result')).id, succeeded.id);
+  assert.equal((await controller.selectOwned(workspace, 'session-a', undefined, 'result')).id, cancelled.id);
   assert.equal((await controller.selectOwned(workspace, 'session-a', failed.id, 'result')).id, failed.id, 'explicit result IDs retain exact prior selection');
+  assert.equal((await controller.selectOwned(workspace, 'session-a', active.id, 'result')).id, active.id, 'explicit active result IDs remain exact');
   assert.equal((await controller.selectOwned(workspace, 'session-a', succeeded.id, 'cancel')).id, succeeded.id, 'explicit cancel IDs retain exact idempotent selection');
-  await assert.rejects(controller.selectOwned(workspace, 'session-b', undefined, 'cancel'), { code: 'OWNED_JOB_NOT_FOUND' });
+  await assert.rejects(controller.selectOwned(workspace, 'session-a', sibling.id, 'result'), { code: 'OWNED_JOB_NOT_FOUND' });
+  await assert.rejects(controller.selectOwned(workspace, 'session-a', other.id, 'result'), { code: 'OWNED_JOB_NOT_FOUND' });
 });
 
 test('wait reaches terminal state or returns a stable timeout error', async () => {

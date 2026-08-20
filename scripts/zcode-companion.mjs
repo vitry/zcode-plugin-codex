@@ -95,8 +95,12 @@ export async function runCompanion(argv, runtime = {}) {
   }
   if (parsed.command === 'result') {
     const job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'result');
-    if (job.status !== 'succeeded' || !job.resultArtifact) throw new PluginError('JOB_RESULT_UNFINISHED', `Job ${job.id} is ${job.status}.`, { category: 'state', remedy: `Run $zcode:status ${job.id} --wait.`, details: { jobId: job.id, status: job.status } });
-    return { job, result: await readResultArtifact({ dataRoot, workspace: cwd, artifact: job.resultArtifact }) };
+    if (job.status === 'succeeded') {
+      if (!job.resultArtifact) throw new PluginError('ZCODE_RESULT_MISSING', `Job ${job.id} succeeded without a stored result artifact.`, { category: 'state', remedy: `Run $zcode:status ${job.id} to inspect the completed job.`, details: { jobId: job.id, status: job.status } });
+      return { job, result: await readResultArtifact({ dataRoot, workspace: cwd, artifact: job.resultArtifact }) };
+    }
+    if (job.status === 'failed' || job.status === 'cancelled') return { job: publicJob(job, caller.sessionId, true) };
+    throw new PluginError('JOB_RESULT_UNFINISHED', `Job ${job.id} is ${job.status}.`, { category: 'state', remedy: `Run $zcode:status ${job.id} --wait.`, details: { jobId: job.id, status: job.status } });
   }
   if (parsed.command === 'cancel') {
     const selected = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'cancel');
