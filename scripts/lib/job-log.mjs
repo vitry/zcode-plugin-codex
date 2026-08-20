@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { link, lstat, open, realpath } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import { ensurePrivateDirectoryWithin, readPrivateDirectory, withFileLock } from './fs.mjs';
@@ -196,6 +196,20 @@ async function verifyExistingLog(root, logFile, expected) {
 
 /** @param {string} root @param {string} logFile @param {Buffer} bytes @param {{dev:bigint,ino:bigint}|undefined} [expected] */
 async function appendAt(root, logFile, bytes, expected) {
+  const leaf = basename(logFile);
+  const match = /^([a-f0-9]{64})\.log$/.exec(leaf);
+  if (!match || join(root, leaf) !== logFile) throw pathError();
+  const locksRoot = join(root, '.job-log-append-locks');
+  await ensurePrivateDirectoryWithin(root, locksRoot);
+  const lockPath = join(locksRoot, match[1]);
+  return withFileLock(lockPath, async () => {
+    await verifyExistingLog(root, logFile, expected);
+    await appendAtLocked(root, logFile, bytes, expected);
+  });
+}
+
+/** @param {string} root @param {string} logFile @param {Buffer} bytes @param {{dev:bigint,ino:bigint}|undefined} [expected] */
+async function appendAtLocked(root, logFile, bytes, expected) {
   const lexical = await lstat(logFile, { bigint: true });
   if (lexical.isSymbolicLink() || !lexical.isFile() || await realpath(dirname(logFile)) !== root) throw pathError();
   if (!privateOwnerMode(lexical)) throw pathError();

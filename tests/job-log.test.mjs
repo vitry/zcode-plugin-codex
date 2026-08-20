@@ -1,5 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import {
   chmod,
@@ -30,6 +31,7 @@ import {
   resolveJobLogFile,
 } from '../scripts/lib/job-log.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
+import { ensurePrivateDirectoryWithin, withFileLock } from '../scripts/lib/fs.mjs';
 
 const JOB_ID = 'a'.repeat(64);
 
@@ -45,6 +47,27 @@ async function withFixture(operation) {
   const context = await fixture();
   try { return await operation(context); }
   finally { await rm(context.root, { recursive: true, force: true }); }
+}
+
+async function waitForPaths(paths) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if ((await Promise.all(paths.map((path) => stat(path).then(() => true, () => false)))).every(Boolean)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail('Timed out waiting for deterministic child-process gates.');
+}
+
+function runNode(source) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', source], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = ''; let stderr = '';
+    const timeout = setTimeout(() => { child.kill(); reject(new Error('Gated append child exceeded its timeout.')); }, 10_000);
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', (error) => { clearTimeout(timeout); reject(error); });
+    child.once('exit', (code, signal) => { clearTimeout(timeout); resolve({ code, signal, stdout, stderr }); });
+  });
 }
 
 test('resolves the exact log sibling and creates a private regular file', async () => withFixture(async ({ dataRoot, workspace }) => {
@@ -187,6 +210,106 @@ test('serializes equivalent spellings of one canonical workspace in invocation o
   assert.match(lines[1], /canonical second$/);
 }));
 
+test('cross-process append locking keeps gated large block frames contiguous', async () => withFixture(async ({ root, dataRoot, workspace }) => {
+  const logFile = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID }).then((sink) => sink.logFile);
+  const gates = join(root, 'append-gates');
+  await mkdir(gates);
+  const bodyBytes = 256 * 1024;
+  const moduleUrl = new URL('../scripts/lib/job-log.mjs', import.meta.url).href;
+  const childSource = (id) => `
+    import { constants } from 'node:fs';
+    import { access, mkdir, open } from 'node:fs/promises';
+    import { join } from 'node:path';
+    import { appendJobLogBlock } from ${JSON.stringify(moduleUrl)};
+    const gates = ${JSON.stringify(gates)}; const id = ${JSON.stringify(id)}; const peer = id === 'A' ? 'B' : 'A';
+    await mkdir(join(gates, 'ready-' + id));
+    while (true) { try { await access(join(gates, 'release')); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); } }
+    const probe = await open(${JSON.stringify(logFile)}, constants.O_RDONLY); const prototype = Object.getPrototypeOf(probe); await probe.close();
+    const originalWrite = prototype.write; let call = 0;
+    prototype.write = async function gatedPartial(buffer, offset = 0, length = buffer.byteLength - offset, position) {
+      const result = await originalWrite.call(this, buffer, offset, Math.min(length, 65536), position); call += 1;
+      await mkdir(join(gates, id + '-' + call)).catch(() => {});
+      const peerGate = join(gates, peer + '-' + call); const deadline = Date.now() + 100;
+      while (Date.now() < deadline) { try { await access(peerGate); break; } catch { await new Promise((resolve) => setTimeout(resolve, 2)); } }
+      return result;
+    };
+    try { await appendJobLogBlock({ dataRoot: ${JSON.stringify(dataRoot)}, workspace: ${JSON.stringify(workspace)}, jobId: ${JSON.stringify(JOB_ID)}, title: 'Child ' + id, body: id.repeat(${bodyBytes}) }); }
+    finally { prototype.write = originalWrite; }
+  `;
+  const children = [runNode(childSource('A')), runNode(childSource('B'))];
+  await waitForPaths([join(gates, 'ready-A'), join(gates, 'ready-B')]);
+  await mkdir(join(gates, 'release'));
+  const results = await Promise.all(children);
+  for (const result of results) assert.equal(result.code, 0, result.stderr || result.stdout);
+
+  const contents = await readFile(logFile, 'utf8');
+  const headers = [...contents.matchAll(/\n\[[^\]\n]+\] Child ([AB])\n/g)];
+  assert.equal(headers.length, 2);
+  assert.notEqual(headers[0][1], headers[1][1]);
+  for (let index = 0; index < headers.length; index += 1) {
+    const start = headers[index].index + headers[index][0].length;
+    const end = index + 1 < headers.length ? headers[index + 1].index : contents.length;
+    assert.equal(contents.slice(start, end), `${headers[index][1].repeat(bodyBytes)}\n`);
+  }
+}));
+
+test('append revalidates admitted identity after waiting for the cross-process lock', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const jobsRoot = join(storage.directory, 'jobs');
+  const locksRoot = join(jobsRoot, '.job-log-append-locks');
+  await ensurePrivateDirectoryWithin(jobsRoot, locksRoot);
+  const lockPath = join(locksRoot, JOB_ID);
+  const displaced = `${sink.logFile}.lock-waiter`;
+  let appendPromise;
+  let observed;
+  let settled = false;
+  let settledWhileHeld;
+  const probe = await open(sink.logFile, constants.O_RDONLY);
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const originalStat = prototype.stat;
+  let statCalls = 0; let markAdmitted;
+  const admitted = new Promise((resolve) => { markAdmitted = resolve; });
+  prototype.stat = async function markAdmission(...args) {
+    const info = await originalStat.call(this, ...args); statCalls += 1;
+    if (statCalls === 4) markAdmitted();
+    return info;
+  };
+  try {
+    await withFileLock(lockPath, async () => {
+      appendPromise = appendJobLogEvent({ dataRoot, workspace, jobId: JOB_ID, event: 'must fail after waiting' });
+      observed = appendPromise.then(() => ({ ok: true }), (error) => ({ ok: false, error })).finally(() => { settled = true; });
+      await admitted;
+      await new Promise((resolve) => setImmediate(resolve));
+      settledWhileHeld = settled;
+      if (!settled) {
+        await rename(sink.logFile, displaced);
+        await writeFile(sink.logFile, 'replacement\n', { mode: 0o600 });
+      }
+    });
+    const outcome = await observed;
+    assert.equal(settledWhileHeld, false);
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.error.code, 'JOB_LOG_PATH_UNSAFE');
+  } finally { prototype.stat = originalStat; }
+  assert.equal(await readFile(sink.logFile, 'utf8'), 'replacement\n');
+  assert.doesNotMatch(await readFile(displaced, 'utf8'), /must fail after waiting/);
+}));
+
+test('append-lock path failures throw safely for direct calls and only disable sinks', { skip: process.platform === 'win32' }, async () => withFixture(async ({ root, dataRoot, workspace }) => {
+  const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const outside = join(root, 'outside-append-locks');
+  await mkdir(outside);
+  await symlink(outside, join(storage.directory, 'jobs', '.job-log-append-locks'), 'dir');
+  await assert.rejects(appendJobLogEvent({ dataRoot, workspace, jobId: JOB_ID, event: 'direct lock failure' }), { code: 'JOB_LOG_APPEND_FAILED' });
+  await sink.appendBlock('Sink lock failure', 'must not persist');
+  assert.equal(sink.disabled, true);
+  assert.equal(await readFile(sink.logFile, 'utf8'), '');
+  assert.deepEqual(await readdir(outside), []);
+}));
+
 test('keeps concurrently appended jobs isolated', async () => withFixture(async ({ dataRoot, workspace }) => {
   const otherJobId = 'b'.repeat(64);
   const first = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
@@ -302,112 +425,48 @@ test('a sink disables observationally after its file identity is replaced', asyn
   assert.equal(await readFile(displaced, 'utf8'), '');
 }));
 
-test('direct append rejects a valid private replacement installed after canonical admission', async () => withFixture(async ({ dataRoot, workspace }) => {
+test('direct block append revalidates identity after waiting for the cross-process lock', async () => withFixture(async ({ dataRoot, workspace }) => {
   const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const jobsRoot = join(storage.directory, 'jobs');
+  const locksRoot = join(jobsRoot, '.job-log-append-locks');
+  await ensurePrivateDirectoryWithin(jobsRoot, locksRoot);
+  const lockPath = join(locksRoot, JOB_ID);
   const probe = await open(sink.logFile, constants.O_RDONLY);
   const prototype = Object.getPrototypeOf(probe);
   await probe.close();
   const originalStat = prototype.stat;
-  const originalSync = prototype.sync;
   let statCalls = 0;
-  let releaseSync;
-  const syncRelease = new Promise((resolve) => { releaseSync = resolve; });
-  let markSyncReached;
-  const syncReached = new Promise((resolve) => { markSyncReached = resolve; });
-  let markAdmissionVerified;
-  const admissionVerified = new Promise((resolve) => { markAdmissionVerified = resolve; });
-  let held = false;
-  prototype.stat = async function patchedStat(...args) {
-    const info = await originalStat.call(this, ...args);
-    statCalls += 1;
-    if (statCalls === 6) markAdmissionVerified();
+  let markAdmitted;
+  const admitted = new Promise((resolve) => { markAdmitted = resolve; });
+  prototype.stat = async function markAdmission(...args) {
+    const info = await originalStat.call(this, ...args); statCalls += 1;
+    if (statCalls === 4) markAdmitted();
     return info;
-  };
-  prototype.sync = async function patchedSync(...args) {
-    if (!held) {
-      held = true;
-      markSyncReached();
-      await syncRelease;
-    }
-    return originalSync.call(this, ...args);
-  };
-  const displaced = `${sink.logFile}.admitted`;
-  try {
-    const blocker = sink.appendEvent('blocking append');
-    await syncReached;
-    const direct = appendJobLogEvent({ dataRoot, workspace, jobId: JOB_ID, event: 'must not reach replacement' });
-    await admissionVerified;
-    await rename(sink.logFile, displaced);
-    await writeFile(sink.logFile, 'replacement\n', { mode: 0o600 });
-    releaseSync();
-    await blocker;
-    await assert.rejects(direct, { code: 'JOB_LOG_PATH_UNSAFE' });
-    assert.equal(sink.disabled, true);
-    assert.equal(await readFile(sink.logFile, 'utf8'), 'replacement\n');
-    assert.doesNotMatch(await readFile(displaced, 'utf8'), /must not reach replacement/);
-  } finally {
-    releaseSync();
-    prototype.stat = originalStat;
-    prototype.sync = originalSync;
-  }
-}));
-
-test('direct block append rejects a valid private replacement installed after canonical admission', async () => withFixture(async ({ dataRoot, workspace }) => {
-  const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
-  const probe = await open(sink.logFile, constants.O_RDONLY);
-  const prototype = Object.getPrototypeOf(probe);
-  await probe.close();
-  const originalStat = prototype.stat;
-  const originalSync = prototype.sync;
-  let statCalls = 0;
-  let releaseSync;
-  const syncRelease = new Promise((resolve) => { releaseSync = resolve; });
-  let markSyncReached;
-  const syncReached = new Promise((resolve) => { markSyncReached = resolve; });
-  let markAdmissionVerified;
-  const admissionVerified = new Promise((resolve) => { markAdmissionVerified = resolve; });
-  let held = false;
-  prototype.stat = async function patchedStat(...args) {
-    const info = await originalStat.call(this, ...args);
-    statCalls += 1;
-    if (statCalls === 6) markAdmissionVerified();
-    return info;
-  };
-  prototype.sync = async function patchedSync(...args) {
-    if (!held) {
-      held = true;
-      markSyncReached();
-      await syncRelease;
-    }
-    return originalSync.call(this, ...args);
   };
   const displaced = `${sink.logFile}.block-admitted`;
+  let observed; let settled = false; let settledWhileHeld;
   try {
-    const blocker = sink.appendEvent('blocking block append');
-    await syncReached;
-    const direct = appendJobLogBlock({
-      dataRoot,
-      workspace,
-      jobId: JOB_ID,
-      title: 'Must not reach replacement',
-      body: 'private selected body',
+    await withFileLock(lockPath, async () => {
+      const append = appendJobLogBlock({ dataRoot, workspace, jobId: JOB_ID, title: 'Must not reach replacement', body: 'private selected body' });
+      observed = append.then(() => ({ ok: true }), (error) => ({ ok: false, error })).finally(() => { settled = true; });
+      await admitted;
+      await new Promise((resolve) => setImmediate(resolve));
+      settledWhileHeld = settled;
+      if (!settled) {
+        await rename(sink.logFile, displaced);
+        await writeFile(sink.logFile, 'replacement\n', { mode: 0o600 });
+      }
     });
-    await admissionVerified;
-    await rename(sink.logFile, displaced);
-    await writeFile(sink.logFile, 'replacement\n', { mode: 0o600 });
-    releaseSync();
-    await blocker;
-    await assert.rejects(direct, { code: 'JOB_LOG_PATH_UNSAFE' });
-    assert.equal(sink.disabled, true);
-    assert.equal(await readFile(sink.logFile, 'utf8'), 'replacement\n');
-    const displacedContents = await readFile(displaced, 'utf8');
-    assert.doesNotMatch(displacedContents, /Must not reach replacement/);
-    assert.doesNotMatch(displacedContents, /private selected body/);
-  } finally {
-    releaseSync();
-    prototype.stat = originalStat;
-    prototype.sync = originalSync;
-  }
+    const outcome = await observed;
+    assert.equal(settledWhileHeld, false);
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.error.code, 'JOB_LOG_PATH_UNSAFE');
+  } finally { prototype.stat = originalStat; }
+  assert.equal(await readFile(sink.logFile, 'utf8'), 'replacement\n');
+  const displacedContents = await readFile(displaced, 'utf8');
+  assert.doesNotMatch(displacedContents, /Must not reach replacement/);
+  assert.doesNotMatch(displacedContents, /private selected body/);
 }));
 
 test('a create failure returns a disabled non-throwing sink without a path', { skip: process.platform === 'win32' }, async () => withFixture(async ({ root, dataRoot, workspace }) => {
