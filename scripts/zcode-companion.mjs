@@ -550,7 +550,11 @@ function terminalResultJob(job) {
 /** @param {string} message */
 function sanitizeTerminalResultMessage(message) {
   const normalized = [...message]
-    .map((character) => terminalResultControl(character.codePointAt(0)) ? ' ' : character)
+    .map((character) => {
+      const code = /** @type {number} */ (character.codePointAt(0));
+      if (terminalResultBidiControl(code)) return '';
+      return code <= 0x1f || code >= 0x7f && code <= 0x9f ? ' ' : character;
+    })
     .join('')
     .replace(/\s+/gu, ' ')
     .trim();
@@ -564,10 +568,10 @@ function sanitizeTerminalResultMessage(message) {
   }
   return `${output}${suffix}`;
 }
-/** @param {number|undefined} code */
-function terminalResultControl(code) {
-  return code !== undefined && (code <= 0x1f || code >= 0x7f && code <= 0x9f
-    || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069);
+/** @param {number} code */
+function terminalResultBidiControl(code) {
+  return code === 0x061c || code === 0x200e || code === 0x200f
+    || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
 }
 /** @param {Record<string,any>} source @param {string[]} fields */
 function copyOptionalStringFields(source, fields) {

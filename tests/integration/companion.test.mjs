@@ -1155,7 +1155,7 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
     snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
   });
   const storedError = {
-    message: `Public failure\u202e\nwith\tcontrols\u0000 ${'界'.repeat(800)}`,
+    message: `Public\u061c failure\u200e\u202e\nwith\u200f\tcontrols\u0000 ${'界'.repeat(800)}`,
     code: 'PRIVATE_ERROR_CODE', secretMarker: 'PRIVATE_ERROR_SECRET', details: { token: 'PRIVATE_ERROR_TOKEN' },
   };
   await store.finishJob(context.workspace, failed.id, ['running'], 'failed', { error: storedError, exitCode: 7 });
@@ -1170,7 +1170,8 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
   assert.equal(Buffer.byteLength(failedResult.json.job.error.message), 2048);
   assert.equal([...failedResult.json.job.error.message].some((character) => {
     const code = character.codePointAt(0);
-    return code <= 0x1f || code >= 0x7f && code <= 0x9f || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
+    return code <= 0x1f || code >= 0x7f && code <= 0x9f || code === 0x061c || code === 0x200e || code === 0x200f
+      || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
   }), false);
   assert.doesNotMatch(JSON.stringify(failedResult.json), /PRIVATE_|private-|ownerSessionId|ownerTurnId|permissionSnapshot|promptArtifact|resultArtifact|workerLeaseId|childPid|zcodeSessionId|inputId|startRevision|beforeMessageIds|model|effort|progressProbe|progressPreview|lastCancelError|exitCode|secretMarker|details/u);
 
