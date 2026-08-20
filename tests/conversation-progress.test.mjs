@@ -511,12 +511,55 @@ test('queue overflow requires an exact newer recovery baseline before continuous
   assert.deepEqual(await describer.observe(foreignRecovery, observedAt), []);
   const staleRecovery = conversationFrame({ ordinal: 1, fromSeq: 1, toSeq: 1, deliveryKind: 'recovery', deltas: [] });
   assert.deepEqual(await describer.observe(staleRecovery, observedAt), []);
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 10, fromSeq: 2, toSeq: 10, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 10, fromSeq: 1, toSeq: 10, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
   const resumed = await describer.observe(conversationFrame({ ordinal: 11, fromSeq: 10, toSeq: 11, deltas: [toolRow({ rowId: 11, input: { command: 'echo recovered' } })] }), observedAt);
   assert.equal(resumed[0].message, 'Running command: echo recovered.');
   describer.markTerminal();
   assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 12, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
   assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 13, deltas: [toolRow({ rowId: 13 })] }), observedAt), []);
+});
+
+test('a gap during async projection discards staged lifecycle state and its watermark', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  let releasePath;
+  let reportPathStarted;
+  const pathStarted = new Promise((resolve) => { reportPathStarted = resolve; });
+  const pathGate = new Promise((resolve) => { releasePath = resolve; });
+  const describer = await createStructuralDescriber(
+    { sessionId: 'session-1', subscriptionId: 'sub-1', workspace },
+    { resolvePath: async () => { reportPathStarted(); await pathGate; return null; } },
+  );
+
+  assert.deepEqual(await describer.observe(conversationFrame({
+    ordinal: 1, fromSeq: 0, toSeq: 1,
+    deltas: [{ op: 'state.updated', patch: { revision: 1 } }],
+  }), observedAt), { disposition: 'accepted', phase: 'online', events: [] });
+
+  const interrupted = describer.observe(conversationFrame({
+    ordinal: 2, fromSeq: 1, toSeq: 2,
+    deltas: [
+      toolRow({ rowId: 2, toolCallId: 'staged-tool', input: { command: 'STAGED_MARKER' } }),
+      toolRow({ rowId: 3, toolCallId: 'path-tool', toolName: 'Read', input: { file_path: 'blocked' } }),
+    ],
+  }), observedAt);
+  await pathStarted;
+  describer.markGap();
+  releasePath();
+  assert.deepEqual(await interrupted, { disposition: 'ignored', reason: 'recovery-required', events: [] });
+
+  assert.deepEqual(await describer.observe(conversationFrame({
+    deliveryKind: 'recovery', ordinal: 2, fromSeq: 1, toSeq: 1, deltas: [],
+  }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
+
+  const terminal = await describer.observe(conversationFrame({
+    ordinal: 3, fromSeq: 1, toSeq: 2,
+    deltas: [toolRow({
+      rowId: 2, toolCallId: 'staged-tool', status: 'success', input: { command: 'SAFE_TERMINAL' },
+      endedAt: 1_786_233_600_010,
+    })],
+  }), observedAt);
+  assert.deepEqual(terminal.events.map((event) => event.message), ['Command completed: SAFE_TERMINAL (10ms).']);
+  assert.doesNotMatch(JSON.stringify(terminal), /STAGED_MARKER/);
 });
 
 test('accepts bounded captured multiline tool output without rendering any raw output', async () => {

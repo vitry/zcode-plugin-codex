@@ -128,47 +128,62 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     const sequenceGap = lastOrdinal !== undefined
       && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== lastSeq);
     if (sequenceGap) { needsRecovery = true; return rejected('sequence'); }
-    lastOrdinal = frame.ordinal; lastSeq = frame.toSeq;
+    const stagedToolStates = new Map(toolStates);
+    const stagedRowStates = new Map(rowStates);
     const staged = [];
+    let stagedTerminal = false;
     for (const delta of frame.deltas) {
-      if (delta.op === 'row.removed') { applyRemoval(/** @type {number} */ (delta.fromRowId)); continue; }
+      if (delta.op === 'row.removed') {
+        applyRemoval(/** @type {number} */ (delta.fromRowId), stagedToolStates, stagedRowStates);
+        continue;
+      }
       if (!delta.row) continue;
       if (delta.row.kind === 'toolCall') {
-        if (staged.length >= MAX_PUBLIC_EVENTS_PER_FRAME) { absorbToolState(delta.row); continue; }
-        const event = await describeTool(delta.row, toolStates, workspaceRoot, publicObservedAt, resolvePath, pathTimeoutMs, () => terminal || needsRecovery);
+        if (staged.length >= MAX_PUBLIC_EVENTS_PER_FRAME) { absorbToolState(delta.row, stagedToolStates); continue; }
+        const event = await describeTool(delta.row, stagedToolStates, workspaceRoot, publicObservedAt, resolvePath, pathTimeoutMs, () => terminal || needsRecovery);
         if (terminal || needsRecovery) return ignored(terminal ? 'terminal' : 'recovery-required');
         if (event && staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push(event);
       } else {
         const row = delta.row;
-        const previous = rowStates.get(row.rowId);
+        const previous = stagedRowStates.get(row.rowId);
         if (row.state === 'completedSuccess' || row.state === 'failed' || row.state === 'completedInterrupted') {
-          if (previous !== undefined || rowStates.size < MAX_TRACKED_ROWS) rowStates.set(row.rowId, row.state);
+          if (previous !== undefined || stagedRowStates.size < MAX_TRACKED_ROWS) stagedRowStates.set(row.rowId, row.state);
           if (staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'finalizing', message: row.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
-          latchTerminal(); break;
+          stagedTerminal = true; break;
         }
-        if (previous === undefined && rowStates.size >= MAX_TRACKED_ROWS) continue;
-        rowStates.set(row.rowId, row.state);
+        if (previous === undefined && stagedRowStates.size >= MAX_TRACKED_ROWS) continue;
+        stagedRowStates.set(row.rowId, row.state);
         if (previous === row.state) continue;
         if (row.state === 'running' && previous === undefined && staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'starting', message: 'ZCode turn started.', observedAt: publicObservedAt });
       }
     }
+    if (terminal || needsRecovery) return ignored(terminal ? 'terminal' : 'recovery-required');
+    replaceMap(toolStates, stagedToolStates); replaceMap(rowStates, stagedRowStates);
+    lastOrdinal = frame.ordinal; lastSeq = frame.toSeq;
+    if (stagedTerminal) latchTerminal();
     return accepted('online', staged);
   }
 
   function resetLifecycleState() { toolStates.clear(); rowStates.clear(); }
 
-  /** @param {number} fromRowId */
-  function applyRemoval(fromRowId) {
-    for (const [toolCallId, state] of toolStates) if (state.rowId >= fromRowId) toolStates.delete(toolCallId);
-    for (const rowId of rowStates.keys()) if (rowId >= fromRowId) rowStates.delete(rowId);
+  /** @template K,V @param {Map<K,V>} target @param {Map<K,V>} replacement */
+  function replaceMap(target, replacement) {
+    target.clear();
+    for (const [key, value] of replacement) target.set(key, value);
   }
 
-  /** @param {any} row */
-  function absorbToolState(row) {
-    const prior = toolStates.get(row.toolCallId) ?? { rowId: row.rowId, started: false, terminal: false, message: null };
-    if (prior.terminal || !toolStates.has(row.toolCallId) && toolStates.size >= MAX_TRACKED_ROWS) return;
-    if (START_STATUSES.has(row.status)) toolStates.set(row.toolCallId, { rowId: row.rowId, started: true, terminal: false, message: prior.message });
-    else toolStates.set(row.toolCallId, { rowId: row.rowId, started: prior.started, terminal: true, message: prior.message });
+  /** @param {number} fromRowId @param {Map<string,{rowId:number,started:boolean,terminal:boolean,message:string|null}>} [targetToolStates] @param {Map<number,string>} [targetRowStates] */
+  function applyRemoval(fromRowId, targetToolStates = toolStates, targetRowStates = rowStates) {
+    for (const [toolCallId, state] of targetToolStates) if (state.rowId >= fromRowId) targetToolStates.delete(toolCallId);
+    for (const rowId of targetRowStates.keys()) if (rowId >= fromRowId) targetRowStates.delete(rowId);
+  }
+
+  /** @param {any} row @param {Map<string,{rowId:number,started:boolean,terminal:boolean,message:string|null}>} [states] */
+  function absorbToolState(row, states = toolStates) {
+    const prior = states.get(row.toolCallId) ?? { rowId: row.rowId, started: false, terminal: false, message: null };
+    if (prior.terminal || !states.has(row.toolCallId) && states.size >= MAX_TRACKED_ROWS) return;
+    if (START_STATUSES.has(row.status)) states.set(row.toolCallId, { rowId: row.rowId, started: true, terminal: false, message: prior.message });
+    else states.set(row.toolCallId, { rowId: row.rowId, started: prior.started, terminal: true, message: prior.message });
   }
 
   /** @param {ValidatedDelta[]} deltas */
