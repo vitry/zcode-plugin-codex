@@ -16,7 +16,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -123,7 +123,30 @@ test('serializes concurrent sink appends in invocation order and separates block
   assert.match(lines[3], /^\[.+Z\] Assistant message$/);
   assert.equal(lines[4], 'line one');
   assert.equal(lines[5], 'line two');
-  assert.match(lines[6], /^\[.+Z\] fourth$/);
+  assert.equal(lines[6], '');
+  assert.match(lines[7], /^\[.+Z\] fourth$/);
+}));
+
+test('normalizes every public Unicode line separator out of event lines and block titles', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  await sink.appendEvent('event\u000bvertical\u000cform\u001cfile\u0085next\u2028third\u2029last');
+  await sink.appendBlock('title\u0085next\u2028third\u2029last', 'body');
+  await sink.close();
+  const contents = await readFile(sink.logFile, 'utf8');
+  assert.match(contents, /^\[.+Z\] event vertical form file next third last\n\n\[.+Z\] title next third last\nbody\n$/);
+  for (const separator of ['\u000b', '\u000c', '\u001c', '\u0085', '\u2028', '\u2029']) assert.equal(contents.includes(separator), false);
+}));
+
+test('serializes equivalent spellings of one canonical workspace in invocation order', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const alias = `${workspace}${sep}.`;
+  const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  const first = appendJobLogEvent({ dataRoot, workspace: alias, jobId: JOB_ID, event: 'alias first' });
+  const second = sink.appendEvent('canonical second');
+  await Promise.all([first, second]);
+  await sink.close();
+  const lines = (await readFile(sink.logFile, 'utf8')).trim().split('\n');
+  assert.match(lines[0], /alias first$/);
+  assert.match(lines[1], /canonical second$/);
 }));
 
 test('keeps concurrently appended jobs isolated', async () => withFixture(async ({ dataRoot, workspace }) => {
@@ -150,6 +173,17 @@ test('exposes and enforces explicit UTF-8 content bounds while preserving accept
   const body = '  leading\n\tmiddle\ntrailing  ';
   await appendJobLogBlock({ dataRoot, workspace, jobId: JOB_ID, title: 'Safe', body });
   assert.match(await readFile(await resolveJobLogFile({ dataRoot, workspace, jobId: JOB_ID }), 'utf8'), /\] Safe\n {2}leading\n\tmiddle\ntrailing {2}\n$/);
+}));
+
+test('preserves every accepted block-body byte including CRLF, CR, and controls', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  const body = 'first\r\nsecond\rthird\u0000fourth';
+  await sink.appendBlock('Exact body', body);
+  await sink.close();
+  const contents = await readFile(sink.logFile);
+  const headerEnd = contents.indexOf(Buffer.from('Exact body\n')) + Buffer.byteLength('Exact body\n');
+  assert.ok(headerEnd >= Buffer.byteLength('Exact body\n'));
+  assert.deepEqual(contents.subarray(headerEnd), Buffer.from(`${body}\n`, 'utf8'));
 }));
 
 test('a sink disables observationally after its file identity is replaced', async () => withFixture(async ({ dataRoot, workspace }) => {

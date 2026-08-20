@@ -12,6 +12,7 @@ export const MAX_JOB_LOG_BODY_BYTES = 4 * 1024 * 1024;
 
 const JOB_ID_PATTERN = /^[a-f0-9]{64}$/;
 const queues = new Map();
+let admissions = Promise.resolve();
 
 /** @param {{dataRoot:string,workspace:string,jobId:string}} input */
 export async function resolveJobLogFile(input) {
@@ -30,9 +31,13 @@ export async function resolveJobLogFile(input) {
 export async function createJobLog(input) {
   validateJobId(input?.jobId);
   const title = normalizedLine(input?.title, MAX_JOB_LOG_TITLE_BYTES);
-  return serialize(invocationKey(input), async () => {
+  return admitCanonical(async () => {
     try {
       const opened = await createOrReopen(input);
+      return { key: canonicalQueueKey(opened), target: opened };
+    } catch (error) { throw safeCreateError(error); }
+  }, async (opened) => {
+    try {
       if (opened.created) await appendAt(opened.root, opened.logFile, eventBytes(`Starting ${title}.`), opened.identity);
       return opened.logFile;
     } catch (error) { throw safeCreateError(error); }
@@ -43,24 +48,16 @@ export async function createJobLog(input) {
 export async function appendJobLogEvent(input) {
   validateJobId(input?.jobId);
   const bytes = eventBytes(input?.event);
-  return serialize(invocationKey(input), async () => {
-    try {
-      const { root, logFile } = await existingLog(input);
-      await appendAt(root, logFile, bytes);
-    } catch (error) { throw safeAppendError(error); }
-  });
+  return serializeCanonical(input, ({ root, logFile }) => appendAt(root, logFile, bytes))
+    .catch((error) => { throw safeAppendError(error); });
 }
 
 /** @param {{dataRoot:string,workspace:string,jobId:string,title:string,body:string}} input */
 export async function appendJobLogBlock(input) {
   validateJobId(input?.jobId);
   const bytes = blockBytes(input?.title, input?.body);
-  return serialize(invocationKey(input), async () => {
-    try {
-      const { root, logFile } = await existingLog(input);
-      await appendAt(root, logFile, bytes);
-    } catch (error) { throw safeAppendError(error); }
-  });
+  return serializeCanonical(input, ({ root, logFile }) => appendAt(root, logFile, bytes))
+    .catch((error) => { throw safeAppendError(error); });
 }
 
 /** @param {{dataRoot:string,workspace:string,jobId:string}} input */
@@ -72,11 +69,11 @@ export async function createJobLogSink(input) {
   let disabled = false;
   let closed = false;
   let tail = Promise.resolve();
-  const queueKey = invocationKey(input);
+  const queueKey = canonicalQueueKey(opened);
   /** @param {()=>Promise<void>} operation */
   const enqueue = (operation) => {
     if (disabled || closed) return Promise.resolve();
-    const pending = serialize(queueKey, async () => {
+    const pending = admitCanonical(async () => ({ key: queueKey, target: opened }), async () => {
       if (disabled || closed) return;
       try { await operation(); } catch { disabled = true; }
     });
@@ -138,8 +135,8 @@ async function existingLog(input) {
   const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
   const root = await secureJobsRoot(storage.directory);
   const logFile = join(root, `${input.jobId}.log`);
-  await verifyExistingLog(root, logFile);
-  return { root, logFile };
+  const verified = await verifyExistingLog(root, logFile);
+  return { root, logFile, identity: verified.identity };
 }
 
 /** @param {string} storageDirectory */
@@ -220,9 +217,11 @@ function eventBytes(event) {
 function blockBytes(title, body) {
   const normalizedTitle = normalizedLine(title, MAX_JOB_LOG_TITLE_BYTES);
   if (typeof body !== 'string' || !body || Buffer.byteLength(body, 'utf8') > MAX_JOB_LOG_BODY_BYTES) throw contentError();
-  const normalizedBody = normalizeBody(body);
-  if (!normalizedBody) throw contentError();
-  return Buffer.from(`\n[${new Date().toISOString()}] ${normalizedTitle}\n${normalizedBody}${normalizedBody.endsWith('\n') ? '' : '\n'}`, 'utf8');
+  return Buffer.concat([
+    Buffer.from(`\n[${new Date().toISOString()}] ${normalizedTitle}\n`, 'utf8'),
+    Buffer.from(body, 'utf8'),
+    Buffer.from('\n', 'utf8'),
+  ]);
 }
 
 /** @param {unknown} value @param {number} maximumBytes */
@@ -232,23 +231,12 @@ function normalizedLine(value, maximumBytes) {
   let separating = false;
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
-    if (code <= 32 || code === 127) { separating = normalized.length > 0; continue; }
+    if (code <= 32 || code === 127 || code === 0x85 || code === 0x2028 || code === 0x2029) { separating = normalized.length > 0; continue; }
     if (separating) normalized += ' ';
     normalized += character;
     separating = false;
   }
   if (!normalized) throw contentError();
-  return normalized;
-}
-
-/** @param {string} value */
-function normalizeBody(value) {
-  let normalized = '';
-  const lineNormalized = value.replace(/\r\n?/gu, '\n');
-  for (const character of lineNormalized) {
-    const code = character.codePointAt(0) ?? 0;
-    normalized += code < 32 && character !== '\n' && character !== '\t' || code === 127 ? '\uFFFD' : character;
-  }
   return normalized;
 }
 
@@ -260,6 +248,37 @@ function serialize(key, operation) {
   pending.finally(() => { if (queues.get(key) === pending) queues.delete(key); }).catch(() => {});
   return pending;
 }
+
+/**
+ * Admit append invocations in call order before dispatching them to a queue
+ * keyed by the canonical file path and captured file identity. Resolution is
+ * ordered, but writes to different job identities may proceed independently.
+ * @template T,U
+ * @param {()=>Promise<{key:string,target:T}>} resolveTarget
+ * @param {(target:T)=>Promise<U>} operation
+ * @returns {Promise<U>}
+ */
+function admitCanonical(resolveTarget, operation) {
+  return new Promise((resolveResult, rejectResult) => {
+    const admitted = admissions.then(async () => {
+      const { key, target } = await resolveTarget();
+      serialize(key, () => operation(target)).then(resolveResult, rejectResult);
+    });
+    admissions = admitted.catch(() => {});
+    admitted.catch(rejectResult);
+  });
+}
+
+/** @template T @param {{dataRoot:string,workspace:string,jobId:string}} input @param {(target:{root:string,logFile:string,identity:{dev:bigint,ino:bigint}})=>Promise<T>} operation */
+function serializeCanonical(input, operation) {
+  return admitCanonical(async () => {
+    const target = await existingLog(input);
+    return { key: canonicalQueueKey(target), target };
+  }, operation);
+}
+
+/** @param {{logFile:string,identity:{dev:bigint,ino:bigint}}} target */
+function canonicalQueueKey(target) { return `${target.logFile}\0${target.identity.dev}:${target.identity.ino}`; }
 
 /** @param {{dataRoot?:unknown,workspace?:unknown,jobId?:unknown}} input */
 function invocationKey(input) { return `${String(input?.dataRoot)}\0${String(input?.workspace)}\0${String(input?.jobId)}`; }
