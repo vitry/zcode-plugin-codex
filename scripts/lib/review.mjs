@@ -9,7 +9,7 @@ import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
 import { createJobController, withJobCancellationLock } from './job-control.mjs';
 import { isBoundedPublicIdentifier } from './identifier.mjs';
-import { createJobLogSink } from './job-log.mjs';
+import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { createDeferredConversationProgressObserver } from './conversation-progress.mjs';
 import { createSessionProgressDescriber } from './session-progress.mjs';
@@ -54,15 +54,14 @@ export async function executeJob(input) {
   let primaryError;
   /** @type {any} */
   let output;
+  let appliedFinalization = false;
   let progressCleaned = false;
   /** @type {any} */ let jobLog;
   let jobLogCleaned = false;
   const cleanupJobLog = async () => {
     if (jobLogCleaned) return;
     jobLogCleaned = true;
-    const deadline = Date.now() + OPTIONAL_PROGRESS_FENCE_MS;
-    await waitForOptionalProgress(Promise.resolve().then(() => jobLog?.flush()).catch(() => {}), deadline);
-    await waitForOptionalProgress(Promise.resolve().then(() => jobLog?.close()).catch(() => {}), deadline);
+    await jobLog?.close(Date.now() + OPTIONAL_PROGRESS_FENCE_MS);
   };
   const cleanupProgress = async () => {
     if (progressCleaned) return;
@@ -85,13 +84,11 @@ export async function executeJob(input) {
     try { reporter?.close(); } catch { /* progress-only */ }
   };
   try {
-    try {
-      jobLog = await createJobLogSink({ dataRoot, workspace, jobId: job.id });
-      if (jobLog.logFile) {
-        try { running = await input.store.attachJobLog(workspace, job.id, jobLog.logFile); }
-        catch { await cleanupJobLog(); jobLog = undefined; }
-      }
-    } catch { jobLog = undefined; }
+    jobLog = await openRuntimeJobLog({
+      dataRoot, workspace, job, store: input.store, attach: 'always', fenceMs: OPTIONAL_PROGRESS_FENCE_MS,
+      writeDiagnostic: input.progressWriter,
+    });
+    if (jobLog.attachedJob) running = jobLog.attachedJob;
     let prompt;
     if (job.command === 'review' || job.command === 'adversarial-review') {
       const gitFacts = await collectGitFacts({ workspace, scope: input.scope, base: input.base });
@@ -119,10 +116,7 @@ export async function executeJob(input) {
       ...(input.progressWriter ? { write: input.progressWriter } : {}),
       ...(input.progressRelayWriter ? { relay: input.progressRelayWriter } : {}),
       persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
-      ...(jobLog ? { archive: async (event) => {
-        await jobLog.appendEvent(event.message);
-        if (jobLog.disabled) throw new Error('progress archive unavailable');
-      } } : {}),
+      archive: (event) => jobLog.archiveEvent(event.message),
       persistProbe: (probe) => input.store.updateJobProgressProbe(workspace, job.id, probe),
       describeNotification: conversationObserver.observe,
       onDescriptorOverflow: conversationObserver.markGap,
@@ -166,8 +160,12 @@ export async function executeJob(input) {
     const finalStatus = terminalSnapshotStatus(finalSnapshot, turnBoundary);
     remoteTerminalProven = ['error', 'completed', 'idle'].includes(finalStatus);
     const result = extractTerminalResultForStatus(finalSnapshot, job.command, turnBoundary, finalStatus);
-    try { void jobLog?.appendBlock('Assistant message', result); } catch { /* log-only */ }
-    output = await publishSuccessfulResult({ input, job, workspace, dataRoot, result });
+    const publication = await publishSuccessfulResult({
+      input, job, workspace, dataRoot, result,
+      appendAssistant: () => jobLog.appendBlock('Assistant message', result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS),
+    });
+    output = { job: publication.job, result: publication.result };
+    appliedFinalization = publication.appliedFinalization;
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
     const current = await input.store.readJob(workspace, job.id).catch(() => running);
@@ -203,8 +201,8 @@ export async function executeJob(input) {
   // Cleanup order is part of the progress lifecycle contract.
   await cleanupProgress();
   await client.close().catch(() => {});
-  if (!primaryError && output?.job?.status === 'succeeded' && typeof output.result === 'string') {
-    try { void jobLog?.appendBlock('Final output', output.result); } catch { /* log-only */ }
+  if (!primaryError && appliedFinalization && output?.job?.status === 'succeeded' && typeof output.result === 'string') {
+    await jobLog?.appendBlock('Final output', output.result, Date.now() + OPTIONAL_PROGRESS_FENCE_MS);
   }
   await cleanupJobLog();
   if (primaryError) throw primaryError;
@@ -228,20 +226,21 @@ async function waitForOptionalProgress(operation, deadline) {
   return completed;
 }
 
-/** Serialize executor terminal publication with cancellation and lifecycle maintenance. @param {{input:any,job:any,workspace:string,dataRoot:string,result:string}} publication */
-async function publishSuccessfulResult({ input, job, workspace, dataRoot, result }) {
+/** Serialize executor terminal publication with cancellation and lifecycle maintenance. @param {{input:any,job:any,workspace:string,dataRoot:string,result:string,appendAssistant:()=>Promise<unknown>}} publication */
+async function publishSuccessfulResult({ input, job, workspace, dataRoot, result, appendAssistant }) {
   return withJobCancellationLock({ dataRoot, workspace, jobId: job.id }, async () => {
     const current = await input.store.readJob(workspace, job.id);
-    if (current.status === 'succeeded') return { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: current.resultArtifact }) };
+    if (current.status === 'succeeded') return { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: current.resultArtifact }), appliedFinalization: false };
     if (['failed', 'cancelled'].includes(current.status)) throw terminalPublicationError(job.id, current.status);
     if (current.status !== 'running') throw statusPublicationError(job.id, current.status);
+    await appendAssistant();
     const resultArtifact = await writeResultArtifact({ dataRoot, workspace, jobId: job.id, contents: result }, { syncDirectory: input.syncDirectory });
     try {
       const succeeded = await input.store.finishJob(workspace, job.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
-      return { job: succeeded, result };
+      return { job: succeeded, result, appliedFinalization: true };
     } catch (error) {
       const winner = await input.store.readJob(workspace, job.id).catch(() => null);
-      if (winner?.status === 'succeeded' && winner.resultArtifact === resultArtifact) return { job: winner, result: await readResultArtifact({ dataRoot, workspace, artifact: resultArtifact }) };
+      if (winner?.status === 'succeeded' && winner.resultArtifact === resultArtifact) return { job: winner, result: await readResultArtifact({ dataRoot, workspace, artifact: resultArtifact }), appliedFinalization: true };
       if (winner?.status === 'running') throw new SuccessfulResultFinalizationError(error, resultArtifact);
       if (!winner) throw new SuccessfulResultFinalizationError(error, resultArtifact);
       if (winner.resultArtifact !== resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});

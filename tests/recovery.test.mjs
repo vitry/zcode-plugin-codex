@@ -286,6 +286,29 @@ test('workspace scavenging stops an active orphan and rereads completion before 
   assert.doesNotMatch(log, /Assistant message/);
 });
 
+test('recovery log attachment and Final append failures emit one fixed safe diagnostic without changing the winner', async () => {
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  for (const failure of ['attach', 'final']) {
+    const fixture = await context(); const { job, store } = await orphanJob(fixture, { ownerSessionId: `owner-${failure}` }); const lines = [];
+    let replaced = false;
+    const replaceLog = async () => {
+      if (replaced) return; replaced = true;
+      const current = await store.readJob(fixture.workspace, job.id); await rm(current.logFile); await mkdir(current.logFile);
+    };
+    const wrapped = {
+      ...store,
+      ...(failure === 'attach' ? { attachJobLog: async () => { throw new Error('PRIVATE_RECOVERY_ATTACH_PATH'); } } : {}),
+      ...(failure === 'final' ? { finishJob: async (...args) => { const winner = await store.finishJob(...args); if (args[3] === 'succeeded') await replaceLog(); return winner; } } : {}),
+    };
+    const snapshot = { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'recovery-log-answer', parentMessageId: job.inputId }, parts: [{ type: 'text', text: `recovered despite ${failure}` }] }] };
+    await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot }), progressWriter: (line) => lines.push(line) });
+    const winner = await store.readJob(fixture.workspace, job.id); assert.equal(winner.status, 'succeeded'); assert.ok(winner.resultArtifact);
+    if (failure === 'final') assert.equal(replaced, true);
+    assert.equal(lines.filter((line) => line === '[zcode] ZCode job log was disabled.\n').length, 1, failure);
+    assert.doesNotMatch(lines.join(''), /PRIVATE_RECOVERY_ATTACH_PATH|zcode-recovery-|\.log/u, failure);
+  }
+});
+
 test('recovery success finalization failure preserves the result for a later retry', async () => {
   const fixture = await context(); const { job, store } = await orphanJob(fixture); const storageError = new PluginError('JSON_WRITE_FAILED', 'recovery success write failed once', { category: 'storage', remedy: 'retry recovery' }); let failedWrites = 0; let successWrites = 0; let failSuccess = true;
   const wrapped = { ...store, finishJob: async (workspace, jobId, expected, next, patch) => { if (next === 'succeeded') { successWrites += 1; if (failSuccess) { failSuccess = false; throw storageError; } } else failedWrites += 1; return store.finishJob(workspace, jobId, expected, next, patch); } };

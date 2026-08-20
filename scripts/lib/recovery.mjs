@@ -1,8 +1,8 @@
 import { PluginError } from './errors.mjs';
 import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
-import { extractFinalResult, readResultArtifact, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
+import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
 import { withFileLock } from './fs.mjs';
-import { appendJobLogBlock, createJobLogSink } from './job-log.mjs';
+import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
 
@@ -174,7 +174,7 @@ async function reconcileOrphan(input, job) {
     return input.intent === 'scavenge' && controlChannelUnavailable(error)
       ? failJob(input, current, establishedUnavailableOrphanError(error))
       : stopThenSettle(input, current, client, error, jobLog);
-  } finally { await client?.close().catch(() => {}); await closeJobLogBoundedly(jobLog); }
+  } finally { await client?.close().catch(() => {}); await jobLog?.close(Date.now() + OPTIONAL_JOB_LOG_FENCE_MS); }
 }
 
 /** @param {any} job */
@@ -247,7 +247,7 @@ async function settleEndedRemoteJob(input, job) {
     return controlChannelUnavailable(error)
       ? failEndedUnavailableJob(input, job, establishedUnavailableOrphanError(error))
       : retainAfterStopFailure(input, job, error);
-  } finally { await client?.close().catch(() => {}); await closeJobLogBoundedly(jobLog); }
+  } finally { await client?.close().catch(() => {}); await jobLog?.close(Date.now() + OPTIONAL_JOB_LOG_FENCE_MS); }
 }
 
 /** Return null when completion is not proven and leave the durable job active. @param {any} input @param {any} job @param {any} snapshot @param {any} jobLog */
@@ -260,9 +260,9 @@ async function completeEndedJob(input, job, snapshot, jobLog) {
     result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
     resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
   } catch { return null; }
-  const winner = await finishRecoveredResult(input, job, resultArtifact);
-  await appendRecoveredFinal(input, jobLog, winner, resultArtifact, result);
-  return winner;
+  const finalization = await finishRecoveredResult(input, job, resultArtifact);
+  await appendRecoveredFinal(jobLog, finalization, result);
+  return finalization.winner;
 }
 /** @param {any} input @param {any} job @param {any} snapshot @param {'fail'|'cancel'} [invalidResult] @param {any} [jobLog] */
 async function completeJob(input, job, snapshot, invalidResult = 'fail', jobLog) {
@@ -274,65 +274,34 @@ async function completeJob(input, job, snapshot, invalidResult = 'fail', jobLog)
   } catch (error) {
     return invalidResult === 'cancel' ? cancelJob(input, job) : failJob(input, job, error);
   }
-  const winner = await finishRecoveredResult(input, job, resultArtifact);
-  await appendRecoveredFinal(input, jobLog, winner, resultArtifact, result);
-  return winner;
+  const finalization = await finishRecoveredResult(input, job, resultArtifact);
+  await appendRecoveredFinal(jobLog, finalization, result);
+  return finalization.winner;
 }
 
 /** @param {any} input @param {any} job @param {string} resultArtifact */
 async function finishRecoveredResult(input, job, resultArtifact) {
-  try { return await input.store.finishJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, exitCode: 0 }); }
+  try { return { winner: await input.store.finishJob(input.workspace, job.id, ['running', 'cancelling'], 'succeeded', { resultArtifact, exitCode: 0 }), appliedFinalization: true }; }
   catch (error) {
     const winner = await input.store.readJob(input.workspace, job.id).catch(() => null);
-    if (winner?.status === 'succeeded' && winner.resultArtifact === resultArtifact) return winner;
-    if (isTransitionConflict(error) && winner) return winner;
+    if (winner?.status === 'succeeded' && winner.resultArtifact === resultArtifact) return { winner, appliedFinalization: true };
+    if (isTransitionConflict(error) && winner) return { winner, appliedFinalization: false };
     throw new SuccessfulResultFinalizationError(error, resultArtifact);
   }
 }
 
-/** @param {any} input @param {any} jobLog @param {any} winner @param {string} attemptedArtifact @param {string} attemptedResult */
-async function appendRecoveredFinal(input, jobLog, winner, attemptedArtifact, attemptedResult) {
-  if (!jobLog || winner?.status !== 'succeeded') return;
-  let publicResult = attemptedResult;
-  if (winner.resultArtifact !== attemptedArtifact) {
-    try { publicResult = await readResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, artifact: winner.resultArtifact }); }
-    catch { return; }
-  }
-  try {
-    await waitForOptionalLog(appendJobLogBlock({
-      dataRoot: input.dataRoot, workspace: input.workspace, jobId: winner.id, title: 'Final output', body: publicResult,
-    }), Date.now() + OPTIONAL_JOB_LOG_FENCE_MS);
-  } catch { /* log-only */ }
+/** @param {any} jobLog @param {{winner:any,appliedFinalization:boolean}} finalization @param {string} result */
+async function appendRecoveredFinal(jobLog, finalization, result) {
+  if (!finalization.appliedFinalization || finalization.winner?.status !== 'succeeded') return;
+  await jobLog?.appendCanonicalBlock('Final output', result, Date.now() + OPTIONAL_JOB_LOG_FENCE_MS);
 }
 
 /** @param {any} input @param {any} job */
 async function openRecoveryJobLog(input, job) {
-  try {
-    const jobLog = await createJobLogSink({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id });
-    if (jobLog.logFile && !job.logFile) {
-      try { await input.store.attachJobLog(input.workspace, job.id, jobLog.logFile); }
-      catch { await closeJobLogBoundedly(jobLog); return undefined; }
-    }
-    return jobLog;
-  } catch { return undefined; }
-}
-
-/** @param {any} jobLog */
-async function closeJobLogBoundedly(jobLog) {
-  if (!jobLog) return;
-  const deadline = Date.now() + OPTIONAL_JOB_LOG_FENCE_MS;
-  await waitForOptionalLog(Promise.resolve().then(() => jobLog.flush()).catch(() => {}), deadline);
-  await waitForOptionalLog(Promise.resolve().then(() => jobLog.close()).catch(() => {}), deadline);
-}
-
-/** @param {Promise<unknown>} operation @param {number} deadline */
-async function waitForOptionalLog(operation, deadline) {
-  const milliseconds = Math.max(0, deadline - Date.now());
-  if (milliseconds === 0) return;
-  /** @type {ReturnType<typeof setTimeout>|undefined} */ let timer;
-  try { await Promise.race([operation, new Promise((resolve) => { timer = setTimeout(resolve, milliseconds); })]); }
-  catch { /* log-only */ }
-  finally { if (timer !== undefined) clearTimeout(timer); }
+  return openRuntimeJobLog({
+    dataRoot: input.dataRoot, workspace: input.workspace, job, store: input.store,
+    attach: 'if-missing', writeDiagnostic: input.progressWriter, fenceMs: OPTIONAL_JOB_LOG_FENCE_MS,
+  });
 }
 /** @param {any} input @param {any} job @param {any} client @param {unknown} error @param {any} jobLog */
 async function stopThenSettle(input, job, client, error, jobLog) {

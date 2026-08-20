@@ -962,30 +962,37 @@ test('executor reports only same-session progress and drains persistence before 
   assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
 });
 
-test('job-log create, attachment, and append failures remain observational to authoritative success', async () => {
-  for (const failure of ['create', 'attach', 'append']) {
+test('each job-log failure stage emits one fixed safe diagnostic without changing authoritative success or preview', async () => {
+  for (const failure of ['create', 'attach', 'archive', 'assistant', 'final']) {
     const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
     const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace });
     if (failure === 'create') await mkdir(join(storage.directory, 'jobs', `${job.id}.log`));
-    const wrapped = failure === 'attach'
-      ? { ...store, attachJobLog: async () => { throw new Error('PRIVATE_ATTACH_PATH'); } }
-      : store;
+    let replaced = false;
+    const replaceLog = async () => {
+      if (replaced) return; replaced = true;
+      const attached = await store.readJob(workspace, job.id); await rm(attached.logFile); await mkdir(attached.logFile);
+    };
+    const wrapped = {
+      ...store,
+      ...(failure === 'attach' ? { attachJobLog: async () => { throw new Error('PRIVATE_ATTACH_PATH'); } } : {}),
+      ...(failure === 'final' ? { finishJob: async (/** @type {string} */ targetWorkspace, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => { const winner = await store.finishJob(targetWorkspace, jobId, expected, next, patch); if (next === 'succeeded') await replaceLog(); return winner; } } : {}),
+    };
     const client = {
       createSession: async () => {
-        if (failure === 'append') {
-          const attached = await store.readJob(workspace, job.id);
-          await rm(attached.logFile); await mkdir(attached.logFile);
-        }
         return { session: { sessionId: `zs-log-${failure}` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] };
       },
       setPermissionHandler: () => {}, subscribe: silentSubscribe,
-      send: async () => ({ inputId: `input-log-${failure}`, stateRevision: 1 }), waitForCompletion: async () => {},
-      readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: `assistant-log-${failure}`, parentMessageId: `input-log-${failure}` }, parts: [{ type: 'text', text: `result despite ${failure}` }] }] }),
+      send: async () => { if (failure === 'archive') await replaceLog(); return { inputId: `input-log-${failure}`, stateRevision: 1 }; }, waitForCompletion: async () => {},
+      readSession: async () => { if (failure === 'assistant') await replaceLog(); return { projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: `assistant-log-${failure}`, parentMessageId: `input-log-${failure}` }, parts: [{ type: 'text', text: `result despite ${failure}` }] }] }; },
       close: async () => {},
     };
-    const output = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' });
+    /** @type {string[]} */ const lines = [];
+    const output = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: (line) => lines.push(line) });
     assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, `result despite ${failure}`);
     assert.equal(await readFile(join(storage.directory, output.job.resultArtifact), 'utf8'), output.result);
+    assert.equal(lines.filter((line) => line === '[zcode] ZCode job log was disabled.\n').length, 1, failure);
+    assert.doesNotMatch(lines.join(''), /PRIVATE_ATTACH_PATH|zcode-job-control-|\.log/u, failure);
+    assert.doesNotMatch(JSON.stringify((await store.readJob(workspace, job.id)).progressPreview), /job log/i, failure);
   }
 });
 

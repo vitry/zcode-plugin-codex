@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -90,6 +90,29 @@ test('creates imported history, writes a durable result, and succeeds the tracke
   assert.match(log, /Final output\nImported from Codex\n/);
   assert.equal((log.match(/Final output/g) ?? []).length, 1);
   assert.doesNotMatch(log, /Assistant message/);
+});
+
+test('Transfer log attachment and Final append failures emit one fixed safe diagnostic without changing the winner', async () => {
+  for (const failure of ['attach', 'final']) {
+    const context = await executionFixture();
+    /** @type {string[]} */
+    const lines = [];
+    let replaced = false;
+    const replaceLog = async () => {
+      if (replaced) return; replaced = true;
+      const current = await context.store.readJob(context.workspace, context.job.id); await rm(current.logFile); await mkdir(current.logFile);
+    };
+    const store = {
+      ...context.store,
+      ...(failure === 'attach' ? { attachJobLog: async () => { throw new Error('PRIVATE_TRANSFER_ATTACH_PATH'); } } : {}),
+      ...(failure === 'final' ? { finishJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => { const winner = await context.store.finishJob(workspace, jobId, expected, next, patch); if (next === 'succeeded') await replaceLog(); return winner; } } : {}),
+    };
+    const output = await executeTransfer({ ...context, store, sourceThreadId: source, launch: { command: 'zcode', args: [] }, createClient: async () => context.client, progressWriter: (line) => lines.push(line) });
+    assert.equal(output.job.status, 'succeeded'); assert.ok(output.job.resultArtifact);
+    assert.equal(lines.filter((line) => line === '[zcode] ZCode job log was disabled.\n').length, 1, failure);
+    assert.doesNotMatch(lines.join(''), /PRIVATE_TRANSFER_ATTACH_PATH|zcode-transfer-|\.log/u, failure);
+    assert.doesNotMatch(await readFile(join((await resolveWorkspaceStorage(context)).directory, output.job.resultArtifact), 'utf8'), /PRIVATE_TRANSFER_ATTACH_PATH/);
+  }
 });
 
 test('Transfer success finalization failure keeps its recoverable result and never rewrites failed', async () => {

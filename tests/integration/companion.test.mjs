@@ -1885,6 +1885,35 @@ test('real Transfer imports current Codex history into a resumable ZCode session
   assert.doesNotMatch(exposed, new RegExp(context.caller)); assert.doesNotMatch(exposed, /hidden reasoning|private-turn-id|private-user-id|private-agent-id|transcript_path/);
 });
 
+test('public Transfer reports one fixed safe diagnostic when its attached job log becomes unwritable', async () => {
+  const context = await fixture();
+  /** @type {string[]} */
+  const diagnostics = [];
+  const sourceThread = { id: 'codex-session', ephemeral: false, turns: [{ startedAt: 1_725_000_000, items: [{ type: 'agentMessage', text: 'visible response' }] }] };
+  const output = await runCompanion(['transfer'], {
+    cwd: context.workspace,
+    env: context.env,
+    caller: caller('codex-session'),
+    progressWriter: (line) => { diagnostics.push(line); },
+    dependencies: {
+      readCodexThread: async () => {
+        const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+        assert.equal(jobs.length, 1); assert.equal(typeof jobs[0].logFile, 'string');
+        await rm(jobs[0].logFile); await mkdir(jobs[0].logFile);
+        return sourceThread;
+      },
+      createManagedZCodeClient: async () => ({
+        createSession: async () => ({ session: { sessionId: 'session-log-diagnostic' } }),
+        close: async () => {},
+      }),
+    },
+  });
+  assert.equal(output.job.status, 'succeeded'); assert.equal(output.zcodeSessionId, 'session-log-diagnostic');
+  assert.deepEqual(diagnostics, ['[zcode] ZCode job log was disabled.\n']);
+  assert.doesNotMatch(diagnostics.join(''), new RegExp(context.directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(diagnostics.join(''), /EISDIR|job-log|\.log/);
+});
+
 test('Transfer launcher configuration failure terminalizes its reserved job', async () => {
   const context = await fixture();
   const result = await companion(context, ['transfer'], { CODEX_APP_SERVER_ARGS_JSON: '{bad-json' });
