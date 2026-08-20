@@ -434,13 +434,12 @@ test('failed unpublished-temp creation never deletes a foreign temp replacement'
   let replacementPath;
   prototype.sync = async function replaceUnpublishedTemp() {
     if (replacementPath === undefined) {
-      const jobsDirectory = dirname(logFile);
-      const entries = await readdir(jobsDirectory);
-      replacementPath = entries
-        .filter((entry) => entry.includes(JOB_ID) && entry.endsWith('.tmp'))
-        .map((entry) => join(jobsDirectory, entry))[0] ?? logFile;
+      const publicationDirectory = join(dirname(logFile), '.job-log-publication-locks', JOB_ID);
+      const temporaryEntries = (await readdir(publicationDirectory)).filter((entry) => entry.endsWith('.tmp'));
+      assert.equal(temporaryEntries.length, 1);
+      replacementPath = join(publicationDirectory, temporaryEntries[0]);
       const displaced = `${replacementPath}.plugin-owned`;
-      try { await rename(replacementPath, displaced); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+      await rename(replacementPath, displaced);
       await writeFile(replacementPath, 'foreign temp replacement\n', { mode: 0o600 });
     }
     throw Object.assign(new Error('injected unpublished durability failure'), { code: 'EIO' });
