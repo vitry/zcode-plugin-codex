@@ -115,11 +115,17 @@ export class ZCodeProtocolClient {
       }, effectiveTimeoutMs);
       waiter.timer = timer;
       timer?.unref?.();
-      unsubscribe = this.subscribe((message) => {
-        if (!isCompletionFor(message, sessionId, this.turns.get(sessionId))) return;
-        this.completed.get(sessionId)?.shift();
-        this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); if (timer) clearTimeout(timer); unsubscribe(); this.abortTurn(sessionId); resolve(message.params);
-      });
+      try {
+        unsubscribe = this.subscribe((message) => {
+          if (!isCompletionFor(message, sessionId, this.turns.get(sessionId))) return;
+          this.completed.get(sessionId)?.shift();
+          this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); if (timer) clearTimeout(timer); unsubscribe(); this.abortTurn(sessionId); resolve(message.params);
+        });
+      } catch (error) {
+        if (timer) clearTimeout(timer);
+        this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); waiter.unsubscribe();
+        reject(error); return;
+      }
       waiter.unsubscribe = unsubscribe;
       this.completionWaiters.add(waiter);
     });

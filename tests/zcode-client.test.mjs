@@ -25,6 +25,17 @@ async function withTestDeadlineKeepalive(operation) {
   try { return await operation(); } finally { clearInterval(keepalive); }
 }
 
+async function boundedTestPromise(promise, label, timeoutMs = 1_000) {
+  /** @type {NodeJS.Timeout|undefined} */ let timer;
+  try {
+    return await Promise.race([promise, new Promise((resolvePromise, reject) => {
+      void resolvePromise;
+      timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+      timer.unref?.();
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 async function compactBrokerTemp() {
   const base = process.platform === 'win32' ? tmpdir() : realpathSync('/tmp');
   const directory = await mkdtemp(join(base, 'zb-'));
@@ -409,7 +420,7 @@ test('ordinary completion has no implicit deadline and cleans state after a dela
     const [waiter] = client.protocol.completionWaiters;
     assert.ok(waiter, 'completion waiter must be registered while the delayed terminal is pending');
     const registeredTimer = waiter.timer;
-    const completion = await waiting;
+    const completion = await boundedTestPromise(waiting, 'ordinary completion');
     assert.equal(registeredTimer, null);
     assert.equal(completion.reason, 'prompt_completed');
     assert.equal(client.turnState(sessionId), null);
@@ -417,6 +428,46 @@ test('ordinary completion has no implicit deadline and cleans state after a dela
     assert.equal(client.protocol.completionWaiters.size, 0);
     assert.equal(client.protocol.waiterSessions.size, 0);
   }, { FAKE_ZCODE_COMPLETION_DELAY_MS: '100' }, { completionTimeoutMs: undefined });
+});
+
+test('completion waiter registration rolls back when subscriber capacity is full', async () => {
+  await withClient(async (client) => {
+    const releases = Array.from({ length: 256 }, () => client.subscribe(() => {}));
+    try {
+      const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+      await client.send(sessionId, 'subscriber saturation');
+      await assert.rejects(client.waitForCompletion(sessionId), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
+      assert.equal(client.protocol.completionWaiters.size, 0);
+      assert.equal(client.protocol.waiterSessions.size, 0);
+      assert.equal(client.turnState(sessionId), 'armed');
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 30));
+      assert.equal(client.turnState(sessionId), 'armed', 'rolled-back registration timer must not abort the active turn');
+      releases.pop()?.();
+      const waiting = client.waitForCompletion(sessionId, 2_000);
+      assert.equal(client.protocol.completionWaiters.size, 1);
+      assert.ok([...client.protocol.completionWaiters][0].timer);
+      await client.stopSession(sessionId);
+      await assert.rejects(waiting, { code: 'ZCODE_SESSION_STOPPED' });
+      assert.equal(client.protocol.completionWaiters.size, 0);
+      assert.equal(client.protocol.waiterSessions.size, 0);
+      assert.equal(client.turnState(sessionId), null);
+    } finally { for (const release of releases) release(); }
+  }, { FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' }, { completionTimeoutMs: 20 });
+});
+
+test('client close rejects and cleans a completion waiter without a timer', async () => {
+  await withClient(async (client) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await client.send(sessionId, 'close pending completion');
+    const waiting = client.waitForCompletion(sessionId);
+    assert.equal([...client.protocol.completionWaiters][0].timer, null);
+    const rejected = assert.rejects(waiting, { code: 'ZCODE_DISCONNECTED' });
+    await client.close();
+    await rejected;
+    assert.equal(client.protocol.completionWaiters.size, 0);
+    assert.equal(client.protocol.waiterSessions.size, 0);
+    assert.equal(client.protocol.subscribers.size, 0);
+  }, { FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' }, { completionTimeoutMs: undefined });
 });
 
 test('completion in the same frame batch after response survives the arm barrier', async () => {
@@ -522,10 +573,14 @@ test('disconnect rejects completion waiters immediately', async () => {
   await withClient(async (client) => {
     const created = await client.createSession({ workspace: '/repo' });
     await client.send(created.session.sessionId, 'wait');
-    const waiting = client.waitForCompletion(created.session.sessionId, 2_000);
+    const waiting = client.waitForCompletion(created.session.sessionId);
+    assert.equal([...client.protocol.completionWaiters][0].timer, null);
     await assert.rejects(client.listSessions(), { code: 'ZCODE_DISCONNECTED' });
     await assert.rejects(waiting, { code: 'ZCODE_DISCONNECTED' });
-  }, { FAKE_ZCODE_DISCONNECT: 'session/list', FAKE_ZCODE_CROSS_SESSION: 'other' });
+    assert.equal(client.protocol.completionWaiters.size, 0);
+    assert.equal(client.protocol.waiterSessions.size, 0);
+    assert.equal(client.protocol.subscribers.size, 0);
+  }, { FAKE_ZCODE_DISCONNECT: 'session/list', FAKE_ZCODE_CROSS_SESSION: 'other' }, { completionTimeoutMs: undefined });
 });
 
 test('malformed, oversized, disconnect and request error fail closed', async (t) => {
