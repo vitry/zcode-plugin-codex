@@ -1,5 +1,5 @@
 import { PluginError } from './errors.mjs';
-import { boundUtf8, normalizePublicText } from './public-text.mjs';
+import { boundUtf8, normalizePublicText, publicErrorMessage } from './public-text.mjs';
 import { validProgressProbe } from './state.mjs';
 
 /** @param {unknown} error */
@@ -77,13 +77,9 @@ function renderJob(job) {
 
 /** @param {unknown} value */
 function renderStoredError(value) {
-  const message = typeof value === 'string' ? value
-    : value && typeof value === 'object' && 'message' in value
-      && typeof value.message === 'string' ? value.message : null;
+  const message = publicErrorMessage(value);
   if (message === null) return null;
-  const normalized = normalizePublicText(message);
-  if (normalized.length === 0) return null;
-  return boundMarkdown(escapeMarkdown(normalized), 2_048);
+  return boundMarkdown(escapeMarkdown(message), 2_048);
 }
 
 /** @param {string} value @param {number} maxBytes */

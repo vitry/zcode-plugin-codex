@@ -1155,7 +1155,7 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
     snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
   });
   const storedError = {
-    message: `Public\u061c failure\u200e\u202e\nwith\u200f\tcontrols\u0000 ${'界'.repeat(800)}`,
+    message: `Public\u061c **failure**\u200e\u202e\nwith\u200f\tcontrols\u0000 ${'界'.repeat(800)}`,
     code: 'PRIVATE_ERROR_CODE', secretMarker: 'PRIVATE_ERROR_SECRET', details: { token: 'PRIVATE_ERROR_TOKEN' },
   };
   await store.finishJob(context.workspace, failed.id, ['running'], 'failed', { error: storedError, exitCode: 7 });
@@ -1165,9 +1165,9 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
     'command', 'createdAt', 'error', 'finishedAt', 'id', 'lastActivityAt', 'owner', 'owned', 'phase', 'startedAt', 'status',
   ].sort());
   assert.deepEqual(Object.keys(failedResult.json.job.error), ['message']);
-  assert.match(failedResult.json.job.error.message, /^Public failure with controls /u);
+  assert.match(failedResult.json.job.error.message, /^Public \*\*failure\*\* with controls /u);
   assert.match(failedResult.json.job.error.message, /\.\.\.$/u);
-  assert.equal(Buffer.byteLength(failedResult.json.job.error.message), 2048);
+  assert.ok(Buffer.byteLength(failedResult.json.job.error.message) <= 2_048);
   assert.equal([...failedResult.json.job.error.message].some((character) => {
     const code = character.codePointAt(0);
     return code <= 0x1f || code >= 0x7f && code <= 0x9f || code === 0x061c || code === 0x200e || code === 0x200f
@@ -1175,9 +1175,13 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
   }), false);
   assert.doesNotMatch(JSON.stringify(failedResult.json), /PRIVATE_|private-|ownerSessionId|ownerTurnId|permissionSnapshot|promptArtifact|resultArtifact|workerLeaseId|childPid|zcodeSessionId|inputId|startRevision|beforeMessageIds|model|effort|progressProbe|progressPreview|lastCancelError|exitCode|secretMarker|details/u);
   const failedStatus = await companion(context, ['status', failed.id]);
+  assert.equal(failedStatus.code, 0, `${failedStatus.stderr}${failedStatus.stdout}`);
+  assert.deepEqual(failedStatus.json.job.error, failedResult.json.job.error);
+  assert.doesNotMatch(JSON.stringify(failedStatus.json.job.error), /PRIVATE_|secretMarker|details|code/u);
   const failedResultError = failedResult.stdout.split('\n').find((/** @type {string} */ line) => line.startsWith('Error: '));
   const failedStatusError = failedStatus.stdout.split('\n').find((/** @type {string} */ line) => line.startsWith('Error: '));
   assert.ok(failedResultError); assert.equal(failedStatusError, failedResultError);
+  assert.match(failedStatusError, /^Error: Public \\\*\\\*failure\\\*\\\* with controls /u);
 
   await new Promise((resolve) => setTimeout(resolve, 2));
   const succeeded = await reserve('succeeded-result'); const successfulContents = 'exact immutable result\n';
@@ -1220,6 +1224,18 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
   const missingResult = await companion(context, ['result', missing.id]);
   assert.notEqual(missingResult.code, 0); assert.equal(missingResult.json.error.code, 'ZCODE_RESULT_MISSING');
   assert.match(missingResult.json.error.remedy, new RegExp(`\\$zcode:status ${missing.id}`));
+
+  const controlOnly = await reserve('control-only-result');
+  await store.finishJob(context.workspace, controlOnly.id, ['queued'], 'failed', {
+    error: { message: ' \n\u0000\u0085\u061c\u200e\u200f\u202e\u2069 ', code: 'PRIVATE_EMPTY_CODE' }, exitCode: 1,
+  });
+  for (const command of ['status', 'result']) {
+    const output = await companion(context, [command, controlOnly.id]);
+    assert.equal(output.code, 0, `${output.stderr}${output.stdout}`);
+    assert.equal(Object.hasOwn(output.json.job, 'error'), false);
+    assert.doesNotMatch(output.stdout, /^Error:/mu);
+    assert.doesNotMatch(`${output.internal}${output.stdout}`, /PRIVATE_EMPTY_CODE/u);
+  }
 });
 
 test('a new owner scavenges one orphan blocker and retries writable reservation exactly once', async () => {
