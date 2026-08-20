@@ -101,7 +101,7 @@ export class ZCodeProtocolClient {
 
   /** @param {string} sessionId @param {number} [timeoutMs] */
   waitForCompletion(sessionId, timeoutMs) {
-    const effectiveTimeoutMs = timeoutMs ?? this.completionTimeoutMs;
+    const effectiveTimeoutMs = timeoutMs === undefined ? this.completionTimeoutMs : timeoutMs;
     if (!nonEmpty(sessionId) || effectiveTimeoutMs !== undefined && (!Number.isSafeInteger(effectiveTimeoutMs) || effectiveTimeoutMs < 1 || effectiveTimeoutMs > 86_400_000) || this.turns.get(sessionId)?.status !== 'armed' || this.waiterSessions.has(sessionId)) return Promise.reject(protocolInputError());
     const queued = this.completed.get(sessionId)?.shift();
     if (queued) { this.abortTurn(sessionId); return Promise.resolve(queued); }

@@ -431,9 +431,11 @@ test('completion timeout and stop fully clean the turn and allow another send', 
   await withClient(async (client) => {
     const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
     await client.send(sessionId, 'timeout');
-    for (const invalidTimeoutMs of [0, -1, 1.5, 86_400_001, Number.MAX_SAFE_INTEGER + 1]) {
+    for (const invalidTimeoutMs of [null, 0, -1, 1.5, 86_400_001, Number.MAX_SAFE_INTEGER + 1]) {
       await assert.rejects(client.waitForCompletion(sessionId, invalidTimeoutMs), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
       assert.equal(client.turnState(sessionId), 'armed');
+      assert.equal(client.protocol.completionWaiters.size, 0);
+      assert.equal(client.protocol.waiterSessions.size, 0);
     }
     await assert.rejects(client.waitForCompletion(sessionId, 20), { code: 'ZCODE_COMPLETION_TIMEOUT' });
     await client.send(sessionId, 'retry'); await client.waitForCompletion(sessionId);
