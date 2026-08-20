@@ -80,6 +80,18 @@ test('ordinary embedded prose punctuation and internal hyphens do not trigger st
     argv: ['result', JOB_ID],
     explicit: true,
   });
+  assert.deepEqual(parseRecordedInvocation('result', "please $zcode:result what's the latest?"), {
+    argv: ['result'],
+    explicit: true,
+  });
+  assert.deepEqual(parseRecordedInvocation('result', `please $zcode:result ${JOB_ID} what's next?`), {
+    argv: ['result', JOB_ID],
+    explicit: true,
+  });
+  assert.deepEqual(parseRecordedInvocation('cancel', "can $zcode:cancel what's currently running?"), {
+    argv: ['cancel'],
+    explicit: true,
+  });
 });
 
 test('embedded result marker rejects ID-looking tokens that are not exact lowercase digests', () => {
