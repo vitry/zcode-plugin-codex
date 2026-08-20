@@ -71,6 +71,40 @@ test('ambiguous embedded result syntax remains strict for downstream validation'
   });
 });
 
+test('quoted and escaped command-shaped tokens retain strict tokenization', () => {
+  assert.deepEqual(parseRecordedInvocation('cancel', 'please $zcode:cancel "--wait"'), {
+    argv: ['cancel', '--wait'],
+    explicit: true,
+  });
+  assert.deepEqual(parseRecordedInvocation('result', 'please $zcode:result "$zcode:cancel"'), {
+    argv: ['result', '$zcode:cancel'],
+    explicit: true,
+  });
+  assert.deepEqual(parseRecordedInvocation('cancel', String.raw`please $zcode:cancel \--wait`), {
+    argv: ['cancel', '--wait'],
+    explicit: true,
+  });
+  assert.deepEqual(parseRecordedInvocation('result', String.raw`please $zcode:result \$zcode:cancel`), {
+    argv: ['result', '$zcode:cancel'],
+    explicit: true,
+  });
+});
+
+test('quoted and escaped embedded exact IDs retain strict tokenization', () => {
+  assert.deepEqual(parseRecordedInvocation('result', `please $zcode:result "${JOB_ID}"`), {
+    argv: ['result', JOB_ID],
+    explicit: true,
+  });
+  assert.deepEqual(parseRecordedInvocation('cancel', `please $zcode:cancel '${JOB_ID}'`), {
+    argv: ['cancel', JOB_ID],
+    explicit: true,
+  });
+  assert.deepEqual(parseRecordedInvocation('result', `please $zcode:result \\${JOB_ID}`), {
+    argv: ['result', JOB_ID],
+    explicit: true,
+  });
+});
+
 test('ordinary embedded prose punctuation and internal hyphens do not trigger strict mode', () => {
   assert.deepEqual(parseRecordedInvocation('result', 'please $zcode:result tell me state-of-the-art news, thanks'), {
     argv: ['result'],

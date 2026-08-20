@@ -20,8 +20,8 @@ export function parseRecordedInvocation(command, prompt) {
   if (match) {
     const rest = prompt.slice(match.index + match[0].length).trim();
     const commandForm = new RegExp(`^${escapeRegExp(marker)}(?=$|\\s)`).test(prompt.trimStart());
-    const ambiguous = /(?:^|\s)(?:-|\$zcode:)/u.test(rest);
-    if (['result', 'cancel'].includes(command) && !commandForm && !ambiguous) {
+    const embeddedLookup = ['result', 'cancel'].includes(command) && !commandForm;
+    if (embeddedLookup && !requiresStrictEmbeddedParsing(rest)) {
       const jobId = /^([a-f0-9]{64})(?=$|\s)/u.exec(rest)?.[1];
       return { argv: [command, ...(jobId ? [jobId] : [])], explicit: true };
     }
@@ -81,6 +81,14 @@ function tokenize(text) {
   }
   if (escaped || quote) throw invocationError('RECORDED_PROMPT_INVALID', 'The recorded invocation contains an incomplete quote or escape.');
   if (started) tokens.push(token); return tokens;
+}
+
+/** @param {string} rest */
+function requiresStrictEmbeddedParsing(rest) {
+  const rawTokens = rest.split(/\s+/u);
+  if (rawTokens.some((token) => { const exposed = token.replace(/^[\\'"]+/u, ''); return exposed.startsWith('-') || exposed.startsWith('$zcode:'); })) return true;
+  const first = rawTokens[0] ?? ''; const unwrapped = first.replace(/^[\\'"]+/u, '').replace(/[\\'"]+$/u, '');
+  return unwrapped !== first && digest(unwrapped);
 }
 
 /** @param {string} dataRoot @param {string} workspace */
