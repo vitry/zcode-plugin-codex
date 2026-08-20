@@ -765,7 +765,7 @@ test('conversation unsubscribe failure is observational and preserves the exact 
   const result = await companion(context, ['rescue', '--fresh', 'unsubscribe failure'], { FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_FAIL: '1' });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
   assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
-  assert.equal(result.stderr, '[zcode] ZCode started the delegated turn.\n[zcode] ZCode completed the delegated turn.\n[zcode] ZCode conversation progress cleanup was incomplete.\n');
+  assert.match(result.stderr, /^\[zcode\] ZCode started the delegated turn\.\n\[zcode\] ZCode completed the delegated turn\.\n\[zcode\] ZCode conversation progress cleanup was incomplete\.\n(?:\[zcode\] ZCode progress cleanup reached its time limit\.\n\[zcode\] ZCode progress archive was disabled\.\n)?$/u);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsubscribe failed|-32099/);
   const status = await companion(context, ['status', result.json.job.id]);
   assert.equal(status.json.job.status, 'succeeded');

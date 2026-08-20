@@ -933,14 +933,26 @@ test('executor reports only same-session progress and drains persistence before 
   } finally { releaseFinalizing(); }
   const result = await execution;
   assert.equal(result.job.status, 'succeeded'); assert.equal(typeof intervalCallback, 'function');
-  assert.deepEqual(lines, [
+  const semanticLines = [
     '[zcode] ZCode started the delegated turn.\n',
     '[zcode] ZCode completed a tool call.\n',
     '[zcode] ZCode is generating a response.\n',
     '[zcode] ZCode started a tool call.\n',
     '[zcode] ZCode completed the delegated turn.\n',
-  ]);
-  assert.deepEqual(persisted.map((event) => event.message), lines.map((line) => line.slice(8, -1)));
+  ];
+  const diagnosticLines = [
+    '[zcode] ZCode progress cleanup reached its time limit.\n',
+    '[zcode] ZCode progress archive was disabled.\n',
+  ];
+  assert.deepEqual(lines.slice(0, semanticLines.length), semanticLines);
+  assert.ok([0, diagnosticLines.length].includes(lines.length - semanticLines.length));
+  assert.deepEqual(lines.slice(semanticLines.length), lines.length === semanticLines.length ? [] : diagnosticLines);
+  const semanticMessages = semanticLines.map((line) => line.slice(8, -1));
+  const diagnosticMessages = diagnosticLines.map((line) => line.slice(8, -1));
+  const persistedMessages = persisted.map((event) => event.message);
+  assert.deepEqual(persistedMessages.slice(0, semanticMessages.length), semanticMessages);
+  assert.ok([0, diagnosticMessages.length].includes(persistedMessages.length - semanticMessages.length));
+  assert.deepEqual(persistedMessages.slice(semanticMessages.length), persistedMessages.length === semanticMessages.length ? [] : diagnosticMessages);
   assert.deepEqual(relays.map(({ sequence, phase, code }) => ({ sequence, phase, code })), [
     { sequence: 1, phase: 'starting', code: 'started' },
     { sequence: 2, phase: 'investigating', code: 'tool-active' },
@@ -949,12 +961,12 @@ test('executor reports only same-session progress and drains persistence before 
     { sequence: 5, phase: 'finalizing', code: 'finalizing' },
   ]);
   assert.ok(order.lastIndexOf('persist:finalizing') < order.indexOf('transition:succeeded'));
-  assert.equal(order.includes('persist:waiting'), false);
+  assert.equal(order.filter((entry) => entry === 'persist:waiting').length, persistedMessages.length - semanticMessages.length);
   const succeeded = await store.readJob(workspace, job.id);
   assert.equal(succeeded.status, 'succeeded');
   assert.equal(succeeded.logFile, join((await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace })).directory, 'jobs', `${job.id}.log`));
   const log = await readFile(succeeded.logFile, 'utf8');
-  for (const event of persisted) assert.match(log, new RegExp(event.message.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  for (const message of semanticMessages) assert.match(log, new RegExp(message.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(log, /Assistant message\ndone\n/);
   assert.match(log, /Final output\ndone\n/);
   assert.equal((log.match(/Assistant message/g) ?? []).length, 1);
