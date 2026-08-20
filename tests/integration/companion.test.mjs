@@ -328,6 +328,17 @@ async function prepareDirectRescueChild(context, input) {
   return { callerContext, parent };
 }
 
+/** @param {any} context @param {{parentSessionId:string,source:'explicit'|'proactive',task:string,options:Record<string,string>}} input */
+async function prepareRescueInCurrentTurn(context, input) {
+  const preparation = new PassThrough();
+  preparation.end(`${JSON.stringify({ version: 1, source: input.source, task: input.task, options: input.options })}\n`);
+  return runDirectInvocation(['prepare', 'rescue'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_THREAD_ID: input.parentSessionId },
+    input: preparation,
+  });
+}
+
 test('role-status rescue is bounded and returns before caller consumption, reconciliation, discovery, or reservation', async () => {
   const context = await fixture();
   const forbidden = () => { throw new Error('role-status crossed the read-only preflight boundary'); };
@@ -1045,6 +1056,138 @@ test('sibling child rejection happens before reservation, session send, or stop'
   assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /EXECUTOR_IDENTITY_NOT_FOUND/);
   assert.equal(await readFile(record, 'utf8'), '');
   assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), []);
+});
+
+test('same-parent-turn stopped Rescue child resumes its exact session in the next preparation generation', async () => {
+  const context = await fixture(); const record = join(context.directory, 'same-parent-turn.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'same-turn-parent'; const parentTurnId = 'same-turn-parent-turn'; const childId = 'same-turn-rescue-child'; const childTurnId = 'same-turn-child-turn';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId, childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait establish same-turn session',
+  });
+  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  const first = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env });
+  assert.equal(first.job.status, 'succeeded');
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: childTurnId, cwd: context.workspace, hook_event_name: 'SubagentStop',
+    agent_id: childId, agent_type: 'zcode-rescue',
+  });
+
+  const prepared = await prepareRescueInCurrentTurn(context, {
+    parentSessionId, source: 'proactive', task: 'continue in the same parent turn',
+    options: { execution: 'foreground', resume: 'resume' },
+  });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue' });
+  const second = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env });
+  assert.equal(second.job.status, 'succeeded');
+  assert.equal(second.job.zcodeSessionId, first.job.zcodeSessionId);
+
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 1);
+  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 2);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 2);
+  const binding = await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({
+    workspace: context.workspace, parentSessionId, executorAgentId: childId, executorAgentType: 'zcode-rescue',
+    executorParentTurnId: parentTurnId, executorParentPermissionMode: 'workspace-write', permissionMode: 'workspace-write',
+  });
+  assert.equal(binding.kind, 'bound');
+  assert.equal(binding.binding.anchorJobId, first.job.id);
+  assert.equal(binding.binding.currentJobId, second.job.id);
+  assert.equal(jobs.every((job) => job.operationId === jobs[0].operationId), true);
+  const storage = await resolveWorkspaceStorage(context);
+  const preparedNames = (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json'));
+  assert.equal(preparedNames.length, 1);
+  const consumed = JSON.parse(await readFile(join(storage.directory, 'invocations', 'prepared', preparedNames[0]), 'utf8'));
+  assert.equal(consumed.generation, 2);
+  assert.equal(consumed.requiredExecutorAgentId, childId);
+  assert.equal(consumed.executorAgentId, childId);
+  assert.ok(consumed.consumedAt);
+  const callsBeforeDuplicate = await readFile(record, 'utf8'); const jobsBeforeDuplicate = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env }), { code: 'RESCUE_PREPARATION_CONSUMED' });
+  assert.equal(await readFile(record, 'utf8'), callsBeforeDuplicate);
+  assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), jobsBeforeDuplicate);
+});
+
+test('same-parent-turn continuation rejects its still-active Rescue child before reservation or RPC', async () => {
+  const context = await fixture(); const record = join(context.directory, 'same-parent-turn-active.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'same-turn-active-parent'; const childId = 'same-turn-active-child';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'same-turn-active-parent-turn', childId, childTurnId: 'same-turn-active-child-turn',
+    prompt: '$zcode:rescue --fresh --wait establish active-child session',
+  });
+  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  const first = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env });
+  assert.equal(first.job.status, 'succeeded');
+  assert.deepEqual(await prepareRescueInCurrentTurn(context, {
+    parentSessionId, source: 'proactive', task: 'must wait for SubagentStop',
+    options: { execution: 'foreground', resume: 'resume' },
+  }), { type: 'prepared', command: 'rescue' });
+  const callsBefore = await readFile(record, 'utf8'); const jobsBefore = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env }), { code: 'EXECUTOR_STATE_MISMATCH' });
+  assert.equal(await readFile(record, 'utf8'), callsBefore);
+  assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), jobsBefore);
+});
+
+test('same-parent-turn stopped Rescue child rejects a missing durable binding before reservation or RPC', async () => {
+  const context = await fixture(); const record = join(context.directory, 'same-parent-turn-unbound.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'same-turn-unbound-parent'; const childId = 'same-turn-unbound-child'; const childTurnId = 'same-turn-unbound-child-turn';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'same-turn-unbound-parent-turn', childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait establish binding before loss',
+  });
+  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  assert.equal((await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env })).job.status, 'succeeded');
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: childTurnId, cwd: context.workspace, hook_event_name: 'SubagentStop',
+    agent_id: childId, agent_type: 'zcode-rescue',
+  });
+  assert.deepEqual(await prepareRescueInCurrentTurn(context, {
+    parentSessionId, source: 'proactive', task: 'reject missing durable binding',
+    options: { execution: 'foreground', resume: 'resume' },
+  }), { type: 'prepared', command: 'rescue' });
+  const storage = await resolveWorkspaceStorage(context);
+  const bindingNames = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-') && name.endsWith('.json'));
+  assert.equal(bindingNames.length, 1);
+  await unlink(join(storage.directory, bindingNames[0]));
+  const callsBefore = await readFile(record, 'utf8'); const jobsBefore = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal(await readFile(record, 'utf8'), callsBefore);
+  assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), jobsBefore);
+});
+
+test('same-parent-turn continuation rejects a sibling child before reservation or RPC', async () => {
+  const context = await fixture(); const record = join(context.directory, 'same-parent-turn-sibling.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'same-turn-sibling-parent'; const parentTurnId = 'same-turn-sibling-parent-turn'; const childId = 'same-turn-required-child'; const childTurnId = 'same-turn-required-child-turn';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId, childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait bind the required child',
+  });
+  const requiredEnv = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  assert.equal((await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: requiredEnv })).job.status, 'succeeded');
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: childTurnId, cwd: context.workspace, hook_event_name: 'SubagentStop',
+    agent_id: childId, agent_type: 'zcode-rescue',
+  });
+  assert.deepEqual(await prepareRescueInCurrentTurn(context, {
+    parentSessionId, source: 'proactive', task: 'reject the sibling continuation',
+    options: { execution: 'foreground', resume: 'resume' },
+  }), { type: 'prepared', command: 'rescue' });
+  const active = await createIdentityStore({ dataRoot: context.dataRoot }).resolveActiveTurn({ sessionId: parentSessionId, workspace: context.workspace });
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: 'same-turn-sibling-child-turn', cwd: context.workspace, hook_event_name: 'SubagentStart',
+    agent_id: 'same-turn-sibling-child', agent_type: 'zcode-rescue',
+  }, active);
+  const callsBefore = await readFile(record, 'utf8'); const jobsBefore = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_THREAD_ID: 'same-turn-sibling-child', FAKE_ZCODE_RECORD: record },
+  }), { code: 'RESCUE_PREPARATION_MISMATCH' });
+  assert.equal(await readFile(record, 'utf8'), callsBefore);
+  assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), jobsBefore);
 });
 
 test('real CLI completion that wins before SIGINT remains succeeded with exit zero', async () => {

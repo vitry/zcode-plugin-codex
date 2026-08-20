@@ -139,12 +139,15 @@ export async function runDirectInvocation(argv, runtime = {}) {
     const caller = await identity.resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: cwd });
     if (executor.active) assertExecutorMatchesCaller(executor, caller);
     const prepared = await createRescuePreparationStore({ dataRoot }).consume({ ...caller, executorAgentId: executor.agentId });
+    if (prepared.requiredExecutorAgentId !== null && executor.active) throw new PluginError('EXECUTOR_STATE_MISMATCH', 'A Rescue continuation requires the original child to be stopped.', { category: 'authorization', remedy: 'Wait for the original Rescue child to stop, then prepare the continuation again.' });
+    let rescueRoute;
     if (!executor.active) {
-      const binding = await createStateStore({ dataRoot }).resolveRescueBinding({ ...bindingLookup(executor, cwd), ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}) });
-      if (binding.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
+      const resolved = await createStateStore({ dataRoot }).resolveRescueBinding({ ...bindingLookup(executor, cwd), ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}) });
+      if (resolved.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
+      rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId, expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId };
     }
     const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
-    const output = await runCompanion(preparedArgv, { cwd: caller.workspace, env, caller, executor, originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+    const output = await runCompanion(preparedArgv, { cwd: caller.workspace, env, caller, executor, rescueRoute, originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
     if (output?.type === 'needs-choice') await saveRescuePendingChoice({ dataRoot, caller, cwd, source: prepared.envelope.source, executor, argv: preparedArgv, output });
     return output;
   }
