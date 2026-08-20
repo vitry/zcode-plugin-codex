@@ -515,7 +515,7 @@ test('rescue task semantics reach the fake peer as the authorized objective', as
 
 test('foreground rescue streams safe progress to stderr and durably exposes it through status', async () => {
   const context = await fixture();
-  const result = await companion(context, ['rescue', '--fresh', 'surface progress'], { FAKE_ZCODE_PROGRESS: '1' });
+  const result = await companion(context, ['rescue', '--fresh', 'surface progress'], { FAKE_ZCODE_PROGRESS: '1', FAKE_ZCODE_CONVERSATION_PROGRESS: '1' });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.stdout, 'done\n');
   assert.match(result.stderr, /\[zcode\] ZCode started the delegated turn\./);
   assert.match(result.stderr, /\[zcode\] ZCode is generating a response\./);
@@ -525,12 +525,16 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   assert.equal(status.code, 0, `${status.stderr}${status.stdout}`);
   assert.equal(status.json.job.phase, 'finalizing');
   assert.ok(Date.parse(status.json.job.lastActivityAt));
-  assert.deepEqual(status.json.job.progressPreview, [
-    'ZCode is generating a response.',
-    'ZCode started a tool call.',
-    'ZCode completed a tool call.',
+  assert.equal(status.json.job.progressPreview.length, 4);
+  assert.equal(status.json.job.progressPreview.at(-1), 'ZCode completed the delegated turn.');
+  const log = await readFile(status.json.job.logFile, 'utf8');
+  for (const message of [
+    'ZCode started the delegated turn.', 'ZCode is generating a response.', 'ZCode started a tool call.', 'ZCode completed a tool call.',
     'ZCode completed the delegated turn.',
-  ]);
+  ]) assert.match(log, new RegExp(message.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(log, /Assistant message\ndone\n/);
+  assert.match(log, /Final output\ndone\n/);
+  assert.doesNotMatch(log, /raw output must stay private|reasoning must stay private|capability must stay private|PRIVATE_SNAPSHOT_REASONING|PRIVATE_SNAPSHOT_METADATA/);
 });
 
 test('conversation online progress reaches stderr and preview while initial and foreign frames stay private', async () => {

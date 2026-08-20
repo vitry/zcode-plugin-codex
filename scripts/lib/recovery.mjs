@@ -1,7 +1,8 @@
 import { PluginError } from './errors.mjs';
 import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
-import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
+import { extractFinalResult, readResultArtifact, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
 import { withFileLock } from './fs.mjs';
+import { appendJobLogBlock, createJobLogSink } from './job-log.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
 
@@ -9,6 +10,7 @@ const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 const REMOTE_ACTIVE = new Set(['running', 'waiting']);
 const CONTROL_CHANNEL_UNAVAILABLE = new Set(['ZCODE_BROKER_PROTOCOL_UNAVAILABLE', 'ZCODE_DISCONNECTED']);
 export const LEGACY_QUEUED_STALE_MS = 5 * 60_000;
+const OPTIONAL_JOB_LOG_FENCE_MS = 250;
 
 /** Hold the exact production worker identity for its full lifetime. @param {{dataRoot:string,workspace:string,jobId:string,workerLeaseId:string,timeoutMs?:number}} input @param {()=>Promise<any>} operation */
 export async function withWorkerLease(input, operation) {
@@ -114,6 +116,7 @@ async function settleSelectedJob(input) {
 /** @param {any} input @param {any} job */
 async function reconcileOrphan(input, job) {
   let client;
+  let jobLog;
   if (job.status === 'queued') return failJob(input, job, recoveryError('Queued worker reservation is orphaned.'));
   if (typeof job.zcodeSessionId !== 'string') return failJob(input, job, recoveryError('Worker exited before a remote session was accepted.'));
   const ownerId = ownerIdForSession(job.ownerSessionId);
@@ -138,30 +141,31 @@ async function reconcileOrphan(input, job) {
       throwIfRecoveryInterrupted(input);
       return retainAfterStopFailure(input, job, recoveryError('The ZCode recovery client is unavailable.'));
     }
+    jobLog = await openRecoveryJobLog(input, job);
     let listed;
     try { listed = await client.listSessions(); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); return input.intent === 'scavenge' && controlChannelUnavailable(error) ? failJob(input, job, establishedUnavailableOrphanError(error)) : stopThenSettle(input, job, client, error); }
+    catch (error) { throwIfRecoveryInterrupted(input, error); return input.intent === 'scavenge' && controlChannelUnavailable(error) ? failJob(input, job, establishedUnavailableOrphanError(error)) : stopThenSettle(input, job, client, error, jobLog); }
     throwIfRecoveryInterrupted(input);
-    if (!Array.isArray(listed?.sessions)) return stopThenSettle(input, job, client, recoveryError('ZCode session listing is malformed during recovery.'));
+    if (!Array.isArray(listed?.sessions)) return stopThenSettle(input, job, client, recoveryError('ZCode session listing is malformed during recovery.'), jobLog);
     if (!listed.sessions.some((/** @type {any} */ session) => session.sessionId === job.zcodeSessionId)) return failJob(input, job, recoveryError('ZCode session is missing during recovery.'));
-    if (job.command === 'transfer') return stopThenSettle(input, job, client, recoveryError('Transfer worker exited before local finalization.'));
-    if (!hasBoundary(job)) return stopThenSettle(input, job, client, recoveryError('The durable turn boundary is incomplete.'));
+    if (job.command === 'transfer') return stopThenSettle(input, job, client, recoveryError('Transfer worker exited before local finalization.'), jobLog);
+    if (!hasBoundary(job)) return stopThenSettle(input, job, client, recoveryError('The durable turn boundary is incomplete.'), jobLog);
     let snapshot;
     try { snapshot = await client.readSession(job.zcodeSessionId); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); return input.intent === 'scavenge' && controlChannelUnavailable(error) ? failJob(input, job, establishedUnavailableOrphanError(error)) : stopThenSettle(input, job, client, error); }
+    catch (error) { throwIfRecoveryInterrupted(input, error); return input.intent === 'scavenge' && controlChannelUnavailable(error) ? failJob(input, job, establishedUnavailableOrphanError(error)) : stopThenSettle(input, job, client, error, jobLog); }
     throwIfRecoveryInterrupted(input);
-    if (!Number.isSafeInteger(snapshot?.runtime?.stateRevision) || snapshot.runtime.stateRevision < job.startRevision) return stopThenSettle(input, job, client, recoveryError('ZCode recovery state is older than the accepted turn boundary.'));
+    if (!Number.isSafeInteger(snapshot?.runtime?.stateRevision) || snapshot.runtime.stateRevision < job.startRevision) return stopThenSettle(input, job, client, recoveryError('ZCode recovery state is older than the accepted turn boundary.'), jobLog);
     const remoteStatus = snapshot?.projection?.status;
     if (REMOTE_ACTIVE.has(remoteStatus)) {
-      if (job.status === 'cancelling' || input.intent === 'scavenge') return stopThenSettle(input, job, client, recoveryError('The remote turn remained active after its executor exited.'));
+      if (job.status === 'cancelling' || input.intent === 'scavenge') return stopThenSettle(input, job, client, recoveryError('The remote turn remained active after its executor exited.'), jobLog);
       return job;
     }
     if (remoteStatus === 'paused') return job.status === 'cancelling'
-      ? stopThenSettle(input, job, client, recoveryError('The cancelling remote turn is paused.'))
+      ? stopThenSettle(input, job, client, recoveryError('The cancelling remote turn is paused.'), jobLog)
       : failJob(input, job, recoveryError('The orphaned remote turn is paused.'));
     if (remoteStatus === 'error') return failJob(input, job, recoveryError(snapshot?.projection?.lastError?.message ?? 'ZCode reported a terminal error during recovery.'));
-    if (!['completed', 'idle'].includes(remoteStatus)) return stopThenSettle(input, job, client, recoveryError('ZCode recovery state is ambiguous.'));
-    return completeJob(input, job, snapshot);
+    if (!['completed', 'idle'].includes(remoteStatus)) return stopThenSettle(input, job, client, recoveryError('ZCode recovery state is ambiguous.'), jobLog);
+    return completeJob(input, job, snapshot, 'fail', jobLog);
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);
     if (error instanceof SuccessfulResultFinalizationError) throw error;
@@ -169,8 +173,8 @@ async function reconcileOrphan(input, job) {
     if (TERMINAL.has(current.status)) return current;
     return input.intent === 'scavenge' && controlChannelUnavailable(error)
       ? failJob(input, current, establishedUnavailableOrphanError(error))
-      : stopThenSettle(input, current, client, error);
-  } finally { await client?.close().catch(() => {}); }
+      : stopThenSettle(input, current, client, error, jobLog);
+  } finally { await client?.close().catch(() => {}); await closeJobLogBoundedly(jobLog); }
 }
 
 /** @param {any} job */
@@ -214,6 +218,7 @@ async function cancelledConflictWinner(input, job, error) {
 /** @param {any} input @param {any} job */
 async function settleEndedRemoteJob(input, job) {
   let client;
+  const jobLog = await openRecoveryJobLog(input, job);
   try {
     try { client = await input.createClient(job, ownerIdForSession(job.ownerSessionId)); throwIfRecoveryInterrupted(input); }
     catch (error) {
@@ -227,7 +232,7 @@ async function settleEndedRemoteJob(input, job) {
     try { snapshot = await client.readSession(job.zcodeSessionId); }
     catch (error) { throwIfRecoveryInterrupted(input, error); return controlChannelUnavailable(error) ? failEndedUnavailableJob(input, job, establishedUnavailableOrphanError(error)) : retainAfterStopFailure(input, job, error); }
     throwIfRecoveryInterrupted(input);
-    const completed = await completeEndedJob(input, job, snapshot);
+    const completed = await completeEndedJob(input, job, snapshot, jobLog);
     if (completed) return completed;
     if (!REMOTE_ACTIVE.has(snapshot?.projection?.status)) return input.store.readJob(input.workspace, job.id);
     try { await client.stopSession(job.zcodeSessionId); throwIfRecoveryInterrupted(input); }
@@ -235,37 +240,43 @@ async function settleEndedRemoteJob(input, job) {
     try { snapshot = await client.readSession(job.zcodeSessionId); }
     catch (error) { throwIfRecoveryInterrupted(input, error); return cancelJob(input, job); }
     throwIfRecoveryInterrupted(input);
-    return await completeEndedJob(input, job, snapshot) ?? cancelJob(input, job);
+    return await completeEndedJob(input, job, snapshot, jobLog) ?? cancelJob(input, job);
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);
     if (error instanceof SuccessfulResultFinalizationError) throw error;
     return controlChannelUnavailable(error)
       ? failEndedUnavailableJob(input, job, establishedUnavailableOrphanError(error))
       : retainAfterStopFailure(input, job, error);
-  } finally { await client?.close().catch(() => {}); }
+  } finally { await client?.close().catch(() => {}); await closeJobLogBoundedly(jobLog); }
 }
 
-/** Return null when completion is not proven and leave the durable job active. @param {any} input @param {any} job @param {any} snapshot */
-async function completeEndedJob(input, job, snapshot) {
+/** Return null when completion is not proven and leave the durable job active. @param {any} input @param {any} job @param {any} snapshot @param {any} jobLog */
+async function completeEndedJob(input, job, snapshot, jobLog) {
   if (!hasBoundary(job) || !Number.isSafeInteger(snapshot?.runtime?.stateRevision)
     || snapshot.runtime.stateRevision < job.startRevision || !['completed', 'idle'].includes(snapshot?.projection?.status)) return null;
   let resultArtifact;
+  let result;
   try {
-    const result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
+    result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
     resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
   } catch { return null; }
-  return finishRecoveredResult(input, job, resultArtifact);
+  const winner = await finishRecoveredResult(input, job, resultArtifact);
+  await appendRecoveredFinal(input, jobLog, winner, resultArtifact, result);
+  return winner;
 }
-/** @param {any} input @param {any} job @param {any} snapshot @param {'fail'|'cancel'} [invalidResult] */
-async function completeJob(input, job, snapshot, invalidResult = 'fail') {
+/** @param {any} input @param {any} job @param {any} snapshot @param {'fail'|'cancel'} [invalidResult] @param {any} [jobLog] */
+async function completeJob(input, job, snapshot, invalidResult = 'fail', jobLog) {
   let resultArtifact;
+  let result;
   try {
-    const result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
+    result = extractFinalResult(snapshot, job.command, { inputId: job.inputId, stateRevision: job.startRevision, beforeMessageIds: new Set(job.beforeMessageIds) });
     resultArtifact = await writeResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id, contents: result });
   } catch (error) {
     return invalidResult === 'cancel' ? cancelJob(input, job) : failJob(input, job, error);
   }
-  return finishRecoveredResult(input, job, resultArtifact);
+  const winner = await finishRecoveredResult(input, job, resultArtifact);
+  await appendRecoveredFinal(input, jobLog, winner, resultArtifact, result);
+  return winner;
 }
 
 /** @param {any} input @param {any} job @param {string} resultArtifact */
@@ -278,8 +289,53 @@ async function finishRecoveredResult(input, job, resultArtifact) {
     throw new SuccessfulResultFinalizationError(error, resultArtifact);
   }
 }
-/** @param {any} input @param {any} job @param {any} client @param {unknown} error */
-async function stopThenSettle(input, job, client, error) {
+
+/** @param {any} input @param {any} jobLog @param {any} winner @param {string} attemptedArtifact @param {string} attemptedResult */
+async function appendRecoveredFinal(input, jobLog, winner, attemptedArtifact, attemptedResult) {
+  if (!jobLog || winner?.status !== 'succeeded') return;
+  let publicResult = attemptedResult;
+  if (winner.resultArtifact !== attemptedArtifact) {
+    try { publicResult = await readResultArtifact({ dataRoot: input.dataRoot, workspace: input.workspace, artifact: winner.resultArtifact }); }
+    catch { return; }
+  }
+  try {
+    await waitForOptionalLog(appendJobLogBlock({
+      dataRoot: input.dataRoot, workspace: input.workspace, jobId: winner.id, title: 'Final output', body: publicResult,
+    }), Date.now() + OPTIONAL_JOB_LOG_FENCE_MS);
+  } catch { /* log-only */ }
+}
+
+/** @param {any} input @param {any} job */
+async function openRecoveryJobLog(input, job) {
+  try {
+    const jobLog = await createJobLogSink({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: job.id });
+    if (jobLog.logFile && !job.logFile) {
+      try { await input.store.attachJobLog(input.workspace, job.id, jobLog.logFile); }
+      catch { await closeJobLogBoundedly(jobLog); return undefined; }
+    }
+    return jobLog;
+  } catch { return undefined; }
+}
+
+/** @param {any} jobLog */
+async function closeJobLogBoundedly(jobLog) {
+  if (!jobLog) return;
+  const deadline = Date.now() + OPTIONAL_JOB_LOG_FENCE_MS;
+  await waitForOptionalLog(Promise.resolve().then(() => jobLog.flush()).catch(() => {}), deadline);
+  await waitForOptionalLog(Promise.resolve().then(() => jobLog.close()).catch(() => {}), deadline);
+}
+
+/** @param {Promise<unknown>} operation @param {number} deadline */
+async function waitForOptionalLog(operation, deadline) {
+  const milliseconds = Math.max(0, deadline - Date.now());
+  if (milliseconds === 0) return;
+  /** @type {ReturnType<typeof setTimeout>|undefined} */ let timer;
+  try { await Promise.race([operation, new Promise((resolve) => { timer = setTimeout(resolve, milliseconds); })]); }
+  catch { /* log-only */ }
+  finally { if (timer !== undefined) clearTimeout(timer); }
+}
+/** @param {any} input @param {any} job @param {any} client @param {unknown} error @param {any} jobLog */
+async function stopThenSettle(input, job, client, error, jobLog) {
   const stopped = await stopRemote(job, client);
   throwIfRecoveryInterrupted(input, stopped.ok ? undefined : stopped.error);
   if (!stopped.ok) return input.intent === 'scavenge' && controlChannelUnavailable(stopped.error)
@@ -290,7 +346,7 @@ async function stopThenSettle(input, job, client, error) {
   catch (readError) { throwIfRecoveryInterrupted(input, readError); /* acknowledged stop is sufficient for status-appropriate settlement */ }
   if (snapshot) throwIfRecoveryInterrupted(input);
   if (snapshot && hasBoundary(job) && Number.isSafeInteger(snapshot?.runtime?.stateRevision) && snapshot.runtime.stateRevision >= job.startRevision
-    && ['completed', 'idle'].includes(snapshot?.projection?.status)) return completeJob(input, job, snapshot, job.status === 'cancelling' ? 'cancel' : 'fail');
+    && ['completed', 'idle'].includes(snapshot?.projection?.status)) return completeJob(input, job, snapshot, job.status === 'cancelling' ? 'cancel' : 'fail', jobLog);
   return job.status === 'cancelling' ? cancelJob(input, job) : failJob(input, job, error);
 }
 /** @param {any} job @param {any} client */

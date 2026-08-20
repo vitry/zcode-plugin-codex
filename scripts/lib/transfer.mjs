@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { PluginError } from './errors.mjs';
 import { hasControl, isSafeIdentifier } from './identifier.mjs';
 import { createJobController, withJobCancellationLock } from './job-control.mjs';
+import { createJobLogSink } from './job-log.mjs';
 import { removeResultArtifact, writeResultArtifact } from './review.mjs';
 import { withWorkerLease } from './recovery.mjs';
 import { IMPORTED_HISTORY_SOURCE } from './zcode-client.mjs';
@@ -19,6 +20,7 @@ export const TRANSFER_WIRE_LIMITS = Object.freeze({
   maxOutboundBytes: 16 * 1024 * 1024,
   drainTimeoutMs: 5_000,
 });
+const OPTIONAL_JOB_LOG_FENCE_MS = 250;
 
 /** @param {{source?:string}} options @param {{sessionId?:string,[key:string]:unknown}} caller */
 export function resolveTransferSource(options, caller) {
@@ -80,7 +82,21 @@ async function executeClaimedTransfer(input) {
   /** @type {string|undefined} */ let resultArtifact;
   /** @type {string|undefined} */ let result;
   /** @type {string|undefined} */ let resumeCommand;
+  /** @type {any} */ let jobLog;
+  let finalOutputQueued = false;
+  const queueFinalOutput = () => {
+    if (finalOutputQueued || typeof result !== 'string') return;
+    finalOutputQueued = true;
+    try { void jobLog?.appendBlock('Final output', result); } catch { /* log-only */ }
+  };
   try {
+    try {
+      jobLog = await createJobLogSink({ dataRoot, workspace, jobId: job.id });
+      if (jobLog.logFile) {
+        try { running = await store.attachJobLog(workspace, job.id, jobLog.logFile); }
+        catch { await closeJobLogBoundedly(jobLog); jobLog = undefined; }
+      }
+    } catch { jobLog = undefined; }
     validateExecution(input);
     running = await store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString() });
     input.signal?.throwIfAborted();
@@ -119,14 +135,19 @@ async function executeClaimedTransfer(input) {
       await (input.removeResult ?? removeResultArtifact)({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact });
       throw new PluginError('TRANSFER_CANCELLED', `Transfer job ${job.id} was cancelled.`, { category: 'state', remedy: 'Run Transfer again if the imported session is still needed.' });
     }
+    queueFinalOutput();
     return { type: 'transfer', job: succeeded, result, zcodeSessionId: sessionId, resumeCommand };
   } catch (caught) {
     const error = input.signal?.aborted ? input.signal.reason : caught;
     const current = await store?.readJob(workspace, job?.id).catch(() => running);
-    if (!isInterruption(error) && current?.status === 'succeeded' && sessionId && resultArtifact && result && resumeCommand) return { type: 'transfer', job: current, result, zcodeSessionId: sessionId, resumeCommand };
+    if (!isInterruption(error) && current?.status === 'succeeded' && sessionId && resultArtifact && result && resumeCommand) {
+      queueFinalOutput(); return { type: 'transfer', job: current, result, zcodeSessionId: sessionId, resumeCommand };
+    }
     if (!isInterruption(error) && current?.status === 'running' && resultArtifact && result && resumeCommand) throw error;
     if (isInterruption(error)) {
-      if (current?.status === 'succeeded' && sessionId && resultArtifact && result && resumeCommand) return { type: 'transfer', job: current, result, zcodeSessionId: sessionId, resumeCommand };
+      if (current?.status === 'succeeded' && sessionId && resultArtifact && result && resumeCommand) {
+        queueFinalOutput(); return { type: 'transfer', job: current, result, zcodeSessionId: sessionId, resumeCommand };
+      }
       if (resultArtifact) await (input.removeResult ?? removeResultArtifact)({ dataRoot, workspace, jobId: job.id, artifact: resultArtifact }).catch(() => {});
       await cancelInterruptedTransfer({ ...input, job, client }).catch(() => {});
     } else {
@@ -136,7 +157,25 @@ async function executeClaimedTransfer(input) {
       });
     }
     throw error;
-  } finally { await client?.close().catch(() => {}); }
+  } finally { await client?.close().catch(() => {}); await closeJobLogBoundedly(jobLog); }
+}
+
+/** @param {any} jobLog */
+async function closeJobLogBoundedly(jobLog) {
+  if (!jobLog) return;
+  const deadline = Date.now() + OPTIONAL_JOB_LOG_FENCE_MS;
+  await waitForOptionalLog(Promise.resolve().then(() => jobLog.flush()).catch(() => {}), deadline);
+  await waitForOptionalLog(Promise.resolve().then(() => jobLog.close()).catch(() => {}), deadline);
+}
+
+/** @param {Promise<unknown>} operation @param {number} deadline */
+async function waitForOptionalLog(operation, deadline) {
+  const milliseconds = Math.max(0, deadline - Date.now());
+  if (milliseconds === 0) return;
+  /** @type {ReturnType<typeof setTimeout>|undefined} */ let timer;
+  try { await Promise.race([operation, new Promise((resolve) => { timer = setTimeout(resolve, milliseconds); })]); }
+  catch { /* log-only */ }
+  finally { if (timer !== undefined) clearTimeout(timer); }
 }
 
 /** @template T @param {()=>Promise<T>} operation @param {AbortSignal|undefined} signal */

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -950,8 +950,43 @@ test('executor reports only same-session progress and drains persistence before 
   ]);
   assert.ok(order.lastIndexOf('persist:finalizing') < order.indexOf('transition:succeeded'));
   assert.equal(order.includes('persist:waiting'), false);
-  assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+  const succeeded = await store.readJob(workspace, job.id);
+  assert.equal(succeeded.status, 'succeeded');
+  assert.equal(succeeded.logFile, join((await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace })).directory, 'jobs', `${job.id}.log`));
+  const log = await readFile(succeeded.logFile, 'utf8');
+  for (const event of persisted) assert.match(log, new RegExp(event.message.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(log, /Assistant message\ndone\n/);
+  assert.match(log, /Final output\ndone\n/);
+  assert.equal((log.match(/Assistant message/g) ?? []).length, 1);
+  assert.equal((log.match(/Final output/g) ?? []).length, 1);
   assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
+});
+
+test('job-log create, attachment, and append failures remain observational to authoritative success', async () => {
+  for (const failure of ['create', 'attach', 'append']) {
+    const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+    const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace });
+    if (failure === 'create') await mkdir(join(storage.directory, 'jobs', `${job.id}.log`));
+    const wrapped = failure === 'attach'
+      ? { ...store, attachJobLog: async () => { throw new Error('PRIVATE_ATTACH_PATH'); } }
+      : store;
+    const client = {
+      createSession: async () => {
+        if (failure === 'append') {
+          const attached = await store.readJob(workspace, job.id);
+          await rm(attached.logFile); await mkdir(attached.logFile);
+        }
+        return { session: { sessionId: `zs-log-${failure}` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] };
+      },
+      setPermissionHandler: () => {}, subscribe: silentSubscribe,
+      send: async () => ({ inputId: `input-log-${failure}`, stateRevision: 1 }), waitForCompletion: async () => {},
+      readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: `assistant-log-${failure}`, parentMessageId: `input-log-${failure}` }, parts: [{ type: 'text', text: `result despite ${failure}` }] }] }),
+      close: async () => {},
+    };
+    const output = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task' });
+    assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, `result despite ${failure}`);
+    assert.equal(await readFile(join(storage.directory, output.job.resultArtifact), 'utf8'), output.result);
+  }
 });
 
 test('slow send has no progress side effects until accepted', async () => {

@@ -85,6 +85,11 @@ test('creates imported history, writes a durable result, and succeeds the tracke
   assert.match(output.result, /^Imported from Codex/m); assert.match(output.result, /ZCode session ID: zcode-session-1/); assert.match(output.resumeCommand, /^'\/Applications\/Z Code\/zcode' --profile 'a b' --resume zcode-session-1$/);
   const storage = await resolveWorkspaceStorage(context);
   assert.equal(await readFile(join(storage.directory, output.job.resultArtifact), 'utf8'), output.result);
+  assert.equal(output.job.logFile, join(storage.directory, 'jobs', `${output.job.id}.log`));
+  const log = await readFile(output.job.logFile, 'utf8');
+  assert.match(log, /Final output\nImported from Codex\n/);
+  assert.equal((log.match(/Final output/g) ?? []).length, 1);
+  assert.doesNotMatch(log, /Assistant message/);
 });
 
 test('Transfer success finalization failure keeps its recoverable result and never rewrites failed', async () => {
@@ -110,6 +115,7 @@ test('thread/read and conversion failures happen before ZCode creation and durab
     const context = await executionFixture(readThread); let createCalls = 0;
     await assert.rejects(executeTransfer({ ...context, sourceThreadId: source, launch: { command: 'zcode', args: [] }, createClient: async () => { createCalls += 1; return context.client; } }));
     assert.equal(createCalls, 0); const failed = await context.store.readJob(context.workspace, context.job.id); assert.equal(failed.status, 'failed'); assert.equal(failed.resultArtifact, undefined);
+    assert.doesNotMatch(await readFile(failed.logFile, 'utf8'), /Assistant message|Final output/);
   }
 });
 

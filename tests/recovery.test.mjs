@@ -292,6 +292,8 @@ test('recovery success finalization failure preserves the result for a later ret
   assert.equal(successWrites, 1); assert.equal(failedWrites, 0); assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
   const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace }); assert.equal(await readFile(join(storage.directory, 'results', `${job.id}.md`), 'utf8'), 'recover this result later');
   await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: completed }) }); const recovered = await store.readJob(fixture.workspace, job.id); assert.equal(recovered.status, 'succeeded'); assert.equal(successWrites, 2); assert.equal(failedWrites, 0); assert.equal(await readFile(join(storage.directory, recovered.resultArtifact), 'utf8'), 'recover this result later');
+  const log = await readFile(recovered.logFile, 'utf8');
+  assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.match(log, /Final output\nrecover this result later\n/);
 });
 
 test('acknowledged stop cancels a cancelling orphan when post-stop completion has no valid result', async () => {
@@ -569,7 +571,13 @@ test('owned recovery ignores a foreign corrupt job through its trusted owner bin
     createClient: async (job) => { clients += 1; return recoveryClient(job, { snapshot: { projection: { status: 'completed' }, runtime: { stateRevision: 2 }, messages: [{ info: { role: 'assistant', messageId: 'answer-mine', parentMessageId: mine.inputId }, parts: [{ type: 'text', text: 'owned recovery completed' }] }] } }); },
   });
   assert.equal(clients, 1); assert.equal(recovered.length, 1); assert.equal(recovered[0].id, mine.id); assert.equal(recovered[0].status, 'succeeded');
-  assert.equal((await store.readJob(fixture.workspace, mine.id)).status, 'succeeded');
+  const succeeded = await store.readJob(fixture.workspace, mine.id);
+  assert.equal(succeeded.status, 'succeeded');
+  assert.equal(succeeded.logFile, join(storage.directory, 'jobs', `${mine.id}.log`));
+  const log = await readFile(succeeded.logFile, 'utf8');
+  assert.match(log, /Final output\nowned recovery completed\n/);
+  assert.equal((log.match(/Final output/g) ?? []).length, 1);
+  assert.doesNotMatch(log, /Assistant message/);
   assert.equal(JSON.parse(await readFile(join(storage.directory, 'job-owners', 'index.json'), 'utf8')).version, 3, 'a matching tuple marker must avoid parsing bound foreign canonical state');
 });
 
