@@ -1333,7 +1333,7 @@ test('deferred reporter buffers only bounded normalized events and activates sta
 });
 
 test('deferred semantic work cannot dispatch timestamps behind activation or later activity', async () => {
-  const persisted = []; const diagnostics = []; const descriptions = [];
+  const persisted = []; const archived = []; const diagnostics = []; const descriptions = [];
   let currentTime = observedAt;
   const reporter = progressModule.createProgressReporter({
     sessionId: 'session-a', deferred: true,
@@ -1342,6 +1342,7 @@ test('deferred semantic work cannot dispatch timestamps behind activation or lat
       if (previous && Date.parse(event.observedAt) < Date.parse(previous.observedAt)) throw new Error('state rejected a regressing observation');
       persisted.push(event);
     },
+    archive: async (event) => archived.push(event),
     describeNotification: (frame, frameObservedAt) => new Promise((resolve) => descriptions.push({ frame, frameObservedAt, resolve })),
     onDiagnostic: ({ kind }) => diagnostics.push(kind),
     now: () => currentTime, setInterval: () => ({ unref() {} }), clearInterval: () => {},
@@ -1377,6 +1378,7 @@ test('deferred semantic work cannot dispatch timestamps behind activation or lat
     ['Late post-activation event.', '2026-08-08T00:00:30.000Z'],
     ['ZCode completed the delegated turn.', '2026-08-08T00:00:40.000Z'],
   ]);
+  assert.deepEqual(archived.map((event) => event.message), persisted.map((event) => event.message));
   reporter.close();
 });
 

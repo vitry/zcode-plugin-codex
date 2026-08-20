@@ -151,6 +151,47 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
+/** @param {any} context @param {string[]} args */
+async function companionWithArchiveHandshake(context, args) {
+  const nonce = randomBytes(32).toString('hex');
+  const gate = join(context.directory, `${nonce}-archive-progress-gate.json`);
+  const reached = join(context.directory, `${nonce}-archive-progress-reached.json`);
+  const expected = [
+    'ZCode is generating a response.', 'ZCode started a tool call.', 'ZCode is retrying the model request.',
+    'ZCode tool work is still running.', 'ZCode completed a tool call.',
+  ];
+  await atomicWriteJson(gate, { version: 1, nonce, acknowledged: 0 });
+  const execution = companion(context, args, {
+    FAKE_ZCODE_ARCHIVE_PROGRESS: '1', FAKE_ZCODE_ARCHIVE_PROGRESS_GATE: gate,
+    FAKE_ZCODE_ARCHIVE_PROGRESS_GATE_NONCE: nonce, FAKE_ZCODE_ARCHIVE_PROGRESS_GATE_REACHED: reached,
+  });
+  let result;
+  try {
+    const storage = await resolveWorkspaceStorage(context);
+    for (const [index, message] of expected.entries()) {
+      await waitFor(async () => {
+        const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
+        for (const name of names.filter((candidate) => candidate.endsWith('.log'))) {
+          if ((await readFile(join(storage.directory, 'jobs', name), 'utf8').catch(() => '')).includes(message)) return true;
+        }
+        return false;
+      }, `archive did not durably append semantic event ${index + 1}`);
+      await atomicWriteJson(gate, { version: 1, nonce, acknowledged: index + 1 });
+    }
+    result = await execution;
+    assert.deepEqual(JSON.parse(await readFile(reached, 'utf8')), { version: 1, nonce, sequence: expected.length });
+  } finally {
+    await atomicWriteJson(gate, { version: 1, nonce, acknowledged: expected.length }).catch(() => {});
+    if (!result) await execution.catch(() => {});
+    await Promise.all([unlink(gate).catch(() => {}), unlink(reached).catch(() => {})]);
+  }
+  await Promise.all([
+    assert.rejects(stat(gate), { code: 'ENOENT' }),
+    assert.rejects(stat(reached), { code: 'ENOENT' }),
+  ]);
+  return result;
+}
+
 /** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
@@ -515,7 +556,7 @@ test('rescue task semantics reach the fake peer as the authorized objective', as
 
 test('foreground rescue streams safe progress to stderr and durably exposes it through status', async () => {
   const context = await fixture();
-  const result = await companion(context, ['rescue', '--fresh', 'surface progress'], { FAKE_ZCODE_ARCHIVE_PROGRESS: '1' });
+  const result = await companionWithArchiveHandshake(context, ['rescue', '--fresh', 'surface progress']);
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.stdout, 'done\n');
   assert.match(result.stderr, /\[zcode\] ZCode started the delegated turn\./);
   assert.match(result.stderr, /\[zcode\] ZCode is generating a response\./);
