@@ -56,9 +56,13 @@ Root 在 raw-capable TTY 上启动 `prepare rescue`。companion 先启用 raw mo
 
 durable Rescue binding 现在把同一个已停止的 Rescue child 绑定到一个精确 ZCode session。私有 `anchorJobId` 标识被采用的操作，`currentJobId` 在每个续做 job 被持久预留并发布时前移，即使该 job 随后排队、失败或取消；两个标识都不会进入 child message。明确的主动续做会 prepare resume 并 follow up 同一个已停止的 Rescue child；它复用相同的 `invoke-prepared rescue` assignment，不会产生第二次 `SubagentStart`。显式 bound 请求若没有 `--resume` 或 `--fresh`，也 follow up 同一 child，并由其 bound `needs-choice` 结果触发一次用户选择。`--fresh` 始终准备独立操作和新的 child。
 
+普通前台 Rescue 的完成等待不设插件定义的墙钟截止时间。活动父 turn 的授权由生命周期而非时间绑定，因此在同一个仍活动的父 turn 中，明确续做可以用下一代 30 分钟的一次性 preparation 替换已消费代，follow up 精确的已停止 child，并复用精确绑定的 ZCode session。caller credential 和每一代 preparation 仍以 30 分钟为界；request RPC、可选 Stop review gate、qualification harness 和显式 status wait 也继续使用各自有限预算。Root `Stop`、替换性的 `UserPromptSubmit`、`SessionEnd`、`$zcode:cancel`、`SIGINT` 和 `SIGTERM` 仍是权威的终止或撤销边界。
+
 legacy jobs-only 状态只会采用唯一且精确合格的续做候选；有歧义或旧 pending 状态会被拒绝而不是猜测。权限变化不能 resume 旧 binding，而 `--fresh` 会捕获当前 permission 快照。`SessionEnd` 会关闭结束 Codex session 的 Rescue binding，使其不能再次恢复。无效 binding、executor 不匹配、错误 workspace、已关闭 session 或 provenance 不一致都会 fail closed，不会 fallback 到 latest session。受管 Role 字节已经变化，因此 `role-status rescue` 可能返回 `upgrade-required`；继续前请重新运行 `$zcode:setup` 完成需要升级的 Role。
 
 前台 Rescue 只在一个原生子线程中运行常量 forwarder。host 支持 `agent_type` 时，Codex 选择具名 `zcode-rescue` Role。generic child 只是 host-only 兼容回退：仅当当前 spawn schema 缺少 `agent_type`，或能证明该字段在任何 child 启动前已被拒绝时才允许；Role 缺失、被 shadow、漂移或属于外部配置时绝不回退。父线程只运行只读 Role preflight 和私有 prepare rollout、显示原生生命周期并返回 child 的最终公开 stdout；它不会 inline 执行 Rescue，也不会把 child stderr、工具输出、原始 conversation frame 或中间进度复制到父线程。
+
+Role preflight 使用固定 readiness 词汇：`caller-unavailable` 要求从活动且受拥有的父 turn 重试，`inspection-unavailable` 要求仅重试检查而不修改 setup。install、upgrade、drift、conflict、restart 或真正 host `unsupported` 等受管状态会引导运行 `$zcode:setup`。由于本次 Role 字节发生变化，现有已拥有的受管 Role 安装需要按正常流程执行一次 `$zcode:setup` 升级。
 
 Rescue child 使用与任务无关的原生显示基名 `zcode_rescue_task`；同级名称冲突时会添加有界序号。该 metadata 不编码业务目标或 task 文本。名称和路径只用于导航：符合 `zcode_rescue_*` 规范既不能证明 child 是 Rescue，也不会授予 Rescue 权限；显示名称不同也不会移除一个已由可信链路确认的 Rescue child 的权限。
 

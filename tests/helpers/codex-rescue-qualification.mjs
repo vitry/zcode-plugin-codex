@@ -91,7 +91,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   const expected = input.expected; const parentSessionId = boundedString(expected.parentSessionId); const childThreadId = boundedString(expected.childThreadId);
   const originalParentTurnId = boundedString(expected.originalParentTurnId);
   const continuationParentTurnId = boundedString(expected.continuationParentTurnId);
-  if (!parentSessionId || !childThreadId || !originalParentTurnId || !continuationParentTurnId || originalParentTurnId === continuationParentTurnId) mismatch('continuation-identity', 'Prepared continuation identity is incomplete.');
+  if (!parentSessionId || !childThreadId || !originalParentTurnId || continuationParentTurnId !== originalParentTurnId) mismatch('continuation-identity', 'Prepared continuation must remain in the exact active parent turn.');
   const parseArray = (text, code) => { if (Buffer.byteLength(text) > MAX_ROLLOUT_BYTES) mismatch(code, 'Captured evidence exceeds its byte bound.'); let value; try { value = JSON.parse(text); } catch { mismatch(code, 'Captured evidence is malformed.'); } return boundedArray(value, MAX_EVENTS_PER_ROLLOUT, code); };
   const parent = parseArray(input.parentRolloutJson, 'continuation-parent-events'); const child = parseArray(input.childRolloutJson, 'continuation-child-events');
   const hooks = parseArray(input.hookLifecycleJson, 'continuation-hook-events'); const jobBytes = parseArray(input.jobRecordBytesJson, 'continuation-jobs'); const peer = parseArray(input.fakePeerJson, 'continuation-peer-events');
@@ -134,8 +134,8 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   if (!(parent.indexOf(preparations[0]) < parent.indexOf(spawns[0]) && parent.indexOf(spawns[0]) < parent.indexOf(starts[0])
     && parent.indexOf(starts[0]) < parent.indexOf(stops[0]) && parent.indexOf(stops[0]) < parent.indexOf(preparations[1])
     && parent.indexOf(preparations[1]) < parent.indexOf(followups[0]))) mismatch('continuation-event-order', 'Captured raw parent event order is invalid.');
-  const originalEvents = [preparations[0], spawns[0], starts[0], stops[0]]; const continuationEvents = [preparations[1], followups[0]];
-  if (originalEvents.some((event) => event?.turn_id !== originalParentTurnId) || continuationEvents.some((event) => event?.turn_id !== continuationParentTurnId)) mismatch('continuation-parent-turns', 'Raw parent events do not prove a fresh continuation turn.');
+  const parentTurnEvents = [preparations[0], spawns[0], starts[0], stops[0], preparations[1], followups[0]];
+  if (parentTurnEvents.some((event) => event?.turn_id !== originalParentTurnId)) mismatch('continuation-parent-turns', 'Raw parent events do not prove one exact active parent turn.');
   await validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution });
   const observedAgentPath = boundedString(starts[0].payload.agent_path); const observedTaskName = boundedString(spawn.task_name);
   if (!observedTaskName || !observedAgentPath || observedAgentPath !== `/root/${observedTaskName}`
@@ -152,31 +152,32 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
     || executor.agentType !== (input.route === 'named' ? 'zcode-rescue' : 'default')) mismatch('continuation-executor-provenance', 'Raw stopped executor provenance is invalid.');
   if (!Number.isFinite(Date.parse(executor.createdAt))) mismatch('continuation-executor-provenance', 'Raw executor creation time is invalid.');
   const startHooks = hooks.filter((event) => event?.hook_event_name === 'SubagentStart'); const stopHooks = hooks.filter((event) => event?.hook_event_name === 'SubagentStop');
-  const freshHooks = hooks.filter((event) => event?.hook_event_name === 'UserPromptSubmit');
-  if (startHooks.length !== 1 || stopHooks.length !== 1 || freshHooks.length !== 1 || freshHooks[0].turn_id !== continuationParentTurnId
+  const promptHooks = hooks.filter((event) => event?.hook_event_name === 'UserPromptSubmit');
+  if (startHooks.length !== 1 || stopHooks.length !== 1 || promptHooks.length !== 1 || promptHooks[0].turn_id !== originalParentTurnId
     || startHooks[0].agent_id !== childThreadId || stopHooks[0].agent_id !== childThreadId
     || startHooks[0].session_id !== parentSessionId || stopHooks[0].session_id !== parentSessionId
-    || freshHooks[0].session_id !== parentSessionId || startHooks[0].turn_id !== executor.childTurnId || stopHooks[0].turn_id !== executor.childTurnId
+    || promptHooks[0].session_id !== parentSessionId || startHooks[0].turn_id !== executor.childTurnId || stopHooks[0].turn_id !== executor.childTurnId
     || startHooks[0].parent_turn_id !== undefined && startHooks[0].parent_turn_id !== originalParentTurnId
     || stopHooks[0].parent_turn_id !== undefined && stopHooks[0].parent_turn_id !== originalParentTurnId
     || startHooks[0].agent_type !== executor.agentType || stopHooks[0].agent_type !== executor.agentType
     || startHooks[0].permission_mode !== expected.permissionMode || stopHooks[0].permission_mode !== expected.permissionMode
-    || freshHooks[0].permission_mode !== expected.permissionMode || startHooks[0].cwd !== expected.workspace
-    || stopHooks[0].cwd !== expected.workspace || freshHooks[0].cwd !== expected.workspace) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle does not prove one Start/Stop and a fresh parent turn.');
-  if (!(hooks.indexOf(startHooks[0]) < hooks.indexOf(stopHooks[0]) && hooks.indexOf(stopHooks[0]) < hooks.indexOf(freshHooks[0]))) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle order is invalid.');
+    || promptHooks[0].permission_mode !== expected.permissionMode || startHooks[0].cwd !== expected.workspace
+    || stopHooks[0].cwd !== expected.workspace || promptHooks[0].cwd !== expected.workspace) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle does not prove one prompt and one Start/Stop in the same parent turn.');
+  if (!(hooks.indexOf(promptHooks[0]) < hooks.indexOf(startHooks[0]) && hooks.indexOf(startHooks[0]) < hooks.indexOf(stopHooks[0]))) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle order is invalid.');
   let authority; let partition; try { authority = parseRescueBindingAuthority(input.bindingAuthorityBytes, { parentSessionId, workspace: expected.workspace }); partition = parseRescueBindingPartition(input.bindingPartitionBytes, { parentSessionId, workspace: expected.workspace }); } catch { mismatch('continuation-binding-invalid', 'Raw Rescue binding files are invalid.'); }
   if (authority.key !== partition.key || partition.records.length !== 1) mismatch('continuation-binding-invalid', 'Raw Rescue binding authority and partition do not match.');
   const binding = partition.records[0];
   if (binding.executorAgentId !== childThreadId || binding.executorAgentType !== executor.agentType || binding.executorParentTurnId !== originalParentTurnId
     || binding.executorParentPermissionMode !== expected.permissionMode || binding.permissionMode !== expected.permissionMode
-    || binding.state !== 'active') mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
-  if (!boundedString(binding.operationId)) mismatch('continuation-binding-identity', 'Raw Rescue binding generation is absent.');
+    || binding.state !== 'active' || binding.operationId !== expected.operationId
+    || binding.anchorJobId !== expected.anchorJobId) mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
+  if (binding.currentJobId !== expected.currentJobId) mismatch('continuation-current-job-stale', 'Raw current job binding does not match the captured CAS route.');
   const jobs = await parseRawJobsWithProduction(jobBytes, expected);
   if (jobs.length !== 2 || new Set(jobs.map((job) => job?.id)).size !== jobs.length) mismatch('continuation-job-identity', 'Raw job evidence contains extra or duplicate identities.');
   const anchor = jobs.find((job) => job?.id === binding.anchorJobId); const current = jobs.find((job) => job?.id === binding.currentJobId);
   if (!current) mismatch('continuation-current-job-stale', 'Raw current job evidence is absent.');
   if (!anchor || anchor.status === 'cancelled' || !boundedString(anchor.zcodeSessionId)) mismatch('continuation-anchor-invalid', 'Raw anchor job is not resumable.');
-  if (anchor.ownerTurnId !== originalParentTurnId || current.ownerTurnId !== continuationParentTurnId) mismatch('continuation-job-record', 'Raw job owner turns do not match the two parent turns.');
+  if (anchor.ownerTurnId !== originalParentTurnId || current.ownerTurnId !== originalParentTurnId) mismatch('continuation-job-record', 'Raw job owner turns do not match the active parent turn.');
   if (!['queued', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled'].includes(current.status)) mismatch('continuation-current-job-stale', 'Raw current job status is invalid.');
   let backgroundObserver;
   if (input.execution === 'background') { try { backgroundObserver = parseObject(input.backgroundObserverJson, 'continuation-background-evidence'); } catch { mismatch('continuation-background-evidence', 'Background continuation lacks raw private observer evidence.'); }
@@ -274,8 +275,9 @@ function validateLiveRawContinuationCapture(input, core) {
   if (allChildWriteIds.length !== consumedChildWriteIds.size || allChildWriteIds.some((id) => !consumedChildWriteIds.has(id))) mismatch('continuation-raw-child-events', 'A raw child poll is not owned by exactly one invoke segment.');
   const starts = rawHooks.filter((event) => event?.hook_event_name === 'SubagentStart'); const stops = rawHooks.filter((event) => event?.hook_event_name === 'SubagentStop');
   const prompts = rawHooks.filter((event) => event?.hook_event_name === 'UserPromptSubmit');
-  if (starts.length !== 1 || stops.length !== 1 || prompts.length < 1 || prompts.length > 2 || rawHooks.some((event) => !['SubagentStart', 'SubagentStop', 'UserPromptSubmit'].includes(event?.hook_event_name))
-    || !(rawHooks.indexOf(starts[0]) < rawHooks.indexOf(stops[0]) && rawHooks.indexOf(stops[0]) < rawHooks.indexOf(prompts.at(-1)))) mismatch('continuation-raw-hook-events', 'Complete hook capture contains duplicates, extras, or invalid order.');
+  if (starts.length !== 1 || stops.length !== 1 || prompts.length !== 1 || prompts[0].turn_id !== core.expected.originalParentTurnId
+    || rawHooks.some((event) => !['SubagentStart', 'SubagentStop', 'UserPromptSubmit'].includes(event?.hook_event_name))
+    || !(rawHooks.indexOf(prompts[0]) < rawHooks.indexOf(starts[0]) && rawHooks.indexOf(starts[0]) < rawHooks.indexOf(stops[0]))) mismatch('continuation-raw-hook-events', 'Complete hook capture contains duplicates, extras, or invalid order.');
   if (rawPeer.length !== 4 || rawPeer.filter((event) => event?.method === 'session/create').length !== 1 || rawPeer.filter((event) => event?.method === 'session/resume').length !== 1
     || rawPeer.filter((event) => event?.method === 'session/send').length !== 2) mismatch('continuation-raw-peer-events', 'Complete fake-peer capture contains an extra or missing request.');
   validateImmutableArtifactHistory(history, input);
@@ -304,7 +306,7 @@ function assertAllowedRawHostCalls(events, role) {
 }
 
 function validateImmutableArtifactHistory(history, input) {
-  const immutable = new Map(); const executorHistory = new Map(); const bindingHistory = new Map(); const jobHistory = new Map();
+  const immutable = new Map(); const preparationHistory = new Map(); const executorHistory = new Map(); const bindingHistory = new Map(); const jobHistory = new Map();
   let previousSequence = 0;
   for (const artifact of history) {
     if (!artifact || typeof artifact.path !== 'string' || Buffer.byteLength(artifact.path) > 4096 || typeof artifact.bytes !== 'string' || Buffer.byteLength(artifact.bytes) > MAX_ROLLOUT_BYTES
@@ -312,7 +314,7 @@ function validateImmutableArtifactHistory(history, input) {
     if (artifact.sequence !== null) previousSequence = artifact.sequence;
     let value; try { value = JSON.parse(artifact.bytes); } catch { continue; }
     let identity;
-    if (artifact.path.includes('invocations/prepared/') && value?.consumedAt) identity = `prepared-path:${artifact.path}`;
+    if (artifact.path.includes('invocations/prepared/') && value?.consumedAt) appendHistory(preparationHistory, artifact.path, value);
     else if (artifact.path.includes('rescue-binding-authority-')) identity = `authority-path:${artifact.path}`;
     if (identity) { const previous = immutable.get(identity); if (previous !== undefined && previous !== artifact.bytes) mismatch('continuation-artifact-history', 'An immutable captured artifact changed across phases.');
       immutable.set(identity, artifact.bytes); }
@@ -320,7 +322,7 @@ function validateImmutableArtifactHistory(history, input) {
     if (artifact.path.includes('rescue-binding-session-') && Array.isArray(value?.records)) for (const record of value.records) appendHistory(bindingHistory, record.key, record);
     if (artifact.path.startsWith('jobs/') && value?.id) appendHistory(jobHistory, value.id, value);
   }
-  if (immutable.size < 3 || executorHistory.size !== 1 || bindingHistory.size !== 1 || jobHistory.size !== 2) mismatch('continuation-artifact-history', 'Complete artifact history is missing mandatory authority records.');
+  if (immutable.size < 1 || preparationHistory.size !== 1 || executorHistory.size !== 1 || bindingHistory.size !== 1 || jobHistory.size !== 2) mismatch('continuation-artifact-history', 'Complete artifact history is missing mandatory authority records.');
   let preparations; let jobs; try { preparations = JSON.parse(input.preparationRecordBytesJson); jobs = JSON.parse(input.jobRecordBytesJson); } catch { mismatch('continuation-artifact-history', 'Selected artifact bytes are malformed.'); }
   let executor; let authority; let partition; try { executor = JSON.parse(input.executorRecordBytes); authority = JSON.parse(input.bindingAuthorityBytes); partition = JSON.parse(input.bindingPartitionBytes); } catch { mismatch('continuation-artifact-history', 'Selected authority bytes are malformed.'); }
   const executorKey = createHash('sha256').update(JSON.stringify(['executor', executor.agentId])).digest('hex');
@@ -339,6 +341,15 @@ function validateImmutableArtifactHistory(history, input) {
     if (!safe || coreNearMiss && !corePath.test(artifact.path)) mismatch('continuation-artifact-history', 'Raw artifact history contains an unsafe or malformed authority path.');
   }
   for (const [path, bytes] of expectedArtifacts) if (!history.some((artifact) => artifact.path === path && artifact.bytes === bytes)) mismatch('continuation-artifact-history', 'Selected authority bytes are absent from their exact captured path.');
+  for (const versions of preparationHistory.values()) {
+    if (versions.length !== 2 || versions[0].version !== 2 || versions[0].generation !== 1 || versions[0].requiredExecutorAgentId !== null
+      || versions[1].version !== 2 || versions[1].generation !== 2 || versions[1].requiredExecutorAgentId !== versions[0].executorAgentId
+      || versions.some((record) => record.consumedAt === null || record.executorAgentId !== versions[0].executorAgentId)
+      || JSON.stringify(Object.fromEntries(Object.entries(versions[0]).filter(([key]) => !['createdAt', 'expiresAt', 'consumedAt', 'envelope', 'generation', 'requiredExecutorAgentId', 'source'].includes(key))))
+        !== JSON.stringify(Object.fromEntries(Object.entries(versions[1]).filter(([key]) => !['createdAt', 'expiresAt', 'consumedAt', 'envelope', 'generation', 'requiredExecutorAgentId', 'source'].includes(key))))) {
+      mismatch('continuation-artifact-history', 'Preparation history is not the sole legal consumed generation 1 to consumed generation 2 replacement.');
+    }
+  }
   for (const versions of executorHistory.values()) assertStableVersions(versions, ['active'], 'executor');
   for (const versions of bindingHistory.values()) assertStableVersions(versions, ['currentJobId', 'permissionMode', 'updatedAt'], 'binding');
   for (const versions of jobHistory.values()) assertStableFields(versions, ['id', 'workspace', 'ownerSessionId', 'ownerTurnId', 'command', 'readOnly', 'permissionSnapshot'], 'job');
@@ -1183,18 +1194,19 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
   let recordBytes; try { recordBytes = JSON.parse(rawRecordsJson); } catch { mismatch('continuation-preparation-records', 'Raw consumed preparation records are malformed.'); }
   if (!Array.isArray(recordBytes) || recordBytes.length !== 2 || recordBytes.some((bytes) => typeof bytes !== 'string' || !bytes.endsWith('\n'))) mismatch('continuation-preparation-records', 'Exactly two raw consumed preparation records are required.');
   const specifications = [
-    { turnId: expected.originalParentTurnId, source: 'explicit', resume: 'fresh', handle: undefined },
-    { turnId: expected.continuationParentTurnId, source: 'proactive', resume: 'resume', handle: undefined },
+    { generation: 1, source: 'explicit', resume: 'fresh', requiredExecutorAgentId: null },
+    { generation: 2, source: 'proactive', resume: 'resume', requiredExecutorAgentId: expected.childThreadId },
   ];
   const parsedRecords = recordBytes.map((bytes) => { let value; try { value = JSON.parse(bytes); } catch { mismatch('continuation-preparation-records', 'A raw consumed preparation record is malformed.'); } return value; });
-  for (const specification of specifications) {
-    const turnEvents = parent.map((event, index) => ({ event, index })).filter(({ event }) => event?.turn_id === specification.turnId);
-    const calls = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call').map(({ event, index }) => ({ event, index, host: parseCapturedHostCall(event.payload.input) }));
-    const outputs = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call_output');
-    const prepares = calls.filter(({ host }) => host.kind === 'exec_command' && host.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" prepare rescue'));
-    const writes = calls.filter(({ host }) => host.kind === 'write_stdin');
-    if (prepares.length !== 1 || writes.length !== 1) mismatch('continuation-preparation-protocol', 'Each parent turn must own one prepare process and one write.');
-    const prepare = prepares[0]; const write = writes[0];
+  if (parsedRecords[0]?.key !== parsedRecords[1]?.key) mismatch('continuation-preparation-records', 'Preparation generations must replace one exact turn slot.');
+  const turnEvents = parent.map((event, index) => ({ event, index })).filter(({ event }) => event?.turn_id === expected.originalParentTurnId);
+  const calls = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call').map(({ event, index }) => ({ event, index, host: parseCapturedHostCall(event.payload.input) }));
+  const outputs = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call_output');
+  const prepares = calls.filter(({ host }) => host.kind === 'exec_command' && host.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" prepare rescue'));
+  const writes = calls.filter(({ host }) => host.kind === 'write_stdin');
+  if (prepares.length !== 2 || writes.length !== 2) mismatch('continuation-preparation-protocol', 'The active parent turn must own exactly two prepare/write generations.');
+  for (let generationIndex = 0; generationIndex < specifications.length; generationIndex += 1) {
+    const specification = specifications[generationIndex]; const prepare = prepares[generationIndex]; const write = writes[generationIndex];
     if (prepare.host.envelope.get('tty') !== true || prepare.host.envelope.get('workdir') !== expected.workspace) mismatch('continuation-preparation-protocol', 'Preparation must use the exact TTY workspace envelope.');
     const readyOutput = outputs.filter(({ event }) => event.payload.call_id === prepare.event.payload.call_id);
     const ackOutput = outputs.filter(({ event }) => event.payload.call_id === write.event.payload.call_id);
@@ -1208,15 +1220,16 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
     if (!chars.endsWith('\n') || chars.slice(0, -1).includes('\n')) mismatch('continuation-preparation-route', 'Preparation is not one LF-terminated envelope.');
     let envelope; try { envelope = await readRescuePreparation(Readable.from([chars])); } catch { mismatch('continuation-preparation-route', 'Production preparation parser rejected the raw LF envelope.'); }
     if (envelope.source !== specification.source || envelope.options.resume !== specification.resume || (envelope.options.execution ?? 'foreground') !== expected.execution) mismatch('continuation-preparation-route', 'Preparation source or exact route is invalid.');
-    const record = parsedRecords.find((candidate) => candidate?.turnId === specification.turnId);
-    const keys = ['consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'key', 'permissionMode', 'sessionId', 'source', 'turnId', 'version', 'workspace'];
-    if (!record || Object.keys(record).sort().join('\0') !== keys.sort().join('\0') || record.version !== 1 || !/^[a-f0-9]{64}$/u.test(record.key)
-      || record.sessionId !== expected.parentSessionId || record.workspace !== expected.workspace || record.permissionMode !== expected.permissionMode
+    const record = parsedRecords[generationIndex];
+    const keys = ['consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'generation', 'key', 'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source', 'turnId', 'version', 'workspace'];
+    if (!record || Object.keys(record).sort().join('\0') !== keys.sort().join('\0') || record.version !== 2 || record.generation !== specification.generation
+      || record.requiredExecutorAgentId !== specification.requiredExecutorAgentId || !/^[a-f0-9]{64}$/u.test(record.key)
+      || record.sessionId !== expected.parentSessionId || record.turnId !== expected.originalParentTurnId || record.workspace !== expected.workspace || record.permissionMode !== expected.permissionMode
       || record.executorAgentId !== expected.childThreadId || record.source !== specification.source || JSON.stringify(record.envelope) !== JSON.stringify(envelope)
       || !Number.isFinite(Date.parse(record.createdAt)) || Date.parse(record.expiresAt) - Date.parse(record.createdAt) !== 30 * 60_000
       || !Number.isFinite(Date.parse(record.consumedAt)) || Date.parse(record.consumedAt) < Date.parse(record.createdAt)
       || Date.parse(record.consumedAt) >= Date.parse(record.expiresAt)) mismatch('continuation-preparation-records', 'Consumed preparation identity or single-consume state is invalid.');
-    await assertConsumedPreparationWithProduction(recordBytes[parsedRecords.indexOf(record)], record, expected);
+    await assertConsumedPreparationWithProduction(recordBytes[generationIndex], record, expected);
   }
 }
 
