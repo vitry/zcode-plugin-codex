@@ -99,7 +99,7 @@ export async function runCompanion(argv, runtime = {}) {
       if (!job.resultArtifact) throw new PluginError('ZCODE_RESULT_MISSING', `Job ${job.id} succeeded without a stored result artifact.`, { category: 'state', remedy: `Run $zcode:status ${job.id} to inspect the completed job.`, details: { jobId: job.id, status: job.status } });
       return { job, result: await readResultArtifact({ dataRoot, workspace: cwd, artifact: job.resultArtifact }) };
     }
-    if (job.status === 'failed' || job.status === 'cancelled') return { job: publicJob(job, caller.sessionId, true) };
+    if (job.status === 'failed' || job.status === 'cancelled') return { job: terminalResultJob(job) };
     throw new PluginError('JOB_RESULT_UNFINISHED', `Job ${job.id} is ${job.status}.`, { category: 'state', remedy: `Run $zcode:status ${job.id} --wait.`, details: { jobId: job.id, status: job.status } });
   }
   if (parsed.command === 'cancel') {
@@ -532,6 +532,48 @@ function publicJob(job, ownerSessionId, includeProgressProbe = false) {
   const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe;
   if (includeProgressProbe && validProgressProbe(job.progressProbe)) visible.progressProbe = { ...job.progressProbe, rejected: { ...job.progressProbe.rejected } };
   return { ...visible, owned: true, owner: 'same-owner' };
+}
+/** @param {any} job */
+function terminalResultJob(job) {
+  const visible = {
+    id: job.id,
+    command: job.command,
+    status: job.status,
+    ...copyOptionalStringFields(job, ['phase', 'createdAt', 'startedAt', 'finishedAt', 'lastActivityAt']),
+    owned: true,
+    owner: 'same-owner',
+  };
+  const storedMessage = typeof job.error === 'string' ? job.error : typeof job.error?.message === 'string' ? job.error.message : '';
+  const message = sanitizeTerminalResultMessage(storedMessage);
+  return message ? { ...visible, error: { message } } : visible;
+}
+/** @param {string} message */
+function sanitizeTerminalResultMessage(message) {
+  const normalized = [...message]
+    .map((character) => terminalResultControl(character.codePointAt(0)) ? ' ' : character)
+    .join('')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  const limit = 2_048;
+  if (Buffer.byteLength(normalized) <= limit) return normalized;
+  const suffix = '...'; const budget = limit - Buffer.byteLength(suffix); let output = ''; let bytes = 0;
+  for (const character of normalized) {
+    const size = Buffer.byteLength(character);
+    if (bytes + size > budget) break;
+    output += character; bytes += size;
+  }
+  return `${output}${suffix}`;
+}
+/** @param {number|undefined} code */
+function terminalResultControl(code) {
+  return code !== undefined && (code <= 0x1f || code >= 0x7f && code <= 0x9f
+    || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069);
+}
+/** @param {Record<string,any>} source @param {string[]} fields */
+function copyOptionalStringFields(source, fields) {
+  const result = /** @type {Record<string,string>} */ ({});
+  for (const field of fields) if (typeof source[field] === 'string') result[field] = source[field];
+  return result;
 }
 /** @param {Record<string,any>} source @param {string[]} fields */
 function copyOptionalFields(source, fields) {

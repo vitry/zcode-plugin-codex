@@ -1138,15 +1138,41 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
     command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'read-only' },
   });
   const failed = await reserve('failed-result');
-  const boundedError = { message: 'bounded stored failure' };
-  await store.finishJob(context.workspace, failed.id, ['queued'], 'failed', { error: boundedError, exitCode: 7 });
+  const startedAt = new Date(Math.max(Date.now(), Date.parse(failed.createdAt))).toISOString();
+  await store.transitionJob(context.workspace, failed.id, ['queued'], 'running', {
+    childPid: 424242, workerLeaseId: 'a'.repeat(64), zcodeSessionId: 'private-zcode-session', startedAt,
+    model: { providerId: 'private-provider', modelId: 'private-model' }, effort: 'xhigh', promptArtifact: 'artifacts/private-prompt.md',
+  });
+  await store.transitionJob(context.workspace, failed.id, ['running'], 'running', {
+    inputId: 'private-input', startRevision: 77, beforeMessageIds: ['private-before-message'],
+  });
+  await store.transitionJob(context.workspace, failed.id, ['running'], 'running', { lastCancelError: { message: 'PRIVATE_CANCEL_REASON' } });
+  await store.updateJobProgress(context.workspace, failed.id, { phase: 'running', message: 'PRIVATE_PROGRESS_PREVIEW', observedAt: startedAt });
+  await store.updateJobProgressProbe(context.workspace, failed.id, {
+    state: 'online', subscriptionAcknowledged: true, framesReceived: 99,
+    acceptedInitial: 1, acceptedOnline: 2, acceptedRecovery: 3,
+    rejected: { 'wire-version': 4, 'envelope-shape': 5, sequence: 6, topic: 7, 'row-kind': 8, 'row-shape': 9 },
+    snapshotFallbackActive: false, snapshotFallbackUnavailable: false,
+  });
+  const storedError = {
+    message: `Public failure\u202e\nwith\tcontrols\u0000 ${'界'.repeat(800)}`,
+    code: 'PRIVATE_ERROR_CODE', secretMarker: 'PRIVATE_ERROR_SECRET', details: { token: 'PRIVATE_ERROR_TOKEN' },
+  };
+  await store.finishJob(context.workspace, failed.id, ['running'], 'failed', { error: storedError, exitCode: 7 });
   const failedResult = await companion(context, ['result', failed.id]);
   assert.equal(failedResult.code, 0, `${failedResult.stderr}${failedResult.stdout}`);
-  const storedFailed = await store.readJob(context.workspace, failed.id);
-  const expectedFailed = { ...storedFailed, owned: true, owner: 'same-owner' };
-  delete expectedFailed.ownerSessionId; delete expectedFailed.ownerTurnId; delete expectedFailed.permissionSnapshot;
-  assert.deepEqual(failedResult.json, { job: expectedFailed });
-  assert.deepEqual(failedResult.json.job.error, boundedError);
+  assert.deepEqual(Object.keys(failedResult.json.job).sort(), [
+    'command', 'createdAt', 'error', 'finishedAt', 'id', 'lastActivityAt', 'owner', 'owned', 'phase', 'startedAt', 'status',
+  ].sort());
+  assert.deepEqual(Object.keys(failedResult.json.job.error), ['message']);
+  assert.match(failedResult.json.job.error.message, /^Public failure with controls /u);
+  assert.match(failedResult.json.job.error.message, /\.\.\.$/u);
+  assert.equal(Buffer.byteLength(failedResult.json.job.error.message), 2048);
+  assert.equal([...failedResult.json.job.error.message].some((character) => {
+    const code = character.codePointAt(0);
+    return code <= 0x1f || code >= 0x7f && code <= 0x9f || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
+  }), false);
+  assert.doesNotMatch(JSON.stringify(failedResult.json), /PRIVATE_|private-|ownerSessionId|ownerTurnId|permissionSnapshot|promptArtifact|resultArtifact|workerLeaseId|childPid|zcodeSessionId|inputId|startRevision|beforeMessageIds|model|effort|progressProbe|progressPreview|lastCancelError|exitCode|secretMarker|details/u);
 
   await new Promise((resolve) => setTimeout(resolve, 2));
   const succeeded = await reserve('succeeded-result'); const successfulContents = 'exact immutable result\n';
@@ -1155,14 +1181,14 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
   await store.finishJob(context.workspace, succeeded.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
   await new Promise((resolve) => setTimeout(resolve, 2));
   const cancelled = await reserve('cancelled-result');
-  await store.finishJob(context.workspace, cancelled.id, ['queued'], 'cancelled', { error: { message: 'bounded cancellation' }, exitCode: null });
+  await store.finishJob(context.workspace, cancelled.id, ['queued'], 'cancelled', { exitCode: null });
   await new Promise((resolve) => setTimeout(resolve, 2));
   const active = await reserve('active-result');
 
   const implicit = await companion(context, ['result']);
   assert.equal(implicit.code, 0, `${implicit.stderr}${implicit.stdout}`);
   assert.equal(implicit.json.job.id, cancelled.id); assert.equal(implicit.json.job.status, 'cancelled');
-  assert.deepEqual(implicit.json.job.error, { message: 'bounded cancellation' });
+  assert.equal(Object.hasOwn(implicit.json.job, 'error'), false);
 
   const successful = await companion(context, ['result', succeeded.id]);
   assert.equal(successful.code, 0, `${successful.stderr}${successful.stdout}`);
