@@ -200,7 +200,7 @@ export function createProgressReporter({
   };
   /** @param {boolean} requireAcceptedBoundary */
   const activateCompatibilityBoundary = (requireAcceptedBoundary = false) => {
-    if (closed || !accepting || requireAcceptedBoundary && !acceptedBoundaryActivated || compatibilityBoundaryActivated || progressProbe.state !== 'probing' || progressProbe.acceptedOnline > 0) return false;
+    if (closed || !accepting || requireAcceptedBoundary && !acceptedBoundaryActivated || compatibilityBoundaryActivated || progressProbe.state !== 'probing') return false;
     compatibilityBoundaryActivated = true;
     /** @type {unknown} */ let activation = false;
     try { activation = typeof activateSnapshotFallback === 'function' ? activateSnapshotFallback() : false; } catch { activation = false; }
@@ -255,7 +255,8 @@ export function createProgressReporter({
     if (result.disposition === 'accepted' && ['initial', 'online', 'recovery'].includes(result.phase)) {
       const field = result.phase === 'initial' ? 'acceptedInitial' : result.phase === 'online' ? 'acceptedOnline' : 'acceptedRecovery';
       progressProbe[field] = saturatingIncrement(progressProbe[field]);
-      if (result.phase === 'online') {
+      const hasBoundedPublicEvent = result.events.slice(0, MAX_PROGRESS_PENDING_EVENTS).some(validPublicEvent);
+      if (result.phase === 'online' && hasBoundedPublicEvent) {
         cleanupSnapshotFallback();
         progressProbe.state = 'online'; progressProbe.snapshotFallbackActive = false; progressProbe.snapshotFallbackUnavailable = false;
       }

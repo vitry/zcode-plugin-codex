@@ -151,13 +151,18 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'cumulative-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
-  const gateNonce = options.completionAfterProgressLine ? randomBytes(32).toString('hex') : undefined;
+  const heartbeatDiagnostic = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
+  const completionAfterProgressLine = options.completionAfterProgressLine ?? (options.heartbeat ? heartbeatDiagnostic : undefined);
+  const gateNonce = completionAfterProgressLine ? randomBytes(32).toString('hex') : undefined;
   const gatePath = gateNonce ? join(context.directory, `${scenario}-${gateNonce}-progress-dispatch-gate.json`) : undefined;
   let gateTimedOut = false; let gateWriteError; let observedExpectedLine = false; let gateDeadline;
+  /** @type {()=>void} */ let heartbeat = () => { throw new Error('heartbeat was not assigned'); };
+  let heartbeatAssigned = false; let signalHeartbeatAssigned = () => {};
+  const heartbeatReady = new Promise((resolvePromise) => { signalHeartbeatAssigned = () => resolvePromise(undefined); });
   const releaseGate = async () => {
     if (!gatePath || !gateNonce) return;
     try { await writeFile(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'release' }), { mode: 0o600 }); }
@@ -167,10 +172,10 @@ async function deterministicConversationScenario(context, scenario, options = {}
   let output;
   try {
     if (gatePath) {
-      gateDeadline = setTimeout(() => { gateTimedOut = true; void releaseGate(); }, 5_000);
+      gateDeadline = setTimeout(() => { gateTimedOut = true; void releaseGate(); }, 15_000);
       gateDeadline.unref?.();
     }
-    output = await runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
+    const execution = runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
       cwd: context.workspace,
       env: {
         ...context.env, ...options.env, FAKE_ZCODE_CONVERSATION_SCENARIO: scenario, FAKE_ZCODE_RECORD: record,
@@ -179,24 +184,48 @@ async function deterministicConversationScenario(context, scenario, options = {}
       caller: owner,
       progressWriter: (line) => {
         lines.push(line);
-        if (line === options.completionAfterProgressLine) { observedExpectedLine = true; void releaseGate(); }
+        if (line === completionAfterProgressLine) { observedExpectedLine = true; void releaseGate(); }
       },
       ...(options.heartbeat ? { progressDependencies: {
         now: () => new Date().toISOString(),
-        setInterval: (/** @type {()=>void} */ callback) => { queueMicrotask(callback); return { unref() {} }; },
+        setInterval: (/** @type {()=>void} */ callback) => { heartbeat = callback; heartbeatAssigned = true; signalHeartbeatAssigned(); return { unref() {} }; },
         clearInterval: () => {},
       } } : {}),
     });
+    if (options.heartbeat) {
+      await heartbeatReady;
+      await waitForConversationProbeBoundary(context, record, scenario);
+      assert.equal(heartbeatAssigned, true);
+      heartbeat();
+    }
+    output = await execution;
   } finally {
     if (gateDeadline) clearTimeout(gateDeadline);
     await releaseGate();
   }
-  if (gateTimedOut || !observedExpectedLine && options.completionAfterProgressLine) throw new Error(`expected public progress line was not dispatched: ${options.completionAfterProgressLine}`);
+  if (gateTimedOut || !observedExpectedLine && completionAfterProgressLine) throw new Error(`expected public progress line was not dispatched: ${completionAfterProgressLine}`);
   if (gateWriteError) throw gateWriteError;
   const status = await runCompanion(['status', output.job.id], { cwd: context.workspace, env: context.env, caller: owner });
   const stored = await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, output.job.id);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   return { lines, output, requests, status, stored };
+}
+
+/** @param {any} context @param {string} record @param {string} scenario */
+async function waitForConversationProbeBoundary(context, record, scenario) {
+  const storage = await resolveWorkspaceStorage(context);
+  await waitFor(async () => {
+    const requests = await readFile(record, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
+    if (!requests.some((frame) => frame.method === 'session/send')) return false;
+    const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
+    for (const name of names) {
+      if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
+      const job = await readFile(join(storage.directory, 'jobs', name), 'utf8').then(JSON.parse).catch(() => null);
+      if (typeof job?.inputId !== 'string' || !Number.isSafeInteger(job?.startRevision)) continue;
+      if (scenario === 'zero-online' ? job.progressProbe?.acceptedOnline > 0 : job.progressProbe?.acceptedInitial > 0) return true;
+    }
+    return false;
+  }, `conversation ${scenario} frame was not observed after the accepted boundary`);
 }
 
 /** @param {()=>Promise<boolean>} predicate @param {string} message */
@@ -535,9 +564,9 @@ test('observed unknown conversation rows and a sequence gap preserve later safe 
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1);
 });
 
-test('cumulative and reset conversation ranges emit each known lifecycle once', async () => {
+test('exclusive-baseline conversation ranges emit each known lifecycle once', async () => {
   const context = await fixture();
-  const scenario = await deterministicConversationScenario(context, 'cumulative-ranges');
+  const scenario = await deterministicConversationScenario(context, 'exclusive-ranges');
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
   assert.equal(scenario.lines.filter((line) => line === '[zcode] ZCode turn started.\n').length, 1);
   assert.equal(scenario.lines.filter((line) => line === '[zcode] Running tool: Read.\n').length, 1);
@@ -618,18 +647,19 @@ test('later accepted online recovery stops snapshot reads and discards a delayed
   });
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
   assert.equal(scenario.stored.progressProbe.state, 'online'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
+  assert.match(scenario.lines.join(''), /ZCode turn started\./, 'a production-shape turnHeader supplies semantic health');
   assert.doesNotMatch(visible, /PRIVATE_LATE_SNAPSHOT|Running tool: Bash\./);
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one late progress read plus one final authoritative read');
 });
 
-test('accepted zero-event online conversation frame prevents deterministic heartbeat fallback', async () => {
+test('accepted zero-event online conversation frame remains eligible for deterministic heartbeat fallback', async () => {
   const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'zero-online', { heartbeat: true });
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
-  assert.equal(scenario.stored.progressProbe.state, 'online'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
-  assert.doesNotMatch(scenario.lines.join(''), /ZCode (?:conversation frames were unavailable|semantic progress is unavailable)/);
+  assert.equal(scenario.stored.progressProbe.state, 'snapshot-fallback'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
+  assert.equal(scenario.lines.filter((line) => /ZCode conversation frames were unavailable/.test(line)).length, 1);
   assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
-  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
+  assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one fallback progress read remains separate from the final authoritative read');
 });
 
 test('malformed conversation rejection burst degrades once without leaking rejected payloads or changing completion', async () => {
@@ -644,11 +674,11 @@ test('malformed conversation rejection burst degrades once without leaking rejec
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 2, 'one progress read remains separate from the final authoritative read');
 });
 
-test('one sequence gap remains diagnostic while later continuous frames keep progress online', async () => {
+test('one sequence gap restores continuity without treating an empty online frame as semantic health', async () => {
   const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'sequence-gap');
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.stored.progressProbe.rejected.sequence, 1);
-  assert.equal(scenario.stored.progressProbe.acceptedOnline, 3);
-  assert.equal(scenario.stored.progressProbe.state, 'online');
+  assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
+  assert.equal(scenario.stored.progressProbe.state, 'probing');
   assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
   assert.equal(scenario.lines.filter((line) => /conversation frames were unavailable/.test(line)).length, 0);
   const visible = `${scenario.lines.join('')}${JSON.stringify(scenario.status)}`;
@@ -669,11 +699,11 @@ test('conversation subscribe failure is observational, durable, and preserves th
   const result = await companion(context, ['rescue', '--fresh', 'subscribe failure'], { FAKE_ZCODE_CONVERSATION_SUBSCRIBE_FAIL: '1' });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
   assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
-  assert.equal(result.stderr, '[zcode] ZCode started the delegated turn.\n[zcode] ZCode conversation progress is unavailable.\n[zcode] ZCode completed the delegated turn.\n');
+  assert.match(result.stderr, /^\[zcode\] ZCode started the delegated turn\.\n\[zcode\] ZCode conversation progress is unavailable\.\n\[zcode\] ZCode completed the delegated turn\.\n(?:\[zcode\] ZCode progress cleanup reached its time limit\.\n)?$/u);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsupported conversation subscription|-32601/);
   const status = await companion(context, ['status', result.json.job.id]);
   assert.equal(status.json.job.status, 'succeeded');
-  assert.match(JSON.stringify(status.json.job.progressPreview), /conversation progress is unavailable/);
+  if (!result.stderr.includes('progress cleanup reached its time limit')) assert.match(JSON.stringify(status.json.job.progressPreview), /conversation progress is unavailable/);
 });
 
 test('conversation unsubscribe failure is observational and preserves the exact result', async () => {

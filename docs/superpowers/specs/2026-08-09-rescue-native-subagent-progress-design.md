@@ -505,11 +505,13 @@ a fixed follow-up. Wait timeout/interruption tests prove no duplicate spawn.
 
 ### Progress
 
-Fixture tests feed initial and online conversation frames for Bash, Edit, Write,
-Read, Grep, Glob, WebSearch, unknown tools, success, failure, and terminal turn
-states. They cover 96-character shortening, multibyte bounds, controls, huge
-strings, duplicates, reordering, cross-session frames, path traversal, post-
-terminal events, and subscription fallback.
+Fixture tests feed initial, online-overflow, and recovery snapshots plus all five
+ZCode 0.16.3 delta operations for Bash, Edit, Write, Read, Grep, Glob, WebSearch,
+unknown tools, success, failure, and terminal turn states. They cover exclusive
+sequence baselines, 500-operation and one-MiB bounds, 64-event fanout,
+96-character shortening, multibyte bounds, controls, huge strings, duplicates,
+reordering, cross-session frames, path traversal, post-terminal events, and
+subscription fallback.
 
 Adversarial tests prove that reasoning, assistant drafts, tool output, file
 contents, environment data, capability-like strings outside approved command or

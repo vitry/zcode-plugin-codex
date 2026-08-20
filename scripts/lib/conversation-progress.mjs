@@ -11,14 +11,18 @@ const TURN_ORIGINS = new Set(['userInput', 'backgroundResult', 'goalContinuation
 const MAX_WIRE_TEXT = 1_048_576;
 const MAX_DURATION_MS = 86_400_000;
 const MAX_PUBLIC_MESSAGE_BYTES = 256;
-const MAX_DELTAS_PER_FRAME = 64;
+const MAX_DELTAS_PER_FRAME = 500;
+const MAX_PUBLIC_EVENTS_PER_FRAME = 64;
 const MAX_TRACKED_ROWS = 256;
 const MAX_PENDING_OBSERVATIONS = 4;
+const MAX_OPAQUE_JSON_DEPTH = 64;
+const MAX_OPAQUE_JSON_NODES = 65_536;
 const PATH_RESOLUTION_TIMEOUT_MS = 100;
 const CONVERSATION_WIRE_VERSION = 3;
-const SUPPORTED_DELTA_OPS = new Set(['row.appended', 'row.upserted']);
+const ROW_DELTA_PATHS = new Set(['text', 'inputText', 'output.text', 'summaryText']);
 const SUPPORTED_ROW_KINDS = new Set(['toolCall', 'turnHeader']);
 /** @typedef {{phase:string,message:string,observedAt:string}} PublicProgressEvent */
+/** @typedef {{op:string,row:Record<string,any>|null,fromRowId?:number}} ValidatedDelta */
 /** @typedef {{disposition:'accepted',phase:'initial'|'online'|'recovery',events:PublicProgressEvent[]}|{disposition:'rejected'|'ignored',reason:string,events:PublicProgressEvent[]}} ObservationResult */
 /** @param {string} reason @returns {ObservationResult} */
 const rejected = (reason) => ({ disposition: 'rejected', reason, events: [] });
@@ -49,6 +53,7 @@ export async function createConversationProgressDescriber({ sessionId, subscript
   const resolvePath = dependencies.resolvePath ?? containedRelativePath;
   const requestedPathTimeout = dependencies.pathTimeoutMs;
   const pathTimeoutMs = Number.isSafeInteger(requestedPathTimeout) && /** @type {number} */ (requestedPathTimeout) >= 1 ? /** @type {number} */ (requestedPathTimeout) : PATH_RESOLUTION_TIMEOUT_MS;
+  /** @type {Map<string,{rowId:number,started:boolean,terminal:boolean,message:string|null}>} */
   const toolStates = new Map();
   const rowStates = new Map();
   /** @type {Array<{notification:unknown,observedAt:string,resolve:(result:ObservationResult)=>void}>} */
@@ -90,58 +95,103 @@ export async function createConversationProgressDescriber({ sessionId, subscript
     if (terminal) return ignored('terminal');
     if (!validObservedAt(observedAt)) return rejected('envelope-shape');
     const publicObservedAt = /** @type {string} */ (observedAt);
-    const validated = validateNotification(notification, topic, subscriptionId);
+    const validated = validateNotification(notification, topic, subscriptionId, sessionId);
     if (!validated.ok) return rejected(validated.reason);
     const frame = validated.value;
-    if (frame.deliveryKind === 'initial') return accepted('initial');
+    if (frame.deliveryKind === 'initial') {
+      if (lastOrdinal !== undefined) return ignored('stale');
+      lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false;
+      resetLifecycleState();
+      return accepted('initial');
+    }
     if (frame.deliveryKind === 'recovery') {
-      if (lastOrdinal !== undefined && (frame.ordinal <= lastOrdinal || frame.toSeq <= /** @type {number} */ (lastSeq))) {
+      const repeatedDeltas = lastSeq !== undefined && frame.toSeq === lastSeq && frame.payloadKind === 'deltas' && frame.deltas.length > 0;
+      if (lastOrdinal !== undefined && repeatedDeltas && frame.ordinal > lastOrdinal) { lastOrdinal = frame.ordinal; return ignored('stale'); }
+      if (lastOrdinal !== undefined && (frame.ordinal <= lastOrdinal || frame.toSeq < /** @type {number} */ (lastSeq))) {
         return ignored('stale');
       }
+      if (lastSeq !== undefined && frame.payloadKind === 'deltas' && frame.fromSeq > lastSeq) {
+        needsRecovery = true; return rejected('sequence');
+      }
       lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false;
-      absorbRecovery(frame.deltas); return accepted('recovery');
+      if (frame.payloadKind === 'snapshot') resetLifecycleState();
+      else absorbRecovery(frame.deltas);
+      return accepted('recovery');
+    }
+    if (frame.payloadKind === 'snapshot') {
+      if (lastOrdinal !== undefined && frame.ordinal <= lastOrdinal) return ignored('stale');
+      lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false; resetLifecycleState();
+      return accepted('online');
     }
     if (needsRecovery) return ignored('recovery-required');
     if (lastOrdinal !== undefined && frame.ordinal <= lastOrdinal) return ignored('stale');
     const sequenceGap = lastOrdinal !== undefined
-      && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq > /** @type {number} */ (lastSeq) + 1);
-    lastOrdinal = frame.ordinal; lastSeq = Math.max(lastSeq ?? frame.toSeq, frame.toSeq);
-    if (sequenceGap) return rejected('sequence');
+      && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== lastSeq);
+    if (sequenceGap) { needsRecovery = true; return rejected('sequence'); }
+    const stagedToolStates = new Map(toolStates);
+    const stagedRowStates = new Map(rowStates);
     const staged = [];
+    let stagedTerminal = false;
     for (const delta of frame.deltas) {
+      if (delta.op === 'row.removed') {
+        applyRemoval(/** @type {number} */ (delta.fromRowId), stagedToolStates, stagedRowStates);
+        continue;
+      }
       if (!delta.row) continue;
       if (delta.row.kind === 'toolCall') {
-        const event = await describeTool(delta.row, toolStates, workspaceRoot, publicObservedAt, resolvePath, pathTimeoutMs, () => terminal || needsRecovery);
+        if (staged.length >= MAX_PUBLIC_EVENTS_PER_FRAME) { absorbToolState(delta.row, stagedToolStates); continue; }
+        const event = await describeTool(delta.row, stagedToolStates, workspaceRoot, publicObservedAt, resolvePath, pathTimeoutMs, () => terminal || needsRecovery);
         if (terminal || needsRecovery) return ignored(terminal ? 'terminal' : 'recovery-required');
-        if (event) staged.push(event);
+        if (event && staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push(event);
       } else {
         const row = delta.row;
-        const previous = rowStates.get(row.rowId);
+        const previous = stagedRowStates.get(row.rowId);
         if (row.state === 'completedSuccess' || row.state === 'failed' || row.state === 'completedInterrupted') {
-          if (previous !== undefined || rowStates.size < MAX_TRACKED_ROWS) rowStates.set(row.rowId, row.state);
-          staged.push({ phase: 'finalizing', message: row.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
-          latchTerminal(); break;
+          if (previous !== undefined || stagedRowStates.size < MAX_TRACKED_ROWS) stagedRowStates.set(row.rowId, row.state);
+          if (staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'finalizing', message: row.state === 'completedSuccess' ? 'ZCode turn completed.' : 'ZCode turn ended without success.', observedAt: publicObservedAt });
+          stagedTerminal = true; break;
         }
-        if (previous === undefined && rowStates.size >= MAX_TRACKED_ROWS) continue;
-        rowStates.set(row.rowId, row.state);
+        if (previous === undefined && stagedRowStates.size >= MAX_TRACKED_ROWS) continue;
+        stagedRowStates.set(row.rowId, row.state);
         if (previous === row.state) continue;
-        if (row.state === 'running' && previous === undefined) staged.push({ phase: 'starting', message: 'ZCode turn started.', observedAt: publicObservedAt });
+        if (row.state === 'running' && previous === undefined && staged.length < MAX_PUBLIC_EVENTS_PER_FRAME) staged.push({ phase: 'starting', message: 'ZCode turn started.', observedAt: publicObservedAt });
       }
     }
+    if (terminal || needsRecovery) return ignored(terminal ? 'terminal' : 'recovery-required');
+    replaceMap(toolStates, stagedToolStates); replaceMap(rowStates, stagedRowStates);
+    lastOrdinal = frame.ordinal; lastSeq = frame.toSeq;
+    if (stagedTerminal) latchTerminal();
     return accepted('online', staged);
   }
 
-  /** @param {Array<{op:string,row?:any}>} deltas */
+  function resetLifecycleState() { toolStates.clear(); rowStates.clear(); }
+
+  /** @template K,V @param {Map<K,V>} target @param {Map<K,V>} replacement */
+  function replaceMap(target, replacement) {
+    target.clear();
+    for (const [key, value] of replacement) target.set(key, value);
+  }
+
+  /** @param {number} fromRowId @param {Map<string,{rowId:number,started:boolean,terminal:boolean,message:string|null}>} [targetToolStates] @param {Map<number,string>} [targetRowStates] */
+  function applyRemoval(fromRowId, targetToolStates = toolStates, targetRowStates = rowStates) {
+    for (const [toolCallId, state] of targetToolStates) if (state.rowId >= fromRowId) targetToolStates.delete(toolCallId);
+    for (const rowId of targetRowStates.keys()) if (rowId >= fromRowId) targetRowStates.delete(rowId);
+  }
+
+  /** @param {any} row @param {Map<string,{rowId:number,started:boolean,terminal:boolean,message:string|null}>} [states] */
+  function absorbToolState(row, states = toolStates) {
+    const prior = states.get(row.toolCallId) ?? { rowId: row.rowId, started: false, terminal: false, message: null };
+    if (prior.terminal || !states.has(row.toolCallId) && states.size >= MAX_TRACKED_ROWS) return;
+    if (START_STATUSES.has(row.status)) states.set(row.toolCallId, { rowId: row.rowId, started: true, terminal: false, message: prior.message });
+    else states.set(row.toolCallId, { rowId: row.rowId, started: prior.started, terminal: true, message: prior.message });
+  }
+
+  /** @param {ValidatedDelta[]} deltas */
   function absorbRecovery(deltas) {
     for (const delta of deltas) {
+      if (delta.op === 'row.removed') { applyRemoval(/** @type {number} */ (delta.fromRowId)); continue; }
       const row = delta.row; if (!row) continue;
-      if (row.kind === 'toolCall') {
-        const prior = toolStates.get(row.toolCallId) ?? { started: false, terminal: false, message: null };
-        if (prior.terminal || !toolStates.has(row.toolCallId) && toolStates.size >= MAX_TRACKED_ROWS) continue;
-        if (START_STATUSES.has(row.status)) toolStates.set(row.toolCallId, { started: true, terminal: false, message: prior.message });
-        else toolStates.set(row.toolCallId, { started: prior.started, terminal: true, message: prior.message });
-        continue;
-      }
+      if (row.kind === 'toolCall') { absorbToolState(row); continue; }
       if (row.state === 'completedSuccess' || row.state === 'failed' || row.state === 'completedInterrupted') {
         if (rowStates.has(row.rowId) || rowStates.size < MAX_TRACKED_ROWS) rowStates.set(row.rowId, row.state);
         latchTerminal(); return;
@@ -199,8 +249,8 @@ export function createDeferredConversationProgressObserver({ sessionId, workspac
   });
 }
 
-/** @param {unknown} notification @param {string} topic @param {string} subscriptionId @returns {{ok:true,value:{deliveryKind:'initial'|'online'|'recovery',ordinal:number,fromSeq:number,toSeq:number,deltas:Array<{op:string,row:Record<string,any>|null}>}}|{ok:false,reason:string}} */
-function validateNotification(notification, topic, subscriptionId) {
+/** @param {unknown} notification @param {string} topic @param {string} subscriptionId @param {string} sessionId @returns {{ok:true,value:{deliveryKind:'initial'|'online'|'recovery',ordinal:number,fromSeq:number,toSeq:number,payloadKind:'snapshot'|'deltas',deltas:ValidatedDelta[]}}|{ok:false,reason:string}} */
+function validateNotification(notification, topic, subscriptionId, sessionId) {
   if (!plainObject(notification) || notification.method !== 'v4/conversation/frame' || !plainObject(notification.params)) return { ok: false, reason: 'envelope-shape' };
   const wire = notification.params;
   if (!exactKeys(wire, ['wireVersion', 'kind', 'deliveryKind', 'logicalFrameId', 'logicalFrameOrdinal', 'topic', 'subscriptionId', 'frame'])) return { ok: false, reason: 'envelope-shape' };
@@ -214,23 +264,51 @@ function validateNotification(notification, topic, subscriptionId) {
   if (!exactKeys(frame, ['topic', 'subscriptionId', 'fromSeq', 'toSeq', 'sentAt', 'payload'])) return { ok: false, reason: 'envelope-shape' };
   if (frame.topic !== topic || frame.subscriptionId !== subscriptionId) return { ok: false, reason: 'topic' };
   if (!nonnegativeInteger(frame.fromSeq) || !nonnegativeInteger(frame.toSeq) || frame.toSeq < frame.fromSeq) return { ok: false, reason: 'sequence' };
-  if (!wireTimestamp(frame.sentAt) || !plainObject(frame.payload)
-    || !exactKeys(frame.payload, ['kind', 'deltas']) || frame.payload.kind !== 'deltas'
+  if (!wireTimestamp(frame.sentAt) || !plainObject(frame.payload) || !encodedJsonWithinBound(frame.payload)) return { ok: false, reason: 'envelope-shape' };
+  if (frame.payload.kind === 'snapshot') {
+    if (!exactKeys(frame.payload, ['kind', 'snapshot']) || !validSnapshot(frame.payload.snapshot, sessionId, frame.fromSeq, frame.toSeq)) return { ok: false, reason: 'envelope-shape' };
+    return { ok: true, value: { deliveryKind: wire.deliveryKind, ordinal: wire.logicalFrameOrdinal, fromSeq: frame.fromSeq, toSeq: frame.toSeq, payloadKind: 'snapshot', deltas: [] } };
+  }
+  if (!exactKeys(frame.payload, ['kind', 'deltas']) || frame.payload.kind !== 'deltas'
     || !Array.isArray(frame.payload.deltas) || frame.payload.deltas.length > MAX_DELTAS_PER_FRAME) return { ok: false, reason: 'envelope-shape' };
   const deltas = [];
   for (const value of frame.payload.deltas) {
     const delta = validateDelta(value); if (!delta.ok) return delta; deltas.push(delta.value);
   }
-  return { ok: true, value: { deliveryKind: wire.deliveryKind, ordinal: wire.logicalFrameOrdinal, fromSeq: frame.fromSeq, toSeq: frame.toSeq, deltas } };
+  return { ok: true, value: { deliveryKind: wire.deliveryKind, ordinal: wire.logicalFrameOrdinal, fromSeq: frame.fromSeq, toSeq: frame.toSeq, payloadKind: 'deltas', deltas } };
 }
 
-/** @param {unknown} value @returns {{ok:true,value:{op:string,row:Record<string,any>|null}}|{ok:false,reason:string}} */
+/** @param {unknown} value @returns {{ok:true,value:ValidatedDelta}|{ok:false,reason:string}} */
 function validateDelta(value) {
-  if (!plainObject(value) || !SUPPORTED_DELTA_OPS.has(value.op) || !exactKeys(value, ['op'], ['row'])) return { ok: false, reason: 'row-shape' };
-  if (value.row === undefined) return { ok: true, value: { op: value.op, row: null } };
+  if (!plainObject(value) || typeof value.op !== 'string') return { ok: false, reason: 'row-shape' };
+  if (value.op === 'row.removed') return exactKeys(value, ['op', 'fromRowId']) && wireNumber(value.fromRowId)
+    ? { ok: true, value: { op: value.op, row: null, fromRowId: value.fromRowId } } : { ok: false, reason: 'row-shape' };
+  if (value.op === 'row.delta') return exactKeys(value, ['op', 'rowId', 'path', 'append']) && wireNumber(value.rowId)
+    && ROW_DELTA_PATHS.has(value.path) && boundedOpaqueText(value.append)
+    ? { ok: true, value: { op: value.op, row: null } } : { ok: false, reason: 'row-shape' };
+  if (value.op === 'state.updated') return exactKeys(value, ['op', 'patch']) && boundedOpaqueJsonObject(value.patch)
+    ? { ok: true, value: { op: value.op, row: null } } : { ok: false, reason: 'row-shape' };
+  if (!['row.appended', 'row.upserted'].includes(value.op) || !exactKeys(value, ['op', 'row'])) return { ok: false, reason: 'row-shape' };
   if (!plainObject(value.row) || !safeRowEnvelope(value.row)) return { ok: false, reason: 'row-shape' };
   if (!SUPPORTED_ROW_KINDS.has(value.row.kind)) return { ok: true, value: { op: value.op, row: null } };
   const row = validateRow(value.row); return row ? { ok: true, value: { op: value.op, row } } : { ok: false, reason: 'row-shape' };
+}
+
+/** @param {unknown} value @param {string} sessionId @param {number} fromSeq @param {number} toSeq */
+function validSnapshot(value, sessionId, fromSeq, toSeq) {
+  if (!boundedOpaqueJsonObject(value)) return false;
+  const snapshot = /** @type {Record<string,any>} */ (value);
+  if (!exactKeys(snapshot, [
+    'availability', 'backgroundWorks', 'config', 'control', 'goal', 'inputRouting', 'logEpoch',
+    'meta', 'modelTransition', 'pendingCommands', 'pendingInteractions', 'plan', 'protocolVersion',
+    'queue', 'revision', 'rows', 'seq', 'sessionId', 'usage', 'workspaceHookAdmission',
+  ], ['subagents'])) return false;
+  if (snapshot.protocolVersion !== 1 || snapshot.sessionId !== sessionId || !boundedIdentifier(snapshot.logEpoch, 1024)
+    || !wireNumber(snapshot.seq) || snapshot.seq !== toSeq || !wireNumber(snapshot.revision) || fromSeq !== 0) return false;
+  const rows = snapshot.rows;
+  return plainObject(rows) && exactKeys(rows, ['window', 'totalCount', 'firstRowId'])
+    && Array.isArray(rows.window) && rows.window.length <= 60 && nonnegativeInteger(rows.totalCount)
+    && (rows.firstRowId === null || wireNumber(rows.firstRowId));
 }
 
 /** @param {Record<string,any>} row */
@@ -276,24 +354,24 @@ function validateRow(row) {
   return null;
 }
 
-/** @param {any} row @param {Map<string,{started:boolean,terminal:boolean,message:string|null}>} states @param {string} workspaceRoot @param {string} observedAt @param {(value:unknown,root:string)=>Promise<string|null>} resolvePath @param {number} timeoutMs @param {()=>boolean} isTerminal */
+/** @param {any} row @param {Map<string,{rowId:number,started:boolean,terminal:boolean,message:string|null}>} states @param {string} workspaceRoot @param {string} observedAt @param {(value:unknown,root:string)=>Promise<string|null>} resolvePath @param {number} timeoutMs @param {()=>boolean} isTerminal */
 async function describeTool(row, states, workspaceRoot, observedAt, resolvePath, timeoutMs, isTerminal) {
   const key = row.toolCallId;
-  const prior = states.get(key) ?? { started: false, terminal: false, message: null };
+  const prior = states.get(key) ?? { rowId: row.rowId, started: false, terminal: false, message: null };
   if (prior.terminal) return null;
   const status = row.status;
   if (START_STATUSES.has(status)) {
     if (prior.started || !states.has(key) && states.size >= MAX_TRACKED_ROWS) return null;
     const message = fitProgressMessage(await formatToolStartMessage(row, workspaceRoot, resolvePath, timeoutMs));
     if (isTerminal()) return null;
-    states.set(key, { started: true, terminal: false, message });
+    states.set(key, { rowId: row.rowId, started: true, terminal: false, message });
     return { phase: status === 'pendingApproval' ? 'waiting' : 'running', message, observedAt };
   }
   if (!SUCCESS_STATUSES.has(status) && !FAILURE_STATUSES.has(status)) return null;
   if (!states.has(key) && states.size >= MAX_TRACKED_ROWS) return null;
   const startMessageValue = prior.message ?? await formatToolStartMessage(row, workspaceRoot, resolvePath, timeoutMs);
   if (isTerminal()) return null;
-  states.set(key, { started: prior.started, terminal: true, message: startMessageValue });
+  states.set(key, { rowId: row.rowId, started: prior.started, terminal: true, message: startMessageValue });
   const duration = durationSuffix(row.startedAt, row.endedAt);
   return { phase: 'running', message: fitProgressMessage(formatToolTerminalMessage(row, startMessageValue, SUCCESS_STATUSES.has(status), duration)), observedAt };
 }
@@ -386,6 +464,28 @@ function exactKeys(value, required, optional = []) { const keys = Object.keys(va
 function boundedIdentifier(value, max) { return typeof value === 'string' && value.length > 0 && value.length <= max && !hasControl(value); }
 /** @param {unknown} value */
 function boundedWireText(value) { return typeof value === 'string' && value.length <= MAX_WIRE_TEXT && !hasControl(value); }
+/** @param {unknown} value */
+function boundedOpaqueJsonObject(value) {
+  if (!plainObject(value)) return false;
+  if (!encodedJsonWithinBound(value)) return false;
+  const seen = new Set();
+  const pending = [{ value, depth: 0 }];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop(); if (!current) return false;
+    nodes += 1; if (nodes > MAX_OPAQUE_JSON_NODES || current.depth > MAX_OPAQUE_JSON_DEPTH) return false;
+    const item = current.value;
+    if (item === null || typeof item === 'string' || typeof item === 'boolean') continue;
+    if (typeof item === 'number') { if (!Number.isFinite(item)) return false; continue; }
+    if (typeof item !== 'object' || seen.has(item)) return false;
+    if (!Array.isArray(item) && !plainObject(item)) return false;
+    seen.add(item);
+    for (const child of Array.isArray(item) ? item : Object.values(item)) pending.push({ value: child, depth: current.depth + 1 });
+  }
+  return true;
+}
+/** @param {unknown} value */
+function encodedJsonWithinBound(value) { try { const encoded = JSON.stringify(value); return typeof encoded === 'string' && Buffer.byteLength(encoded) <= MAX_WIRE_TEXT; } catch { return false; } }
 /** @param {string} value */
 function hasControl(value) { return [...value].some((character) => { const code = character.codePointAt(0) ?? 0; return code <= 31 || code >= 127 && code <= 159; }); }
 /** @param {unknown} value */
