@@ -57,6 +57,29 @@ test('ambiguous embedded result syntax remains strict for downstream validation'
     argv: ['result', '$zcode:cancel', JOB_ID],
     explicit: true,
   });
+  assert.deepEqual(parseRecordedInvocation('result', 'please $zcode:result tell me --wait now'), {
+    argv: ['result', 'tell', 'me', '--wait', 'now'],
+    explicit: true,
+  });
+  assert.deepEqual(parseRecordedInvocation('result', `please $zcode:result tell me $zcode:cancel ${JOB_ID}`), {
+    argv: ['result', 'tell', 'me', '$zcode:cancel', JOB_ID],
+    explicit: true,
+  });
+  assert.deepEqual(parseRecordedInvocation('result', `please $zcode:result ${JOB_ID} then $zcode:cancel`), {
+    argv: ['result', JOB_ID, 'then', '$zcode:cancel'],
+    explicit: true,
+  });
+});
+
+test('ordinary embedded prose punctuation and internal hyphens do not trigger strict mode', () => {
+  assert.deepEqual(parseRecordedInvocation('result', 'please $zcode:result tell me state-of-the-art news, thanks'), {
+    argv: ['result'],
+    explicit: true,
+  });
+  assert.deepEqual(parseRecordedInvocation('result', `please $zcode:result ${JOB_ID} state-of-the-art, thanks`), {
+    argv: ['result', JOB_ID],
+    explicit: true,
+  });
 });
 
 test('embedded result marker rejects ID-looking tokens that are not exact lowercase digests', () => {
