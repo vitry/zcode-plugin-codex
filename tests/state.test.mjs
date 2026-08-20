@@ -172,6 +172,60 @@ test('jobs follow queued -> running -> succeeded and persist complete metadata',
   assert.deepEqual(await store.listJobs(workspace), [succeeded]);
 });
 
+test('job logs attach once at the exact canonical active-job path and persist across transitions', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput, readOnly: true });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const logFile = join(storage.directory, 'jobs', `${job.id}.log`);
+
+  const attached = await store.attachJobLog(workspace, job.id, logFile);
+  assert.equal(attached.logFile, logFile);
+  assert.deepEqual(await store.attachJobLog(workspace, job.id, logFile), attached);
+  assert.equal((await store.transitionJob(workspace, job.id, ['queued'], 'running')).logFile, logFile);
+  assert.equal((await store.transitionJob(workspace, job.id, ['running'], 'cancelling')).logFile, logFile);
+  assert.equal((await store.transitionJob(workspace, job.id, ['cancelling'], 'cancelled')).logFile, logFile);
+  assert.equal((await store.readJob(workspace, job.id)).logFile, logFile);
+});
+
+test('job log attachment rejects invalid identity, path replacement, and terminal attachment', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput, readOnly: true });
+  const other = await store.reserveJob({ workspace, ...jobInput, readOnly: true, ownerTurnId: 'turn-b' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const exact = join(storage.directory, 'jobs', `${job.id}.log`);
+
+  await assert.rejects(store.attachJobLog(workspace, 'not-a-job', exact), { code: 'JOB_LOG_INPUT_INVALID' });
+  for (const invalid of [
+    `${job.id}.log`,
+    join(storage.directory, 'outside.log'),
+    join(storage.directory, 'jobs', `${other.id}.log`),
+  ]) await assert.rejects(store.attachJobLog(workspace, job.id, invalid), { code: 'JOB_LOG_PATH_INVALID' });
+
+  await store.attachJobLog(workspace, job.id, exact);
+  await assert.rejects(store.attachJobLog(workspace, job.id, join(storage.directory, 'jobs', `${job.id}.replacement.log`)), { code: 'JOB_LOG_PATH_INVALID' });
+
+  await store.transitionJob(workspace, other.id, ['queued'], 'failed', { error: 'fixture failure' });
+  await assert.rejects(
+    store.attachJobLog(workspace, other.id, join(storage.directory, 'jobs', `${other.id}.log`)),
+    { code: 'JOB_LOG_TERMINAL' },
+  );
+});
+
+test('persisted job log paths are validated against workspace storage while legacy jobs remain valid', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const legacy = await store.reserveJob({ workspace, ...jobInput, readOnly: true });
+  assert.equal((await store.readJob(workspace, legacy.id)).logFile, undefined);
+
+  const corrupt = await store.reserveJob({ workspace, ...jobInput, readOnly: true, ownerTurnId: 'corrupt' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const recordPath = join(storage.directory, 'jobs', `${corrupt.id}.json`);
+  await atomicWriteJson(recordPath, { ...corrupt, logFile: join(storage.directory, 'jobs', `${legacy.id}.log`) });
+  await assert.rejects(store.readJob(workspace, corrupt.id), { code: 'JOB_RECORD_INVALID' });
+});
+
 test('repeated atomic job updates remain readable across a later reservation', async () => {
   const { dataRoot, workspace } = await fixture(); const store = createStateStore({ dataRoot });
   const first = await store.reserveJob({ workspace, ...jobInput });

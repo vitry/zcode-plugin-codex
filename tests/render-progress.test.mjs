@@ -47,6 +47,38 @@ test('renders a bounded detailed active-job progress report with elapsed time', 
   }
 });
 
+test('detailed status renders one safe bounded absolute log path after timing and before progress', () => {
+  const logFile = `/private/zcode/jobs/${id}.log`;
+  const output = renderOutput({
+    job: {
+      id, command: 'review', status: 'running', createdAt: '2026-08-08T00:00:00.000Z',
+      logFile, progressPreview: ['working'], owned: true, owner: 'same-owner',
+    },
+  });
+  assert.equal(output.split('\n').filter((/** @type {string} */ line) => line.startsWith('Log: ')).length, 1);
+  const elapsedAt = output.indexOf('Elapsed: ');
+  const logAt = output.indexOf(`Log: ${logFile}`);
+  const progressAt = output.indexOf('Progress:');
+  assert.ok(elapsedAt >= 0 && logAt > elapsedAt && progressAt > logAt);
+
+  const bounded = renderOutput({ job: { id, command: 'review', status: 'running', logFile: `/${'a'.repeat(6_000)}`, owned: true, owner: 'same-owner' } });
+  const logLine = bounded.split('\n').find((/** @type {string} */ line) => line.startsWith('Log: '));
+  assert.ok(logLine);
+  assert.ok(Buffer.byteLength(logLine.slice('Log: '.length)) <= 4_096);
+  assert.match(logLine, /\.\.\.$/);
+});
+
+test('invalid log paths never render and compact lists omit logs', () => {
+  for (const logFile of [undefined, '', 'relative/job.log', '/safe/job.log\nforged', 42]) {
+    const job = { id, command: 'review', status: 'running', owned: true, owner: 'same-owner', ...(logFile === undefined ? {} : { logFile }) };
+    assert.doesNotMatch(renderOutput({ job }), /^Log:/mu);
+  }
+  assert.doesNotMatch(renderOutput({ job: { id, command: 'review', status: 'running', hasOwner: true, logFile: `/private/${id}.log` } }), /^Log:/mu);
+  assert.doesNotMatch(renderOutput({
+    jobs: [{ id, command: 'review', status: 'running', owner: 'same-owner', logFile: `/private/${id}.log` }],
+  }), /Log:|\.log/u);
+});
+
 test('detailed status safely renders a bounded last cancellation error', () => {
   const job = {
     id,
@@ -211,4 +243,16 @@ test('JSON exposes only a valid exact-owner single-job probe while every other v
     { jobs: [value.job] },
     { job: { ...value.job, owned: undefined, owner: undefined, hasOwner: true } },
   ]) assert.equal(Object.hasOwn((JSON.parse(renderOutput(hidden, { json: true })).job ?? JSON.parse(renderOutput(hidden, { json: true })).jobs[0]), 'progressProbe'), false);
+});
+
+test('JSON exposes logFile only for an exact-owner single-job projection', () => {
+  const logFile = `/private/zcode/jobs/${id}.log`;
+  const exact = { job: { id, status: 'running', owned: true, owner: 'same-owner', logFile } };
+  assert.equal(JSON.parse(renderOutput(exact, { json: true })).job.logFile, logFile);
+  for (const hidden of [
+    { job: { ...exact.job, owned: undefined, owner: undefined } },
+    { job: { ...exact.job, owned: undefined, owner: undefined, hasOwner: true } },
+    { jobs: [exact.job] },
+    { type: 'rescue-status', status: 'running', logFile },
+  ]) assert.doesNotMatch(renderOutput(hidden, { json: true }), /logFile|\.log/u);
 });

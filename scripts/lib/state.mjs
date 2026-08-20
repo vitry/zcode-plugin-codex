@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { lstat, readdir, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import {
@@ -243,9 +243,48 @@ export function createStateStore(options) {
           });
         }
         const claimed = { ...job, ...worker, updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString() };
-        validateJobRecord(claimed, jobId, storage.workspacePath);
+        validateJobRecord(claimed, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
         await atomicWriteJson(path, claimed);
         return claimed;
+      });
+    },
+
+    /** @param {string} workspace @param {string} jobId @param {string} logFile */
+    async attachJobLog(workspace, jobId, logFile) {
+      if (!isNonEmptyString(workspace) || !isDigest(jobId) || !isNonEmptyString(logFile)) {
+        throw new PluginError('JOB_LOG_INPUT_INVALID', 'Job log attachment input is invalid.', {
+          category: 'state', remedy: 'Provide one workspace, canonical job ID, and absolute canonical log path.',
+        });
+      }
+      const storage = await jobStorage(dataRoot, workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const expectedLogFile = expectedJobLogPath(storage.jobsDirectory, jobId);
+        if (logFile !== expectedLogFile) {
+          throw new PluginError('JOB_LOG_PATH_INVALID', 'Job log path does not match the canonical job log path.', {
+            category: 'state', remedy: 'Attach only the exact log path allocated for this job.', details: { jobId },
+          });
+        }
+        const path = jobPath(storage.jobsDirectory, jobId);
+        const job = await readJobRecord(path, jobId, storage.workspacePath);
+        if (TERMINAL_STATUSES.has(job.status)) {
+          throw new PluginError('JOB_LOG_TERMINAL', `Job ${jobId} is already terminal.`, {
+            category: 'state', remedy: 'Attach the log while the job is active.', details: { jobId, status: job.status },
+          });
+        }
+        if (job.logFile === logFile) return job;
+        if (job.logFile !== undefined) {
+          throw new PluginError('JOB_LOG_CONFLICT', `Job ${jobId} already has a different log path.`, {
+            category: 'state', remedy: 'Keep the first securely created log attached to the job.', details: { jobId },
+          });
+        }
+        const updated = {
+          ...job,
+          logFile,
+          updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString(),
+        };
+        validateJobRecord(updated, jobId, storage.workspacePath, expectedLogFile);
+        await atomicWriteJson(path, updated);
+        return updated;
       });
     },
 
@@ -310,7 +349,7 @@ export function createStateStore(options) {
             observedAtMs,
           )).toISOString(),
         };
-        validateJobRecord(updated, jobId, storage.workspacePath);
+        validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
         await atomicWriteJson(path, updated);
         return updated;
       });
@@ -329,7 +368,7 @@ export function createStateStore(options) {
           progressProbe: boundedProbe,
           updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString(),
         };
-        validateJobRecord(updated, jobId, storage.workspacePath);
+        validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
         await atomicWriteJson(path, updated);
         return updated;
       });
@@ -421,7 +460,7 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
       workspace: job.workspace,
     };
     if (effectivePatch.lastCancelError === null) delete updated.lastCancelError;
-    validateJobRecord(updated, jobId, storage.workspacePath);
+    validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
     await atomicWriteJson(path, updated);
     return updated;
   });
@@ -972,13 +1011,14 @@ async function readAllJobs(jobsDirectory, expectedWorkspacePath) {
       await readJsonFile(join(jobsDirectory, entry)),
       entry.slice(0, -'.json'.length),
       expectedWorkspacePath,
+      expectedJobLogPath(jobsDirectory, entry.slice(0, -'.json'.length)),
     )));
 }
 
 /** @param {string} path @param {string} jobId @param {string} expectedWorkspacePath */
 async function readJobRecord(path, jobId, expectedWorkspacePath) {
   try {
-    return validateJobRecord(await readJsonFile(path), jobId, expectedWorkspacePath);
+    return validateJobRecord(await readJsonFile(path), jobId, expectedWorkspacePath, expectedJobLogPath(dirname(path), jobId));
   } catch (error) {
     if (error instanceof PluginError && error.code === 'JSON_READ_FAILED'
       && error.cause instanceof Error && 'code' in error.cause && error.cause.code === 'ENOENT') {
@@ -1116,8 +1156,8 @@ function invalidProgressInput(invalidFields) {
   });
 }
 
-/** @param {any} job @param {string} expectedJobId @param {string} expectedWorkspacePath @returns {any} */
-function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
+/** @param {any} job @param {string} expectedJobId @param {string} expectedWorkspacePath @param {string} expectedLogFile @returns {any} */
+function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLogFile) {
   const validShape = isPlainJsonObject(job)
     && job.id === expectedJobId
     && job.workspace === expectedWorkspacePath
@@ -1140,6 +1180,7 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath) {
     && (!('finishedAt' in job) || isIsoTimestamp(job.finishedAt))
     && (!('promptArtifact' in job) || isSafeArtifact(job.promptArtifact))
     && (!('resultArtifact' in job) || isSafeArtifact(job.resultArtifact))
+    && (!('logFile' in job) || job.logFile === expectedLogFile)
     && (!('error' in job) || isTrackedError(job.error))
     && (!('lastCancelError' in job) || isCancellationError(job.lastCancelError))
     && (!('phase' in job) || PROGRESS_PHASES.includes(job.phase))
@@ -1397,6 +1438,11 @@ function jobPath(jobsDirectory, jobId) {
     });
   }
   return join(jobsDirectory, `${jobId}.json`);
+}
+
+/** @param {string} jobsDirectory @param {string} jobId */
+function expectedJobLogPath(jobsDirectory, jobId) {
+  return join(jobsDirectory, `${jobId}.log`);
 }
 
 /**

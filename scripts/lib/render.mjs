@@ -1,3 +1,5 @@
+import { isAbsolute } from 'node:path';
+
 import { PluginError } from './errors.mjs';
 import { boundUtf8, normalizePublicText, publicErrorMessage } from './public-text.mjs';
 import { validProgressProbe } from './state.mjs';
@@ -54,6 +56,7 @@ function renderJob(job) {
     : [];
   const storedError = ['failed', 'cancelled'].includes(job.status) ? renderStoredError(job.error) : null;
   const lastCancellationError = renderStoredError(job.lastCancelError);
+  const logFile = safePath(job.owned === true && job.owner === 'same-owner' ? job.logFile : undefined);
   const lines = [
     `Job: ${safeInline(job.id)}`,
     `Command: ${safeInline(job.command)}`,
@@ -64,6 +67,7 @@ function renderJob(job) {
     `Finished: ${safeInline(job.finishedAt)}`,
     `${timingLabel}: ${timing}`,
     `Last activity: ${safeInline(job.lastActivityAt)}`,
+    ...(logFile === null ? [] : [`Log: ${logFile}`]),
     ...(storedError === null ? [] : [`Error: ${storedError}`]),
     ...(lastCancellationError === null
       ? [] : [`Last cancellation error: ${lastCancellationError}`]),
@@ -102,6 +106,14 @@ function safeProgress(message) {
   return escapeMarkdown(boundUtf8(normalizePublicText(message), 256));
 }
 
+/** @param {unknown} value */
+function safePath(value) {
+  if (typeof value !== 'string' || !isAbsolute(value)) return null;
+  const normalized = normalizePublicText(value);
+  if (normalized.length === 0 || normalized !== value) return null;
+  return escapeMarkdown(boundUtf8(normalized, 4_096));
+}
+
 /** @param {string} value */
 function escapeMarkdown(value) {
   return value.replace(/([\\`*_{}[\]<>#!|~])/g, '\\$1').replace(/^([-+])/, '\\$1');
@@ -135,7 +147,7 @@ export function renderInternalOutput(value) { return `${JSON.stringify(value)}\n
 function exactOwnerJob(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'jobs')
     && value.job && typeof value.job === 'object' && !Array.isArray(value.job)
-    && value.job.owned === true && value.job.owner === 'same-owner' && validProgressProbe(value.job.progressProbe)
+    && value.job.owned === true && value.job.owner === 'same-owner'
     ? value.job : null;
 }
 
@@ -147,6 +159,7 @@ function redact(value, progressProbeOwner = null) {
   for (const [key, entry] of Object.entries(value)) {
     if (/token|capability|permissionSnapshot|privateInvocation/i.test(key)) continue;
     if (/progressProbe/i.test(key) && (value !== progressProbeOwner || key !== 'progressProbe' || !validProgressProbe(entry))) continue;
+    if (key === 'logFile' && value !== progressProbeOwner) continue;
     result[key] = redact(entry, progressProbeOwner);
   }
   return result;

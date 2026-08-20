@@ -531,6 +531,7 @@ function publicJob(job, ownerSessionId, includeProgressProbe = false) {
     };
   }
   const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe;
+  if (!includeProgressProbe) delete visible.logFile;
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
     if (message === null) delete visible.error; else visible.error = { message };

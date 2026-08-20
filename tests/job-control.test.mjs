@@ -6,11 +6,13 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
+import { parseArgs } from '../scripts/lib/args.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
 import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { executeJob } from '../scripts/lib/review.mjs';
+import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
 
 async function setup() {
@@ -48,7 +50,7 @@ test('bound Rescue status selects the exact binding current job and returns only
   const jobs = [
     { id: 'job-wrong-turn', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'other-turn', command: 'rescue', status: 'running' },
     { id: 'job-wrong-command', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'review', status: 'running' },
-    { id: 'job-bound', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'rescue', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:00.000Z', progressPreview: preview, workerLeaseId: 'PRIVATE_WORKER', resultArtifact: 'PRIVATE_ARTIFACT' },
+    { id: 'job-bound', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'rescue', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:00.000Z', progressPreview: preview, logFile: '/private/job-bound.log', workerLeaseId: 'PRIVATE_WORKER', resultArtifact: 'PRIVATE_ARTIFACT' },
   ];
   let requested;
   const result = await readBoundRescueStatus({
@@ -84,6 +86,29 @@ test('bound Rescue status maps exact binding lookup failures to fixed safe error
     readBoundRescueStatus({ store: { readBoundRescueCurrentJob: async () => { throw new PluginError('PRIVATE_STATE_FAILURE', 'PRIVATE_JOB_ID'); } }, workspace: '/repo', executor }),
     (/** @type {any} */ error) => error?.code === 'BOUND_RESCUE_STATUS_UNAVAILABLE' && error.message === 'Bound Rescue status is unavailable.' && Object.keys(error.details).length === 0,
   );
+});
+
+test('status exposes logFile only on exact-owner detail and keeps the grammar unchanged', async () => {
+  const { root, workspace, store } = await setup();
+  const mine = await store.reserveJob({ workspace, ...reservation, readOnly: true });
+  const foreign = await store.reserveJob({ workspace, ...reservation, readOnly: true, ownerSessionId: 'session-b', ownerTurnId: 'turn-b' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace });
+  const mineLog = join(storage.directory, 'jobs', `${mine.id}.log`);
+  const foreignLog = join(storage.directory, 'jobs', `${foreign.id}.log`);
+  await store.attachJobLog(workspace, mine.id, mineLog);
+  await store.attachJobLog(workspace, foreign.id, foreignLog);
+  const runtime = {
+    cwd: workspace,
+    env: { ...process.env, ZCODE_DATA_ROOT: join(root, 'data') },
+    caller: { sessionId: 'session-a', turnId: 'turn-a', permissionMode: 'workspace-write' },
+  };
+
+  const detailed = await runCompanion(['status', mine.id], runtime);
+  assert.equal(detailed.job.logFile, mineLog);
+  const listed = await runCompanion(['status', '--all'], runtime);
+  assert.equal(Object.hasOwn(listed.jobs.find((/** @type {any} */ job) => job.id === mine.id), 'logFile'), false);
+  assert.equal(Object.hasOwn(listed.jobs.find((/** @type {any} */ job) => job.id === foreign.id), 'logFile'), false);
+  assert.throws(() => parseArgs(['status', mine.id, '--log']), { code: 'ARGUMENT_INVALID' });
 });
 
 test('latest selection is canonical-workspace and owner confined', async () => {
