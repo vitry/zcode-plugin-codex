@@ -9,6 +9,7 @@ import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
 import { createJobController, withJobCancellationLock } from './job-control.mjs';
 import { isBoundedPublicIdentifier } from './identifier.mjs';
+import { createJobLogSink } from './job-log.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
 import { createDeferredConversationProgressObserver } from './conversation-progress.mjs';
 import { createSessionProgressDescriber } from './session-progress.mjs';
@@ -54,6 +55,15 @@ export async function executeJob(input) {
   /** @type {any} */
   let output;
   let progressCleaned = false;
+  /** @type {any} */ let jobLog;
+  let jobLogCleaned = false;
+  const cleanupJobLog = async () => {
+    if (jobLogCleaned) return;
+    jobLogCleaned = true;
+    const deadline = Date.now() + OPTIONAL_PROGRESS_FENCE_MS;
+    await waitForOptionalProgress(Promise.resolve().then(() => jobLog?.flush()).catch(() => {}), deadline);
+    await waitForOptionalProgress(Promise.resolve().then(() => jobLog?.close()).catch(() => {}), deadline);
+  };
   const cleanupProgress = async () => {
     if (progressCleaned) return;
     progressCleaned = true;
@@ -75,6 +85,13 @@ export async function executeJob(input) {
     try { reporter?.close(); } catch { /* progress-only */ }
   };
   try {
+    try {
+      jobLog = await createJobLogSink({ dataRoot, workspace, jobId: job.id });
+      if (jobLog.logFile) {
+        try { running = await input.store.attachJobLog(workspace, job.id, jobLog.logFile); }
+        catch { await cleanupJobLog(); jobLog = undefined; }
+      }
+    } catch { jobLog = undefined; }
     let prompt;
     if (job.command === 'review' || job.command === 'adversarial-review') {
       const gitFacts = await collectGitFacts({ workspace, scope: input.scope, base: input.base });
@@ -102,6 +119,10 @@ export async function executeJob(input) {
       ...(input.progressWriter ? { write: input.progressWriter } : {}),
       ...(input.progressRelayWriter ? { relay: input.progressRelayWriter } : {}),
       persist: (event) => input.store.updateJobProgress(workspace, job.id, event),
+      ...(jobLog ? { archive: async (event) => {
+        await jobLog.appendEvent(event.message);
+        if (jobLog.disabled) throw new Error('progress archive unavailable');
+      } } : {}),
       persistProbe: (probe) => input.store.updateJobProgressProbe(workspace, job.id, probe),
       describeNotification: conversationObserver.observe,
       onDescriptorOverflow: conversationObserver.markGap,
@@ -145,6 +166,7 @@ export async function executeJob(input) {
     const finalStatus = terminalSnapshotStatus(finalSnapshot, turnBoundary);
     remoteTerminalProven = ['error', 'completed', 'idle'].includes(finalStatus);
     const result = extractTerminalResultForStatus(finalSnapshot, job.command, turnBoundary, finalStatus);
+    try { void jobLog?.appendBlock('Assistant message', result); } catch { /* log-only */ }
     output = await publishSuccessfulResult({ input, job, workspace, dataRoot, result });
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
@@ -181,6 +203,10 @@ export async function executeJob(input) {
   // Cleanup order is part of the progress lifecycle contract.
   await cleanupProgress();
   await client.close().catch(() => {});
+  if (!primaryError && output?.job?.status === 'succeeded' && typeof output.result === 'string') {
+    try { void jobLog?.appendBlock('Final output', output.result); } catch { /* log-only */ }
+  }
+  await cleanupJobLog();
   if (primaryError) throw primaryError;
   return output;
 }
