@@ -168,6 +168,13 @@ deltas remain fenced until a valid recovery delivery or a bounded authoritative
 snapshot establishes a new baseline. An online overflow snapshot may reset from
 sequence zero while fenced.
 
+Online delta application is transactional across asynchronous path
+normalization. Tool and row lifecycle state, public events, terminal intent,
+and both trusted watermarks remain staged until every description has settled
+and the frame is still admissible. A gap, overflow, or terminal latch observed
+while a description is pending discards the entire staged frame, so a later
+recovery or terminal update cannot expose content from an ignored frame.
+
 A delta recovery is valid only when its range covers the last trusted sequence:
 `fromSeq` is no greater than the trusted `toSeq`, and its new `toSeq` does not
 move backward. A recovery range that begins after the trusted sequence leaves a
@@ -183,22 +190,28 @@ completion, cancellation, or result handling.
 Each foreground Rescue progress reporter has one of four observational states:
 
 - `probing`: subscription may still produce a usable online frame;
-- `online`: at least one usable online frame has been accepted;
+- `online`: at least one accepted online frame emitted a bounded public semantic
+  event;
 - `snapshot-fallback`: no usable semantic frame was available by the first
   heartbeat boundary, or a bounded rejected-frame threshold was reached; or
 - `lifecycle-only`: both semantic frames and snapshot fallback are unavailable.
 
 Initial snapshots do not switch the reporter to `online` because historical
-activity must not suppress fallback for the current turn. Once an online frame
-is accepted, snapshot polling stops. State changes do not affect the
-authoritative completion wait.
+activity must not suppress fallback for the current turn. Structural acceptance
+still increments `acceptedOnline` for diagnostics, but an accepted frame with no
+public events is not evidence of usable progress: it neither exits nor blocks
+snapshot fallback, and it leaves `probing`, `snapshot-fallback`, or
+`lifecycle-only` unchanged. The first accepted online frame with at least one
+bounded public event switches the reporter to `online` and stops snapshot
+polling exactly once; later empty frames do not regress that state. State changes
+do not affect the authoritative completion wait.
 
 ### Bounded session snapshot fallback
 
-At the first heartbeat boundary with no accepted online frame, the reporter
-reads the same session through the existing authenticated client. While fallback
-is active, it repeats at most once per heartbeat interval. Only one read may be
-in flight, and a read that has not settled is not duplicated.
+At the first heartbeat boundary with no semantically usable online frame, the
+reporter reads the same session through the existing authenticated client.
+While fallback is active, it repeats at most once per heartbeat interval. Only
+one read may be in flight, and a read that has not settled is not duplicated.
 
 Snapshot processing uses the existing schema-validated session response and the
 accepted current-turn boundary. It ignores messages that existed before send
