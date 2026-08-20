@@ -241,11 +241,27 @@ test('package test scripts do not depend on shell glob expansion', () => {
   );
 });
 
-test('conversation compatibility progress never parses raw session logs or synthesizes conversation frames', () => {
-  for (const relativePath of ['scripts/lib/progress.mjs', 'scripts/lib/conversation-progress.mjs', 'scripts/lib/session-progress.mjs']) {
+test('conversation compatibility progress has no dependency capable of reading durable job logs', () => {
+  const allowedImports = new Map([
+    ['scripts/lib/progress.mjs', []],
+    ['scripts/lib/conversation-progress.mjs', [
+      '{ lstat, realpath } from node:fs/promises',
+      '{ dirname, isAbsolute, relative, resolve, sep } from node:path',
+    ]],
+    ['scripts/lib/session-progress.mjs', [
+      '{ fitProgressMessage, formatToolTerminalMessage } from ./conversation-progress.mjs',
+      '{ isSafeIdentifier } from ./identifier.mjs',
+    ]],
+  ]);
+  for (const [relativePath, expectedImports] of allowedImports) {
     const source = readFileSync(new URL(relativePath, root), 'utf8');
-    assert.doesNotMatch(source, /(?:readFile|createReadStream).*zcode/si, `${relativePath} must not parse raw ZCode logs`);
-    assert.doesNotMatch(source, /(?:job[-_ ]?log|readJobLog|jobLogPath)/i, `${relativePath} must not parse durable per-job logs`);
+    const imports = [
+      ...[...source.matchAll(/^\s*import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]\s*;?/gm)]
+        .map((match) => ({ index: match.index, contract: `${match[1].replace(/\s+/g, ' ').trim()} from ${match[2]}` })),
+      ...[...source.matchAll(/^\s*import\s*['"]([^'"]+)['"]\s*;?/gm)]
+        .map((match) => ({ index: match.index, contract: `[side-effect] from ${match[1]}` })),
+    ].sort((left, right) => left.index - right.index).map(({ contract }) => contract);
+    assert.deepEqual(imports, expectedImports, `${relativePath} must not acquire a job-log reader dependency`);
   }
   assert.doesNotMatch(readFileSync(new URL('scripts/lib/session-progress.mjs', root), 'utf8'), /v4\/conversation\/frame/, 'session fallback must not synthesize conversation frames');
 });

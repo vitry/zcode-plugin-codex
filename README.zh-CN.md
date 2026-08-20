@@ -118,7 +118,7 @@ Progress:
 Log: <absolute-private-path>
 ```
 
-每个 job 的日志还可以保存由现有精确 linkage 规则选出的当前 turn 的可见 assistant 文本，以及权威最终输出。原始命令 stdout/stderr、任意工具 input/output/error/metadata、文件内容、patch、环境值、凭据、capabilities、隐藏消息和原始推理仍全部排除。日志与进度只具观察性，不能建立或改变终态权威。
+每个 job 的日志还可以保存由现有精确 linkage 规则选出的当前 turn 的可见 assistant 文本，以及权威最终输出。原始命令 stdout/stderr、任意工具 payload（input/output/error/metadata）、原始推理、文件或 patch 内容、环境值、凭据、capabilities 和隐藏消息绝不直接摄取为日志源字段。此 allowlist 不是语义秘密脱敏边界：如果可见 assistant 或最终文本本身引用或转述了敏感材料，被选中的文本仍会保留。请勿让秘密进入可见模型文本，并相应保护私有日志。日志与进度只具观察性，不能建立或改变终态权威。
 
 只有精确 owner 的详细 status 会暴露私有路径。紧凑列表、外部 `--all` 投影、同级 sibling session、绑定的 Rescue status sidecar、Root relay 和终态通知都不会暴露 `logFile` 或日志路径。status 语法仍为 `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]`：不提供 `--log` 选项或日志读取命令。日志沿用现有持久保留策略，在卸载或选择性 runtime 清理后仍保留；没有日志轮转、过期、裁剪、逐日志删除、导出或搜索功能。仅在删除已证明属于本插件的工作区数据时才删除这些日志。
 
