@@ -88,6 +88,51 @@ test('renders terminal duration and keeps result rendering unchanged', () => {
   assert.equal(renderOutput({ job, result: 'unchanged result' }), 'unchanged result\n');
 });
 
+test('failed terminal jobs render one safe bounded object error message', () => {
+  const output = renderOutput({
+    job: {
+      id,
+      command: 'review',
+      status: 'failed',
+      error: {
+        message: `failure\u061c **unsafe**\u200e\nnext \u202Eline\u200F ~~later~~\u0000\u0085 ${'界'.repeat(800)}`,
+        code: 'PRIVATE_CODE',
+        details: { token: 'PRIVATE_TOKEN' },
+      },
+    },
+  });
+  const errorLines = output.split('\n').filter((/** @type {string} */ entry) => entry.startsWith('Error: '));
+  assert.equal(errorLines.length, 1);
+  const message = errorLines[0].slice('Error: '.length);
+  assert.match(message, /^failure \\\*\\\*unsafe\\\*\\\* next line \\~\\~later\\~\\~ /u);
+  assert.match(message, /\.\.\.$/u);
+  assert.ok(Buffer.byteLength(message) <= 2_048);
+  assert.equal([...message].some((character) => {
+    const code = character.codePointAt(0);
+    return code <= 0x1f || code >= 0x7f && code <= 0x9f || code === 0x061c || code === 0x200e || code === 0x200f
+      || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069 || code === 0xfffd;
+  }), false);
+  assert.doesNotMatch(output, /PRIVATE_CODE|PRIVATE_TOKEN|details|token/u);
+});
+
+test('legacy string terminal errors render and absent public messages are omitted', () => {
+  const terminal = { id, command: 'rescue', status: 'cancelled' };
+  assert.match(renderOutput({ job: { ...terminal, error: 'legacy `failure`' } }), /\nError: legacy \\`failure\\`\n/u);
+
+  for (const error of [undefined, '', ' \n\t ', '\u061c\u200e\u202e\u2069']) {
+    const output = renderOutput({ job: { ...terminal, ...(error === undefined ? {} : { error }) } });
+    assert.doesNotMatch(output, /^Error:/mu);
+    assert.match(output, /^Status: cancelled$/mu);
+  }
+});
+
+test('successful result rendering wins over terminal job error rendering', () => {
+  assert.equal(renderOutput({
+    result: 'exact successful result',
+    job: { id, command: 'review', status: 'failed', error: { message: 'do not render' } },
+  }), 'exact successful result\n');
+});
+
 test('compact job lists include phase and only the latest safe preview', () => {
   const output = renderOutput({
     jobs: [{

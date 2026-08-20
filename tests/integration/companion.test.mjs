@@ -1174,12 +1174,28 @@ test('result exposes owned terminal outcomes, skips active jobs, and preserves s
       || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
   }), false);
   assert.doesNotMatch(JSON.stringify(failedResult.json), /PRIVATE_|private-|ownerSessionId|ownerTurnId|permissionSnapshot|promptArtifact|resultArtifact|workerLeaseId|childPid|zcodeSessionId|inputId|startRevision|beforeMessageIds|model|effort|progressProbe|progressPreview|lastCancelError|exitCode|secretMarker|details/u);
+  const failedStatus = await companion(context, ['status', failed.id]);
+  const failedResultError = failedResult.stdout.split('\n').find((/** @type {string} */ line) => line.startsWith('Error: '));
+  const failedStatusError = failedStatus.stdout.split('\n').find((/** @type {string} */ line) => line.startsWith('Error: '));
+  assert.ok(failedResultError); assert.equal(failedStatusError, failedResultError);
 
   await new Promise((resolve) => setTimeout(resolve, 2));
   const succeeded = await reserve('succeeded-result'); const successfulContents = 'exact immutable result\n';
   const resultArtifact = await writeResultArtifact({ dataRoot: context.dataRoot, workspace: context.workspace, jobId: succeeded.id, contents: successfulContents });
   await store.transitionJob(context.workspace, succeeded.id, ['queued'], 'running');
   await store.finishJob(context.workspace, succeeded.id, ['running'], 'succeeded', { resultArtifact, exitCode: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const cancelledWithReason = await reserve('cancelled-result-with-reason');
+  await store.finishJob(context.workspace, cancelledWithReason.id, ['queued'], 'cancelled', {
+    error: 'legacy `cancelled`\nreason \u202ewith controls', exitCode: null,
+  });
+  const cancelledResult = await companion(context, ['result', cancelledWithReason.id]);
+  const cancelledStatus = await companion(context, ['status', cancelledWithReason.id]);
+  const cancelledResultError = cancelledResult.stdout.split('\n').find((/** @type {string} */ line) => line.startsWith('Error: '));
+  const cancelledStatusError = cancelledStatus.stdout.split('\n').find((/** @type {string} */ line) => line.startsWith('Error: '));
+  assert.equal(cancelledResultError, 'Error: legacy \\`cancelled\\` reason with controls');
+  assert.equal(cancelledStatusError, cancelledResultError);
+
   await new Promise((resolve) => setTimeout(resolve, 2));
   const cancelled = await reserve('cancelled-result');
   await store.finishJob(context.workspace, cancelled.id, ['queued'], 'cancelled', { exitCode: null });

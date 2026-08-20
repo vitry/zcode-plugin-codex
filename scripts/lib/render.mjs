@@ -52,7 +52,8 @@ function renderJob(job) {
   const previews = Array.isArray(job.progressPreview)
     ? job.progressPreview.filter((/** @type {unknown} */ message) => typeof message === 'string').slice(-4)
     : [];
-  const lastCancellationError = renderCancellationError(job.lastCancelError);
+  const storedError = ['failed', 'cancelled'].includes(job.status) ? renderStoredError(job.error) : null;
+  const lastCancellationError = renderStoredError(job.lastCancelError);
   const lines = [
     `Job: ${safeInline(job.id)}`,
     `Command: ${safeInline(job.command)}`,
@@ -63,6 +64,7 @@ function renderJob(job) {
     `Finished: ${safeInline(job.finishedAt)}`,
     `${timingLabel}: ${timing}`,
     `Last activity: ${safeInline(job.lastActivityAt)}`,
+    ...(storedError === null ? [] : [`Error: ${storedError}`]),
     ...(lastCancellationError === null
       ? [] : [`Last cancellation error: ${lastCancellationError}`]),
     'Progress:',
@@ -74,12 +76,14 @@ function renderJob(job) {
 }
 
 /** @param {unknown} value */
-function renderCancellationError(value) {
+function renderStoredError(value) {
   const message = typeof value === 'string' ? value
     : value && typeof value === 'object' && 'message' in value
       && typeof value.message === 'string' ? value.message : null;
-  if (message === null || message.trim().length === 0) return null;
-  return boundUtf8(safeInline(message), 2_048);
+  if (message === null) return null;
+  const normalized = normalizePublicText(message);
+  if (normalized.length === 0) return null;
+  return boundUtf8(escapeMarkdown(normalized), 2_048);
 }
 
 /** @param {unknown} value */
