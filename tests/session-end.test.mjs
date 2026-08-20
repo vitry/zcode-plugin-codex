@@ -79,7 +79,7 @@ function executorClient(text = 'executor result') {
     createSession: async () => ({ session: { sessionId: 'remote-a' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: () => () => {},
     send: async () => ({ inputId: 'input-a', stateRevision: 7 }), waitForCompletion: async () => {},
-    readSession: async () => ({ messages: [{ info: { role: 'assistant', messageId: 'executor-answer', parentMessageId: 'input-a' }, parts: [{ type: 'text', text }] }] }),
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 7 }, messages: [{ info: { role: 'assistant', messageId: 'executor-answer', parentMessageId: 'input-a' }, parts: [{ type: 'text', text }] }] }),
     close: async () => {},
   };
 }
