@@ -168,6 +168,12 @@ deltas remain fenced until a valid recovery delivery or a bounded authoritative
 snapshot establishes a new baseline. An online overflow snapshot may reset from
 sequence zero while fenced.
 
+A delta recovery is valid only when its range covers the last trusted sequence:
+`fromSeq` is no greater than the trusted `toSeq`, and its new `toSeq` does not
+move backward. A recovery range that begins after the trusted sequence leaves a
+hole, is rejected without advancing either watermark, and keeps recovery
+fencing active. An equal-sequence empty recovery remains a valid no-op baseline.
+
 Fragment frames remain unsupported. Their rejection is observational and uses
 the existing bounded session-snapshot fallback; it cannot affect authoritative
 completion, cancellation, or result handling.

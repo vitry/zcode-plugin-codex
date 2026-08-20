@@ -258,6 +258,34 @@ test('overlapping online deltas cannot clear deduplication or replay tool activi
   assert.deepEqual(completed.events.map((event) => event.message), ['Read completed.']);
 });
 
+test('a recovery delta must cover the trusted sequence before it can unlock online progress', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
+  const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  assert.deepEqual(await describer.observe(conversationFrame({
+    deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 10,
+    snapshot: boundedSnapshotFixture({ seq: 10 }),
+  }), observedAt), { disposition: 'accepted', phase: 'initial', events: [] });
+  assert.equal((await describer.observe(conversationFrame({
+    ordinal: 2, fromSeq: 10, toSeq: 11, deltas: [toolRow({ rowId: 10, toolCallId: 'trusted', status: 'running' })],
+  }), observedAt)).events.length, 1);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 4, fromSeq: 11, toSeq: 12, deltas: [] }), observedAt), {
+    disposition: 'rejected', reason: 'sequence', events: [],
+  });
+  assert.deepEqual(await describer.observe(conversationFrame({
+    deliveryKind: 'recovery', ordinal: 4, fromSeq: 20, toSeq: 21, deltas: [],
+  }), observedAt), { disposition: 'rejected', reason: 'sequence', events: [] });
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 3, fromSeq: 11, toSeq: 12, deltas: [] }), observedAt), {
+    disposition: 'ignored', reason: 'recovery-required', events: [],
+  });
+  assert.deepEqual(await describer.observe(conversationFrame({
+    deliveryKind: 'recovery', ordinal: 4, fromSeq: 11, toSeq: 21, deltas: [],
+  }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
+  const resumed = await describer.observe(conversationFrame({
+    ordinal: 5, fromSeq: 21, toSeq: 22, deltas: [toolRow({ rowId: 11, toolCallId: 'resumed', status: 'running' })],
+  }), observedAt);
+  assert.deepEqual(resumed.events.map((event) => event.message), ['Running tool: Bash.']);
+});
+
 test('normalizes previews by removing controls, collapsing whitespace, and truncating by Unicode code point', () => {
   assert.equal(normalizePreview(' a\r\n\tb\u0000\u0085  c ', 96), 'a b c');
   const value = `${'😀'.repeat(95)}界尾`;
@@ -483,7 +511,7 @@ test('queue overflow requires an exact newer recovery baseline before continuous
   assert.deepEqual(await describer.observe(foreignRecovery, observedAt), []);
   const staleRecovery = conversationFrame({ ordinal: 1, fromSeq: 1, toSeq: 1, deliveryKind: 'recovery', deltas: [] });
   assert.deepEqual(await describer.observe(staleRecovery, observedAt), []);
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 10, fromSeq: 10, toSeq: 10, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 10, fromSeq: 2, toSeq: 10, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
   const resumed = await describer.observe(conversationFrame({ ordinal: 11, fromSeq: 10, toSeq: 11, deltas: [toolRow({ rowId: 11, input: { command: 'echo recovered' } })] }), observedAt);
   assert.equal(resumed[0].message, 'Running command: echo recovered.');
   describer.markTerminal();
@@ -615,8 +643,8 @@ test('prebind overflow requires and accepts a newer recovery baseline', async ()
   await deferred.bind('sub-1'); await Promise.all(buffered);
   assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 5, deltas: [toolRow({ rowId: 5 })] }), observedAt), { disposition: 'ignored', reason: 'recovery-required', events: [] });
   assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 6, deltas: [toolRow({ rowId: 6 })] }), observedAt), { disposition: 'ignored', reason: 'recovery-required', events: [] });
-  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 7, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
-  const resumed = await deferred.observe(conversationFrame({ ordinal: 8, deltas: [toolRow({ rowId: 8 })] }), observedAt);
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 7, fromSeq: 4, toSeq: 7, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
+  const resumed = await deferred.observe(conversationFrame({ ordinal: 8, fromSeq: 7, toSeq: 8, deltas: [toolRow({ rowId: 8 })] }), observedAt);
   assert.equal(resumed.disposition, 'accepted'); assert.equal(resumed.phase, 'online'); assert.equal(resumed.events.length, 1);
 });
 
@@ -629,14 +657,14 @@ test('overflow during bind latches recovery before a newly buffered recovery fra
     const capacityGate = deferred.observe(conversationFrame({ ordinal: 5, deltas: [toolRow({ rowId: 5 })] }), observedAt);
     deferred.observe(conversationFrame({ ordinal: 6, deltas: [toolRow({ rowId: 6 })] }), observedAt);
     overflow = deferred.observe(conversationFrame({ ordinal: 7, deltas: [toolRow({ rowId: 7, input: { command: 'PRIVATE_BIND_OVERFLOW' } })] }), observedAt);
-    return capacityGate.then(() => { recovery = deferred.observe(conversationFrame({ ordinal: 8, deliveryKind: 'recovery', deltas: [] }), observedAt); });
+    return capacityGate.then(() => { recovery = deferred.observe(conversationFrame({ ordinal: 8, fromSeq: 1, toSeq: 8, deliveryKind: 'recovery', deltas: [] }), observedAt); });
   });
   await deferred.bind('sub-1'); await injectOverflow;
   const overflowResult = await overflow;
   assert.deepEqual(overflowResult, { disposition: 'ignored', reason: 'overflow', events: [] });
   assert.doesNotMatch(JSON.stringify(overflowResult), /PRIVATE_BIND_OVERFLOW/);
   assert.deepEqual(await recovery, { disposition: 'accepted', phase: 'recovery', events: [] });
-  const resumed = await deferred.observe(conversationFrame({ ordinal: 9, deltas: [toolRow({ rowId: 9 })] }), observedAt);
+  const resumed = await deferred.observe(conversationFrame({ ordinal: 9, fromSeq: 8, toSeq: 9, deltas: [toolRow({ rowId: 9 })] }), observedAt);
   assert.equal(resumed.disposition, 'accepted'); assert.equal(resumed.phase, 'online'); assert.equal(resumed.events.length, 1);
 });
 
@@ -659,6 +687,6 @@ test('deferred observer can fence and recover more than one post-bind overflow e
   assert.equal((await deferred.observe(conversationFrame({ ordinal: 3, deltas: [toolRow({ rowId: 3 })] }), observedAt)).length, 1);
   deferred.markGap();
   assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 4, deltas: [toolRow({ rowId: 4 })] }), observedAt), []);
-  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 5, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
-  assert.equal((await deferred.observe(conversationFrame({ ordinal: 6, deltas: [toolRow({ rowId: 6 })] }), observedAt)).length, 1);
+  assert.deepEqual(await deferred.observe(conversationFrame({ ordinal: 5, fromSeq: 3, toSeq: 5, deliveryKind: 'recovery', deltas: [] }), observedAt), []);
+  assert.equal((await deferred.observe(conversationFrame({ ordinal: 6, fromSeq: 5, toSeq: 6, deltas: [toolRow({ rowId: 6 })] }), observedAt)).length, 1);
 });

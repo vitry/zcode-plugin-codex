@@ -110,6 +110,9 @@ export async function createConversationProgressDescriber({ sessionId, subscript
       if (lastOrdinal !== undefined && (frame.ordinal <= lastOrdinal || frame.toSeq < /** @type {number} */ (lastSeq))) {
         return ignored('stale');
       }
+      if (lastSeq !== undefined && frame.payloadKind === 'deltas' && frame.fromSeq > lastSeq) {
+        needsRecovery = true; return rejected('sequence');
+      }
       lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false;
       if (frame.payloadKind === 'snapshot') resetLifecycleState();
       else absorbRecovery(frame.deltas);
