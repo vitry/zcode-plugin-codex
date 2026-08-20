@@ -83,7 +83,16 @@ function renderStoredError(value) {
   if (message === null) return null;
   const normalized = normalizePublicText(message);
   if (normalized.length === 0) return null;
-  return boundUtf8(escapeMarkdown(normalized), 2_048);
+  return boundMarkdown(escapeMarkdown(normalized), 2_048);
+}
+
+/** @param {string} value @param {number} maxBytes */
+function boundMarkdown(value, maxBytes) {
+  if (Buffer.byteLength(value) <= maxBytes) return value;
+  const bounded = boundUtf8(value, maxBytes);
+  const prefix = bounded.slice(0, -3);
+  const trailingBackslashes = prefix.match(/\\+$/u)?.[0].length ?? 0;
+  return trailingBackslashes % 2 === 0 ? bounded : `${prefix.slice(0, -1)}...`;
 }
 
 /** @param {unknown} value */

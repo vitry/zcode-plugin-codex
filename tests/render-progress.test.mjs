@@ -115,6 +115,28 @@ test('failed terminal jobs render one safe bounded object error message', () => 
   assert.doesNotMatch(output, /PRIVATE_CODE|PRIVATE_TOKEN|details|token/u);
 });
 
+test('bounded terminal error messages do not leave a dangling Markdown escape', () => {
+  const output = renderOutput({
+    job: { id, command: 'review', status: 'failed', error: { message: `${'a'.repeat(2_044)}*tail` } },
+  });
+  const line = output.split('\n').find((/** @type {string} */ entry) => entry.startsWith('Error: '));
+  assert.ok(line);
+  const message = line.slice('Error: '.length);
+  assert.ok(Buffer.byteLength(message) <= 2_048);
+  assert.equal(message.endsWith('...'), true);
+  const trailingBackslashes = message.slice(0, -3).match(/\\+$/u)?.[0].length ?? 0;
+  assert.equal(trailingBackslashes % 2, 0);
+
+  const pairedOutput = renderOutput({
+    job: { id, command: 'review', status: 'failed', error: { message: `${'a'.repeat(2_043)}\\tail` } },
+  });
+  const pairedLine = pairedOutput.split('\n').find((/** @type {string} */ entry) => entry.startsWith('Error: '));
+  assert.ok(pairedLine);
+  const pairedMessage = pairedLine.slice('Error: '.length);
+  assert.ok(Buffer.byteLength(pairedMessage) <= 2_048);
+  assert.equal(pairedMessage.endsWith('\\\\...'), true);
+});
+
 test('legacy string terminal errors render and absent public messages are omitted', () => {
   const terminal = { id, command: 'rescue', status: 'cancelled' };
   assert.match(renderOutput({ job: { ...terminal, error: 'legacy `failure`' } }), /\nError: legacy \\`failure\\`\n/u);
