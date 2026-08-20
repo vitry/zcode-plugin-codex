@@ -155,9 +155,14 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
-  const gateNonce = options.completionAfterProgressLine ? randomBytes(32).toString('hex') : undefined;
+  const heartbeatDiagnostic = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
+  const completionAfterProgressLine = options.completionAfterProgressLine ?? (options.heartbeat ? heartbeatDiagnostic : undefined);
+  const gateNonce = completionAfterProgressLine ? randomBytes(32).toString('hex') : undefined;
   const gatePath = gateNonce ? join(context.directory, `${scenario}-${gateNonce}-progress-dispatch-gate.json`) : undefined;
   let gateTimedOut = false; let gateWriteError; let observedExpectedLine = false; let gateDeadline;
+  /** @type {()=>void} */ let heartbeat = () => { throw new Error('heartbeat was not assigned'); };
+  let heartbeatAssigned = false; let signalHeartbeatAssigned = () => {};
+  const heartbeatReady = new Promise((resolvePromise) => { signalHeartbeatAssigned = () => resolvePromise(undefined); });
   const releaseGate = async () => {
     if (!gatePath || !gateNonce) return;
     try { await writeFile(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'release' }), { mode: 0o600 }); }
@@ -170,7 +175,7 @@ async function deterministicConversationScenario(context, scenario, options = {}
       gateDeadline = setTimeout(() => { gateTimedOut = true; void releaseGate(); }, 5_000);
       gateDeadline.unref?.();
     }
-    output = await runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
+    const execution = runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
       cwd: context.workspace,
       env: {
         ...context.env, ...options.env, FAKE_ZCODE_CONVERSATION_SCENARIO: scenario, FAKE_ZCODE_RECORD: record,
@@ -179,24 +184,48 @@ async function deterministicConversationScenario(context, scenario, options = {}
       caller: owner,
       progressWriter: (line) => {
         lines.push(line);
-        if (line === options.completionAfterProgressLine) { observedExpectedLine = true; void releaseGate(); }
+        if (line === completionAfterProgressLine) { observedExpectedLine = true; void releaseGate(); }
       },
       ...(options.heartbeat ? { progressDependencies: {
         now: () => new Date().toISOString(),
-        setInterval: (/** @type {()=>void} */ callback) => { queueMicrotask(callback); return { unref() {} }; },
+        setInterval: (/** @type {()=>void} */ callback) => { heartbeat = callback; heartbeatAssigned = true; signalHeartbeatAssigned(); return { unref() {} }; },
         clearInterval: () => {},
       } } : {}),
     });
+    if (options.heartbeat) {
+      await heartbeatReady;
+      await waitForConversationProbeBoundary(context, record, scenario);
+      assert.equal(heartbeatAssigned, true);
+      heartbeat();
+    }
+    output = await execution;
   } finally {
     if (gateDeadline) clearTimeout(gateDeadline);
     await releaseGate();
   }
-  if (gateTimedOut || !observedExpectedLine && options.completionAfterProgressLine) throw new Error(`expected public progress line was not dispatched: ${options.completionAfterProgressLine}`);
+  if (gateTimedOut || !observedExpectedLine && completionAfterProgressLine) throw new Error(`expected public progress line was not dispatched: ${completionAfterProgressLine}`);
   if (gateWriteError) throw gateWriteError;
   const status = await runCompanion(['status', output.job.id], { cwd: context.workspace, env: context.env, caller: owner });
   const stored = await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, output.job.id);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   return { lines, output, requests, status, stored };
+}
+
+/** @param {any} context @param {string} record @param {string} scenario */
+async function waitForConversationProbeBoundary(context, record, scenario) {
+  const storage = await resolveWorkspaceStorage(context);
+  await waitFor(async () => {
+    const requests = await readFile(record, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
+    if (!requests.some((frame) => frame.method === 'session/send')) return false;
+    const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
+    for (const name of names) {
+      if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
+      const job = await readFile(join(storage.directory, 'jobs', name), 'utf8').then(JSON.parse).catch(() => null);
+      if (typeof job?.inputId !== 'string' || !Number.isSafeInteger(job?.startRevision)) continue;
+      if (scenario === 'zero-online' ? job.progressProbe?.acceptedOnline > 0 : job.progressProbe?.acceptedInitial > 0) return true;
+    }
+    return false;
+  }, `conversation ${scenario} frame was not observed after the accepted boundary`);
 }
 
 /** @param {()=>Promise<boolean>} predicate @param {string} message */
