@@ -89,10 +89,10 @@ export async function runCompanion(argv, runtime = {}) {
   await reconcile();
   if (parsed.command === 'status') {
     const modelPolicy = summarizeWorkspaceModelConfig(await readWorkspaceModelConfig({ dataRoot, workspace: cwd }));
-    if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId)), modelPolicy };
+    if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId, 'list')), modelPolicy };
     let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
     if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs, runtime.signal);
-    return { job: publicJob(job, caller.sessionId, true), modelPolicy };
+    return { job: publicJob(job, caller.sessionId, 'detail'), modelPolicy };
   }
   if (parsed.command === 'result') {
     const job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'result');
@@ -519,8 +519,8 @@ function requireAuthorization(value, keys) {
   return value;
 }
 function authorizationInputError() { return new PluginError('INTERNAL_AUTHORIZATION_INVALID', 'The internal authorization envelope is invalid.', { category: 'authorization', remedy: 'Invoke this command through its installed skill using the protected internal channel.' }); }
-/** @param {any} job @param {string} ownerSessionId @param {boolean} [includeProgressProbe] */
-function publicJob(job, ownerSessionId, includeProgressProbe = false) {
+/** @param {any} job @param {string} ownerSessionId @param {'list'|'detail'} projection */
+function publicJob(job, ownerSessionId, projection) {
   if (job.ownerSessionId !== ownerSessionId) {
     return {
       id: job.id,
@@ -531,7 +531,7 @@ function publicJob(job, ownerSessionId, includeProgressProbe = false) {
     };
   }
   const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe;
-  if (!includeProgressProbe) delete visible.logFile;
+  if (projection !== 'detail') delete visible.logFile;
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
     if (message === null) delete visible.error; else visible.error = { message };
@@ -541,7 +541,7 @@ function publicJob(job, ownerSessionId, includeProgressProbe = false) {
     if (message === null) delete visible.lastCancelError;
     else visible.lastCancelError = typeof visible.lastCancelError === 'string' ? message : { message };
   }
-  if (includeProgressProbe && validProgressProbe(job.progressProbe)) visible.progressProbe = { ...job.progressProbe, rejected: { ...job.progressProbe.rejected } };
+  if (projection === 'detail' && validProgressProbe(job.progressProbe)) visible.progressProbe = { ...job.progressProbe, rejected: { ...job.progressProbe.rejected } };
   return { ...visible, owned: true, owner: 'same-owner' };
 }
 /** @param {any} job */

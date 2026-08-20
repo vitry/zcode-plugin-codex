@@ -272,11 +272,6 @@ export function createStateStore(options) {
           });
         }
         if (job.logFile === logFile) return job;
-        if (job.logFile !== undefined) {
-          throw new PluginError('JOB_LOG_CONFLICT', `Job ${jobId} already has a different log path.`, {
-            category: 'state', remedy: 'Keep the first securely created log attached to the job.', details: { jobId },
-          });
-        }
         const updated = {
           ...job,
           logFile,

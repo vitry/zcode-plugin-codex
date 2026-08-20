@@ -226,6 +226,29 @@ test('general transitions cannot patch logFile', async () => {
   assert.equal((await store.readJob(workspace, job.id)).logFile, undefined);
 });
 
+test('job log attachment and terminal transition serialize to one valid durable outcome', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput, readOnly: true });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const logFile = join(storage.directory, 'jobs', `${job.id}.log`);
+
+  const [attachment, terminal] = await Promise.allSettled([
+    store.attachJobLog(workspace, job.id, logFile),
+    store.transitionJob(workspace, job.id, ['queued'], 'failed', { error: 'race terminal' }),
+  ]);
+  assert.equal(terminal.status, 'fulfilled');
+  const persisted = await store.readJob(workspace, job.id);
+  assert.equal(persisted.status, 'failed');
+  if (attachment.status === 'fulfilled') {
+    assert.equal(attachment.value.logFile, logFile);
+    assert.equal(persisted.logFile, logFile);
+  } else {
+    assert.equal(attachment.reason?.code, 'JOB_LOG_TERMINAL');
+    assert.equal(persisted.logFile, undefined);
+  }
+});
+
 test('persisted job log paths are validated against workspace storage while legacy jobs remain valid', async () => {
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });

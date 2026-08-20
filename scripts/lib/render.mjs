@@ -108,10 +108,17 @@ function safeProgress(message) {
 
 /** @param {unknown} value */
 function safePath(value) {
-  if (typeof value !== 'string' || !isAbsolute(value)) return null;
-  const normalized = normalizePublicText(value);
-  if (normalized.length === 0 || normalized !== value) return null;
-  return boundMarkdown(escapeMarkdown(normalized), 4_096);
+  if (typeof value !== 'string' || !isAbsolute(value) || [...value].some(unsafePathCharacter)) return null;
+  return boundMarkdown(escapeMarkdown(value), 4_096);
+}
+
+/** @param {string} character */
+function unsafePathCharacter(character) {
+  const code = /** @type {number} */ (character.codePointAt(0));
+  return code <= 0x1f || code >= 0x7f && code <= 0x9f
+    || code === 0x061c || code === 0x200e || code === 0x200f
+    || code === 0x2028 || code === 0x2029 || code >= 0x202a && code <= 0x202e
+    || code >= 0x2066 && code <= 0x2069;
 }
 
 /** @param {string} value */

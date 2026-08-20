@@ -85,8 +85,16 @@ test('detailed status bounds the rendered log path after Markdown escaping', () 
   assert.equal(trailingBackslashes % 2, 0);
 });
 
+test('detailed status preserves consecutive ordinary spaces in a canonical log path', () => {
+  const logFile = `/private/zcode data  root/jobs/${id}.log`;
+  const output = renderOutput({
+    job: { id, command: 'review', status: 'running', owned: true, owner: 'same-owner', logFile },
+  });
+  assert.match(output, new RegExp(`^Log: ${logFile}$`, 'mu'));
+});
+
 test('invalid log paths never render and compact lists omit logs', () => {
-  for (const logFile of [undefined, '', 'relative/job.log', '/safe/job.log\nforged', 42]) {
+  for (const logFile of [undefined, '', 'relative/job.log', '/safe/job.log\nforged', '/safe/job.log\u2028forged', '/safe/job.log\u2029forged', 42]) {
     const job = { id, command: 'review', status: 'running', owned: true, owner: 'same-owner', ...(logFile === undefined ? {} : { logFile }) };
     assert.doesNotMatch(renderOutput({ job }), /^Log:/mu);
   }
