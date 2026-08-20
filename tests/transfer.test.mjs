@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -85,6 +85,34 @@ test('creates imported history, writes a durable result, and succeeds the tracke
   assert.match(output.result, /^Imported from Codex/m); assert.match(output.result, /ZCode session ID: zcode-session-1/); assert.match(output.resumeCommand, /^'\/Applications\/Z Code\/zcode' --profile 'a b' --resume zcode-session-1$/);
   const storage = await resolveWorkspaceStorage(context);
   assert.equal(await readFile(join(storage.directory, output.job.resultArtifact), 'utf8'), output.result);
+  assert.equal(output.job.logFile, join(storage.directory, 'jobs', `${output.job.id}.log`));
+  const log = await readFile(output.job.logFile, 'utf8');
+  assert.match(log, /Final output\nImported from Codex\n/);
+  assert.equal((log.match(/Final output/g) ?? []).length, 1);
+  assert.doesNotMatch(log, /Assistant message/);
+});
+
+test('Transfer log attachment and Final append failures emit one fixed safe diagnostic without changing the winner', async () => {
+  for (const failure of ['attach', 'final']) {
+    const context = await executionFixture();
+    /** @type {string[]} */
+    const lines = [];
+    let replaced = false;
+    const replaceLog = async () => {
+      if (replaced) return; replaced = true;
+      const current = await context.store.readJob(context.workspace, context.job.id); await rm(current.logFile); await mkdir(current.logFile);
+    };
+    const store = {
+      ...context.store,
+      ...(failure === 'attach' ? { attachJobLog: async () => { throw new Error('PRIVATE_TRANSFER_ATTACH_PATH'); } } : {}),
+      ...(failure === 'final' ? { finishJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => { const winner = await context.store.finishJob(workspace, jobId, expected, next, patch); if (next === 'succeeded') await replaceLog(); return winner; } } : {}),
+    };
+    const output = await executeTransfer({ ...context, store, sourceThreadId: source, launch: { command: 'zcode', args: [] }, createClient: async () => context.client, progressWriter: (line) => lines.push(line) });
+    assert.equal(output.job.status, 'succeeded'); assert.ok(output.job.resultArtifact);
+    assert.equal(lines.filter((line) => line === '[zcode] ZCode job log was disabled.\n').length, 1, failure);
+    assert.doesNotMatch(lines.join(''), /PRIVATE_TRANSFER_ATTACH_PATH|zcode-transfer-|\.log/u, failure);
+    assert.doesNotMatch(await readFile(join((await resolveWorkspaceStorage(context)).directory, output.job.resultArtifact), 'utf8'), /PRIVATE_TRANSFER_ATTACH_PATH/);
+  }
 });
 
 test('Transfer success finalization failure keeps its recoverable result and never rewrites failed', async () => {
@@ -93,6 +121,8 @@ test('Transfer success finalization failure keeps its recoverable result and nev
   await assert.rejects(executeTransfer({ ...context, store, sourceThreadId: source, launch: { command: 'zcode', args: [] }, createClient: async () => context.client }), (error) => error === storageError || /** @type {any} */ (error)?.cause === storageError);
   assert.equal(successWrites, 1); assert.equal(failedWrites, 0); assert.equal((await context.store.readJob(context.workspace, context.job.id)).status, 'running');
   const storage = await resolveWorkspaceStorage(context); assert.match(await readFile(join(storage.directory, 'results', `${context.job.id}.md`), 'utf8'), /ZCode session ID: zcode-session-1/);
+  const active = await context.store.readJob(context.workspace, context.job.id);
+  assert.doesNotMatch(await readFile(active.logFile, 'utf8'), /Assistant message|Final output/);
 });
 
 test('Transfer persists and holds its exact worker lease before reading Codex history', async () => {
@@ -110,6 +140,7 @@ test('thread/read and conversion failures happen before ZCode creation and durab
     const context = await executionFixture(readThread); let createCalls = 0;
     await assert.rejects(executeTransfer({ ...context, sourceThreadId: source, launch: { command: 'zcode', args: [] }, createClient: async () => { createCalls += 1; return context.client; } }));
     assert.equal(createCalls, 0); const failed = await context.store.readJob(context.workspace, context.job.id); assert.equal(failed.status, 'failed'); assert.equal(failed.resultArtifact, undefined);
+    assert.doesNotMatch(await readFile(failed.logFile, 'utf8'), /Assistant message|Final output/);
   }
 });
 
@@ -138,6 +169,7 @@ test('joins an in-flight successful cancellation after artifact write and does n
   releaseStop.resolve(); assert.equal((await cancelling).status, 'cancelled'); assert.equal((await transfer).error?.code, 'TRANSFER_CANCELLED');
   const final = await context.store.readJob(context.workspace, context.job.id); assert.equal(final.status, 'cancelled'); assert.equal(final.resultArtifact, undefined); assert.equal(createCalls, 1); assert.equal(writeCalls, 1);
   const storage = await resolveWorkspaceStorage(context); await assert.rejects(readFile(join(storage.directory, artifact), 'utf8'), { code: 'ENOENT' });
+  assert.doesNotMatch(await readFile(final.logFile, 'utf8'), /Assistant message|Final output/);
 });
 
 test('joins a failed cancellation after artifact write and completes exactly once', async () => {
@@ -149,6 +181,7 @@ test('joins a failed cancellation after artifact write and completes exactly onc
   const cancelling = controller.cancel(context.workspace, context.job.id, 'codex-owner'); await stopEntered.promise; releaseWriter.resolve(); await new Promise((resolve) => setTimeout(resolve, 20)); assert.equal(transferSettled, false);
   releaseStop.resolve(); await assert.rejects(cancelling, { code: 'JOB_CANCEL_FAILED' }); const output = (await transfer).value;
   assert.ok(output); assert.equal(output.job.status, 'succeeded'); assert.equal(createCalls, 1); assert.equal(writeCalls, 1); assert.equal((await context.store.readJob(context.workspace, context.job.id)).status, 'succeeded');
+  const log = await readFile(output.job.logFile, 'utf8'); assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.doesNotMatch(log, /Assistant message/);
 });
 
 test('artifact failure terminalization joins successful and failed cancellation attempts', async () => {
@@ -160,6 +193,7 @@ test('artifact failure terminalization joins successful and failed cancellation 
     const cancelling = controller.cancel(context.workspace, context.job.id, 'codex-owner'); await stopEntered.promise; releaseWriter.resolve(); await new Promise((resolve) => setTimeout(resolve, 20)); assert.equal(settled, false);
     releaseStop.resolve(); if (stopSucceeds) assert.equal((await cancelling).status, 'cancelled'); else await assert.rejects(cancelling, { code: 'JOB_CANCEL_FAILED' });
     assert.match((await transfer).error?.message ?? '', /disk refused/); const final = await context.store.readJob(context.workspace, context.job.id); assert.equal(final.status, stopSucceeds ? 'cancelled' : 'failed'); assert.equal(final.resultArtifact, undefined);
+    assert.doesNotMatch(await readFile(final.logFile, 'utf8'), /Assistant message|Final output/);
   }
 });
 
@@ -204,11 +238,13 @@ test('Transfer interruption removes a written result while a completed finalizat
     await assert.rejects(executeTransfer({ ...context, sourceThreadId: source, launch: { command: 'zcode', args: [] }, signal: controller.signal, createClient: async () => context.client, writeResult: async (input) => { artifact = await writeResultArtifact(input); controller.abort(interruption); return artifact; } }), (error) => error === interruption);
     const persisted = await context.store.readJob(context.workspace, context.job.id); assert.equal(persisted.status, 'cancelled'); assert.equal(persisted.resultArtifact, undefined);
     const storage = await resolveWorkspaceStorage(context); await assert.rejects(readFile(join(storage.directory, artifact), 'utf8'), { code: 'ENOENT' });
+    assert.doesNotMatch(await readFile(persisted.logFile, 'utf8'), /Assistant message|Final output/);
   }
   {
     const controller = new AbortController(); const context = await executionFixture();
     const wrapped = { ...context.store, transitionJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch = {}) => { const result = await context.store.transitionJob(workspace, jobId, expected, next, patch); if (next === 'succeeded') controller.abort(new PluginError('JOB_INTERRUPTED', 'late')); return result; } };
     const output = await executeTransfer({ ...context, store: wrapped, sourceThreadId: source, launch: { command: 'zcode', args: [] }, signal: controller.signal, createClient: async () => context.client });
     assert.equal(output.job.status, 'succeeded'); assert.ok(output.job.resultArtifact); assert.equal((await context.store.readJob(context.workspace, context.job.id)).status, 'succeeded');
+    const log = await readFile(output.job.logFile, 'utf8'); assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.doesNotMatch(log, /Assistant message/);
   }
 });

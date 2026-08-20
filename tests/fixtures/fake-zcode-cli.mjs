@@ -14,6 +14,11 @@ const progressDispatchGate = process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE;
 const progressDispatchGateNonce = process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE_NONCE;
 if ((progressDispatchGate === undefined) !== (progressDispatchGateNonce === undefined)
   || progressDispatchGateNonce !== undefined && !/^[a-f0-9]{64}$/u.test(progressDispatchGateNonce)) throw new Error('fake progress-dispatch gate identity is invalid');
+const archiveProgressGate = process.env.FAKE_ZCODE_ARCHIVE_PROGRESS_GATE;
+const archiveProgressGateNonce = process.env.FAKE_ZCODE_ARCHIVE_PROGRESS_GATE_NONCE;
+const archiveProgressGateReached = process.env.FAKE_ZCODE_ARCHIVE_PROGRESS_GATE_REACHED;
+if ([archiveProgressGate, archiveProgressGateNonce, archiveProgressGateReached].filter((value) => value !== undefined).length % 3 !== 0
+  || archiveProgressGateNonce !== undefined && !/^[a-f0-9]{64}$/u.test(archiveProgressGateNonce)) throw new Error('fake archive-progress gate identity is invalid');
 let progressDispatchGateChecks = 0;
 if (process.env.FAKE_ZCODE_PROCESS_FILE) await writeFile(process.env.FAKE_ZCODE_PROCESS_FILE, JSON.stringify({
   pid: process.pid, ppid: process.ppid, ...(processNonce ? { nonce: processNonce } : {}),
@@ -136,6 +141,18 @@ async function progressDispatchReleased() {
   progressDispatchGateChecks += 1;
   if (process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE_REACHED) await writeFile(process.env.FAKE_ZCODE_PROGRESS_DISPATCH_GATE_REACHED, JSON.stringify({ version: 1, nonce: progressDispatchGateNonce, checks: progressDispatchGateChecks }));
   return false;
+}
+async function waitForArchiveProgress(sequence) {
+  if (!archiveProgressGate || !archiveProgressGateNonce || !archiveProgressGateReached) return;
+  await writeFile(archiveProgressGateReached, JSON.stringify({ version: 1, nonce: archiveProgressGateNonce, sequence }));
+  while (true) {
+    const value = await readFile(archiveProgressGate, 'utf8').then(JSON.parse).catch(() => null);
+    if (value && typeof value === 'object' && !Array.isArray(value)
+      && Object.keys(value).sort().join(',') === 'acknowledged,nonce,version'
+      && value.version === 1 && value.nonce === archiveProgressGateNonce
+      && Number.isSafeInteger(value.acknowledged) && value.acknowledged >= sequence) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 async function scheduleCompletion(sessionId, completion) {
   const reachedDelayMs = Number(process.env.FAKE_ZCODE_COMPLETION_GATE_REACHED_DELAY_MS ?? 0);
@@ -344,10 +361,19 @@ input.on('line', async (line) => {
       }
       const notificationSession = process.env.FAKE_ZCODE_CROSS_SESSION ?? p.sessionId;
       let notificationRevision = stateRevision;
-      if (process.env.FAKE_ZCODE_PROGRESS === '1') {
-        for (const reason of ['model_streaming', 'tool_call_started', 'tool_call_result']) {
+      if (process.env.FAKE_ZCODE_PROGRESS === '1' || process.env.FAKE_ZCODE_ARCHIVE_PROGRESS === '1') {
+        const reasons = process.env.FAKE_ZCODE_ARCHIVE_PROGRESS === '1'
+          ? ['model_streaming', 'tool_call_started', 'api_retry', 'tool_call_progress', 'tool_call_result']
+          : ['model_streaming', 'tool_call_started', 'tool_call_result'];
+        for (const [index, reason] of reasons.entries()) {
           notificationRevision += 1;
-          send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: notificationRevision, reason, patch: {} } });
+          send({ method: 'state.updated', params: {
+            type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: notificationRevision, reason,
+            patch: process.env.FAKE_ZCODE_ARCHIVE_PROGRESS === '1'
+              ? { rawToolOutput: 'RAW_TOOL_OUTPUT', privateReasoning: 'PRIVATE_REASONING', capabilityToken: 'CAPABILITY_TOKEN' }
+              : {},
+          } });
+          if (process.env.FAKE_ZCODE_ARCHIVE_PROGRESS === '1') await waitForArchiveProgress(index + 1);
         }
       }
       const completion = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: notificationRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };

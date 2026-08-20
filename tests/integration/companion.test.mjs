@@ -151,6 +151,47 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
+/** @param {any} context @param {string[]} args */
+async function companionWithArchiveHandshake(context, args) {
+  const nonce = randomBytes(32).toString('hex');
+  const gate = join(context.directory, `${nonce}-archive-progress-gate.json`);
+  const reached = join(context.directory, `${nonce}-archive-progress-reached.json`);
+  const expected = [
+    'ZCode is generating a response.', 'ZCode started a tool call.', 'ZCode is retrying the model request.',
+    'ZCode tool work is still running.', 'ZCode completed a tool call.',
+  ];
+  await atomicWriteJson(gate, { version: 1, nonce, acknowledged: 0 });
+  const execution = companion(context, args, {
+    FAKE_ZCODE_ARCHIVE_PROGRESS: '1', FAKE_ZCODE_ARCHIVE_PROGRESS_GATE: gate,
+    FAKE_ZCODE_ARCHIVE_PROGRESS_GATE_NONCE: nonce, FAKE_ZCODE_ARCHIVE_PROGRESS_GATE_REACHED: reached,
+  });
+  let result;
+  try {
+    const storage = await resolveWorkspaceStorage(context);
+    for (const [index, message] of expected.entries()) {
+      await waitFor(async () => {
+        const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
+        for (const name of names.filter((candidate) => candidate.endsWith('.log'))) {
+          if ((await readFile(join(storage.directory, 'jobs', name), 'utf8').catch(() => '')).includes(message)) return true;
+        }
+        return false;
+      }, `archive did not durably append semantic event ${index + 1}`);
+      await atomicWriteJson(gate, { version: 1, nonce, acknowledged: index + 1 });
+    }
+    result = await execution;
+    assert.deepEqual(JSON.parse(await readFile(reached, 'utf8')), { version: 1, nonce, sequence: expected.length });
+  } finally {
+    await atomicWriteJson(gate, { version: 1, nonce, acknowledged: expected.length }).catch(() => {});
+    if (!result) await execution.catch(() => {});
+    await Promise.all([unlink(gate).catch(() => {}), unlink(reached).catch(() => {})]);
+  }
+  await Promise.all([
+    assert.rejects(stat(gate), { code: 'ENOENT' }),
+    assert.rejects(stat(reached), { code: 'ENOENT' }),
+  ]);
+  return result;
+}
+
 /** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
@@ -515,7 +556,7 @@ test('rescue task semantics reach the fake peer as the authorized objective', as
 
 test('foreground rescue streams safe progress to stderr and durably exposes it through status', async () => {
   const context = await fixture();
-  const result = await companion(context, ['rescue', '--fresh', 'surface progress'], { FAKE_ZCODE_PROGRESS: '1' });
+  const result = await companionWithArchiveHandshake(context, ['rescue', '--fresh', 'surface progress']);
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.stdout, 'done\n');
   assert.match(result.stderr, /\[zcode\] ZCode started the delegated turn\./);
   assert.match(result.stderr, /\[zcode\] ZCode is generating a response\./);
@@ -526,11 +567,24 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   assert.equal(status.json.job.phase, 'finalizing');
   assert.ok(Date.parse(status.json.job.lastActivityAt));
   assert.deepEqual(status.json.job.progressPreview, [
-    'ZCode is generating a response.',
-    'ZCode started a tool call.',
+    'ZCode is retrying the model request.',
+    'ZCode tool work is still running.',
     'ZCode completed a tool call.',
     'ZCode completed the delegated turn.',
   ]);
+  const log = await readFile(status.json.job.logFile, 'utf8');
+  const archivedMessages = [
+    'ZCode started the delegated turn.', 'ZCode is generating a response.', 'ZCode started a tool call.',
+    'ZCode is retrying the model request.', 'ZCode tool work is still running.', 'ZCode completed a tool call.',
+    'ZCode completed the delegated turn.',
+  ];
+  let previousIndex = -1;
+  for (const message of archivedMessages) {
+    const index = log.indexOf(message); assert.ok(index > previousIndex, `${message} must be archived in receive order`); previousIndex = index;
+  }
+  assert.match(log, /Assistant message\ndone\n/);
+  assert.match(log, /Final output\ndone\n/);
+  assert.doesNotMatch(log, /RAW_TOOL_OUTPUT|PRIVATE_REASONING|CAPABILITY_TOKEN/);
 });
 
 test('conversation online progress reaches stderr and preview while initial and foreign frames stay private', async () => {
@@ -711,7 +765,7 @@ test('conversation unsubscribe failure is observational and preserves the exact 
   const result = await companion(context, ['rescue', '--fresh', 'unsubscribe failure'], { FAKE_ZCODE_CONVERSATION_UNSUBSCRIBE_FAIL: '1' });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`);
   assert.equal(result.json.result, 'done'); assert.equal(result.json.job.status, 'succeeded');
-  assert.equal(result.stderr, '[zcode] ZCode started the delegated turn.\n[zcode] ZCode completed the delegated turn.\n[zcode] ZCode conversation progress cleanup was incomplete.\n');
+  assert.match(result.stderr, /^\[zcode\] ZCode started the delegated turn\.\n\[zcode\] ZCode completed the delegated turn\.\n\[zcode\] ZCode conversation progress cleanup was incomplete\.\n(?:\[zcode\] ZCode progress cleanup reached its time limit\.\n\[zcode\] ZCode progress archive was disabled\.\n)?$/u);
   assert.doesNotMatch(`${result.stderr}${result.stdout}${result.internal}`, /unsubscribe failed|-32099/);
   const status = await companion(context, ['status', result.json.job.id]);
   assert.equal(status.json.job.status, 'succeeded');
@@ -1080,6 +1134,12 @@ test('background reservation exposes one private invocation, which is single-use
   const privateAuth = { executionCapability: capability, jobId: reserved.json.job.id };
   const first = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.equal(first.code, 0, first.stderr); assert.equal(first.json.job.status, 'succeeded');
+  const backgroundLog = await readFile(first.json.job.logFile, 'utf8');
+  assert.match(backgroundLog, /Assistant message\n[\s\S]*"findings": \[\]/);
+  assert.match(backgroundLog, /Final output\n[\s\S]*"findings": \[\]/);
+  assert.equal((backgroundLog.match(/Assistant message/g) ?? []).length, 1);
+  assert.equal((backgroundLog.match(/Final output/g) ?? []).length, 1);
+  assert.doesNotMatch(backgroundLog, /PRIVATE_REASONING|RAW_TOOL_OUTPUT|CAPABILITY_TOKEN/);
   const replay = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.notEqual(replay.code, 0); assert.equal(replay.json.error.code, 'EXECUTION_CAPABILITY_CONSUMED');
 });
@@ -1578,6 +1638,11 @@ test('rescue requires an explicit choice when an owned resumable session exists'
   const resumed = await companion(context, ['rescue', '--resume', 'next task']);
   assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
   assert.equal(resumed.json.job.zcodeSessionId, fresh.json.job.zcodeSessionId);
+  const resumeLog = await readFile(resumed.json.job.logFile, 'utf8');
+  assert.match(resumeLog, /Assistant message\ndone\n/); assert.match(resumeLog, /Final output\ndone\n/);
+  assert.equal((resumeLog.match(/Assistant message/g) ?? []).length, 1);
+  assert.equal((resumeLog.match(/Final output/g) ?? []).length, 1);
+  assert.doesNotMatch(resumeLog, /PRIVATE_REASONING|RAW_TOOL_OUTPUT|CAPABILITY_TOKEN/);
 });
 
 test('trusted bound routing keeps choice identity private and permits only fresh permission replacement', async () => {
@@ -1818,6 +1883,35 @@ test('real Transfer imports current Codex history into a resumable ZCode session
   const storage = await resolveWorkspaceStorage(context); const artifact = await readFile(join(storage.directory, transferred.json.job.resultArtifact), 'utf8');
   const exposed = `${transferred.stdout}${transferred.stderr}${await readFile(codexRecord, 'utf8')}${await readFile(zcodeRecord, 'utf8')}${artifact}`;
   assert.doesNotMatch(exposed, new RegExp(context.caller)); assert.doesNotMatch(exposed, /hidden reasoning|private-turn-id|private-user-id|private-agent-id|transcript_path/);
+});
+
+test('public Transfer reports one fixed safe diagnostic when its attached job log becomes unwritable', async () => {
+  const context = await fixture();
+  /** @type {string[]} */
+  const diagnostics = [];
+  const sourceThread = { id: 'codex-session', ephemeral: false, turns: [{ startedAt: 1_725_000_000, items: [{ type: 'agentMessage', text: 'visible response' }] }] };
+  const output = await runCompanion(['transfer'], {
+    cwd: context.workspace,
+    env: context.env,
+    caller: caller('codex-session'),
+    progressWriter: (line) => { diagnostics.push(line); },
+    dependencies: {
+      readCodexThread: async () => {
+        const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+        assert.equal(jobs.length, 1); assert.equal(typeof jobs[0].logFile, 'string');
+        await rm(jobs[0].logFile); await mkdir(jobs[0].logFile);
+        return sourceThread;
+      },
+      createManagedZCodeClient: async () => ({
+        createSession: async () => ({ session: { sessionId: 'session-log-diagnostic' } }),
+        close: async () => {},
+      }),
+    },
+  });
+  assert.equal(output.job.status, 'succeeded'); assert.equal(output.zcodeSessionId, 'session-log-diagnostic');
+  assert.deepEqual(diagnostics, ['[zcode] ZCode job log was disabled.\n']);
+  assert.doesNotMatch(diagnostics.join(''), new RegExp(context.directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(diagnostics.join(''), /EISDIR|job-log|\.log/);
 });
 
 test('Transfer launcher configuration failure terminalizes its reserved job', async () => {

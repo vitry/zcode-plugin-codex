@@ -373,6 +373,9 @@ test('executeJob respects a SessionEnd completion winner without rewriting its r
   });
   const stored = await input.store.readJob(input.workspace, reservation.id); const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
   assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'maintenance result'); assert.equal(stored.status, 'succeeded'); assert.equal(await readFile(join(storage.directory, stored.resultArtifact), 'utf8'), 'maintenance result');
+  const log = await readFile(stored.logFile, 'utf8');
+  assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.match(log, /Final output\nmaintenance result\n/);
+  assert.doesNotMatch(log, /Assistant message|late executor result/);
 });
 
 test('executeJob does not write a result after SessionEnd cancellation wins', async () => {

@@ -281,6 +281,32 @@ test('workspace scavenging stops an active orphan and rereads completion before 
   assert.equal(recovered.status, 'succeeded'); assert.equal(stops, 1); assert.equal(reads, 2); assert.ok(recovered.resultArtifact);
   const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace });
   assert.equal(await readFile(join(storage.directory, recovered.resultArtifact), 'utf8'), 'completion won the stop race');
+  const log = await readFile(recovered.logFile, 'utf8');
+  assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.match(log, /Final output\ncompletion won the stop race\n/);
+  assert.doesNotMatch(log, /Assistant message/);
+});
+
+test('recovery log attachment and Final append failures emit one fixed safe diagnostic without changing the winner', async () => {
+  const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+  for (const failure of ['attach', 'final']) {
+    const fixture = await context(); const { job, store } = await orphanJob(fixture, { ownerSessionId: `owner-${failure}` }); const lines = [];
+    let replaced = false;
+    const replaceLog = async () => {
+      if (replaced) return; replaced = true;
+      const current = await store.readJob(fixture.workspace, job.id); await rm(current.logFile); await mkdir(current.logFile);
+    };
+    const wrapped = {
+      ...store,
+      ...(failure === 'attach' ? { attachJobLog: async () => { throw new Error('PRIVATE_RECOVERY_ATTACH_PATH'); } } : {}),
+      ...(failure === 'final' ? { finishJob: async (...args) => { const winner = await store.finishJob(...args); if (args[3] === 'succeeded') await replaceLog(); return winner; } } : {}),
+    };
+    const snapshot = { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'recovery-log-answer', parentMessageId: job.inputId }, parts: [{ type: 'text', text: `recovered despite ${failure}` }] }] };
+    await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot }), progressWriter: (line) => lines.push(line) });
+    const winner = await store.readJob(fixture.workspace, job.id); assert.equal(winner.status, 'succeeded'); assert.ok(winner.resultArtifact);
+    if (failure === 'final') assert.equal(replaced, true);
+    assert.equal(lines.filter((line) => line === '[zcode] ZCode job log was disabled.\n').length, 1, failure);
+    assert.doesNotMatch(lines.join(''), /PRIVATE_RECOVERY_ATTACH_PATH|zcode-recovery-|\.log/u, failure);
+  }
 });
 
 test('recovery success finalization failure preserves the result for a later retry', async () => {
@@ -291,7 +317,10 @@ test('recovery success finalization failure preserves the result for a later ret
   await assert.rejects(scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: completed }) }), (error) => error === storageError || error?.cause === storageError);
   assert.equal(successWrites, 1); assert.equal(failedWrites, 0); assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
   const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace }); assert.equal(await readFile(join(storage.directory, 'results', `${job.id}.md`), 'utf8'), 'recover this result later');
+  assert.doesNotMatch(await readFile((await store.readJob(fixture.workspace, job.id)).logFile, 'utf8'), /Assistant message|Final output/);
   await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: completed }) }); const recovered = await store.readJob(fixture.workspace, job.id); assert.equal(recovered.status, 'succeeded'); assert.equal(successWrites, 2); assert.equal(failedWrites, 0); assert.equal(await readFile(join(storage.directory, recovered.resultArtifact), 'utf8'), 'recover this result later');
+  const log = await readFile(recovered.logFile, 'utf8');
+  assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.match(log, /Final output\nrecover this result later\n/);
 });
 
 test('acknowledged stop cancels a cancelling orphan when post-stop completion has no valid result', async () => {
@@ -304,6 +333,7 @@ test('acknowledged stop cancels a cancelling orphan when post-stop completion ha
   }) });
   const recovered = await store.readJob(fixture.workspace, job.id);
   assert.equal(recovered.status, 'cancelled'); assert.equal(stops, 1); assert.equal(reads, 2); assert.equal(recovered.resultArtifact, undefined);
+  assert.doesNotMatch(await readFile(recovered.logFile, 'utf8'), /Assistant message|Final output/);
 });
 
 test('workspace scavenging retains the writable guard when active stop is unacknowledged', async () => {
@@ -345,7 +375,8 @@ test('terminal completion racing orphan settlement is never overwritten', async 
   } };
   const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
   await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] } }) });
-  assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'succeeded');
+  const winner = await store.readJob(fixture.workspace, job.id); assert.equal(winner.status, 'succeeded');
+  assert.doesNotMatch(await readFile(winner.logFile, 'utf8'), /Assistant message|Final output/);
 });
 
 test('background preparation failures terminalize the reservation and release the writable slot', async () => {
@@ -460,6 +491,10 @@ test('cancelling recovery distinguishes completed, stopped, active-acked, and ac
     assert.equal(recovered.status, mode === 'completed' ? 'succeeded' : mode === 'active-unacked' ? 'running' : 'cancelled', mode);
     assert.equal(stops, mode === 'paused' || mode.startsWith('active') ? 1 : 0, mode);
     if (mode === 'active-unacked') assert.match(recovered.lastCancelError, /retry stop/);
+    const log = await readFile(recovered.logFile, 'utf8');
+    if (mode === 'completed') {
+      assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.match(log, /Final output\nrecovered answer\n/);
+    } else assert.doesNotMatch(log, /Assistant message|Final output/);
   }
 });
 
@@ -569,7 +604,13 @@ test('owned recovery ignores a foreign corrupt job through its trusted owner bin
     createClient: async (job) => { clients += 1; return recoveryClient(job, { snapshot: { projection: { status: 'completed' }, runtime: { stateRevision: 2 }, messages: [{ info: { role: 'assistant', messageId: 'answer-mine', parentMessageId: mine.inputId }, parts: [{ type: 'text', text: 'owned recovery completed' }] }] } }); },
   });
   assert.equal(clients, 1); assert.equal(recovered.length, 1); assert.equal(recovered[0].id, mine.id); assert.equal(recovered[0].status, 'succeeded');
-  assert.equal((await store.readJob(fixture.workspace, mine.id)).status, 'succeeded');
+  const succeeded = await store.readJob(fixture.workspace, mine.id);
+  assert.equal(succeeded.status, 'succeeded');
+  assert.equal(succeeded.logFile, join(storage.directory, 'jobs', `${mine.id}.log`));
+  const log = await readFile(succeeded.logFile, 'utf8');
+  assert.match(log, /Final output\nowned recovery completed\n/);
+  assert.equal((log.match(/Final output/g) ?? []).length, 1);
+  assert.doesNotMatch(log, /Assistant message/);
   assert.equal(JSON.parse(await readFile(join(storage.directory, 'job-owners', 'index.json'), 'utf8')).version, 3, 'a matching tuple marker must avoid parsing bound foreign canonical state');
 });
 

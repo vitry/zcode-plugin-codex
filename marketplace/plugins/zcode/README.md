@@ -103,7 +103,7 @@ Every run is reserved as a durable, owner-scoped job. Installed plugin state liv
 
 `SessionEnd` performs best-effort settlement of the ending session's writable Rescue. A claimed queued reservation remains unchanged while its worker lease is held. If the process exits before settlement completes, a later Rescue uses a reservation-time crash fallback and may settle a provably orphaned writable job; settlement does not transfer ownership, and only the original owner can access its result. During this reservation-time crash fallback, a held exact worker lease keeps the writable guard in place. When the exact worker lease is free and the existing broker control channel is unavailable, `SessionEnd` or the next Rescue archives the orphan as `failed` and releases the writable guard. This is abandonment, not confirmed remote stop. On a reachable broker, an unacknowledged `session/stop` still keeps the writable guard. Other sessions can use `$zcode:status --all` only for redacted workspace inspection.
 
-Foreground runs stream ZCode activity to the current terminal. If no new activity arrives, they emit a 20-second heartbeat so a long model or tool call remains visibly alive. The same safe activity is stored on the job; `$zcode:status <job-id>` shows its phase, last activity time, and recent progress previews. For example:
+Foreground runs stream ZCode activity to the current terminal. If no new activity arrives, they emit a 20-second heartbeat so a long model or tool call remains visibly alive. Every accepted safe semantic progress event successfully dispatched by the existing bounded pipeline is also appended to a private, durable, human-readable `workspaces/<workspace-hash>/jobs/<job-id>.log`, beside `<job-id>.json`; the job's `progressPreview` remains only the last four events. The exact-owner detailed `$zcode:status <job-id>` displays progress previews, its phase and last activity time, plus `Log: <absolute-private-path>`. For example:
 
 ```text
 $zcode:rescue --wait repair the failing tests
@@ -115,7 +115,12 @@ Status: running
 Phase: running
 Progress:
   - ZCode started a tool call.
+Log: <absolute-private-path>
 ```
+
+The per-job log may also store current-turn visible assistant text selected by the exact existing linkage rules and the authoritative final output. Raw command stdout/stderr, arbitrary tool payloads (input/output/errors/metadata), raw reasoning, file or patch contents, environment values, credentials, capabilities, and hidden messages are never directly ingested as log source fields. This allowlist is not a semantic secret-redaction boundary: if visible assistant or final text itself quotes or paraphrases sensitive material, that selected text is retained. Keep secrets out of visible model text and protect the private log accordingly. Logs and progress are observational and cannot establish or alter terminal authority.
+
+Only the exact-owner detailed status exposes the private path. Compact lists, foreign `--all` projections, sibling sessions, the bound Rescue status sidecar, Root relays, and terminal notices do not expose `logFile` or a log path. The status grammar remains `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]`: there is no `--log` option or log-reading command. Logs use the existing durable retention and remain after uninstall or selective runtime cleanup; there is no rotation, expiry, pruning, per-log delete, export, or search. They are deleted only by proven plugin-owned workspace-data erasure.
 
 Background jobs have a separate lifecycle: ending the launching foreground command or Codex turn does not automatically cancel them. Use `$zcode:status <job-id>` to inspect one and `$zcode:cancel <job-id>` for explicit cancellation; ownership remains limited to the Codex session that reserved the job.
 

@@ -16,6 +16,7 @@ const PROGRESS_DIAGNOSTICS = new Map([
   ['conversation-render-failed', 'ZCode conversation progress rendering was disabled.'],
   ['writer-disabled', 'ZCode progress output was disabled.'],
   ['preview-disabled', 'ZCode progress preview was disabled.'],
+  ['archive-disabled', 'ZCode progress archive was disabled.'],
   ['progress-flush-timeout', 'ZCode progress cleanup reached its time limit.'],
   ['conversation-snapshot-fallback', 'ZCode conversation frames were unavailable; using bounded session progress.'],
   ['conversation-lifecycle-only', 'ZCode semantic progress is unavailable; lifecycle updates will continue.'],
@@ -64,7 +65,7 @@ export function normalizeZCodeProgress(notification, sessionId, observedAt) {
 }
 
 /**
- * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,relay?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>false|(()=>unknown),describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
+ * @param {{sessionId:string,deferred?:boolean,write?:(line:string)=>void,relay?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,persist?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,archive?:(event:{phase:string,message:string,observedAt:string})=>Promise<void>|void,persistProbe?:(probe:any)=>Promise<void>|void,activateSnapshotFallback?:()=>false|(()=>unknown),describeNotification?:(notification:unknown,observedAt:string)=>any|Promise<any>,onDescriptorOverflow?:()=>void,onDiagnostic?:(diagnostic:{kind:string})=>void,now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void}} options
  */
 export function createProgressReporter({
   sessionId,
@@ -72,6 +73,7 @@ export function createProgressReporter({
   write,
   relay,
   persist,
+  archive,
   persistProbe,
   activateSnapshotFallback: configuredSnapshotFallback,
   describeNotification,
@@ -94,11 +96,13 @@ export function createProgressReporter({
   const logicalPending = [];
   /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */ const writerPending = [];
   /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */ const persistPending = [];
+  /** @type {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} */ const archivePending = [];
   /** @type {Promise<void>|null} */ let writerInFlight = null;
   /** @type {Promise<void>|null} */ let persistInFlight = null;
-  let writerEpoch = 0; let persistEpoch = 0;
+  /** @type {Promise<void>|null} */ let archiveInFlight = null;
+  let writerEpoch = 0; let persistEpoch = 0; let archiveEpoch = 0;
   /** @type {string|null} */ let lastPersistedAt = null;
-  let writerDisabled = false; let persistDisabled = false;
+  let writerDisabled = false; let persistDisabled = false; let archiveDisabled = false;
   /** @type {Promise<void>|null} */ let descriptorInFlight = null;
   /** @type {Extract<(typeof logicalPending)[number],{kind:'descriptor'}>|null} */ let activeDescriptor = null;
   let descriptorEpoch = 0;
@@ -311,6 +315,24 @@ export function createProgressReporter({
     });
     persistInFlight = tracked;
   };
+  /** @param {{event:{phase:string,message:string,observedAt:string},sequence:number}} entry */
+  const startArchive = (entry) => {
+    if (typeof archive !== 'function' || archiveDisabled) return;
+    const epoch = archiveEpoch;
+    let operation;
+    try { operation = Promise.resolve(archive(entry.event)); }
+    catch { operation = Promise.reject(new Error('progress archive failed')); }
+    const tracked = operation.catch(() => {
+      if (epoch !== archiveEpoch) return;
+      disableArchive(true);
+    }).then(() => {
+      if (epoch !== archiveEpoch) return;
+      archiveInFlight = null;
+      const next = archivePending.shift();
+      if (next) startArchive(next);
+    });
+    archiveInFlight = tracked;
+  };
   /** @param {Array<{event:{phase:string,message:string,observedAt:string},sequence:number}>} queue @param {{event:{phase:string,message:string,observedAt:string},sequence:number}} entry */
   const retainBounded = (queue, entry) => {
     queue.push(entry);
@@ -329,6 +351,12 @@ export function createProgressReporter({
     if (typeof persist !== 'function' || persistDisabled) return;
     const entry = { event, sequence };
     if (persistInFlight === null) startPersist(entry); else retainBounded(persistPending, entry);
+  };
+  /** @param {{phase:string,message:string,observedAt:string}} event @param {number} sequence */
+  const enqueueArchive = (event, sequence) => {
+    if (typeof archive !== 'function' || archiveDisabled) return;
+    const entry = { event, sequence };
+    if (archiveInFlight === null) startArchive(entry); else retainBounded(archivePending, entry);
   };
   /** @param {{sequence:number,phase:string,code:string,observedAt:string}} record */
   const startRelay = (record) => {
@@ -381,7 +409,7 @@ export function createProgressReporter({
     if (key === previousKey) return null;
     previousKey = key;
     if (event.phase === 'finalizing') terminalDispatched = true;
-    enqueueWriter(event, sequence); enqueuePersist(event, sequence);
+    enqueueWriter(event, sequence); enqueuePersist(event, sequence); enqueueArchive(event, sequence);
     if (relaySource !== 'none') relayEvent(event, relaySource);
     return event;
   };
@@ -555,19 +583,22 @@ export function createProgressReporter({
         diagnose('progress-flush-timeout'); await Promise.resolve();
       }
       const sinkBudget = remaining(deadline);
-      const [writerDrained, persistenceDrained, probePersistenceDrained, relayDrained] = await Promise.all([
-        waitWithin(drainWriter(), sinkBudget), waitWithin(drainPersistence(), sinkBudget), waitWithin(drainProbePersistence(), sinkBudget), waitWithin(drainRelay(), sinkBudget),
+      const [writerDrained, persistenceDrained, archiveDrained, probePersistenceDrained, relayDrained] = await Promise.all([
+        waitWithin(drainWriter(), sinkBudget), waitWithin(drainPersistence(), sinkBudget), waitWithin(drainArchive(), sinkBudget),
+        waitWithin(drainProbePersistence(), sinkBudget), waitWithin(drainRelay(), sinkBudget),
       ]);
-      if (!writerDrained || !persistenceDrained || !probePersistenceDrained || !relayDrained) {
+      if (!writerDrained || !persistenceDrained || !archiveDrained || !probePersistenceDrained || !relayDrained) {
         diagnose('progress-flush-timeout'); await Promise.resolve();
         if (!writerDrained) disableWriter();
         if (!persistenceDrained) disablePersist();
+        if (!archiveDrained) disableArchive(true);
         if (!probePersistenceDrained) disableProbePersist();
         if (!relayDrained) disableRelay();
         const finalBudget = remaining(deadline);
         await Promise.all([
           writerDisabled ? Promise.resolve() : waitWithin(drainWriter(), finalBudget),
           persistDisabled ? Promise.resolve() : waitWithin(drainPersistence(), finalBudget),
+          archiveDisabled ? Promise.resolve() : waitWithin(drainArchive(), finalBudget),
           probePersistInFlight === null ? Promise.resolve() : waitWithin(drainProbePersistence(), finalBudget),
           relayInFlight === null ? Promise.resolve() : waitWithin(drainRelay(), finalBudget),
         ]);
@@ -581,7 +612,7 @@ export function createProgressReporter({
       descriptorEpoch += 1;
       for (const item of logicalPending) if (item.kind === 'descriptor') item.state = 'dropped';
       activeDescriptor = null; descriptorInFlight = null; pumpLogical(); logicalPending.length = 0;
-      disableWriter(); disablePersist(); disableRelay();
+      disableWriter(); disablePersist(); disableArchive(); disableRelay();
       stopTimer();
     },
   };
@@ -605,6 +636,8 @@ export function createProgressReporter({
     while (persistInFlight !== null) await persistInFlight;
   }
 
+  async function drainArchive() { while (archiveInFlight !== null) await archiveInFlight; }
+
   async function drainProbePersistence() {
     while (probePersistInFlight !== null) await probePersistInFlight;
   }
@@ -614,6 +647,10 @@ export function createProgressReporter({
 
   function disableWriter() { writerEpoch += 1; writerDisabled = true; writerInFlight = null; writerPending.length = 0; }
   function disablePersist() { persistEpoch += 1; persistDisabled = true; persistInFlight = null; persistPending.length = 0; }
+  function disableArchive(withDiagnostic = false) {
+    archiveEpoch += 1; archiveDisabled = true; archiveInFlight = null; archivePending.length = 0;
+    if (withDiagnostic) diagnose('archive-disabled');
+  }
   function disableProbePersist() { probePersistInFlight = null; probePersistPending = null; }
   function disableRelay() { relayEpoch += 1; relayDisabled = true; relayInFlight = null; relayPending.length = 0; }
 }

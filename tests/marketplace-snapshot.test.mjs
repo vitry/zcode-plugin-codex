@@ -22,6 +22,8 @@ test('marketplace builder requires the complete isolated Rescue payload', () => 
     'scripts/zcode-companion.mjs',
     'scripts/lib/invocation.mjs',
     'scripts/lib/job-control.mjs',
+    'scripts/lib/job-log.mjs',
+    'scripts/lib/job-log-runtime.mjs',
     'scripts/lib/public-text.mjs',
     'scripts/lib/rescue-binding.mjs',
     'scripts/lib/rescue-preparation.mjs',

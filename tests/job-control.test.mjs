@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
+import { parseArgs } from '../scripts/lib/args.mjs';
 import { atomicWriteJson } from '../scripts/lib/fs.mjs';
 import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { executeJob } from '../scripts/lib/review.mjs';
+import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
 
 async function setup() {
@@ -48,7 +50,7 @@ test('bound Rescue status selects the exact binding current job and returns only
   const jobs = [
     { id: 'job-wrong-turn', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'other-turn', command: 'rescue', status: 'running' },
     { id: 'job-wrong-command', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'review', status: 'running' },
-    { id: 'job-bound', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'rescue', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:00.000Z', progressPreview: preview, workerLeaseId: 'PRIVATE_WORKER', resultArtifact: 'PRIVATE_ARTIFACT' },
+    { id: 'job-bound', workspace: '/repo', ownerSessionId: 'parent', ownerTurnId: 'parent-turn', command: 'rescue', status: 'running', phase: 'running', lastActivityAt: '2026-08-17T00:00:00.000Z', progressPreview: preview, logFile: '/private/job-bound.log', workerLeaseId: 'PRIVATE_WORKER', resultArtifact: 'PRIVATE_ARTIFACT' },
   ];
   let requested;
   const result = await readBoundRescueStatus({
@@ -84,6 +86,29 @@ test('bound Rescue status maps exact binding lookup failures to fixed safe error
     readBoundRescueStatus({ store: { readBoundRescueCurrentJob: async () => { throw new PluginError('PRIVATE_STATE_FAILURE', 'PRIVATE_JOB_ID'); } }, workspace: '/repo', executor }),
     (/** @type {any} */ error) => error?.code === 'BOUND_RESCUE_STATUS_UNAVAILABLE' && error.message === 'Bound Rescue status is unavailable.' && Object.keys(error.details).length === 0,
   );
+});
+
+test('status exposes logFile only on exact-owner detail and keeps the grammar unchanged', async () => {
+  const { root, workspace, store } = await setup();
+  const mine = await store.reserveJob({ workspace, ...reservation, readOnly: true });
+  const foreign = await store.reserveJob({ workspace, ...reservation, readOnly: true, ownerSessionId: 'session-b', ownerTurnId: 'turn-b' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace });
+  const mineLog = join(storage.directory, 'jobs', `${mine.id}.log`);
+  const foreignLog = join(storage.directory, 'jobs', `${foreign.id}.log`);
+  await store.attachJobLog(workspace, mine.id, mineLog);
+  await store.attachJobLog(workspace, foreign.id, foreignLog);
+  const runtime = {
+    cwd: workspace,
+    env: { ...process.env, ZCODE_DATA_ROOT: join(root, 'data') },
+    caller: { sessionId: 'session-a', turnId: 'turn-a', permissionMode: 'workspace-write' },
+  };
+
+  const detailed = await runCompanion(['status', mine.id], runtime);
+  assert.equal(detailed.job.logFile, mineLog);
+  const listed = await runCompanion(['status', '--all'], runtime);
+  assert.equal(Object.hasOwn(listed.jobs.find((/** @type {any} */ job) => job.id === mine.id), 'logFile'), false);
+  assert.equal(Object.hasOwn(listed.jobs.find((/** @type {any} */ job) => job.id === foreign.id), 'logFile'), false);
+  assert.throws(() => parseArgs(['status', mine.id, '--log']), { code: 'ARGUMENT_INVALID' });
 });
 
 test('latest selection is canonical-workspace and owner confined', async () => {
@@ -908,14 +933,26 @@ test('executor reports only same-session progress and drains persistence before 
   } finally { releaseFinalizing(); }
   const result = await execution;
   assert.equal(result.job.status, 'succeeded'); assert.equal(typeof intervalCallback, 'function');
-  assert.deepEqual(lines, [
+  const semanticLines = [
     '[zcode] ZCode started the delegated turn.\n',
     '[zcode] ZCode completed a tool call.\n',
     '[zcode] ZCode is generating a response.\n',
     '[zcode] ZCode started a tool call.\n',
     '[zcode] ZCode completed the delegated turn.\n',
-  ]);
-  assert.deepEqual(persisted.map((event) => event.message), lines.map((line) => line.slice(8, -1)));
+  ];
+  const diagnosticLines = [
+    '[zcode] ZCode progress cleanup reached its time limit.\n',
+    '[zcode] ZCode progress archive was disabled.\n',
+  ];
+  assert.deepEqual(lines.slice(0, semanticLines.length), semanticLines);
+  assert.ok([0, diagnosticLines.length].includes(lines.length - semanticLines.length));
+  assert.deepEqual(lines.slice(semanticLines.length), lines.length === semanticLines.length ? [] : diagnosticLines);
+  const semanticMessages = semanticLines.map((line) => line.slice(8, -1));
+  const diagnosticMessages = diagnosticLines.map((line) => line.slice(8, -1));
+  const persistedMessages = persisted.map((event) => event.message);
+  assert.deepEqual(persistedMessages.slice(0, semanticMessages.length), semanticMessages);
+  assert.ok([0, diagnosticMessages.length].includes(persistedMessages.length - semanticMessages.length));
+  assert.deepEqual(persistedMessages.slice(semanticMessages.length), persistedMessages.length === semanticMessages.length ? [] : diagnosticMessages);
   assert.deepEqual(relays.map(({ sequence, phase, code }) => ({ sequence, phase, code })), [
     { sequence: 1, phase: 'starting', code: 'started' },
     { sequence: 2, phase: 'investigating', code: 'tool-active' },
@@ -924,9 +961,51 @@ test('executor reports only same-session progress and drains persistence before 
     { sequence: 5, phase: 'finalizing', code: 'finalizing' },
   ]);
   assert.ok(order.lastIndexOf('persist:finalizing') < order.indexOf('transition:succeeded'));
-  assert.equal(order.includes('persist:waiting'), false);
-  assert.equal((await store.readJob(workspace, job.id)).status, 'succeeded');
+  assert.equal(order.filter((entry) => entry === 'persist:waiting').length, persistedMessages.length - semanticMessages.length);
+  const succeeded = await store.readJob(workspace, job.id);
+  assert.equal(succeeded.status, 'succeeded');
+  assert.equal(succeeded.logFile, join((await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace })).directory, 'jobs', `${job.id}.log`));
+  const log = await readFile(succeeded.logFile, 'utf8');
+  for (const message of semanticMessages) assert.match(log, new RegExp(message.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(log, /Assistant message\ndone\n/);
+  assert.match(log, /Final output\ndone\n/);
+  assert.equal((log.match(/Assistant message/g) ?? []).length, 1);
+  assert.equal((log.match(/Final output/g) ?? []).length, 1);
   assert.equal(unsubscribes, 1); assert.equal(cleared, 1); assert.equal(closes, 1); assert.equal(handler, null);
+});
+
+test('each job-log failure stage emits one fixed safe diagnostic without changing authoritative success or preview', async () => {
+  for (const failure of ['create', 'attach', 'archive', 'assistant', 'final']) {
+    const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+    const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace });
+    if (failure === 'create') await mkdir(join(storage.directory, 'jobs', `${job.id}.log`));
+    let replaced = false;
+    const replaceLog = async () => {
+      if (replaced) return; replaced = true;
+      const attached = await store.readJob(workspace, job.id); await rm(attached.logFile); await mkdir(attached.logFile);
+    };
+    const wrapped = {
+      ...store,
+      ...(failure === 'attach' ? { attachJobLog: async () => { throw new Error('PRIVATE_ATTACH_PATH'); } } : {}),
+      ...(failure === 'final' ? { finishJob: async (/** @type {string} */ targetWorkspace, /** @type {string} */ jobId, /** @type {string[]} */ expected, /** @type {string} */ next, /** @type {Record<string,unknown>} */ patch) => { const winner = await store.finishJob(targetWorkspace, jobId, expected, next, patch); if (next === 'succeeded') await replaceLog(); return winner; } } : {}),
+    };
+    const client = {
+      createSession: async () => {
+        return { session: { sessionId: `zs-log-${failure}` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] };
+      },
+      setPermissionHandler: () => {}, subscribe: silentSubscribe,
+      send: async () => { if (failure === 'archive') await replaceLog(); return { inputId: `input-log-${failure}`, stateRevision: 1 }; }, waitForCompletion: async () => {},
+      readSession: async () => { if (failure === 'assistant') await replaceLog(); return { projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: `assistant-log-${failure}`, parentMessageId: `input-log-${failure}` }, parts: [{ type: 'text', text: `result despite ${failure}` }] }] }; },
+      close: async () => {},
+    };
+    /** @type {string[]} */ const lines = [];
+    const output = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', progressWriter: (line) => lines.push(line) });
+    assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, `result despite ${failure}`);
+    assert.equal(await readFile(join(storage.directory, output.job.resultArtifact), 'utf8'), output.result);
+    assert.equal(lines.filter((line) => line === '[zcode] ZCode job log was disabled.\n').length, 1, failure);
+    assert.doesNotMatch(lines.join(''), /PRIVATE_ATTACH_PATH|zcode-job-control-|\.log/u, failure);
+    assert.doesNotMatch(JSON.stringify((await store.readJob(workspace, job.id)).progressPreview), /job log/i, failure);
+  }
 });
 
 test('slow send has no progress side effects until accepted', async () => {
@@ -1182,7 +1261,8 @@ test('wait and read ambiguity retain the running guard when remote stop is unack
 test('artifact directory fsync failure fails the job before success', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   const client = { createSession: async () => ({ session: { sessionId: 'zs' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } } }), setPermissionHandler: () => {}, subscribe: silentSubscribe, send: async () => ({ inputId: 'input-artifact-failure', stateRevision: 1 }), waitForCompletion: async () => ({}), readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 1 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-artifact', parentMessageId: 'input-artifact-failure' }, parts: [{ type: 'text', text: 'done' }] }] }), close: async () => {} };
-  const error = Object.assign(new Error('disk sync failed'), { code: 'EIO' });
-  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', syncDirectory: async () => { throw error; } }), { code: 'ARTIFACT_WRITE_FAILED' });
-  assert.equal((await store.readJob(workspace, job.id)).status, 'failed');
+  const error = Object.assign(new Error('disk sync failed'), { code: 'EIO' }); let syncs = 0;
+  await assert.rejects(executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', syncDirectory: async () => { syncs += 1; if (syncs === 2) throw error; } }), { code: 'ARTIFACT_WRITE_FAILED' });
+  const failed = await store.readJob(workspace, job.id); assert.equal(failed.status, 'failed'); assert.equal(failed.resultArtifact, undefined);
+  const log = await readFile(failed.logFile, 'utf8'); assert.match(log, /Assistant message\ndone\n/); assert.doesNotMatch(log, /Final output/);
 });

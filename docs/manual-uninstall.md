@@ -42,7 +42,7 @@ Durable jobs and their history are retained by default so results and diagnostic
 
 - `jobs/`, `job-owners/`, and `job-specs/` job records;
 - `prompts/` and `results/` artifacts;
-- persisted progress previews inside job records, plus diagnostic logs/history represented by those records and artifacts; and
+- persisted progress previews inside job records and private durable `jobs/<job-id>.log` history files; each log is retained after uninstall and selective runtime cleanup; and
 - `config/models.json` workspace model policy, if it should be retained for a later reinstall.
 
 ## Selective runtime-state cleanup while retaining history
@@ -59,6 +59,8 @@ After all jobs and plugin processes have stopped, you may selectively remove the
 Deleting these paths disables authorization, recovery, notification, broker control, and review-gate continuity represented by them. Perform this selective cleanup only after activity is conclusively settled.
 
 For full data erasure, after jobs are settled and after making any required backup, you may additionally remove the proven plugin-owned workspace directories under `<plugin-data-root>/workspaces/`. Removing a whole workspace directory permanently deletes its prompts, results, progress, logs/history, model policy, job ownership, and recovery evidence. Remove the plugin-data root itself only after proving it is the ZCode marketplace namespace and contains no data you want to retain.
+
+A `jobs/<job-id>.log` is deleted only by proven plugin-owned workspace-data erasure as described above. There is no separate per-log deletion or cleanup path.
 
 ---
 
@@ -106,7 +108,7 @@ Setup 还可能在选定的 Codex user configuration 中留下：
 
 - `jobs/`、`job-owners/` 和 `job-specs/` 任务记录；
 - `prompts/` 与 `results/` artifact；
-- job 记录中的持久 progress preview，以及这些记录和 artifact 所代表的诊断 logs/history；
+- job 记录中的持久 progress preview，以及私有持久 `jobs/<job-id>.log` 历史文件；每份日志在卸载和选择性清理后仍保留；
 - 如需供以后重新安装使用，可保留 `config/models.json` 工作区 model policy。
 
 ## 保留历史时选择性清理运行状态
@@ -123,3 +125,5 @@ Setup 还可能在选定的 Codex user configuration 中留下：
 删除这些路径会同时删除其代表的 authorization、恢复、通知、broker 控制和 review-gate 连续性。只有在活动已经明确结算后才执行这种选择性清理。
 
 如果需要彻底清除数据，请先结束任务并完成必要备份，然后可以额外移除 `<plugin-data-root>/workspaces/` 下已证明属于本插件的工作区目录。删除整个工作区目录会永久删除其中的 prompts、results、progress、logs/history、model policy、job ownership 与恢复证据。仅当确认整个 plugin-data root 是 ZCode 的 marketplace namespace，且其中没有需要保留的数据时，才移除该根目录。
+
+`jobs/<job-id>.log` 仅在删除已证明属于本插件的工作区数据时才删除；不存在单独逐日志删除或清理路径。
