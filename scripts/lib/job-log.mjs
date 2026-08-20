@@ -1,6 +1,7 @@
+import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, realpath, unlink } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { lstat, open, realpath, rename, unlink } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import { ensurePrivateDirectoryWithin } from './fs.mjs';
@@ -66,16 +67,18 @@ export async function createJobLogSink(input) {
   try { validateJobId(input?.jobId); opened = await serialize(invocationKey(input), () => createOrReopen(input)); }
   catch { return disabledSink(); }
 
-  let disabled = false;
+  let failed = false;
+  let rejectedAfterClose = false;
   let closed = false;
   let tail = Promise.resolve();
   const queueKey = canonicalQueueKey(opened);
   /** @param {()=>Promise<void>} operation */
   const enqueue = (operation) => {
-    if (disabled || closed) return Promise.resolve();
+    if (failed) return Promise.resolve();
+    if (closed) { rejectedAfterClose = true; return Promise.resolve(); }
     const pending = admitCanonical(async () => ({ key: queueKey, target: opened }), async () => {
-      if (disabled || closed) return;
-      try { await operation(); } catch { disabled = true; }
+      if (failed) return;
+      try { await operation(); } catch { failed = true; }
     });
     tail = pending.catch(() => {});
     return pending;
@@ -85,8 +88,13 @@ export async function createJobLogSink(input) {
   /** @param {unknown} title @param {unknown} body */
   const appendBlock = (title, body) => enqueue(() => appendAt(opened.root, opened.logFile, blockBytes(title, body), opened.identity));
   const flush = async () => { await tail; };
-  const close = async () => { await flush(); closed = true; };
-  return { logFile: opened.logFile, appendEvent, appendBlock, flush, close, get disabled() { return disabled; } };
+  const close = async () => {
+    if (closed) { await tail; return; }
+    closed = true;
+    const drain = tail;
+    await drain;
+  };
+  return { logFile: opened.logFile, appendEvent, appendBlock, flush, close, get disabled() { return failed || rejectedAfterClose; } };
 }
 
 /** @param {{dataRoot:string,workspace:string,jobId:string}} input */
@@ -116,7 +124,7 @@ async function createOrReopen(input) {
   } catch (error) {
     await handle.close().catch(() => {});
     handle = undefined;
-    await unlinkIfIdentity(logFile, identity);
+    await quarantineAndRemoveIfIdentity(logFile, identity);
     throw error;
   } finally { await handle?.close().catch(() => {}); }
 
@@ -125,7 +133,7 @@ async function createOrReopen(input) {
     await syncDirectory(root);
     return { root, logFile, identity: verified.identity, created: true };
   } catch (error) {
-    await unlinkIfIdentity(logFile, identity);
+    await quarantineAndRemoveIfIdentity(logFile, identity);
     throw error;
   }
 }
@@ -195,7 +203,7 @@ async function appendAt(root, logFile, bytes, expected) {
       || !sameIdentity(before, current) || !sameIdentity(before, stable)
       || expected && !sameIdentity(before, expected)) throw pathError();
     await confirmation.close(); confirmation = undefined;
-    await handle.write(bytes);
+    await writeAll(handle, bytes);
     await handle.sync();
     const after = await handle.stat({ bigint: true });
     confirmation = await open(logFile, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -290,15 +298,34 @@ function fileIdentity(info) { return { dev: info.dev, ino: info.ino }; }
 function sameIdentity(left, right) { return left.dev === right.dev && left.ino === right.ino; }
 /** @param {{mode:bigint|number}} info */
 function privateOwnerMode(info) { return process.platform === 'win32' || (Number(info.mode) & 0o777) === 0o600; }
+/** @param {import('node:fs/promises').FileHandle} handle @param {Buffer} bytes */
+async function writeAll(handle, bytes) {
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const { bytesWritten } = await handle.write(bytes, offset, bytes.byteLength - offset);
+    if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > bytes.byteLength - offset) throw new Error('Job log write made invalid progress.');
+    offset += bytesWritten;
+  }
+}
 /** @param {string} path @param {{dev:bigint,ino:bigint}|undefined} identity */
-async function unlinkIfIdentity(path, identity) {
+async function quarantineAndRemoveIfIdentity(path, identity) {
   if (!identity) return;
+  const quarantine = join(dirname(path), `.${basename(path)}.${randomBytes(16).toString('hex')}.quarantine`);
   let handle;
+  let confirmation;
   try {
-    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    if (sameIdentity(await handle.stat({ bigint: true }), identity)) await unlink(path);
-  } catch { /* Cleanup is best-effort and only occurs for the captured identity. */ }
-  finally { await handle?.close().catch(() => {}); }
+    await rename(path, quarantine);
+    handle = await open(quarantine, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = await handle.stat({ bigint: true });
+    confirmation = await open(quarantine, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const current = await confirmation.stat({ bigint: true });
+    if (!sameIdentity(opened, identity) || !sameIdentity(opened, current)) return;
+    await unlink(quarantine);
+  } catch { /* Cleanup is best-effort and only removes the captured identity. */ }
+  finally {
+    await confirmation?.close().catch(() => {});
+    await handle?.close().catch(() => {});
+  }
 }
 /** @param {string} path */
 async function syncDirectory(path) {

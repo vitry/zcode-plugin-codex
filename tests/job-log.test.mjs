@@ -16,7 +16,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -186,6 +186,73 @@ test('preserves every accepted block-body byte including CRLF, CR, and controls'
   assert.deepEqual(contents.subarray(headerEnd), Buffer.from(`${body}\n`, 'utf8'));
 }));
 
+test('retries partial writes until complete event and block frames persist', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  const probe = await open(sink.logFile, constants.O_RDONLY);
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const originalWrite = prototype.write;
+  let writeCalls = 0;
+  prototype.write = async function partialWrite(buffer, offset = 0, length = buffer.byteLength - offset, position) {
+    writeCalls += 1;
+    return originalWrite.call(this, buffer, offset, Math.min(length, 7), position);
+  };
+  try {
+    await sink.appendEvent('complete event frame');
+    await sink.appendBlock('Complete block frame', 'complete\r\nbody\u0000bytes');
+    await sink.close();
+  } finally { prototype.write = originalWrite; }
+  const contents = await readFile(sink.logFile, 'utf8');
+  assert.ok(writeCalls > 2);
+  assert.match(contents, /^\[.+Z\] complete event frame\n\n\[.+Z\] Complete block frame\n/u);
+  assert.equal(contents.slice(contents.indexOf('complete\r\nbody')), 'complete\r\nbody\u0000bytes\n');
+}));
+
+test('zero-progress writes fail safely without reporting a persisted frame', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  const probe = await open(sink.logFile, constants.O_RDONLY);
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const originalWrite = prototype.write;
+  prototype.write = async () => ({ bytesWritten: 0, buffer: Buffer.alloc(0) });
+  try {
+    await assert.rejects(appendJobLogEvent({ dataRoot, workspace, jobId: JOB_ID, event: 'direct zero progress' }), { code: 'JOB_LOG_APPEND_FAILED' });
+    await sink.appendEvent('must not report persisted');
+  }
+  finally { prototype.write = originalWrite; }
+  assert.equal(sink.disabled, true);
+  assert.equal(await readFile(sink.logFile, 'utf8'), '');
+}));
+
+test('close atomically rejects later admission and drains only already accepted appends', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  const probe = await open(sink.logFile, constants.O_RDONLY);
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const originalSync = prototype.sync;
+  let releaseSync;
+  const syncRelease = new Promise((resolve) => { releaseSync = resolve; });
+  let markSyncReached;
+  const syncReached = new Promise((resolve) => { markSyncReached = resolve; });
+  let held = false;
+  prototype.sync = async function heldSync(...args) {
+    if (!held) { held = true; markSyncReached(); await syncRelease; }
+    return originalSync.call(this, ...args);
+  };
+  try {
+    const accepted = sink.appendEvent('accepted before close');
+    await syncReached;
+    const closing = sink.close();
+    const rejected = sink.appendEvent('rejected after close');
+    releaseSync();
+    await Promise.all([accepted, closing, rejected]);
+  } finally { releaseSync(); prototype.sync = originalSync; }
+  assert.equal(sink.disabled, true);
+  const contents = await readFile(sink.logFile, 'utf8');
+  assert.match(contents, /accepted before close/);
+  assert.doesNotMatch(contents, /rejected after close/);
+}));
+
 test('a sink disables observationally after its file identity is replaced', async () => withFixture(async ({ dataRoot, workspace }) => {
   const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
   const displaced = `${sink.logFile}.displaced`;
@@ -318,6 +385,37 @@ test('a create failure returns a disabled non-throwing sink without a path', { s
   await sink.flush();
   await sink.close();
   assert.deepEqual(await readdir(outside), []);
+}));
+
+test('failed creation cleanup never deletes a replacement installed after identity checking', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const logFile = await resolveJobLogFile({ dataRoot, workspace, jobId: JOB_ID });
+  const displaced = `${logFile}.cleanup-race`;
+  const probe = await open(join(dirname(logFile), '.cleanup-probe'), 'w+', 0o600);
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const originalStat = prototype.stat;
+  const originalSync = prototype.sync;
+  let statCalls = 0;
+  let replacementInstalled = false;
+  prototype.sync = async () => { throw Object.assign(new Error('injected create durability failure'), { code: 'EIO' }); };
+  prototype.stat = async function replaceDuringCleanup(...args) {
+    const info = await originalStat.call(this, ...args);
+    statCalls += 1;
+    if (statCalls === 3) {
+      try { await rename(logFile, displaced); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+      await writeFile(logFile, 'foreign replacement\n', { mode: 0o600 });
+      replacementInstalled = true;
+    }
+    return info;
+  };
+  try {
+    await assert.rejects(createJobLog({ dataRoot, workspace, jobId: JOB_ID, title: 'Cleanup race' }), { code: 'JOB_LOG_CREATE_FAILED' });
+  } finally {
+    prototype.stat = originalStat;
+    prototype.sync = originalSync;
+  }
+  assert.equal(replacementInstalled, true);
+  assert.equal(await readFile(logFile, 'utf8'), 'foreign replacement\n');
 }));
 
 test('direct appends reject replacement races observed through handle identity', async () => withFixture(async ({ dataRoot, workspace }) => {
