@@ -73,15 +73,16 @@ function user(messageId, info = {}) { return { info: { role: 'user', messageId, 
 function semantics(origin, kind, uiVisibility = 'visible') { return { origin, kind, uiVisibility, providerVisibility: 'visible', transcriptVisibility: 'visible' }; }
 
 test('terminal error preserves the provider message instead of partial assistant text', () => {
+  const providerMessage = '  Provider quota exhausted.  ';
   const snapshot = {
-    projection: { status: 'error', lastError: { message: 'Provider quota exhausted.' } },
+    projection: { status: 'error', lastError: { message: providerMessage } },
     messages: [assistant([{ type: 'text', text: 'partial result' }])],
   };
-  assert.throws(() => extractTerminalResult(snapshot, 'rescue'), { code: 'ZCODE_TURN_FAILED', message: 'Provider quota exhausted.' });
+  assert.throws(() => extractTerminalResult(snapshot, 'rescue'), { code: 'ZCODE_TURN_FAILED', message: providerMessage });
 });
 
 test('terminal error without a usable provider message uses the fixed fallback', () => {
-  for (const lastError of [undefined, {}, { message: '' }]) {
+  for (const lastError of [undefined, {}, { message: '' }, { message: ' \t\n' }]) {
     const snapshot = { projection: { status: 'error', ...(lastError === undefined ? {} : { lastError }) }, messages: [] };
     assert.throws(() => extractTerminalResult(snapshot, 'rescue'), { code: 'ZCODE_TURN_FAILED', message: 'ZCode reported a terminal error.' });
   }
@@ -94,9 +95,27 @@ test('nonterminal snapshot status fails closed', () => {
   );
 });
 
+test('missing terminal snapshot status fails closed', () => {
+  assert.throws(
+    () => extractTerminalResult({ messages: [] }, 'rescue'),
+    { code: 'ZCODE_TERMINAL_STATE_INVALID', message: 'ZCode completion did not produce a success-compatible terminal state.' },
+  );
+});
+
 test('completed terminal snapshot delegates to final result extraction', () => {
   const snapshot = { projection: { status: 'completed' }, messages: [assistant([{ type: 'text', text: 'final result' }])] };
   assert.equal(extractTerminalResult(snapshot, 'rescue'), 'final result');
+});
+
+test('idle terminal snapshot delegates to final result extraction', () => {
+  const snapshot = { projection: { status: 'idle' }, messages: [assistant([{ type: 'text', text: 'idle result' }])] };
+  assert.equal(extractTerminalResult(snapshot, 'rescue'), 'idle result');
+});
+
+test('success-compatible terminal states still require acceptable assistant output', () => {
+  for (const status of ['completed', 'idle']) {
+    assert.throws(() => extractTerminalResult({ projection: { status }, messages: [] }, 'rescue'), { code: 'ZCODE_RESULT_MISSING' });
+  }
 });
 
 test('review result prefers valid structured findings anchored by visible final text', () => {

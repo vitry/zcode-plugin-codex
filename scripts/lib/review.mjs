@@ -337,7 +337,7 @@ export function extractTerminalResult(snapshot, command, turnBoundary = {}) {
   const status = snapshot?.projection?.status;
   if (status === 'error') {
     const providerMessage = snapshot?.projection?.lastError?.message;
-    const message = typeof providerMessage === 'string' && providerMessage.length > 0 ? providerMessage : 'ZCode reported a terminal error.';
+    const message = typeof providerMessage === 'string' && providerMessage.trim().length > 0 ? providerMessage : 'ZCode reported a terminal error.';
     throw new PluginError('ZCODE_TURN_FAILED', message, { category: 'runtime', remedy: 'Inspect the stored ZCode job status/result and retry after resolving the reported provider or runtime failure.' });
   }
   if (status !== 'completed' && status !== 'idle') {
