@@ -82,7 +82,8 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   if (!input || !['named', 'generic'].includes(input.route) || !['foreground', 'background'].includes(input.execution)
     || typeof input.parentRolloutJson !== 'string' || typeof input.childRolloutJson !== 'string'
     || typeof input.hookLifecycleJson !== 'string' || typeof input.executorRecordBytes !== 'string'
-    || typeof input.bindingAuthorityBytes !== 'string' || typeof input.bindingPartitionBytes !== 'string'
+    || typeof input.activeTurnRecordBytes !== 'string' || typeof input.bindingAuthorityBytes !== 'string'
+    || typeof input.bindingPreReservationBytes !== 'string' || typeof input.bindingPartitionBytes !== 'string'
     || typeof input.jobRecordBytesJson !== 'string' || typeof input.fakePeerJson !== 'string'
     || typeof input.execFramesJson !== 'string'
     || !input.expected) {
@@ -136,7 +137,8 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
     && parent.indexOf(preparations[1]) < parent.indexOf(followups[0]))) mismatch('continuation-event-order', 'Captured raw parent event order is invalid.');
   const parentTurnEvents = [preparations[0], spawns[0], starts[0], stops[0], preparations[1], followups[0]];
   if (parentTurnEvents.some((event) => event?.turn_id !== originalParentTurnId)) mismatch('continuation-parent-turns', 'Raw parent events do not prove one exact active parent turn.');
-  await validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution });
+  const activeTurn = validateContinuationActiveTurn(input.activeTurnRecordBytes, { ...expected, originalParentTurnId });
+  const preparationRecords = await validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution }, activeTurn);
   const observedAgentPath = boundedString(starts[0].payload.agent_path); const observedTaskName = boundedString(spawn.task_name);
   if (!observedTaskName || !observedAgentPath || observedAgentPath !== `/root/${observedTaskName}`
     || stops[0].payload.agent_path !== observedAgentPath) mismatch('continuation-presentation', 'Captured child presentation is internally inconsistent.');
@@ -164,20 +166,26 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
     || promptHooks[0].permission_mode !== expected.permissionMode || startHooks[0].cwd !== expected.workspace
     || stopHooks[0].cwd !== expected.workspace || promptHooks[0].cwd !== expected.workspace) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle does not prove one prompt and one Start/Stop in the same parent turn.');
   if (!(hooks.indexOf(promptHooks[0]) < hooks.indexOf(startHooks[0]) && hooks.indexOf(startHooks[0]) < hooks.indexOf(stopHooks[0]))) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle order is invalid.');
-  let authority; let partition; try { authority = parseRescueBindingAuthority(input.bindingAuthorityBytes, { parentSessionId, workspace: expected.workspace }); partition = parseRescueBindingPartition(input.bindingPartitionBytes, { parentSessionId, workspace: expected.workspace }); } catch { mismatch('continuation-binding-invalid', 'Raw Rescue binding files are invalid.'); }
-  if (authority.key !== partition.key || partition.records.length !== 1) mismatch('continuation-binding-invalid', 'Raw Rescue binding authority and partition do not match.');
+  let authority; let prePartition; let partition; try { authority = parseRescueBindingAuthority(input.bindingAuthorityBytes, { parentSessionId, workspace: expected.workspace }); prePartition = parseRescueBindingPartition(input.bindingPreReservationBytes, { parentSessionId, workspace: expected.workspace }); partition = parseRescueBindingPartition(input.bindingPartitionBytes, { parentSessionId, workspace: expected.workspace }); } catch { mismatch('continuation-binding-invalid', 'Raw Rescue binding files are invalid.'); }
+  if (authority.key !== partition.key || authority.key !== prePartition.key || prePartition.records.length !== 1 || partition.records.length !== 1) mismatch('continuation-binding-invalid', 'Raw Rescue binding authority and partitions do not match.');
+  const preBinding = prePartition.records[0];
   const binding = partition.records[0];
   if (binding.executorAgentId !== childThreadId || binding.executorAgentType !== executor.agentType || binding.executorParentTurnId !== originalParentTurnId
     || binding.executorParentPermissionMode !== expected.permissionMode || binding.permissionMode !== expected.permissionMode
-    || binding.state !== 'active' || binding.operationId !== expected.operationId
-    || binding.anchorJobId !== expected.anchorJobId) mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
-  if (binding.currentJobId !== expected.currentJobId) mismatch('continuation-current-job-stale', 'Raw current job binding does not match the captured CAS route.');
+    || binding.state !== 'active' || preBinding.key !== binding.key || preBinding.executorAgentId !== binding.executorAgentId
+    || preBinding.executorAgentType !== binding.executorAgentType || preBinding.executorParentTurnId !== binding.executorParentTurnId
+    || preBinding.executorParentPermissionMode !== binding.executorParentPermissionMode || preBinding.permissionMode !== binding.permissionMode
+    || preBinding.operationId !== binding.operationId || preBinding.anchorJobId !== binding.anchorJobId) mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
+  if (preBinding.state !== 'active' || preBinding.currentJobId !== preBinding.anchorJobId
+    || binding.currentJobId === preBinding.currentJobId) mismatch('continuation-current-job-stale', 'Raw current job binding does not prove the exact pre-reservation CAS transition.');
   const jobs = await parseRawJobsWithProduction(jobBytes, expected);
   if (jobs.length !== 2 || new Set(jobs.map((job) => job?.id)).size !== jobs.length) mismatch('continuation-job-identity', 'Raw job evidence contains extra or duplicate identities.');
   const anchor = jobs.find((job) => job?.id === binding.anchorJobId); const current = jobs.find((job) => job?.id === binding.currentJobId);
   if (!current) mismatch('continuation-current-job-stale', 'Raw current job evidence is absent.');
   if (!anchor || anchor.status === 'cancelled' || !boundedString(anchor.zcodeSessionId)) mismatch('continuation-anchor-invalid', 'Raw anchor job is not resumable.');
   if (anchor.ownerTurnId !== originalParentTurnId || current.ownerTurnId !== originalParentTurnId) mismatch('continuation-job-record', 'Raw job owner turns do not match the active parent turn.');
+  if (Date.parse(anchor.createdAt) > Date.parse(stops[0].timestamp) || Date.parse(preBinding.updatedAt) > Date.parse(preparationRecords[1].createdAt)
+    || Date.parse(current.createdAt) < Date.parse(preparationRecords[1].createdAt) || Date.parse(binding.updatedAt) < Date.parse(current.createdAt)) mismatch('continuation-job-record', 'Raw binding and job timestamps do not match the long-running lifecycle transition.');
   if (!['queued', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled'].includes(current.status)) mismatch('continuation-current-job-stale', 'Raw current job status is invalid.');
   let backgroundObserver;
   if (input.execution === 'background') { try { backgroundObserver = parseObject(input.backgroundObserverJson, 'continuation-background-evidence'); } catch { mismatch('continuation-background-evidence', 'Background continuation lacks raw private observer evidence.'); }
@@ -229,7 +237,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   if (!(eventTimestamp(starts[0]) < eventTimestamp(calls[0]) && eventTimestamp(firstOutput) < eventTimestamp(stops[0])
     && eventTimestamp(followups[0]) < eventTimestamp(calls[1]))) mismatch('continuation-child-order', 'Cross-rollout child chronology is invalid.');
   assertMandatoryContinuationPublicSurfaces(parent, child, jobs, observedAgentPath, execFrames);
-  const privateValues = [binding.key, binding.operationId, binding.anchorJobId, binding.currentJobId, anchor.zcodeSessionId,
+  const privateValues = [activeTurn.key, binding.key, binding.operationId, binding.anchorJobId, binding.currentJobId, anchor.zcodeSessionId,
     backgroundObserver?.executionCapability, current.workerLeaseId, executor.childTurnId].filter((value) => typeof value === 'string' && value);
   if (privateValues.length < 6) mismatch('continuation-private-sentinels', 'Raw artifacts do not provide mandatory private sentinels.');
   const publicText = JSON.stringify({ parent: redactValidatedPreparationInputs(parent), child, execFrames, rawCapture: rawCapture?.publicEvidence });
@@ -237,7 +245,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   return {
     route: input.route, parentSessionId, childThreadId, agentPath: observedAgentPath, originalParentTurnId, continuationParentTurnId,
     spawnCount: 1, startCount: 1, stopCount: 1, followupCount: 1, continuationSpawnCount: 0,
-    childInvocationCount: 2, peerResumeChecked: true, execution: input.execution,
+    childInvocationCount: 2, peerResumeChecked: true, activeTurnLifecycleChecked: true, execution: input.execution,
   };
 }
 
@@ -324,11 +332,13 @@ function validateImmutableArtifactHistory(history, input) {
   }
   if (immutable.size < 1 || preparationHistory.size !== 1 || executorHistory.size !== 1 || bindingHistory.size !== 1 || jobHistory.size !== 2) mismatch('continuation-artifact-history', 'Complete artifact history is missing mandatory authority records.');
   let preparations; let jobs; try { preparations = JSON.parse(input.preparationRecordBytesJson); jobs = JSON.parse(input.jobRecordBytesJson); } catch { mismatch('continuation-artifact-history', 'Selected artifact bytes are malformed.'); }
-  let executor; let authority; let partition; try { executor = JSON.parse(input.executorRecordBytes); authority = JSON.parse(input.bindingAuthorityBytes); partition = JSON.parse(input.bindingPartitionBytes); } catch { mismatch('continuation-artifact-history', 'Selected authority bytes are malformed.'); }
+  let activeTurn; let executor; let authority; let prePartition; let partition; try { activeTurn = JSON.parse(input.activeTurnRecordBytes); executor = JSON.parse(input.executorRecordBytes); authority = JSON.parse(input.bindingAuthorityBytes); prePartition = JSON.parse(input.bindingPreReservationBytes); partition = JSON.parse(input.bindingPartitionBytes); } catch { mismatch('continuation-artifact-history', 'Selected authority bytes are malformed.'); }
   const executorKey = createHash('sha256').update(JSON.stringify(['executor', executor.agentId])).digest('hex');
   const expectedArtifacts = [
+    [`identity/active-turns/${activeTurn.key}.json`, input.activeTurnRecordBytes],
     [`hook-state/executor-${executorKey}.json`, input.executorRecordBytes],
     [`rescue-binding-authority-${authority.key}.json`, input.bindingAuthorityBytes],
+    [`rescue-binding-session-${prePartition.key}.json`, input.bindingPreReservationBytes],
     [`rescue-binding-session-${partition.key}.json`, input.bindingPartitionBytes],
     ...preparations.map((bytes) => [`invocations/prepared/${JSON.parse(bytes).key}.json`, bytes]),
     ...jobs.map((bytes) => [`jobs/${JSON.parse(bytes).id}.json`, bytes]),
@@ -1189,7 +1199,21 @@ async function parseRawJobsWithProduction(jobBytes, expected) {
   } finally { await rm(dataRoot, { recursive: true, force: true }); }
 }
 
-async function validateContinuationPreparations(parent, rawRecordsJson, expected) {
+function validateContinuationActiveTurn(rawBytes, expected) {
+  let record; try { record = JSON.parse(rawBytes); } catch { mismatch('continuation-active-turn', 'Raw active-turn bytes are malformed.'); }
+  const keys = ['createdAt', 'key', 'kind', 'permissionMode', 'prompt', 'sessionId', 'turnId', 'version', 'workspace'];
+  const expectedKey = createHash('sha256').update(JSON.stringify([expected.parentSessionId, expected.workspace])).digest('hex');
+  if (!rawBytes.endsWith('\n') || Object.keys(record ?? {}).sort().join('\0') !== keys.sort().join('\0')
+    || record.version !== 2 || record.kind !== 'active-turn' || record.key !== expectedKey
+    || record.sessionId !== expected.parentSessionId || record.turnId !== expected.originalParentTurnId
+    || record.workspace !== expected.workspace || record.permissionMode !== expected.permissionMode
+    || typeof record.prompt !== 'string' || !Number.isFinite(Date.parse(record.createdAt))) {
+    mismatch('continuation-active-turn', 'Raw lifecycle-bound active-turn authority is invalid.');
+  }
+  return record;
+}
+
+async function validateContinuationPreparations(parent, rawRecordsJson, expected, activeTurn) {
   if (typeof rawRecordsJson !== 'string' || Buffer.byteLength(rawRecordsJson) > MAX_ROLLOUT_BYTES) mismatch('continuation-preparation-records', 'Raw consumed preparation records are absent.');
   let recordBytes; try { recordBytes = JSON.parse(rawRecordsJson); } catch { mismatch('continuation-preparation-records', 'Raw consumed preparation records are malformed.'); }
   if (!Array.isArray(recordBytes) || recordBytes.length !== 2 || recordBytes.some((bytes) => typeof bytes !== 'string' || !bytes.endsWith('\n'))) mismatch('continuation-preparation-records', 'Exactly two raw consumed preparation records are required.');
@@ -1199,6 +1223,8 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
   ];
   const parsedRecords = recordBytes.map((bytes) => { let value; try { value = JSON.parse(bytes); } catch { mismatch('continuation-preparation-records', 'A raw consumed preparation record is malformed.'); } return value; });
   if (parsedRecords[0]?.key !== parsedRecords[1]?.key) mismatch('continuation-preparation-records', 'Preparation generations must replace one exact turn slot.');
+  if (Date.parse(parsedRecords[1]?.createdAt) - Date.parse(activeTurn.createdAt) <= 60 * 60_000
+    || Date.parse(parsedRecords[1]?.createdAt) - Date.parse(parsedRecords[0]?.consumedAt) <= 60 * 60_000) mismatch('continuation-active-turn', 'The full continuation lifecycle does not cross both legacy active-turn deadlines after generation 1 was consumed.');
   const turnEvents = parent.map((event, index) => ({ event, index })).filter(({ event }) => event?.turn_id === expected.originalParentTurnId);
   const calls = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call').map(({ event, index }) => ({ event, index, host: parseCapturedHostCall(event.payload.input) }));
   const outputs = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call_output');
@@ -1227,24 +1253,33 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
       || record.sessionId !== expected.parentSessionId || record.turnId !== expected.originalParentTurnId || record.workspace !== expected.workspace || record.permissionMode !== expected.permissionMode
       || record.executorAgentId !== expected.childThreadId || record.source !== specification.source || JSON.stringify(record.envelope) !== JSON.stringify(envelope)
       || !Number.isFinite(Date.parse(record.createdAt)) || Date.parse(record.expiresAt) - Date.parse(record.createdAt) !== 30 * 60_000
+      || Date.parse(record.createdAt) < Date.parse(prepare.event.timestamp) || Date.parse(record.createdAt) > Date.parse(ackOutput[0].event.timestamp)
       || !Number.isFinite(Date.parse(record.consumedAt)) || Date.parse(record.consumedAt) < Date.parse(record.createdAt)
       || Date.parse(record.consumedAt) >= Date.parse(record.expiresAt)) mismatch('continuation-preparation-records', 'Consumed preparation identity or single-consume state is invalid.');
-    await assertConsumedPreparationWithProduction(recordBytes[generationIndex], record, expected);
   }
+  await assertPreparationGenerationsWithProduction(parsedRecords, expected);
+  return parsedRecords;
 }
 
-async function assertConsumedPreparationWithProduction(rawBytes, record, expected) {
+async function assertPreparationGenerationsWithProduction(records, expected) {
   const dataRoot = await mkdtemp(join(tmpdir(), 'zcode-qualification-preparation-'));
   try {
-    const store = createRescuePreparationStore({ dataRoot });
-    await store.save({ sessionId: record.sessionId, turnId: record.turnId, workspace: expected.workspace, permissionMode: record.permissionMode,
-      envelope: record.envelope, recordedPrompt: record.source === 'explicit' ? '$zcode:rescue fixture' : 'proactive fixture', now: record.createdAt });
-    const storage = await resolveWorkspaceStorage({ dataRoot, workspace: expected.workspace });
-    await writeFile(join(storage.directory, 'invocations', 'prepared', `${record.key}.json`), rawBytes);
-    try { await store.consume({ sessionId: record.sessionId, turnId: record.turnId, workspace: expected.workspace, permissionMode: record.permissionMode, executorAgentId: record.executorAgentId, now: record.consumedAt }); }
-    catch (error) { if (error?.code === 'RESCUE_PREPARATION_CONSUMED') return; mismatch('continuation-preparation-records', 'Production preparation store rejected the consumed record.'); }
-    mismatch('continuation-preparation-records', 'Consumed preparation record was reusable.');
+    const store = createRescuePreparationStore({ dataRoot }); const [first, second] = records;
+    const identity = { sessionId: first.sessionId, turnId: first.turnId, workspace: expected.workspace, permissionMode: first.permissionMode };
+    await store.save({ ...identity, envelope: first.envelope, recordedPrompt: '$zcode:rescue fixture', now: first.createdAt });
+    const consumedFirst = await store.consume({ ...identity, executorAgentId: first.executorAgentId, now: first.consumedAt });
+    if (JSON.stringify(consumedFirst) !== JSON.stringify(first)) mismatch('continuation-preparation-records', 'Production preparation store did not reproduce consumed generation 1.');
+    await store.save({ ...identity, envelope: second.envelope, recordedPrompt: 'proactive fixture', now: second.createdAt });
+    await assertRejectCode(store.consume({ ...identity, executorAgentId: 'sibling-executor', now: second.consumedAt }), 'RESCUE_PREPARATION_MISMATCH');
+    const consumedSecond = await store.consume({ ...identity, executorAgentId: second.executorAgentId, now: second.consumedAt });
+    if (JSON.stringify(consumedSecond) !== JSON.stringify(second)) mismatch('continuation-preparation-records', 'Production preparation store did not reproduce the fresh expired-tombstone successor.');
+    await assertRejectCode(store.consume({ ...identity, executorAgentId: second.executorAgentId, now: second.consumedAt }), 'RESCUE_PREPARATION_CONSUMED');
   } finally { await rm(dataRoot, { recursive: true, force: true }); }
+}
+
+async function assertRejectCode(promise, code) {
+  try { await promise; } catch (error) { if (error?.code === code) return; }
+  mismatch('continuation-preparation-records', 'Production preparation store did not enforce the expected one-shot generation boundary.');
 }
 
 function assertMandatoryContinuationPublicSurfaces(parent, child, jobs, agentPath, execFrames) {

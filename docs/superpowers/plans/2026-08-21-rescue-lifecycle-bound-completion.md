@@ -349,7 +349,7 @@ test('consumed preparation advances only to one proactive resume generation', as
 });
 ```
 
-Add table cases proving replacement rejects an unconsumed record, explicit/fresh input, changed permission, expired prior, malformed/unknown record, missing prior executor, generation overflow, and a sibling. Add a 16-way concurrent replacement test with exactly one fulfilled save.
+Add table cases proving replacement rejects an unconsumed record (including an expired unconsumed record), explicit/fresh input, changed permission, malformed/unknown record, missing prior executor, generation overflow, and a sibling. Add a 16-way concurrent replacement test with exactly one fulfilled save. Also prove that an expired consumed tombstone may produce exactly one bound proactive-resume successor whose own lifetime is a fresh 30 minutes.
 
 - [ ] **Step 2: Run preparation tests and verify RED**
 
@@ -398,10 +398,12 @@ const boundResume = envelope.source === 'proactive'
   && current.permissionMode === input.permissionMode
   && current.consumedAt !== null
   && nonempty(current.executorAgentId)
-  && createdAt < Date.parse(current.expiresAt);
+  && createdAt >= Date.parse(current.consumedAt);
 ```
 
 Compute the generation internally (`legacy ? 2 : current.generation + 1`) and reject unsafe overflow. Write one v2 record in the same slot with `requiredExecutorAgentId: current.executorAgentId`, `consumedAt: null`, and `executorAgentId: null`. Apply the explicit prompt marker/source check only for an empty first-generation slot; replacement is intentionally proactive even when the original recorded prompt was explicit.
+
+The prior generation's `expiresAt` still bounds its unconsumed authority and consume path. It does not block replacement after the record is already an exact-executor consumed tombstone; otherwise a ZCode turn lasting beyond 30 minutes would make same-parent-turn continuation impossible. The successor always starts a new independent 30-minute lifetime from the lock-linearized save time.
 
 - [ ] **Step 5: Enforce the exact executor during consume and preserve cleanup**
 

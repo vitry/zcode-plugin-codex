@@ -127,7 +127,6 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           if (occupied) {
             const current = await readPreparedRecord(storage, path, key, false);
             const kind = recordKind(current);
-            const currentExpiresAt = Date.parse(current.expiresAt);
             const boundResume = envelope.source === 'proactive'
               && envelope.options.resume === 'resume'
               && current.sessionId === input.sessionId
@@ -136,8 +135,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
               && current.permissionMode === input.permissionMode
               && current.consumedAt !== null
               && safeIdentifier(current.executorAgentId)
-              && createdAt >= Date.parse(current.consumedAt)
-              && createdAt < currentExpiresAt;
+              && createdAt >= Date.parse(current.consumedAt);
             if (!boundResume) throw preparationError(
               'RESCUE_PREPARATION_EXISTS', 'A Rescue preparation already exists for this turn.',
             );

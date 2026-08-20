@@ -296,6 +296,37 @@ test('consumed preparation advances through proactive resume generations bound t
   });
 });
 
+test('consumed expired generation produces one exact-bound proactive resume successor with a fresh TTL', async () => {
+  const { store, workspaceA } = await storeFixture();
+  const createdAt = new Date('2026-08-17T00:00:00.000Z'); const resumedAt = new Date(createdAt.getTime() + 61 * 60_000);
+  const base = { sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial' };
+  await store.save({ ...base, envelope: validEnvelope, now: createdAt });
+  await store.consume({ ...base, executorAgentId: 'rescue-child', now: new Date(createdAt.getTime() + 1_000) });
+  const replacement = { ...base, now: resumedAt,
+    envelope: { version: 1, source: 'proactive', task: 'continue after long work', options: { resume: 'resume' } } };
+  const results = await Promise.allSettled(Array.from({ length: 16 }, () => store.save(replacement)));
+  assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1);
+  assert.equal(results.filter(({ status }) => status === 'rejected').length, 15);
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'sibling', now: resumedAt }), { code: 'RESCUE_PREPARATION_MISMATCH' });
+  const second = await store.consume({ ...base, executorAgentId: 'rescue-child', now: resumedAt });
+  assert.equal(second.generation, 2); assert.equal(second.requiredExecutorAgentId, 'rescue-child');
+  assert.equal(second.createdAt, resumedAt.toISOString());
+  assert.equal(Date.parse(second.expiresAt) - Date.parse(second.createdAt), 30 * 60_000);
+});
+
+test('expired unconsumed generation cannot be replaced by proactive resume', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture(); const now = new Date('2026-08-17T00:00:00.000Z');
+  const base = { sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial' };
+  await store.save({ ...base, envelope: validEnvelope, now });
+  const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a'); const before = await readFile(path);
+  await assert.rejects(store.save({ ...base, now: new Date(now.getTime() + 61 * 60_000),
+    envelope: { version: 1, source: 'proactive', task: 'unauthorized replacement', options: { resume: 'resume' } } }),
+  { code: 'RESCUE_PREPARATION_EXISTS' });
+  assert.deepEqual(await readFile(path), before);
+});
+
 test('strict consumed legacy v1 preparation upgrades once to generation 2', async () => {
   const { dataRoot, store, workspaceA } = await storeFixture();
   const now = new Date('2026-08-17T00:00:00.000Z');
@@ -399,7 +430,7 @@ test('consumed preparation replacement rejects unauthorized or invalid prior sta
       save: { ...save, envelope: { ...save.envelope, options: { resume: 'fresh' } } },
     })],
     ['changed permission', (record, save) => ({ save: { ...save, permissionMode: 'read-only' } })],
-    ['expired prior', (record, save, now) => ({ save: { ...save, now: new Date(now.getTime() + 30 * 60_000) } })],
+    ['changed turn', (record, save) => ({ save: { ...save, turnId: 'turn-b' } })],
     ['clock before creation', (record, save, now) => ({ save: { ...save, now: new Date(now.getTime() - 1) } })],
     ['missing executor', (record) => { record.executorAgentId = ''; return { record }; }],
     ['oversized executor', (record) => { record.executorAgentId = 'x'.repeat(513); return { record }; }],
@@ -452,7 +483,7 @@ test('16-way concurrent consumed replacement permits exactly one new generation'
   assert.equal(second.generation, 2);
 });
 
-test('replacement rechecks expiry after lock contention before writing', async () => {
+test('replacement takes a fresh TTL from lock-linearized time after prior expiry', async () => {
   const { dataRoot, store, workspaceA } = await storeFixture();
   const createdAt = new Date('2026-08-17T00:00:00.000Z');
   const expiresAt = createdAt.getTime() + 30 * 60_000;
@@ -463,7 +494,6 @@ test('replacement rechecks expiry after lock contention before writing', async (
   await store.save({ ...base, envelope: validEnvelope, now: createdAt });
   await store.consume({ ...base, executorAgentId: 'rescue-child', now: createdAt });
   const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
-  const before = await readFile(path);
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA });
   /** @type {()=>void} */
   let signalLockOpen = () => {};
@@ -487,11 +517,13 @@ test('replacement rechecks expiry after lock contention before writing', async (
       await lockOpen;
       clock = expiresAt;
     });
-    await assert.rejects(/** @type {Promise<void>} */ (pending), { code: 'RESCUE_PREPARATION_EXISTS' });
+    await /** @type {Promise<void>} */ (pending);
   } finally {
     Date.now = originalNow;
   }
-  assert.deepEqual(await readFile(path), before);
+  const replacement = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(replacement.generation, 2); assert.equal(replacement.createdAt, new Date(expiresAt).toISOString());
+  assert.equal(Date.parse(replacement.expiresAt) - Date.parse(replacement.createdAt), 30 * 60_000);
 });
 
 test('cleanupTurn removes the current v2 generation slot', async () => {

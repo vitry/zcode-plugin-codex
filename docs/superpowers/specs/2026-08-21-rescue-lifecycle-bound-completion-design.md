@@ -240,6 +240,15 @@ may be atomically replaced only when all of these hold:
 - the new generation is exactly the previous generation plus one;
 - no concurrent writer replaced the slot.
 
+Expiry limits the authority of each unconsumed generation; it does not preserve
+authority in a consumed tombstone. An expired unconsumed generation still
+cannot be consumed or replaced. Once a generation was consumed by its exact
+executor, its one-shot authority is spent, so that exact-bound consumed slot may
+be superseded even after `expiresAt`; the successor receives a new independent
+30-minute lifetime. This permits a long first ZCode turn to continue later in
+the same still-active parent turn without making any replayable artifact
+unbounded.
+
 The replacement carries the prior consuming executor into
 `requiredExecutorAgentId`. Consumption requires that exact executor. The
 consumer must also pass the existing stopped durable-provenance, fresh
@@ -372,8 +381,9 @@ and dependencies; no deterministic test waits 30 or 60 real minutes.
 - A second save over an unconsumed generation fails.
 - A consumed generation permits only the next proactive bound-resume generation.
 - The same executor consumes the next generation; a sibling cannot.
-- Fresh, explicit, permission-changed, malformed, expired, replayed, and
-  concurrent replacement attempts fail before reservation.
+- Fresh, explicit, permission-changed, malformed, replayed, concurrent, and
+  expired-unconsumed replacement attempts fail before reservation. Expired
+  consumed tombstones may produce only the next exact-bound proactive resume.
 - Multiple sequential same-turn resume generations work and remain bounded.
 - Root Stop and SessionEnd clean the slot.
 

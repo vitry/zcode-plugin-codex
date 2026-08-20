@@ -131,14 +131,17 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   assert.equal(sent.accepted, true);
   await client.waitForCompletion(sessionId);
   const firstCompleted = await client.readSession(sessionId);
-  const firstAssistantResults = visibleAssistantResults(firstCompleted);
+  const firstAssistantResults = visibleAssistantResultsForInput(firstCompleted, sent.inputId);
   assert.ok(firstAssistantResults.length >= 1, 'the first direct real turn must expose a non-empty assistant result');
   const continued = await client.send(sessionId, 'Continue in this exact session. Inspect only and reply with a second short acknowledgement distinct from the first.');
   assert.equal(continued.accepted, true);
   await client.waitForCompletion(sessionId);
   const secondCompleted = await client.readSession(sessionId);
-  const secondAssistantResults = visibleAssistantResults(secondCompleted);
-  assert.ok(secondAssistantResults.length >= 2, 'two sequential direct real turns must expose two non-empty assistant results');
+  const secondAssistantResults = visibleAssistantResultsForInput(secondCompleted, continued.inputId);
+  assert.ok(secondAssistantResults.length >= 1, 'the second direct real turn must expose a new non-empty assistant result linked to its accepted input');
+  const firstAssistantIds = new Set(firstAssistantResults.map((entry) => entry.info.messageId));
+  assert.ok(secondAssistantResults.every((message) => !firstAssistantIds.has(message.info.messageId)),
+    'the second direct real turn must not reuse a first-turn assistant result');
   await client.stopSession(sessionId, 10_000);
   sessions.delete(sessionId);
 
@@ -158,9 +161,21 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   sessions.delete(importedId);
 });
 
-function visibleAssistantResults(session) {
-  return session.messages.filter((message) => message.info?.role === 'assistant'
-    && message.parts?.some((part) => part.type === 'text' && typeof part.text === 'string' && part.text.trim()));
+test('visible assistant result selection is linked to the exact accepted input', () => {
+  const snapshot = { messages: [
+    { info: { role: 'assistant', messageId: 'assistant-first', parentMessageId: 'input-first' }, parts: [{ type: 'text', text: 'first' }] },
+    { info: { role: 'assistant', messageId: 'assistant-empty', parentMessageId: 'input-second' }, parts: [{ type: 'text', text: '   ' }] },
+    { info: { role: 'assistant', messageId: 'assistant-second', parentMessageId: 'input-second' }, parts: [{ type: 'text', text: 'second' }] },
+  ] };
+  assert.deepEqual(visibleAssistantResultsForInput(snapshot, 'input-second').map((message) => message.info.messageId), ['assistant-second']);
+  assert.deepEqual(visibleAssistantResultsForInput(snapshot, 'input-missing'), []);
+});
+
+function visibleAssistantResultsForInput(session, inputId) {
+  if (typeof inputId !== 'string' || inputId.length === 0 || !Array.isArray(session?.messages)) return [];
+  return session.messages.filter((message) => message?.info?.role === 'assistant' && message.info.parentMessageId === inputId
+    && typeof message.info.messageId === 'string' && message.info.messageId.length > 0
+    && message.parts?.some((part) => part?.type === 'text' && typeof part.text === 'string' && part.text.trim()));
 }
 
 function boundedBarrier(promise, label, timeoutMs = 60_000) {

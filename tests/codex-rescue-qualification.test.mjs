@@ -61,6 +61,7 @@ test('qualifies named and generic foreground/background continuation in one acti
       continuationSpawnCount: 0,
       childInvocationCount: 2,
       peerResumeChecked: true,
+      activeTurnLifecycleChecked: true,
       execution,
     });
   }
@@ -73,6 +74,10 @@ test('same-turn qualification rejects generation, required executor, turn identi
     ['continuation-parent-turns', (input) => { const rows = JSON.parse(input.parentRolloutJson); rows.find((row) => row?.payload?.name === 'followup_task').turn_id = 'turn-replaced'; input.parentRolloutJson = JSON.stringify(rows); }],
     ['continuation-binding-identity', (input) => { const partition = JSON.parse(input.bindingPartitionBytes); partition.records[0].operationId = 'e'.repeat(64); input.bindingPartitionBytes = `${JSON.stringify(partition)}\n`; }],
     ['continuation-current-job-stale', (input) => { const partition = JSON.parse(input.bindingPartitionBytes); partition.records[0].currentJobId = 'f'.repeat(64); input.bindingPartitionBytes = `${JSON.stringify(partition)}\n`; }],
+    ['continuation-active-turn', (input) => { const active = JSON.parse(input.activeTurnRecordBytes); active.expiresAt = '2026-08-10T00:30:00.000Z'; input.activeTurnRecordBytes = `${JSON.stringify(active)}\n`; }],
+    ['continuation-active-turn', (input) => { const records = JSON.parse(input.preparationRecordBytesJson); const second = JSON.parse(records[1]); second.createdAt = '2026-08-10T00:59:00.600Z'; second.expiresAt = '2026-08-10T01:29:00.600Z'; records[1] = `${JSON.stringify(second)}\n`; input.preparationRecordBytesJson = JSON.stringify(records); }],
+    ['continuation-binding-identity', (input) => { const pre = JSON.parse(input.bindingPreReservationBytes); pre.records[0].operationId = 'e'.repeat(64); input.bindingPreReservationBytes = `${JSON.stringify(pre)}\n`; }],
+    ['continuation-current-job-stale', (input) => { const pre = JSON.parse(input.bindingPreReservationBytes); pre.records[0].currentJobId = 'f'.repeat(64); input.bindingPreReservationBytes = `${JSON.stringify(pre)}\n`; }],
   ];
   for (const [code, mutate] of mutations) {
     const input = preparedContinuationFixture('named'); mutate(input);
@@ -1894,6 +1899,8 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     executorAgentType: route === 'named' ? 'zcode-rescue' : 'default', executorParentTurnId: 'turn-original',
     executorParentPermissionMode: 'acceptEdits', workspace: expectedWorkspace, permissionMode: 'acceptEdits',
     anchorJobId, currentJobId, operationId, now: '2026-08-10T00:00:00.000Z' });
+  binding.updatedAt = '2026-08-10T01:01:03.000Z';
+  const preReservationBinding = { ...binding, currentJobId: anchorJobId, updatedAt: '2026-08-10T00:00:05.000Z' };
   const parent = [
     { type: 'session_meta', payload: { id: parentId, session_id: parentId, thread_source: 'user', source: 'exec' } },
     { ...structuredExecResult(expectedPreparationCommand, 'prepare-1', { tty: true, env: { PATH: '/usr/bin' } }), timestamp: '2026-08-10T00:00:00.250Z' },
@@ -1904,12 +1911,12 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childId, agent_path: agentPath, parent_turn_id: 'turn-original' } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ agent_id: childId }) } },
     { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childId, agent_path: agentPath, parent_turn_id: 'turn-original' } },
-    { ...structuredExecResult(expectedPreparationCommand, 'prepare-2', { tty: true }), timestamp: '2026-08-10T00:00:06.000Z' },
-    { ...capturedResultEvent('prepare-2', { output: PREPARATION_READY, session_id: 72 }), timestamp: '2026-08-10T00:00:06.250Z' },
-    { ...structuredPoll(72, 'prepare-write-2', `${JSON.stringify(preparationEnvelope('proactive', 'resume', execution))}\n`), timestamp: '2026-08-10T00:00:06.500Z' },
-    { ...capturedResultEvent('prepare-write-2', { output: PREPARED_ACK, exit_code: 0 }), timestamp: '2026-08-10T00:00:07.000Z' },
-    { type: 'response_item', timestamp: '2026-08-10T00:00:08.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childId, message }) } },
-    { type: 'response_item', timestamp: '2026-08-10T00:00:09.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: childId }) } },
+    { ...structuredExecResult(expectedPreparationCommand, 'prepare-2', { tty: true }), timestamp: '2026-08-10T01:01:00.000Z' },
+    { ...capturedResultEvent('prepare-2', { output: PREPARATION_READY, session_id: 72 }), timestamp: '2026-08-10T01:01:00.250Z' },
+    { ...structuredPoll(72, 'prepare-write-2', `${JSON.stringify(preparationEnvelope('proactive', 'resume', execution))}\n`), timestamp: '2026-08-10T01:01:00.500Z' },
+    { ...capturedResultEvent('prepare-write-2', { output: PREPARED_ACK, exit_code: 0 }), timestamp: '2026-08-10T01:01:01.000Z' },
+    { type: 'response_item', timestamp: '2026-08-10T01:01:02.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childId, message }) } },
+    { type: 'response_item', timestamp: '2026-08-10T01:01:03.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: childId }) } },
   ];
   for (const event of parent.slice(1)) event.turn_id = 'turn-original';
   const child = [
@@ -1917,14 +1924,13 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     structuredExecResult(expectedCommand, 'invoke-1'), capturedResultEvent('invoke-1', { output: 'initial done\n', exit_code: 0 }),
     { type: 'event_msg', timestamp: '2026-08-10T00:00:04.000Z', payload: { type: 'agent_message', phase: 'final_answer', message: 'initial done' } },
     structuredExecResult(expectedCommand, 'invoke-2'), capturedResultEvent('invoke-2', { output: 'continued\n', exit_code: 0 }),
-    { type: 'event_msg', timestamp: '2026-08-10T00:00:12.000Z', payload: { type: 'agent_message', phase: 'final_answer', message: 'continued' } },
+    { type: 'event_msg', timestamp: '2026-08-10T01:01:06.000Z', payload: { type: 'agent_message', phase: 'final_answer', message: 'continued' } },
   ];
-  child[1].timestamp = '2026-08-10T00:00:03.000Z'; child[2].timestamp = '2026-08-10T00:00:03.500Z'; child[4].timestamp = '2026-08-10T00:00:10.000Z'; child[5].timestamp = '2026-08-10T00:00:11.000Z';
+  child[1].timestamp = '2026-08-10T00:00:03.000Z'; child[2].timestamp = '2026-08-10T00:00:03.500Z'; child[4].timestamp = '2026-08-10T01:01:04.000Z'; child[5].timestamp = '2026-08-10T01:01:05.000Z';
   child[1].turn_id = child[2].turn_id = 'invoke-original'; child[4].turn_id = child[5].turn_id = 'invoke-continuation';
   return {
     route, execution, expected: { parentSessionId: parentId, childThreadId: childId, agentPath, workspace: expectedWorkspace,
-      permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-original',
-      operationId: binding.operationId, anchorJobId, currentJobId },
+      permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-original' },
     parentRolloutJson: JSON.stringify(parent), childRolloutJson: JSON.stringify(child),
     execFramesJson: JSON.stringify([
       { type: 'thread.started', thread_id: parentId },
@@ -1937,15 +1943,17 @@ function preparedContinuationFixture(route, execution = 'foreground') {
       { hook_event_name: 'SubagentStop', session_id: parentId, turn_id: 'child-turn', parent_turn_id: 'turn-original', cwd: expectedWorkspace, permission_mode: 'acceptEdits', agent_id: childId, agent_type: route === 'named' ? 'zcode-rescue' : 'default' },
     ]),
     executorRecordBytes: `${JSON.stringify({ kind: 'subagent-executor', agentId: childId, agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId: parentId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', workspace: expectedWorkspace, active: false, createdAt: '2026-08-08T00:00:00.000Z' })}\n`,
+    activeTurnRecordBytes: `${JSON.stringify(activeTurnRecord(parentId, 'turn-original', expectedWorkspace))}\n`,
     bindingAuthorityBytes: `${JSON.stringify(createRescueBindingAuthority({ parentSessionId: parentId, workspace: expectedWorkspace, createdAt: '2026-08-10T00:00:00.000Z' }))}\n`,
+    bindingPreReservationBytes: `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: expectedWorkspace, records: [preReservationBinding] }))}\n`,
     bindingPartitionBytes: `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: expectedWorkspace, records: [binding] }))}\n`,
     preparationRecordBytesJson: JSON.stringify([
       `${JSON.stringify(preparationRecord('turn-original', 1, 'explicit', 'fresh', execution, null, childId))}\n`,
       `${JSON.stringify(preparationRecord('turn-original', 2, 'proactive', 'resume', execution, childId, childId))}\n`,
     ]),
     jobRecordBytesJson: JSON.stringify([
-      `${JSON.stringify(rawJob(anchorJobId, 'turn-original', 'succeeded', { zcodeSessionId: 'zcode-session-original' }))}\n`,
-      `${JSON.stringify(rawJob(currentJobId, 'turn-original', execution === 'background' ? 'queued' : 'succeeded', execution === 'background' ? { childPid: 12345, workerLeaseId: 'e'.repeat(64) } : {}))}\n`,
+      `${JSON.stringify(rawJob(anchorJobId, 'turn-original', 'succeeded', { zcodeSessionId: 'zcode-session-original', updatedAt: '2026-08-10T00:00:05.000Z' }))}\n`,
+      `${JSON.stringify(rawJob(currentJobId, 'turn-original', execution === 'background' ? 'queued' : 'succeeded', { createdAt: '2026-08-10T01:01:03.000Z', updatedAt: '2026-08-10T01:01:06.000Z', ...(execution === 'background' ? { childPid: 12345, workerLeaseId: 'e'.repeat(64) } : {}) }))}\n`,
     ]),
     fakePeerJson: JSON.stringify([{ id: 1, method: 'session/create', params: { workspace: { workspacePath: expectedWorkspace, workspaceKey: expectedWorkspace } } }, { id: 2, method: 'session/send', params: { sessionId: 'zcode-session-original', inputId: 'input-original', queryId: 'input-original', content: 'initial objective' } }, { id: 3, method: 'session/resume', params: { sessionId: 'zcode-session-original' } }, { id: 4, method: 'session/send', params: { sessionId: 'zcode-session-original', inputId: 'input-continuation', queryId: 'input-continuation', content: 'continuation objective' } }]),
     ...(execution === 'background' ? { backgroundObserverJson: JSON.stringify({ executionCapability: 'capability-private', jobId: currentJobId }) } : {}),
@@ -1957,11 +1965,17 @@ const PREPARED_ACK = `${JSON.stringify({ type: 'prepared', command: 'rescue' })}
 function preparationEnvelope(source, resume, execution) { return { version: 1, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution, resume } }; }
 function preparationRecord(turnId, generation, source, resume, execution, requiredExecutorAgentId, executorAgentId) {
   const key = createHash('sha256').update(JSON.stringify([parentId, turnId, expectedWorkspace, 'rescue'])).digest('hex');
-  const minute = generation === 1 ? '00' : '06';
+  const createdAt = generation === 1 ? '2026-08-10T00:00:00.600Z' : '2026-08-10T01:01:00.600Z';
+  const expiresAt = generation === 1 ? '2026-08-10T00:30:00.600Z' : '2026-08-10T01:31:00.600Z';
+  const consumedAt = generation === 1 ? '2026-08-10T00:00:03.000Z' : '2026-08-10T01:01:04.000Z';
   return { version: 2, key, sessionId: parentId, turnId, workspace: expectedWorkspace, permissionMode: 'acceptEdits', source,
     envelope: preparationEnvelope(source, resume, execution), generation, requiredExecutorAgentId,
-    createdAt: `2026-08-10T00:${minute}:00.000Z`, expiresAt: `2026-08-10T00:${generation === 1 ? '30' : '36'}:00.000Z`,
-    consumedAt: `2026-08-10T00:${minute}:01.000Z`, executorAgentId };
+    createdAt, expiresAt, consumedAt, executorAgentId };
+}
+
+function activeTurnRecord(sessionId, turnId, workspace) {
+  return { version: 2, kind: 'active-turn', key: createHash('sha256').update(JSON.stringify([sessionId, workspace])).digest('hex'),
+    sessionId, turnId, workspace, permissionMode: 'acceptEdits', prompt: '$zcode:rescue repair fixture', createdAt: '2026-08-09T23:59:59.000Z' };
 }
 
 function rawJob(id, ownerTurnId, status, extra = {}) {
