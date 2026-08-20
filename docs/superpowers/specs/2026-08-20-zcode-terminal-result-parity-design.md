@@ -7,6 +7,10 @@ The incident recorded in `log/20260820-104134-zcode-rescue-protocol-failure.txt`
 1. ZCode emitted a failed terminal turn after provider stream recovery was exhausted, but the Companion attempted to extract a successful assistant result and reported `ZCODE_RESULT_MISSING` instead of the real terminal failure.
 2. The natural-language prompt `通过 $zcode:result 可以查到结果吗` was reconstructed as `result 可以查到结果吗`, causing the trailing prose to be rejected as a malformed job ID instead of performing the documented no-ID lookup.
 
+The underlying ZCode turn did not fail because the local app server was missing or because its baseline provider configuration was invalid. Retained model-I/O records show that the same `bigmodel` / `GLM-5.2` configuration completed 82 model interactions before 11 consecutive long-lived SSE requests to `https://open.bigmodel.cn/api/anthropic` ended with the underlying TLS socket error `TypeError: terminated`. Each failed request had already emitted valid stream chunks but never supplied an authoritative protocol finish event. The retained logs cannot identify whether the close originated at the local proxy/network boundary or the provider edge.
+
+This design therefore repairs the Companion's lifecycle classification, persistence, and presentation of that terminal failure. It does not claim to repair the independent provider-stream interruption that triggered the failed turn.
+
 The sibling implementation `../codex-plugin-cc` is the highest-authority behavioral reference for this repair. It treats completed, failed, and cancelled jobs as finished results; preserves failure messages; and defaults result lookup to the latest finished job owned by the current host session.
 
 ## Goals
@@ -27,6 +31,8 @@ The sibling implementation `../codex-plugin-cc` is the highest-authority behavio
 - Adding job-ID prefix matching; the local plugin's exact 64-character ID contract remains unchanged.
 - Redesigning hook identity storage or adding a new structured invocation transport.
 - Migrating historical failed job records whose stored error already lost the underlying reason.
+- Diagnosing or repairing local proxy, network-path, or BigModel provider interruptions.
+- Retrying or synthesizing completion after a provider SSE stream ends without an authoritative finish event.
 
 ## Reference Behavior
 
@@ -100,6 +106,7 @@ For `result` and `cancel`:
 ## Error Handling
 
 - `ZCODE_TURN_FAILED` is a protocol/runtime terminal outcome, not a missing-result condition.
+- Provider/network terminal failures retain their bounded protocol-supplied reason; the Companion must not replace them with `ZCODE_RESULT_MISSING` merely because no success artifact exists.
 - Its remedy directs the user to inspect stored status/result details and retry only after resolving the reported ZCode/provider cause.
 - `ZCODE_RESULT_MISSING` remains valid when a success-compatible terminal snapshot has no acceptable current-turn assistant response.
 - An active, paused, waiting, or otherwise non-success status observed after the completion wait is reported as an ambiguous terminal-state protocol failure.
