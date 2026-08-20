@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { buildPrompt } from '../scripts/lib/prompts.mjs';
-import { decidePermission, extractFinalResult } from '../scripts/lib/review.mjs';
+import { decidePermission, extractFinalResult, extractTerminalResult } from '../scripts/lib/review.mjs';
 
 const options = [
   { optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } },
@@ -71,6 +71,33 @@ function user(messageId, info = {}) { return { info: { role: 'user', messageId, 
 
 /** @param {string} origin @param {string} kind @param {string} [uiVisibility] */
 function semantics(origin, kind, uiVisibility = 'visible') { return { origin, kind, uiVisibility, providerVisibility: 'visible', transcriptVisibility: 'visible' }; }
+
+test('terminal error preserves the provider message instead of partial assistant text', () => {
+  const snapshot = {
+    projection: { status: 'error', lastError: { message: 'Provider quota exhausted.' } },
+    messages: [assistant([{ type: 'text', text: 'partial result' }])],
+  };
+  assert.throws(() => extractTerminalResult(snapshot, 'rescue'), { code: 'ZCODE_TURN_FAILED', message: 'Provider quota exhausted.' });
+});
+
+test('terminal error without a usable provider message uses the fixed fallback', () => {
+  for (const lastError of [undefined, {}, { message: '' }]) {
+    const snapshot = { projection: { status: 'error', ...(lastError === undefined ? {} : { lastError }) }, messages: [] };
+    assert.throws(() => extractTerminalResult(snapshot, 'rescue'), { code: 'ZCODE_TURN_FAILED', message: 'ZCode reported a terminal error.' });
+  }
+});
+
+test('nonterminal snapshot status fails closed', () => {
+  assert.throws(
+    () => extractTerminalResult({ projection: { status: 'running' }, messages: [] }, 'rescue'),
+    { code: 'ZCODE_TERMINAL_STATE_INVALID', message: 'ZCode completion did not produce a success-compatible terminal state.' },
+  );
+});
+
+test('completed terminal snapshot delegates to final result extraction', () => {
+  const snapshot = { projection: { status: 'completed' }, messages: [assistant([{ type: 'text', text: 'final result' }])] };
+  assert.equal(extractTerminalResult(snapshot, 'rescue'), 'final result');
+});
 
 test('review result prefers valid structured findings anchored by visible final text', () => {
   const structured = { findings: [{ severity: 'high', file: 'src/a.js', line: 7, evidence: 'boom', fix: 'repair' }] };

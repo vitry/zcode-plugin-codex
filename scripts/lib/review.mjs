@@ -142,7 +142,7 @@ export async function executeJob(input) {
     await cleanupProgress();
     const finalSnapshot = await client.readSession(activeSessionId);
     remoteTerminalProven = true;
-    const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
+    const result = extractTerminalResult(finalSnapshot, job.command, turnBoundary);
     output = await publishSuccessfulResult({ input, job, workspace, dataRoot, result });
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
@@ -330,6 +330,20 @@ async function defaultSyncDirectory(path) {
   try { await handle.sync(); }
   catch (error) { if (!['EINVAL', 'ENOTSUP', 'EPERM'].includes(errorCode(error) ?? '')) throw error; }
   finally { await handle.close(); }
+}
+
+/** @param {any} snapshot @param {string} command @param {{beforeMessageIds?:Set<string>,inputId?:string,stateRevision?:number}} [turnBoundary] */
+export function extractTerminalResult(snapshot, command, turnBoundary = {}) {
+  const status = snapshot?.projection?.status;
+  if (status === 'error') {
+    const providerMessage = snapshot?.projection?.lastError?.message;
+    const message = typeof providerMessage === 'string' && providerMessage.length > 0 ? providerMessage : 'ZCode reported a terminal error.';
+    throw new PluginError('ZCODE_TURN_FAILED', message, { category: 'runtime', remedy: 'Inspect the stored ZCode job status/result and retry after resolving the reported provider or runtime failure.' });
+  }
+  if (status !== 'completed' && status !== 'idle') {
+    throw new PluginError('ZCODE_TERMINAL_STATE_INVALID', 'ZCode completion did not produce a success-compatible terminal state.', { category: 'protocol', remedy: 'Inspect the stored job status and retry.' });
+  }
+  return extractFinalResult(snapshot, command, turnBoundary);
 }
 
 /** @param {any} snapshot @param {string} command @param {{beforeMessageIds?:Set<string>,inputId?:string,stateRevision?:number}} [turnBoundary] */
