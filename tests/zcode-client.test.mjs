@@ -401,6 +401,24 @@ test('completion arms after send response and requires a newer revision', async 
   }, { FAKE_ZCODE_BARRIER: '1' });
 });
 
+test('ordinary completion has no implicit deadline and cleans state after a delayed terminal', async () => {
+  await withClient(async (client) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await client.send(sessionId, 'delayed ordinary completion');
+    const waiting = client.waitForCompletion(sessionId);
+    const [waiter] = client.protocol.completionWaiters;
+    assert.ok(waiter, 'completion waiter must be registered while the delayed terminal is pending');
+    const registeredTimer = waiter.timer;
+    const completion = await waiting;
+    assert.equal(registeredTimer, null);
+    assert.equal(completion.reason, 'prompt_completed');
+    assert.equal(client.turnState(sessionId), null);
+    for (const map of [client.protocol.turns, client.protocol.completed, client.protocol.earlyCompletions, client.protocol.completionExpiry]) assert.equal(map.size, 0);
+    assert.equal(client.protocol.completionWaiters.size, 0);
+    assert.equal(client.protocol.waiterSessions.size, 0);
+  }, { FAKE_ZCODE_COMPLETION_DELAY_MS: '100' }, { completionTimeoutMs: undefined });
+});
+
 test('completion in the same frame batch after response survives the arm barrier', async () => {
   await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); await client.send(created.session.sessionId, 'sync'); const completion = await client.waitForCompletion(created.session.sessionId); assert.equal(completion.revision, 2); }, { FAKE_ZCODE_SYNC_COMPLETE: '1' });
 });
@@ -412,7 +430,12 @@ test('stale and valid completions in the same stdout write choose the valid revi
 test('completion timeout and stop fully clean the turn and allow another send', async () => {
   await withClient(async (client) => {
     const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
-    await client.send(sessionId, 'timeout'); await assert.rejects(client.waitForCompletion(sessionId, 20), { code: 'ZCODE_COMPLETION_TIMEOUT' });
+    await client.send(sessionId, 'timeout');
+    for (const invalidTimeoutMs of [0, -1, 1.5, 86_400_001, Number.MAX_SAFE_INTEGER + 1]) {
+      await assert.rejects(client.waitForCompletion(sessionId, invalidTimeoutMs), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
+      assert.equal(client.turnState(sessionId), 'armed');
+    }
+    await assert.rejects(client.waitForCompletion(sessionId, 20), { code: 'ZCODE_COMPLETION_TIMEOUT' });
     await client.send(sessionId, 'retry'); await client.waitForCompletion(sessionId);
     await client.send(sessionId, 'stop'); const waiter = client.waitForCompletion(sessionId, 2_000); await new Promise((resolve) => setTimeout(resolve, 20)); await client.stopSession(sessionId); await assert.rejects(waiter, { code: 'ZCODE_SESSION_STOPPED' });
     assert.equal(client.turnState(sessionId), null);

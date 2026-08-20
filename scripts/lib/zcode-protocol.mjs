@@ -14,7 +14,7 @@ export class ZCodeProtocolClient {
   constructor(child, options = {}) {
     this.child = child;
     this.requestTimeoutMs = boundedInteger(options.requestTimeoutMs, 30_000, 1, 3_600_000);
-    this.completionTimeoutMs = boundedInteger(options.completionTimeoutMs, 3_600_000, 1, 86_400_000);
+    this.completionTimeoutMs = options.completionTimeoutMs === undefined ? undefined : boundedInteger(options.completionTimeoutMs, options.completionTimeoutMs, 1, 86_400_000);
     this.maxFrameBytes = boundedInteger(options.maxFrameBytes, DEFAULT_MAX_FRAME_BYTES, 128, 16 * 1024 * 1024);
     /** @type {Map<number,{resolve:(value:any)=>void,reject:(error:Error)=>void,timer:NodeJS.Timeout,method:string}>} */
     this.pending = new Map();
@@ -100,24 +100,25 @@ export class ZCodeProtocolClient {
   subscribe(handler) { if (typeof handler !== 'function' || this.subscribers.size >= 256) throw protocolInputError(); this.subscribers.add(handler); return () => this.subscribers.delete(handler); }
 
   /** @param {string} sessionId @param {number} [timeoutMs] */
-  waitForCompletion(sessionId, timeoutMs = this.completionTimeoutMs) {
-    if (!nonEmpty(sessionId) || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || this.turns.get(sessionId)?.status !== 'armed' || this.waiterSessions.has(sessionId)) return Promise.reject(protocolInputError());
+  waitForCompletion(sessionId, timeoutMs) {
+    const effectiveTimeoutMs = timeoutMs ?? this.completionTimeoutMs;
+    if (!nonEmpty(sessionId) || effectiveTimeoutMs !== undefined && (!Number.isSafeInteger(effectiveTimeoutMs) || effectiveTimeoutMs < 1 || effectiveTimeoutMs > 86_400_000) || this.turns.get(sessionId)?.status !== 'armed' || this.waiterSessions.has(sessionId)) return Promise.reject(protocolInputError());
     const queued = this.completed.get(sessionId)?.shift();
     if (queued) { this.abortTurn(sessionId); return Promise.resolve(queued); }
     return new Promise((resolve, reject) => {
       let unsubscribe = () => {};
       this.waiterSessions.add(sessionId); const waiter = { reject, timer: /** @type {NodeJS.Timeout|null} */ (null), unsubscribe, sessionId };
-      const timer = setTimeout(() => {
+      const timer = effectiveTimeoutMs === undefined ? null : setTimeout(() => {
         this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); this.abortTurn(sessionId);
         unsubscribe();
-        reject(new PluginError('ZCODE_COMPLETION_TIMEOUT', `ZCode session ${sessionId} did not complete in time.`, { category: 'timeout', remedy: 'Read or resume the session before retrying.', details: { sessionId, timeoutMs } }));
-      }, timeoutMs);
+        reject(new PluginError('ZCODE_COMPLETION_TIMEOUT', `ZCode session ${sessionId} did not complete in time.`, { category: 'timeout', remedy: 'Read or resume the session before retrying.', details: { sessionId, timeoutMs: effectiveTimeoutMs } }));
+      }, effectiveTimeoutMs);
       waiter.timer = timer;
-      timer.unref?.();
+      timer?.unref?.();
       unsubscribe = this.subscribe((message) => {
         if (!isCompletionFor(message, sessionId, this.turns.get(sessionId))) return;
         this.completed.get(sessionId)?.shift();
-        this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); clearTimeout(timer); unsubscribe(); this.abortTurn(sessionId); resolve(message.params);
+        this.completionWaiters.delete(waiter); this.waiterSessions.delete(sessionId); if (timer) clearTimeout(timer); unsubscribe(); this.abortTurn(sessionId); resolve(message.params);
       });
       waiter.unsubscribe = unsubscribe;
       this.completionWaiters.add(waiter);

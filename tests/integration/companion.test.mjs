@@ -459,6 +459,7 @@ function missingRemoteDependencies(calls = []) {
   return {
     discoverLaunch: async () => { calls.push('discover'); return { command: process.execPath, args: [fake], target: fake }; },
     createManagedZCodeClient: async (/** @type {any} */ options) => {
+      assert.equal(Object.hasOwn(options, 'completionTimeoutMs'), false, 'ordinary recovery clients must not receive a completion deadline');
       calls.push({ type: 'client', ownerId: options.ownerId });
       return { listSessions: async () => { calls.push('list'); return { sessions: [] }; }, close: async () => { calls.push('close'); } };
     },
@@ -1902,10 +1903,10 @@ test('public Transfer reports one fixed safe diagnostic when its attached job lo
         await rm(jobs[0].logFile); await mkdir(jobs[0].logFile);
         return sourceThread;
       },
-      createManagedZCodeClient: async () => ({
-        createSession: async () => ({ session: { sessionId: 'session-log-diagnostic' } }),
-        close: async () => {},
-      }),
+      createManagedZCodeClient: async (/** @type {any} */ options) => {
+        assert.equal(Object.hasOwn(options, 'completionTimeoutMs'), false, 'ordinary foreground clients must not receive a completion deadline');
+        return { createSession: async () => ({ session: { sessionId: 'session-log-diagnostic' } }), close: async () => {} };
+      },
     },
   });
   assert.equal(output.job.status, 'succeeded'); assert.equal(output.zcodeSessionId, 'session-log-diagnostic');
