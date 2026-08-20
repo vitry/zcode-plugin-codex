@@ -281,6 +281,9 @@ test('workspace scavenging stops an active orphan and rereads completion before 
   assert.equal(recovered.status, 'succeeded'); assert.equal(stops, 1); assert.equal(reads, 2); assert.ok(recovered.resultArtifact);
   const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace });
   assert.equal(await readFile(join(storage.directory, recovered.resultArtifact), 'utf8'), 'completion won the stop race');
+  const log = await readFile(recovered.logFile, 'utf8');
+  assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.match(log, /Final output\ncompletion won the stop race\n/);
+  assert.doesNotMatch(log, /Assistant message/);
 });
 
 test('recovery success finalization failure preserves the result for a later retry', async () => {
@@ -291,6 +294,7 @@ test('recovery success finalization failure preserves the result for a later ret
   await assert.rejects(scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: completed }) }), (error) => error === storageError || error?.cause === storageError);
   assert.equal(successWrites, 1); assert.equal(failedWrites, 0); assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'running');
   const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace }); assert.equal(await readFile(join(storage.directory, 'results', `${job.id}.md`), 'utf8'), 'recover this result later');
+  assert.doesNotMatch(await readFile((await store.readJob(fixture.workspace, job.id)).logFile, 'utf8'), /Assistant message|Final output/);
   await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: completed }) }); const recovered = await store.readJob(fixture.workspace, job.id); assert.equal(recovered.status, 'succeeded'); assert.equal(successWrites, 2); assert.equal(failedWrites, 0); assert.equal(await readFile(join(storage.directory, recovered.resultArtifact), 'utf8'), 'recover this result later');
   const log = await readFile(recovered.logFile, 'utf8');
   assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.match(log, /Final output\nrecover this result later\n/);
@@ -306,6 +310,7 @@ test('acknowledged stop cancels a cancelling orphan when post-stop completion ha
   }) });
   const recovered = await store.readJob(fixture.workspace, job.id);
   assert.equal(recovered.status, 'cancelled'); assert.equal(stops, 1); assert.equal(reads, 2); assert.equal(recovered.resultArtifact, undefined);
+  assert.doesNotMatch(await readFile(recovered.logFile, 'utf8'), /Assistant message|Final output/);
 });
 
 test('workspace scavenging retains the writable guard when active stop is unacknowledged', async () => {
@@ -347,7 +352,8 @@ test('terminal completion racing orphan settlement is never overwritten', async 
   } };
   const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
   await scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace, reconcileOwnership: async () => {}, createClient: async () => recoveryClient(job, { snapshot: { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] } }) });
-  assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'succeeded');
+  const winner = await store.readJob(fixture.workspace, job.id); assert.equal(winner.status, 'succeeded');
+  assert.doesNotMatch(await readFile(winner.logFile, 'utf8'), /Assistant message|Final output/);
 });
 
 test('background preparation failures terminalize the reservation and release the writable slot', async () => {
@@ -462,6 +468,10 @@ test('cancelling recovery distinguishes completed, stopped, active-acked, and ac
     assert.equal(recovered.status, mode === 'completed' ? 'succeeded' : mode === 'active-unacked' ? 'running' : 'cancelled', mode);
     assert.equal(stops, mode === 'paused' || mode.startsWith('active') ? 1 : 0, mode);
     if (mode === 'active-unacked') assert.match(recovered.lastCancelError, /retry stop/);
+    const log = await readFile(recovered.logFile, 'utf8');
+    if (mode === 'completed') {
+      assert.equal((log.match(/Final output/g) ?? []).length, 1); assert.match(log, /Final output\nrecovered answer\n/);
+    } else assert.doesNotMatch(log, /Assistant message|Final output/);
   }
 });
 

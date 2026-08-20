@@ -515,7 +515,7 @@ test('rescue task semantics reach the fake peer as the authorized objective', as
 
 test('foreground rescue streams safe progress to stderr and durably exposes it through status', async () => {
   const context = await fixture();
-  const result = await companion(context, ['rescue', '--fresh', 'surface progress'], { FAKE_ZCODE_PROGRESS: '1', FAKE_ZCODE_CONVERSATION_PROGRESS: '1' });
+  const result = await companion(context, ['rescue', '--fresh', 'surface progress'], { FAKE_ZCODE_ARCHIVE_PROGRESS: '1' });
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.stdout, 'done\n');
   assert.match(result.stderr, /\[zcode\] ZCode started the delegated turn\./);
   assert.match(result.stderr, /\[zcode\] ZCode is generating a response\./);
@@ -525,16 +525,25 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   assert.equal(status.code, 0, `${status.stderr}${status.stdout}`);
   assert.equal(status.json.job.phase, 'finalizing');
   assert.ok(Date.parse(status.json.job.lastActivityAt));
-  assert.equal(status.json.job.progressPreview.length, 4);
-  assert.equal(status.json.job.progressPreview.at(-1), 'ZCode completed the delegated turn.');
-  const log = await readFile(status.json.job.logFile, 'utf8');
-  for (const message of [
-    'ZCode started the delegated turn.', 'ZCode is generating a response.', 'ZCode started a tool call.', 'ZCode completed a tool call.',
+  assert.deepEqual(status.json.job.progressPreview, [
+    'ZCode is retrying the model request.',
+    'ZCode tool work is still running.',
+    'ZCode completed a tool call.',
     'ZCode completed the delegated turn.',
-  ]) assert.match(log, new RegExp(message.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  ]);
+  const log = await readFile(status.json.job.logFile, 'utf8');
+  const archivedMessages = [
+    'ZCode started the delegated turn.', 'ZCode is generating a response.', 'ZCode started a tool call.',
+    'ZCode is retrying the model request.', 'ZCode tool work is still running.', 'ZCode completed a tool call.',
+    'ZCode completed the delegated turn.',
+  ];
+  let previousIndex = -1;
+  for (const message of archivedMessages) {
+    const index = log.indexOf(message); assert.ok(index > previousIndex, `${message} must be archived in receive order`); previousIndex = index;
+  }
   assert.match(log, /Assistant message\ndone\n/);
   assert.match(log, /Final output\ndone\n/);
-  assert.doesNotMatch(log, /raw output must stay private|reasoning must stay private|capability must stay private|PRIVATE_SNAPSHOT_REASONING|PRIVATE_SNAPSHOT_METADATA/);
+  assert.doesNotMatch(log, /RAW_TOOL_OUTPUT|PRIVATE_REASONING|CAPABILITY_TOKEN/);
 });
 
 test('conversation online progress reaches stderr and preview while initial and foreign frames stay private', async () => {
@@ -1084,6 +1093,12 @@ test('background reservation exposes one private invocation, which is single-use
   const privateAuth = { executionCapability: capability, jobId: reserved.json.job.id };
   const first = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.equal(first.code, 0, first.stderr); assert.equal(first.json.job.status, 'succeeded');
+  const backgroundLog = await readFile(first.json.job.logFile, 'utf8');
+  assert.match(backgroundLog, /Assistant message\n[\s\S]*"findings": \[\]/);
+  assert.match(backgroundLog, /Final output\n[\s\S]*"findings": \[\]/);
+  assert.equal((backgroundLog.match(/Assistant message/g) ?? []).length, 1);
+  assert.equal((backgroundLog.match(/Final output/g) ?? []).length, 1);
+  assert.doesNotMatch(backgroundLog, /PRIVATE_REASONING|RAW_TOOL_OUTPUT|CAPABILITY_TOKEN/);
   const replay = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.notEqual(replay.code, 0); assert.equal(replay.json.error.code, 'EXECUTION_CAPABILITY_CONSUMED');
 });
@@ -1582,6 +1597,11 @@ test('rescue requires an explicit choice when an owned resumable session exists'
   const resumed = await companion(context, ['rescue', '--resume', 'next task']);
   assert.equal(resumed.code, 0, `${resumed.stderr}${resumed.stdout}`);
   assert.equal(resumed.json.job.zcodeSessionId, fresh.json.job.zcodeSessionId);
+  const resumeLog = await readFile(resumed.json.job.logFile, 'utf8');
+  assert.match(resumeLog, /Assistant message\ndone\n/); assert.match(resumeLog, /Final output\ndone\n/);
+  assert.equal((resumeLog.match(/Assistant message/g) ?? []).length, 1);
+  assert.equal((resumeLog.match(/Final output/g) ?? []).length, 1);
+  assert.doesNotMatch(resumeLog, /PRIVATE_REASONING|RAW_TOOL_OUTPUT|CAPABILITY_TOKEN/);
 });
 
 test('trusted bound routing keeps choice identity private and permits only fresh permission replacement', async () => {

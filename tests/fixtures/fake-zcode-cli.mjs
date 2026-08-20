@@ -344,10 +344,22 @@ input.on('line', async (line) => {
       }
       const notificationSession = process.env.FAKE_ZCODE_CROSS_SESSION ?? p.sessionId;
       let notificationRevision = stateRevision;
-      if (process.env.FAKE_ZCODE_PROGRESS === '1') {
-        for (const reason of ['model_streaming', 'tool_call_started', 'tool_call_result']) {
+      if (process.env.FAKE_ZCODE_PROGRESS === '1' || process.env.FAKE_ZCODE_ARCHIVE_PROGRESS === '1') {
+        const reasons = process.env.FAKE_ZCODE_ARCHIVE_PROGRESS === '1'
+          ? ['model_streaming', 'tool_call_started', 'api_retry', 'tool_call_progress', 'tool_call_result']
+          : ['model_streaming', 'tool_call_started', 'tool_call_result'];
+        for (const reason of reasons) {
           notificationRevision += 1;
-          send({ method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: notificationRevision, reason, patch: {} } });
+          send({ method: 'state.updated', params: {
+            type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: notificationRevision, reason,
+            patch: process.env.FAKE_ZCODE_ARCHIVE_PROGRESS === '1'
+              ? { rawToolOutput: 'RAW_TOOL_OUTPUT', privateReasoning: 'PRIVATE_REASONING', capabilityToken: 'CAPABILITY_TOKEN' }
+              : {},
+          } });
+          // Cross-process pipe delivery can coalesce same-turn writes even after
+          // setImmediate. This dedicated fixture cadence gives the companion a
+          // deterministic I/O turn per semantic event without changing runtime bounds.
+          if (process.env.FAKE_ZCODE_ARCHIVE_PROGRESS === '1') await new Promise((resolve) => setTimeout(resolve, 15));
         }
       }
       const completion = { method: 'state.updated', params: { type: 'state.updated', scope: 'session', sessionId: notificationSession, revision: notificationRevision + 1, reason: 'prompt_completed', patch: { status: 'idle' } } };
