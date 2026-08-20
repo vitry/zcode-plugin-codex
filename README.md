@@ -32,7 +32,7 @@ ZCode Desktop and ZCode CLI keep model-provider settings separately. Configure a
 | `$zcode:rescue [--background \| --wait] [--resume \| --fresh] [--model <provider/model\|alias>] [--effort none\|minimal\|low\|medium\|high\|xhigh] <task...>` | Delegate investigation or edits; foreground by default. |
 | `$zcode:transfer [--source <codex-thread-id>]` | Import visible Codex turns into a resumable ZCode session. |
 | `$zcode:status [job-id] [--wait] [--timeout-ms <milliseconds>] [--all]` | Inspect durable jobs; wait defaults to 240 seconds. |
-| `$zcode:result [job-id]` | Read a completed job's full stored output. |
+| `$zcode:result [job-id]` | With no ID, read the latest finished outcome owned by the current Codex session in this workspace; an exact job ID remains supported. Succeeded jobs return the exact stored result artifact, while failed or cancelled jobs return a bounded stored outcome or failure report. |
 | `$zcode:cancel [job-id]` | Cancel an owned queued or running job. |
 | `$zcode:setup [--enable-review-gate \| --disable-review-gate]` | Diagnose readiness and configure the optional review gate. |
 

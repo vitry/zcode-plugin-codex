@@ -19,6 +19,12 @@ export function parseRecordedInvocation(command, prompt) {
   const marker = `$zcode:${command}`; const match = new RegExp(`(?:^|\\s)${escapeRegExp(marker)}(?=$|\\s)`).exec(prompt);
   if (match) {
     const rest = prompt.slice(match.index + match[0].length).trim();
+    const commandForm = new RegExp(`^${escapeRegExp(marker)}(?=$|\\s)`).test(prompt.trimStart());
+    const embeddedLookup = ['result', 'cancel'].includes(command) && !commandForm;
+    if (embeddedLookup && !requiresStrictEmbeddedParsing(rest)) {
+      const jobId = /^([a-f0-9]{64})(?=$|\s)/u.exec(rest)?.[1];
+      return { argv: [command, ...(jobId ? [jobId] : [])], explicit: true };
+    }
     return { argv: [command, ...tokenize(rest)], explicit: true };
   }
   if (command === 'rescue') return { argv: [command, prompt], explicit: false };
@@ -75,6 +81,14 @@ function tokenize(text) {
   }
   if (escaped || quote) throw invocationError('RECORDED_PROMPT_INVALID', 'The recorded invocation contains an incomplete quote or escape.');
   if (started) tokens.push(token); return tokens;
+}
+
+/** @param {string} rest */
+function requiresStrictEmbeddedParsing(rest) {
+  const rawTokens = rest.split(/\s+/u);
+  if (rawTokens.some((token) => { const exposed = token.replace(/^[\\'"]+/u, ''); return exposed.startsWith('-') || exposed.startsWith('$zcode:'); })) return true;
+  const first = rawTokens[0] ?? ''; const unwrapped = first.replace(/^[\\'"]+/u, '').replace(/[\\'"]+$/u, '');
+  return unwrapped !== first && digest(unwrapped);
 }
 
 /** @param {string} dataRoot @param {string} workspace */

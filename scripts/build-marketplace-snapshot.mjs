@@ -19,6 +19,7 @@ export const REQUIRED_RESCUE_PAYLOAD = Object.freeze([
   'scripts/zcode-companion.mjs',
   'scripts/lib/invocation.mjs',
   'scripts/lib/job-control.mjs',
+  'scripts/lib/public-text.mjs',
   'scripts/lib/rescue-binding.mjs',
   'scripts/lib/rescue-preparation.mjs',
   'scripts/lib/state.mjs',

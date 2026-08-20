@@ -1,5 +1,6 @@
 .worktrees/
 .planning/
+/log/
 node_modules/
 coverage/
 *.log

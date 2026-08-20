@@ -255,7 +255,7 @@ function abortable(operation, signal) {
 /** @param {any} job @param {'status'|'result'|'cancel'} eligibility */
 function eligibleImplicit(job, eligibility) {
   if (eligibility === 'cancel') return ['queued', 'running', 'cancelling'].includes(job.status);
-  if (eligibility === 'result') return job.status === 'succeeded' && typeof job.resultArtifact === 'string';
+  if (eligibility === 'result') return TERMINAL.has(job.status);
   return true;
 }
 /** @param {any} store @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch */

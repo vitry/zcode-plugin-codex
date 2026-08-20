@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { buildPrompt } from '../scripts/lib/prompts.mjs';
-import { decidePermission, extractFinalResult } from '../scripts/lib/review.mjs';
+import { decidePermission, extractFinalResult, extractTerminalResult } from '../scripts/lib/review.mjs';
 
 const options = [
   { optionId: 'allow', kind: 'allow', name: 'Allow', response: { decision: 'allow' } },
@@ -71,6 +71,106 @@ function user(messageId, info = {}) { return { info: { role: 'user', messageId, 
 
 /** @param {string} origin @param {string} kind @param {string} [uiVisibility] */
 function semantics(origin, kind, uiVisibility = 'visible') { return { origin, kind, uiVisibility, providerVisibility: 'visible', transcriptVisibility: 'visible' }; }
+
+const ALL_BIDI_CONTROLS = '\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069';
+
+/** @param {string} value */
+function hasPublicControl(value) {
+  return [...value].some((character) => {
+    const code = /** @type {number} */ (character.codePointAt(0));
+    return code <= 0x1f || code >= 0x7f && code <= 0x9f || code === 0x061c || code === 0x200e || code === 0x200f || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
+  });
+}
+
+test('terminal error preserves the provider message instead of partial assistant text', () => {
+  const providerMessage = 'Provider quota exhausted.';
+  const snapshot = {
+    projection: { status: 'error', lastError: { message: providerMessage } },
+    messages: [assistant([{ type: 'text', text: 'partial result' }])],
+  };
+  assert.throws(() => extractTerminalResult(snapshot, 'rescue'), { code: 'ZCODE_TURN_FAILED', message: providerMessage });
+});
+
+test('terminal error without a usable provider message uses the fixed fallback', () => {
+  for (const lastError of [undefined, {}, { message: '' }, { message: ' \t\n' }]) {
+    const snapshot = { projection: { status: 'error', ...(lastError === undefined ? {} : { lastError }) }, messages: [] };
+    assert.throws(() => extractTerminalResult(snapshot, 'rescue'), { code: 'ZCODE_TURN_FAILED', message: 'ZCode reported a terminal error.' });
+  }
+});
+
+test('terminal error normalizes and UTF-8 bounds multibyte provider text without splitting code points', () => {
+  const providerMessage = ` ProviderRAW\n\u0000\u001f\u007f\u0085${ALL_BIDI_CONTROLS} ${'界'.repeat(800)} END `;
+  const expected = `ProviderRAW ${'界'.repeat(677)}...`;
+  assert.throws(
+    () => extractTerminalResult({ projection: { status: 'error', lastError: { message: providerMessage } }, messages: [] }, 'rescue'),
+    (/** @type {any} */ error) => {
+      assert.equal(error.code, 'ZCODE_TURN_FAILED'); assert.equal(error.message, expected);
+      assert.ok(Buffer.byteLength(error.message) <= 2_048); assert.equal(hasPublicControl(error.message), false);
+      return true;
+    },
+  );
+});
+
+test('terminal error with only whitespace and public controls uses the fixed fallback', () => {
+  const providerMessage = ` \t\n\u0000\u001f\u007f\u0085${ALL_BIDI_CONTROLS} `;
+  assert.throws(
+    () => extractTerminalResult({ projection: { status: 'error', lastError: { message: providerMessage } }, messages: [] }, 'rescue'),
+    { code: 'ZCODE_TURN_FAILED', message: 'ZCode reported a terminal error.' },
+  );
+});
+
+test('nonterminal snapshot status fails closed', () => {
+  assert.throws(
+    () => extractTerminalResult({ projection: { status: 'running' }, messages: [] }, 'rescue'),
+    { code: 'ZCODE_TERMINAL_STATE_INVALID', message: 'ZCode completion did not produce a success-compatible terminal state.' },
+  );
+});
+
+test('missing terminal snapshot status fails closed', () => {
+  assert.throws(
+    () => extractTerminalResult({ messages: [] }, 'rescue'),
+    { code: 'ZCODE_TERMINAL_STATE_INVALID', message: 'ZCode completion did not produce a success-compatible terminal state.' },
+  );
+});
+
+test('completed terminal snapshot delegates to final result extraction', () => {
+  const snapshot = { projection: { status: 'completed' }, messages: [assistant([{ type: 'text', text: 'final result' }])] };
+  assert.equal(extractTerminalResult(snapshot, 'rescue'), 'final result');
+});
+
+test('idle terminal snapshot delegates to final result extraction', () => {
+  const snapshot = { projection: { status: 'idle' }, messages: [assistant([{ type: 'text', text: 'idle result' }])] };
+  assert.equal(extractTerminalResult(snapshot, 'rescue'), 'idle result');
+});
+
+test('success-compatible terminal states still require acceptable assistant output', () => {
+  for (const status of ['completed', 'idle']) {
+    assert.throws(() => extractTerminalResult({ projection: { status }, messages: [] }, 'rescue'), { code: 'ZCODE_RESULT_MISSING' });
+  }
+});
+
+test('terminal extraction rejects stale or missing authoritative revisions before trusting status', () => {
+  const boundary = { stateRevision: 8 };
+  for (const runtime of [undefined, {}, { stateRevision: 7 }, { stateRevision: 8.5 }]) {
+    const snapshot = {
+      projection: { status: 'error', lastError: { message: 'stale private provider error' } },
+      ...(runtime === undefined ? {} : { runtime }),
+      messages: [],
+    };
+    assert.throws(
+      () => extractTerminalResult(snapshot, 'rescue', boundary),
+      { code: 'ZCODE_TERMINAL_STATE_INVALID', message: 'ZCode completion did not produce a success-compatible terminal state.' },
+    );
+  }
+});
+
+test('terminal extraction accepts an authoritative revision at or beyond the accepted boundary', () => {
+  const snapshot = {
+    projection: { status: 'completed' }, runtime: { stateRevision: 9 },
+    messages: [assistant([{ type: 'text', text: 'fresh result' }])],
+  };
+  assert.equal(extractTerminalResult(snapshot, 'rescue', { stateRevision: 8 }), 'fresh result');
+});
 
 test('review result prefers valid structured findings anchored by visible final text', () => {
   const structured = { findings: [{ severity: 'high', file: 'src/a.js', line: 7, evidence: 'boom', fix: 'repair' }] };
