@@ -197,6 +197,56 @@ test('a sink disables observationally after its file identity is replaced', asyn
   assert.equal(await readFile(displaced, 'utf8'), '');
 }));
 
+test('direct append rejects a valid private replacement installed after canonical admission', async () => withFixture(async ({ dataRoot, workspace }) => {
+  const sink = await createJobLogSink({ dataRoot, workspace, jobId: JOB_ID });
+  const probe = await open(sink.logFile, constants.O_RDONLY);
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const originalStat = prototype.stat;
+  const originalSync = prototype.sync;
+  let statCalls = 0;
+  let releaseSync;
+  const syncRelease = new Promise((resolve) => { releaseSync = resolve; });
+  let markSyncReached;
+  const syncReached = new Promise((resolve) => { markSyncReached = resolve; });
+  let markAdmissionVerified;
+  const admissionVerified = new Promise((resolve) => { markAdmissionVerified = resolve; });
+  let held = false;
+  prototype.stat = async function patchedStat(...args) {
+    const info = await originalStat.call(this, ...args);
+    statCalls += 1;
+    if (statCalls === 6) markAdmissionVerified();
+    return info;
+  };
+  prototype.sync = async function patchedSync(...args) {
+    if (!held) {
+      held = true;
+      markSyncReached();
+      await syncRelease;
+    }
+    return originalSync.call(this, ...args);
+  };
+  const displaced = `${sink.logFile}.admitted`;
+  try {
+    const blocker = sink.appendEvent('blocking append');
+    await syncReached;
+    const direct = appendJobLogEvent({ dataRoot, workspace, jobId: JOB_ID, event: 'must not reach replacement' });
+    await admissionVerified;
+    await rename(sink.logFile, displaced);
+    await writeFile(sink.logFile, 'replacement\n', { mode: 0o600 });
+    releaseSync();
+    await blocker;
+    await assert.rejects(direct, { code: 'JOB_LOG_PATH_UNSAFE' });
+    assert.equal(sink.disabled, true);
+    assert.equal(await readFile(sink.logFile, 'utf8'), 'replacement\n');
+    assert.doesNotMatch(await readFile(displaced, 'utf8'), /must not reach replacement/);
+  } finally {
+    releaseSync();
+    prototype.stat = originalStat;
+    prototype.sync = originalSync;
+  }
+}));
+
 test('a create failure returns a disabled non-throwing sink without a path', { skip: process.platform === 'win32' }, async () => withFixture(async ({ root, dataRoot, workspace }) => {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const outside = join(root, 'outside');

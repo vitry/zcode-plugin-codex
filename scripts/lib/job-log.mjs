@@ -48,7 +48,7 @@ export async function createJobLog(input) {
 export async function appendJobLogEvent(input) {
   validateJobId(input?.jobId);
   const bytes = eventBytes(input?.event);
-  return serializeCanonical(input, ({ root, logFile }) => appendAt(root, logFile, bytes))
+  return serializeCanonical(input, ({ root, logFile, identity }) => appendAt(root, logFile, bytes, identity))
     .catch((error) => { throw safeAppendError(error); });
 }
 
@@ -56,7 +56,7 @@ export async function appendJobLogEvent(input) {
 export async function appendJobLogBlock(input) {
   validateJobId(input?.jobId);
   const bytes = blockBytes(input?.title, input?.body);
-  return serializeCanonical(input, ({ root, logFile }) => appendAt(root, logFile, bytes))
+  return serializeCanonical(input, ({ root, logFile, identity }) => appendAt(root, logFile, bytes, identity))
     .catch((error) => { throw safeAppendError(error); });
 }
 
