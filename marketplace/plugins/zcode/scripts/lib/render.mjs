@@ -1,4 +1,5 @@
 import { PluginError } from './errors.mjs';
+import { boundUtf8, normalizePublicText } from './public-text.mjs';
 import { validProgressProbe } from './state.mjs';
 
 /** @param {unknown} error */
@@ -51,7 +52,8 @@ function renderJob(job) {
   const previews = Array.isArray(job.progressPreview)
     ? job.progressPreview.filter((/** @type {unknown} */ message) => typeof message === 'string').slice(-4)
     : [];
-  const lastCancellationError = renderCancellationError(job.lastCancelError);
+  const storedError = ['failed', 'cancelled'].includes(job.status) ? renderStoredError(job.error) : null;
+  const lastCancellationError = renderStoredError(job.lastCancelError);
   const lines = [
     `Job: ${safeInline(job.id)}`,
     `Command: ${safeInline(job.command)}`,
@@ -62,6 +64,7 @@ function renderJob(job) {
     `Finished: ${safeInline(job.finishedAt)}`,
     `${timingLabel}: ${timing}`,
     `Last activity: ${safeInline(job.lastActivityAt)}`,
+    ...(storedError === null ? [] : [`Error: ${storedError}`]),
     ...(lastCancellationError === null
       ? [] : [`Last cancellation error: ${lastCancellationError}`]),
     'Progress:',
@@ -73,51 +76,39 @@ function renderJob(job) {
 }
 
 /** @param {unknown} value */
-function renderCancellationError(value) {
+function renderStoredError(value) {
   const message = typeof value === 'string' ? value
     : value && typeof value === 'object' && 'message' in value
       && typeof value.message === 'string' ? value.message : null;
-  if (message === null || message.trim().length === 0) return null;
-  return boundUtf8(safeInline(message), 2_048);
+  if (message === null) return null;
+  const normalized = normalizePublicText(message);
+  if (normalized.length === 0) return null;
+  return boundMarkdown(escapeMarkdown(normalized), 2_048);
+}
+
+/** @param {string} value @param {number} maxBytes */
+function boundMarkdown(value, maxBytes) {
+  if (Buffer.byteLength(value) <= maxBytes) return value;
+  const bounded = boundUtf8(value, maxBytes);
+  const prefix = bounded.slice(0, -3);
+  const trailingBackslashes = prefix.match(/\\+$/u)?.[0].length ?? 0;
+  return trailingBackslashes % 2 === 0 ? bounded : `${prefix.slice(0, -1)}...`;
 }
 
 /** @param {unknown} value */
 function safeInline(value) {
   if (typeof value !== 'string' || value.length === 0) return '—';
-  const controlFree = [...value].map((character) => {
-    const code = /** @type {number} */ (character.codePointAt(0));
-    if (isBidiControl(code)) return '';
-    return code <= 31 || code >= 127 && code <= 159 ? ' ' : character;
-  }).join('');
-  return escapeMarkdown(controlFree.replace(/\s+/g, ' ').trim());
+  return escapeMarkdown(normalizePublicText(value));
 }
 
 /** @param {string} message */
 function safeProgress(message) {
-  const bounded = boundUtf8(message, 256);
-  return safeInline(bounded);
+  return escapeMarkdown(boundUtf8(normalizePublicText(message), 256));
 }
 
 /** @param {string} value */
 function escapeMarkdown(value) {
   return value.replace(/([\\`*_{}[\]<>#!|~])/g, '\\$1').replace(/^([-+])/, '\\$1');
-}
-
-/** @param {number} code */
-function isBidiControl(code) {
-  return code === 0x061c || code === 0x200e || code === 0x200f
-    || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
-}
-
-/** @param {string} value @param {number} maxBytes */
-function boundUtf8(value, maxBytes) {
-  if (Buffer.byteLength(value) <= maxBytes) return value;
-  let result = '';
-  for (const character of value) {
-    if (Buffer.byteLength(result) + Buffer.byteLength(character) > maxBytes - 3) break;
-    result += character;
-  }
-  return `${result}...`;
 }
 
 /** @param {number} milliseconds */

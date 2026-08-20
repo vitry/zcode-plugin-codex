@@ -141,8 +141,9 @@ export async function executeJob(input) {
     await waitForCompletionOrAbort(client.waitForCompletion(activeSessionId), input.signal);
     await cleanupProgress();
     const finalSnapshot = await client.readSession(activeSessionId);
-    remoteTerminalProven = true;
-    const result = extractFinalResult(finalSnapshot, job.command, turnBoundary);
+    const finalStatus = terminalSnapshotStatus(finalSnapshot, turnBoundary);
+    remoteTerminalProven = ['error', 'completed', 'idle'].includes(finalStatus);
+    const result = extractTerminalResultForStatus(finalSnapshot, job.command, turnBoundary, finalStatus);
     output = await publishSuccessfulResult({ input, job, workspace, dataRoot, result });
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
@@ -333,6 +334,31 @@ async function defaultSyncDirectory(path) {
 }
 
 /** @param {any} snapshot @param {string} command @param {{beforeMessageIds?:Set<string>,inputId?:string,stateRevision?:number}} [turnBoundary] */
+export function extractTerminalResult(snapshot, command, turnBoundary = {}) {
+  return extractTerminalResultForStatus(snapshot, command, turnBoundary, terminalSnapshotStatus(snapshot, turnBoundary));
+}
+
+/** @param {any} snapshot @param {{stateRevision?:number}} turnBoundary */
+function terminalSnapshotStatus(snapshot, turnBoundary) {
+  if (turnBoundary.stateRevision !== undefined) {
+    const snapshotRevision = snapshot?.runtime?.stateRevision;
+    if (!Number.isSafeInteger(snapshotRevision) || snapshotRevision < turnBoundary.stateRevision) throw invalidTerminalState();
+  }
+  return snapshot?.projection?.status;
+}
+
+/** @param {any} snapshot @param {string} command @param {{beforeMessageIds?:Set<string>,inputId?:string,stateRevision?:number}} turnBoundary @param {unknown} status */
+function extractTerminalResultForStatus(snapshot, command, turnBoundary, status) {
+  if (status === 'error') {
+    const providerMessage = snapshot?.projection?.lastError?.message;
+    const message = typeof providerMessage === 'string' && providerMessage.trim().length > 0 ? providerMessage : 'ZCode reported a terminal error.';
+    throw new PluginError('ZCODE_TURN_FAILED', message, { category: 'runtime', remedy: 'Inspect the stored ZCode job status/result and retry after resolving the reported provider or runtime failure.' });
+  }
+  if (status !== 'completed' && status !== 'idle') throw invalidTerminalState();
+  return extractFinalResult(snapshot, command, turnBoundary);
+}
+
+/** @param {any} snapshot @param {string} command @param {{beforeMessageIds?:Set<string>,inputId?:string,stateRevision?:number}} [turnBoundary] */
 export function extractFinalResult(snapshot, command, turnBoundary = {}) {
   const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
   const beforeMessageIds = turnBoundary.beforeMessageIds ?? new Set();
@@ -372,6 +398,7 @@ function isCurrentUserRoot(message, beforeMessageIds) {
 /** @param {any} snapshot */
 function snapshotMessageIds(snapshot) { return new Set((Array.isArray(snapshot?.messages) ? snapshot.messages : []).map((/** @type {any} */ message) => message?.info?.messageId).filter((/** @type {unknown} */ value) => typeof value === 'string')); }
 function missingResult() { return new PluginError('ZCODE_RESULT_MISSING', 'ZCode completed without a visible result for the current turn.', { category: 'protocol', remedy: 'Inspect the ZCode session and retry.' }); }
+function invalidTerminalState() { return new PluginError('ZCODE_TERMINAL_STATE_INVALID', 'ZCode completion did not produce a success-compatible terminal state.', { category: 'protocol', remedy: 'Inspect the stored job status and retry.' }); }
 /** @param {unknown} [cause] */
 function invalidReviewResult(cause) { return new PluginError('REVIEW_RESULT_INVALID', 'ZCode review output failed the required findings schema.', { category: 'protocol', remedy: 'Retry the review with a compatible ZCode model.', ...(cause ? { cause } : {}) }); }
 /** @param {any} response */
