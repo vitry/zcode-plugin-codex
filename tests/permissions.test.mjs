@@ -118,6 +118,29 @@ test('success-compatible terminal states still require acceptable assistant outp
   }
 });
 
+test('terminal extraction rejects stale or missing authoritative revisions before trusting status', () => {
+  const boundary = { stateRevision: 8 };
+  for (const runtime of [undefined, {}, { stateRevision: 7 }, { stateRevision: 8.5 }]) {
+    const snapshot = {
+      projection: { status: 'error', lastError: { message: 'stale private provider error' } },
+      ...(runtime === undefined ? {} : { runtime }),
+      messages: [],
+    };
+    assert.throws(
+      () => extractTerminalResult(snapshot, 'rescue', boundary),
+      { code: 'ZCODE_TERMINAL_STATE_INVALID', message: 'ZCode completion did not produce a success-compatible terminal state.' },
+    );
+  }
+});
+
+test('terminal extraction accepts an authoritative revision at or beyond the accepted boundary', () => {
+  const snapshot = {
+    projection: { status: 'completed' }, runtime: { stateRevision: 9 },
+    messages: [assistant([{ type: 'text', text: 'fresh result' }])],
+  };
+  assert.equal(extractTerminalResult(snapshot, 'rescue', { stateRevision: 8 }), 'fresh result');
+});
+
 test('review result prefers valid structured findings anchored by visible final text', () => {
   const structured = { findings: [{ severity: 'high', file: 'src/a.js', line: 7, evidence: 'boom', fix: 'repair' }] };
   const snapshot = { messages: [assistant([
