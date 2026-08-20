@@ -42,7 +42,13 @@ ZCode Desktop 与 ZCode CLI 分别保存 model provider 设置。运行 `$zcode:
 
 `$zcode:setup` 在稳定的 plugin data 根目录下管理一个带 digest 收据的 `zcode-rescue` Role，而不是把它写进带版本号的插件缓存。Setup 只写精确的 user-config Role 注册项，并在一次 setup 中完成首次安装或受管升级；具有完整所有权证据的 numeric-v1 收据也在同一次运行中迁移。ZCode 不拥有 `hide_spawn_agent_metadata`；Codex host 负责协作工具 schema，包括是否提供 `agent_type`。只有 numeric-v1 收据、Role 字节和精确注册能证明旧版 ZCode setup 写入了目标层 `false` 时，setup 才移除该旧配置叶。Setup 不会接管或覆盖冲突：外部 `zcode-rescue` 注册、同名项目 Role、或更高优先级 override 都会 fail closed 并给出 setup 诊断。收据、Role 文件和有效注册必须精确一致。
 
-本次发布修改了受管 Role 字节，因此 digest 也会升级。更新后请重新运行 `$zcode:setup`，先完成受管 Role 升级协调，再使用 Rescue。
+本次发布修改了受管 Role 字节，因此受管 Role digest 也会升级。`role-status rescue` 可能报告 `upgrade-required`；更新后请重新运行 `$zcode:setup`，先完成兼容的受管 Role 升级协调，再使用 Rescue。
+
+source checkout 和已安装插件使用刻意隔离的命名空间：source development 默认使用 `zcode`，已安装的 marketplace 实例使用 `zcode-<marketplace>`。现有已安装数据和 source-development 数据保持不变并留在原位置。插件不会合并、搜索、重定向或复制已安装命名空间与 source 命名空间之间的状态；source checkout 仍可在自己的 hook lifecycle 已证明自己的 session 时正常工作。
+
+在每个受管父 turn 中，受管 `UserPromptSubmit` hook 都会注入一条由执行该 hook 的精确插件实例机器渲染的 instance-bound launcher command。Root 和 Rescue 子 agent 原样复用这些精确字节，并且只追加固定 Rescue 参数。它们绝不从 cwd 或 Skill 文本构造路径，绝不调用直接 companion 形式 `node scripts/zcode-companion.mjs`，也绝不通过 PATH、全局包或 cache 搜索选择另一个插件实例。这样无需模型自行选择路径，同时不削弱实例或命名空间隔离。
+
+`source-session-unproven` 对该 Rescue 路由是终态：应使用活动受管 lifecycle context 中的 launcher，但不要从未证明的 source checkout 运行 `$zcode:setup`、prepare、follow up 或 spawn。launcher error 由 shell-unsafe 安装路径触发时同样是终态，并给出固定的重新安装 remedy；请把插件重新安装到 shell-safe 路径，再从新的受管父 turn 重试。两种情况都不授权 fallback launcher 或自动重定向。
 
 Rescue 有两种等价入口：显式 `$zcode:rescue` 是请求中字面且适用的入口；Root 也可以根据完整业务目标主动选择 Rescue。这就是自动路由，不提供 `--auto` 选项。显式 `--fresh` 或 `--resume` 始终权威；明确的主动续做会在 child 启动前物化为 resume，明确的独立工作会物化为 fresh。
 

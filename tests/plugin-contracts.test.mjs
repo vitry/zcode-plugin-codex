@@ -251,6 +251,10 @@ test('conversation compatibility progress never parses raw session logs or synth
 
 test('marketplace mirrors every critical prepared Rescue source byte for byte', () => {
   for (const relativePath of [
+    'skills/rescue/launcher.mjs',
+    'scripts/lib/rescue-launcher-command.mjs',
+    'scripts/lib/plugin-data.mjs',
+    'scripts/lib/managed-agent-role.mjs',
     'CHANGELOG.md',
     'README.md',
     'README.zh-CN.md',

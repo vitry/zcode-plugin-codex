@@ -14,16 +14,34 @@ import { PluginError } from './errors.mjs';
 export function resolvePluginDataRoot({ env = process.env, pluginRoot } = {}) {
   const explicit = nonEmpty(env.ZCODE_DATA_ROOT);
   if (explicit) return canonicalPath(explicit);
+  return resolvePluginDataContext({ env, pluginRoot }).dataRoot;
+}
+
+/**
+ * Resolve the writable data root together with provenance derived only from
+ * the executing plugin location. Explicit data roots select storage, not the
+ * plugin installation identity.
+ *
+ * @param {{env?:NodeJS.ProcessEnv,pluginRoot?:string}} input
+ * @returns {{dataRoot:string,provenance:'marketplace'|'source'}}
+ */
+export function resolvePluginDataContext({ env = process.env, pluginRoot } = {}) {
+  const explicit = nonEmpty(env.ZCODE_DATA_ROOT);
   const codexHome = canonicalPath(nonEmpty(env.CODEX_HOME) ?? join(homedir(), '.codex'));
   const installed = installedIdentity(pluginRoot, codexHome);
+  const provenance = installed ? 'marketplace' : 'source';
+  if (explicit) return { dataRoot: canonicalPath(explicit), provenance };
   if (installed) {
     const expected = join(codexHome, 'plugins', 'data', `zcode-${installed.marketplace}`);
     for (const injected of [nonEmpty(env.PLUGIN_DATA), nonEmpty(env.CLAUDE_PLUGIN_DATA)]) {
-      if (injected && canonicalPath(injected) === canonicalPath(expected)) return canonicalPath(injected);
+      if (injected && canonicalPath(injected) === canonicalPath(expected)) return { dataRoot: canonicalPath(injected), provenance };
     }
-    return expected;
+    return { dataRoot: expected, provenance };
   }
-  return canonicalPath(nonEmpty(env.PLUGIN_DATA) ?? nonEmpty(env.CLAUDE_PLUGIN_DATA) ?? join(codexHome, 'plugins', 'data', 'zcode'));
+  return {
+    dataRoot: canonicalPath(nonEmpty(env.PLUGIN_DATA) ?? nonEmpty(env.CLAUDE_PLUGIN_DATA) ?? join(codexHome, 'plugins', 'data', 'zcode')),
+    provenance,
+  };
 }
 
 /** @param {string|undefined} pluginRoot @param {string} codexHome */

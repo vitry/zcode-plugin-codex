@@ -1,6 +1,7 @@
 ---
 status: accepted
 supersedes: caller-capability-through-model-and-fd
+amended: 2026-08-20
 ---
 
 # Use a thread-bound direct companion for installed Skills
@@ -55,6 +56,31 @@ interactive choice. This is an integrity check inside the existing private
 `0700` same-UID trust boundary, not a claim that environment variables or local
 files are cryptographically unforgeable by a hostile process running as that
 UID.
+
+## Rescue launcher amendment (2026-08-20)
+
+The statement above that every Skill runs a direct-companion command is amended
+for Rescue by the
+[Rescue root-provenance diagnostics design](../superpowers/specs/2026-08-19-rescue-root-provenance-diagnostics-design.md).
+Rescue now receives one machine-rendered, instance-bound launcher command from
+the owned parent `UserPromptSubmit` lifecycle context. Root and the Rescue child
+reuse those exact bytes; they do not derive the companion path from cwd, PATH, a
+source checkout, or another installed cache entry.
+
+The launcher accepts only the fixed Rescue argv shapes in its allowlist and
+imports the companion relative to its own module. In the same process it
+dispatches those validated arguments to the companion; it does not create an
+additional process hop or authorization boundary. Consequently, the original
+single-hop trust model remains preserved: the one ordinary shell-tool child
+still presents its ambient `CODEX_THREAD_ID`, and the companion still resolves
+and authorizes the exact private active-turn record for the canonical workspace.
+The launcher selects the plugin instance; it neither supplies caller identity
+nor bypasses the private thread-bound authorization described by this decision.
+
+All earlier rationale about keeping secrets out of model-visible commands,
+binding child identity through native lifecycle hooks, and failing closed is
+retained. Only Rescue command-location selection is superseded: the model no
+longer constructs or directly invokes `scripts/zcode-companion.mjs`.
 
 ## Rejected alternative
 

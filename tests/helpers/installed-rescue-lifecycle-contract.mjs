@@ -1,7 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { isAbsolute, win32 } from 'node:path';
 import { expectedGenericRescueMessage } from './rescue-skill-contract.mjs';
 import { qualifyCodexRescuePreparedContinuationEvidence } from './codex-rescue-qualification.mjs';
 
@@ -31,8 +30,8 @@ const canonicalTerminalTail = 'Partial stdout, stderr, heartbeat text, or an out
 const canonicalChoiceTerminal = 'A needs-choice response with exit code 3 is terminal for the current child turn.';
 const genericCanonicalLines = expectedGenericRescueMessage.split('\n');
 const canonicalNamedTerminal = 'A companion result containing an exit code is terminal. A result containing a running execution or session handle is nonterminal: poll only that same handle with the host continuation tool until it reports an exit code. Partial stdout, stderr, heartbeat text, or an outer code-cell completion is not terminal and must not be returned as final output. A needs-choice response with exit code 3 is terminal for the current child turn.';
-const canonicalNamedRoleDigest = 'bc12bc4c76462e233299dbaad95b088fd5f39c46606c4d343b6a23cec1d0476b';
-const companionCommandLine = /^node "(?<root>[^"\r\n]{1,2048})\/scripts\/zcode-companion\.mjs" (?<command>invoke-prepared rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
+const canonicalNamedRoleDigest = '356d6e026d614ffe746cfef34e4bb78b39fbc6300bab1aa1430a60186596fe1c';
+const launcherCommandLine = /^(?<launcher>\{\{RESCUE_LAUNCHER_COMMAND\}\}|<rescue-launcher-command>|node "(?<path>[^"\r\n]{1,2048})") (?<command>invoke-prepared rescue|invoke-status rescue|invoke-choice rescue resume|invoke-choice rescue fresh)$/gmu;
 
 export function installedCanonicalContradictionMutations(source, route) {
   const privacyBoundary = route === 'named' ? '\n\nWhile the original foreground handle' : '\nWhile the original foreground handle';
@@ -50,18 +49,41 @@ export function installedCanonicalContradictionMutations(source, route) {
 }
 
 export function installedCommandPathMutations(source) {
-  const commands = [...source.matchAll(companionCommandLine)];
-  assert.equal(commands.length, 4, 'command-path mutations require four canonical companion commands');
-  const root = commands[0].groups.root;
-  const wrongRoot = '/wrong/installed-rescue-root';
+  const commands = [...source.matchAll(launcherCommandLine)];
+  assert.equal(commands.length, 4, 'command-path mutations require four canonical launcher commands');
+  const launcher = commands[0].groups.launcher;
+  const wrongLauncher = 'node "/wrong/skills/rescue/launcher.mjs"';
   return [
-    ['uniform wrong root', source.replaceAll(root, wrongRoot)],
-    ['divergent root', replaceLastInstalledLifecycleMarker(source, root, wrongRoot)],
-    ['quote and argument injection', source.replaceAll(root, `${root}" --inspect "`)],
+    ['uniform wrong launcher', source.replaceAll(launcher, wrongLauncher)],
+    ['divergent launcher', replaceLastInstalledLifecycleMarker(source, launcher, wrongLauncher)],
+    ['quote and argument injection', source.replaceAll(launcher, `${launcher} --inspect`)],
     ['appended companion option', source.replace('invoke-prepared rescue', 'invoke-prepared rescue --detail')],
-    ['control in root', source.replaceAll(root, `${root}\tunsafe`)],
-    ['newline in root', source.replaceAll(root, `${root}\nunsafe`)],
+    ['command substitution in launcher', source.replaceAll(launcher, 'node "/tmp/$(touch PWNED)/skills/rescue/launcher.mjs"')],
+    ['backtick substitution in launcher', source.replaceAll(launcher, 'node "/tmp/`touch PWNED`/skills/rescue/launcher.mjs"')],
+    ['POSIX backslash in launcher', source.replaceAll(launcher, 'node "/tmp/slash\\/skills/rescue/launcher.mjs"')],
+    ['Windows percent expansion in launcher', source.replaceAll(launcher, 'node "C:\\ZCode%TEMP%\\skills\\rescue\\launcher.mjs"')],
+    ['control in launcher', source.replaceAll(launcher, `${launcher}\tunsafe`)],
+    ['newline in launcher', source.replaceAll(launcher, `${launcher}\nunsafe`)],
   ];
+}
+
+function hasControlCharacter(value) {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code >= 127 && code <= 159;
+  });
+}
+
+function isSafeRenderedLauncherCommand(command) {
+  const match = /^node "(?<path>.+)"$/u.exec(command);
+  const launcherPath = match?.groups?.path;
+  if (!launcherPath || Buffer.byteLength(launcherPath) > 2048 || hasControlCharacter(launcherPath)) return false;
+  if (/^[A-Za-z]:\\/u.test(launcherPath)) {
+    return launcherPath.toLowerCase().endsWith('\\skills\\rescue\\launcher.mjs')
+      && !/["`$%!^&|<>]/u.test(launcherPath) && !/\\{2,}|[\\/]$/u.test(launcherPath);
+  }
+  return launcherPath.startsWith('/') && launcherPath.endsWith('/skills/rescue/launcher.mjs')
+    && !/[\\"`$]/u.test(launcherPath);
 }
 
 export function replaceLastInstalledLifecycleMarker(source, expected, replacement) {
@@ -74,11 +96,11 @@ export function installedShortLifecycleDecoy() {
   return [...markers.slice(0, 10).map(([, marker]) => marker), markers.at(-1)[1]].join('\n');
 }
 
-export function installedLifecycleContractMutations(source, route, expectedRoot) {
+export function installedLifecycleContractMutations(source, route, expectedLauncherCommand) {
   const relayMarker = markers.find(([label]) => label === 'relay start')[1];
   const rawMarker = markers.find(([label]) => label === 'raw progress prohibition')[1];
   const rawAllowance = replaceLastInstalledLifecycleMarker(source, rawMarker, 'Relay detailed `[zcode]` lines and arbitrary stderr');
-  const relocated = moveInstalledRelayAfterTerminal(source, route, expectedRoot);
+  const relocated = moveInstalledRelayAfterTerminal(source, route, expectedLauncherCommand);
   const lifecycleStart = source.indexOf(markers[0][1]);
   const lifecycleEndMarker = markers.at(-1)[1];
   const lifecycleEnd = source.indexOf(lifecycleEndMarker) + lifecycleEndMarker.length;
@@ -107,33 +129,20 @@ function occurrences(source, marker) {
   return count;
 }
 
-function hasUnsafeCommandPathCharacter(value) {
-  for (const character of value) {
-    const code = character.codePointAt(0);
-    if (character === '"' || code <= 0x1f || code >= 0x7f && code <= 0x9f) return true;
-  }
-  return false;
-}
-
-function assertExactCommandPaths(source, expectedRoot, prefix) {
-  const placeholder = expectedRoot === '{{PLUGIN_ROOT}}' || expectedRoot === '<canonical-plugin-root>';
-  assert.ok(typeof expectedRoot === 'string' && expectedRoot && Buffer.byteLength(expectedRoot) <= 2048
-    && !hasUnsafeCommandPathCharacter(expectedRoot)
-    && (placeholder || isAbsolute(expectedRoot) || win32.isAbsolute(expectedRoot)),
-  `${prefix} trusted expected root and exact argv require one safe bounded absolute root or canonical placeholder`);
-  const encodedExpectedRoot = placeholder ? expectedRoot : JSON.stringify(expectedRoot).slice(1, -1);
-  const commands = [...source.matchAll(companionCommandLine)];
-  assert.equal(commands.length, 4, `${prefix} trusted expected root and exact argv require four strict companion command lines`);
-  assert.ok(commands.every((match) => !hasUnsafeCommandPathCharacter(match.groups.root)
-    && Buffer.byteLength(match.groups.root) <= 2048),
-  `${prefix} trusted expected root and exact argv require quote/control/newline-free bounded command paths`);
-  assert.ok(commands.every((match) => match.groups.root === encodedExpectedRoot),
-    `${prefix} trusted expected root and exact argv must match every renderer-substituted command root`);
+function assertExactLauncherCommands(source, expectedLauncherCommand, prefix) {
+  const placeholder = ['{{RESCUE_LAUNCHER_COMMAND}}', '<rescue-launcher-command>'].includes(expectedLauncherCommand);
+  assert.ok(typeof expectedLauncherCommand === 'string' && expectedLauncherCommand && Buffer.byteLength(expectedLauncherCommand) <= 4096
+    && (placeholder || isSafeRenderedLauncherCommand(expectedLauncherCommand)),
+  `${prefix} trusted expected launcher command must be one bounded machine-rendered command or canonical placeholder`);
+  const commands = [...source.matchAll(launcherCommandLine)];
+  assert.equal(commands.length, 4, `${prefix} trusted expected launcher command requires four strict launcher command lines`);
+  assert.ok(commands.every((match) => match.groups.launcher === expectedLauncherCommand),
+    `${prefix} trusted expected launcher command must match every command prefix`);
   assert.deepEqual(new Set(commands.map((match) => match.groups.command)), new Set([
     'invoke-prepared rescue', 'invoke-status rescue', 'invoke-choice rescue resume', 'invoke-choice rescue fresh',
-  ]), `${prefix} trusted expected root and exact argv must retain all four fixed companion commands`);
-  return source.replace(companionCommandLine,
-    (_line, _root, command) => `node "{{PLUGIN_ROOT}}/scripts/zcode-companion.mjs" ${command}`);
+  ]), `${prefix} trusted expected launcher command must retain all four fixed arguments`);
+  return source.replace(launcherCommandLine,
+    (_line, _launcher, _path, command) => `{{RESCUE_LAUNCHER_COMMAND}} ${command}`);
 }
 
 function assertCanonicalOperativeRoute(source, normalized, route, prefix) {
@@ -145,7 +154,7 @@ function assertCanonicalOperativeRoute(source, normalized, route, prefix) {
     `${prefix} exact canonical operative route must match the independent normalized managed Role digest`);
 }
 
-/** @param {string} source @param {{route:'named'|'generic', expectedRoot:string, assertionPrefix?:string}} input */
+/** @param {string} source @param {{route:'named'|'generic', expectedLauncherCommand:string, assertionPrefix?:string}} input */
 export function parseInstalledForwarderLifecycleContract(source, input) {
   const prefix = `${input.assertionPrefix ?? ''}${input.route}`;
   assert.equal(typeof source, 'string', `${prefix} lifecycle source must be text`);
@@ -170,14 +179,14 @@ export function parseInstalledForwarderLifecycleContract(source, input) {
   const initial = source.indexOf(initialCommand);
   assert.ok(initial > start && initial < end,
     `${prefix} unique operative lifecycle region must contain its initial foreground command`);
-  const normalized = assertExactCommandPaths(source, input.expectedRoot, prefix);
+  const normalized = assertExactLauncherCommands(source, input.expectedLauncherCommand, prefix);
   assertCanonicalOperativeRoute(source, normalized, input.route, prefix);
   return { start, end, text: source.slice(start, end), positions: Object.fromEntries(positions.map(({ label, start: position }) => [label, position])) };
 }
 
-/** @param {string} source @param {'named'|'generic'} route @param {{expectedRoot:string, assertionPrefix?:string}} options */
+/** @param {string} source @param {'named'|'generic'} route @param {{expectedLauncherCommand:string, assertionPrefix?:string}} options */
 export function assertInstalledForwarderLifecycleContract(source, route, options = {}) {
-  parseInstalledForwarderLifecycleContract(source, { route, expectedRoot: options.expectedRoot, assertionPrefix: options.assertionPrefix });
+  parseInstalledForwarderLifecycleContract(source, { route, expectedLauncherCommand: options.expectedLauncherCommand, assertionPrefix: options.assertionPrefix });
   return true;
 }
 
@@ -187,8 +196,8 @@ export async function assertInstalledPreparedContinuationContract(source, captur
   return qualifyCodexRescuePreparedContinuationEvidence(capture);
 }
 
-export function moveInstalledRelayAfterTerminal(source, route, expectedRoot) {
-  const parsed = parseInstalledForwarderLifecycleContract(source, { route, expectedRoot });
+export function moveInstalledRelayAfterTerminal(source, route, expectedLauncherCommand) {
+  const parsed = parseInstalledForwarderLifecycleContract(source, { route, expectedLauncherCommand });
   const start = parsed.positions['relay start'];
   const end = parsed.positions['status boundary'];
   const terminal = parsed.positions['terminal return'];

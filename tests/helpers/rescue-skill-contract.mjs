@@ -11,10 +11,10 @@ export const expectedNamedRescueSpawn = [
   `  message: '${expectedNamedRescueMessage}',`,
   '})',
 ].join('\n');
-export const expectedGenericRescueInstruction = "For the generic route, substitute only the preflight-verified absolute canonical plugin root in this fixed message, then call `spawn_agent` with `task_name: rescueTaskName`, `fork_turns: 'none'`, no `agent_type`, and exactly that message:";
+export const expectedGenericRescueInstruction = "For the generic route, substitute only the already-bound immutable `rescueLauncherCommand` for `<rescue-launcher-command>` in this fixed message, then call `spawn_agent` with `task_name: rescueTaskName`, `fork_turns: 'none'`, no `agent_type`, and exactly that message:";
 export const expectedGenericRescueMessage = [
   'Act only as the installed ZCode Rescue forwarder. You are task-blind and capability-free. In the current workspace run exactly:',
-  'node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-prepared rescue',
+  '<rescue-launcher-command> invoke-prepared rescue',
   'Preserve stderr and return public stdout verbatim. Do not inspect or modify code independently, interpret results, retry, cancel, choose a pending branch, or request/print/persist authorization material.',
   'The same exact prepared assignment is valid for either the initial turn or a stopped same-child prepared continuation selected by the parent. The one-command-per-turn rule applies to both. The assignment alone does not prove the sender or binding: run only its mapped companion command, which validates the exact executor and private binding before work starts.',
   'Reject every non-exact assignment, arbitrary message, nested Rescue request, and independent repository work without running a command.',
@@ -23,15 +23,38 @@ export const expectedGenericRescueMessage = [
   'Phase/code pairs are exactly `starting` / `started`, `running` / `model-active`, `investigating` / `tool-active`, `editing` / `editing`, `verifying` / `verifying`, `waiting` / `waiting`, and `finalizing` / `finalizing`.',
   'Never relay detailed `[zcode]` lines, arbitrary stderr, stdout, commands, paths, identifiers, content, results, or errors. Never invent a relay from a partial, malformed, unknown, stale, duplicate, or out-of-order record. After inspecting each yielded result and optionally relaying its valid complete records, continue only with same-handle `write_stdin` polling. A relay or its tool result never replaces a poll and never authorizes another Rescue invocation.',
   'While the original foreground handle is live and only between polls, accept exactly one of these exact trimmed no-argument user status intents: `zcode status`, `$zcode:status`, `/zcode:status`. For any of those spellings run the sidecar with no arguments using only this constant command:',
-  'node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-status rescue',
+  '<rescue-launcher-command> invoke-status rescue',
   'Return its bounded status to that requesting child transcript, then resume polling the same original handle. Reject status arguments and every other spelling. Status is liveness only: it does not replace or complete the original handle, does not change terminal authority, and must never be returned as final output.',
   'If that command returned a needs-choice response, stop. Only after the parent sends exactly `Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.` run exactly:',
-  'node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-choice rescue resume',
+  '<rescue-launcher-command> invoke-choice rescue resume',
   'Only after the parent sends exactly `Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.` run exactly:',
-  'node "<canonical-plugin-root>/scripts/zcode-companion.mjs" invoke-choice rescue fresh',
+  '<rescue-launcher-command> invoke-choice rescue fresh',
   'A project tool, test, build, lint, or other command failure reported while the ZCode turn remains active is not a Rescue failure. Do not hard-code project commands or parse their output to decide completion; keep polling the exact original handle. Only the original companion and ZCode terminal result is authoritative.',
   "Return only the original foreground execution's terminal public stdout. Never substitute relay output, status output, intermediate output, or child-authored text.",
 ].join('\n');
+
+export function assertRescueLauncherGate(source, { assertionPrefix = '' } = {}) {
+  const gate = source.indexOf('## Immutable Rescue launcher gate');
+  const objective = source.indexOf('Invoke explicitly as');
+  const routing = source.indexOf('## Single-hop Rescue routing');
+  assert.ok(gate >= 0, `${assertionPrefix}immutable Rescue launcher gate must exist`);
+  assert.ok(gate < objective && objective < routing, `${assertionPrefix}launcher gate must precede objective handling and routing`);
+  const block = source.slice(gate, objective);
+  assert.match(block, /trusted lifecycle additional-context descriptor/i);
+  assert.match(block, /\[zcode-rescue-launcher\][^\n]+"version":1[^\n]+"launcherCommand":"node/i);
+  assert.match(block, /bind `rescueLauncherCommand` exactly once/i);
+  assert.match(block, /immutable/i);
+  assert.match(block, /missing[\s\S]+ambiguous[\s\S]+malformed[\s\S]+terminal/i);
+  assert.match(block, /\[zcode-rescue-launcher-error\][\s\S]+reinstall[\s\S]+terminal/i);
+  assert.match(block, /launcher-error[\s\S]+(?:do not|never)[^\n]+\$zcode:setup[\s\S]+prepare[\s\S]+follow[ -]?up[\s\S]+spawn/i);
+  assert.match(block, /(?:do not|never)[^\n]+companion[\s\S]+\$zcode:setup[\s\S]+prepare[\s\S]+follow[ -]?up[\s\S]+spawn/i);
+  assert.match(block, /every[^\n]+Rescue command[^\n]+exact `rescueLauncherCommand` bytes[^\n]+fixed allowlisted arguments/i);
+  assert.match(block, /never[^\n]+quote[^\n]+escape[^\n]+parse[^\n]+rebuild[^\n]+raw path/i);
+  assert.match(block, /(?:do not|never)[^\n]+cwd[\s\S]+repository[\s\S]+Skill prose[\s\S]+plugin root/i);
+  assert.match(block, /(?:do not|never)[^\n]+`scripts\/zcode-companion\.mjs`[\s\S]+PATH[\s\S]+global[\s\S]+cache/i);
+  assert.match(block, /(?:do not|never)[^\n]+switch[^\n]+launcher[^\n]+diagnostic/i);
+  return { gate, objective, routing, block };
+}
 
 const namedBoundary = '\nOnly after the preflight returned `ready`';
 const genericBoundary = '\nKeep the returned child ID as `rescueChildId`';
@@ -112,7 +135,7 @@ export function assertExactChildContinuationContract(source, { assertionPrefix =
   assert.match(block, /Root[^\n]+owns[^\n]+semantic choice/i);
   assert.match(block, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*expectedPreparedContinuationMessage,?\s*\}\)/s);
   assert.doesNotMatch(block, /followup_task\([\s\S]{0,240}(?:task|jobId|sessionId|workspace|permission|binding)/i);
-  assert.match(block, /named assignment literal[\s\S]+complete fixed generic message[\s\S]+same canonical plugin root/i);
+  assert.match(block, /named assignment literal[\s\S]+complete fixed generic message[\s\S]+same immutable Rescue launcher command/i);
   assert.match(source, /Preparation authorizes exactly one next action:[^\n]+stopped-child `followup_task`[^\n]+new child, never both/i);
   assert.match(source, /Only when the selected next action is a new-child spawn[^\n]+choose `rescueTaskName`/i);
   assert.match(source, /A stopped-child followup never chooses or changes a task name/i);

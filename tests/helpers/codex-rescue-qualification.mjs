@@ -110,7 +110,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   if (parentMeta?.id !== parentSessionId || parentMeta?.session_id !== parentSessionId || parentMeta?.thread_source !== 'user'
     || parentMeta?.source !== 'exec' || Object.hasOwn(parentMeta ?? {}, 'parent_thread_id')) mismatch('continuation-parent-metadata', 'Raw parent session metadata is invalid.');
   assertGlobalCallOwnership(parent, child);
-  const preparations = parentExecs.filter((event) => parseCapturedHostCall(event.payload.input).envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" prepare rescue'));
+  const preparations = parentExecs.filter((event) => parseCapturedHostCall(event.payload.input).envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" prepare rescue'));
   if (preparations.length !== 2 || preparations.some((call) => parentOutputs.filter((output) => output.payload.type === 'custom_tool_call_output' && output.payload.call_id === call.payload.call_id).length !== 1)) mismatch('continuation-preparation-count', 'Captured continuation must contain two linked raw parent preparations.');
   const parentCalls = parent.filter((event) => ['custom_tool_call', 'function_call'].includes(event?.payload?.type));
   const preparationWrites = parentExecs.filter((event) => parseCapturedHostCall(event.payload.input).kind === 'write_stdin');
@@ -216,7 +216,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
     || childMeta?.thread_source !== 'subagent' || childSpawn?.parent_thread_id !== parentSessionId || childSpawn?.agent_path !== observedAgentPath
     || childSpawn?.agent_role !== (input.route === 'named' ? 'zcode-rescue' : null)) mismatch('continuation-child-metadata', 'Raw child session metadata is invalid.');
   if (calls.length !== 2 || outputs.length !== 2
-    || childCommands.some((command) => typeof command !== 'string' || !command.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue'))
+    || childCommands.some((command) => typeof command !== 'string' || !command.endsWith('/skills/rescue/launcher.mjs" invoke-prepared rescue'))
     || new Set(childCommands).size !== 1
     || calls.some((call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)) mismatch('continuation-child-invocations', 'Raw child rollout does not prove two exact linked invoke-prepared turns.');
   const childTurns = calls.map((call) => boundedString(call.turn_id));
@@ -253,15 +253,15 @@ function validateLiveRawContinuationCapture(input, core) {
     || parentFunctions.some((event) => !['spawn_agent', 'followup_task'].includes(event.payload.name))) mismatch('continuation-raw-parent-events', 'Complete parent capture contains an extra orchestration call.');
   assertAllowedRawHostCalls(rawParent, 'parent'); assertAllowedRawHostCalls(rawChild, 'child');
   const rawParentCommands = rawParent.filter((event) => event?.payload?.type === 'custom_tool_call').map((event) => parseCapturedHostCall(event.payload.input));
-  if (rawParentCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" prepare rescue')).length !== 2
+  if (rawParentCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" prepare rescue')).length !== 2
     || rawParentCommands.filter((host) => host.kind === 'write_stdin').length !== 2
     || rawParent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started').length !== 1
     || rawParent.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'stopped').length !== 1) mismatch('continuation-raw-parent-events', 'Complete parent capture duplicates or omits a required lifecycle event.');
   const rawChildCommands = rawChild.filter((event) => event?.payload?.type === 'custom_tool_call').map((event) => parseCapturedHostCall(event.payload.input));
-  if (rawChildCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue')).length !== 2
+  if (rawChildCommands.filter((host) => host.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" invoke-prepared rescue')).length !== 2
     || rawChildCommands.filter((host) => host.kind === 'write_stdin').length > MAX_CHILD_POLLS) mismatch('continuation-raw-child-events', 'Complete child capture duplicates or omits invoke-prepared evidence.');
   const consumedChildWriteIds = new Set();
-  for (const invoke of rawChild.filter((event) => event?.payload?.type === 'custom_tool_call' && parseCapturedHostCall(event.payload.input).envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue'))) {
+  for (const invoke of rawChild.filter((event) => event?.payload?.type === 'custom_tool_call' && parseCapturedHostCall(event.payload.input).envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" invoke-prepared rescue'))) {
     const calls = rawChild.filter((event) => event?.turn_id === invoke.turn_id && event?.payload?.type === 'custom_tool_call'
       && (event === invoke || parseCapturedHostCall(event.payload.input).kind === 'write_stdin'));
     for (const call of calls.filter((event) => parseCapturedHostCall(event.payload.input).kind === 'write_stdin')) {
@@ -292,8 +292,8 @@ function assertAllowedRawHostCalls(events, role) {
   for (const call of calls) {
     const host = parseCapturedHostCall(call.payload.input); const command = host.envelope.get('cmd');
     const allowed = role === 'parent'
-      ? host.kind === 'write_stdin' || typeof command === 'string' && (command.endsWith('/scripts/zcode-companion.mjs" prepare rescue') || command.endsWith('/scripts/zcode-companion.mjs" role-status rescue') || command.endsWith('/scripts/zcode-companion.mjs" invoke-status rescue'))
-      : host.kind === 'write_stdin' || typeof command === 'string' && (command.endsWith('/scripts/zcode-companion.mjs" invoke-prepared rescue') || command.endsWith('/scripts/zcode-companion.mjs" invoke-status rescue'));
+      ? host.kind === 'write_stdin' || typeof command === 'string' && (command.endsWith('/skills/rescue/launcher.mjs" prepare rescue') || command.endsWith('/skills/rescue/launcher.mjs" role-status rescue') || command.endsWith('/skills/rescue/launcher.mjs" invoke-status rescue'))
+      : host.kind === 'write_stdin' || typeof command === 'string' && (command.endsWith('/skills/rescue/launcher.mjs" invoke-prepared rescue') || command.endsWith('/skills/rescue/launcher.mjs" invoke-status rescue'));
     if (!allowed) mismatch(`continuation-raw-${role}-events`, `Complete ${role} capture contains an extra host call.`);
   }
   const allCalls = events.filter((event) => ['custom_tool_call', 'function_call'].includes(event?.payload?.type));
@@ -1191,7 +1191,7 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
     const turnEvents = parent.map((event, index) => ({ event, index })).filter(({ event }) => event?.turn_id === specification.turnId);
     const calls = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call').map(({ event, index }) => ({ event, index, host: parseCapturedHostCall(event.payload.input) }));
     const outputs = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call_output');
-    const prepares = calls.filter(({ host }) => host.kind === 'exec_command' && host.envelope.get('cmd')?.endsWith('/scripts/zcode-companion.mjs" prepare rescue'));
+    const prepares = calls.filter(({ host }) => host.kind === 'exec_command' && host.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" prepare rescue'));
     const writes = calls.filter(({ host }) => host.kind === 'write_stdin');
     if (prepares.length !== 1 || writes.length !== 1) mismatch('continuation-preparation-protocol', 'Each parent turn must own one prepare process and one write.');
     const prepare = prepares[0]; const write = writes[0];
@@ -1741,7 +1741,9 @@ function assertExactKeys(object, expected, code) {
 }
 
 function isCompanionCommand(command) {
-  return typeof command === 'string' && (command.includes('zcode-companion.mjs') || /(?:^|\s)(?:prepare|invoke(?:-prepared|-choice)?)\s+rescue(?:\s|$)/u.test(command));
+  return typeof command === 'string' && (command.includes('zcode-companion.mjs')
+    || command.includes('skills/rescue/launcher.mjs')
+    || /(?:^|\s)(?:role-status|prepare|invoke(?:-prepared|-choice|-status)?)\s+rescue(?:\s|$)/u.test(command));
 }
 
 function sessionMeta(events) {

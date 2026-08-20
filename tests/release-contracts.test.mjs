@@ -92,6 +92,55 @@ test('release docs explain automatic Rescue routing and private prepared rollout
   assert.match(chinese, /重新运行 `?\$zcode:setup`?.{0,180}(?:digest|Role 升级)|(?:digest|Role 升级).{0,180}重新运行 `?\$zcode:setup`?/is);
 });
 
+test('release docs bind Rescue to its owned instance launcher without crossing namespaces', () => {
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  const security = read('SECURITY.md');
+  const changelog = read('CHANGELOG.md');
+
+  assert.match(english, /source checkout.{0,160}installed plugin.{0,160}intentionally isolated namespaces/is);
+  assert.match(english, /`zcode`.{0,120}`zcode-<marketplace>`/is);
+  assert.match(english, /owned `?UserPromptSubmit`? hook.{0,180}machine-rendered.{0,100}instance-bound launcher command/is);
+  assert.match(english, /exact plugin instance.{0,180}(?:reuse|reuses).{0,100}exact bytes/is);
+  assert.match(english, /never.{0,100}`node scripts\/zcode-companion\.mjs`.{0,180}(?:PATH|global package|cache search)/is);
+  assert.match(english, /`source-session-unproven`.{0,180}terminal.{0,180}(?:do not|never).{0,100}`?\$zcode:setup`?/is);
+  assert.match(english, /launcher error.{0,160}shell-unsafe install path.{0,160}reinstall/is);
+  assert.match(english, /does not (?:merge|search|redirect|copy)[\s\S]{0,240}(?:installed|source) namespace/i);
+  assert.match(english, /existing installed and source-development data.{0,160}(?:unchanged|same locations)/is);
+  assert.match(english, /managed Role digest.{0,160}(?:upgrade-required|rerun `?\$zcode:setup`?)/is);
+
+  assert.match(chinese, /source checkout.{0,160}已安装插件.{0,160}刻意隔离的命名空间/is);
+  assert.match(chinese, /`zcode`.{0,120}`zcode-<marketplace>`/is);
+  assert.match(chinese, /受管 `?UserPromptSubmit`? hook.{0,180}机器渲染.{0,100}instance-bound launcher command/is);
+  assert.match(chinese, /精确插件实例.{0,180}原样复用.{0,100}字节/is);
+  assert.match(chinese, /绝不.{0,100}`node scripts\/zcode-companion\.mjs`.{0,180}(?:PATH|全局包|cache 搜索)/is);
+  assert.match(chinese, /`source-session-unproven`.{0,180}终态.{0,180}(?:不要|绝不).{0,100}`?\$zcode:setup`?/is);
+  assert.match(chinese, /launcher error.{0,160}shell-unsafe 安装路径.{0,160}重新安装/is);
+  assert.match(chinese, /不会(?:合并|搜索|重定向|复制)[\s\S]{0,240}(?:已安装|source)命名空间/i);
+  assert.match(chinese, /现有已安装数据和 source-development 数据.{0,160}(?:保持不变|原位置)/is);
+  assert.match(chinese, /受管 Role digest.{0,160}(?:upgrade-required|重新运行 `?\$zcode:setup`?)/is);
+
+  assert.match(security, /instance-bound launcher.{0,200}owned parent lifecycle context/is);
+  assert.match(security, /(?:must not|never).{0,160}(?:cwd-relative|direct companion|PATH|cache search)/is);
+  assert.match(security, /(?:must not|never).{0,160}(?:merge|search|redirect|copy).{0,160}namespace/is);
+  assert.match(changelog, /instance-bound Rescue launcher/i);
+  assert.match(changelog, /source-session-unproven.{0,160}(?:terminal|no setup retry)/is);
+  assert.match(changelog, /installed.{0,100}source-development namespaces.{0,160}isolated/is);
+});
+
+test('ADR 0010 records the Rescue launcher amendment without weakening direct authorization', () => {
+  const adr = read('docs/adr/0010-use-thread-bound-direct-companion.md');
+
+  assert.match(adr, /amended.{0,80}2026-08-20/is);
+  assert.match(adr, /2026-08-19-rescue-root-provenance-diagnostics-design\.md/i);
+  assert.match(adr, /Rescue.{0,180}instance-bound launcher/is);
+  assert.match(adr, /launcher.{0,180}same process.{0,180}(?:delegates|dispatches).{0,160}companion/is);
+  assert.match(adr, /(?:does not|is not).{0,120}(?:process hop|authorization boundary)/is);
+  assert.match(adr, /`CODEX_THREAD_ID`.{0,200}private active-turn record/is);
+  assert.match(adr, /single[- ]hop.{0,200}(?:preserved|remains)/is);
+  assert.match(adr, /fixed Rescue (?:argv|command).{0,180}(?:allowlist|shapes)/is);
+});
+
 test('binding ADR defines current status at durable continuation publication', () => {
   const adr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');
   assert.match(adr, /`currentJobId`.{0,180}durably reserved and published.{0,180}(?:queues|fails|cancelled)/is);

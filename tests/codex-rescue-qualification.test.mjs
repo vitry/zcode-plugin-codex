@@ -26,12 +26,12 @@ const childId = '019fe6e0-4764-7192-83ba-0b0cc2c48660';
 const taskName = 'zcode_rescue_fix_progress';
 const agentPath = `/root/${taskName}`;
 const expectedWorkspace = process.cwd();
-const expectedCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-prepared rescue';
-const expectedPreflightCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" role-status rescue';
-const expectedPreparationCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" prepare rescue';
+const expectedCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
+const expectedPreflightCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs" role-status rescue';
+const expectedPreparationCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs" prepare rescue';
 const expectedPreparationEnvelope = Object.freeze({ version: 1, source: 'explicit', task: 'repair the qualification fixture', options: { execution: 'foreground', resume: 'fresh' } });
 const expectedPreparationPayload = JSON.stringify(expectedPreparationEnvelope);
-const expectedStatusCommand = 'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-status rescue';
+const expectedStatusCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-status rescue';
 const expectedPublicOutput = 'done';
 const expectedSemanticProgress = Object.freeze({
   start: '[zcode] Running command: npm test.',
@@ -842,7 +842,7 @@ test('choice qualification fails closed on duplicate execution, identity drift, 
     { code: 'choice-wait-output-shape', mutate: (input) => { waitResult(input, 'wait-1').payload.output = JSON.stringify({ message: 'Wait completed.', timed_out: true }); } },
     { code: 'choice-wait-return-order', mutate: (input) => { const output = waitResult(input, 'wait-2'); input.rollouts[0].splice(input.rollouts[0].indexOf(output), 1); input.rollouts[0].push(output); } },
     { code: 'choice-command-count', mutate: (input) => input.rollouts[1].splice(-1, 0, structuredExec(expectedCommand, 'exec-3')) },
-    { code: 'choice-command-mismatch', mutate: (input) => { choiceExec(input).payload.input = structuredExec('node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue fresh', 'exec-2').payload.input; } },
+    { code: 'choice-command-mismatch', mutate: (input) => { choiceExec(input).payload.input = structuredExec('node "/installed/zcode/skills/rescue/launcher.mjs" invoke-choice rescue fresh', 'exec-2').payload.input; } },
     { code: 'choice-child-terminal-sequence', mutate: (input) => { input.rollouts[1][3].payload.message = 'tampered'; } },
     { code: 'choice-terminal-timeline', mutate: (input) => { choiceExec(input).timestamp = input.rollouts[0].find((event) => event?.payload?.phase === 'final_answer').timestamp; } },
     { code: 'choice-followup-order', mutate: (input) => { const ask = input.rollouts[0].splice(input.rollouts[0].findIndex((event) => event?.payload?.phase === 'final_answer'), 1)[0]; input.rollouts[0].splice(input.rollouts[0].findIndex((event) => event?.payload?.name === 'followup_task') + 1, 0, ask); } },
@@ -1342,7 +1342,7 @@ test('binds child stdout to the unique exec call and terminal sentinel', () => {
 test('rejects every parent companion command except the exact readiness preflight', () => {
   const commands = [
     `${expectedCommand} && true`,
-    'node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue fresh',
+    'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-choice rescue fresh',
     `sh -c ${JSON.stringify(expectedCommand)}`,
   ];
   for (const command of commands) {
@@ -1806,7 +1806,7 @@ function choiceOptions(choice, overrides = {}) {
     expectedPreflightCommand,
     expectedPreparationCommand,
     expectedPreparationPayload,
-    expectedChoiceCommand: `node "/installed/zcode/scripts/zcode-companion.mjs" invoke-choice rescue ${choice}`,
+    expectedChoiceCommand: `node "/installed/zcode/skills/rescue/launcher.mjs" invoke-choice rescue ${choice}`,
     expectedFollowupMessage: `Continue the pending ZCode Rescue with ${choice}. Run only the installed ${choice} forwarder command and return its public stdout verbatim.`,
     expectedPublicOutput,
     statusPrivacyCanaries: ['PRIVATE', 'raw output must stay private', 'reasoning must stay private'],

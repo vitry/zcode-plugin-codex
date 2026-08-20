@@ -1,7 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, mkdir, realpath, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile, mkdir, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -681,16 +681,58 @@ test('real companion setup is the only public command that needs no caller autho
   await assert.rejects(runCompanion(['status'], { cwd: ctx.cwd, env: { ...ctx.options.env, PLUGIN_ROOT: root, PLUGIN_DATA: ctx.dataRoot } }), { code: 'INTERNAL_AUTHORIZATION_INVALID' });
 });
 
+test('real source lifecycle remains ready after setup under its own isolated namespace', async () => {
+  const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+  await recordSetupSession(ctx, 'source-ready-session', 'Configure this source development namespace.');
+  const env = {
+    ...ctx.options.env, ZCODE_DATA_ROOT: ctx.dataRoot, CODEX_THREAD_ID: 'source-ready-session',
+    CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+  };
+  assert.equal((await runCompanion(['setup'], { cwd: ctx.cwd, env })).status, 'ready');
+  assert.deepEqual(await runCompanion(['role-status', 'rescue'], { cwd: ctx.cwd, env }), {
+    type: 'role-status', role: 'zcode-rescue', status: 'ready',
+  });
+});
+
 test('real companion setup fails closed when private active-session proof is missing or ambiguous', async (t) => {
   await t.test('missing', async () => {
     const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
-    await assert.rejects(runCompanion(['setup'], { cwd: ctx.cwd, env: ctx.options.env }), { code: 'SETUP_SESSION_UNPROVEN' });
+    await assert.rejects(runCompanion(['setup'], { cwd: ctx.cwd, env: { ...ctx.options.env, ZCODE_DATA_ROOT: ctx.dataRoot } }), {
+      code: 'SETUP_SESSION_UNPROVEN', category: 'authorization',
+      remedy: 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.',
+    });
   });
   await t.test('ambiguous', async () => {
     const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
     await recordSetupSession(ctx, 'setup-a', 'Set up this project naturally.');
     await recordSetupSession(ctx, 'setup-b', 'Configure the plugin please.');
-    await assert.rejects(runCompanion(['setup'], { cwd: ctx.cwd, env: ctx.options.env }), { code: 'SETUP_SESSION_UNPROVEN' });
+    await assert.rejects(runCompanion(['setup'], { cwd: ctx.cwd, env: { ...ctx.options.env, ZCODE_DATA_ROOT: ctx.dataRoot } }), {
+      code: 'SETUP_SESSION_UNPROVEN',
+      remedy: 'Run $zcode:setup from one active Codex session after its lifecycle hooks have started.',
+    });
+  });
+  await t.test('one active source turn without SessionStart', async () => {
+    const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+    await createIdentityStore({ dataRoot: ctx.dataRoot }).beginCallerTurn({
+      sessionId: 'source-active-without-start', turnId: 'source-active-turn', workspace: ctx.cwd,
+      permissionMode: 'workspace-write', prompt: 'Configure the source checkout.',
+    });
+    await assert.rejects(runCompanion(['setup'], { cwd: ctx.cwd, env: { ...ctx.options.env, ZCODE_DATA_ROOT: ctx.dataRoot } }), {
+      code: 'SETUP_SESSION_UNPROVEN', category: 'authorization',
+      remedy: 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.',
+    });
+  });
+  await t.test('corrupt SessionStart remains the generic lifecycle failure', async () => {
+    const ctx = await context({ hooks: hookMetadata(root, 'trusted'), features: { hooks: true } });
+    await recordSetupSession(ctx, 'source-corrupt-start', 'Configure the source checkout.');
+    const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.cwd });
+    const hookState = join(storage.directory, 'hook-state');
+    const [sessionRecord] = (await readdir(hookState)).filter((name) => name.startsWith('session-'));
+    assert.ok(sessionRecord); await writeFile(join(hookState, sessionRecord), '{}\n');
+    await assert.rejects(runCompanion(['setup'], { cwd: ctx.cwd, env: { ...ctx.options.env, ZCODE_DATA_ROOT: ctx.dataRoot } }), {
+      code: 'SETUP_SESSION_UNPROVEN', category: 'authorization',
+      remedy: 'Restart Codex, then run $zcode:setup from one active session.',
+    });
   });
 });
 

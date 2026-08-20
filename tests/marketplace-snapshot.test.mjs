@@ -18,6 +18,7 @@ test('marketplace builder requires the complete isolated Rescue payload', () => 
   assert.deepEqual(REQUIRED_RESCUE_PAYLOAD, [
     'agents/zcode-rescue.toml.template',
     'skills/rescue/SKILL.md',
+    'skills/rescue/launcher.mjs',
     'scripts/zcode-companion.mjs',
     'scripts/lib/invocation.mjs',
     'scripts/lib/job-control.mjs',
@@ -26,6 +27,8 @@ test('marketplace builder requires the complete isolated Rescue payload', () => 
     'scripts/lib/state.mjs',
     'scripts/lib/conversation-progress.mjs',
     'scripts/lib/managed-agent-role.mjs',
+    'scripts/lib/plugin-data.mjs',
+    'scripts/lib/rescue-launcher-command.mjs',
     'scripts/lib/progress.mjs',
     'hooks/subagent-hook.mjs',
     'hooks/lib/hook-state.mjs',
