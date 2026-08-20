@@ -115,13 +115,17 @@ export async function createConversationProgressDescriber({ sessionId, subscript
       else absorbRecovery(frame.deltas);
       return accepted('recovery');
     }
+    if (frame.payloadKind === 'snapshot') {
+      if (lastOrdinal !== undefined && frame.ordinal <= lastOrdinal) return ignored('stale');
+      lastOrdinal = frame.ordinal; lastSeq = frame.toSeq; needsRecovery = false; resetLifecycleState();
+      return accepted('online');
+    }
     if (needsRecovery) return ignored('recovery-required');
     if (lastOrdinal !== undefined && frame.ordinal <= lastOrdinal) return ignored('stale');
     const sequenceGap = lastOrdinal !== undefined
-      && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq > /** @type {number} */ (lastSeq));
-    lastOrdinal = frame.ordinal; lastSeq = Math.max(lastSeq ?? frame.toSeq, frame.toSeq);
-    if (sequenceGap) return rejected('sequence');
-    if (frame.payloadKind === 'snapshot') { resetLifecycleState(); return accepted('online'); }
+      && (frame.ordinal !== lastOrdinal + 1 || frame.fromSeq !== lastSeq);
+    if (sequenceGap) { needsRecovery = true; return rejected('sequence'); }
+    lastOrdinal = frame.ordinal; lastSeq = frame.toSeq;
     const staged = [];
     for (const delta of frame.deltas) {
       if (delta.op === 'row.removed') { applyRemoval(/** @type {number} */ (delta.fromRowId)); continue; }

@@ -160,6 +160,14 @@ validated, and ignored. No snapshot, patch, text append, unknown row, assistant
 draft, tool output, or historical terminal row is rendered. Public event fanout
 remains capped at 64 per frame and tracked lifecycle state at 256 rows.
 
+After any accepted baseline, a normal online delta must have the next logical
+ordinal and `fromSeq` exactly equal to the last accepted `toSeq`. Overlapping
+replays and ordinal or sequence gaps are rejected before applying operations;
+the rejected frame does not advance either trusted watermark. Further online
+deltas remain fenced until a valid recovery delivery or a bounded authoritative
+snapshot establishes a new baseline. An online overflow snapshot may reset from
+sequence zero while fenced.
+
 Fragment frames remain unsupported. Their rejection is observational and uses
 the existing bounded session-snapshot fallback; it cannot affect authoritative
 completion, cancellation, or result handling.

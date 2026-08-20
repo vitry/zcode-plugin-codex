@@ -172,7 +172,7 @@ test('accepts the 0.16.3 subscriber operation limit while enforcing the complete
   });
 });
 
-test('observed unknown rows and sequence gaps do not silence later known progress', async () => {
+test('observed unknown rows stay private while a sequence gap requires recovery before later progress', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const describer = await createStructuralDescriber({
     sessionId: 'session-observed',
@@ -191,17 +191,22 @@ test('observed unknown rows and sequence gaps do not silence later known progres
   });
 
   const first = await describer.observe(frame({
-    ordinal: 1, fromSeq: 1, toSeq: 1,
+    ordinal: 1, fromSeq: 0, toSeq: 1,
     deltas: [turnRow({ rowId: 1, state: 'running' }), unknownRow(2, 'PRIVATE_UNKNOWN_ROW')],
   }), observedAt);
   const duplicate = await describer.observe(frame({
-    ordinal: 1, fromSeq: 1, toSeq: 1,
+    ordinal: 1, fromSeq: 0, toSeq: 1,
     deltas: [unknownRow(3, 'PRIVATE_STALE_ROW')],
   }), observedAt);
   const gap = await describer.observe(frame({
-    ordinal: 4, fromSeq: 4, toSeq: 4,
+    ordinal: 4, fromSeq: 1, toSeq: 4,
     deltas: [toolRow({ rowId: 4, toolCallId: 'tool-safe', toolName: 'Read', status: 'running' })],
   }), observedAt);
+  const fenced = await describer.observe(frame({
+    ordinal: 2, fromSeq: 1, toSeq: 2,
+    deltas: [unknownRow(5, 'PRIVATE_INTERLEAVED_ROW'), toolRow({ rowId: 6, toolCallId: 'tool-safe', toolName: 'Read', status: 'success' })],
+  }), observedAt);
+  const recovery = await describer.observe(frame({ ordinal: 4, fromSeq: 1, toSeq: 4, deliveryKind: 'recovery', deltas: [] }), observedAt);
   const later = await describer.observe(frame({
     ordinal: 5, fromSeq: 4, toSeq: 5,
     deltas: [unknownRow(5, 'PRIVATE_INTERLEAVED_ROW'), toolRow({ rowId: 6, toolCallId: 'tool-safe', toolName: 'Read', status: 'success' })],
@@ -210,8 +215,10 @@ test('observed unknown rows and sequence gaps do not silence later known progres
   assert.deepEqual(first.events.map((event) => event.message), ['ZCode turn started.']);
   assert.deepEqual(duplicate, { disposition: 'ignored', reason: 'stale', events: [] });
   assert.deepEqual(gap, { disposition: 'rejected', reason: 'sequence', events: [] });
+  assert.deepEqual(fenced, { disposition: 'ignored', reason: 'recovery-required', events: [] });
+  assert.deepEqual(recovery, { disposition: 'accepted', phase: 'recovery', events: [] });
   assert.deepEqual(later.events.map((event) => event.message), ['Read completed.']);
-  assert.doesNotMatch(JSON.stringify([first, duplicate, gap, later]), /PRIVATE_(?:UNKNOWN|STALE|INTERLEAVED)_ROW/);
+  assert.doesNotMatch(JSON.stringify([first, duplicate, gap, fenced, recovery, later]), /PRIVATE_(?:UNKNOWN|STALE|INTERLEAVED)_ROW/);
 
   for (const [mutate, reason] of [
     [(row) => { row.turnId = 'unsafe\nturn'; }, 'row-shape'],
@@ -225,23 +232,30 @@ test('observed unknown rows and sequence gaps do not silence later known progres
   }
 });
 
-test('cumulative and reset sequence ranges converge without replaying known rows', async () => {
+test('overlapping online deltas cannot clear deduplication or replay tool activity before recovery', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
-  const describer = await createStructuralDescriber({ sessionId: 'session-cumulative', subscriptionId: 'subscription-cumulative', workspace });
-  const frame = (options) => conversationFrame({ sessionId: 'session-cumulative', subscriptionId: 'subscription-cumulative', ...options });
-  const turn = turnRow({ rowId: 1, state: 'running' });
-  const running = toolRow({ rowId: 2, toolCallId: 'tool-cumulative', toolName: 'Read', status: 'running' });
-  const completed = toolRow({ rowId: 2, toolCallId: 'tool-cumulative', toolName: 'Read', status: 'success' });
-
-  const first = await describer.observe(frame({ ordinal: 1, fromSeq: 1, toSeq: 10, deltas: [turn] }), observedAt);
-  const cumulative = await describer.observe(frame({ ordinal: 2, fromSeq: 1, toSeq: 11, deltas: [turn, running] }), observedAt);
-  const overlapping = await describer.observe(frame({ ordinal: 3, fromSeq: 1, toSeq: 12, deltas: [turn, running] }), observedAt);
-  const reset = await describer.observe(frame({ ordinal: 4, fromSeq: 0, toSeq: 13, deltas: [turn, completed] }), observedAt);
-
-  assert.deepEqual(first.events.map((event) => event.message), ['ZCode turn started.']);
-  assert.deepEqual(cumulative.events.map((event) => event.message), ['Running tool: Read.']);
-  assert.deepEqual(overlapping, { disposition: 'accepted', phase: 'online', events: [] });
-  assert.deepEqual(reset.events.map((event) => event.message), ['Read completed.']);
+  const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
+  const running = toolRow({ rowId: 10, toolCallId: 'tool-current', toolName: 'Read', status: 'running' });
+  assert.deepEqual(await describer.observe(conversationFrame({
+    deliveryKind: 'initial', ordinal: 1, fromSeq: 0, toSeq: 10,
+    snapshot: boundedSnapshotFixture({ seq: 10 }),
+  }), observedAt), { disposition: 'accepted', phase: 'initial', events: [] });
+  assert.deepEqual((await describer.observe(conversationFrame({ ordinal: 2, fromSeq: 10, toSeq: 11, deltas: [running] }), observedAt)).events.map((event) => event.message), ['Running tool: Read.']);
+  assert.deepEqual(await describer.observe(conversationFrame({
+    ordinal: 3, fromSeq: 0, toSeq: 12,
+    deltas: [{ op: 'row.removed', fromRowId: 10 }, running],
+  }), observedAt), { disposition: 'rejected', reason: 'sequence', events: [] });
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 3, fromSeq: 11, toSeq: 12, deltas: [running] }), observedAt), {
+    disposition: 'ignored', reason: 'recovery-required', events: [],
+  });
+  assert.deepEqual(await describer.observe(conversationFrame({
+    deliveryKind: 'recovery', ordinal: 3, fromSeq: 11, toSeq: 12, deltas: [running],
+  }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
+  const completed = await describer.observe(conversationFrame({
+    ordinal: 4, fromSeq: 12, toSeq: 13,
+    deltas: [toolRow({ rowId: 10, toolCallId: 'tool-current', toolName: 'Read', status: 'success' })],
+  }), observedAt);
+  assert.deepEqual(completed.events.map((event) => event.message), ['Read completed.']);
 });
 
 test('normalizes previews by removing controls, collapsing whitespace, and truncating by Unicode code point', () => {
@@ -396,19 +410,17 @@ test('fails closed on every missing extra mistyped controlled or unverified capt
   assert.deepEqual(await turnDescriber.observe(hostileTurn, observedAt), []);
 });
 
-test('rejects discontinuities diagnostically while advancing the observational watermark', async () => {
+test('rejects discontinuities without trusting their watermark and accepts an authoritative snapshot reset', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
   const frame = (ordinal, fromSeq, toSeq, rowId) => conversationFrame({ ordinal, fromSeq, toSeq, deltas: [toolRow({ rowId, input: { command: `echo ${rowId}` } })] });
   assert.equal((await describer.observe(frame(7, 10, 10, 1), observedAt)).events.length, 1);
   assert.deepEqual(await describer.observe(frame(8, 12, 12, 2), observedAt), { disposition: 'rejected', reason: 'sequence', events: [] });
-  assert.deepEqual(await describer.observe(frame(8, 12, 12, 2), observedAt), { disposition: 'ignored', reason: 'stale', events: [] });
-  const invalid = frame(8, 12, 12, 2); invalid.params.frame.payload.deltas[0].row.extra = true;
-  assert.deepEqual(await describer.observe(invalid, observedAt), { disposition: 'rejected', reason: 'row-shape', events: [] });
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 8, fromSeq: 12, toSeq: 12, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'ignored', reason: 'stale', events: [] });
-  assert.equal((await describer.observe(frame(9, 1, 13, 3), observedAt)).events.length, 1);
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 11, fromSeq: 1, toSeq: 15, deliveryKind: 'recovery', deltas: [] }), observedAt), { disposition: 'accepted', phase: 'recovery', events: [] });
-  assert.equal((await describer.observe(frame(12, 1, 16, 4), observedAt)).events.length, 1);
+  assert.deepEqual(await describer.observe(frame(8, 10, 11, 2), observedAt), { disposition: 'ignored', reason: 'recovery-required', events: [] });
+  assert.deepEqual(await describer.observe(conversationFrame({
+    ordinal: 8, fromSeq: 0, toSeq: 12, deliveryKind: 'online', snapshot: boundedSnapshotFixture({ seq: 12 }),
+  }), observedAt), { disposition: 'accepted', phase: 'online', events: [] });
+  assert.equal((await describer.observe(frame(9, 12, 13, 3), observedAt)).events.length, 1);
 });
 
 test('recognizes only captured tool failure statuses and turn failure terminal states', async () => {
@@ -549,7 +561,7 @@ test('recovery silently folds bounded tool states without path resolution and de
   assert.equal(terminal.length, 1); assert.doesNotMatch(JSON.stringify(terminal), /RECOVERY_PATH_SECRET/);
 });
 
-test('received sequence gaps reject once without silencing later continuous frames', async () => {
+test('an ordinal gap fences online progress until a valid recovery baseline restores it', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'zcode-progress-'));
   const describer = await createStructuralDescriber({ sessionId: 'session-1', subscriptionId: 'sub-1', workspace });
   assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 1, deliveryKind: 'recovery', deltas: [] }), observedAt), {
@@ -559,12 +571,12 @@ test('received sequence gaps reject once without silencing later continuous fram
     disposition: 'rejected', reason: 'sequence', events: [],
   });
   for (const ordinal of [4, 5, 6]) assert.deepEqual(await describer.observe(conversationFrame({ ordinal, deltas: [] }), observedAt), {
-    disposition: 'accepted', phase: 'online', events: [],
+    disposition: 'ignored', reason: 'recovery-required', events: [],
   });
-  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 7, deliveryKind: 'recovery', deltas: [] }), observedAt), {
+  assert.deepEqual(await describer.observe(conversationFrame({ ordinal: 7, fromSeq: 1, toSeq: 7, deliveryKind: 'recovery', deltas: [] }), observedAt), {
     disposition: 'accepted', phase: 'recovery', events: [],
   });
-  const resumed = await describer.observe(conversationFrame({ ordinal: 8, deltas: [toolRow({ rowId: 8 })] }), observedAt);
+  const resumed = await describer.observe(conversationFrame({ ordinal: 8, fromSeq: 7, toSeq: 8, deltas: [toolRow({ rowId: 8 })] }), observedAt);
   assert.equal(resumed.disposition, 'accepted'); assert.equal(resumed.phase, 'online'); assert.equal(resumed.events.length, 1);
   assert.doesNotMatch(JSON.stringify(resumed), /frame-|tool-8|turn-1/);
 });

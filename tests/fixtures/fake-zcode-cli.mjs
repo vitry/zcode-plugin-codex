@@ -314,19 +314,20 @@ input.on('line', async (line) => {
         ] }));
         send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 1, deltas: [unknownRow(53, 'PRIVATE_OBSERVED_STALE')] }));
         send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 4, deltas: [{ op: 'row.upserted', row: { rowId: 54, turnId: 'turn-observed', createdAt: 1_786_233_600_000, createdAtSeq: 54, kind: 'toolCall', toolCallId: 'tool-observed', toolName: 'Read', status: 'running', inputText: '{}', input: {}, startedAt: 1_786_233_600_000 } }] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'recovery', ordinal: 4, fromSeq: 1, toSeq: 4, deltas: [] }));
         send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 5, deltas: [
           unknownRow(55, 'PRIVATE_OBSERVED_INTERLEAVED'),
           { op: 'row.upserted', row: { rowId: 56, turnId: 'turn-observed', createdAt: 1_786_233_600_000, createdAtSeq: 56, kind: 'toolCall', toolCallId: 'tool-observed', toolName: 'Read', status: 'success', inputText: '{}', input: {}, startedAt: 1_786_233_600_000, endedAt: 1_786_233_600_025 } },
         ] }));
       }
-      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'cumulative-ranges' && subscription) {
+      if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'exclusive-ranges' && subscription) {
         const turn = { op: 'row.upserted', row: { rowId: 61, turnId: 'turn-cumulative', createdAt: 1_786_233_600_000, createdAtSeq: 61, kind: 'turnHeader', origin: 'userInput', state: 'running', startedAt: 1_786_233_600_000 } };
         const tool = { rowId: 62, turnId: 'turn-cumulative', createdAt: 1_786_233_600_000, createdAtSeq: 62, kind: 'toolCall', toolCallId: 'tool-cumulative', toolName: 'Read', status: 'running', inputText: '{}', input: {}, startedAt: 1_786_233_600_000 };
         const unknown = { op: 'row.upserted', row: { rowId: 63, turnId: 'turn-cumulative', createdAt: 1_786_233_600_000, createdAtSeq: 63, kind: 'assistantDraft', content: 'PRIVATE_CUMULATIVE_ROW' } };
-        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 1, fromSeq: 1, toSeq: 10, deltas: [turn] }));
-        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 2, fromSeq: 1, toSeq: 11, deltas: [turn, { op: 'row.upserted', row: tool }] }));
-        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 3, fromSeq: 1, toSeq: 12, deltas: [turn, { op: 'row.upserted', row: tool }, unknown] }));
-        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 4, fromSeq: 0, toSeq: 13, deltas: [turn, { op: 'row.upserted', row: { ...tool, status: 'success', endedAt: 1_786_233_600_025 } }] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 1, fromSeq: 0, toSeq: 10, deltas: [turn] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 2, fromSeq: 10, toSeq: 11, deltas: [turn, { op: 'row.upserted', row: tool }] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 3, fromSeq: 11, toSeq: 12, deltas: [turn, { op: 'row.upserted', row: tool }, unknown] }));
+        send(conversationNotification({ sessionId: p.sessionId, subscriptionId: subscription, deliveryKind: 'online', ordinal: 4, fromSeq: 12, toSeq: 13, deltas: [turn, { op: 'row.upserted', row: { ...tool, status: 'success', endedAt: 1_786_233_600_025 } }] }));
       }
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1' && subscription) {
         const base = { rowId: 41, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 41, kind: 'toolCall', toolCallId: 'tool-command-1', toolName: 'Bash', input: { command: 'npm\ttest', reasoning: 'reasoning must stay private', brokerToken: 'capability must stay private' }, inputText: '{"command":"raw output"}', startedAt: 1_786_233_600_000 };
@@ -392,9 +393,10 @@ input.on('line', async (line) => {
       }
       if (process.env.FAKE_ZCODE_CONVERSATION_SCENARIO === 'sequence-gap') {
         send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'recovery', ordinal: 1, deltas: [] }));
-        for (const ordinal of [3, 4, 5, 6]) send(conversationNotification({
-          sessionId, subscriptionId, deliveryKind: 'online', ordinal, logicalFrameId: `PRIVATE_SEQUENCE_FRAME_${ordinal}`, deltas: [],
-        }));
+        send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'online', ordinal: 3, logicalFrameId: 'PRIVATE_SEQUENCE_FRAME_3', deltas: [] }));
+        send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'online', ordinal: 2, logicalFrameId: 'PRIVATE_SEQUENCE_FRAME_2', deltas: [] }));
+        send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'recovery', ordinal: 3, fromSeq: 1, toSeq: 3, deltas: [] }));
+        send(conversationNotification({ sessionId, subscriptionId, deliveryKind: 'online', ordinal: 4, fromSeq: 3, toSeq: 4, deltas: [] }));
       }
       if (process.env.FAKE_ZCODE_CONVERSATION_PROGRESS === '1') {
         const historical = { rowId: 40, turnId: 'turn-1', createdAt: 1_786_233_600_000, createdAtSeq: 40, kind: 'toolCall', toolCallId: 'initial', toolName: 'Bash', status: 'inputStreaming', inputText: '{"command":"INITIAL_SECRET"}', input: { command: 'INITIAL_SECRET' }, startedAt: 1_786_233_600_000 };
