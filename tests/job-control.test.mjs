@@ -23,6 +23,14 @@ async function setup() {
 const reservation = { ownerSessionId: 'session-a', ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
 const silentSubscribe = () => () => {};
 
+/** @param {string} value */
+function hasPublicControl(value) {
+  return [...value].some((character) => {
+    const code = /** @type {number} */ (character.codePointAt(0));
+    return code <= 0x1f || code >= 0x7f && code <= 0x9f || code === 0x061c || code === 0x200e || code === 0x200f || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
+  });
+}
+
 /** @param {string} root @param {string} workspace @param {string} jobId */
 async function attemptFixture(root, workspace, jobId) {
   const storage = await resolveWorkspaceStorage({ dataRoot: join(root, 'data'), workspace }); const path = join(storage.directory, 'cancel-attempts', `${jobId}.json`);
@@ -551,7 +559,8 @@ test('completion that wins the signal race remains successful', async () => {
 
 test('authoritative terminal error fails the job with the exact provider reason instead of partial text', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
-  const providerReason = 'Provider rejected the delegated turn.';
+  const providerReason = ' Provider rejected\n\u0000\u0085\u202e the delegated turn. ';
+  const sanitizedReason = 'Provider rejected the delegated turn.';
   const client = {
     createSession: async () => ({ session: { sessionId: 'zs-terminal-error' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
     setPermissionHandler: () => {}, subscribe: silentSubscribe,
@@ -564,12 +573,12 @@ test('authoritative terminal error fails the job with the exact provider reason 
     close: async () => {},
   };
 
-  await assert.rejects(
-    executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }),
-    { code: 'ZCODE_TURN_FAILED', message: providerReason },
-  );
+  const caught = await executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task' }).catch((error) => error);
+  assert.equal(caught.code, 'ZCODE_TURN_FAILED'); assert.equal(caught.message, sanitizedReason);
+  assert.equal(hasPublicControl(caught.message), false);
   const persisted = await store.readJob(workspace, job.id);
-  assert.equal(persisted.status, 'failed'); assert.equal(persisted.error.message, providerReason);
+  assert.equal(persisted.status, 'failed'); assert.equal(persisted.error.message, sanitizedReason);
+  assert.equal(persisted.error.message, caught.message); assert.equal(persisted.error.message.includes(providerReason), false);
   assert.equal(persisted.resultArtifact, undefined);
 });
 

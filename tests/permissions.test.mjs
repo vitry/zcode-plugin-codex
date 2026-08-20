@@ -72,8 +72,18 @@ function user(messageId, info = {}) { return { info: { role: 'user', messageId, 
 /** @param {string} origin @param {string} kind @param {string} [uiVisibility] */
 function semantics(origin, kind, uiVisibility = 'visible') { return { origin, kind, uiVisibility, providerVisibility: 'visible', transcriptVisibility: 'visible' }; }
 
+const ALL_BIDI_CONTROLS = '\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069';
+
+/** @param {string} value */
+function hasPublicControl(value) {
+  return [...value].some((character) => {
+    const code = /** @type {number} */ (character.codePointAt(0));
+    return code <= 0x1f || code >= 0x7f && code <= 0x9f || code === 0x061c || code === 0x200e || code === 0x200f || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069;
+  });
+}
+
 test('terminal error preserves the provider message instead of partial assistant text', () => {
-  const providerMessage = '  Provider quota exhausted.  ';
+  const providerMessage = 'Provider quota exhausted.';
   const snapshot = {
     projection: { status: 'error', lastError: { message: providerMessage } },
     messages: [assistant([{ type: 'text', text: 'partial result' }])],
@@ -86,6 +96,27 @@ test('terminal error without a usable provider message uses the fixed fallback',
     const snapshot = { projection: { status: 'error', ...(lastError === undefined ? {} : { lastError }) }, messages: [] };
     assert.throws(() => extractTerminalResult(snapshot, 'rescue'), { code: 'ZCODE_TURN_FAILED', message: 'ZCode reported a terminal error.' });
   }
+});
+
+test('terminal error normalizes and UTF-8 bounds multibyte provider text without splitting code points', () => {
+  const providerMessage = ` ProviderRAW\n\u0000\u001f\u007f\u0085${ALL_BIDI_CONTROLS} ${'界'.repeat(800)} END `;
+  const expected = `ProviderRAW ${'界'.repeat(677)}...`;
+  assert.throws(
+    () => extractTerminalResult({ projection: { status: 'error', lastError: { message: providerMessage } }, messages: [] }, 'rescue'),
+    (/** @type {any} */ error) => {
+      assert.equal(error.code, 'ZCODE_TURN_FAILED'); assert.equal(error.message, expected);
+      assert.ok(Buffer.byteLength(error.message) <= 2_048); assert.equal(hasPublicControl(error.message), false);
+      return true;
+    },
+  );
+});
+
+test('terminal error with only whitespace and public controls uses the fixed fallback', () => {
+  const providerMessage = ` \t\n\u0000\u001f\u007f\u0085${ALL_BIDI_CONTROLS} `;
+  assert.throws(
+    () => extractTerminalResult({ projection: { status: 'error', lastError: { message: providerMessage } }, messages: [] }, 'rescue'),
+    { code: 'ZCODE_TURN_FAILED', message: 'ZCode reported a terminal error.' },
+  );
 });
 
 test('nonterminal snapshot status fails closed', () => {
