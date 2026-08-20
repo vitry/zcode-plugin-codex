@@ -38,6 +38,11 @@ const rescueChoiceRoutes = new WeakMap();
 const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
 const MANAGED_ROLE_STATUSES = new Set(['ready', 'restart-required', 'install-required', 'upgrade-required', 'drift', 'foreign-conflict', 'project-shadowed', 'higher-precedence-conflict', 'unsupported']);
 const SOURCE_SESSION_REMEDY = 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.';
+const ROLE_REMEDIES = /** @type {Readonly<Record<string,string>>} */ (Object.freeze({
+  'source-session-unproven': SOURCE_SESSION_REMEDY,
+  'caller-unavailable': 'Retry from an active owned parent turn.',
+  'inspection-unavailable': 'Retry Role preflight.',
+}));
 const SAFE_BOUND_STATUS_ERRORS = new Set([
   'ACTIVE_TURN_EXPIRED', 'ACTIVE_TURN_NOT_FOUND', 'BOUND_RESCUE_STATUS_INPUT_INVALID',
   'BOUND_RESCUE_STATUS_NOT_FOUND', 'BOUND_RESCUE_STATUS_UNAVAILABLE',
@@ -60,7 +65,7 @@ export async function runCompanion(argv, runtime = {}) {
     return runSetup({ pluginRoot: activePluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
   }
   if (parsed.command === 'role-status') {
-    let inspection; let inspectionStarted = false; let sourceSessionUnproven = false;
+    let inspection; let inspectionStarted = false; let failure;
     try {
       if (runtime.dependencies?.inspectRescueRoleStatus) { inspectionStarted = true; inspection = await runtime.dependencies.inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, env }); }
       else {
@@ -71,11 +76,14 @@ export async function runCompanion(argv, runtime = {}) {
         inspection = await inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd) });
       }
     } catch (error) {
-      sourceSessionUnproven = pluginData.provenance === 'source' && !inspectionStarted && sourceRoleSessionFailure(error);
-      inspection = { status: 'unsupported' };
+      failure = error;
     }
-    const status = sourceSessionUnproven ? 'source-session-unproven' : MANAGED_ROLE_STATUSES.has(inspection?.status) ? inspection.status : 'unsupported';
-    return { type: 'role-status', role: 'zcode-rescue', status, ...(status === 'ready' ? {} : { remedy: status === 'source-session-unproven' ? SOURCE_SESSION_REMEDY : '$zcode:setup' }) };
+    const status = failure
+      ? roleFailureStatus({ error: failure, provenance: pluginData.provenance, inspectionStarted })
+      : inspection?.status === 'inspection-unavailable'
+        ? 'inspection-unavailable'
+        : MANAGED_ROLE_STATUSES.has(inspection?.status) ? inspection.status : 'inspection-unavailable';
+    return { type: 'role-status', role: 'zcode-rescue', status, ...(status === 'ready' ? {} : { remedy: ROLE_REMEDIES[status] ?? '$zcode:setup' }) };
   }
   const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies, signal: runtime.signal });
@@ -768,6 +776,13 @@ function sourceRoleSessionFailure(error) {
   const code = /** @type {any} */ (error)?.code;
   return ['AMBIENT_THREAD_UNAVAILABLE', 'ACTIVE_TURN_NOT_FOUND', 'ACTIVE_TURN_EXPIRED'].includes(code)
     || code === 'SETUP_SESSION_UNPROVEN' && missingRecordedSessionStart(error);
+}
+
+/** @param {{error:unknown,provenance:'marketplace'|'source',inspectionStarted:boolean}} input */
+function roleFailureStatus({ error, provenance, inspectionStarted }) {
+  if (!inspectionStarted && provenance === 'source' && sourceRoleSessionFailure(error)) return 'source-session-unproven';
+  if (!inspectionStarted) return 'caller-unavailable';
+  return 'inspection-unavailable';
 }
 
 /** @param {unknown} error */

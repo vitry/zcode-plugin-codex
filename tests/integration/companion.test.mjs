@@ -402,9 +402,15 @@ test('role-status rescue maps every non-ready managed state to the exact setup r
     assert.ok(Buffer.byteLength(renderOutput(output)) < 256);
   }
   const invalid = await runCompanion(['role-status', 'rescue'], { cwd: context.workspace, env: context.env, dependencies: { inspectRescueRoleStatus: async () => ({ status: 'secret'.repeat(10_000) }) } });
-  assert.deepEqual(invalid, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
-  const failed = await runCompanion(['role-status', 'rescue'], { cwd: context.workspace, env: context.env, dependencies: { inspectRescueRoleStatus: async () => { throw new Error('private config parser detail'); } } });
-  assert.deepEqual(failed, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+  assert.deepEqual(invalid, { type: 'role-status', role: 'zcode-rescue', status: 'inspection-unavailable', remedy: 'Retry Role preflight.' });
+  const privateError = 'PRIVATE_PATH_SENTINEL /private/config/layer.toml private-thread-id';
+  const failed = await runCompanion(['role-status', 'rescue'], { cwd: context.workspace, env: context.env, dependencies: { inspectRescueRoleStatus: async () => { throw new Error(privateError); } } });
+  assert.deepEqual(failed, { type: 'role-status', role: 'zcode-rescue', status: 'inspection-unavailable', remedy: 'Retry Role preflight.' });
+  for (const output of [invalid, failed]) {
+    const rendered = renderOutput(output);
+    assert.ok(Buffer.byteLength(rendered) < 256);
+    assert.doesNotMatch(rendered, /PRIVATE_PATH_SENTINEL|private-thread-id|private\/config|configuration layer|Error:|at runCompanion/);
+  }
 });
 
 test('source role-status reports only exact pre-inspection session proof failures without leaking private input', async () => {
@@ -458,10 +464,10 @@ test('source role-status does not relabel a corrupt SessionStart record as a wro
   assert.ok(sessionRecord); await writeFile(join(hookState, sessionRecord), '{}\n');
   assert.deepEqual(await runCompanion(['role-status', 'rescue'], {
     cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: sessionId },
-  }), { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+  }), { type: 'role-status', role: 'zcode-rescue', status: 'caller-unavailable', remedy: 'Retry from an active owned parent turn.' });
 });
 
-test('installed companion missing-turn behavior remains unsupported without crossing into source diagnostics', async (t) => {
+test('installed companion missing-turn behavior reports caller unavailable without crossing into source diagnostics', async (t) => {
   const context = await fixture(); const codexHome = join(context.directory, 'installed-codex-home');
   const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
   await mkdir(installed, { recursive: true });
@@ -474,8 +480,8 @@ test('installed companion missing-turn behavior remains unsupported without cros
     env: { ...context.env, CODEX_HOME: codexHome, CODEX_THREAD_ID: 'installed-missing-turn' },
   });
   assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
-  t.diagnostic('Installed provenance retains the existing bounded unsupported result and never reads the isolated source namespace.');
+  assert.deepEqual(JSON.parse(result.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'caller-unavailable', remedy: 'Retry from an active owned parent turn.' });
+  t.diagnostic('Installed provenance returns a bounded caller failure and never reads the isolated source namespace.');
 });
 
 test('source role-status does not relabel inspection and configuration failures', async () => {
@@ -489,13 +495,13 @@ test('source role-status does not relabel inspection and configuration failures'
       env: context.env,
       dependencies: { inspectRescueRoleStatus: async () => { throw error; } },
     });
-    assert.deepEqual(output, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+    assert.deepEqual(output, { type: 'role-status', role: 'zcode-rescue', status: 'inspection-unavailable', remedy: 'Retry Role preflight.' });
   }
   const forged = await runCompanion(['role-status', 'rescue'], {
     cwd: context.workspace, env: context.env,
     dependencies: { inspectRescueRoleStatus: async () => ({ status: 'source-session-unproven' }) },
   });
-  assert.deepEqual(forged, { type: 'role-status', role: 'zcode-rescue', status: 'unsupported', remedy: '$zcode:setup' });
+  assert.deepEqual(forged, { type: 'role-status', role: 'zcode-rescue', status: 'inspection-unavailable', remedy: 'Retry Role preflight.' });
 });
 
 /** @param {any[]} [calls] */

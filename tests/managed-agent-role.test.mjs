@@ -161,11 +161,15 @@ test('installed Rescue Role consumes only a previously prepared task-blind invoc
 test('owned previous Role bytes require one upgrade before exact continuation Role is ready', async () => {
   const ctx = await fixture();
   const currentTemplate = await readFile(new URL('../agents/zcode-rescue.toml.template', import.meta.url), 'utf8');
+  const generationContract = 'Within the same still-active parent turn, that parent may prepare exactly one proactive `resume` generation and follow up this same stopped child with the exact initial assignment. Each generation remains one-shot and the companion validates the required executor and exact bound ZCode session before work starts.';
+  const previousCurrentTemplate = currentTemplate.replace(`${generationContract}\n`, '');
+  assert.notEqual(previousCurrentTemplate, currentTemplate, 'the lifecycle Role must add the same-parent generation contract');
+  assert.equal(createHash('sha256').update(previousCurrentTemplate).digest('hex'), '220ea41b3de03f363cc919012426433d2f437f3e70739fa6120ea8bd769c927f');
   const addedContract = [
     'The same exact prepared assignment is valid for either the initial turn or a stopped same-child prepared continuation selected by the parent. The one-command-per-turn rule applies to both. The assignment alone does not prove the sender or binding: run only its mapped companion command, which validates the exact executor and private binding before work starts.',
     'Reject every non-exact assignment, arbitrary message, nested Rescue request, and independent repository work without running a command.',
   ].join('\n');
-  const previousTemplate = currentTemplate.replace(`${addedContract}\n\n`, '')
+  const previousTemplate = previousCurrentTemplate.replace(`${addedContract}\n\n`, '')
     .replaceAll('{{RESCUE_LAUNCHER_COMMAND}}', 'node "{{PLUGIN_ROOT}}/scripts/zcode-companion.mjs"');
   assert.notEqual(previousTemplate, currentTemplate, 'the Task 3 Role must add an exact prepared-continuation contract');
   assert.equal(createHash('sha256').update(previousTemplate).digest('hex'), 'efc7f28226dcbab083fa99bea581debc0a16d5251b026b72b3392d59e3991aac');
@@ -219,7 +223,12 @@ test('managed Rescue role refuses higher-precedence definitions and load errors'
     { name: { type: 'managed', file: '/etc/codex.toml' }, version: 'm1', config: { agents: { [MANAGED_ROLE_NAME]: roleConfig('/managed.toml') } } },
   ] });
   assert.equal((await inspectManagedRescueRole(common(ctx, managed))).status, 'higher-precedence-conflict');
-  assert.equal((await inspectManagedRescueRole(common(ctx, configState({ errors: [{ path: ctx.paths.rolePath, message: 'load failed' }] })))).status, 'unsupported');
+  const unavailable = await inspectManagedRescueRole(common(ctx, configState({ errors: [{ path: ctx.paths.rolePath, message: 'PRIVATE_CONFIG_LAYER' }] })));
+  assert.deepEqual(unavailable, {
+    status: 'inspection-unavailable', rolePath: ctx.paths.rolePath,
+    reason: 'Codex configuration layers are unavailable or contain Role load errors.',
+  });
+  assert.doesNotMatch(JSON.stringify(unavailable), /PRIVATE_CONFIG_LAYER/);
 });
 
 test('managed Rescue role classifies a lower-precedence same-name definition as foreign', async () => {
@@ -829,7 +838,7 @@ test('managed Rescue role rejects unsafe symlink installation paths', async () =
   const ctx = await fixture();
   const outside = await mkdtemp(join(tmpdir(), 'zcode-role-outside-'));
   await symlink(outside, join(ctx.dataRoot, 'agent-roles'));
-  assert.equal((await inspectManagedRescueRole(common(ctx, configState({})))).status, 'unsupported');
+  assert.equal((await inspectManagedRescueRole(common(ctx, configState({})))).status, 'inspection-unavailable');
   await assert.rejects(reconcileManagedRescueRole({
     ...common(ctx, configState({})), batchWrite: async () => ({}), readConfig: async () => configState({}),
   }), { code: 'MANAGED_ROLE_PATH_UNSAFE' });
@@ -843,7 +852,7 @@ test('managed Rescue role rejects a symlinked lock directory without touching it
   const markerMode = (await stat(marker)).mode & 0o777;
   await mkdir(join(ctx.dataRoot, 'agent-roles'));
   await symlink(outside, ctx.paths.lockPath);
-  assert.equal((await inspectManagedRescueRole(common(ctx, configState({})))).status, 'unsupported');
+  assert.equal((await inspectManagedRescueRole(common(ctx, configState({})))).status, 'inspection-unavailable');
   await assert.rejects(reconcileManagedRescueRole({
     ...common(ctx, configState({})), batchWrite: async () => ({}), readConfig: async () => configState({}),
   }), { code: 'MANAGED_ROLE_PATH_UNSAFE' });
@@ -858,7 +867,7 @@ test('managed Rescue role rejects a symlinked advisory lock file without touchin
   const outsideMode = (await stat(outside)).mode & 0o777;
   await mkdir(ctx.paths.lockPath, { recursive: true });
   await symlink(outside, join(ctx.paths.lockPath, 'advisory.lock'));
-  assert.equal((await inspectManagedRescueRole(common(ctx, configState({})))).status, 'unsupported');
+  assert.equal((await inspectManagedRescueRole(common(ctx, configState({})))).status, 'inspection-unavailable');
   await assert.rejects(reconcileManagedRescueRole({
     ...common(ctx, configState({})), batchWrite: async () => ({}), readConfig: async () => configState({}),
   }), { code: 'MANAGED_ROLE_PATH_UNSAFE' });
