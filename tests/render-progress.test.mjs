@@ -68,6 +68,23 @@ test('detailed status renders one safe bounded absolute log path after timing an
   assert.match(logLine, /\.\.\.$/);
 });
 
+test('detailed status bounds the rendered log path after Markdown escaping', () => {
+  const output = renderOutput({
+    job: {
+      id, command: 'review', status: 'running', owned: true, owner: 'same-owner',
+      logFile: `/${'*'.repeat(3_000)}.log`,
+    },
+  });
+  const lines = output.split('\n').filter((/** @type {string} */ line) => line.startsWith('Log: '));
+  assert.equal(lines.length, 1);
+  const renderedPath = lines[0].slice('Log: '.length);
+  assert.ok(Buffer.byteLength(renderedPath) <= 4_096);
+  assert.match(renderedPath, /^\/\\\*/u);
+  assert.match(renderedPath, /\.\.\.$/u);
+  const trailingBackslashes = renderedPath.slice(0, -3).match(/\\+$/u)?.[0].length ?? 0;
+  assert.equal(trailingBackslashes % 2, 0);
+});
+
 test('invalid log paths never render and compact lists omit logs', () => {
   for (const logFile of [undefined, '', 'relative/job.log', '/safe/job.log\nforged', 42]) {
     const job = { id, command: 'review', status: 'running', owned: true, owner: 'same-owner', ...(logFile === undefined ? {} : { logFile }) };

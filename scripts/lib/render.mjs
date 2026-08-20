@@ -111,7 +111,7 @@ function safePath(value) {
   if (typeof value !== 'string' || !isAbsolute(value)) return null;
   const normalized = normalizePublicText(value);
   if (normalized.length === 0 || normalized !== value) return null;
-  return escapeMarkdown(boundUtf8(normalized, 4_096));
+  return boundMarkdown(escapeMarkdown(normalized), 4_096);
 }
 
 /** @param {string} value */

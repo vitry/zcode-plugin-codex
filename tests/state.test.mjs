@@ -197,6 +197,7 @@ test('job log attachment rejects invalid identity, path replacement, and termina
   const exact = join(storage.directory, 'jobs', `${job.id}.log`);
 
   await assert.rejects(store.attachJobLog(workspace, 'not-a-job', exact), { code: 'JOB_LOG_INPUT_INVALID' });
+  await assert.rejects(store.attachJobLog(workspace, 'A'.repeat(64), exact), { code: 'JOB_LOG_INPUT_INVALID' });
   for (const invalid of [
     `${job.id}.log`,
     join(storage.directory, 'outside.log'),
@@ -211,6 +212,18 @@ test('job log attachment rejects invalid identity, path replacement, and termina
     store.attachJobLog(workspace, other.id, join(storage.directory, 'jobs', `${other.id}.log`)),
     { code: 'JOB_LOG_TERMINAL' },
   );
+});
+
+test('general transitions cannot patch logFile', async () => {
+  const { dataRoot, workspace } = await fixture();
+  const store = createStateStore({ dataRoot });
+  const job = await store.reserveJob({ workspace, ...jobInput, readOnly: true });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  await assert.rejects(store.transitionJob(workspace, job.id, ['queued'], 'running', {
+    logFile: join(storage.directory, 'jobs', `${job.id}.log`),
+  }), (/** @type {any} */ error) => error?.code === 'JOB_PATCH_FORBIDDEN' && error.details.forbiddenFields.includes('logFile'));
+  assert.equal((await store.readJob(workspace, job.id)).status, 'queued');
+  assert.equal((await store.readJob(workspace, job.id)).logFile, undefined);
 });
 
 test('persisted job log paths are validated against workspace storage while legacy jobs remain valid', async () => {
