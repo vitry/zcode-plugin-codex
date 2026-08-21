@@ -1023,19 +1023,24 @@ test('strictly newer trusted resume and clear proofs supersede an orphan without
     const { dataRoot, workspaceA } = await fixture();
     const initial = {
       sessionId: `session-newer-${sessionSource}`, turnId: 'turn-initial', workspace: workspaceA, permissionMode: 'default',
-      sessionStartedAt: '2026-08-21T11:59:00.000Z', sessionSource: 'startup', now: '2026-08-21T12:00:00.000Z', lifecycleResult: true,
+      prompt: 'same authority', sessionStartedAt: '2026-08-21T11:59:00.000Z', sessionSource: 'startup', now: '2026-08-21T12:00:00.000Z', lifecycleResult: true,
     };
     const { active: orphan } = await createOrphanPending(dataRoot, initial);
-    const newer = await createIdentityStore({ dataRoot }).beginCallerTurn(/** @type {any} */ ({
-      ...initial, turnId: `turn-${sessionSource}`, prompt: sessionSource,
+    const identity = createIdentityStore({ dataRoot });
+    const newerInput = /** @type {any} */ ({
+      ...initial,
       sessionStartedAt: '2026-08-21T12:01:00.000Z', sessionSource, now: '2026-08-21T12:02:00.000Z',
-    }));
+    });
+    const newer = await identity.beginCallerTurn(newerInput);
     assert.deepEqual(newer.replacedTurn, { turnId: initial.turnId, generationId: orphan.generationId, executionWorkspace: null });
     const active = JSON.parse(await readFile(await globalActivePath(dataRoot, initial.sessionId), 'utf8'));
-    assert.equal(active.status, 'active'); assert.equal(active.turnId, `turn-${sessionSource}`); assert.notEqual(active.generationId, orphan.generationId);
+    assert.equal(active.status, 'active'); assert.equal(active.turnId, initial.turnId); assert.notEqual(active.generationId, orphan.generationId);
     const ledger = JSON.parse(await readFile(await globalSessionPath(dataRoot, initial.sessionId), 'utf8'));
     assert.equal(ledger.sessionStartedAt, '2026-08-21T12:01:00.000Z'); assert.equal(ledger.sessionSource, sessionSource);
-    assert.equal((await createIdentityStore({ dataRoot }).consumeCallerContext(newer.token, { workspace: workspaceA, now: '2026-08-21T12:02:00.000Z' })).turnId, `turn-${sessionSource}`);
+    assert.equal((await identity.consumeCallerContext(newer.token, { workspace: workspaceA, now: newerInput.now })).turnId, initial.turnId);
+    const retry = await identity.beginCallerTurn(newerInput);
+    assert.equal(retry.replacedTurn, null);
+    assert.equal(JSON.parse(await readFile(await globalActivePath(dataRoot, initial.sessionId), 'utf8')).generationId, active.generationId);
   }
 });
 
