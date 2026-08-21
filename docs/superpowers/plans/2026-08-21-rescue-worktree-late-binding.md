@@ -139,15 +139,21 @@ timeout. Cross-worktree binding requires candidate === canonical top-level and
 equal canonical common dirs. Treat non-Git origin/candidate as eligible only
 when their canonical workspace paths are equal.
 
-Linearize every v3 record mutation under `<dataRoot>/identity-lifecycle/.lock`
-and never acquire a workspace lock inside it. Preserve the existing workspace
-identity lock for caller tokens, capabilities, gates, legacy records, and one
-bounded origin index. Changed-turn begin uses: global pending generation ->
-release -> origin caller/index write -> release -> exact global active
-publication. Resolvers reject pending. Retry repairs the exact pending
-generation. Add injected failure/crash-reopen tests at every write. Validate the
-complete persisted record before reading any authority field. Return fresh
-caller-shaped objects:
+Linearize every v3 record mutation under a fixed, digest-striped per-session
+lock below `<dataRoot>/identity-lifecycle/.lock/`. Preserve the existing
+workspace identity lock for caller tokens, capabilities, gates, legacy records,
+and one bounded origin index. The only nested order is session lifecycle ->
+workspace identity; no path may acquire those locks in reverse, and Git runs
+outside both before exact generation/state revalidation. Changed-turn begin
+uses: session pending generation -> release -> reacquire and fence exact
+generation -> origin caller/index write while retaining the session lock ->
+exact active publication -> release. A superseded publisher must fail before
+workspace mutation. Resolvers reject pending. Retry repairs the exact pending
+generation. Claim publishes its workspace ledger entry before the bound active
+record, repairs a missing ledger entry idempotently, and revalidates after the
+lock-free Git probe. Add injected failure/crash-reopen tests at every write.
+Validate the complete persisted record before reading any authority field.
+Return fresh caller-shaped objects:
 
 ```js
 {

@@ -264,22 +264,29 @@ workspace and common directory resolve canonically.
 ### Linearization and lock order
 
 v3 creation, `claim` resolution, `endCallerTurn`, and `cleanupSession` linearize
-under the one data-root lifecycle-identity lock. Two candidate worktrees racing
-to claim can produce only one winner. Resolving the already selected exact
-target is idempotent; claiming any other target is always rejected.
+under a bounded, digest-striped per-session lifecycle lock. The fixed stripe
+pool prevents attacker-controlled lock-path growth; a digest collision may
+briefly serialize unrelated sessions but cannot run Git or other slow external
+work while holding the stripe. Two candidate worktrees racing to claim can
+produce only one winner. Resolving the already selected exact target is
+idempotent; claiming any other target is always rejected.
 
-Changed-turn publication is fail-closed across the global and origin workspace
-locks:
+Changed-turn publication is fail-closed across the session lifecycle and origin
+workspace locks:
 
-1. under the global lock, validate the ledger, capture replaced-turn metadata,
+1. under the session lock, validate the ledger, capture replaced-turn metadata,
    append the new origin to `knownWorkspaces`, and publish a new random
    generation with `status: "pending"`; pending suppresses every resolver and
    every legacy fallback;
-2. after releasing the global lock, remove every old caller token for this
-   session and write the new unreachable random token plus the exact origin
-   index under the origin workspace lock;
-3. reacquire the global lock, require the exact pending generation, and replace
-   only `status` with `"active"`; only then return the token/result.
+2. after releasing the session lock, reacquire that same session lock, require
+   the exact pending generation before any workspace mutation, then acquire
+   each affected workspace identity lock in the single permitted
+   session-to-workspace order; remove every old caller token for this session
+   and write the new unreachable random token plus the exact origin index;
+3. while retaining the session lock, revalidate the exact generation and
+   replace only `status` with `"active"`; only then release locks and return the
+   token/result. A superseded publisher fails before touching a newer token or
+   index.
 
 A crash or injected failure before step 3 leaves no usable authority. Retrying
 the exact pending generation repairs and publishes it; a conflicting begin
@@ -290,16 +297,22 @@ rotating the caller token. Reusing the same turn ID with any changed authority
 field creates a new generation, resets execution to null, and invalidates the
 old generation. Fault-injection tests cover every publication point.
 
-No operation holds the authority lock while acquiring a workspace identity,
-preparation, hook-state, job, binding, or broker lock. The required order is:
+The only nested lifecycle lock order is session lifecycle followed by workspace
+identity during fenced publication or exact cleanup. No code acquires a session
+lifecycle lock while holding a workspace lock, and lifecycle code never nests
+preparation, hook-state, job, binding, or broker locks. The required order is:
 
 ```text
-authority mutation/read -> release authority lock -> workspace operation
+session lifecycle lock -> workspace identity lock
 ```
 
-This prevents cleanup and preparation lock inversion. Callers must re-resolve
-the bound authority at the next security-sensitive boundary rather than trust
-a stale object across an asynchronous workspace mutation.
+Git eligibility inspection happens outside the session lock; `claim` then
+reacquires the session lock and revalidates the exact generation/state before
+publishing ledger-first and active-record-last. This prevents slow Git from
+blocking unrelated sessions and prevents cleanup/preparation lock inversion.
+Callers must re-resolve the bound authority at the next security-sensitive
+boundary rather than trust a stale object across an asynchronous workspace
+mutation.
 
 ## Production Integration
 
