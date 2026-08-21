@@ -411,8 +411,29 @@ SubagentStart resolves the parent's turn with `workspaceBinding: 'execution'`,
 `input.session_id`, and origin hook cwd. IdentityStore projects the caller
 workspace to the bound target. The forwarding marker and an exact bounded
 `executor-route` pointer remain in the hook origin; the pointer binds agent,
-parent session/turn/generation, child turn, and canonical target. The executor
-record is written to the target and gains the same parent generation ID.
+parent session/turn/generation/permission, child turn, canonical origin and
+target, a bounded update time, and `pending | active | stopped` state. The
+executor record is written to the target and gains the same parent generation
+ID.
+
+Start publishes a 30-second, exact-generation pending route under the origin
+lock, writes the target executor, then reacquires the origin lock and re-resolves
+the exact execution authority before publishing active. Pending retry refreshes
+its lease with compare-and-set. A fresh, authority-matching pending route may
+temporarily suppress Root Stop; expired, rewritten, wrong-target, wrong-origin,
+wrong-permission, or replaced-generation routes do not. Stop linearizes first
+by setting the origin route stopped and marker false, then stops the target
+executor. If Stop wins any Start interleaving, Start's finalization leaves the
+executor inactive.
+
+Executor publication is treated as an uncertain commit: the write and every
+route/authority finalization step run inside one default-failed compensation
+scope. Unless active route publication succeeds, the exact target executor is
+best-effort deactivated even when atomic rename succeeded but chmod, directory
+sync, or lock cleanup reported failure. Missing, malformed, removed, or
+rewritten routes are never recreated as trusted state. Route reads use bounded
+nofollow handles with identity revalidation; directory enumeration is bounded,
+and SessionEnd removes exact `parentSessionId` routes without touching siblings.
 SubagentStop follows only that exact origin pointer, revalidates the target
 executor, and marks it stopped even if the current active turn has since been
 replaced. It never searches the workspace ledger or data-root partitions.

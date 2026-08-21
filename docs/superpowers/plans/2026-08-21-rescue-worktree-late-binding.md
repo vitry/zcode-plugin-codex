@@ -402,17 +402,39 @@ target assertions fail.
 
 Change `markForwarding` to accept the v3 caller projected by
 `workspaceBinding:'execution'`. Keep the forwarding marker and a strict
-`executor-route` pointer at hook origin; write/read the executor at target. Both
-records bind parent generation ID in addition to existing identities. Add an
-interface helper that follows only the exact route pointer for SubagentStop and
-forwarding suppression. Do not enumerate `workspaces/` or the lifecycle ledger.
+`executor-route` pointer at hook origin; write/read the executor at target. The
+strict route binds parent generation/permission, canonical origin/target,
+bounded `updatedAt`, and `pending | active | stopped`; executor and marker bind
+the same identities. Add an interface helper that follows only the exact route
+pointer for SubagentStop and forwarding suppression. Use bounded nofollow route
+reads, bounded strict directory enumeration, and exact sibling-safe cleanup.
+Do not enumerate `workspaces/` or the lifecycle ledger.
+
+Start publishes a fresh pending route, writes the target executor, then under
+the origin lock re-resolves exact execution authority and compare-and-set
+publishes active. Pending lasts 30 seconds; retry refreshes its lease. Only a
+fresh route matching session, turn, generation (or proved legacy absence),
+permission, origin, and target may temporarily suppress Root Stop. Stop first
+linearizes route stopped/marker false, then stops the executor. Start must
+observe a winning Stop and leave its executor inactive.
+
+Treat target executor publication as uncertain: include the write itself and
+all finalization in one default-failed `try/finally`. Unless active route
+publication succeeds, best-effort deactivate the exact executor even if rename
+succeeded and a later chmod/fsync/unlock failed. Preserve the primary private
+error; compensation cannot replace it. Never recreate a missing, malformed, or
+rewritten route as trusted stopped state. Add deterministic barriers for every
+Start/Stop/Root Stop/SessionEnd ordering, expired retry, generation replacement,
+target rewrite/move, route removal/corruption, and post-rename write failure.
 
 SubagentStart resolves `resolveActiveTurn({sessionId: input.session_id,
 workspace: target, workspaceBinding: 'execution'})` through IdentityStore before
 executor creation; origin input is valid and the returned caller workspace is
 the target. SubagentStop follows the persisted route pointer and updates only
 the matching target child record even after active-turn replacement. Legacy
-true-absence continues using input cwd.
+true-absence continues using input cwd and represents absent generation as
+`null` only inside the route schema; IdentityStore must still prove both global
+lifecycle files truly absent.
 
 - [ ] **Step 4: Make Stop and SessionEnd revoke before cleanup**
 
