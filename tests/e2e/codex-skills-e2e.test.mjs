@@ -662,20 +662,42 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
   ]) {
     const temporary = await mkdtemp(join(tmpdir(), 'zcode-raw-continuation-')); t.after(() => rm(temporary, { recursive: true, force: true }));
     const workspaceDirectory = join(temporary, 'workspace'); const dataRoot = join(temporary, 'data'); await Promise.all([mkdir(workspaceDirectory), mkdir(dataRoot)]); const workspace = await realpath(workspaceDirectory);
-    const installedHooks = join(root, 'marketplace', 'plugins', 'zcode', 'hooks'); const hookEnv = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+    const parentSessionId = '019fe6df-faa2-7851-8edb-55f1be7d5489';
+    const installedRoot = join(root, 'marketplace', 'plugins', 'zcode');
+    const installedHooks = join(installedRoot, 'hooks'); const hookEnv = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
     const hook = async (script, input) => runChild(process.execPath, [join(installedHooks, script)], { cwd: workspace, env: hookEnv, ordinaryInput: true, input });
-    assert.equal((await hook('session-lifecycle-hook.mjs', { session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' })).code, 0);
-    assert.equal((await hook('user-prompt-hook.mjs', { session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', turn_id: 'turn-original', cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue --fresh repair' })).code, 0);
+    assert.equal((await hook('session-lifecycle-hook.mjs', { session_id: parentSessionId, cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' })).code, 0);
+    assert.equal((await hook('user-prompt-hook.mjs', { session_id: parentSessionId, turn_id: 'turn-original', cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue --fresh repair' })).code, 0);
+    const prepared = await runRawChild(process.execPath, [join(installedRoot, 'skills', 'rescue', 'launcher.mjs'), 'prepare', 'rescue'], {
+      cwd: workspace,
+      env: { ...process.env, ZCODE_DATA_ROOT: dataRoot, CODEX_THREAD_ID: parentSessionId,
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() },
+      input: `${JSON.stringify({ version: 1, source: 'explicit', task: 'repair', options: { execution: 'foreground', resume: 'fresh' } })}\n`,
+    });
+    assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout); assert.match(prepared.stdout, /"type":"prepared"/u);
+    const activeKey = createHash('sha256').update(JSON.stringify([parentSessionId])).digest('hex');
+    const active = JSON.parse(await readFile(join(dataRoot, 'identity-lifecycle', 'active-turns', `${activeKey}.json`), 'utf8'));
+    assert.equal(active.originWorkspace, workspace); assert.equal(active.executionWorkspace, active.originWorkspace);
     const agentType = route === 'named' ? 'zcode-rescue' : 'default';
-    const lifecycle = (event) => ({ session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', turn_id: 'child-turn', cwd: workspace, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: '019fe6e0-4764-7192-83ba-0b0cc2c48660', agent_type: agentType, ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
+    const lifecycle = (event) => ({ session_id: parentSessionId, turn_id: 'child-turn', cwd: workspace, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: '019fe6e0-4764-7192-83ba-0b0cc2c48660', agent_type: agentType, ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
     assert.equal((await hook('subagent-hook.mjs', lifecycle('SubagentStart'))).code, 0);
     assert.equal((await hook('subagent-hook.mjs', lifecycle('SubagentStop'))).code, 0);
-    const executorPath = (await recursiveFiles(dataRoot)).find((path) => basename(path).startsWith('executor-'));
-    assert.ok(executorPath, 'installed hooks must persist the exact stopped executor record');
+    const executorArtifacts = await Promise.all((await recursiveFiles(dataRoot)).filter((path) => basename(path).startsWith('executor-'))
+      .map((path) => readFile(path, 'utf8')));
+    const executorArtifact = executorArtifacts.find((bytes) => JSON.parse(bytes).kind === 'subagent-executor');
+    assert.ok(executorArtifact, 'installed hooks must persist the exact stopped executor record');
+    const executor = JSON.parse(executorArtifact);
+    assert.deepEqual(Object.keys(executor).sort(), ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
+    assert.equal(executor.kind, 'subagent-executor'); assert.equal(executor.active, false);
+    assert.equal(executor.agentId, '019fe6e0-4764-7192-83ba-0b0cc2c48660'); assert.equal(executor.agentType, agentType);
+    assert.equal(executor.parentSessionId, parentSessionId); assert.equal(executor.parentTurnId, 'turn-original');
+    assert.equal(executor.parentPermissionMode, 'acceptEdits'); assert.equal(executor.childTurnId, 'child-turn');
+    assert.equal(executor.parentGenerationId, active.generationId); assert.equal(executor.originWorkspace, workspace); assert.equal(executor.workspace, workspace);
+    assert.ok(Number.isFinite(Date.parse(executor.createdAt)));
     assert.match(skill, /stopped exact same-operation child/i);
     const evidence = await assertInstalledPreparedContinuationContract(source, installedPreparedContinuationCapture(route, {
-      workspace, executorRecordBytes: await readFile(executorPath, 'utf8'),
-      hookLifecycleJson: JSON.stringify([{ hook_event_name: 'UserPromptSubmit', session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', turn_id: 'turn-original', cwd: workspace, permission_mode: 'acceptEdits' }, { ...lifecycle('SubagentStart'), parent_turn_id: 'turn-original' }, { ...lifecycle('SubagentStop'), parent_turn_id: 'turn-original' }]),
+      workspace,
+      hookLifecycleJson: JSON.stringify([{ hook_event_name: 'UserPromptSubmit', session_id: parentSessionId, turn_id: 'turn-original', cwd: workspace, permission_mode: 'acceptEdits' }, { ...lifecycle('SubagentStart'), parent_turn_id: 'turn-original' }, { ...lifecycle('SubagentStop'), parent_turn_id: 'turn-original' }]),
     }), { expectedLauncherCommand });
     assert.equal(evidence.continuationSpawnCount, 0);
     assert.equal(evidence.peerResumeChecked, true);

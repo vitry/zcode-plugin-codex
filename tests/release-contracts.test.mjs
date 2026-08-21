@@ -430,7 +430,10 @@ test('release qualification covers the installed direct bridge and explicit real
   const real = read('tests/e2e/real-zcode.test.mjs');
   assert.match(real, /resolveRealZCodeModelEnvironment/); assert.match(real, /ZCODE_REAL_MODEL_CONFLICT/);
   assert.match(real, /invokePrepared/); assert.match(real, /'invoke-prepared', 'rescue'/); assert.match(real, /prepareProactive/);
-  assert.match(real, /worktree/); assert.match(real, /180_000/); assert.match(real, /firstInvoke/); assert.match(real, /secondInvoke/); assert.match(real, /model/);
+  // 420s is only the node:test qualification boundary; the existing managed observer must not accept a completion timeout.
+  assert.match(real, /worktree/); assert.match(real, /timeout:\s*420_000/u); assert.match(real, /\bcreateExistingManagedZCodeClient\b/u);
+  assert.doesNotMatch(real, /\bcompletionTimeoutMs\b/u); assert.doesNotMatch(real, /\bcreateZCodeClient\b/u);
+  assert.match(real, /firstInvoke/); assert.match(real, /secondInvoke/); assert.match(real, /model/);
   assert.doesNotMatch(real, /createCallerContext/); assert.doesNotMatch(real, /\brunCompanion\b/);
   const realModel = read('tests/helpers/real-zcode-model.mjs');
   assert.match(realModel, /ZCODE_REAL_E2E_MODEL/); assert.match(realModel, /ZCODE_REAL_MODEL/); assert.match(realModel, /deprecatedAliasUsed/);
