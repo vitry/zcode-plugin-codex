@@ -475,6 +475,20 @@ test('route finalization failures compensate the exact executor without rebuildi
   });
 });
 
+test('executor persistence failure after rename is compensated without hiding the primary error', async (t) => {
+  const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, 'executor-post-rename-failure');
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data }); const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await identity.beginCallerTurn({ sessionId: 'post-rename-parent', turnId: 'post-rename-parent-turn', workspace: origin, permissionMode: 'workspace-write', prompt: 'post rename', ...proof });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'post-rename-parent', workspace: target, workspaceBinding: 'claim' });
+  const start = { session_id: caller.sessionId, turn_id: 'post-rename-child-turn', cwd: origin, hook_event_name: 'SubagentStart', agent_id: 'post-rename-child', agent_type: 'zcode-rescue' };
+  await assert.rejects(markForwarding(data, start, caller, { publicationSeam: (point) => { if (point === 'after-executor-persisted') throw new Error('injected post-rename failure'); } }),
+    (error) => error?.code === 'EXECUTOR_ROUTE_INVALID' && error?.cause?.message === 'injected post-rename failure');
+  const targetStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: target }); const targetDirectory = join(targetStorage.directory, 'hook-state');
+  const rawExecutor = JSON.parse(await readFile(join(targetDirectory, (await readdir(targetDirectory)).find((name) => name.startsWith('executor-'))), 'utf8')); assert.equal(rawExecutor.active, false);
+  assert.equal((await resolveForwardingRoute(data, origin, start.session_id, start.turn_id)).state, 'pending', 'failed executor publication must not promote its route');
+});
+
 test('executor uniqueness is scoped to parent generation while duplicate same-generation children remain ambiguous', async (t) => {
   const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, 'executor-generation-scope');
   t.after(() => rm(target, { recursive: true, force: true }));

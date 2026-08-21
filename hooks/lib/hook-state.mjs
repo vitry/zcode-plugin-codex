@@ -100,9 +100,12 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
     });
     await publicationSeam?.('after-route-pending');
     const executor = { kind: 'subagent-executor', agentId: input.agent_id, agentType: input.agent_type, parentSessionId: input.session_id, parentGenerationId: generationId, parentTurnId: parentCaller.turnId, parentPermissionMode: parentCaller.permissionMode, childTurnId: input.turn_id, originWorkspace: origin.workspacePath, workspace: target.workspacePath, active: true, createdAt: route.createdAt };
-    await withFileLock(target.lock, () => atomicWriteJson(join(target.directory, `executor-${key('executor', input.agent_id)}.json`), executor));
     let finalState = 'failed'; let finalError = null;
     try {
+      await withFileLock(target.lock, async () => {
+        await atomicWriteJson(join(target.directory, `executor-${key('executor', input.agent_id)}.json`), executor);
+        await publicationSeam?.('after-executor-persisted');
+      });
       await publicationSeam?.('after-executor-write');
       await withFileLock(origin.lock, async () => {
         let current;
