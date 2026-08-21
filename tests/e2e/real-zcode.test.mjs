@@ -131,13 +131,13 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   assert.equal(sent.accepted, true);
   await client.waitForCompletion(sessionId);
   const firstCompleted = await client.readSession(sessionId);
-  const firstAssistantResults = visibleAssistantResultsForInput(firstCompleted, sent.inputId);
+  const firstAssistantResults = visibleAssistantResultsForTurn(firstCompleted, sent.inputId, messageIds(selected));
   assert.ok(firstAssistantResults.length >= 1, 'the first direct real turn must expose a non-empty assistant result');
   const continued = await client.send(sessionId, 'Continue in this exact session. Inspect only and reply with a second short acknowledgement distinct from the first.');
   assert.equal(continued.accepted, true);
   await client.waitForCompletion(sessionId);
   const secondCompleted = await client.readSession(sessionId);
-  const secondAssistantResults = visibleAssistantResultsForInput(secondCompleted, continued.inputId);
+  const secondAssistantResults = visibleAssistantResultsForTurn(secondCompleted, continued.inputId, messageIds(firstCompleted));
   assert.ok(secondAssistantResults.length >= 1, 'the second direct real turn must expose a new non-empty assistant result linked to its accepted input');
   const firstAssistantIds = new Set(firstAssistantResults.map((entry) => entry.info.messageId));
   assert.ok(secondAssistantResults.every((message) => !firstAssistantIds.has(message.info.messageId)),
@@ -161,21 +161,44 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   sessions.delete(importedId);
 });
 
-test('visible assistant result selection is linked to the exact accepted input', () => {
+test('visible assistant result selection is linked to the exact accepted input or its sole persisted user root', () => {
   const snapshot = { messages: [
     { info: { role: 'assistant', messageId: 'assistant-first', parentMessageId: 'input-first' }, parts: [{ type: 'text', text: 'first' }] },
     { info: { role: 'assistant', messageId: 'assistant-empty', parentMessageId: 'input-second' }, parts: [{ type: 'text', text: '   ' }] },
     { info: { role: 'assistant', messageId: 'assistant-second', parentMessageId: 'input-second' }, parts: [{ type: 'text', text: 'second' }] },
   ] };
-  assert.deepEqual(visibleAssistantResultsForInput(snapshot, 'input-second').map((message) => message.info.messageId), ['assistant-second']);
-  assert.deepEqual(visibleAssistantResultsForInput(snapshot, 'input-missing'), []);
+  assert.deepEqual(visibleAssistantResultsForTurn(snapshot, 'input-second', new Set()).map((message) => message.info.messageId), ['assistant-second']);
+  assert.deepEqual(visibleAssistantResultsForTurn(snapshot, 'input-missing', new Set()), []);
+  const remapped = { messages: [
+    { info: { role: 'user', messageId: 'persisted-root', semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'prompt' }] },
+    { info: { role: 'assistant', messageId: 'persisted-result', parentMessageId: 'persisted-root' }, parts: [{ type: 'text', text: 'result' }] },
+  ] };
+  assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set()).map((message) => message.info.messageId), ['persisted-result']);
+  remapped.messages.push({ info: { role: 'user', messageId: 'ambiguous-root', semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'other' }] });
+  assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set()), []);
 });
 
-function visibleAssistantResultsForInput(session, inputId) {
-  if (typeof inputId !== 'string' || inputId.length === 0 || !Array.isArray(session?.messages)) return [];
-  return session.messages.filter((message) => message?.info?.role === 'assistant' && message.info.parentMessageId === inputId
+function visibleAssistantResultsForTurn(session, inputId, beforeMessageIds) {
+  if (typeof inputId !== 'string' || inputId.length === 0 || !(beforeMessageIds instanceof Set) || !Array.isArray(session?.messages)) return [];
+  const newMessages = session.messages.filter((message) => typeof message?.info?.messageId === 'string' && !beforeMessageIds.has(message.info.messageId));
+  const directlyLinked = newMessages.some((message) => message?.info?.role === 'assistant' && message.info.parentMessageId === inputId);
+  let parentMessageId = inputId;
+  if (!directlyLinked) {
+    const roots = newMessages.filter((message) => message?.info?.role === 'user' && message.info.synthetic !== true
+      && message.info.visibility !== 'model-only' && message.info.source === undefined
+      && (message.info.semantics === undefined || message.info.semantics.origin === 'real_user'
+        && message.info.semantics.kind === 'user_prompt' && message.info.semantics.uiVisibility === 'visible'));
+    if (roots.length !== 1) return [];
+    parentMessageId = roots[0].info.messageId;
+  }
+  return newMessages.filter((message) => message?.info?.role === 'assistant' && message.info.parentMessageId === parentMessageId
     && typeof message.info.messageId === 'string' && message.info.messageId.length > 0
     && message.parts?.some((part) => part?.type === 'text' && typeof part.text === 'string' && part.text.trim()));
+}
+
+function messageIds(session) {
+  return new Set((Array.isArray(session?.messages) ? session.messages : [])
+    .map((message) => message?.info?.messageId).filter((value) => typeof value === 'string'));
 }
 
 function boundedBarrier(promise, label, timeoutMs = 60_000) {

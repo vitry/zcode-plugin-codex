@@ -302,14 +302,22 @@ test('ordinary empty session/create retains explicit session ID binding', async 
   }, { FAKE_ZCODE_EMPTY_SESSION: '1', FAKE_ZCODE_SESSION_ID: 'different-session' });
 });
 
-test('the unknown-projection exception remains confined to session/create', async (t) => {
-  for (const method of ['session/read', 'session/resume', 'session/setModel', 'session/setThoughtLevel']) await t.test(method, () => withClient(async (client) => {
+test('the unknown-projection exception remains confined to creation and exact pre-turn settings', async (t) => {
+  for (const method of ['session/read', 'session/resume']) await t.test(`${method} rejects it`, () => withClient(async (client) => {
     const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
     const operation = method === 'session/read' ? () => client.readSession(sessionId)
-      : method === 'session/resume' ? () => client.resumeSession(sessionId)
-        : method === 'session/setModel' ? () => client.setModel(sessionId, { providerId: 'fake2', modelId: 'other' })
-          : () => client.setThoughtLevel(sessionId, 'high');
+      : () => client.resumeSession(sessionId);
     await assert.rejects(operation(), { code: 'ZCODE_OUTPUT_INVALID' });
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
+  await t.test('session/setModel accepts the captured empty state', () => withClient(async (client) => {
+    const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
+    const selected = await client.setModel(sessionId, { providerId: 'fake2', modelId: 'other' });
+    assert.deepEqual(selected.settings.model.current, { providerId: 'fake2', modelId: 'other' });
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
+  await t.test('session/setThoughtLevel accepts the captured empty state', () => withClient(async (client) => {
+    const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
+    const selected = await client.setThoughtLevel(sessionId, 'high');
+    assert.equal(selected.settings.thoughtLevel.current, 'HIGH');
   }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
 });
 
@@ -332,7 +340,7 @@ test('the empty-create validator rejects every remaining non-empty or conflictin
       ['active projection tool call', (value) => { value.projection.activeToolCalls = [{ toolCallId: 'tool-1', toolName: 'write', status: 'pending' }]; }, true],
       ['background projection job', (value) => { value.projection.backgroundJobs = [{}]; }, true],
       ['projection error', (value) => { value.projection.lastError = { type: 'runtime', message: 'not empty' }; }, true],
-      ['nonzero runtime revision', (value) => { value.runtime.stateRevision = 1; }, true],
+      ['noninitial runtime revision', (value) => { value.runtime.stateRevision = 2; }, true],
       ['active runtime turn ID', (value) => { value.runtime.activeTurnId = 'turn-1'; }, true],
       ['active runtime turn kind', (value) => { value.runtime.activeTurnKind = 'regular'; }, true],
       ['pending runtime request', (value) => { value.runtime.pendingRequestIds = ['request-1']; }, true],
@@ -358,6 +366,9 @@ test('the empty-create validator rejects every remaining non-empty or conflictin
     explicitEmpty.runtime.goalVerifications = []; explicitEmpty.runtime.goalVerificationTimeline = [];
     assert.equal(validCreateSnapshot(explicitEmpty, sessionId, workspace), true, 'explicit null and empty activity state must remain fresh');
     assert.equal(validSetupAuthProbeSnapshot(explicitEmpty, sessionId, workspace), true, 'setup probe must accept explicit null and empty activity state');
+    const cli0163Empty = structuredClone(explicitEmpty); cli0163Empty.runtime.stateRevision = 1;
+    assert.equal(validCreateSnapshot(cli0163Empty, sessionId, workspace), true, 'captured 0.16.3 empty create revision must remain fresh');
+    assert.equal(validSetupAuthProbeSnapshot(cli0163Empty, sessionId, workspace), true, 'setup probe must accept the captured 0.16.3 empty create revision');
   }, { FAKE_ZCODE_EMPTY_SESSION: '1' });
 });
 

@@ -5,7 +5,7 @@ import { readdir, realpath } from 'node:fs/promises';
 import { PluginError } from './errors.mjs';
 import { isBoundedPublicIdentifier, isSafeIdentifier } from './identifier.mjs';
 import { closeProtocolUntil, connectZCodeBroker, MAX_DRAIN_TIMEOUT_MS, spawnZCodeProtocol } from './zcode-protocol.mjs';
-import { validCreateSnapshot, validSessionInfo, validSetupAuthProbeSnapshot, validSnapshot as snapshotValid } from './zcode-schema.mjs';
+import { validCreateSnapshot, validSessionInfo, validSettingsSnapshot, validSetupAuthProbeSnapshot, validSnapshot as snapshotValid } from './zcode-schema.mjs';
 import { brokerEndpointFor, brokerIdentityNameForWireOptions, ensureZCodeBroker, inspectBrokerIdentity, MAX_BROKER_IDLE_TIMEOUT_MS, MIN_BROKER_IDLE_TIMEOUT_MS, prioritizeBrokerOwnership } from '../zcode-broker.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
@@ -79,7 +79,7 @@ export class ZCodeClient {
   async setModel(sessionId, model) {
     requireSessionId(sessionId); validateModel(model);
     const result = await this.protocol.request('session/setModel', { sessionId, model: copyModel(model), persistAsWorkspaceLastUsed: false });
-    validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/setModel');
+    validateSettingsResult(result, sessionId, this.expectedWorkspace(sessionId), 'session/setModel');
     if (!exactModel(result.settings.model.current) || !sameModel(result.settings.model.current, model)) throw new PluginError('ZCODE_MODEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested model.', { category: 'protocol', remedy: 'Retry with a model tuple advertised by ZCode.' });
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
@@ -96,7 +96,7 @@ export class ZCodeClient {
     const actual = advertised.find((value) => value.toLowerCase() === normalized);
     if (!actual) throw new PluginError('ZCODE_THOUGHT_LEVEL_UNSUPPORTED', 'The selected model does not advertise this thought level.', { category: 'configuration', remedy: 'Choose a thought level advertised by the selected model.', details: { thoughtLevel: normalized } });
     const result = await this.protocol.request('session/setThoughtLevel', { sessionId, thoughtLevel: actual, persistAsWorkspaceLastUsed: false });
-    validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/setThoughtLevel');
+    validateSettingsResult(result, sessionId, this.expectedWorkspace(sessionId), 'session/setThoughtLevel');
     if (typeof result.settings.thoughtLevel.current !== 'string' || result.settings.thoughtLevel.current.toLowerCase() !== actual.toLowerCase()) throw new PluginError('ZCODE_THOUGHT_LEVEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested thought level.', { category: 'protocol', remedy: 'Retry with a thought level advertised by the selected model.' });
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
@@ -324,5 +324,7 @@ function inputError() { return new PluginError('ZCODE_INPUT_INVALID', 'ZCode cli
 function requireObjectResult(value, method) { if (!plainObject(value)) throw outputError(method); return value; }
 /** @param {any} value @param {string} sessionId @param {string} workspace @param {string} method */
 function validateSnapshot(value, sessionId, workspace, method) { if (!snapshotValid(value, sessionId, workspace)) throw outputError(method); }
+/** @param {any} value @param {string} sessionId @param {string} workspace @param {string} method */
+function validateSettingsResult(value, sessionId, workspace, method) { if (!validSettingsSnapshot(value, sessionId, workspace)) throw outputError(method); }
 /** @param {string} method */
 function outputError(method) { return new PluginError('ZCODE_OUTPUT_INVALID', `ZCode returned an invalid ${method} result.`, { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.', details: { method } }); }
