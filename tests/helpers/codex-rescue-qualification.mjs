@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -1326,9 +1326,13 @@ async function validateCanonicalGitLineage(originWorkspace, executionWorkspace) 
     const { execFile } = await import('node:child_process');
     const result = await new Promise((resolve, reject) => execFile('git', ['rev-parse', '--path-format=absolute', '--is-inside-work-tree', '--show-toplevel', '--git-common-dir'],
       { cwd: workspace, encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024, shell: false }, (error, stdout) => error ? reject(error) : resolve(stdout)));
-    const [inside, topLevel, commonDir, ...extra] = result.trimEnd().split('\n');
-    if (inside !== 'true' || extra.length > 0 || topLevel !== workspace || !commonDir) throw new Error('invalid Git lineage');
-    return commonDir;
+    const [inside, topLevel, commonDir, ...extra] = result.trimEnd().split(/\r?\n/u);
+    if (inside !== 'true' || extra.length > 0 || !topLevel || !commonDir) throw new Error('invalid Git lineage');
+    const [canonicalWorkspace, canonicalTopLevel, canonicalCommonDir] = await Promise.all([
+      realpath(workspace), realpath(topLevel), realpath(commonDir),
+    ]);
+    if (canonicalTopLevel !== canonicalWorkspace) throw new Error('invalid Git lineage');
+    return canonicalCommonDir;
   };
   let originCommon; let targetCommon;
   try { [originCommon, targetCommon] = await Promise.all([probe(originWorkspace), probe(executionWorkspace)]); } catch { mismatch('continuation-workspace-lineage', 'Origin and execution workspaces are not canonical linked worktrees.'); }
