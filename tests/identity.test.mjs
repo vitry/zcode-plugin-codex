@@ -320,8 +320,8 @@ test('public caller creation preserves exact legacy bytes and 30 minute TTL when
     permissionMode: 'default', now,
   };
   const token = await identity.createCallerContext(input);
-  const caller = JSON.parse(await readFile(await callerContextPath(dataRoot, workspaceA, token), 'utf8'));
-  assert.deepEqual(caller, {
+  const path = await callerContextPath(dataRoot, workspaceA, token);
+  const expected = {
     digest: createHash('sha256').update(token).digest('hex'),
     sessionId: input.sessionId,
     turnId: input.turnId,
@@ -329,7 +329,9 @@ test('public caller creation preserves exact legacy bytes and 30 minute TTL when
     permissionMode: input.permissionMode,
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
-  });
+  };
+  assert.equal(await readFile(path, 'utf8'), `${JSON.stringify(expected, null, 2)}\n`);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
   const lifecycle = join(await realpath(dataRoot), 'identity-lifecycle');
   assert.deepEqual(await readdir(join(lifecycle, 'active-turns')), []);
   assert.deepEqual(await readdir(join(lifecycle, 'sessions')), []);
@@ -405,16 +407,23 @@ test('protected caller publication is fenced from concurrent replacement and cle
         release.resolve(); await creating;
         assert.fail('protected caller publication must expose the session-lock test seam');
       }
-      let mutationSettled = false;
-      const mutation = (operation === 'replacement'
+      const mutation = operation === 'replacement'
         ? identity.beginCallerTurn({ ...input, ...proof, turnId: 'turn-b' })
-        : identity.cleanupSession(workspaceA, input.sessionId))
-        .then((value) => { mutationSettled = true; return value; });
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-      assert.equal(mutationSettled, false, `${operation} must wait for protected caller publication`);
+        : identity.cleanupSession(workspaceA, input.sessionId);
+      const sessionKey = createHash('sha256').update(JSON.stringify([input.sessionId])).digest('hex');
+      const expectedLockPath = join(
+        await realpath(dataRoot), 'identity-lifecycle', 'session-locks', sessionKey.slice(0, 2),
+      );
+      await assert.rejects(mutation, (error) => {
+        const lockError = /** @type {any} */ (error);
+        assert.equal(lockError?.code, 'LOCK_TIMEOUT');
+        assert.equal(lockError?.details?.lockPath, expectedLockPath);
+        return true;
+      });
       release.resolve();
       const token = await creating;
-      await mutation;
+      if (operation === 'replacement') await identity.beginCallerTurn({ ...input, ...proof, turnId: 'turn-b' });
+      else await identity.cleanupSession(workspaceA, input.sessionId);
       await assert.rejects(identity.consumeCallerContext(token, { workspace: workspaceA }), { code: 'CALLER_CONTEXT_INVALID' });
     });
   }
