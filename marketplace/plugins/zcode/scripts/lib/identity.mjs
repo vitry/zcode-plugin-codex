@@ -114,7 +114,10 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
 
     /** Atomically starts one caller turn and revokes older turns for this exact session. @param {CallerContextInput} input @returns {Promise<any>} */
     async beginCallerTurn(input) {
-      validateCallerInput(input); const storage = await identityStorage(dataRoot, input.workspace); const { token, digest, record } = callerRecord(input, storage.workspacePath);
+      validateCallerInput(input);
+      const operationTimestamp = toTimestamp(input.now);
+      const storage = await identityStorage(dataRoot, input.workspace);
+      const { token, digest, record } = callerRecord(input, storage.workspacePath, operationTimestamp);
       if (!hasSessionProof(input)) {
         await withFileLock(storage.lockPath, async () => {
           await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId !== input.turnId);
@@ -130,7 +133,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       /** @type {string[]} */ let priorWorkspaces = [];
       const lifecycleLockPath = sessionLockPath(global, input.sessionId);
       await withFileLock(lifecycleLockPath, async () => {
-        const state = await readGlobalBeginState(global, input);
+        const state = await readGlobalBeginState(global, input, operationTimestamp);
         const existing = state?.active ?? null; const ledger = state?.ledger ?? null;
         if (ledger !== null) {
           if (ledger.endedAt !== null && Date.parse(input.sessionStartedAt) <= Date.parse(ledger.sessionStartedAt)) {
@@ -150,9 +153,11 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         const knownWorkspaces = appendKnownWorkspace(
           recoverableWorkspaces, storage.workspacePath,
         );
-        const updatedAt = new Date(Math.max(toTimestamp(input.now), ledger === null ? 0 : Date.parse(ledger.updatedAt))).toISOString();
+        const updatedAt = new Date(Math.max(operationTimestamp, ledger === null ? 0 : Date.parse(ledger.updatedAt))).toISOString();
         const nextLedger = sessionRecord(input, globalIdentityKey(input.sessionId), knownWorkspaces, updatedAt);
-        const pending = duplicate ? existing : globalActiveTurnRecord(input, storage.workspacePath, globalIdentityKey(input.sessionId), generationId, 'pending');
+        const pending = duplicate ? existing : globalActiveTurnRecord(
+          input, storage.workspacePath, globalIdentityKey(input.sessionId), generationId, 'pending', operationTimestamp,
+        );
         await publicationSeam?.('before-pending');
         if (!duplicate) {
           await atomicWriteJson(state?.activePath ?? join(global.activeTurnsDirectory, `${pending.key}.json`), pending, { privateRoot: global.directory });
@@ -610,8 +615,8 @@ async function readGlobalState(storage, sessionId, validatePaths) {
   return { active, ledger, activePath, sessionPath };
 }
 
-/** @param {ReturnType<typeof globalIdentityStorage> extends Promise<infer T> ? T : never} storage @param {CallerContextInput & {sessionStartedAt:string,sessionSource:string}} input */
-async function readGlobalBeginState(storage, input) {
+/** @param {ReturnType<typeof globalIdentityStorage> extends Promise<infer T> ? T : never} storage @param {CallerContextInput & {sessionStartedAt:string,sessionSource:string}} input @param {number} operationTimestamp */
+async function readGlobalBeginState(storage, input, operationTimestamp) {
   const key = globalIdentityKey(input.sessionId);
   const activePath = join(storage.activeTurnsDirectory, `${key}.json`);
   const sessionPath = join(storage.sessionsDirectory, `${key}.json`);
@@ -626,7 +631,7 @@ async function readGlobalBeginState(storage, input) {
   if (ledger !== null) {
     if (!isSessionRecord(ledger) || ledger.key !== key || ledger.sessionId !== input.sessionId) throw invalidAuthorizationRecord('identity session');
     if (active !== null && !lifecycleRecordsConsistent(active, ledger)) throw invalidAuthorizationRecord('identity session');
-  } else if (!isRecoverableOrphanPending(active, toTimestamp(input.now), strictTimestamp(input.sessionStartedAt))) {
+  } else if (!isRecoverableOrphanPending(active, operationTimestamp, strictTimestamp(input.sessionStartedAt))) {
     throw invalidAuthorizationRecord('identity session');
   }
   return { active, ledger, activePath, sessionPath };
@@ -880,9 +885,9 @@ async function authorizationRecordExists(path) {
   }
 }
 
-/** @param {CallerContextInput} input @param {string} workspacePath */
-function callerRecord(input, workspacePath) {
-  const token = createToken(); const digest = tokenDigest(token); const createdAt = toTimestamp(input.now);
+/** @param {CallerContextInput} input @param {string} workspacePath @param {number} [timestamp] */
+function callerRecord(input, workspacePath, timestamp) {
+  const token = createToken(); const digest = tokenDigest(token); const createdAt = timestamp ?? toTimestamp(input.now);
   return { token, digest, record: { digest, sessionId: input.sessionId, turnId: input.turnId, workspace: workspacePath, permissionMode: input.permissionMode, createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + CALLER_LIFETIME_MS).toISOString() } };
 }
 
@@ -897,9 +902,9 @@ function activeTurnRecord(input, workspacePath) {
   return { version: 2, kind: 'active-turn', key, sessionId: input.sessionId, turnId: input.turnId, workspace: workspacePath, permissionMode: input.permissionMode, prompt: input.prompt ?? '', createdAt: new Date(createdAt).toISOString() };
 }
 
-/** @param {CallerContextInput} input @param {string} originWorkspace @param {string} key @param {string} generationId @param {'pending'|'active'} status */
-function globalActiveTurnRecord(input, originWorkspace, key, generationId, status) {
-  const createdAt = new Date(toTimestamp(input.now)).toISOString();
+/** @param {CallerContextInput} input @param {string} originWorkspace @param {string} key @param {string} generationId @param {'pending'|'active'} status @param {number} timestamp */
+function globalActiveTurnRecord(input, originWorkspace, key, generationId, status, timestamp) {
+  const createdAt = new Date(timestamp).toISOString();
   return { version: 3, kind: 'active-turn', key, sessionId: input.sessionId, generationId, turnId: input.turnId, originWorkspace, executionWorkspace: null, permissionMode: input.permissionMode, prompt: input.prompt ?? '', createdAt, status };
 }
 
