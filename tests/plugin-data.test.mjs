@@ -25,11 +25,11 @@ test('plugin data context preserves explicit roots while reporting trusted insta
   assert.deepEqual(resolvePluginDataContext({
     env: { ZCODE_DATA_ROOT: explicit, CODEX_HOME: codexHome },
     pluginRoot: join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0'),
-  }), { dataRoot: explicit, provenance: 'marketplace' });
+  }), { dataRoot: explicit, provenance: 'marketplace', runtimePluginRoot: join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0') });
   assert.deepEqual(resolvePluginDataContext({
     env: { ZCODE_DATA_ROOT: explicit, CODEX_HOME: codexHome },
     pluginRoot: resolve('source', 'zcode-plugin-codex'),
-  }), { dataRoot: explicit, provenance: 'source' });
+  }), { dataRoot: explicit, provenance: 'source', runtimePluginRoot: resolve('source', 'zcode-plugin-codex') });
 });
 
 test('installed plugins derive a marketplace-qualified data root without injected plugin data', () => {
@@ -60,7 +60,7 @@ test('source checkouts use the unqualified CODEX_HOME development root', () => {
   const codexHome = resolve('codex-home-fixture');
   assert.equal(resolvePluginDataRoot({ env: { CODEX_HOME: codexHome }, pluginRoot: resolve('source', 'zcode-plugin-codex') }), join(codexHome, 'plugins', 'data', 'zcode'));
   assert.deepEqual(resolvePluginDataContext({ env: { CODEX_HOME: codexHome }, pluginRoot: resolve('source', 'zcode-plugin-codex') }), {
-    dataRoot: join(codexHome, 'plugins', 'data', 'zcode'), provenance: 'source',
+    dataRoot: join(codexHome, 'plugins', 'data', 'zcode'), provenance: 'source', runtimePluginRoot: resolve('source', 'zcode-plugin-codex'),
   });
 });
 
@@ -89,33 +89,53 @@ test('installed identity follows canonical symlinked plugin paths', async (t) =>
   const actualHome = await realpath(codexHome);
   assert.equal(resolvePluginDataRoot({ env: { CODEX_HOME: codexHome }, pluginRoot: link }), join(actualHome, 'plugins', 'data', 'zcode-vitry'));
   assert.deepEqual(resolvePluginDataContext({ env: { CODEX_HOME: codexHome }, pluginRoot: link }), {
-    dataRoot: join(actualHome, 'plugins', 'data', 'zcode-vitry'), provenance: 'marketplace',
+    dataRoot: join(actualHome, 'plugins', 'data', 'zcode-vitry'), provenance: 'marketplace', runtimePluginRoot: await realpath(installed),
   });
   assert.equal(await realpath(link), await realpath(installed));
 });
 
-test('trusted lexical companion entry preserves marketplace identity for an exact owned cache symlink only', async (t) => {
+test('trusted lexical runtime entries preserve marketplace identity for exact owned cache symlinks only', async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'zpc-plugin-entry-link-'));
   t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporary, { force: true, recursive: true })));
   const codexHome = join(temporary, 'codex-home'); const ownedRoot = resolve(fileURLToPath(new URL('../', import.meta.url)));
   const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
   await mkdir(dirname(installed), { recursive: true }); await symlink(ownedRoot, installed, 'dir');
+  const expected = { dataRoot: join(await realpath(codexHome), 'plugins', 'data', 'zcode-vitry'), provenance: 'marketplace', runtimePluginRoot: installed };
+  for (const relativeEntry of ['hooks/user-prompt-hook.mjs', 'skills/rescue/launcher.mjs', 'scripts/zcode-companion.mjs']) {
+    assert.deepEqual(resolvePluginDataContext({
+      env: { CODEX_HOME: codexHome }, pluginRoot: ownedRoot, entryPath: join(installed, ...relativeEntry.split('/')),
+    }), expected, relativeEntry);
+  }
   const entryPath = join(installed, 'scripts', 'zcode-companion.mjs');
-  assert.deepEqual(resolvePluginDataContext({ env: { CODEX_HOME: codexHome }, pluginRoot: ownedRoot, entryPath }), {
-    dataRoot: join(await realpath(codexHome), 'plugins', 'data', 'zcode-vitry'), provenance: 'marketplace',
-  });
 
-  const wrongRoot = join(temporary, 'wrong-plugin'); await mkdir(join(wrongRoot, 'scripts'), { recursive: true });
-  await writeFile(join(wrongRoot, 'scripts', 'zcode-companion.mjs'), 'export {};\n');
+  const wrongRoot = join(temporary, 'wrong-plugin');
+  for (const relativeEntry of ['hooks/user-prompt-hook.mjs', 'skills/rescue/launcher.mjs', 'scripts/zcode-companion.mjs']) {
+    const target = join(wrongRoot, ...relativeEntry.split('/')); await mkdir(dirname(target), { recursive: true }); await writeFile(target, 'export {};\n');
+  }
   const wrongTarget = join(codexHome, 'plugins', 'cache', 'other', 'zcode', '0.1.0');
   await mkdir(dirname(wrongTarget), { recursive: true }); await symlink(wrongRoot, wrongTarget, 'dir');
   for (const candidate of [
     join(wrongTarget, 'scripts', 'zcode-companion.mjs'),
+    join(wrongTarget, 'hooks', 'user-prompt-hook.mjs'),
+    join(wrongTarget, 'skills', 'rescue', 'launcher.mjs'),
     join(temporary, 'outside-cache', 'scripts', 'zcode-companion.mjs'),
     join(codexHome, 'plugins', 'cache', 'vitry', 'wrong-plugin', '0.1.0', 'scripts', 'zcode-companion.mjs'),
+    join(installed, 'hooks', 'session-end-hook.mjs'),
+    join(installed, 'skills', 'rescue', 'SKILL.md'),
     `${installed}${sep}..${sep}0.1.0${sep}scripts${sep}zcode-companion.mjs`,
     `${entryPath}\u0000bad`,
   ]) assert.throws(() => resolvePluginDataContext({ env: { CODEX_HOME: codexHome }, pluginRoot: ownedRoot, entryPath: candidate }), { code: 'PLUGIN_DATA_ROOT_INVALID' });
+});
+
+test('trusted runtime entries preserve an ordinary non-symlinked marketplace installation', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zpc-plugin-entry-installed-'));
+  t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporary, { force: true, recursive: true })));
+  const codexHome = join(temporary, 'codex-home'); const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.2.0');
+  const entryPath = join(installed, 'skills', 'rescue', 'launcher.mjs');
+  await mkdir(dirname(entryPath), { recursive: true }); await writeFile(entryPath, 'export {};\n');
+  assert.deepEqual(resolvePluginDataContext({ env: { CODEX_HOME: codexHome }, pluginRoot: installed, entryPath }), {
+    dataRoot: join(await realpath(codexHome), 'plugins', 'data', 'zcode-vitry'), provenance: 'marketplace', runtimePluginRoot: installed,
+  });
 });
 
 test('installed identity rejects malformed cache segments', () => {

@@ -36,6 +36,7 @@ import { resolveForwardingExecutor, resolveRecordedSessionStart } from '../hooks
 const backgroundBindings = new WeakMap();
 const rescueChoiceRoutes = new WeakMap();
 const activeCompanionPath = fileURLToPath(import.meta.url);
+const activeRescueLauncherPath = fileURLToPath(new URL('../skills/rescue/launcher.mjs', import.meta.url));
 const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
 const MANAGED_ROLE_STATUSES = new Set(['ready', 'restart-required', 'install-required', 'upgrade-required', 'drift', 'foreign-conflict', 'project-shadowed', 'higher-precedence-conflict', 'unsupported']);
 const SOURCE_SESSION_REMEDY = 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.';
@@ -760,12 +761,15 @@ export async function runCompanionCli(argv = process.argv.slice(2)) {
 
 if (process.argv[1] && sameEntryPath(fileURLToPath(import.meta.url), resolve(process.argv[1]))) await runCompanionCli();
 
-/** Return only the lexical executable path whose real target is this owned companion. */
+/** Return only a lexical executable path whose real target is an owned runtime entry. */
 function invocationEntryPath() {
   if (typeof process.argv[1] !== 'string' || !process.argv[1]) return undefined;
   const invoked = resolve(process.argv[1]);
-  if (invoked === resolve(activeCompanionPath)) return undefined;
-  return sameEntryPath(activeCompanionPath, invoked) ? invoked : undefined;
+  for (const owned of [activeCompanionPath, activeRescueLauncherPath]) {
+    if (invoked === resolve(owned)) return undefined;
+    if (sameEntryPath(owned, invoked)) return invoked;
+  }
+  return undefined;
 }
 
 /** Treat marketplace symlink entrypoints as the installed companion itself. @param {string} left @param {string} right */

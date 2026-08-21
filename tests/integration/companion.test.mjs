@@ -721,7 +721,7 @@ test('installed companion missing-turn behavior reports caller unavailable witho
   t.diagnostic('Installed provenance returns a bounded caller failure and never reads the isolated source namespace.');
 });
 
-test('symlinked marketplace companion keeps installed provenance and previews SessionStart from the origin namespace', async () => {
+test('symlinked marketplace hook renders its lexical launcher and the real launcher preserves installed provenance', async (t) => {
   const context = await fixture(); const codexHome = join(context.directory, 'symlink-installed-codex-home');
   const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
   await mkdir(dirname(installed), { recursive: true }); await symlink(root, installed, 'dir');
@@ -738,10 +738,13 @@ test('symlinked marketplace companion keeps installed provenance and previews Se
     input: { session_id: sessionId, turn_id: 'symlink-installed-turn', cwd: context.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue inspect symlink provenance' },
   });
   assert.equal(prompted.code, 0, prompted.stderr || prompted.stdout);
+  const promptContext = JSON.parse(prompted.stdout).hookSpecificOutput.additionalContext;
+  assert.equal(JSON.parse(promptContext.slice(promptContext.indexOf('{'))).launcherCommand, `node "${join(installed, 'skills', 'rescue', 'launcher.mjs')}"`);
   const linked = await addLinkedWorktree(context.workspace, context.directory, 'symlink-installed-target');
   const configFile = join(installedData, 'config.toml');
   const config = { config: {}, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: {} }] };
-  const result = await run(process.execPath, [join(installed, 'scripts', 'zcode-companion.mjs'), 'role-status', 'rescue'], {
+  const installedLauncher = join(installed, 'skills', 'rescue', 'launcher.mjs');
+  const result = await run(process.execPath, [installedLauncher, 'role-status', 'rescue'], {
     cwd: linked,
     env: {
       ...process.env, CODEX_HOME: codexHome, CODEX_THREAD_ID: sessionId,
@@ -752,6 +755,27 @@ test('symlinked marketplace companion keeps installed provenance and previews Se
   assert.equal(result.code, 0, result.stderr || result.stdout);
   assert.deepEqual(JSON.parse(result.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'install-required', remedy: '$zcode:setup' });
   assert.ok((await readdir(join(installedData, 'identity-lifecycle', 'active-turns'))).length === 1);
+
+  const ttyRecord = join(context.directory, 'symlink-installed-prepare-tty.txt'); await writeFile(ttyRecord, '');
+  const child = spawn(process.execPath, [installedLauncher, 'prepare', 'rescue'], {
+    cwd: linked,
+    env: {
+      ...process.env, CODEX_HOME: codexHome, CODEX_THREAD_ID: sessionId,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  const exit = new Promise((resolveExit, reject) => child.once('error', reject).once('exit', (code, signal) => { exited = true; resolveExit({ code, signal }); }));
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  await waitFor(async () => stdout.includes('preparation-input-ready'), 'symlinked installed launcher did not reach preparation readiness');
+  child.stdin?.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'symlink installed task', options: {} })}\n`);
+  assert.deepEqual(await exit, { code: 0, signal: null }); assert.equal(stderr, '');
+  assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n{"type":"prepared","command":"rescue"}\n');
+  assert.equal((await createRescuePreparationStore({ dataRoot: installedData }).consume({
+    sessionId, turnId: 'symlink-installed-turn', workspace: linked, permissionMode: 'acceptEdits', executorAgentId: 'symlink-installed-child',
+  })).envelope.task, 'symlink installed task');
 });
 
 test('source role-status does not relabel inspection and configuration failures', async () => {
