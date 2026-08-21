@@ -145,7 +145,7 @@ State is stored outside workspace partitions:
 
 ```text
 <dataRoot>/identity-lifecycle/
-  .lock/
+  session-locks/
   active-turns/<sha256(sessionId)>.json
   sessions/<sha256(sessionId)>.json
 ```

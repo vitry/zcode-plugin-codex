@@ -140,7 +140,7 @@ equal canonical common dirs. Treat non-Git origin/candidate as eligible only
 when their canonical workspace paths are equal.
 
 Linearize every v3 record mutation under a fixed, digest-striped per-session
-lock below `<dataRoot>/identity-lifecycle/.lock/`. Preserve the existing
+lock below `<dataRoot>/identity-lifecycle/session-locks/`. Preserve the existing
 workspace identity lock for caller tokens, capabilities, gates, legacy records,
 and one bounded origin index. The only nested order is session lifecycle ->
 workspace identity; no path may acquire those locks in reverse, and Git runs
