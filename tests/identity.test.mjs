@@ -298,9 +298,18 @@ test('session proof creates exact private global v3 identity records without cha
   assert.equal(caller.generationId, active.generationId); assert.equal('token' in caller, false);
   const consumed = await identity.consumeCallerContext(token, { workspace: origin, now });
   assert.equal('version' in consumed, false); assert.equal('generationId' in consumed, false);
-  assert.equal((await stat(dirname(activePath))).mode & 0o777, 0o700);
-  assert.equal((await stat(activePath)).mode & 0o777, 0o600);
-  assert.equal((await stat(sessionPath)).mode & 0o777, 0o600);
+  const activeDirectoryStat = await stat(dirname(activePath));
+  const activeStat = await stat(activePath);
+  const sessionStat = await stat(sessionPath);
+  if (process.platform === 'win32') {
+    assert.equal(activeDirectoryStat.isDirectory(), true);
+    assert.equal(activeStat.isFile(), true);
+    assert.equal(sessionStat.isFile(), true);
+  } else {
+    assert.equal(activeDirectoryStat.mode & 0o777, 0o700);
+    assert.equal(activeStat.mode & 0o777, 0o600);
+    assert.equal(sessionStat.mode & 0o777, 0o600);
+  }
   assert.deepEqual(await identity.resolveActiveTurn({ sessionId: 'session-proof', workspace: origin }), {
     version: 2, kind: 'active-turn', sessionId: 'session-proof', turnId: 'turn-a',
     workspace: originPath, permissionMode: 'workspace-write', prompt: 'repair', createdAt: now.toISOString(),
@@ -380,7 +389,9 @@ test('public caller creation preserves exact legacy bytes and 30 minute TTL when
     expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
   };
   assert.equal(await readFile(path, 'utf8'), `${JSON.stringify(expected, null, 2)}\n`);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  const callerStat = await stat(path);
+  if (process.platform === 'win32') assert.equal(callerStat.isFile(), true);
+  else assert.equal(callerStat.mode & 0o777, 0o600);
   const lifecycle = join(await realpath(dataRoot), 'identity-lifecycle');
   assert.deepEqual(await readdir(join(lifecycle, 'active-turns')), []);
   assert.deepEqual(await readdir(join(lifecycle, 'sessions')), []);
