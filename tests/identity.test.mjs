@@ -562,6 +562,41 @@ test('cleanup revokes exact-session caller tokens in every known workspace witho
   assert.equal((await identity.consumeCallerContext(siblingToken, { workspace: execution })).sessionId, 'session-b');
 });
 
+test('an ended session ledger revokes caller tokens before workspace cleanup completes', async () => {
+  const { dataRoot, root } = await fixture(); const { origin } = await linkedWorktreeFixture(root);
+  const input = {
+    sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
+    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+  };
+  const token = await createIdentityStore({ dataRoot }).beginCallerTurn(input);
+  const discovered = deferred(); const releaseConsume = deferred();
+  const consumption = createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => {
+      if (point === 'after-caller-discovery') { discovered.resolve(); await releaseConsume.promise; }
+    },
+  }).consumeCallerContext(token, { workspace: origin });
+  assert.equal(await Promise.race([
+    discovered.promise.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 100)),
+  ]), true, 'consumer must pause after discovering the token and before checking lifecycle state');
+  const cleanup = createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => {
+      if (point === 'after-cleanup-tombstone') throw new Error('injected after tombstone');
+    },
+  });
+  await assert.rejects(cleanup.cleanupSession(origin, 'session-a'), /injected after tombstone/);
+  releaseConsume.resolve();
+  await assert.rejects(consumption, { code: 'CALLER_CONTEXT_INVALID' });
+  const { sessionPath } = await globalIdentityArtifacts(dataRoot);
+  await writeFile(sessionPath, '{}\n', { mode: 0o600 });
+  await assert.rejects(
+    createIdentityStore({ dataRoot }).consumeCallerContext(token, { workspace: origin }),
+    { code: 'AUTHORIZATION_RECORD_INVALID' },
+  );
+});
+
 test('proved begin fencing prevents a delayed loser from deleting a returned winner token or index', async () => {
   const { dataRoot, root } = await fixture(); const { origin } = await linkedWorktreeFixture(root);
   const reached = deferred(); const release = deferred();

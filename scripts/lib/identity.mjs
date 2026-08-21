@@ -13,6 +13,7 @@ import {
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const CALLER_LIFETIME_MS = 30 * 60_000;
+const MAX_CALLER_RECORD_BYTES = 48 * 1024;
 const MAX_ACTIVE_TURN_BYTES = 96 * 1024;
 const MAX_SESSION_BYTES = 32 * 1024;
 const MAX_ORIGIN_INDEX_BYTES = 16 * 1024;
@@ -64,6 +65,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
           const endedAt = monotonicTimestamp(ledger.updatedAt);
           await atomicWriteJson(state.sessionPath, { ...ledger, endedAt, updatedAt: endedAt }, { privateRoot: global.directory });
         }
+        await publicationSeam?.('after-cleanup-tombstone');
         if (active !== null) await unlink(state.activePath).catch((error) => { if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error; });
         for (const knownWorkspace of ledger.knownWorkspaces) {
           const knownStorage = await identityStorageForCanonical(global.dataRootPath, knownWorkspace);
@@ -312,21 +314,18 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       validateTokenAndWorkspace(token, expected);
       const storage = await identityStorage(dataRoot, expected.workspace);
       const digest = tokenDigest(token);
-      return withFileLock(storage.lockPath, async () => {
-        const record = await readAuthorizationRecord(
-          join(storage.callersDirectory, `${digest}.json`),
-          'CALLER_CONTEXT_INVALID',
-          'Caller context is invalid for this workspace.',
-        );
-        if (!isCallerRecord(record)) throw invalidAuthorizationRecord('caller context');
-        if (!safeEqual(record.digest, digest) || record.workspace !== storage.workspacePath) {
-          throw authorizationError('CALLER_CONTEXT_INVALID', 'Caller context is invalid for this workspace.');
-        }
-        if (toTimestamp(expected.now) >= Date.parse(record.expiresAt)) {
-          throw authorizationError('CALLER_CONTEXT_EXPIRED', 'Caller context has expired.',
-            'Create a new caller context for the current turn.');
-        }
-        return publicRecord(record);
+      const discovered = await withFileLock(storage.lockPath,
+        () => readCallerContextRecord(storage, digest, expected));
+      await publicationSeam?.('after-caller-discovery');
+      const global = await globalIdentityStorage(dataRoot);
+      return withFileLock(sessionLockPath(global, discovered.sessionId), async () => {
+        const state = await readGlobalState(global, discovered.sessionId, false);
+        if (state !== null && state.ledger.endedAt !== null) throw invalidCallerContext();
+        return withFileLock(storage.lockPath, async () => {
+          const current = await readCallerContextRecord(storage, digest, expected);
+          if (!safeEqual(current.sessionId, discovered.sessionId)) throw invalidCallerContext();
+          return publicRecord(current);
+        });
       });
     },
 
@@ -786,6 +785,21 @@ async function cleanupWorkspaceSession(storage, sessionId) {
   }
 }
 
+/** @param {any} storage @param {string} digest @param {{now?:Date|number|string}} expected */
+async function readCallerContextRecord(storage, digest, expected) {
+  const record = await readOptionalBounded(
+    storage.directory, join(storage.callersDirectory, `${digest}.json`), MAX_CALLER_RECORD_BYTES,
+  );
+  if (record === null) throw invalidCallerContext();
+  if (!isCallerRecord(record)) throw invalidAuthorizationRecord('caller context');
+  if (!safeEqual(record.digest, digest) || record.workspace !== storage.workspacePath) throw invalidCallerContext();
+  if (toTimestamp(expected.now) >= Date.parse(record.expiresAt)) {
+    throw authorizationError('CALLER_CONTEXT_EXPIRED', 'Caller context has expired.',
+      'Create a new caller context for the current turn.');
+  }
+  return record;
+}
+
 /** @param {string} path @param {string} code @param {string} message */
 async function readAuthorizationRecord(path, code, message) {
   try {
@@ -1179,6 +1193,10 @@ function hasSessionProof(input) { return input.sessionStartedAt !== undefined &&
 
 function workspaceIneligible() {
   return authorizationError('ACTIVE_TURN_WORKSPACE_INELIGIBLE', 'The requested workspace is not eligible for this active turn.');
+}
+
+function invalidCallerContext() {
+  return authorizationError('CALLER_CONTEXT_INVALID', 'Caller context is invalid for this workspace.');
 }
 
 /** @param {string} code @param {string} message @param {string} [remedy] */
