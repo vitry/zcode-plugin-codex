@@ -428,7 +428,10 @@ test('release qualification covers the installed direct bridge and explicit real
   assert.doesNotMatch(qualified, /require-qualified\.cjs/); const required = packageJson.scripts['test:qualification-required']; assert.match(required, /require-qualified\.cjs/); assert.match(read('tests/helpers/require-qualified.cjs'), /ZCODE_REQUIRE_QUALIFIED\s*=\s*['"]1['"]/);
   assert.match(packageJson.scripts.check, /npm run test:qualified/);
   const real = read('tests/e2e/real-zcode.test.mjs');
-  assert.match(real, /resolveRealZCodeModelEnvironment/); assert.match(real, /ZCODE_REAL_MODEL_CONFLICT/); assert.match(real, /runCompanion/); assert.match(real, /--model/);
+  assert.match(real, /resolveRealZCodeModelEnvironment/); assert.match(real, /ZCODE_REAL_MODEL_CONFLICT/);
+  assert.match(real, /invokePrepared/); assert.match(real, /'invoke-prepared', 'rescue'/); assert.match(real, /prepareProactive/);
+  assert.match(real, /worktree/); assert.match(real, /180_000/); assert.match(real, /firstInvoke/); assert.match(real, /secondInvoke/); assert.match(real, /model/);
+  assert.doesNotMatch(real, /createCallerContext/); assert.doesNotMatch(real, /\brunCompanion\b/);
   const realModel = read('tests/helpers/real-zcode-model.mjs');
   assert.match(realModel, /ZCODE_REAL_E2E_MODEL/); assert.match(realModel, /ZCODE_REAL_MODEL/); assert.match(realModel, /deprecatedAliasUsed/);
   const installed = read('tests/e2e/codex-skills-e2e.test.mjs');

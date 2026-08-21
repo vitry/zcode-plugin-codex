@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -191,7 +191,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || preBinding.operationId !== binding.operationId || preBinding.anchorJobId !== binding.anchorJobId) mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
   if (preBinding.state !== 'active' || preBinding.currentJobId !== preBinding.anchorJobId
     || binding.currentJobId === preBinding.currentJobId) mismatch('continuation-current-job-stale', 'Raw current job binding does not prove the exact pre-reservation CAS transition.');
-  const jobs = await parseRawJobsWithProduction(jobBytes, expected);
+  const jobs = await parseRawJobsWithProduction(jobBytes, expected, input.installedDataRoot);
   if (jobs.length !== 2 || new Set(jobs.map((job) => job?.id)).size !== jobs.length) mismatch('continuation-job-identity', 'Raw job evidence contains extra or duplicate identities.');
   const anchor = jobs.find((job) => job?.id === binding.anchorJobId); const current = jobs.find((job) => job?.id === binding.currentJobId);
   if (!current) mismatch('continuation-current-job-stale', 'Raw current job evidence is absent.');
@@ -1199,20 +1199,22 @@ function assertGlobalCallOwnership(...rollouts) {
   }
 }
 
-async function parseRawJobsWithProduction(jobBytes, expected) {
+async function parseRawJobsWithProduction(jobBytes, expected, installedDataRoot) {
   if (!Array.isArray(jobBytes) || jobBytes.length !== 2) mismatch('continuation-job-identity', 'Exactly two raw persisted job files are required.');
   if (jobBytes.some((bytes) => typeof bytes !== 'string' || !bytes.endsWith('\n'))) mismatch('continuation-job-record', 'Raw persisted job file bytes are invalid.');
   const routed = jobBytes.map((bytes) => { let value; try { value = JSON.parse(bytes); } catch { mismatch('continuation-job-record', 'Raw persisted job bytes are malformed.'); } if (!/^[a-f0-9]{64}$/u.test(value?.id)) mismatch('continuation-job-record', 'Raw persisted job identity is invalid.'); return { bytes, id: value.id }; });
-  const dataRoot = await mkdtemp(join(tmpdir(), 'zcode-qualification-state-'));
+  const suppliedRoot = typeof installedDataRoot === 'string' && installedDataRoot.length > 0 ? installedDataRoot : undefined;
+  const dataRoot = suppliedRoot ?? await mkdtemp(join(tmpdir(), 'zcode-qualification-state-'));
   try {
     const storage = await resolveWorkspaceStorage({ dataRoot, workspace: expected.workspace }); await mkdir(storage.directory, { recursive: true }); const jobsDirectory = join(storage.directory, 'jobs'); await mkdir(jobsDirectory, { recursive: true });
-    await Promise.all(routed.map(({ bytes, id }) => writeFile(join(jobsDirectory, `${id}.json`), bytes)));
+    if (suppliedRoot === undefined) await Promise.all(routed.map(({ bytes, id }) => writeFile(join(jobsDirectory, `${id}.json`), bytes)));
+    else for (const { bytes, id } of routed) if (await readFile(join(jobsDirectory, `${id}.json`), 'utf8').catch(() => null) !== bytes) mismatch('continuation-job-record', 'Observed installed job bytes do not match their persisted source files.');
     const store = createStateStore({ dataRoot });
     const jobs = []; for (const { id } of routed) { try { jobs.push(await store.readJob(expected.workspace, id)); } catch { mismatch('continuation-job-record', 'Production StateStore rejected raw persisted job bytes.'); } }
     for (const job of jobs) if (job.ownerSessionId !== expected.parentSessionId || job.workspace !== expected.workspace || job.command !== 'rescue'
       || job.readOnly !== false || job.permissionSnapshot?.permissionMode !== expected.permissionMode) mismatch('continuation-job-record', 'Production job authority does not match the continuation.');
     return jobs;
-  } finally { await rm(dataRoot, { recursive: true, force: true }); }
+  } finally { if (suppliedRoot === undefined) await rm(dataRoot, { recursive: true, force: true }); }
 }
 
 function validateContinuationActiveTurn(rawBytes, expected) {

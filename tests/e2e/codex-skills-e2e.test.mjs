@@ -689,6 +689,9 @@ test('installed continuation capture qualifies one parent turn from origin hooks
   await git(['worktree', 'add', '-qb', 'installed-capture-target', executionDirectory], originDirectory);
   const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(executionDirectory);
   const observed = await observeInstalledWorkspaceBoundAuthority({ temporary, originWorkspace, executionWorkspace });
+  const observerExpected = { parentSessionId: '019fe6df-faa2-7851-8edb-55f1be7d5489', parentTurnId: 'turn-original', childThreadId: '019fe6e0-4764-7192-83ba-0b0cc2c48660',
+    childTurnId: 'child-turn', originWorkspace, executionWorkspace, permissionMode: 'acceptEdits' };
+  assertInstalledWorkspaceBoundObservation(observed, observerExpected);
   assert.equal(observed.pending.status, 'pending');
   assert.equal(observed.unbound.status, 'active'); assert.equal(observed.unbound.executionWorkspace, null);
   assert.deepEqual(observed.role.activeBytesAfter, observed.role.activeBytesBefore);
@@ -712,7 +715,18 @@ test('installed continuation capture qualifies one parent turn from origin hooks
   assert.ok(observed.preparationHistory.length >= 2); assert.ok(observed.bindingHistory.length >= 2); assert.ok(observed.jobs.length >= 2);
   assert.equal(JSON.stringify(observed.hostCalls).includes('installed-observer-private-sentinel'), false);
   assert.deepEqual(observed.cleanedPaths.filter((path) => observed.remainingPaths.includes(path)), []);
-  const capture = syntheticWorkspaceBoundContinuationFixture('named', originWorkspace, executionWorkspace);
+  for (const mutate of [
+    (value) => { value.preparationHistory[0].workspace = originWorkspace; },
+    (value) => { value.preparationHistory[1].generation = value.preparationHistory[0].generation; },
+    (value) => { value.jobs[1].id = value.jobs[0].id; },
+    (value) => { value.bindingHistory.at(-1).records[0].currentJobId = value.bindingHistory[0].records[0].currentJobId; },
+    (value) => { value.bindingHistory.at(-1).workspace = originWorkspace; },
+    (value) => { value.jobs[1].workspace = originWorkspace; },
+  ]) {
+    const changed = structuredClone(observed); mutate(changed);
+    assert.throws(() => assertInstalledWorkspaceBoundObservation(changed, observerExpected), /installed observer/u);
+  }
+  const capture = installedWorkspaceBoundCaptureFromObservation(observed, observerExpected);
   const evidence = await qualifyCodexRescuePreparedContinuationEvidence(capture);
   assert.equal(evidence.originWorkspace, originWorkspace);
   assert.equal(evidence.executionWorkspace, executionWorkspace);
@@ -2194,13 +2208,14 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
   assert.equal(secondInvoke.code, 0, secondInvoke.stderr || secondInvoke.stdout);
   const filesBeforeCleanup = await recursiveFiles(dataRoot); const parsed = [];
   for (const path of filesBeforeCleanup) {
-    try { parsed.push({ path, value: JSON.parse(await readFile(path, 'utf8')) }); } catch { /* locks and non-JSON are irrelevant */ }
+    try { const bytes = await readFile(path, 'utf8'); parsed.push({ path, bytes, value: JSON.parse(bytes) }); } catch { /* locks and non-JSON are irrelevant */ }
   }
   const originIndex = parsed.find(({ value }) => value?.kind === 'active-turn-index' && value.sessionId === parentSessionId)?.value;
-  const executor = parsed.findLast(({ value }) => value?.kind === 'subagent-executor' && value.agentId === childThreadId)?.value;
-  const route = parsed.findLast(({ value }) => value?.kind === 'executor-route' && value.agentId === childThreadId)?.value;
-  const preparation = parsed.findLast(({ path, value }) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`)
-    && value?.sessionId === parentSessionId && value?.envelope?.version === 1)?.value;
+  const executorArtifact = parsed.findLast(({ value }) => value?.kind === 'subagent-executor' && value.agentId === childThreadId);
+  const routeArtifact = parsed.findLast(({ value }) => value?.kind === 'executor-route' && value.agentId === childThreadId);
+  const preparationArtifact = parsed.findLast(({ path, value }) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`)
+    && value?.sessionId === parentSessionId && value?.envelope?.version === 1);
+  const executor = executorArtifact?.value; const route = routeArtifact?.value; const preparation = preparationArtifact?.value;
   assert.ok(originIndex && executor && route && preparation, `installed observer artifacts missing ${JSON.stringify({ originIndex: !!originIndex, executor: !!executor, route: !!route, preparation: !!preparation, kinds: parsed.map(({ value }) => value?.kind).filter(Boolean) })}`);
   const cleanedPaths = parsed.filter(({ path, value }) => value?.kind !== 'identity-session'
     && (value?.sessionId === parentSessionId || value?.parentSessionId === parentSessionId)
@@ -2211,12 +2226,19 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
   const remainingPaths = await recursiveFiles(dataRoot);
   const artifactHistory = [...firstArtifactSnapshot, ...finalArtifacts];
   const parseHistory = (predicate) => artifactHistory.filter(({ path }) => predicate(path)).map(({ bytes }) => { try { return JSON.parse(bytes); } catch { return null; } }).filter(Boolean);
-  const preparationHistory = parseHistory((path) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`))
-    .filter((value) => value.sessionId === parentSessionId && value.executorAgentId === childThreadId);
-  const bindingHistory = parseHistory((path) => basename(path).startsWith('rescue-binding-session-')).filter((value) => value.parentSessionId === parentSessionId);
-  const jobs = parseHistory((path) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`)).filter((value) => value.ownerSessionId === parentSessionId);
+  const preparationHistory = [...new Map(parseHistory((path) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`))
+    .filter((value) => value.sessionId === parentSessionId && value.executorAgentId === childThreadId).map((value) => [value.generation, value])).values()]
+    .sort((left, right) => left.generation - right.generation);
+  const bindingHistory = [...new Map(parseHistory((path) => basename(path).startsWith('rescue-binding-session-')).filter((value) => value.parentSessionId === parentSessionId)
+    .map((value) => [value.records?.[0]?.currentJobId, value])).values()].filter((value) => value.records?.length === 1);
+  const jobs = [...new Map(parseHistory((path) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`))
+    .filter((value) => value.ownerSessionId === parentSessionId).map((value) => [value.id, value])).values()];
+  const authorityArtifact = parsed.findLast(({ path, value }) => basename(path).startsWith('rescue-binding-authority-') && value?.parentSessionId === parentSessionId);
   const peer = (await readFile(peerRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
-  return { pending, unbound, bound, originIndex, executor, route, preparation,
+  return { pending, unbound, bound, originIndex, executor, route, preparation, dataRoot,
+    raw: { pending: pendingBytes, unbound: finalUnboundBytes, bound: `${JSON.stringify(bound)}\n`, originIndex: `${JSON.stringify(originIndex)}\n`, executor: executorArtifact.bytes,
+      route: routeArtifact.bytes, authority: authorityArtifact?.bytes, preparations: preparationHistory.map((value) => `${JSON.stringify(value)}\n`),
+      bindings: bindingHistory.map((value) => `${JSON.stringify(value)}\n`), jobs: jobs.map((value) => parsed.find(({ path, value: candidate }) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`) && candidate?.id === value.id)?.bytes) },
     role: { activeBytesBefore: roleBefore, activeBytesAfter: roleAfter, mtimeBefore: roleStatBefore.mtimeMs, mtimeAfter: roleStatAfter.mtimeMs },
     hostCalls: [{ command: 'role-status rescue', workspace: executionWorkspace, stdout: roleResult.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: prepared.stdout },
       { command: 'invoke-prepared rescue', workspace: executionWorkspace, stdout: firstInvoke.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: proactivePrepared.stdout },
@@ -2224,48 +2246,98 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
     peer, preparationHistory, bindingHistory, jobs, cleanedPaths, remainingPaths };
 }
 
+function assertInstalledWorkspaceBoundObservation(observed, expected) {
+  const fail = (detail) => { throw new Error(`installed observer ${detail}`); };
+  if (!observed || observed.pending?.status !== 'pending' || observed.unbound?.status !== 'active' || observed.unbound.executionWorkspace !== null
+    || observed.bound?.status !== 'active' || observed.bound.executionWorkspace !== expected.executionWorkspace
+    || observed.bound.originWorkspace !== expected.originWorkspace || observed.bound.sessionId !== expected.parentSessionId
+    || observed.bound.turnId !== expected.parentTurnId || observed.bound.permissionMode !== expected.permissionMode) fail('authority mismatch');
+  if (observed.role.activeBytesBefore !== observed.role.activeBytesAfter || observed.role.mtimeBefore !== observed.role.mtimeAfter) fail('Role mutated authority');
+  if (observed.originIndex?.originWorkspace !== expected.originWorkspace || observed.originIndex.generationId !== observed.bound.generationId) fail('origin index mismatch');
+  if (observed.route?.agentId !== expected.childThreadId || observed.route.childTurnId !== expected.childTurnId || observed.route.agentType !== 'zcode-rescue'
+    || observed.route.originWorkspace !== expected.originWorkspace || observed.route.targetWorkspace !== expected.executionWorkspace
+    || observed.route.parentGenerationId !== observed.bound.generationId || observed.route.state !== 'stopped') fail('route mismatch');
+  if (observed.executor?.agentId !== expected.childThreadId || observed.executor.childTurnId !== expected.childTurnId
+    || observed.executor.workspace !== expected.executionWorkspace || observed.executor.originWorkspace !== expected.originWorkspace
+    || observed.executor.parentGenerationId !== observed.bound.generationId || observed.executor.active !== false) fail('executor mismatch');
+  if (!Array.isArray(observed.preparationHistory) || observed.preparationHistory.length !== 2
+    || observed.preparationHistory.map((value) => value.generation).join(',') !== '1,2'
+    || new Set(observed.preparationHistory.map((value) => value.key)).size !== 1
+    || observed.preparationHistory.some((value) => value.workspace !== expected.executionWorkspace || value.sessionId !== expected.parentSessionId
+      || value.turnId !== expected.parentTurnId || value.executorAgentId !== expected.childThreadId || value.consumedAt === null)) fail('preparation history mismatch');
+  if (!Array.isArray(observed.jobs) || observed.jobs.length !== 2 || new Set(observed.jobs.map((value) => value.id)).size !== 2
+    || observed.jobs.some((value) => value.workspace !== expected.executionWorkspace || value.ownerSessionId !== expected.parentSessionId
+      || value.ownerTurnId !== expected.parentTurnId || value.status !== 'succeeded')
+    || observed.jobs.some((value, index) => Date.parse(value.createdAt) < Date.parse(observed.preparationHistory[index].consumedAt))) fail('job history mismatch');
+  if (!Array.isArray(observed.bindingHistory) || observed.bindingHistory.length !== 2) fail('binding history mismatch');
+  const [firstBinding, secondBinding] = observed.bindingHistory.map((value) => value.records?.[0]);
+  if (!firstBinding || !secondBinding || observed.bindingHistory.some((value) => value.workspace !== expected.executionWorkspace)
+    || firstBinding.anchorJobId !== firstBinding.currentJobId || secondBinding.anchorJobId !== firstBinding.anchorJobId || secondBinding.operationId !== firstBinding.operationId
+    || secondBinding.currentJobId === firstBinding.currentJobId || !observed.jobs.some((value) => value.id === firstBinding.currentJobId)
+    || !observed.jobs.some((value) => value.id === secondBinding.currentJobId)) fail('binding did not advance');
+  const creates = observed.peer?.filter((call) => call.method === 'session/create') ?? []; const sends = observed.peer?.filter((call) => call.method === 'session/send') ?? [];
+  if (creates.length !== 1 || sends.length !== 2 || creates[0].params?.workspace?.workspacePath !== expected.executionWorkspace
+    || new Set(sends.map((call) => call.params?.sessionId)).size !== 1 || sends[0].params.sessionId !== sends[1].params.sessionId
+    || sends.some((call, index) => call.params?.inputId !== observed.jobs[index].inputId || call.params.sessionId !== observed.jobs[index].zcodeSessionId)) fail('peer history mismatch');
+}
+
+function installedWorkspaceBoundCaptureFromObservation(observed, expected) {
+  assertInstalledWorkspaceBoundObservation(observed, expected);
+  const input = installedPreparedContinuationCapture('named', { workspace: expected.executionWorkspace });
+  input.expected = { ...input.expected, ...expected, originalParentTurnId: expected.parentTurnId, continuationParentTurnId: expected.parentTurnId };
+  input.hookLifecycleJson = JSON.stringify([
+    { hook_event_name: 'UserPromptSubmit', session_id: expected.parentSessionId, turn_id: expected.parentTurnId, cwd: expected.originWorkspace, permission_mode: expected.permissionMode },
+    { hook_event_name: 'SubagentStart', session_id: expected.parentSessionId, turn_id: expected.childTurnId, parent_turn_id: expected.parentTurnId, cwd: expected.originWorkspace, permission_mode: expected.permissionMode, agent_id: expected.childThreadId, agent_type: 'zcode-rescue' },
+    { hook_event_name: 'SubagentStop', session_id: expected.parentSessionId, turn_id: expected.childTurnId, parent_turn_id: expected.parentTurnId, cwd: expected.originWorkspace, permission_mode: expected.permissionMode, agent_id: expected.childThreadId, agent_type: 'zcode-rescue' },
+  ]);
+  input.activeTurnRecordBytes = observed.raw.bound;
+  input.authorityTransitionBytesJson = JSON.stringify([observed.raw.pending, observed.raw.unbound, observed.raw.unbound, observed.raw.bound]);
+  input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: expected.executionWorkspace,
+    activeBytesBefore: observed.role.activeBytesBefore, activeBytesAfter: observed.role.activeBytesAfter, mtimeBefore: observed.role.mtimeBefore, mtimeAfter: observed.role.mtimeAfter,
+    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
+  input.originIndexRecordBytes = observed.raw.originIndex; input.executorRouteRecordBytes = observed.raw.route; input.executorRecordBytes = observed.raw.executor;
+  input.bindingAuthorityBytes = observed.raw.authority; input.bindingPreReservationBytes = observed.raw.bindings[0]; input.bindingPartitionBytes = observed.raw.bindings[1];
+  input.preparationRecordBytesJson = JSON.stringify(observed.raw.preparations); input.jobRecordBytesJson = JSON.stringify(observed.raw.jobs);
+  input.installedDataRoot = observed.dataRoot;
+  const parent = JSON.parse(input.parentRolloutJson);
+  for (const [index, preparation] of observed.preparationHistory.entries()) {
+    const prepareId = `prepare-${index + 1}`; const writeId = `prepare-write-${index + 1}`; const created = Date.parse(preparation.createdAt);
+    const prepareCall = parent.find((event) => event?.payload?.call_id === prepareId && event.payload.type === 'custom_tool_call');
+    const prepareOutput = parent.find((event) => event?.payload?.call_id === prepareId && event.payload.type === 'custom_tool_call_output');
+    const writeCall = parent.find((event) => event?.payload?.call_id === writeId && event.payload.type === 'custom_tool_call');
+    const writeOutput = parent.find((event) => event?.payload?.call_id === writeId && event.payload.type === 'custom_tool_call_output');
+    for (const [event, offset] of [[prepareCall, -2], [prepareOutput, -1], [writeCall, 0], [writeOutput, 1]]) if (event) event.timestamp = new Date(created + offset).toISOString();
+    if (writeCall) writeCall.payload.input = installedPreparationInput(71 + index, `${JSON.stringify(preparation.envelope)}\n`);
+  }
+  const firstCreated = Date.parse(observed.preparationHistory[0].createdAt); const firstConsumed = Date.parse(observed.preparationHistory[0].consumedAt);
+  const secondCreated = Date.parse(observed.preparationHistory[1].createdAt);
+  const spawnEvent = parent.find((event) => event?.payload?.name === 'spawn_agent'); const startEvent = parent.find((event) => event?.payload?.kind === 'started');
+  const stopEvent = parent.find((event) => event?.payload?.kind === 'stopped'); const followupEvent = parent.find((event) => event?.payload?.name === 'followup_task');
+  const spawnOutput = parent.find((event) => event?.payload?.call_id === 'spawn-1' && event.payload.type === 'function_call_output');
+  const followupOutput = parent.find((event) => event?.payload?.call_id === 'followup-1' && event.payload.type === 'function_call_output');
+  spawnEvent.timestamp = new Date(firstCreated + 2).toISOString(); startEvent.timestamp = new Date(firstCreated + 3).toISOString();
+  stopEvent.timestamp = observed.route.updatedAt; followupEvent.timestamp = new Date(secondCreated + 2).toISOString();
+  spawnOutput.timestamp = new Date(firstConsumed + 2).toISOString(); followupOutput.timestamp = new Date(Date.parse(observed.preparationHistory[1].consumedAt) + 2).toISOString();
+  input.parentRolloutJson = JSON.stringify(parent);
+  const child = JSON.parse(input.childRolloutJson);
+  for (const [index, preparation] of observed.preparationHistory.entries()) {
+    const invoke = child.find((event) => event?.payload?.call_id === `invoke-${index + 1}` && event.payload.type === 'custom_tool_call');
+    const output = child.find((event) => event?.payload?.call_id === `invoke-${index + 1}` && event.payload.type === 'custom_tool_call_output');
+    invoke.timestamp = new Date(Date.parse(preparation.consumedAt) - 1).toISOString(); output.timestamp = new Date(Date.parse(preparation.consumedAt) + 1).toISOString();
+  }
+  input.childRolloutJson = JSON.stringify(child);
+  const peer = observed.peer; input.fakePeerJson = JSON.stringify([peer.find((call) => call.method === 'session/create'), peer.find((call) => call.method === 'session/send'),
+    peer.find((call) => call.method === 'session/resume'), peer.filter((call) => call.method === 'session/send')[1]]);
+  const start = Date.parse(observed.bound.createdAt); const phases = ['session-start', 'user-prompt', 'pending', 'active-unbound', 'role-preview', 'prepare', 'active-bound', 'subagent-start', 'peer-create', 'authority-revoked', 'target-cleanup'];
+  input.authorityLifecycleJson = JSON.stringify(phases.map((phase, index) => ({ phase, workspace: index <= 3 || index === 7 || index === 9 ? expected.originWorkspace : expected.executionWorkspace,
+    ...(index < 2 ? {} : { generationId: observed.bound.generationId }), at: new Date(start + index + 1).toISOString() })));
+  return input;
+}
+
 function runRawChild(command, args, { cwd, env, input } = {}) {
   const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false }); let stdout = ''; let stderr = '';
   child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.stdin.end(input);
   return new Promise((resolvePromise, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolvePromise({ code, signal, stdout, stderr })); });
-}
-
-function syntheticWorkspaceBoundContinuationFixture(route, originWorkspace, executionWorkspace) {
-  const input = installedPreparedContinuationCapture(route, { workspace: executionWorkspace });
-  const generationId = '9'.repeat(64); const parentSessionId = input.expected.parentSessionId;
-  const childThreadId = input.expected.childThreadId;
-  const globalKey = createHash('sha256').update(JSON.stringify([parentSessionId])).digest('hex');
-  input.expected.originWorkspace = originWorkspace; input.expected.executionWorkspace = executionWorkspace;
-  const hooks = JSON.parse(input.hookLifecycleJson); for (const hook of hooks) hook.cwd = originWorkspace; input.hookLifecycleJson = JSON.stringify(hooks);
-  const unbound = { version: 3, kind: 'active-turn', key: globalKey, sessionId: parentSessionId, generationId,
-    turnId: 'turn-original', originWorkspace, executionWorkspace: null, permissionMode: 'acceptEdits',
-    prompt: '$zcode:rescue repair fixture', createdAt: '2026-08-09T23:59:59.000Z', status: 'active' };
-  const pending = { ...unbound, status: 'pending' }; const bound = { ...unbound, executionWorkspace };
-  input.activeTurnRecordBytes = `${JSON.stringify(bound)}\n`;
-  input.authorityTransitionBytesJson = JSON.stringify([pending, unbound, unbound, bound].map((record) => `${JSON.stringify(record)}\n`));
-  input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: executionWorkspace,
-    activeBytesBefore: `${JSON.stringify(unbound)}\n`, activeBytesAfter: `${JSON.stringify(unbound)}\n`, mtimeBefore: 1, mtimeAfter: 1,
-    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
-  input.originIndexRecordBytes = `${JSON.stringify({ version: 1, kind: 'active-turn-index',
-    key: createHash('sha256').update(JSON.stringify([parentSessionId, originWorkspace])).digest('hex'), sessionId: parentSessionId,
-    generationId, globalKey, originWorkspace })}\n`;
-  input.executorRouteRecordBytes = `${JSON.stringify({ version: 1, kind: 'executor-route', agentId: childThreadId,
-    agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId, parentGenerationId: generationId,
-    parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', originWorkspace,
-    targetWorkspace: executionWorkspace, state: 'stopped', createdAt: '2026-08-10T00:00:02.000Z', updatedAt: '2026-08-10T00:00:05.000Z' })}\n`;
-  input.executorRecordBytes = `${JSON.stringify({ kind: 'subagent-executor', agentId: childThreadId,
-    agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId, parentGenerationId: generationId,
-    parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', originWorkspace,
-    workspace: executionWorkspace, active: false, createdAt: '2026-08-10T00:00:02.000Z' })}\n`;
-  input.authorityLifecycleJson = JSON.stringify([
-    ['session-start', originWorkspace, null, '2026-08-09T23:59:58.000Z'], ['user-prompt', originWorkspace, null, '2026-08-09T23:59:59.000Z'],
-    ['pending', originWorkspace, generationId, '2026-08-09T23:59:59.100Z'], ['active-unbound', originWorkspace, generationId, '2026-08-09T23:59:59.200Z'],
-    ['role-preview', executionWorkspace, generationId, '2026-08-10T00:00:00.100Z'], ['prepare', executionWorkspace, generationId, '2026-08-10T00:00:00.250Z'],
-    ['active-bound', executionWorkspace, generationId, '2026-08-10T00:00:00.300Z'], ['subagent-start', originWorkspace, generationId, '2026-08-10T00:00:02.000Z'],
-    ['peer-create', executionWorkspace, generationId, '2026-08-10T00:00:02.500Z'], ['authority-revoked', originWorkspace, generationId, '2026-08-10T01:02:00.000Z'],
-    ['target-cleanup', executionWorkspace, generationId, '2026-08-10T01:02:00.100Z'],
-  ].map(([phase, workspace, generation, at]) => ({ phase, workspace, ...(generation === null ? {} : { generationId: generation }), at })));
-  return input;
 }
 
 function installedRawJob(id, ownerSessionId, workspace, ownerTurnId, status, extra = {}) {

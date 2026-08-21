@@ -10,21 +10,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { resolveModel } from '../../scripts/lib/args.mjs';
 import { diagnoseZCodeAuth } from '../../scripts/lib/codex-config.mjs';
-import { createIdentityStore } from '../../scripts/lib/identity.mjs';
-import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { createZCodeClient } from '../../scripts/lib/zcode-client.mjs';
-import { createManagedZCodeClient } from '../../scripts/lib/zcode-client.mjs';
-import { releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
 import { discoverZCode } from '../../scripts/lib/zcode-discovery.mjs';
-import { runCompanion } from '../../scripts/zcode-companion.mjs';
+import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { resolveRealZCodeModelEnvironment } from '../helpers/real-zcode-model.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
+const fakeZCode = join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs');
 const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
 const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
 
@@ -58,6 +54,12 @@ test('real qualification preflight proves the installed origin-to-worktree autho
   assert.equal(observed.active.originWorkspace, await realpath(originDirectory));
   assert.equal(observed.active.executionWorkspace, await realpath(executionDirectory));
   assert.equal(observed.roleMutated, false);
+  await observed.startChild('real-preflight-child');
+  const first = await observed.invokePrepared({ childId: 'real-preflight-child', zcodePath: fakeZCode }); assert.equal(first.code, 0, first.stderr || first.stdout);
+  await observed.stopChild('real-preflight-child'); await observed.prepareProactive({ task: 'continue preflight' });
+  const second = await observed.invokePrepared({ childId: 'real-preflight-child', zcodePath: fakeZCode }); assert.equal(second.code, 0, second.stderr || second.stdout);
+  const jobs = await readBoundJobs(join(temporary, 'plugin-data'), await realpath(executionDirectory));
+  assert.equal(jobs.length, 2); assert.equal(new Set(jobs.map((job) => job.zcodeSessionId)).size, 1);
 });
 
 test('real ZCode discovery, two-turn session, read-only Companion, cancellation, model, and history import', {
@@ -75,13 +77,13 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   await runGit(['worktree', 'add', '-qb', 'real-zcode-target', executionDirectory], originDirectory);
   const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(executionDirectory);
   const sessions = new Set();
-  let client;
+  let client; let boundTurn;
   t.after(async () => {
     if (client) {
       for (const sessionId of sessions) await client.stopSession(sessionId, 10_000).catch(() => {});
       await client.close().catch(() => {});
     }
-    await releaseManagedZCodeOwner({ dataRoot: join(temporary, 'plugin-data'), workspace: executionWorkspace, ownerId: ownerIdForSession('real-zcode-e2e'), requestTimeoutMs: 10_000 }).catch(() => {});
+    if (boundTurn) await boundTurn.cleanup().catch(() => {});
     await rm(temporary, { force: true, recursive: true });
   });
   const discovery = await discoverZCode({ explicitPath: process.env.ZCODE_PATH, env: process.env });
@@ -93,22 +95,17 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
     requestTimeoutMs: 30_000,
   }), { ready: true, status: 'authenticated' });
 
-  const dataRoot = join(temporary, 'plugin-data'); const identity = createIdentityStore({ dataRoot });
-  const boundTurn = await establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, originWorkspace, executionWorkspace });
-  t.after(boundTurn.cleanup);
+  const dataRoot = join(temporary, 'plugin-data');
+  const firstPrompt = 'Inspect only this empty temporary workspace. Do not write files or run mutating commands. Reply with a short acknowledgement.';
+  const secondPrompt = 'Continue in this exact session. Inspect only and reply with a second short acknowledgement distinct from the first.';
+  boundTurn = await establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, originWorkspace, executionWorkspace, initialTask: firstPrompt, model: requestedModel });
   assert.equal(boundTurn.active.executionWorkspace, executionWorkspace);
   assert.equal(boundTurn.roleMutated, false);
-  const callerContext = await identity.createCallerContext({ sessionId: 'real-zcode-e2e', turnId: 'real-model-turn', workspace: executionWorkspace, permissionMode: 'read-only' });
-  let companionManagedWorkspace;
-  const companion = await runCompanion(['rescue', '--fresh', '--model', requestedModel, 'Inspect this empty workspace read-only and return a short acknowledgement.'], {
-    cwd: executionWorkspace,
-    env: { ...process.env, ZCODE_DATA_ROOT: dataRoot, ZCODE_PATH: discovery.path },
-    authorization: { callerContext },
-    dependencies: { createManagedZCodeClient: (options) => { companionManagedWorkspace = options.workspace; return createManagedZCodeClient({ ...options, completionTimeoutMs: 180_000 }); } },
-  });
-  assert.equal(companion.job.status, 'succeeded'); assert.ok(companion.result.trim()); assert.ok(companion.job.model);
-  assert.equal(companionManagedWorkspace, executionWorkspace, 'bound Companion must create its managed ZCode peer in the execution worktree');
-  assert.equal(JSON.parse(await readFile(boundTurn.activePath, 'utf8')).executionWorkspace, executionWorkspace);
+  const childId = 'real-zcode-rescue-child'; await boundTurn.startChild(childId);
+  const firstInvoke = await boundTurn.invokePrepared({ childId, zcodePath: discovery.path });
+  assert.equal(firstInvoke.code, 0, firstInvoke.stderr || firstInvoke.stdout); assert.ok(firstInvoke.stdout.trim());
+  const [firstJob] = await readBoundJobs(dataRoot, executionWorkspace);
+  assert.equal(firstJob.workspace, executionWorkspace); assert.equal(firstJob.status, 'succeeded'); assert.ok(firstJob.zcodeSessionId); assert.ok(firstJob.inputId);
 
   client = await createZCodeClient({
     workspace: executionWorkspace,
@@ -123,18 +120,23 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
     return denied.response;
   });
 
-  let created;
-  try {
-    created = await client.createSession({ workspace: executionWorkspace });
-  } catch (error) {
-    assert.fail(`ZCode authentication/readiness failed during session/create: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const sessionId = created.session.sessionId;
+  const sessionId = firstJob.zcodeSessionId;
   sessions.add(sessionId);
-
-  const model = resolveModel(requestedModel, {}, created.settings.model.available);
-  const selected = await client.setModel(sessionId, model);
-  assert.deepEqual(selected.settings.model.current, model);
+  const firstCompleted = await client.readSession(sessionId);
+  const firstAssistantResults = visibleAssistantResultsForTurn(firstCompleted, firstJob.inputId, new Set(firstJob.beforeMessageIds), firstPrompt);
+  assert.ok(firstAssistantResults.length >= 1, 'the first installed bound turn must expose a non-empty assistant result');
+  await boundTurn.stopChild(childId);
+  await boundTurn.prepareProactive({ task: secondPrompt, model: requestedModel });
+  const secondInvoke = await boundTurn.invokePrepared({ childId, zcodePath: discovery.path });
+  assert.equal(secondInvoke.code, 0, secondInvoke.stderr || secondInvoke.stdout); assert.ok(secondInvoke.stdout.trim());
+  const jobs = await readBoundJobs(dataRoot, executionWorkspace); assert.equal(jobs.length, 2);
+  const secondJob = jobs[1]; assert.equal(secondJob.zcodeSessionId, sessionId); assert.notEqual(secondJob.inputId, firstJob.inputId);
+  const secondCompleted = await client.readSession(sessionId);
+  const secondAssistantResults = visibleAssistantResultsForTurn(secondCompleted, secondJob.inputId, new Set(secondJob.beforeMessageIds), secondPrompt);
+  assert.ok(secondAssistantResults.length >= 1, 'the second installed bound turn must expose a new non-empty assistant result');
+  assert.ok(secondAssistantResults.every((message) => !new Set(firstAssistantResults.map((entry) => entry.info.messageId)).has(message.info.messageId)));
+  assert.ok(secondAssistantResults.some((message) => !new Set(firstAssistantResults.map(visibleAssistantText)).has(visibleAssistantText(message))));
+  assert.equal(JSON.parse(await readFile(boundTurn.activePath, 'utf8')).executionWorkspace, executionWorkspace);
 
   const cancellation = await client.createSession({ workspace: executionWorkspace });
   const cancellationId = cancellation.session.sessionId;
@@ -168,26 +170,6 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   });
   sessions.delete(cancellationId);
 
-  const firstPrompt = 'Inspect only this empty temporary workspace. Do not write files or run mutating commands. Reply with a short acknowledgement.';
-  const sent = await client.send(sessionId, firstPrompt);
-  assert.equal(sent.accepted, true);
-  await client.waitForCompletion(sessionId, 180_000);
-  const firstCompleted = await client.readSession(sessionId);
-  const firstAssistantResults = visibleAssistantResultsForTurn(firstCompleted, sent.inputId, messageIds(selected), firstPrompt);
-  assert.ok(firstAssistantResults.length >= 1, 'the first direct real turn must expose a non-empty assistant result');
-  const secondPrompt = 'Continue in this exact session. Inspect only and reply with a second short acknowledgement distinct from the first.';
-  const continued = await client.send(sessionId, secondPrompt);
-  assert.equal(continued.accepted, true);
-  await client.waitForCompletion(sessionId, 180_000);
-  const secondCompleted = await client.readSession(sessionId);
-  const secondAssistantResults = visibleAssistantResultsForTurn(secondCompleted, continued.inputId, messageIds(firstCompleted), secondPrompt);
-  assert.ok(secondAssistantResults.length >= 1, 'the second direct real turn must expose a new non-empty assistant result linked to its accepted input');
-  const firstAssistantIds = new Set(firstAssistantResults.map((entry) => entry.info.messageId));
-  assert.ok(secondAssistantResults.every((message) => !firstAssistantIds.has(message.info.messageId)),
-    'the second direct real turn must not reuse a first-turn assistant result');
-  const firstAssistantTexts = new Set(firstAssistantResults.map(visibleAssistantText));
-  assert.ok(secondAssistantResults.some((message) => !firstAssistantTexts.has(visibleAssistantText(message))),
-    'the second direct real turn must expose visible assistant text distinct from the first result');
   await client.stopSession(sessionId, 10_000);
   sessions.delete(sessionId);
 
@@ -276,11 +258,6 @@ function visibleMessageText(message) {
     .map((part) => part.text).join('');
 }
 
-function messageIds(session) {
-  return new Set((Array.isArray(session?.messages) ? session.messages : [])
-    .map((message) => message?.info?.messageId).filter((value) => typeof value === 'string'));
-}
-
 function boundedBarrier(promise, label, timeoutMs = 60_000) {
   let timer;
   const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), timeoutMs); });
@@ -291,7 +268,7 @@ function runGit(args, cwd) {
   return new Promise((resolve, reject) => execFile('git', args, { cwd, encoding: 'utf8', shell: false }, (error, stdout) => error ? reject(error) : resolve(stdout)));
 }
 
-async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, originWorkspace, executionWorkspace }) {
+async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, originWorkspace, executionWorkspace, initialTask = 'inspect real linked worktree', model }) {
   const sessionId = 'real-zcode-e2e'; const turnId = 'real-model-turn';
   const codexHome = join(temporary, 'installed-codex-home');
   const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
@@ -303,7 +280,7 @@ async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, origi
   const hook = (script, input) => runChild(process.execPath, [join(installed, 'hooks', script)], { cwd: originWorkspace, env, ordinaryInput: true, input });
   const started = await hook('session-lifecycle-hook.mjs', { session_id: sessionId, cwd: originWorkspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' });
   assert.equal(started.code, 0, started.stderr || started.stdout);
-  const promptText = '$zcode:rescue inspect real linked worktree';
+  const promptText = `$zcode:rescue ${initialTask}`;
   const prompted = await hook('user-prompt-hook.mjs', { session_id: sessionId, turn_id: turnId, cwd: originWorkspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: promptText });
   assert.equal(prompted.code, 0, prompted.stderr || prompted.stdout);
   const [activeName] = await readdir(join(dataRoot, 'identity-lifecycle', 'active-turns'));
@@ -323,19 +300,45 @@ async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, origi
   assert.deepEqual(JSON.parse(role.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
   const afterRoleStat = await stat(activePath);
   const roleMutated = !beforeRole.equals(await readFile(activePath)) || beforeRoleStat.mtimeMs !== afterRoleStat.mtimeMs;
-  const frame = `${JSON.stringify({ version: 1, source: 'explicit', task: 'inspect real linked worktree', options: { execution: 'foreground', resume: 'fresh' } })}\n`;
+  const frame = `${JSON.stringify({ version: 1, source: 'explicit', task: initialTask, options: { execution: 'foreground', resume: 'fresh', ...(model ? { model } : {}) } })}\n`;
   const prepared = await runSpawn(process.execPath, [join(installed, 'skills', 'rescue', 'launcher.mjs'), 'prepare', 'rescue'], { cwd: executionWorkspace, env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: frame });
   assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout);
   assert.match(prepared.stdout, /"type":"prepared"/u);
   const active = JSON.parse(await readFile(activePath, 'utf8'));
+  let cleaned = false;
+  const launcher = join(installed, 'skills', 'rescue', 'launcher.mjs');
+  const childInput = (event, childId) => ({ session_id: sessionId, turn_id: 'real-zcode-child-turn', cwd: originWorkspace, hook_event_name: event, transcript_path: null,
+    model: 'gpt', permission_mode: 'default', agent_id: childId, agent_type: 'zcode-rescue', ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
   return {
     active, activePath, roleMutated,
+    startChild: async (childId) => { const result = await hook('subagent-hook.mjs', childInput('SubagentStart', childId)); assert.equal(result.code, 0, result.stderr || result.stdout); },
+    stopChild: async (childId) => { const result = await hook('subagent-hook.mjs', childInput('SubagentStop', childId)); assert.equal(result.code, 0, result.stderr || result.stdout); },
+    prepareProactive: async ({ task, model: nextModel }) => {
+      const nextFrame = `${JSON.stringify({ version: 1, source: 'proactive', task, options: { execution: 'foreground', resume: 'resume', ...(nextModel ? { model: nextModel } : {}) } })}\n`;
+      const result = await runSpawn(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
+        env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: nextFrame });
+      assert.equal(result.code, 0, result.stderr || result.stdout); assert.match(result.stdout, /"type":"prepared"/u);
+    },
+    invokePrepared: ({ childId, zcodePath }) => runSpawn(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: executionWorkspace,
+      env: { ...launcherEnv, CODEX_THREAD_ID: childId, ZCODE_PATH: zcodePath } }),
     cleanup: async () => {
+      if (cleaned) return; cleaned = true;
       const ended = await hook('session-end-hook.mjs', { session_id: sessionId, cwd: originWorkspace, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' });
       assert.equal(ended.code, 0, ended.stderr || ended.stdout);
       await assert.rejects(access(activePath), { code: 'ENOENT' });
     },
   };
+}
+
+async function readBoundJobs(dataRoot, workspace) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const directory = join(storage.directory, 'jobs');
+  const values = [];
+  for (const name of await readdir(directory)) {
+    if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
+    const value = JSON.parse(await readFile(join(directory, name), 'utf8'));
+    if (value.ownerSessionId === 'real-zcode-e2e' && value.command === 'rescue') values.push(value);
+  }
+  return values.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
 }
 
 function runSpawn(command, args, { cwd, env, input } = {}) {
