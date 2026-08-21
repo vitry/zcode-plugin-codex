@@ -642,7 +642,7 @@ assert.equal(invokePreparedCalls.length, 2);
 assert.equal(zcodeSessionIds.size, 1);
 ```
 
-Advance injected time beyond the old 30-minute and 60-minute thresholds. Assert the active v2 turn still resolves, caller token/preparation generation TTLs remain bounded, and exactly one child/one ZCode session is used.
+Advance injected time beyond the old 30-minute and 60-minute thresholds. Enable an explicit deterministic-only long-lifecycle qualification option, assert that it reports the duration check, and prove a short live-style fixture cannot claim that check. Installed live qualification remains bounded and validates the same lifecycle structure without waiting 60 minutes. Assert the active v2 turn still resolves, caller token/preparation generation TTLs remain bounded, and exactly one child/one ZCode session is used.
 
 - [ ] **Step 2: Run qualification tests and verify RED**
 

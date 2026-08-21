@@ -46,7 +46,10 @@ const executionCapability = 'qualification-capability-sentinel-private';
 
 test('qualifies named and generic foreground/background continuation in one active parent turn on one stopped child and exact peer session', async () => {
   for (const route of ['named', 'generic']) for (const execution of ['foreground', 'background']) {
-    const evidence = await qualifyCodexRescuePreparedContinuationEvidence(preparedContinuationFixture(route, execution));
+    const evidence = await qualifyCodexRescuePreparedContinuationEvidence(
+      preparedContinuationFixture(route, execution),
+      { requireLongLifecycle: true },
+    );
     assert.deepEqual(evidence, {
       route,
       parentSessionId: parentId,
@@ -62,9 +65,28 @@ test('qualifies named and generic foreground/background continuation in one acti
       childInvocationCount: 2,
       peerResumeChecked: true,
       activeTurnLifecycleChecked: true,
+      longLifecycleChecked: true,
       execution,
     });
   }
+});
+
+test('live-duration continuation evidence stays valid without claiming deterministic long-lifecycle coverage', async () => {
+  const input = preparedContinuationFixture('named');
+  const records = JSON.parse(input.preparationRecordBytesJson);
+  const first = JSON.parse(records[0]); first.consumedAt = '2026-08-10T00:20:00.000Z'; records[0] = `${JSON.stringify(first)}\n`;
+  input.preparationRecordBytesJson = JSON.stringify(records);
+  const evidence = await qualifyCodexRescuePreparedContinuationEvidence(input);
+  assert.equal(evidence.activeTurnLifecycleChecked, true);
+  assert.equal(evidence.longLifecycleChecked, false);
+  await assert.rejects(
+    qualifyCodexRescuePreparedContinuationEvidence(input, { requireLongLifecycle: true }),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-active-turn',
+  );
+  await assert.rejects(
+    qualifyCodexRescuePreparedContinuationEvidence(input, { requireLongLifecycle: 'yes' }),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-raw-contract',
+  );
 });
 
 test('same-turn qualification rejects generation, required executor, turn identity, and exact binding CAS mutations', async () => {
@@ -75,13 +97,13 @@ test('same-turn qualification rejects generation, required executor, turn identi
     ['continuation-binding-identity', (input) => { const partition = JSON.parse(input.bindingPartitionBytes); partition.records[0].operationId = 'e'.repeat(64); input.bindingPartitionBytes = `${JSON.stringify(partition)}\n`; }],
     ['continuation-current-job-stale', (input) => { const partition = JSON.parse(input.bindingPartitionBytes); partition.records[0].currentJobId = 'f'.repeat(64); input.bindingPartitionBytes = `${JSON.stringify(partition)}\n`; }],
     ['continuation-active-turn', (input) => { const active = JSON.parse(input.activeTurnRecordBytes); active.expiresAt = '2026-08-10T00:30:00.000Z'; input.activeTurnRecordBytes = `${JSON.stringify(active)}\n`; }],
-    ['continuation-active-turn', (input) => { const records = JSON.parse(input.preparationRecordBytesJson); const second = JSON.parse(records[1]); second.createdAt = '2026-08-10T00:59:00.600Z'; second.expiresAt = '2026-08-10T01:29:00.600Z'; records[1] = `${JSON.stringify(second)}\n`; input.preparationRecordBytesJson = JSON.stringify(records); }],
+    ['continuation-active-turn', (input) => { const records = JSON.parse(input.preparationRecordBytesJson); const second = JSON.parse(records[1]); second.createdAt = '2026-08-10T00:59:00.600Z'; second.expiresAt = '2026-08-10T01:29:00.600Z'; records[1] = `${JSON.stringify(second)}\n`; input.preparationRecordBytesJson = JSON.stringify(records); }, true],
     ['continuation-binding-identity', (input) => { const pre = JSON.parse(input.bindingPreReservationBytes); pre.records[0].operationId = 'e'.repeat(64); input.bindingPreReservationBytes = `${JSON.stringify(pre)}\n`; }],
     ['continuation-current-job-stale', (input) => { const pre = JSON.parse(input.bindingPreReservationBytes); pre.records[0].currentJobId = 'f'.repeat(64); input.bindingPreReservationBytes = `${JSON.stringify(pre)}\n`; }],
   ];
-  for (const [code, mutate] of mutations) {
+  for (const [code, mutate, requireLongLifecycle = false] of mutations) {
     const input = preparedContinuationFixture('named'); mutate(input);
-    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(input),
+    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(input, { requireLongLifecycle }),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
   }
 });

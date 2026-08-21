@@ -415,7 +415,10 @@ and dependencies; no deterministic test waits 30 or 60 real minutes.
   receives a real terminal, prepares generation 2 without another
   `UserPromptSubmit`, follows up the same stopped child with zero new spawns, and
   resumes the exact original ZCode session.
-- Injected time crosses both old 30-minute and 60-minute thresholds.
+- Deterministic qualification explicitly enables the long-lifecycle check and
+  injects time across both old 30-minute and 60-minute thresholds. Bounded
+  installed live qualification validates the same lifecycle structure and
+  chronology without claiming or waiting for that simulated-duration proof.
 - Named and qualified generic routes preserve one execution per child turn and
   identical public output.
 - Installed marketplace qualification validates source/snapshot parity and the

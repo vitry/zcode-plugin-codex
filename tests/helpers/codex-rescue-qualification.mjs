@@ -78,7 +78,14 @@ export function qualifyCodexRescueEvidence(input, options) {
  * for a clear proactive continuation. Every reported count is derived here;
  * caller-authored normalized verdicts are deliberately outside this contract.
  */
-export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
+export async function qualifyCodexRescuePreparedContinuationEvidence(input, options) {
+  const optionKeys = options && typeof options === 'object' && !Array.isArray(options) ? Object.keys(options) : [];
+  if (options !== undefined && (!options || typeof options !== 'object' || Array.isArray(options)
+    || optionKeys.some((key) => key !== 'requireLongLifecycle')
+    || Object.hasOwn(options, 'requireLongLifecycle') && typeof options.requireLongLifecycle !== 'boolean')) {
+    mismatch('continuation-raw-contract', 'Prepared continuation qualification options are invalid.');
+  }
+  const requireLongLifecycle = options?.requireLongLifecycle === true;
   if (!input || !['named', 'generic'].includes(input.route) || !['foreground', 'background'].includes(input.execution)
     || typeof input.parentRolloutJson !== 'string' || typeof input.childRolloutJson !== 'string'
     || typeof input.hookLifecycleJson !== 'string' || typeof input.executorRecordBytes !== 'string'
@@ -138,7 +145,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   const parentTurnEvents = [preparations[0], spawns[0], starts[0], stops[0], preparations[1], followups[0]];
   if (parentTurnEvents.some((event) => event?.turn_id !== originalParentTurnId)) mismatch('continuation-parent-turns', 'Raw parent events do not prove one exact active parent turn.');
   const activeTurn = validateContinuationActiveTurn(input.activeTurnRecordBytes, { ...expected, originalParentTurnId });
-  const preparationRecords = await validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution }, activeTurn);
+  const preparationRecords = await validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution }, activeTurn, requireLongLifecycle);
   const observedAgentPath = boundedString(starts[0].payload.agent_path); const observedTaskName = boundedString(spawn.task_name);
   if (!observedTaskName || !observedAgentPath || observedAgentPath !== `/root/${observedTaskName}`
     || stops[0].payload.agent_path !== observedAgentPath) mismatch('continuation-presentation', 'Captured child presentation is internally inconsistent.');
@@ -245,7 +252,8 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input) {
   return {
     route: input.route, parentSessionId, childThreadId, agentPath: observedAgentPath, originalParentTurnId, continuationParentTurnId,
     spawnCount: 1, startCount: 1, stopCount: 1, followupCount: 1, continuationSpawnCount: 0,
-    childInvocationCount: 2, peerResumeChecked: true, activeTurnLifecycleChecked: true, execution: input.execution,
+    childInvocationCount: 2, peerResumeChecked: true, activeTurnLifecycleChecked: true,
+    longLifecycleChecked: requireLongLifecycle, execution: input.execution,
   };
 }
 
@@ -1213,7 +1221,7 @@ function validateContinuationActiveTurn(rawBytes, expected) {
   return record;
 }
 
-async function validateContinuationPreparations(parent, rawRecordsJson, expected, activeTurn) {
+async function validateContinuationPreparations(parent, rawRecordsJson, expected, activeTurn, requireLongLifecycle) {
   if (typeof rawRecordsJson !== 'string' || Buffer.byteLength(rawRecordsJson) > MAX_ROLLOUT_BYTES) mismatch('continuation-preparation-records', 'Raw consumed preparation records are absent.');
   let recordBytes; try { recordBytes = JSON.parse(rawRecordsJson); } catch { mismatch('continuation-preparation-records', 'Raw consumed preparation records are malformed.'); }
   if (!Array.isArray(recordBytes) || recordBytes.length !== 2 || recordBytes.some((bytes) => typeof bytes !== 'string' || !bytes.endsWith('\n'))) mismatch('continuation-preparation-records', 'Exactly two raw consumed preparation records are required.');
@@ -1223,8 +1231,8 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
   ];
   const parsedRecords = recordBytes.map((bytes) => { let value; try { value = JSON.parse(bytes); } catch { mismatch('continuation-preparation-records', 'A raw consumed preparation record is malformed.'); } return value; });
   if (parsedRecords[0]?.key !== parsedRecords[1]?.key) mismatch('continuation-preparation-records', 'Preparation generations must replace one exact turn slot.');
-  if (Date.parse(parsedRecords[1]?.createdAt) - Date.parse(activeTurn.createdAt) <= 60 * 60_000
-    || Date.parse(parsedRecords[1]?.createdAt) - Date.parse(parsedRecords[0]?.consumedAt) <= 60 * 60_000) mismatch('continuation-active-turn', 'The full continuation lifecycle does not cross both legacy active-turn deadlines after generation 1 was consumed.');
+  if (requireLongLifecycle && (Date.parse(parsedRecords[1]?.createdAt) - Date.parse(activeTurn.createdAt) <= 60 * 60_000
+    || Date.parse(parsedRecords[1]?.createdAt) - Date.parse(parsedRecords[0]?.consumedAt) <= 60 * 60_000)) mismatch('continuation-active-turn', 'The full continuation lifecycle does not cross both legacy active-turn deadlines after generation 1 was consumed.');
   const turnEvents = parent.map((event, index) => ({ event, index })).filter(({ event }) => event?.turn_id === expected.originalParentTurnId);
   const calls = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call').map(({ event, index }) => ({ event, index, host: parseCapturedHostCall(event.payload.input) }));
   const outputs = turnEvents.filter(({ event }) => event?.payload?.type === 'custom_tool_call_output');
