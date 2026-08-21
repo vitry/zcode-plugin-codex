@@ -1,0 +1,431 @@
+# Rescue Worktree Late Binding Design
+
+Status: approved for implementation on 2026-08-21
+
+## Problem
+
+Codex can start a parent conversation in a repository root and create or enter a
+linked Git worktree later in the same user turn. The installed Rescue launcher
+then runs from the worktree. Today ZCode binds all parent authority to the cwd
+captured by `UserPromptSubmit`, so `role-status rescue` looks for both the active
+turn and SessionStart proof in the worktree partition, finds neither, and
+returns `caller-unavailable`.
+
+This is not a caller TTL, Role installation, or ZCode App Server failure. The
+parent session and turn are still active; only the execution directory changed.
+Requiring a user-visible handoff would expose an implementation detail and make
+ordinary worktree creation unnecessarily fragile. Blindly accepting any cwd at
+Rescue start would fix the usability problem but discard ZCode's exact parent,
+turn, permission, executor, and cleanup guarantees.
+
+## Goals
+
+- Let one active owned parent turn start in an origin workspace and run Rescue
+  from the origin or a linked worktree without a manual handoff.
+- Keep `role-status rescue` read-only. The first trusted parent `prepare rescue`
+  atomically binds the execution workspace before task bytes are accepted.
+- Permit only the origin itself or a canonical linked worktree from the same
+  Git common directory. An unrelated repository or arbitrary directory cannot
+  claim the turn.
+- Make the first execution-workspace binding immutable for the turn; concurrent
+  contenders have exactly one winner.
+- Keep preparation, executor, job, binding, broker, result, and continuation
+  state strictly scoped to the bound execution workspace.
+- Route SubagentStart/Stop and parent Stop/SessionEnd cleanup correctly even
+  when Codex hooks continue to report the origin cwd.
+- Preserve same-workspace behavior, non-Git exact-origin behavior, legacy
+  installed state, lifecycle-bound active turns, 30-minute caller/preparation
+  TTLs, and existing public status vocabulary.
+- Prove the route with deterministic qualification and an authenticated real
+  ZCode two-turn response check in the target worktree.
+- Regenerate the marketplace only from a clean exact source commit.
+
+## Non-goals
+
+- Do not use ZCode Rescue to implement or review this change.
+- Do not make every ZCode command workspace-mobile. Generic caller contexts,
+  review, adversarial review, transfer, status, result, and cancel retain their
+  current exact-workspace contracts.
+- Do not trust a caller-supplied path, Git display name, branch name, repository
+  remote, or process environment as authority.
+- Do not let Role inspection, a child agent, progress, a heartbeat, or a ZCode
+  response create or change the execution-workspace binding.
+- Do not scan every workspace partition to guess where a session or executor
+  lives.
+- Do not copy an active-turn record from one workspace to another.
+- Do not add a public flag, handoff command, task field, or child-visible token.
+- Do not weaken the exact stopped-child, one-shot preparation, permission
+  snapshot, binding CAS, or owner-session checks delivered by PR #38.
+- Do not change ordinary completion, request, cancellation, or review-gate
+  timeout semantics.
+
+## Considered Approaches
+
+### 1. Trust the cwd at every Rescue command
+
+This matches `codex-plugin-cc`: each command canonicalizes its current cwd and
+uses that workspace. It is simple and worktree-friendly, but it cannot prove
+that the current directory was selected by the same active parent turn. A child
+or stale process with ambient session material could redirect work.
+
+### 2. Move all active-turn authority to a global unbound schema
+
+This is conceptually clean, but it changes the trust and storage contract for
+every command and qualification fixture. Review, status, transfer, setup, and
+legacy caller-token behavior do not need workspace mobility, so the blast
+radius is unjustified.
+
+### 3. Add a Rescue-specific two-phase authority (chosen)
+
+Generic identity stays unchanged. The trusted prompt hook additionally records
+one private Rescue lifecycle authority at the data-root level. Role preflight
+may preview it, while private prepare atomically claims an eligible execution
+workspace. All downstream Rescue state remains workspace-local. This is the
+smallest design that fixes the UX without weakening unrelated commands.
+
+## Authority Model
+
+There are two distinct workspace concepts:
+
+- `originWorkspace`: the canonical cwd whose SessionStart and
+  UserPromptSubmit hooks proved the parent session and active turn.
+- `executionWorkspace`: initially null, then the immutable canonical cwd where
+  the first trusted parent preparation occurred.
+
+The authority state machine is:
+
+```text
+SessionStart(origin)
+  -> UserPromptSubmit(origin)
+       -> ACTIVE_UNBOUND
+
+role-status(candidate)
+  -> preview only
+  -> ACTIVE_UNBOUND or ACTIVE_BOUND_TO(candidate): continue inspection
+  -> bound elsewhere / ineligible / missing / corrupt: caller-unavailable
+
+prepare(candidate), before TTY ready or task read
+  -> ACTIVE_UNBOUND + eligible candidate: ACTIVE_BOUND_TO(candidate)
+  -> ACTIVE_BOUND_TO(candidate): idempotent caller resolution
+  -> ACTIVE_BOUND_TO(other): reject
+
+SubagentStart / invoke-prepared / continuation
+  -> require ACTIVE_BOUND_TO(executionWorkspace)
+
+replacement UserPromptSubmit
+  -> replaces the active turn with ACTIVE_UNBOUND
+
+turn-ending Stop
+  -> revokes the exact active turn before advisory target cleanup
+
+SessionEnd
+  -> terminalizes the session authority before all origin/target cleanup
+```
+
+`role-status` deliberately does not claim a workspace. A failed, outdated, or
+conflicting Role inspection must not consume the one binding choice. `prepare`
+claims before enabling raw TTY transport or reading the private task frame, so
+rejected candidates cannot disclose or persist task material.
+
+## Rescue Authority Store
+
+Add a deep module `scripts/lib/rescue-authority.mjs`. It owns validation,
+canonicalization, repository-lineage checks, storage, locking, compatibility,
+and fixed private errors. Hooks and the companion do not manipulate record
+bytes directly.
+
+State is stored outside workspace partitions:
+
+```text
+<dataRoot>/rescue-authority/
+  .lock/
+  sessions/<sha256(sessionId)>.json
+```
+
+The directory and files retain the existing private 0700/0600 guarantees. One
+exact bounded record is stored per parent session:
+
+```json
+{
+  "version": 1,
+  "kind": "rescue-session-authority",
+  "key": "sha256 session slot key",
+  "sessionId": "parent Codex session",
+  "sessionStartedAt": "RFC3339 timestamp",
+  "sessionSource": "startup",
+  "originWorkspace": "/canonical/origin",
+  "knownExecutionWorkspaces": ["/canonical/origin-or-worktree"],
+  "activeTurn": {
+    "turnId": "current parent turn",
+    "originWorkspace": "/canonical/origin",
+    "executionWorkspace": null,
+    "permissionMode": "workspace-write",
+    "prompt": "bounded private prompt",
+    "createdAt": "RFC3339 timestamp"
+  },
+  "endedAt": null
+}
+```
+
+All object keys are exact. Identifiers, paths, prompt bytes, timestamps, file
+size, record count, and `knownExecutionWorkspaces` are bounded. The workspace
+ledger has a fixed maximum of 16 canonical entries. Claiming a seventeenth
+distinct target fails closed rather than dropping cleanup provenance.
+
+The store exposes only narrow operations:
+
+```js
+beginTurn({ sessionId, turnId, originWorkspace, permissionMode, prompt,
+            sessionStartedAt, sessionSource })
+previewTurn({ sessionId, candidateWorkspace })
+bindTurn({ sessionId, candidateWorkspace })
+resolveBoundTurn({ sessionId, workspace })
+endTurn({ sessionId, turnId, originWorkspace })
+endSession({ sessionId, originWorkspace })
+```
+
+`previewTurn`, `bindTurn`, and `resolveBoundTurn` return defensive caller-shaped
+copies. `beginTurn` also returns the replaced turn ID and its bound workspace,
+when one existed, so the prompt hook can remove the prior private preparation
+after releasing the authority lock. `endTurn` and `endSession` return only
+canonical workspaces that were already in the validated record so cleanup never
+scans data-root state.
+
+### Session proof
+
+`UserPromptSubmit` must first resolve the existing workspace-local SessionStart
+record, not merely test a boolean. It passes that record's exact `startedAt` and
+`source` into `beginTurn`. Therefore the global authority is derived only from
+the existing trusted hook chain. Role preflight no longer needs a SessionStart
+record in the target worktree; it uses the proof captured in the authority.
+
+A compact SessionStart never silently replaces a stronger startup/resume/clear
+proof. A record terminalized by SessionEnd cannot reopen unless a strictly newer
+valid SessionStart proof reaches a later UserPromptSubmit.
+
+### Workspace eligibility
+
+The candidate is canonicalized with the existing realpath-based workspace
+resolver. It is eligible when either:
+
+1. it exactly equals `originWorkspace`; or
+2. origin and candidate are both Git worktrees whose bounded, shell-free
+   `git rev-parse --path-format=absolute --git-common-dir` results resolve to
+   the same canonical directory.
+
+Git inspection uses an explicit executable and argv, no shell, bounded output,
+and a short fixed deadline. If either directory is non-Git, only exact-origin
+binding is allowed. Remote URL, branch name, index content, and working-tree
+content are irrelevant. A symlink alias is accepted only after both the
+workspace and common directory resolve canonically.
+
+### Linearization and lock order
+
+`beginTurn`, `bindTurn`, `endTurn`, and `endSession` linearize under the one
+data-root authority lock. Two candidate worktrees racing to bind can produce
+only one winner. Binding the already selected exact target is idempotent;
+binding any other target is always rejected.
+
+No operation holds the authority lock while acquiring a workspace identity,
+preparation, hook-state, job, binding, or broker lock. The required order is:
+
+```text
+authority mutation/read -> release authority lock -> workspace operation
+```
+
+This prevents cleanup and preparation lock inversion. Callers must re-resolve
+the bound authority at the next security-sensitive boundary rather than trust
+a stale object across an asynchronous workspace mutation.
+
+## Production Integration
+
+### UserPromptSubmit
+
+The prompt hook keeps creating the existing origin-scoped caller context,
+active-turn record, and gate baseline. It additionally:
+
+1. resolves the exact origin SessionStart record;
+2. calls `RescueAuthorityStore.beginTurn()`;
+3. cleans any replaced turn's preparation in its returned bound target;
+4. only emits the installed Rescue launcher context after both generic and
+   Rescue authority creation succeed.
+
+Starting a newer prompt for the same session replaces only the active turn;
+the bounded workspace ledger remains available for SessionEnd cleanup.
+
+### Role readiness
+
+Installed `role-status rescue` calls `previewTurn()` with ambient parent session
+and current cwd. An unbound eligible candidate or the exact bound candidate may
+continue to managed Role inspection. An ineligible, different-bound, absent,
+ended, or invalid record maps to the existing fixed `caller-unavailable`
+status. No path, session, turn, prompt, Git output, or private error is rendered.
+
+Source-checkout setup keeps its existing exact-workspace active-turn and
+SessionStart diagnostics. This design changes installed Rescue readiness only.
+
+### Private prepare
+
+`prepare rescue` calls `bindTurn()` before `withPrivatePreparationTransport()`.
+Only after binding succeeds may the launcher write readiness, switch to raw
+mode, or read the LF-terminated private envelope. Preparation is then saved
+using the returned caller with `workspace === executionWorkspace`.
+
+If no global Rescue authority record exists, the companion may use the existing
+exact-workspace active-turn path as a legacy compatibility fallback. Fallback
+is allowed only on true absence. A malformed, future-version, ended, or
+mismatched global record never falls back.
+
+### Subagent lifecycle
+
+SubagentStart resolves the parent's bound Rescue turn by `input.session_id`.
+The forwarding marker remains discoverable from the hook's origin cwd, while
+the executor record is written to the bound execution workspace. SubagentStop
+uses the exact parent authority and agent identity to locate and stop that same
+executor even when its hook cwd is the origin.
+
+Forwarding suppression may inspect at most the two validated locations already
+named by the authority: origin and execution workspace. It never enumerates
+workspace partitions. Sibling agents, child ambient thread IDs, wrong turns,
+wrong permissions, and unapproved Role types remain rejected.
+
+### Invocation and durable state
+
+`invoke-prepared`, choice continuation, bound status, state reservation, job
+artifacts, broker ownership, and ZCode session creation continue to use only the
+bound execution workspace. They must call `resolveBoundTurn()` at their current
+authorization boundary. The origin workspace is never substituted into a job,
+preparation, executor, binding, artifact, or peer request.
+
+### Stop and SessionEnd
+
+When Root Stop actually ends the turn, it first calls `endTurn()` under the
+authority lock. It then cleans the exact preparation in the returned bound
+target, if any, while generic caller and gate cleanup remain origin-scoped. A
+BLOCK outcome retains the active authority exactly as it retains the current
+generic active turn.
+
+SessionEnd first calls `endSession()`, which sets `endedAt`, clears the active
+turn, and returns the validated origin plus the bounded execution-workspace
+ledger. Authorization is therefore revoked even if later advisory cleanup is
+interrupted. Local preparation, executor, identity, and binding cleanup runs
+only for those returned workspaces. Remote job settlement and broker release
+share the existing absolute SessionEnd budget and may be attempted in bounded
+parallel; unacknowledged work retains its durable guard for normal scavenging.
+
+Cleanup failures never restore authority. A later SessionEnd/recovery pass may
+read an ended tombstone for its bounded workspace ledger but cannot authorize
+new Role, prepare, child, or invocation work.
+
+## Compatibility and Migration
+
+- Existing workspace-scoped v2 and legacy active-turn records retain their
+  exact semantics for generic commands.
+- When no global Rescue authority exists, installed Rescue may use only the
+  old exact-workspace route. It cannot late-bind or scan for another workspace.
+- The first valid post-upgrade UserPromptSubmit creates the global record; no
+  explicit setup, cache migration, or user handoff is required.
+- Once a global slot exists, any invalid bytes or identity mismatch fail closed
+  and suppress legacy fallback.
+- Existing caller tokens, preparations, executors, jobs, bindings, results,
+  model policy, and broker records are not rewritten.
+- Marketplace Role template and public child assignment text do not change, so
+  this feature does not require a Role receipt or schema bump.
+- Plugin version remains unchanged; the Unreleased changelog documents the
+  behavior.
+
+## Errors and Privacy
+
+Internal authority errors use fixed task-free messages and codes for missing,
+invalid, ineligible, unbound, bound-to-other, ended, capacity, and lock failure.
+Public Role readiness continues to expose only:
+
+```json
+{
+  "type": "role-status",
+  "role": "zcode-rescue",
+  "status": "caller-unavailable",
+  "remedy": "Retry from an active owned parent turn."
+}
+```
+
+No public output may include either workspace path, Git common directory,
+session or turn identity, prompt/task text, permission mode, child identity,
+record key, exception message/stack, or workspace-ledger contents. Authority
+records never contain caller tokens, launcher commands, preparation frames,
+ZCode session IDs, job IDs, or child IDs.
+
+## Test and Qualification Requirements
+
+### Unit tests
+
+- Exact v1 schema, file bounds, private permissions, defensive copies, and
+  fixed errors.
+- Exact-origin and same-common-dir eligibility; unrelated repo, non-Git target,
+  symlink escape, malformed Git output, timeout, and oversized output reject.
+- Preview is read-only. Bind is idempotent for the winner and immutable against
+  a second target.
+- Sixteen-way two-target contention produces one target winner and one exact
+  stored binding.
+- New prompt replacement, Stop revocation, SessionEnd tombstone/retry, bounded
+  ledger capacity, session isolation, malformed/future records, and strict
+  legacy fallback.
+- Child session IDs and wrong session/turn/permission cannot claim or resolve.
+
+### Hook and integration tests
+
+- SessionStart and UserPromptSubmit at repository root, followed by creation of
+  a real linked worktree in the same parent turn.
+- Worktree role-status succeeds without mutation; prepare then binds before
+  TTY readiness and saves the one-shot task only in the worktree.
+- Two sibling worktrees race; exactly one can prepare and the loser reveals no
+  path or task.
+- Bound target A rejects role-status, prepare, SubagentStart, invoke-prepared,
+  and continuation from target B while A remains usable.
+- SubagentStart/Stop reporting origin cwd still creates and closes the executor
+  in the target; forwarding suppression remains exact.
+- Turn-ending Stop and SessionEnd received at origin revoke first and clean the
+  target without touching sibling sessions. BLOCK Stop retains authority.
+- Same-workspace and non-Git exact-origin routes remain green.
+- Legacy exact-workspace installed state works; invalid global state never
+  falls back.
+
+### Qualification and authenticated response
+
+Qualification evidence must distinguish `originWorkspace` from
+`executionWorkspace`. SessionStart/UserPromptSubmit/parent Stop occur at the
+origin; preflight, prepare, executor, job, binding, broker, and peer
+`session/create.workspace` occur at the target. Raw evidence includes the
+unbound-to-bound authority transition and rejects missing, rewritten,
+second-target, wrong-turn, wrong-permission, or reordered mutations.
+
+The opt-in authenticated real ZCode qualification creates an isolated linked
+worktree, performs two sends in the same exact ZCode session at that target,
+and requires a new non-empty visible assistant result linked to each accepted
+input. Each operation has an explicit qualification-only completion budget;
+ordinary Rescue remains deadline-free.
+
+### Regression and release verification
+
+- Focused authority, identity, hook, companion, preparation, binding, skill,
+  qualification, release-contract, and marketplace tests.
+- `npm run check` on the source tree.
+- Authenticated installed Rescue and real ZCode opt-in suites where available.
+- Build marketplace from a clean exact source SHA; compare every mirrored file
+  byte-for-byte and verify provenance/lock digest.
+- Independent spec/security review, then independent code-quality review.
+- Pull request CI must pass Ubuntu, macOS, and Windows on Node 22.13 and LTS.
+
+## Documentation
+
+Update English and Chinese README operation sections to state:
+
+- conversation origin and Rescue execution workspace are separate;
+- linked-worktree selection is automatic at first trusted prepare;
+- no visible handoff is needed;
+- binding is immutable for that turn and unrelated repositories are rejected;
+- Stop/new prompt/SessionEnd revoke or replace authority across the origin and
+  bound target.
+
+Update `SECURITY.md`, the Unreleased changelog, release-contract tests, and the
+Rescue authorization ADR. Generated marketplace files are never hand edited.
