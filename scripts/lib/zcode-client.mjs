@@ -18,7 +18,7 @@ export const IMPORTED_HISTORY_SOURCE = 'claudeCode';
 
 export class ZCodeClient {
   /** @param {import('./zcode-protocol.mjs').ZCodeProtocolClient} protocol @param {string} [workspace] @param {boolean} [workspaceBound] */
-  constructor(protocol, workspace, workspaceBound = false) { this.protocol = protocol; this.defaultWorkspace = workspace === undefined ? null : resolve(workspace); this.workspaceBound = workspaceBound; this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); }
+  constructor(protocol, workspace, workspaceBound = false) { this.protocol = protocol; this.defaultWorkspace = workspace === undefined ? null : resolve(workspace); this.workspaceBound = workspaceBound; this.sessionCatalogs = new Map(); this.sessionWorkspaces = new Map(); this.initialEmptySessions = new Set(); }
 
   /** @param {{workspace:string,sessionId?:string,model?:{providerId:string,modelId:string,variant?:string},importedHistory?:{title?:string,createdAt?:number,updatedAt?:number,messages:Array<{role:'user'|'assistant',content:string,timestamp?:number}>}}} input */
   async createSession(input) {
@@ -51,6 +51,8 @@ export class ZCodeClient {
     if (!plainObject(result) || !plainObject(result.session) || !isSafeIdentifier(result.session.sessionId) || input.sessionId && result.session.sessionId !== input.sessionId) throw outputError('session/create');
     if (!validator(result, result.session.sessionId, workspacePath)) throw outputError('session/create');
     this.sessionWorkspaces.set(result.session.sessionId, workspacePath);
+    if (snapshotValid(result, result.session.sessionId, workspacePath)) this.initialEmptySessions.delete(result.session.sessionId);
+    else this.initialEmptySessions.add(result.session.sessionId);
     if (plainObject(result.settings?.model) && Array.isArray(result.settings.model.available)) this.sessionCatalogs.set(result.session.sessionId, result.settings.model);
     return result;
   }
@@ -58,6 +60,7 @@ export class ZCodeClient {
   /** @param {string} sessionId @param {string} content @param {Record<string,never>} [options] */
   async send(sessionId, content, options = {}) {
     requireSessionId(sessionId); if (typeof content !== 'string') throw inputError(); requireExactObject(options, [], []);
+    this.initialEmptySessions.delete(sessionId);
     this.protocol.beginTurn(sessionId);
     const inputId = randomUUID();
     let result;
@@ -68,9 +71,9 @@ export class ZCodeClient {
   }
 
   /** @param {string} sessionId */ async readSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/read', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/read'); this.sessionCatalogs.set(sessionId, result.settings.model); return result; }
-  /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); this.sessionWorkspaces.set(sessionId, result.session.workspace.workspacePath); return result; }
+  /** @param {string} sessionId */ async resumeSession(sessionId) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/resume', { sessionId }); validateSnapshot(result, sessionId, this.expectedWorkspace(sessionId), 'session/resume'); this.sessionCatalogs.set(sessionId, result.settings.model); this.sessionWorkspaces.set(sessionId, result.session.workspace.workspacePath); return result; }
   /** @param {number} [timeoutMs] */ async listSessions(timeoutMs) { const result = requireObjectResult(await this.protocol.request('session/list', {}, timeoutMs), 'session/list'); if (!Array.isArray(result.sessions) || !result.sessions.every(validSessionInfo)) throw outputError('session/list'); return result; }
-  /** @param {string} sessionId @param {number} [timeoutMs] */ async stopSession(sessionId, timeoutMs) { requireSessionId(sessionId); const result = await this.protocol.request('session/stop', { sessionId }, timeoutMs); if (!plainObject(result)) throw outputError('session/stop'); if (!this.protocol.acceptBrokerControl) this.protocol.cancelTurn(sessionId); return result; }
+  /** @param {string} sessionId @param {number} [timeoutMs] */ async stopSession(sessionId, timeoutMs) { requireSessionId(sessionId); this.initialEmptySessions.delete(sessionId); const result = await this.protocol.request('session/stop', { sessionId }, timeoutMs); if (!plainObject(result)) throw outputError('session/stop'); if (!this.protocol.acceptBrokerControl) this.protocol.cancelTurn(sessionId); return result; }
   /** @param {number} [timeoutMs] */ async brokerCapabilities(timeoutMs) { const result = await requestBrokerHealth(this, timeoutMs); return { releaseOwnerExclusions: result.capabilities?.releaseOwnerExclusions === true }; }
   /** @param {string[]} [excludeSessionIds] @param {number} [timeoutMs] */
   async releaseOwner(excludeSessionIds, timeoutMs) { if (excludeSessionIds !== undefined && (!Array.isArray(excludeSessionIds) || excludeSessionIds.length > 1_000 || new Set(excludeSessionIds).size !== excludeSessionIds.length || !excludeSessionIds.every((sessionId) => isSafeIdentifier(sessionId)))) throw inputError(); const result = await this.protocol.request('broker/releaseOwner', excludeSessionIds === undefined ? {} : { excludeSessionIds }, timeoutMs); if (!plainObject(result) || !Array.isArray(result.releasedSessionIds) || !Array.isArray(result.failedSessionIds) || !result.releasedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !result.failedSessionIds.every((sessionId) => isSafeIdentifier(sessionId)) || !Number.isSafeInteger(result.deferredSessionCount) || result.deferredSessionCount < 0) throw outputError('broker/releaseOwner'); return result; }
@@ -79,7 +82,7 @@ export class ZCodeClient {
   async setModel(sessionId, model) {
     requireSessionId(sessionId); validateModel(model);
     const result = await this.protocol.request('session/setModel', { sessionId, model: copyModel(model), persistAsWorkspaceLastUsed: false });
-    validateSettingsResult(result, sessionId, this.expectedWorkspace(sessionId), 'session/setModel');
+    validateSettingsResult(result, sessionId, this.expectedWorkspace(sessionId), 'session/setModel', this.initialEmptySessions.has(sessionId));
     if (!exactModel(result.settings.model.current) || !sameModel(result.settings.model.current, model)) throw new PluginError('ZCODE_MODEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested model.', { category: 'protocol', remedy: 'Retry with a model tuple advertised by ZCode.' });
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
@@ -96,7 +99,7 @@ export class ZCodeClient {
     const actual = advertised.find((value) => value.toLowerCase() === normalized);
     if (!actual) throw new PluginError('ZCODE_THOUGHT_LEVEL_UNSUPPORTED', 'The selected model does not advertise this thought level.', { category: 'configuration', remedy: 'Choose a thought level advertised by the selected model.', details: { thoughtLevel: normalized } });
     const result = await this.protocol.request('session/setThoughtLevel', { sessionId, thoughtLevel: actual, persistAsWorkspaceLastUsed: false });
-    validateSettingsResult(result, sessionId, this.expectedWorkspace(sessionId), 'session/setThoughtLevel');
+    validateSettingsResult(result, sessionId, this.expectedWorkspace(sessionId), 'session/setThoughtLevel', this.initialEmptySessions.has(sessionId));
     if (typeof result.settings.thoughtLevel.current !== 'string' || result.settings.thoughtLevel.current.toLowerCase() !== actual.toLowerCase()) throw new PluginError('ZCODE_THOUGHT_LEVEL_APPLY_MISMATCH', 'ZCode did not apply the exact requested thought level.', { category: 'protocol', remedy: 'Retry with a thought level advertised by the selected model.' });
     this.sessionCatalogs.set(sessionId, result.settings.model); return result;
   }
@@ -324,7 +327,7 @@ function inputError() { return new PluginError('ZCODE_INPUT_INVALID', 'ZCode cli
 function requireObjectResult(value, method) { if (!plainObject(value)) throw outputError(method); return value; }
 /** @param {any} value @param {string} sessionId @param {string} workspace @param {string} method */
 function validateSnapshot(value, sessionId, workspace, method) { if (!snapshotValid(value, sessionId, workspace)) throw outputError(method); }
-/** @param {any} value @param {string} sessionId @param {string} workspace @param {string} method */
-function validateSettingsResult(value, sessionId, workspace, method) { if (!validSettingsSnapshot(value, sessionId, workspace)) throw outputError(method); }
+/** @param {any} value @param {string} sessionId @param {string} workspace @param {string} method @param {boolean} allowInitialEmpty */
+function validateSettingsResult(value, sessionId, workspace, method, allowInitialEmpty) { if (!(allowInitialEmpty ? validSettingsSnapshot : snapshotValid)(value, sessionId, workspace)) throw outputError(method); }
 /** @param {string} method */
 function outputError(method) { return new PluginError('ZCODE_OUTPUT_INVALID', `ZCode returned an invalid ${method} result.`, { category: 'protocol', remedy: 'Upgrade or restart ZCode and retry.', details: { method } }); }

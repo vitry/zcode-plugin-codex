@@ -176,24 +176,40 @@ test('visible assistant result selection is linked to the exact accepted input o
   assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set()).map((message) => message.info.messageId), ['persisted-result']);
   remapped.messages.push({ info: { role: 'user', messageId: 'ambiguous-root', semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'other' }] });
   assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set()), []);
+  const unmarked = structuredClone(remapped); unmarked.messages = unmarked.messages.slice(0, 2); delete unmarked.messages[0].info.semantics;
+  assert.deepEqual(visibleAssistantResultsForTurn(unmarked, 'unpersisted-input', new Set()), []);
+  for (const origin of ['system', 'migration']) {
+    const foreign = structuredClone(unmarked); foreign.messages[0].info.semantics = { origin, kind: 'user_prompt', uiVisibility: 'visible' };
+    assert.deepEqual(visibleAssistantResultsForTurn(foreign, 'unpersisted-input', new Set()), []);
+  }
+  const hidden = structuredClone(snapshot); hidden.messages[2].info.semantics = { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'hidden' };
+  assert.deepEqual(visibleAssistantResultsForTurn(hidden, 'input-second', new Set()), []);
+  const wrongKind = structuredClone(snapshot); wrongKind.messages[2].info.semantics = { origin: 'agent_runtime', kind: 'timeline_event', uiVisibility: 'visible' };
+  assert.deepEqual(visibleAssistantResultsForTurn(wrongKind, 'input-second', new Set()), []);
 });
 
 function visibleAssistantResultsForTurn(session, inputId, beforeMessageIds) {
   if (typeof inputId !== 'string' || inputId.length === 0 || !(beforeMessageIds instanceof Set) || !Array.isArray(session?.messages)) return [];
   const newMessages = session.messages.filter((message) => typeof message?.info?.messageId === 'string' && !beforeMessageIds.has(message.info.messageId));
-  const directlyLinked = newMessages.some((message) => message?.info?.role === 'assistant' && message.info.parentMessageId === inputId);
+  const directlyLinked = newMessages.some((message) => visibleAssistant(message, inputId));
   let parentMessageId = inputId;
   if (!directlyLinked) {
     const roots = newMessages.filter((message) => message?.info?.role === 'user' && message.info.synthetic !== true
       && message.info.visibility !== 'model-only' && message.info.source === undefined
-      && (message.info.semantics === undefined || message.info.semantics.origin === 'real_user'
-        && message.info.semantics.kind === 'user_prompt' && message.info.semantics.uiVisibility === 'visible'));
+      && message.info.semantics?.origin === 'real_user' && message.info.semantics.kind === 'user_prompt'
+      && message.info.semantics.uiVisibility === 'visible');
     if (roots.length !== 1) return [];
     parentMessageId = roots[0].info.messageId;
   }
-  return newMessages.filter((message) => message?.info?.role === 'assistant' && message.info.parentMessageId === parentMessageId
+  return newMessages.filter((message) => visibleAssistant(message, parentMessageId));
+}
+
+function visibleAssistant(message, parentMessageId) {
+  const semantics = message?.info?.semantics;
+  return message?.info?.role === 'assistant' && message.info.parentMessageId === parentMessageId
     && typeof message.info.messageId === 'string' && message.info.messageId.length > 0
-    && message.parts?.some((part) => part?.type === 'text' && typeof part.text === 'string' && part.text.trim()));
+    && (semantics === undefined || semantics.origin === 'agent_runtime' && semantics.kind === 'assistant_response' && semantics.uiVisibility === 'visible')
+    && message.parts?.some((part) => part?.type === 'text' && typeof part.text === 'string' && part.text.trim());
 }
 
 function messageIds(session) {

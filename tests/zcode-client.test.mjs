@@ -319,6 +319,12 @@ test('the unknown-projection exception remains confined to creation and exact pr
     const selected = await client.setThoughtLevel(sessionId, 'high');
     assert.equal(selected.settings.thoughtLevel.current, 'HIGH');
   }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
+  await t.test('settings reject a fabricated empty state after send begins', () => withClient(async (client) => {
+    const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
+    await client.send(sessionId, 'begin the first turn');
+    await assert.rejects(client.setModel(sessionId, { providerId: 'fake2', modelId: 'other' }), { code: 'ZCODE_OUTPUT_INVALID' });
+    await assert.rejects(client.setThoughtLevel(sessionId, 'high'), { code: 'ZCODE_OUTPUT_INVALID' });
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
 });
 
 test('the empty-create validator rejects every remaining non-empty or conflicting relation', async () => {
