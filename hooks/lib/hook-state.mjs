@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 
 import { atomicWriteJson, ensurePrivateDirectory, readJsonFile, withFileLock } from '../../scripts/lib/fs.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
-import { PERMISSION_MODES } from '../../scripts/lib/identity.mjs';
+import { createIdentityStore, PERMISSION_MODES } from '../../scripts/lib/identity.mjs';
 import { RESCUE_UNREAD_JOB_LIMIT } from '../../scripts/lib/rescue-launcher-command.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 
@@ -18,7 +18,10 @@ const MAX_UNTRACKED_BYTES = 256 * 1024 * 1024;
 const MAX_SYMLINK_TARGET_BYTES = 64 * 1024;
 const EXECUTOR_LIFETIME_MS = 30 * 60_000;
 const MAX_EXECUTOR_BYTES = 16 * 1024;
-const EXECUTOR_KEYS = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+const MAX_EXECUTOR_ROUTE_BYTES = 16 * 1024;
+const EXECUTOR_KEYS = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+const LEGACY_EXECUTOR_KEYS = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+const EXECUTOR_ROUTE_KEYS = ['agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentSessionId', 'parentTurnId', 'targetWorkspace'];
 
 async function paths(dataRoot, workspace) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const directory = join(storage.directory, 'hook-state');
@@ -66,23 +69,57 @@ export async function resolveRecordedSessionStart(dataRoot, workspace, sessionId
 }
 export async function isOwnedSession(dataRoot, input) { const store = await paths(dataRoot, input.cwd); const id = key('session', input.session_id); try { const record = await readJsonFile(join(store.directory, `session-${id}.json`)); return record.kind === 'session' && record.sessionId === input.session_id && record.workspace === store.workspacePath; } catch { return false; } }
 export async function markForwarding(dataRoot, input, parentCaller) {
-  const store = await paths(dataRoot, input.cwd); const id = key('forward', input.session_id, input.turn_id); const executorPath = join(store.directory, `executor-${key('executor', input.agent_id)}.json`); const active = input.hook_event_name === 'SubagentStart';
-  await withFileLock(store.lock, async () => {
-    await atomicWriteJson(join(store.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, turnId: input.turn_id, agentId: input.agent_id, active, updatedAt: new Date().toISOString() });
-    if (active) {
-      if (parentCaller?.sessionId !== input.session_id || parentCaller?.workspace !== store.workspacePath) throw executorError('EXECUTOR_PARENT_TURN_MISMATCH', 'SubagentStart is not linked to the exact active parent turn.');
-      await atomicWriteJson(executorPath, { kind: 'subagent-executor', agentId: input.agent_id, agentType: input.agent_type, parentSessionId: input.session_id, parentTurnId: parentCaller.turnId, parentPermissionMode: parentCaller.permissionMode, childTurnId: input.turn_id, workspace: store.workspacePath, active: true, createdAt: new Date().toISOString() });
-    }
-    else {
-      let current; try { current = await readBoundedExecutor(executorPath); } catch (error) { if (error?.code === 'ENOENT') return; throw error; }
-      if (!validExecutorRecord(current, store.workspacePath)) throw executorError('EXECUTOR_IDENTITY_INVALID', 'SubagentStop found an invalid exact executor record.');
-      if (current.agentId === input.agent_id && current.parentSessionId === input.session_id && current.childTurnId === input.turn_id && current.agentType === input.agent_type) await atomicWriteJson(executorPath, { ...current, active: false });
-    }
+  const origin = await paths(dataRoot, input.cwd); const id = key('forward', input.session_id, input.turn_id); const active = input.hook_event_name === 'SubagentStart';
+  if (active) {
+    const generationId = parentCaller?.generationId ?? null;
+    const callerOrigin = parentCaller?.originWorkspace ?? parentCaller?.workspace;
+    if (parentCaller?.sessionId !== input.session_id || callerOrigin !== origin.workspacePath
+      || typeof parentCaller?.workspace !== 'string') throw executorError('EXECUTOR_PARENT_TURN_MISMATCH', 'SubagentStart is not linked to the exact active parent turn.');
+    const target = await paths(dataRoot, parentCaller.workspace); const createdAt = new Date().toISOString();
+    const route = { kind: 'executor-route', agentId: input.agent_id, agentType: input.agent_type, parentSessionId: input.session_id, parentGenerationId: generationId, parentTurnId: parentCaller.turnId, childTurnId: input.turn_id, originWorkspace: origin.workspacePath, targetWorkspace: target.workspacePath, createdAt };
+    const executor = { kind: 'subagent-executor', agentId: input.agent_id, agentType: input.agent_type, parentSessionId: input.session_id, parentGenerationId: generationId, parentTurnId: parentCaller.turnId, parentPermissionMode: parentCaller.permissionMode, childTurnId: input.turn_id, originWorkspace: origin.workspacePath, workspace: target.workspacePath, active: true, createdAt };
+    await withFileLock(origin.lock, async () => {
+      await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId, turnId: input.turn_id, agentId: input.agent_id, active: true, targetWorkspace: target.workspacePath, updatedAt: createdAt });
+      await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), route);
+    });
+    await withFileLock(target.lock, () => atomicWriteJson(join(target.directory, `executor-${key('executor', input.agent_id)}.json`), executor));
+    return;
+  }
+
+  let route;
+  await withFileLock(origin.lock, async () => {
+    route = await readExecutorRoute(routePath(origin, input.session_id, input.turn_id)).catch((error) => {
+      if (error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT') return null;
+      throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStop found an invalid exact executor route.', error);
+    });
+    if (route !== null && !validExecutorRoute(route, origin.workspacePath, input)) throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStop found an invalid exact executor route.');
+    await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId: route?.parentGenerationId ?? null, turnId: input.turn_id, agentId: input.agent_id, active: false, targetWorkspace: route?.targetWorkspace ?? origin.workspacePath, updatedAt: new Date().toISOString() });
+  });
+  const target = route === null ? origin : await paths(dataRoot, route.targetWorkspace);
+  const executorPath = join(target.directory, `executor-${key('executor', input.agent_id)}.json`);
+  await withFileLock(target.lock, async () => {
+    let current; try { current = await readBoundedExecutor(executorPath); } catch (error) { if (error?.code === 'ENOENT') return; throw error; }
+    if (!validExecutorRecord(current, target.workspacePath)) throw executorError('EXECUTOR_IDENTITY_INVALID', 'SubagentStop found an invalid exact executor record.');
+    if (route === null && (!isLegacyExecutorRecord(current, target.workspacePath)
+      || !await legacyExecutorAuthorityExists(dataRoot, target.workspacePath, current))) throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStop requires the exact executor route for this executor.');
+    if (current.agentId === input.agent_id && current.parentSessionId === input.session_id && current.childTurnId === input.turn_id && current.agentType === input.agent_type
+      && (route === null || executorMatchesRoute(current, route))) await atomicWriteJson(executorPath, { ...current, active: false });
+  });
+}
+
+export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionId, childTurnId) {
+  const origin = await paths(dataRoot, originWorkspace);
+  return withFileLock(origin.lock, async () => {
+    let route;
+    try { route = await readExecutorRoute(routePath(origin, sessionId, childTurnId)); }
+    catch (error) { throw executorError(error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT' ? 'EXECUTOR_ROUTE_NOT_FOUND' : 'EXECUTOR_ROUTE_INVALID', 'No exact trusted executor route matches this child.', error); }
+    if (!validExecutorRoute(route, origin.workspacePath) || route.parentSessionId !== sessionId || route.childTurnId !== childTurnId) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.');
+    return { ...route };
   });
 }
 export async function resolveForwardingExecutor(dataRoot, workspace, agentId, options = {}) {
   const store = await paths(dataRoot, workspace); const canonicalName = `executor-${key('executor', agentId)}.json`;
-  return withFileLock(store.lock, async () => {
+  const selected = await withFileLock(store.lock, async () => {
     const names = (await readdir(store.directory)).filter((name) => name.startsWith('executor-') && name.endsWith('.json'));
     if (names.length > 1_024) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'Too many private subagent executor records exist.');
     const matches = [];
@@ -118,14 +155,46 @@ export async function resolveForwardingExecutor(dataRoot, workspace, agentId, op
     if (candidates.length !== 1) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'The parent turn does not have exactly one active Rescue executor.');
     return selected;
   });
+  if (isLegacyExecutorRecord(selected, store.workspacePath)) {
+    if (!await legacyExecutorAuthorityExists(dataRoot, store.workspacePath, selected)) throw executorError('EXECUTOR_ROUTE_INVALID', 'Legacy executor routing is unavailable while lifecycle authority exists.');
+    return selected;
+  }
+  const route = await resolveForwardingRoute(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId);
+  if (!executorMatchesRoute(selected, route)) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route does not match this executor.');
+  return selected;
 }
-export async function isForwarding(dataRoot, input) { const store = await paths(dataRoot, input.cwd); const id = key('forward', input.session_id, input.turn_id); try { return (await readJsonFile(join(store.directory, `forward-${id}.json`))).active === true; } catch { return false; } }
+export async function isForwarding(dataRoot, input) {
+  const origin = await paths(dataRoot, input.cwd); const id = key('forward', input.session_id, input.turn_id);
+  try {
+    const marker = await readJsonFile(join(origin.directory, `forward-${id}.json`));
+    if (marker.active !== true) return false;
+    let route;
+    try { route = await readExecutorRoute(routePath(origin, input.session_id, input.turn_id)); }
+    catch (error) {
+      if (error?.code !== 'ENOENT' && error?.cause?.code !== 'ENOENT') throw error;
+      const executor = await readBoundedExecutor(join(origin.directory, `executor-${key('executor', marker.agentId)}.json`));
+      return isLegacyExecutorRecord(executor, origin.workspacePath) && executor.active === true && executor.parentSessionId === input.session_id && executor.childTurnId === input.turn_id
+        && await legacyExecutorAuthorityExists(dataRoot, origin.workspacePath, executor, true);
+    }
+    if (!validExecutorRoute(route, origin.workspacePath) || route.parentSessionId !== input.session_id || route.childTurnId !== input.turn_id || route.agentId !== marker.agentId) return false;
+    const target = await paths(dataRoot, route.targetWorkspace);
+    const executor = await withFileLock(target.lock, () => readBoundedExecutor(join(target.directory, `executor-${key('executor', route.agentId)}.json`)));
+    return validExecutorRecord(executor, target.workspacePath) && executor.active === true && executorMatchesRoute(executor, route);
+  } catch { return false; }
+}
 export async function cleanupSession(dataRoot, workspace, sessionId) { const store = await paths(dataRoot, workspace); await withFileLock(store.lock, async () => { for (const name of await readdir(store.directory)) { if (!name.endsWith('.json')) continue; const path = join(store.directory, name); try { const record = name.startsWith('executor-') ? await readBoundedExecutor(path) : await readJsonFile(path); if (record.sessionId === sessionId || (record.kind === 'subagent-executor' && record.parentSessionId === sessionId)) await unlink(path); } catch { if (name.startsWith('executor-')) await unlink(path).catch(() => {}); /* invalid executor state cannot authorize and must not permanently deny service */ } } }); }
 export async function unreadJobs(dataRoot, workspace, sessionId) { const store = await paths(dataRoot, workspace); const jobs = join(store.directory, '..', 'jobs'); let names = []; try { names = await readdir(jobs); } catch { return []; } return withFileLock(store.lock, async () => { const markerPath = join(store.directory, `notified-${key('notified', sessionId)}.json`); let marker = { kind: 'notifications', sessionId, jobIds: [] }; try { marker = await readJsonFile(markerPath); } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; } const seen = new Set(Array.isArray(marker.jobIds) ? marker.jobIds : []); const found = []; for (const name of names.slice(0, 500)) { if (!name.endsWith('.json')) continue; try { const job = await readJsonFile(join(jobs, name)); if (job.ownerSessionId === sessionId && terminal.has(job.status) && !seen.has(job.id)) found.push({ id: job.id, status: job.status }); } catch { /* state command reports corrupt jobs */ } } const selected = found.slice(-RESCUE_UNREAD_JOB_LIMIT); for (const job of selected) seen.add(job.id); await atomicWriteJson(markerPath, { kind: 'notifications', sessionId, jobIds: [...seen].slice(-500), updatedAt: new Date().toISOString() }); return selected; }); }
 export async function writeGateRun(dataRoot, workspace, record) { const store = await paths(dataRoot, workspace); const directory = join(store.directory, '..', 'gate-runs'); await ensurePrivateDirectory(directory); const id = key(record.sessionId, record.turnId, record.before, record.after); const path = join(directory, `${id}.json`); return withFileLock(join(directory, '.lock'), async () => { try { return { duplicate: true, path, record: await readJsonFile(path) }; } catch (error) { if (error?.cause?.code !== 'ENOENT') throw error; } await atomicWriteJson(path, record); return { duplicate: false, path, record }; }); }
 export async function finishGateRun(path, record) { await atomicWriteJson(path, record); }
-function validExecutorRecord(record, workspace) { return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).sort().join('\0') === [...EXECUTOR_KEYS].sort().join('\0') && record.kind === 'subagent-executor' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.workspace) && record.workspace === workspace && typeof record.active === 'boolean' && canonicalTimestamp(record.createdAt); }
+function validExecutorRecord(record, workspace) { return isCurrentExecutorRecord(record, workspace) || isLegacyExecutorRecord(record, workspace); }
+function isCurrentExecutorRecord(record, workspace) { return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).sort().join('\0') === [...EXECUTOR_KEYS].sort().join('\0') && record.kind === 'subagent-executor' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && (record.parentGenerationId === null || /^[a-f0-9]{64}$/u.test(record.parentGenerationId)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.originWorkspace) && boundedWorkspace(record.workspace) && record.workspace === workspace && typeof record.active === 'boolean' && canonicalTimestamp(record.createdAt); }
+function isLegacyExecutorRecord(record, workspace) { return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).sort().join('\0') === [...LEGACY_EXECUTOR_KEYS].sort().join('\0') && record.kind === 'subagent-executor' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && PERMISSION_MODES.includes(record.parentPermissionMode) && boundedWorkspace(record.workspace) && record.workspace === workspace && typeof record.active === 'boolean' && canonicalTimestamp(record.createdAt); }
+function validExecutorRoute(record, originWorkspace, input) { return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).sort().join('\0') === [...EXECUTOR_ROUTE_KEYS].sort().join('\0') && record.kind === 'executor-route' && [record.agentId, record.agentType, record.parentSessionId, record.parentTurnId, record.childTurnId].every((value) => boundedIdentifier(value)) && (record.parentGenerationId === null || /^[a-f0-9]{64}$/u.test(record.parentGenerationId)) && boundedWorkspace(record.originWorkspace) && record.originWorkspace === originWorkspace && boundedWorkspace(record.targetWorkspace) && canonicalTimestamp(record.createdAt) && (input === undefined || record.parentSessionId === input.session_id && record.childTurnId === input.turn_id && record.agentId === input.agent_id && record.agentType === input.agent_type); }
+function executorMatchesRoute(executor, route) { return executor.agentId === route.agentId && executor.agentType === route.agentType && executor.parentSessionId === route.parentSessionId && executor.parentGenerationId === route.parentGenerationId && executor.parentTurnId === route.parentTurnId && executor.childTurnId === route.childTurnId && executor.originWorkspace === route.originWorkspace && executor.workspace === route.targetWorkspace && executor.createdAt === route.createdAt; }
+async function legacyExecutorAuthorityExists(dataRoot, workspace, executor, requireTurn = false) { try { const caller = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: executor.parentSessionId, workspace, workspaceBinding: 'execution' }); return caller.generationId === undefined && (!requireTurn || caller.turnId === executor.parentTurnId); } catch { return false; } }
+function routePath(store, sessionId, childTurnId) { return join(store.directory, `route-${key('executor-route', sessionId, childTurnId)}.json`); }
 async function readBoundedExecutor(path) { const handle = await open(path, 'r'); try { const stat = await handle.stat(); if (!stat.isFile() || stat.size > MAX_EXECUTOR_BYTES) throw new Error('executor record exceeds byte bound'); const text = await handle.readFile({ encoding: 'utf8' }); if (Buffer.byteLength(text) > MAX_EXECUTOR_BYTES) throw new Error('executor record exceeds byte bound'); return JSON.parse(text); } finally { await handle.close(); } }
+async function readExecutorRoute(path) { const handle = await open(path, 'r'); try { const stat = await handle.stat(); if (!stat.isFile() || stat.size > MAX_EXECUTOR_ROUTE_BYTES) throw new Error('executor route exceeds byte bound'); const text = await handle.readFile({ encoding: 'utf8' }); if (Buffer.byteLength(text) > MAX_EXECUTOR_ROUTE_BYTES) throw new Error('executor route exceeds byte bound'); return JSON.parse(text); } finally { await handle.close(); } }
 function boundedIdentifier(value) { return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 512 && ![...value].some((character) => { const code = character.charCodeAt(0); return code <= 31 || code === 127; }); }
 function boundedWorkspace(value) { return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 4_096 && ![...value].some((character) => ['\0', '\n', '\r'].includes(character)); }
 function canonicalTimestamp(value) { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) && Number.isFinite(Date.parse(value)); }

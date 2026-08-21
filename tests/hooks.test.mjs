@@ -1,7 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cp, mkdtemp, readFile, realpath, writeFile, mkdir, readdir, rm, stat, symlink, unlink } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, realpath, writeFile, mkdir, readdir, rm, rmdir, stat, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -281,14 +281,97 @@ test('changing only an untracked symlink target changes the fingerprint without 
 });
 
 test('subagent hook marks forwarding suppression without changing parent permission snapshot', async () => {
-  const { cwd, env } = await workspace();
+  const { cwd, data, env } = await workspace();
   await runHook('session-lifecycle-hook.mjs', { session_id: 'parent', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'plan', source: 'startup' }, env);
   await runHook('user-prompt-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'plan', prompt: 'go' }, env);
+  await createIdentityStore({ dataRoot: data }).resolveActiveTurn({ sessionId: 'parent', workspace: cwd, workspaceBinding: 'claim' });
   const sub = await runHook('subagent-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', agent_id: 'agent-1', agent_type: 'zcode-rescue' }, env);
   assert.equal(sub.code, 0); assert.match(sub.json.hookSpecificOutput.additionalContext, /forwarding subagent/i);
   assert.doesNotMatch(JSON.stringify(sub.json), /callerContext|executionCapability|[a-f0-9]{64}/);
   const stop = await runHook('subagent-hook.mjs', { session_id: 'parent', turn_id: 'turn', cwd, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'bypassPermissions', agent_id: 'agent-1', agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
   assert.equal(stop.code, 0); assert.deepEqual(stop.json, {});
+});
+
+test('origin cwd routes a bound worktree child and exact replacement stop without scanning', async (t) => {
+  const { cwd: origin, data, env } = await workspace();
+  const target = await addLinkedWorktree(origin, 'origin-cwd-child-route');
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data });
+  const sessionStarted = await runHook('session-lifecycle-hook.mjs', { session_id: 'routed-parent', cwd: origin, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+  assert.equal(sessionStarted.code, 0, sessionStarted.stderr);
+  const prompted = await runHook('user-prompt-hook.mjs', { session_id: 'routed-parent', turn_id: 'parent-turn-a', cwd: origin, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'repair in the linked worktree' }, env);
+  assert.equal(prompted.code, 0, prompted.stderr);
+  const bound = await identity.resolveActiveTurn({ sessionId: 'routed-parent', workspace: target, workspaceBinding: 'claim' });
+
+  const start = { session_id: 'routed-parent', turn_id: 'child-turn-a', cwd: origin, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'routed-child', agent_type: 'zcode-rescue' };
+  const started = await runHook('subagent-hook.mjs', start, env);
+  assert.equal(started.code, 0, started.stderr);
+  const executor = await resolveForwardingExecutor(data, target, 'routed-child');
+  assert.equal(executor.workspace, await realpath(target));
+  assert.equal(executor.parentGenerationId, bound.generationId);
+  await assert.rejects(resolveForwardingExecutor(data, origin, 'routed-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+
+  await runHook('user-prompt-hook.mjs', { session_id: 'routed-parent', turn_id: 'parent-turn-b', cwd: origin, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'replacement turn' }, env);
+  const stopped = await runHook('subagent-hook.mjs', { ...start, hook_event_name: 'SubagentStop', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
+  assert.equal(stopped.code, 0, stopped.stderr);
+  const terminal = await resolveForwardingExecutor(data, target, 'routed-child', { continuation: true, durableProvenance: true });
+  assert.equal(terminal.active, false);
+  assert.equal(terminal.parentGenerationId, bound.generationId, 'replacement authority must not redirect exact child cleanup');
+});
+
+test('origin cwd Root Stop revokes authority before bound worktree preparation cleanup', async (t) => {
+  const { cwd: origin, data, env } = await workspace();
+  const target = await addLinkedWorktree(origin, 'origin-cwd-root-stop');
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data });
+  const preparations = createRescuePreparationStore({ dataRoot: data });
+  const started = await runHook('session-lifecycle-hook.mjs', { session_id: 'stop-routed-parent', cwd: origin, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+  assert.equal(started.code, 0, started.stderr);
+  const prompt = { session_id: 'stop-routed-parent', turn_id: 'stop-routed-turn', cwd: origin, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'finish target work' };
+  assert.equal((await runHook('user-prompt-hook.mjs', prompt, env)).code, 0);
+  const caller = await identity.resolveActiveTurn({ sessionId: prompt.session_id, workspace: target, workspaceBinding: 'claim' });
+  await preparations.save({ ...caller, recordedPrompt: caller.prompt, envelope: { version: 1, source: 'proactive', task: 'finish target work', options: {} } });
+
+  const stopped = await runHook('stop-review-gate-hook.mjs', { ...stopFields(prompt), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' }, env);
+  assert.equal(stopped.code, 0, stopped.stderr);
+  await assert.rejects(identity.resolveActiveTurn({ sessionId: prompt.session_id, workspace: origin }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+  await assert.rejects(preparations.consume({ ...caller, executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
+});
+
+test('origin cwd SessionEnd tombstones before bounded cleanup across two origins and targets', async (t) => {
+  const { cwd: originA, data, env } = await workspace();
+  const targetA = await addLinkedWorktree(originA, 'session-target-a');
+  const originB = await addLinkedWorktree(originA, 'session-origin-b');
+  const targetB = await addLinkedWorktree(originA, 'session-target-b');
+  t.after(() => Promise.all([targetA, originB, targetB].map((path) => rm(path, { recursive: true, force: true }))));
+  const identity = createIdentityStore({ dataRoot: data });
+  const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await identity.beginCallerTurn({ sessionId: 'multi-workspace-parent', turnId: 'turn-a', workspace: originA, permissionMode: 'workspace-write', prompt: 'a', ...proof });
+  await identity.resolveActiveTurn({ sessionId: 'multi-workspace-parent', workspace: targetA, workspaceBinding: 'claim' });
+  const childStart = { session_id: 'multi-workspace-parent', turn_id: 'child-a', cwd: originA, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'multi-child', agent_type: 'zcode-rescue' };
+  assert.equal((await runHook('subagent-hook.mjs', childStart, env)).code, 0);
+
+  await identity.beginCallerTurn({ sessionId: 'multi-workspace-parent', turnId: 'turn-b', workspace: originB, permissionMode: 'workspace-write', prompt: 'b', ...proof });
+  const callerB = await identity.resolveActiveTurn({ sessionId: 'multi-workspace-parent', workspace: targetB, workspaceBinding: 'claim' });
+  const preparations = createRescuePreparationStore({ dataRoot: data });
+  await preparations.save({ ...callerB, recordedPrompt: callerB.prompt, envelope: { version: 1, source: 'proactive', task: 'b', options: {} } });
+  await preparations.save({ sessionId: 'sibling-session', turnId: 'sibling-turn', workspace: targetB, permissionMode: 'default', recordedPrompt: 'sibling', envelope: { version: 1, source: 'proactive', task: 'sibling', options: {} } });
+
+  await identity.beginCallerTurn({ sessionId: 'multi-workspace-parent', turnId: 'turn-c', workspace: originA, permissionMode: 'workspace-write', prompt: 'c', ...proof });
+  await identity.resolveActiveTurn({ sessionId: 'multi-workspace-parent', workspace: targetA, workspaceBinding: 'claim' });
+
+  const targetAStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: targetA }); const targetAHookState = join(targetAStorage.directory, 'hook-state'); const blockedLock = join(targetAHookState, '.lock', 'advisory.lock');
+  await rm(blockedLock, { force: true }); await mkdir(blockedLock);
+  const endInput = { session_id: 'multi-workspace-parent', cwd: originA, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' };
+  const ended = await runHook('session-end-hook.mjs', endInput, env);
+  assert.equal(ended.code, 0, ended.stderr);
+  await assert.rejects(identity.resolveActiveTurn({ sessionId: 'multi-workspace-parent', workspace: originA }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+  assert.ok((await readdir(targetAHookState)).some((name) => name.startsWith('executor-')), 'failed target cleanup must retain retryable state after the tombstone');
+  await rmdir(blockedLock);
+  const retried = await runHook('session-end-hook.mjs', endInput, env); assert.equal(retried.code, 0, retried.stderr);
+  await assert.rejects(resolveForwardingExecutor(data, targetA, 'multi-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await assert.rejects(preparations.consume({ ...callerB, executorAgentId: 'multi-child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
+  assert.equal((await preparations.consume({ sessionId: 'sibling-session', turnId: 'sibling-turn', workspace: targetB, permissionMode: 'default', executorAgentId: 'sibling-child' })).envelope.task, 'sibling');
 });
 
 test('trusted SubagentStart binds one active child executor and fails closed on sibling, parent, workspace, stale stop, and duplicate records', async () => {
@@ -299,7 +382,7 @@ test('trusted SubagentStart binds one active child executor and fails closed on 
   const input = (event, turnId, agentId = 'rescue-child', agentType = 'zcode-rescue') => ({ session_id: 'parent-thread', turn_id: turnId, cwd, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: agentId, agent_type: agentType, ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
   assert.equal((await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-1'), env)).code, 0);
   assert.deepEqual(await resolveForwardingExecutor(data, cwd, 'rescue-child'), {
-    kind: 'subagent-executor', agentId: 'rescue-child', agentType: 'zcode-rescue', parentSessionId: 'parent-thread', parentTurnId: 'parent-origin', parentPermissionMode: 'workspace-write', childTurnId: 'child-turn-1', workspace: storage.workspacePath, active: true, createdAt: (await resolveForwardingExecutor(data, cwd, 'rescue-child')).createdAt,
+    kind: 'subagent-executor', agentId: 'rescue-child', agentType: 'zcode-rescue', parentSessionId: 'parent-thread', parentGenerationId: null, parentTurnId: 'parent-origin', parentPermissionMode: 'workspace-write', childTurnId: 'child-turn-1', originWorkspace: storage.workspacePath, workspace: storage.workspacePath, active: true, createdAt: (await resolveForwardingExecutor(data, cwd, 'rescue-child')).createdAt,
   });
   await runHook('subagent-hook.mjs', input('SubagentStart', 'general-turn', 'general-child', 'default'), env);
   await assert.rejects(resolveForwardingExecutor(data, cwd, 'general-child'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
@@ -329,6 +412,21 @@ test('trusted SubagentStart binds one active child executor and fails closed on 
   await runHook('subagent-hook.mjs', input('SubagentStart', 'child-turn-4'), env);
   await writeFile(join(storage.directory, 'hook-state', 'executor-forged.json'), JSON.stringify({ ...(await resolveForwardingExecutor(data, cwd, 'rescue-child')), updatedAt: new Date().toISOString() }));
   await assert.rejects(resolveForwardingExecutor(data, cwd, 'rescue-child'), { code: 'EXECUTOR_IDENTITY_INVALID' });
+});
+
+test('legacy exact-workspace executor remains readable only without its lifecycle route', async () => {
+  const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'legacy-executor-parent', turnId: 'legacy-parent-turn', workspace: cwd, permissionMode: 'workspace-write', prompt: 'legacy' });
+  const input = { session_id: 'legacy-executor-parent', turn_id: 'legacy-child-turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'legacy-child', agent_type: 'zcode-rescue' };
+  assert.equal((await runHook('subagent-hook.mjs', input, env)).code, 0);
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const directory = join(storage.directory, 'hook-state'); const names = await readdir(directory);
+  const executorPath = join(directory, names.find((name) => name.startsWith('executor-'))); const routePath = join(directory, names.find((name) => name.startsWith('route-')));
+  const current = JSON.parse(await readFile(executorPath, 'utf8')); delete current.parentGenerationId; delete current.originWorkspace;
+  await writeFile(executorPath, JSON.stringify(current)); await unlink(routePath);
+  assert.equal((await resolveForwardingExecutor(data, cwd, 'legacy-child')).parentTurnId, 'legacy-parent-turn');
+  const stopped = await runHook('subagent-hook.mjs', { ...input, hook_event_name: 'SubagentStop', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
+  assert.equal(stopped.code, 0, stopped.stderr);
+  assert.equal((await resolveForwardingExecutor(data, cwd, 'legacy-child', { continuation: true })).active, false);
 });
 
 test('executor records enforce exact schema, byte, time, TTL, and file-count bounds', async () => {
@@ -728,6 +826,7 @@ test('prompt, Root Stop, and SessionEnd clean only their exact prepared Rescue l
     await assert.rejects(prepared.consume({ sessionId: 'owner', turnId: 'root-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
 
     const forwardingPrompt = { ...prompt, turn_id: 'forwarding-turn', prompt: 'forwarding proactive objective' }; await runHook('user-prompt-hook.mjs', forwardingPrompt, env);
+    await createIdentityStore({ dataRoot: data }).resolveActiveTurn({ sessionId: 'owner', workspace: cwd, workspaceBinding: 'claim' });
     await prepared.save({ sessionId: 'owner', turnId: 'forwarding-turn', workspace: cwd, permissionMode: 'default', recordedPrompt: forwardingPrompt.prompt, envelope: { version: 1, source: 'proactive', task: 'forwarding objective', options: {} } });
     await runHook('subagent-hook.mjs', { session_id: 'owner', turn_id: 'forwarding-turn', cwd, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'default', agent_id: 'forward-child', agent_type: 'zcode-rescue' }, env);
     assert.deepEqual((await runHook('stop-review-gate-hook.mjs', { ...stopFields(forwardingPrompt), hook_event_name: 'Stop', stop_hook_active: true, last_assistant_message: 'done' }, env)).json, {});
