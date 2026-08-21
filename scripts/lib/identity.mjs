@@ -79,10 +79,25 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       validateCallerInput(input);
       const storage = await identityStorage(dataRoot, input.workspace);
       const { token, digest, record } = callerRecord(input, storage.workspacePath);
-      await withFileLock(storage.lockPath, () => atomicWriteJson(
-        join(storage.callersDirectory, `${digest}.json`),
-        record,
-      ));
+      const global = await globalIdentityStorage(dataRoot);
+      await withFileLock(sessionLockPath(global, input.sessionId), async () => {
+        const state = await readGlobalState(global, input.sessionId, false);
+        if (state === null) {
+          await withFileLock(storage.lockPath, () => atomicWriteJson(
+            join(storage.callersDirectory, `${digest}.json`), record,
+          ));
+          return;
+        }
+        if (state.active === null || state.active.status !== 'active' || state.ledger.endedAt !== null
+          || state.active.turnId !== input.turnId || state.active.originWorkspace !== storage.workspacePath
+          || state.active.permissionMode !== input.permissionMode) throw invalidCallerContext();
+        await withFileLock(storage.lockPath, async () => {
+          await atomicWriteJson(
+            join(storage.callersDirectory, `${digest}.json`), provedCallerRecord(record, state.active.generationId),
+          );
+          await publicationSeam?.('after-protected-caller-write');
+        });
+      });
       return token;
     },
 

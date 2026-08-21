@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
@@ -61,6 +61,16 @@ async function callerContextPath(dataRoot, workspace, token) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const digest = createHash('sha256').update(token).digest('hex');
   return join(storage.directory, 'identity', 'callers', `${digest}.json`);
+}
+
+/** @param {string} dataRoot @param {string} workspace */
+async function callerArtifactNames(dataRoot, workspace) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  try { return await readdir(join(storage.directory, 'identity', 'callers')); }
+  catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error)?.code === 'ENOENT') return [];
+    throw error;
+  }
 }
 
 /** @param {string} root */
@@ -273,6 +283,141 @@ test('session proof creates exact private global v3 identity records without cha
     version: 2, kind: 'active-turn', sessionId: 'session-proof', turnId: 'turn-a',
     workspace: originPath, permissionMode: 'workspace-write', prompt: 'repair', createdAt: now.toISOString(),
   });
+});
+
+test('public caller creation binds to an exact active v3 generation without changing consumption', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture();
+  const input = {
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', now: new Date('2026-08-20T12:00:00.000Z'),
+  };
+  await identity.beginCallerTurn({
+    ...input, prompt: 'repair',
+    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+  });
+
+  const token = await identity.createCallerContext(input);
+  const active = JSON.parse(await readFile(await globalActivePath(dataRoot, input.sessionId), 'utf8'));
+  const caller = JSON.parse(await readFile(await callerContextPath(dataRoot, workspaceA, token), 'utf8'));
+  assert.equal(caller.version, 1);
+  assert.equal(caller.kind, 'caller-context');
+  assert.equal(caller.generationId, active.generationId);
+  assert.deepEqual(await identity.consumeCallerContext(token, { workspace: workspaceA, now: input.now }), {
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    workspace: await realpath(workspaceA),
+    permissionMode: input.permissionMode,
+    createdAt: input.now.toISOString(),
+    expiresAt: new Date(input.now.getTime() + 30 * 60_000).toISOString(),
+  });
+});
+
+test('public caller creation preserves exact legacy bytes and 30 minute TTL when lifecycle is truly absent', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture();
+  const now = new Date('2026-08-20T12:00:00.000Z');
+  const input = {
+    sessionId: 'legacy-session', turnId: 'legacy-turn', workspace: workspaceA,
+    permissionMode: 'default', now,
+  };
+  const token = await identity.createCallerContext(input);
+  const caller = JSON.parse(await readFile(await callerContextPath(dataRoot, workspaceA, token), 'utf8'));
+  assert.deepEqual(caller, {
+    digest: createHash('sha256').update(token).digest('hex'),
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    workspace: await realpath(workspaceA),
+    permissionMode: input.permissionMode,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
+  });
+  const lifecycle = join(await realpath(dataRoot), 'identity-lifecycle');
+  assert.deepEqual(await readdir(join(lifecycle, 'active-turns')), []);
+  assert.deepEqual(await readdir(join(lifecycle, 'sessions')), []);
+});
+
+test('public caller creation fails closed without artifacts for every non-matching lifecycle state', async (t) => {
+  const cases = /** @type {Array<[string, (context:any)=>Promise<any>]>} */ ([
+    ['pending active', async ({ activePath, active }) => writeFile(activePath, `${JSON.stringify({ ...active, status: 'pending' })}\n`, { mode: 0o600 })],
+    ['ended session', async ({ identity, workspace, input }) => identity.cleanupSession(workspace, input.sessionId)],
+    ['missing active', async ({ activePath }) => unlink(activePath)],
+    ['malformed active', async ({ activePath }) => writeFile(activePath, '{broken', { mode: 0o600 })],
+    ['future active schema', async ({ activePath, active }) => writeFile(activePath, `${JSON.stringify({ ...active, version: 4 })}\n`, { mode: 0o600 })],
+    ['wrong turn', async ({ request }) => { request.turnId = 'turn-b'; }],
+    ['wrong permission', async ({ request }) => { request.permissionMode = 'read-only'; }],
+    ['mismatched stored session', async ({ activePath, active }) => writeFile(activePath, `${JSON.stringify({ ...active, sessionId: 'session-b' })}\n`, { mode: 0o600 })],
+  ]);
+  for (const [name, arrange] of cases) {
+    await t.test(name, async () => {
+      const { dataRoot, identity, workspaceA } = await fixture();
+      const input = {
+        sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA,
+        permissionMode: 'workspace-write', now: new Date('2026-08-20T12:00:00.000Z'),
+      };
+      await identity.beginCallerTurn({
+        ...input, prompt: 'repair',
+        sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+      });
+      const activePath = await globalActivePath(dataRoot, input.sessionId);
+      const active = JSON.parse(await readFile(activePath, 'utf8'));
+      const request = { ...input };
+      await arrange({ active, activePath, dataRoot, identity, input, request, workspace: workspaceA });
+      const before = await callerArtifactNames(dataRoot, workspaceA);
+      await assert.rejects(identity.createCallerContext(request));
+      assert.deepEqual(await callerArtifactNames(dataRoot, workspaceA), before);
+    });
+  }
+
+  await t.test('execution workspace is not the origin', async () => {
+    const { dataRoot, identity, root } = await fixture();
+    const { origin, execution } = await linkedWorktreeFixture(root);
+    const input = {
+      sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'workspace-write',
+      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    };
+    await identity.beginCallerTurn(input);
+    await identity.resolveActiveTurn({ sessionId: input.sessionId, workspace: execution, workspaceBinding: 'claim' });
+    const before = await callerArtifactNames(dataRoot, execution);
+    await assert.rejects(identity.createCallerContext({ ...input, workspace: execution }));
+    assert.deepEqual(await callerArtifactNames(dataRoot, execution), before);
+  });
+});
+
+test('protected caller publication is fenced from concurrent replacement and cleanup', async (t) => {
+  for (const operation of ['replacement', 'cleanup']) {
+    await t.test(operation, async () => {
+      const { dataRoot, workspaceA } = await fixture();
+      const proof = { sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup' };
+      const input = { sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write' };
+      const identity = createIdentityStore({ dataRoot });
+      await identity.beginCallerTurn({ ...input, ...proof });
+      const reached = deferred(); const release = deferred();
+      const creating = createIdentityStore({
+        dataRoot,
+        publicationSeam: async (point) => {
+          if (point === 'after-protected-caller-write') { reached.resolve(); await release.promise; }
+        },
+      }).createCallerContext(input);
+      const didReach = await Promise.race([
+        reached.promise.then(() => true),
+        new Promise((resolvePromise) => setTimeout(() => resolvePromise(false), 100)),
+      ]);
+      if (!didReach) {
+        release.resolve(); await creating;
+        assert.fail('protected caller publication must expose the session-lock test seam');
+      }
+      let mutationSettled = false;
+      const mutation = (operation === 'replacement'
+        ? identity.beginCallerTurn({ ...input, ...proof, turnId: 'turn-b' })
+        : identity.cleanupSession(workspaceA, input.sessionId))
+        .then((value) => { mutationSettled = true; return value; });
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+      assert.equal(mutationSettled, false, `${operation} must wait for protected caller publication`);
+      release.resolve();
+      const token = await creating;
+      await mutation;
+      await assert.rejects(identity.consumeCallerContext(token, { workspace: workspaceA }), { code: 'CALLER_CONTEXT_INVALID' });
+    });
+  }
 });
 
 test('session proof fields are paired and strict before any authorization artifact is created', async () => {
