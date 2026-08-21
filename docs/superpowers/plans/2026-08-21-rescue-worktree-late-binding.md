@@ -212,9 +212,11 @@ git commit -m "feat: add compatible active-turn workspace binding"
 
 **Files:**
 - Modify: `hooks/user-prompt-hook.mjs`
+- Modify: `scripts/lib/plugin-data.mjs`
 - Modify: `scripts/zcode-companion.mjs`
 - Modify: `tests/hooks.test.mjs`
 - Modify: `tests/integration/companion.test.mjs`
+- Modify: `tests/plugin-data.test.mjs`
 
 - [ ] **Step 1: Write the root-to-linked-worktree RED integration test**
 
@@ -305,9 +307,25 @@ CODEX_THREAD_ID, workspace: cwd, workspaceBinding: 'preview'})`; resolve the
 SessionStart record from its validated `originWorkspace` for Role inspection.
 Keep source-checkout setup on the existing exact-workspace path.
 
-For private prepare, call `resolveActiveTurn({sessionId: ambientThreadId,
-workspace: cwd, workspaceBinding: 'claim'})` before entering
-`withPrivatePreparationTransport`. Use the returned caller for preparation save.
+For private prepare, split `withPrivatePreparationTransport` into a no-input
+TTY/raw-mode capability preflight and a post-claim readiness/input phase. A
+preflight or `setRawMode(true)` failure leaves authority unbound. After it
+succeeds, call `resolveActiveTurn({sessionId: ambientThreadId, workspace: cwd,
+workspaceBinding: 'claim'})`, then write readiness and read the frame. Claim is
+the immutable first-writer linearization point: readiness/abort/save failure
+retains the target, creates no preparation, permits a same-target retry, and
+continues rejecting a second target. Use the returned caller for preparation
+save.
+
+Deepen `plugin-data` with one optional trusted lexical entry path rather than
+duplicating provenance parsing in the companion. The companion supplies it
+only when realpath of actual `process.argv[1]` is the exact owned companion and
+the lexical entry differs from the canonical source path. Validate no control
+bytes or traversal, the exact
+`CODEX_HOME/plugins/cache/<marketplace>/zcode/<version>` shape, and canonical
+target ownership before deriving the existing marketplace namespace. Add unit
+and real-child tests for exact cache symlink acceptance and wrong target/shape
+rejection; ordinary source CLI and module import retain existing behavior.
 IdentityStore itself owns true-absence legacy fallback and never falls back on
 invalid/ineligible/ended/mismatch.
 

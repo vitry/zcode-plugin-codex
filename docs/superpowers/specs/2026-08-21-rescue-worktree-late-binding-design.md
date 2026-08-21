@@ -110,7 +110,7 @@ role-status(candidate)
   -> ACTIVE_UNBOUND or ACTIVE_BOUND_TO(candidate): continue inspection
   -> bound elsewhere / ineligible / missing / corrupt: caller-unavailable
 
-prepare(candidate), before TTY ready or task read
+prepare(candidate), after no-input TTY capability preflight and before ready or task read
   -> ACTIVE_UNBOUND + eligible candidate: ACTIVE_BOUND_TO(candidate)
   -> ACTIVE_BOUND_TO(candidate): idempotent caller resolution
   -> ACTIVE_BOUND_TO(other): reject
@@ -130,8 +130,13 @@ SessionEnd
 
 `role-status` deliberately does not claim a workspace. A failed, outdated, or
 conflicting Role inspection must not consume the one binding choice. `prepare`
-claims before enabling raw TTY transport or reading the private task frame, so
-rejected candidates cannot disclose or persist task material.
+first validates the raw-capable private TTY and enables raw mode without reading
+input; either failure leaves the turn unbound. It then claims before emitting
+readiness or reading the private task frame, so rejected candidates cannot
+disclose or persist task material. Claim is the immutable first-writer
+linearization point: a later readiness, abort, frame, or save failure retains
+that target and permits only an idempotent retry from the same target. There is
+no race-prone rollback that would admit a second workspace.
 
 ## Deepened IdentityStore
 
@@ -368,16 +373,26 @@ Role inspection. An ineligible, different-bound, absent, ended, or invalid
 record maps to the existing fixed `caller-unavailable` status. No path, session,
 turn, prompt, Git output, or private error is rendered.
 
+Installed provenance remains owned by `plugin-data`. A companion invoked
+through a lexical cache symlink may supply that actual entry path only when its
+canonical target is the exact owned companion module. `plugin-data` then
+validates the control-free, traversal-free
+`CODEX_HOME/plugins/cache/<marketplace>/zcode/<version>` shape and derives the
+same marketplace namespace. Wrong targets, malformed cache shapes, and
+caller-supplied paths do not create a second provenance route.
+
 Source-checkout setup keeps its existing exact-workspace active-turn and
 SessionStart diagnostics. This design changes installed Rescue readiness only.
 
 ### Private prepare
 
-`prepare rescue` calls `resolveActiveTurn()` with `workspaceBinding: 'claim'`
-before `withPrivatePreparationTransport()`. Only after claim succeeds may the
-launcher write readiness, switch to raw mode, or read the LF-terminated private
-envelope. Preparation is then saved using the returned caller with
-`workspace === executionWorkspace`.
+`prepare rescue` performs the transport's no-input TTY/raw-mode capability
+preflight, then calls `resolveActiveTurn()` with `workspaceBinding: 'claim'`.
+Only after claim succeeds may the launcher write readiness or read the
+LF-terminated private envelope. Preparation is then saved using the returned
+caller with `workspace === executionWorkspace`. Preflight failure leaves no
+claim; post-claim transport or input failure retains the immutable target,
+writes no preparation, and allows a same-target retry.
 
 IdentityStore may resolve the existing workspace v2 or unversioned active-turn
 record only when both the global active slot and lifecycle session ledger are
