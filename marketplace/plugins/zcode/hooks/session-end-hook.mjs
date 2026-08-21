@@ -26,66 +26,79 @@ try {
   const ownerSessionId = input.session_id;
   const ownerId = ownerIdForSession(ownerSessionId);
   const store = createStateStore({ dataRoot });
+  const identityCleanup = await createIdentityStore({ dataRoot }).cleanupSession(input.cwd, ownerSessionId);
+  const knownWorkspaces = identityCleanup?.knownWorkspaces ?? [input.cwd];
   const remoteDeadline = Date.now() + sessionEndRemoteBudgetMs;
   const remoteController = new AbortController();
   const remoteTimer = setTimeout(() => remoteController.abort(new Error('SessionEnd remote cleanup reached its deadline.')), sessionEndRemoteBudgetMs);
   remoteTimer.unref?.();
   try {
-    let ownerReleaseSafe = false;
-    let ownerCleanupStage = 'settlement';
-    try {
-      await settleEndedOwnerWritableJob({
-        store,
-        dataRoot,
-        workspace: input.cwd,
-        ownerSessionId,
-        requestTimeoutMs: existingBrokerRequestTimeoutMs,
-        lockTimeoutMs: 0,
-        signal: remoteController.signal,
-        createClient: (job, derivedOwnerId) => createExistingManagedZCodeClient({
-          dataRoot,
-          workspace: input.cwd,
-          ownerId: derivedOwnerId,
-          requestTimeoutMs: existingBrokerRequestTimeoutMs,
-        }),
-      });
-      if (remoteController.signal.aborted) throw remoteController.signal.reason;
-      ownerCleanupStage = 'retained-writable-guard';
-      const ownedJobs = await store.listOwnedJobs(input.cwd, ownerSessionId);
-      const retainedJobs = ownedJobs.filter((job) => job.command === 'rescue'
-        && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
-      const retainedWritableGuard = retainedJobs.length > 0;
-      if (retainedWritableGuard) process.stderr.write(`ZCode SessionEnd retained writable guard: ${retainedJobs.map((job) => `${job.status}:${typeof job.workerLeaseId === 'string'}`).join(',')}\n`);
-      ownerReleaseSafe = !retainedWritableGuard;
-    } catch (error) {
-      // SessionEnd is advisory, but a sanitized stage/code is essential for
-      // distinguishing a durable guard from an unavailable broker cleanup.
-      process.stderr.write(`ZCode SessionEnd owner cleanup deferred: ${ownerCleanupStage}:${error?.code ?? 'UNKNOWN'}\n`);
-      /* retain broker ownership unless durable state proves release safe */
-    }
-    const remainingRemoteBudgetMs = remoteDeadline - Date.now();
-    if (ownerReleaseSafe && remainingRemoteBudgetMs > 0) {
+    await runBounded(knownWorkspaces, 2, async (workspace) => {
+      let ownerReleaseSafe = false;
+      let ownerCleanupStage = 'settlement';
       try {
-        await releaseManagedZCodeOwner({
+        await settleEndedOwnerWritableJob({
+          store,
           dataRoot,
-          workspace: input.cwd,
-          ownerId,
-          requestTimeoutMs: Math.min(ownerReleaseRequestTimeoutMs, remainingRemoteBudgetMs),
-          cleanupBudgetMs: Math.min(ownerReleaseMaximumBudgetMs, remainingRemoteBudgetMs),
+          workspace,
+          ownerSessionId,
+          requestTimeoutMs: existingBrokerRequestTimeoutMs,
+          lockTimeoutMs: 0,
+          signal: remoteController.signal,
+          createClient: (job, derivedOwnerId) => createExistingManagedZCodeClient({
+            dataRoot,
+            workspace,
+            ownerId: derivedOwnerId,
+            requestTimeoutMs: existingBrokerRequestTimeoutMs,
+          }),
         });
+        if (remoteController.signal.aborted) throw remoteController.signal.reason;
+        ownerCleanupStage = 'retained-writable-guard';
+        const ownedJobs = await store.listOwnedJobs(workspace, ownerSessionId);
+        const retainedJobs = ownedJobs.filter((job) => job.command === 'rescue'
+          && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
+        const retainedWritableGuard = retainedJobs.length > 0;
+        if (retainedWritableGuard) process.stderr.write(`ZCode SessionEnd retained writable guard: ${retainedJobs.map((job) => `${job.status}:${typeof job.workerLeaseId === 'string'}`).join(',')}\n`);
+        ownerReleaseSafe = !retainedWritableGuard;
       } catch (error) {
-        const statusCounts = error?.details?.identityStatusCounts; const reasonCounts = error?.details?.identityReasonCounts;
-        process.stderr.write(`ZCode SessionEnd broker owner release deferred: ${error?.code ?? 'UNKNOWN'}:${JSON.stringify({ statusCounts: statusCounts ?? {}, reasonCounts: reasonCounts ?? {} })}\n`);
+        // SessionEnd is advisory, but a sanitized stage/code is essential for
+        // distinguishing a durable guard from an unavailable broker cleanup.
+        process.stderr.write(`ZCode SessionEnd owner cleanup deferred: ${ownerCleanupStage}:${error?.code ?? 'UNKNOWN'}\n`);
+        /* retain broker ownership unless durable state proves release safe */
       }
-    }
+      const remainingRemoteBudgetMs = remoteDeadline - Date.now();
+      if (ownerReleaseSafe && remainingRemoteBudgetMs > 0) {
+        try {
+          await releaseManagedZCodeOwner({
+            dataRoot,
+            workspace,
+            ownerId,
+            requestTimeoutMs: Math.min(ownerReleaseRequestTimeoutMs, remainingRemoteBudgetMs),
+            cleanupBudgetMs: Math.min(ownerReleaseMaximumBudgetMs, remainingRemoteBudgetMs),
+          });
+        } catch (error) {
+          const statusCounts = error?.details?.identityStatusCounts; const reasonCounts = error?.details?.identityReasonCounts;
+          process.stderr.write(`ZCode SessionEnd broker owner release deferred: ${error?.code ?? 'UNKNOWN'}:${JSON.stringify({ statusCounts: statusCounts ?? {}, reasonCounts: reasonCounts ?? {} })}\n`);
+        }
+      }
+    });
   } finally { clearTimeout(remoteTimer); }
-  await Promise.allSettled([
-    store.closeRescueBindingsForSession({ workspace: input.cwd, parentSessionId: ownerSessionId, reason: 'session-ended' }),
-    cleanupSession(dataRoot, input.cwd, ownerSessionId),
-    createIdentityStore({ dataRoot }).cleanupSession(input.cwd, ownerSessionId),
-    createRescuePreparationStore({ dataRoot }).cleanupSession({ sessionId: ownerSessionId, workspace: input.cwd }),
-  ]);
+  await runBounded(knownWorkspaces, 4, (workspace) => Promise.allSettled([
+    store.closeRescueBindingsForSession({ workspace, parentSessionId: ownerSessionId, reason: 'session-ended' }),
+    cleanupSession(dataRoot, workspace, ownerSessionId),
+    createRescuePreparationStore({ dataRoot }).cleanupSession({ sessionId: ownerSessionId, workspace }),
+  ]));
 } catch (error) {
   process.stderr.write(`ZCode session cleanup advisory failed: ${error?.code ?? 'HOOK_FAILED'}\n`);
   process.exitCode = 1;
+}
+
+async function runBounded(values, concurrency, operation) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (next < values.length) {
+      const index = next; next += 1;
+      await operation(values[index]);
+    }
+  }));
 }

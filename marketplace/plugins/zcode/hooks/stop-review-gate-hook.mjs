@@ -23,7 +23,7 @@ const root = resolve(fileURLToPath(new URL('../', import.meta.url))); const MAX_
 export async function runStopReviewGate(input, options) {
   const dataRoot = options?.dataRoot; const env = options?.env ?? process.env; const timeoutMs = options?.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS; const discover = options?.discoverZCode ?? discoverZCode;
   if (!dataRoot || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEFAULT_GATE_TIMEOUT_MS) throw new Error('invalid stop gate runtime options');
-  const identity = createIdentityStore({ dataRoot }); const preparations = createRescuePreparationStore({ dataRoot }); const turn = { sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd }; const end = async (response) => { await Promise.all([identity.endCallerTurn(turn), preparations.cleanupTurn(turn)]); return response; };
+  const identity = createIdentityStore({ dataRoot }); const preparations = createRescuePreparationStore({ dataRoot }); const turn = { sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd }; const end = async (response) => { const ended = await identity.endCallerTurn(turn); await preparations.cleanupTurn({ ...turn, workspace: ended?.executionWorkspace ?? input.cwd }); return response; };
   if (!await isOwnedSession(dataRoot, input)) return {};
   if (await isForwarding(dataRoot, input)) return {};
   if (input.stop_hook_active) return end({});

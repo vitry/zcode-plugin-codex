@@ -35,6 +35,8 @@ import { resolveForwardingExecutor, resolveRecordedSessionStart } from '../hooks
 
 const backgroundBindings = new WeakMap();
 const rescueChoiceRoutes = new WeakMap();
+const activeCompanionPath = fileURLToPath(import.meta.url);
+const activeRescueLauncherPath = fileURLToPath(new URL('../skills/rescue/launcher.mjs', import.meta.url));
 const activePluginRoot = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
 const MANAGED_ROLE_STATUSES = new Set(['ready', 'restart-required', 'install-required', 'upgrade-required', 'drift', 'foreign-conflict', 'project-shadowed', 'higher-precedence-conflict', 'unsupported']);
 const SOURCE_SESSION_REMEDY = 'Use the instance-bound Rescue launcher from the active lifecycle context; do not run setup from this source checkout.';
@@ -54,7 +56,7 @@ const SAFE_BOUND_STATUS_ERRORS = new Set([
 /** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,executor?:any,rescueRoute?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
-  const parsed = parseArgs(argv); const pluginData = resolvePluginDataContext({ env, pluginRoot: activePluginRoot }); const { dataRoot } = pluginData;
+  const pluginRoot = activePluginRoot; const parsed = parseArgs(argv); const pluginData = resolvePluginDataContext({ env, pluginRoot, entryPath: invocationEntryPath() }); const { dataRoot } = pluginData;
   if (parsed.command === 'setup') {
     let activeTurn;
     try { activeTurn = await createIdentityStore({ dataRoot }).resolveOnlyActiveTurn({ workspace: cwd }); }
@@ -62,18 +64,23 @@ export async function runCompanion(argv, runtime = {}) {
     let session;
     try { session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId); }
     catch (error) { throw sourceSetupRecordedSessionError(error, pluginData.provenance); }
-    return runSetup({ pluginRoot: activePluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
+    return runSetup({ pluginRoot, dataRoot, cwd, reviewGate: parsed.options.reviewGate, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd), dependencies: runtime.dependencies });
   }
   if (parsed.command === 'role-status') {
     let inspection; let inspectionStarted = false; let failure;
     try {
-      if (runtime.dependencies?.inspectRescueRoleStatus) { inspectionStarted = true; inspection = await runtime.dependencies.inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, env }); }
+      if (runtime.dependencies?.inspectRescueRoleStatus) { inspectionStarted = true; inspection = await runtime.dependencies.inspectRescueRoleStatus({ pluginRoot, dataRoot, cwd, env }); }
       else {
         if (typeof env.CODEX_THREAD_ID !== 'string' || !env.CODEX_THREAD_ID) throw new PluginError('AMBIENT_THREAD_UNAVAILABLE', 'The ambient Codex thread is unavailable.', { category: 'authorization', remedy: 'Invoke Rescue from one active Codex parent turn.' });
-        const activeTurn = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: env.CODEX_THREAD_ID, workspace: cwd });
-        const session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId);
+        const installed = pluginData.provenance === 'marketplace';
+        const activeTurn = await createIdentityStore({ dataRoot }).resolveActiveTurn({
+          sessionId: env.CODEX_THREAD_ID,
+          workspace: cwd,
+          ...(installed ? { workspaceBinding: 'preview' } : {}),
+        });
+        const session = await resolveRecordedSessionStart(dataRoot, installed ? activeTurn.originWorkspace ?? cwd : cwd, activeTurn.sessionId);
         inspectionStarted = true;
-        inspection = await inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd) });
+        inspection = await inspectRescueRoleStatus({ pluginRoot, dataRoot, cwd, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd) });
       }
     } catch (error) {
       failure = error;
@@ -125,7 +132,7 @@ export async function runCompanion(argv, runtime = {}) {
 
 /** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:NodeJS.ReadableStream,preparationTransport?:{writeReady:(line:string)=>unknown|Promise<unknown>},dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runDirectInvocation(argv, runtime = {}) {
-  const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot });
+  const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env; const dataRoot = resolvePluginDataRoot({ env, pluginRoot: activePluginRoot, entryPath: invocationEntryPath() });
   const [entry, command, choice, ...extra] = argv;
   const statusInvocation = entry === 'invoke-status' && command === 'rescue' && choice === undefined && extra.length === 0;
   const prepareInvocation = entry === 'prepare' && command === 'rescue' && choice === undefined && extra.length === 0;
@@ -134,30 +141,32 @@ export async function runDirectInvocation(argv, runtime = {}) {
   const ambientThreadId = env.CODEX_THREAD_ID; if (typeof ambientThreadId !== 'string' || !ambientThreadId) throw new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' });
   const identity = createIdentityStore({ dataRoot });
   if (prepareInvocation) {
-    const caller = await identity.resolveActiveTurn({ sessionId: ambientThreadId, workspace: cwd });
     const input = runtime.input ?? process.stdin;
-    return withPrivatePreparationTransport(input, runtime.preparationTransport, async () => {
+    const transport = openPrivatePreparationTransport(input, runtime.preparationTransport);
+    try {
+      const caller = await identity.resolveActiveTurn({ sessionId: ambientThreadId, workspace: cwd, workspaceBinding: 'claim' });
+      await transport.writeReady();
       const envelope = await readRescuePreparationFrame(input, runtime.signal);
       await createRescuePreparationStore({ dataRoot }).save({ ...caller, recordedPrompt: caller.prompt, envelope, signal: runtime.signal });
       return { type: 'prepared', command: 'rescue' };
-    });
+    } finally { transport.close(); }
   }
   if (preparedInvocation) {
     const executor = await resolvePreparedExecutor(dataRoot, cwd, ambientThreadId);
-    const caller = await identity.resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: cwd });
+    const caller = await identity.resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: cwd, workspaceBinding: 'execution' });
     if (executor.active) assertExecutorMatchesCaller(executor, caller);
     const prepared = await createRescuePreparationStore({ dataRoot }).consume({ ...caller, executorAgentId: executor.agentId });
     if (prepared.requiredExecutorAgentId !== null && executor.active) throw new PluginError('EXECUTOR_STATE_MISMATCH', 'A Rescue continuation requires the original child to be stopped.', { category: 'authorization', remedy: 'Wait for the original Rescue child to stop, then prepare the continuation again.' });
     let rescueRoute;
     if (!executor.active) {
-      const resolved = await createStateStore({ dataRoot }).resolveRescueBinding({ ...bindingLookup(executor, cwd), ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}) });
+      const resolved = await createStateStore({ dataRoot }).resolveRescueBinding({ ...bindingLookup(executor, caller.workspace), ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}) });
       if (resolved.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
       rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId, expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId };
       await afterPreparedBindingResolution(runtime.dependencies);
     }
     const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
     const output = await runCompanion(preparedArgv, { cwd: caller.workspace, env, caller, executor, rescueRoute, originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
-    if (output?.type === 'needs-choice') await saveRescuePendingChoice({ dataRoot, caller, cwd, source: prepared.envelope.source, executor, argv: preparedArgv, output });
+    if (output?.type === 'needs-choice') await saveRescuePendingChoice({ dataRoot, caller, cwd: caller.workspace, source: prepared.envelope.source, executor, argv: preparedArgv, output });
     return output;
   }
   if (statusInvocation) {
@@ -165,9 +174,9 @@ export async function runDirectInvocation(argv, runtime = {}) {
     try {
       canonicalWorkspace = (await resolveWorkspaceStorage({ dataRoot, workspace: cwd })).workspacePath;
       const executor = await resolveForwardingExecutor(dataRoot, canonicalWorkspace, ambientThreadId);
-      const caller = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: canonicalWorkspace });
-      if (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The Rescue child is not bound to the active parent turn.', { category: 'authorization', remedy: 'Retry from the original parent thread with one newly started Rescue child.' });
-      return await readBoundRescueStatus({ store: createStateStore({ dataRoot }), workspace: canonicalWorkspace, executor });
+      const caller = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: canonicalWorkspace, workspaceBinding: 'execution' });
+      assertExecutorMatchesCaller(executor, caller);
+      return await readBoundRescueStatus({ store: createStateStore({ dataRoot }), workspace: caller.workspace, executor });
     } catch (error) {
       if (error instanceof PluginError && SAFE_BOUND_STATUS_ERRORS.has(error.code)) throw error;
       throw new PluginError('BOUND_RESCUE_STATUS_UNAVAILABLE', 'Bound Rescue status is unavailable.', { category: 'state', remedy: 'Continue waiting on the original Rescue foreground execution.' });
@@ -179,24 +188,24 @@ export async function runDirectInvocation(argv, runtime = {}) {
   }
   let sessionId = ambientThreadId; let executorAgentId; let executor;
   if (command === 'rescue') { executor = entry === 'invoke-choice' ? await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true, durableProvenance: true }) : await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId); sessionId = executor.parentSessionId; executorAgentId = executor.agentId; }
-  const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd }); const invocations = createInvocationStore({ dataRoot });
-  if (command === 'rescue' && entry === 'invoke' && (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode)) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The Rescue child is not bound to the active parent turn.', { category: 'authorization', remedy: 'Retry from the original parent thread with one newly started Rescue child.' });
+  const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd, ...(command === 'rescue' ? { workspaceBinding: 'execution' } : {}) }); const invocations = createInvocationStore({ dataRoot });
+  if (command === 'rescue' && entry === 'invoke') assertExecutorMatchesCaller(executor, caller);
   /** @type {any} */ let invocation; let executionCaller = caller;
   if (entry === 'invoke-choice') {
-    invocation = await invocations.consumePending({ sessionId, workspace: cwd, command, choice, ...(executorAgentId === undefined ? {} : { executorAgentId }) }); executionCaller = invocation.caller;
+    invocation = await invocations.consumePending({ sessionId, workspace: command === 'rescue' ? caller.workspace : cwd, command, choice, ...(executorAgentId === undefined ? {} : { executorAgentId }) }); executionCaller = invocation.caller;
     if (command === 'rescue' && invocation.route?.routeKind !== 'bound') executor = await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true });
   }
   else {
     if (choice !== undefined) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
     invocation = parseRecordedInvocation(command, caller.prompt);
     if (requiresExecutionChoice(command, invocation.argv)) {
-      await invocations.savePending({ sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode, command, spec: { argv: invocation.argv }, ...(command === 'rescue' ? { source: invocation.source ?? 'explicit' } : {}), ...(executorAgentId === undefined ? {} : { executorAgentId }) });
+      await invocations.savePending({ sessionId, turnId: caller.turnId, workspace: command === 'rescue' ? caller.workspace : cwd, permissionMode: caller.permissionMode, command, spec: { argv: invocation.argv }, ...(command === 'rescue' ? { source: invocation.source ?? 'explicit' } : {}), ...(executorAgentId === undefined ? {} : { executorAgentId }) });
       return { type: 'needs-choice', choices: ['wait', 'background'] };
     }
   }
   const output = await runCompanion(invocation.argv, { cwd: command === 'rescue' ? executionCaller.workspace : cwd, env, caller: executionCaller, executor, rescueRoute: invocation.route, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
   if (output?.type === 'needs-choice') {
-    if (command === 'rescue') await saveRescuePendingChoice({ dataRoot, caller: executionCaller, cwd, source: invocation.source ?? 'explicit', executor, argv: invocation.argv, output });
+    if (command === 'rescue') await saveRescuePendingChoice({ dataRoot, caller: executionCaller, cwd: executionCaller.workspace, source: invocation.source ?? 'explicit', executor, argv: invocation.argv, output });
     else await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv } });
   }
   return output;
@@ -220,7 +229,8 @@ async function saveRescuePendingChoice({ dataRoot, caller, cwd, source, executor
 
 /** @param {any} executor @param {any} caller */
 function assertExecutorMatchesCaller(executor, caller) {
-  if (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The Rescue child is not bound to the active parent turn.', { category: 'authorization', remedy: 'Retry from the original parent thread with one newly started Rescue child.' });
+  if (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode
+    || executor.parentGenerationId !== null && executor.parentGenerationId !== undefined && executor.parentGenerationId !== caller.generationId) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The Rescue child is not bound to the active parent turn.', { category: 'authorization', remedy: 'Retry from the original parent thread with one newly started Rescue child.' });
 }
 
 /** @param {any} dependencies */
@@ -267,16 +277,17 @@ function readRescuePreparationAbortable(input, signal) {
   });
 }
 
-/** @param {NodeJS.ReadableStream} input @param {{writeReady:(line:string)=>unknown|Promise<unknown>}|undefined} transport @param {()=>Promise<any>} operation */
-async function withPrivatePreparationTransport(input, transport, operation) {
-  if (!transport) return operation();
+/** @param {NodeJS.ReadableStream} input @param {{writeReady:(line:string)=>unknown|Promise<unknown>}|undefined} transport */
+function openPrivatePreparationTransport(input, transport) {
+  if (!transport) return { writeReady: async () => {}, close: () => {} };
+  if (typeof transport.writeReady !== 'function') throw new PluginError('DIRECT_INVOCATION_DEPENDENCY_INVALID', 'A private direct-invocation dependency is invalid.', { category: 'validation', remedy: 'Retry without private test dependencies.' });
   const tty = /** @type {NodeJS.ReadableStream & {isTTY?:boolean,setRawMode?:(enabled:boolean)=>unknown}} */ (input);
   if (tty.isTTY !== true || typeof tty.setRawMode !== 'function') throw new PluginError('PREPARATION_TTY_REQUIRED', 'Private Rescue preparation requires a raw-capable terminal.', { category: 'authorization', remedy: 'Run prepare rescue through its installed private PTY transport.' });
   tty.setRawMode(true);
-  try {
-    await transport.writeReady('{"type":"preparation-input-ready","command":"rescue"}\n');
-    return await operation();
-  } finally { try { tty.setRawMode(false); } catch { /* process exit restores terminal state */ } }
+  return {
+    writeReady: () => transport.writeReady('{"type":"preparation-input-ready","command":"rescue"}\n'),
+    close: () => { try { tty.setRawMode?.(false); } catch { /* process exit restores terminal state */ } },
+  };
 }
 
 /** @param {NodeJS.ReadableStream} input @param {AbortSignal|undefined} signal @returns {Promise<any>} */
@@ -750,6 +761,17 @@ export async function runCompanionCli(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && sameEntryPath(fileURLToPath(import.meta.url), resolve(process.argv[1]))) await runCompanionCli();
+
+/** Return only a lexical executable path whose real target is an owned runtime entry. */
+function invocationEntryPath() {
+  if (typeof process.argv[1] !== 'string' || !process.argv[1]) return undefined;
+  const invoked = resolve(process.argv[1]);
+  for (const owned of [activeCompanionPath, activeRescueLauncherPath]) {
+    if (invoked === resolve(owned)) return undefined;
+    if (sameEntryPath(owned, invoked)) return invoked;
+  }
+  return undefined;
+}
 
 /** Treat marketplace symlink entrypoints as the installed companion itself. @param {string} left @param {string} right */
 function sameEntryPath(left, right) {
