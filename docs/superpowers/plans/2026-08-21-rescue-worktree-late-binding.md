@@ -168,6 +168,16 @@ Return fresh caller-shaped objects:
 }
 ```
 
+For proved lifecycle turns, persist caller contexts with an exact private
+`caller-context` version and `generationId`. Keep the public opaque token and
+consume projection unchanged. Consumption may discover the session under a
+workspace lock, but must release it before acquiring the session stripe and
+then re-read in the sole session -> workspace order. If lifecycle state exists,
+require one active v3 record whose generation/session/turn/origin/permission
+matches the caller. Ended, pending, active-missing, malformed, future, or
+superseded lifecycle state revokes the token before advisory file deletion.
+Only true absence of both lifecycle files permits legacy caller consumption.
+
 `workspaceBinding:'execution'` accepts only the origin or exact bound target and
 returns `workspace` as the bound target. `resolveOnlyActiveTurn` follows the
 workspace origin index; it never scans unrelated global slots. Every proved

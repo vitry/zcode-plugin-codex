@@ -191,6 +191,32 @@ size, record count, and the workspace ledger are bounded. The ledger has a
 fixed maximum of 16 canonical entries. Claiming a seventeenth distinct target
 fails closed rather than dropping cleanup provenance.
 
+The public caller token remains an opaque string. For a proved v3 lifecycle,
+its private workspace record uses an exact generation-bound schema:
+
+```json
+{
+  "version": 1,
+  "kind": "caller-context",
+  "digest": "sha256 opaque token",
+  "generationId": "exact active-turn generation",
+  "sessionId": "parent Codex session",
+  "turnId": "current parent turn",
+  "workspace": "/canonical/origin",
+  "permissionMode": "workspace-write",
+  "createdAt": "RFC3339 timestamp",
+  "expiresAt": "RFC3339 timestamp"
+}
+```
+
+Consumption first discovers the bounded record under the workspace lock, then
+releases it and uses the sole session-to-workspace lock order to re-read the
+record and global lifecycle state. When lifecycle state exists, the caller
+generation, session, turn, origin, and permission must exactly match one active
+v3 record. Pending, ended, missing-active, malformed, future, or superseded
+state rejects the token even if advisory workspace cleanup was interrupted.
+Only true absence of both lifecycle files permits the legacy caller schema.
+
 The existing interface gains compatible return metadata and one optional
 resolution discriminator:
 
@@ -206,8 +232,9 @@ cleanupSession(workspace, sessionId)
 Existing callers that omit SessionStart proof keep writing and resolving the
 current workspace-local v2/legacy representation only. The trusted prompt hook
 passes both proof fields together, causing IdentityStore to publish the global
-v3 representation and exact session ledger plus the unchanged workspace-local
-caller token. It does not publish a second active-turn mirror. No-option
+v3 representation and exact session ledger plus a generation-bound private
+caller record; the opaque token and public consume result remain unchanged. It
+does not publish a second active-turn mirror. No-option
 `resolveActiveTurn` reads v3 with exact `originWorkspace` semantics when v3
 exists, otherwise the legacy workspace record. A lifecycle session ledger of
 any state suppresses legacy fallback, even if its active record is absent,
