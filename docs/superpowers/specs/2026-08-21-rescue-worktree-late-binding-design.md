@@ -159,12 +159,14 @@ active record uses the new exact schema:
   "kind": "active-turn",
   "key": "sha256 session slot key",
   "sessionId": "parent Codex session",
+  "generationId": "random 256-bit digest",
   "turnId": "current parent turn",
   "originWorkspace": "/canonical/origin",
   "executionWorkspace": null,
   "permissionMode": "workspace-write",
   "prompt": "bounded private prompt",
-  "createdAt": "RFC3339 timestamp"
+  "createdAt": "RFC3339 timestamp",
+  "status": "active"
 }
 ```
 
@@ -178,7 +180,7 @@ The companion session ledger is a second exact internal record:
   "sessionId": "parent Codex session",
   "sessionStartedAt": "RFC3339 timestamp",
   "sessionSource": "startup",
-  "knownExecutionWorkspaces": ["/canonical/origin-or-worktree"],
+  "knownWorkspaces": ["/canonical/origin-or-worktree"],
   "endedAt": null,
   "updatedAt": "RFC3339 timestamp"
 }
@@ -194,7 +196,7 @@ resolution discriminator:
 
 ```js
 beginCallerTurn({ sessionId, turnId, workspace, permissionMode, prompt,
-                  sessionStartedAt?, sessionSource? })
+                  sessionStartedAt?, sessionSource?, lifecycleResult? })
 resolveActiveTurn({ sessionId, workspace,
                     workspaceBinding?: 'preview' | 'claim' | 'execution' })
 endCallerTurn({ sessionId, turnId, workspace })
@@ -207,17 +209,26 @@ passes both proof fields together, causing IdentityStore to publish the global
 v3 representation and exact session ledger plus the unchanged workspace-local
 caller token. It does not publish a second active-turn mirror. No-option
 `resolveActiveTurn` reads v3 with exact `originWorkspace` semantics when v3
-exists, otherwise the legacy workspace record. `resolveOnlyActiveTurn` performs
-a bounded strict v3 scan filtered by canonical origin plus its existing legacy
-workspace scan; any invalid v3 slot fails closed. Omitting `workspaceBinding`
+exists, otherwise the legacy workspace record. A lifecycle session ledger of
+any state suppresses legacy fallback, even if its active record is absent,
+pending, ended, invalid, or future-versioned. `resolveOnlyActiveTurn` follows a
+bounded exact origin index stored in that workspace and validates its global v3
+target; it does not scan unrelated global slots. Omitting `workspaceBinding`
 therefore preserves today's observable exact origin-workspace behavior.
 `preview` is read-only and accepts an unbound eligible candidate or the exact
 bound target. `claim` performs the one null-to-canonical transition and returns
-the same caller shape. `execution` requires the exact already-bound target.
+the same caller shape. `execution` accepts only the validated origin or exact
+bound path and projects `workspace` to the already-bound target; this lets an
+origin-cwd hook discover the target without trusting a caller-supplied path.
 `endCallerTurn` and `cleanupSession` additionally return only canonical
 workspaces already named by validated records so callers can perform advisory
 cleanup without scans. Existing callers that ignore return values remain
 compatible.
+
+`lifecycleResult: true` is valid only with the exact SessionStart proof pair.
+It returns `{token, replacedTurn}` where `replacedTurn` is null or the previous
+validated `{turnId, generationId, executionWorkspace}`. Existing callers omit
+the flag and continue receiving the token string.
 
 ### Session proof
 
@@ -239,9 +250,10 @@ The candidate is canonicalized with the existing realpath-based workspace
 resolver. It is eligible when either:
 
 1. it exactly equals `originWorkspace`; or
-2. origin and candidate are both Git worktrees whose bounded, shell-free
-   `git rev-parse --path-format=absolute --git-common-dir` results resolve to
-   the same canonical directory.
+2. origin and candidate are both inside Git worktrees, the candidate exactly
+   equals its canonical `--show-toplevel`, and their bounded, shell-free
+   `git rev-parse --path-format=absolute --is-inside-work-tree --show-toplevel
+   --git-common-dir` results prove the same canonical common directory.
 
 Git inspection uses an explicit executable and argv, no shell, bounded output,
 and a short fixed deadline. If either directory is non-Git, only exact-origin
@@ -255,6 +267,28 @@ v3 creation, `claim` resolution, `endCallerTurn`, and `cleanupSession` linearize
 under the one data-root lifecycle-identity lock. Two candidate worktrees racing
 to claim can produce only one winner. Resolving the already selected exact
 target is idempotent; claiming any other target is always rejected.
+
+Changed-turn publication is fail-closed across the global and origin workspace
+locks:
+
+1. under the global lock, validate the ledger, capture replaced-turn metadata,
+   append the new origin to `knownWorkspaces`, and publish a new random
+   generation with `status: "pending"`; pending suppresses every resolver and
+   every legacy fallback;
+2. after releasing the global lock, remove every old caller token for this
+   session and write the new unreachable random token plus the exact origin
+   index under the origin workspace lock;
+3. reacquire the global lock, require the exact pending generation, and replace
+   only `status` with `"active"`; only then return the token/result.
+
+A crash or injected failure before step 3 leaves no usable authority. Retrying
+the exact pending generation repairs and publishes it; a conflicting begin
+supersedes it with another pending generation. An exact duplicate hook input
+with identical session proof, turn, origin, permission, and prompt is
+idempotent and retains the current generation and execution binding while
+rotating the caller token. Reusing the same turn ID with any changed authority
+field creates a new generation, resets execution to null, and invalidates the
+old generation. Fault-injection tests cover every publication point.
 
 No operation holds the authority lock while acquiring a workspace identity,
 preparation, hook-state, job, binding, or broker lock. The required order is:
@@ -271,13 +305,16 @@ a stale object across an asynchronous workspace mutation.
 
 ### UserPromptSubmit
 
-The prompt hook keeps creating the existing origin-scoped caller context,
-active-turn record, and gate baseline. It additionally:
+The prompt hook keeps creating the existing origin-scoped caller context and
+gate baseline. Its active-turn representation becomes v3 when proof is present:
 
 1. resolves the exact origin SessionStart record;
-2. calls the deepened `IdentityStore.beginCallerTurn()`, which creates the
-   existing caller token plus the compatible global v3 active turn;
-3. only emits the installed Rescue launcher context after both writes succeed.
+2. calls the deepened `IdentityStore.beginCallerTurn()` with
+   `lifecycleResult: true`, which publishes the compatible v3 generation and
+   returns the prior validated target, if replaced;
+3. after the method releases its locks, cleans the replaced target's exact
+   preparation; its 30-minute TTL remains a fail-safe if advisory cleanup fails;
+4. only emits the installed Rescue launcher context after publication succeeds.
 
 Starting a newer prompt for the same session replaces only the active turn;
 the bounded workspace ledger remains available for SessionEnd cleanup.
@@ -302,24 +339,27 @@ launcher write readiness, switch to raw mode, or read the LF-terminated private
 envelope. Preparation is then saved using the returned caller with
 `workspace === executionWorkspace`.
 
-If no global v3 active-turn record exists, IdentityStore itself may resolve the
-existing workspace v2 or unversioned active-turn record only at its exact legacy
-workspace. Fallback is allowed only on true absence. A malformed,
-future-version, ended, or mismatched v3 record never falls back.
+IdentityStore may resolve the existing workspace v2 or unversioned active-turn
+record only when both the global active slot and lifecycle session ledger are
+truly absent. Any valid, pending, ended, malformed, future-version, or mismatched
+global lifecycle bytes suppress fallback.
 
 ### Subagent lifecycle
 
-SubagentStart resolves the parent's turn with `workspaceBinding: 'execution'`
-and `input.session_id`.
-The forwarding marker remains discoverable from the hook's origin cwd, while
-the executor record is written to the bound execution workspace. SubagentStop
-uses the exact parent authority and agent identity to locate and stop that same
-executor even when its hook cwd is the origin.
+SubagentStart resolves the parent's turn with `workspaceBinding: 'execution'`,
+`input.session_id`, and origin hook cwd. IdentityStore projects the caller
+workspace to the bound target. The forwarding marker and an exact bounded
+`executor-route` pointer remain in the hook origin; the pointer binds agent,
+parent session/turn/generation, child turn, and canonical target. The executor
+record is written to the target and gains the same parent generation ID.
+SubagentStop follows only that exact origin pointer, revalidates the target
+executor, and marks it stopped even if the current active turn has since been
+replaced. It never searches the workspace ledger or data-root partitions.
 
 Forwarding suppression may inspect at most the two validated locations already
 named by the authority: origin and execution workspace. It never enumerates
-workspace partitions. Sibling agents, child ambient thread IDs, wrong turns,
-wrong permissions, and unapproved Role types remain rejected.
+workspace partitions. Sibling agents, child ambient thread IDs, wrong
+generations, turns, permissions, and unapproved Role types remain rejected.
 
 ### Invocation and durable state
 
@@ -339,8 +379,9 @@ that target, if any. A BLOCK outcome retains the active authority exactly as it
 does today.
 
 SessionEnd first calls the existing `cleanupSession()`, whose v3 lifecycle path
-sets the session ledger `endedAt`, clears the active turn, and returns the
-validated origin plus bounded execution-workspace ledger. Authorization is
+sets the session ledger `endedAt`, clears the active turn, and returns every
+validated entry in bounded `knownWorkspaces`. Every proved begin appends its
+origin; every successful claim appends its target. Authorization is
 therefore revoked even if later advisory cleanup is interrupted. Local
 preparation, executor, identity, and binding cleanup runs only for those
 returned workspaces. Remote job settlement and broker release share the
@@ -355,8 +396,9 @@ new Role, prepare, child, or invocation work.
 
 - Existing workspace-scoped v2 and legacy active-turn records retain their
   exact semantics for generic commands.
-- When no global Rescue authority exists, installed Rescue may use only the
-  old exact-workspace route. It cannot late-bind or scan for another workspace.
+- Only when both global lifecycle files are truly absent may installed Rescue
+  use the old exact-workspace route. It cannot late-bind or scan for another
+  workspace. A session tombstone permanently suppresses stale v2 fallback.
 - The first valid post-upgrade UserPromptSubmit creates the v3 record; no
   explicit setup, cache migration, or user handoff is required.
 - Once a v3 slot exists, any invalid bytes or identity mismatch fail closed
@@ -397,15 +439,20 @@ ZCode session IDs, job IDs, or child IDs.
   permissions, defensive copies, and
   fixed errors.
 - Exact-origin and same-common-dir eligibility; unrelated repo, non-Git target,
-  symlink escape, malformed Git output, timeout, and oversized output reject.
+  nested subdirectory, bare/admin directory, moved worktree, symlink escape,
+  malformed Git output, timeout, and oversized output reject.
 - Preview is read-only. Bind is idempotent for the winner and immutable against
   a second target.
 - Sixteen-way two-target contention produces one target winner and one exact
   stored binding.
-- New prompt replacement, Stop revocation, SessionEnd tombstone/retry, bounded
-  ledger capacity, session isolation, malformed/future records, and strict
-  legacy fallback.
-- Child session IDs and wrong session/turn/permission cannot claim or resolve.
+- Pending/publication failure at every persistence seam, exact duplicate
+  idempotence, same-turn-ID changed-authority generation replacement, Stop
+  revocation, SessionEnd tombstone/retry, origin index bounds, 16-workspace
+  capacity, session isolation, malformed/future records, and strict fallback.
+- Tombstone-plus-stale-v2, corrupt-ledger-plus-v2, and pending-plus-v2 never
+  authorize. Unrelated corrupt global slots cannot block indexed setup.
+- Child session IDs and wrong session/generation/turn/permission cannot claim
+  or resolve.
 
 ### Hook and integration tests
 
@@ -418,9 +465,13 @@ ZCode session IDs, job IDs, or child IDs.
 - Bound target A rejects role-status, prepare, SubagentStart, invoke-prepared,
   and continuation from target B while A remains usable.
 - SubagentStart/Stop reporting origin cwd still creates and closes the executor
-  in the target; forwarding suppression remains exact.
+  in the target through the exact generation-bound route pointer; replacement
+  before SubagentStop does not lose that route. Forwarding suppression remains
+  exact.
 - Turn-ending Stop and SessionEnd received at origin revoke first and clean the
-  target without touching sibling sessions. BLOCK Stop retains authority.
+  target without touching sibling sessions. BLOCK Stop retains authority. A
+  three-turn fixture with two origins and two targets proves the full bounded
+  ledger, partial cleanup failure, and tombstone retry.
 - Same-workspace and non-Git exact-origin routes remain green.
 - Legacy exact-workspace installed state works; invalid v3 state never
   falls back.

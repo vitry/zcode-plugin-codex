@@ -64,9 +64,11 @@ assert.equal((await identity.resolveActiveTurn({
 })).workspace, await realpath(worktreeA));
 ```
 
-The raw record assertion must require exact v3 active-turn and v1 session-ledger
-keys, one null-to-canonical binding transition, canonical key/filename matches,
-private file modes, and no caller token, launcher command, task frame,
+The raw record assertion must require exact v3 active-turn (including random
+generation ID and `active` status), v1 session-ledger, and origin-index keys,
+one pending-to-active publication and null-to-canonical binding transition,
+canonical key/filename matches, private file modes, and no caller token,
+launcher command, task frame,
 job/child/ZCode ID, or Git output. Existing no-option resolution must still
 accept only `root` and return the existing caller shape.
 
@@ -110,6 +112,11 @@ A begin call without SessionStart proof must keep the legacy v2 path; a call
 with the exact proof pair must write v3 plus the v1 session ledger and no v2
 active mirror. Partial proof is invalid. No-option resolution and
 `resolveOnlyActiveTurn` must preserve exact origin semantics across both stores.
+Any lifecycle ledger, including pending/ended/corrupt state, suppresses legacy
+fallback. Add stale-v2 tests for each. An exact duplicate begin retains the
+generation and binding; same turn ID with changed prompt/permission creates a
+new generation and resets the binding. All prior session caller tokens are
+revoked, not only differing turn IDs.
 
 - [ ] **Step 4: Implement the minimal deep module**
 
@@ -126,26 +133,39 @@ cleanupSession(workspace, sessionId)
 Keep the Git runner, strict codec, bounded reader, storage paths, record key,
 eligibility comparison, and test-only dependency seams private. Canonicalize
 workspaces with `resolveWorkspaceStorage`. Execute Git with `execFile` and exact
-argv `['rev-parse', '--path-format=absolute', '--git-common-dir']`, `shell:false`,
-bounded buffer, and fixed timeout. Treat non-Git origin/candidate as eligible
-only when their canonical workspace paths are equal.
+argv for `rev-parse --path-format=absolute --is-inside-work-tree
+--show-toplevel --git-common-dir`, `shell:false`, bounded buffer, and fixed
+timeout. Cross-worktree binding requires candidate === canonical top-level and
+equal canonical common dirs. Treat non-Git origin/candidate as eligible only
+when their canonical workspace paths are equal.
 
 Linearize every v3 record mutation under `<dataRoot>/identity-lifecycle/.lock`
 and never acquire a workspace lock inside it. Preserve the existing workspace
-identity lock for caller tokens, capabilities, gates, and legacy active-turn
-records. Validate the complete persisted record before reading any authority
-field. Return fresh caller-shaped objects:
+identity lock for caller tokens, capabilities, gates, legacy records, and one
+bounded origin index. Changed-turn begin uses: global pending generation ->
+release -> origin caller/index write -> release -> exact global active
+publication. Resolvers reject pending. Retry repairs the exact pending
+generation. Add injected failure/crash-reopen tests at every write. Validate the
+complete persisted record before reading any authority field. Return fresh
+caller-shaped objects:
 
 ```js
 {
   sessionId: record.sessionId,
+  generationId: record.generationId,
   turnId: record.turnId,
   workspace: candidateCanonicalPath,
   permissionMode: record.permissionMode,
   prompt: record.prompt,
   originWorkspace: record.originWorkspace,
+  executionWorkspace: record.executionWorkspace,
 }
 ```
+
+`workspaceBinding:'execution'` accepts only the origin or exact bound target and
+returns `workspace` as the bound target. `resolveOnlyActiveTurn` follows the
+workspace origin index; it never scans unrelated global slots. Every proved
+origin and claimed target enters ledger `knownWorkspaces` (maximum 16).
 
 - [ ] **Step 5: Verify GREEN and regression safety**
 
@@ -224,7 +244,8 @@ Require that role-status does not mutate or touch task/preparation/job/broker
 state; unrelated repository and non-Git target map to exact bounded
 `caller-unavailable`; child ambient ID cannot preview or bind; target A remains
 usable after target B fails; malformed v3 authority suppresses legacy
-fallback; true absence still permits the old same-workspace path. Assert every
+fallback; only absence of both lifecycle files permits the old same-workspace
+path. Assert every
 public result is exact and below the current byte bound, with path/session/turn/
 prompt/error sentinels absent.
 
@@ -235,7 +256,7 @@ call the already-deepened `beginCallerTurn` once:
 
 ```js
 const session = await resolveRecordedSessionStart(dataRoot, input.cwd, input.session_id);
-await createIdentityStore({ dataRoot }).beginCallerTurn({
+const begun = await createIdentityStore({ dataRoot }).beginCallerTurn({
   sessionId: input.session_id,
   turnId: input.turn_id,
   workspace: input.cwd,
@@ -243,13 +264,23 @@ await createIdentityStore({ dataRoot }).beginCallerTurn({
   prompt: input.prompt,
   sessionStartedAt: session.startedAt,
   sessionSource: session.source,
+  lifecycleResult: true,
 });
+if (begun.replacedTurn?.executionWorkspace !== null) {
+  await preparations.cleanupTurn({
+    sessionId: input.session_id,
+    turnId: begun.replacedTurn.turnId,
+    workspace: begun.replacedTurn.executionWorkspace,
+  });
+}
 ```
 
 The exact SessionStart resolve is the production proof; caller-token behavior
 is unchanged. Keep gate baseline, unread jobs, and launcher rendering
-origin-scoped. Emit launcher context only after both SessionStart and
-IdentityStore writes succeed.
+origin-scoped. Replaced preparation cleanup occurs only after IdentityStore has
+released its locks; cleanup failure cannot restore old authority, and the
+preparation remains TTL-bounded. Emit launcher context only after SessionStart
+and active publication succeed.
 
 - [ ] **Step 5: Integrate read-only Role preview and prepare binding**
 
@@ -310,7 +341,11 @@ assert.equal((await resolveForwardingExecutor(dataRoot, target, childAgentId, {
 Also require forwarding Stop suppression, target preparation cleanup on a
 turn-ending Root Stop, BLOCK retention, authority-first SessionEnd revocation,
 target binding closure, target executor/preparation cleanup, sibling-session
-preservation, and ended-tombstone retry after injected cleanup failure.
+preservation, and ended-tombstone retry after injected cleanup failure. Replace
+the parent active generation before SubagentStop and prove the route pointer
+still closes only the old exact child. Add three turns spanning two proved
+origins and two targets; SessionEnd must return/clean all four unique bounded
+workspaces, survive one target failure, and retry from the tombstone.
 
 - [ ] **Step 2: Run and record RED**
 
@@ -325,15 +360,18 @@ target assertions fail.
 
 - [ ] **Step 3: Deepen hook-state placement without workspace scans**
 
-Change `markForwarding` to accept a validated `executionWorkspace`. Keep the
-forwarding marker at the hook origin and write/read the executor at the target.
-Add an interface helper that checks at most authority-provided origin and target
-locations for forwarding suppression. Do not enumerate `workspaces/`.
+Change `markForwarding` to accept the v3 caller projected by
+`workspaceBinding:'execution'`. Keep the forwarding marker and a strict
+`executor-route` pointer at hook origin; write/read the executor at target. Both
+records bind parent generation ID in addition to existing identities. Add an
+interface helper that follows only the exact route pointer for SubagentStop and
+forwarding suppression. Do not enumerate `workspaces/` or the lifecycle ledger.
 
 SubagentStart resolves `resolveActiveTurn({sessionId: input.session_id,
 workspace: target, workspaceBinding: 'execution'})` through IdentityStore before
-executor creation. SubagentStop obtains the exact bound target from the same
-compatible interface and updates only the matching child record. Legacy
+executor creation; origin input is valid and the returned caller workspace is
+the target. SubagentStop follows the persisted route pointer and updates only
+the matching target child record even after active-turn replacement. Legacy
 true-absence continues using input cwd.
 
 - [ ] **Step 4: Make Stop and SessionEnd revoke before cleanup**
@@ -343,7 +381,8 @@ deepened return includes the validated execution target. Use that metadata to
 remove the exact old turn's preparation. BLOCK paths do not end the turn.
 
 SessionEnd calls the existing `identity.cleanupSession(...)` first. Use its
-validated bounded workspace list for hook-state/preparation cleanup, Rescue
+validated bounded `knownWorkspaces` list (every proved origin and claimed
+target) for hook-state/preparation cleanup, Rescue
 binding closure, writable settlement, and broker release. Share the current
 absolute remote deadline; attempt workspace remote cleanup with bounded
 concurrency and retain durable guards on ambiguity. Never restore authority.
@@ -353,7 +392,8 @@ concurrency and retain durable guards on ambiguity. Never restore authority.
 Before `invoke-prepared`, choice continuation, and bound status consume
 workspace state, require `resolveActiveTurn(..., workspaceBinding: 'execution')`
 for the parent session and exact executor workspace. True-absence may use legacy
-exact-workspace behavior; invalid or mismatched v3 authority is terminal. Keep
+exact-workspace behavior only when both global lifecycle files are absent;
+pending/ended/corrupt/mismatched v3 authority is terminal. Keep
 preparation/executor/binding/job calls on `caller.workspace` only.
 
 - [ ] **Step 6: Verify GREEN, concurrency, and cleanup regressions**
@@ -402,19 +442,20 @@ authority snapshots. The deterministic fixture must show:
 
 ```text
 SessionStart(origin) < UserPromptSubmit(origin)
-  < authority ACTIVE_UNBOUND
+  < authority PENDING -> ACTIVE_UNBOUND generation N
   < role-status(execution, no mutation)
   < prepare(execution)
-  < authority ACTIVE_BOUND_TO(execution)
+  < authority ACTIVE_BOUND_TO(execution) generation N
   < SubagentStart(origin hook input, execution executor storage)
   < peer session/create(execution)
 ```
 
 Add one mutation per missing claim, second target, swapped origin/target,
-rewritten turn/permission/session, binding before prompt, role-status mutation,
-executor in origin, peer create in origin, invalid Git lineage, and cleanup
-before revocation. Each mutation must fail a stable qualification code and keep
-private values out of public projections.
+rewritten generation/turn/permission/session, binding before publication,
+role-status mutation, missing/wrong origin index, executor route/executor
+generation drift, peer create in origin, invalid Git lineage, and cleanup before
+revocation. Each mutation must fail a stable qualification code and keep private
+values out of public projections.
 
 - [ ] **Step 2: Run and record RED**
 
