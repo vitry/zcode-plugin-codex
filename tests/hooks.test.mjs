@@ -976,8 +976,18 @@ test('unsafe owned launcher path emits a fixed error after authoritative prompt 
 test('caller contexts end at the earlier turn boundary without crossing sibling sessions', async (t) => {
   await t.test('a new prompt revokes only older turns from the same session', async () => {
     const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
-    for (const session_id of ['owner', 'sibling']) await runHook('session-lifecycle-hook.mjs', { session_id, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
-    await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 't1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'one' }, env); await runHook('user-prompt-hook.mjs', { session_id: 'sibling', turn_id: 's1', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'sibling' }, env); await runHook('user-prompt-hook.mjs', { session_id: 'owner', turn_id: 't2', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'two' }, env);
+    for (const session_id of ['owner', 'sibling']) {
+      const started = await runHook('session-lifecycle-hook.mjs', { session_id, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+      assert.equal(started.code, 0, started.stderr);
+    }
+    for (const prompt of [
+      { session_id: 'owner', turn_id: 't1', prompt: 'one' },
+      { session_id: 'sibling', turn_id: 's1', prompt: 'sibling' },
+      { session_id: 'owner', turn_id: 't2', prompt: 'two' },
+    ]) {
+      const submitted = await runHook('user-prompt-hook.mjs', { ...prompt, cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default' }, env);
+      assert.equal(submitted.code, 0, submitted.stderr);
+    }
     assert.equal((await identity.resolveActiveTurn({ sessionId: 'owner', workspace: cwd })).turnId, 't2'); assert.equal((await identity.resolveActiveTurn({ sessionId: 'sibling', workspace: cwd })).turnId, 's1');
     await identity.endCallerTurn({ sessionId: 'owner', turnId: 't1', workspace: cwd }); assert.equal((await identity.resolveActiveTurn({ sessionId: 'owner', workspace: cwd })).turnId, 't2');
   });
