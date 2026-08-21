@@ -87,6 +87,7 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
       const existing = await readExecutorRoute(routePath(origin, input.session_id, input.turn_id), origin.directory).catch((error) => error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT' ? null : Promise.reject(error));
       if (existing !== null) {
         if (!validExecutorRoute(existing, origin.workspacePath, input) || existing.parentGenerationId !== generationId || existing.parentTurnId !== parentCaller.turnId || existing.parentPermissionMode !== parentCaller.permissionMode || existing.targetWorkspace !== target.workspacePath) throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStart found a conflicting exact executor route.');
+        if (existing.state === 'stopped') throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStart cannot replay an exact stopped executor route.');
         route = existing;
         if (route.state === 'pending') {
           const updatedAt = new Date().toISOString(); route = { ...route, updatedAt };

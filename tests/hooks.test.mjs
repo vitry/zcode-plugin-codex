@@ -342,6 +342,25 @@ test('pending executor route linearizes Start and Stop without an active orphan'
   await assert.rejects(resolveForwardingExecutor(data, target, start.agent_id), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
 });
 
+test('a replayed SubagentStart rejects an exact stopped route without reviving its executor', async () => {
+  const { cwd, data } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await identity.beginCallerTurn({ sessionId: 'stopped-replay-parent', turnId: 'stopped-replay-parent-turn', workspace: cwd, permissionMode: 'workspace-write', prompt: 'stopped replay', ...proof });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'stopped-replay-parent', workspace: cwd, workspaceBinding: 'claim' });
+  const start = { session_id: caller.sessionId, turn_id: 'stopped-replay-child-turn', cwd, hook_event_name: 'SubagentStart', agent_id: 'stopped-replay-child', agent_type: 'zcode-rescue' };
+  await markForwarding(data, start, caller);
+  await markForwarding(data, { ...start, hook_event_name: 'SubagentStop' });
+  assert.equal((await resolveForwardingRoute(data, cwd, start.session_id, start.turn_id)).state, 'stopped');
+  assert.equal((await resolveForwardingExecutor(data, cwd, start.agent_id, { continuation: true, durableProvenance: true })).active, false);
+
+  let crossedPublicationSeam = false;
+  await assert.rejects(markForwarding(data, start, caller, { publicationSeam: () => { crossedPublicationSeam = true; } }), { code: 'EXECUTOR_ROUTE_INVALID' });
+  assert.equal(crossedPublicationSeam, false, 'a pre-existing stopped route must reject before executor publication');
+  assert.equal((await resolveForwardingRoute(data, cwd, start.session_id, start.turn_id)).state, 'stopped');
+  assert.equal((await resolveForwardingExecutor(data, cwd, start.agent_id, { continuation: true, durableProvenance: true })).active, false);
+  await assert.rejects(resolveForwardingExecutor(data, cwd, start.agent_id), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+});
+
 test('pending executor route crash is short-lived, retryable, and cleanup removes exact routes', async (t) => {
   const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, 'pending-route-retry');
   t.after(() => rm(target, { recursive: true, force: true }));
