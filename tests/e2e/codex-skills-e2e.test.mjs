@@ -18,6 +18,7 @@ import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
 import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
+import { brokerEndpointFor } from '../../scripts/zcode-broker.mjs';
 import {
   assertCodexRescueDisplayName,
   CodexRescueEvidenceMismatchError,
@@ -689,8 +690,16 @@ test('installed continuation capture qualifies one parent turn from origin hooks
   await git(['worktree', 'add', '-qb', 'installed-capture-target', executionDirectory], originDirectory);
   const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(executionDirectory);
   const observed = await observeInstalledWorkspaceBoundAuthority({ temporary, originWorkspace, executionWorkspace });
+  const observerDataRoot = join(temporary, 'installed-observer-data');
+  const [observerOriginStorage, observerExecutionStorage] = await Promise.all([
+    resolveWorkspaceStorage({ dataRoot: observerDataRoot, workspace: originWorkspace }),
+    resolveWorkspaceStorage({ dataRoot: observerDataRoot, workspace: executionWorkspace }),
+  ]);
   const observerExpected = { parentSessionId: '019fe6df-faa2-7851-8edb-55f1be7d5489', parentTurnId: 'turn-original', childThreadId: '019fe6e0-4764-7192-83ba-0b0cc2c48660',
-    childTurnId: 'child-turn', originWorkspace, executionWorkspace, permissionMode: 'acceptEdits' };
+    childTurnId: 'child-turn', originWorkspace, executionWorkspace, permissionMode: 'acceptEdits',
+    ownerId: createHash('sha256').update(JSON.stringify(['zcode-owner-v1', '019fe6df-faa2-7851-8edb-55f1be7d5489'])).digest('hex'),
+    originBrokerDirectory: join(observerOriginStorage.directory, 'broker'), executionBrokerDirectory: join(observerExecutionStorage.directory, 'broker'),
+    brokerEndpoint: brokerEndpointFor({ dataRoot: observerExecutionStorage.dataRootPath, workspace: observerExecutionStorage.workspacePath }), brokerProcessCwd: await realpath(tmpdir()) };
   assertInstalledWorkspaceBoundObservation(observed, observerExpected);
   assert.equal(observed.pending.status, 'pending');
   assert.equal(observed.unbound.status, 'active'); assert.equal(observed.unbound.executionWorkspace, null);
@@ -722,6 +731,13 @@ test('installed continuation capture qualifies one parent turn from origin hooks
     (value) => { value.bindingHistory.at(-1).records[0].currentJobId = value.bindingHistory[0].records[0].currentJobId; },
     (value) => { value.bindingHistory.at(-1).workspace = originWorkspace; },
     (value) => { value.jobs[1].workspace = originWorkspace; },
+    (value) => { value.brokerHistory[0].config.workspace = originWorkspace; },
+    (value) => { value.brokerHistory[0].configBytes = value.brokerHistory[0].configBytes.replaceAll(executionWorkspace, originWorkspace); },
+    (value) => { value.brokerHistory[0].config.launchCwd = originWorkspace; },
+    (value) => { value.brokerHistory[0].configPath = join(value.brokerHistory[0].originBrokerDirectory, basename(value.brokerHistory[0].configPath)); },
+    (value) => { value.brokerHistory[0].owners.sessions[value.brokerHistory[0].sessionId] = 'wrong-owner'; },
+    (value) => { value.brokerHistory[0].owners.sessions = { 'wrong-session': observerExpected.ownerId }; },
+    (value) => { value.brokerHistory = []; },
   ]) {
     const changed = structuredClone(observed); mutate(changed);
     assert.throws(() => assertInstalledWorkspaceBoundObservation(changed, observerExpected), /installed observer/u);
@@ -2194,7 +2210,20 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
   const childBase = { agent_id: childThreadId, agent_type: agentType };
   await runHook('subagent-hook.mjs', hookInput('SubagentStart', childBase));
   const peerRecord = join(temporary, 'installed-observer-peer.jsonl'); await writeFile(peerRecord, '');
-  const invokeEnv = { ...launcherEnv, CODEX_THREAD_ID: childThreadId, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: peerRecord, FAKE_ZCODE_GATE_RESULT: 'observer result' };
+  const brokerProcessRecord = join(temporary, 'installed-observer-broker-process.jsonl'); await writeFile(brokerProcessRecord, '');
+  const brokerProcessObserver = join(temporary, 'installed-observer-broker-process.mjs');
+  await writeFile(brokerProcessObserver, `import { appendFileSync, readFileSync } from 'node:fs';
+const record = process.env.INSTALLED_BROKER_PROCESS_RECORD;
+if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-broker.mjs') && process.argv[2]) {
+  const configPath = process.argv[2]; const bytes = readFileSync(configPath, 'utf8');
+  appendFileSync(record, JSON.stringify({ kind: 'broker-startup', configPath, bytes, processCwd: process.cwd() }) + '\\n');
+} else if (record && process.argv[1] === process.env.INSTALLED_ZCODE_MAIN && !process.argv.includes('--version')) {
+  appendFileSync(record, JSON.stringify({ kind: 'zcode-launch', processCwd: process.cwd() }) + '\\n');
+}
+`);
+  const invokeNodeOptions = `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(brokerProcessObserver).href}`.trim();
+  const invokeEnv = { ...launcherEnv, CODEX_THREAD_ID: childThreadId, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: peerRecord, FAKE_ZCODE_GATE_RESULT: 'observer result',
+    NODE_OPTIONS: invokeNodeOptions, INSTALLED_BROKER_PROCESS_RECORD: brokerProcessRecord, INSTALLED_ZCODE_MAIN: fakeZCode };
   const firstInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: executionWorkspace, env: invokeEnv });
   assert.equal(firstInvoke.code, 0, firstInvoke.stderr || firstInvoke.stdout);
   const firstArtifactPaths = await recursiveFiles(dataRoot);
@@ -2206,6 +2235,18 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
   assert.equal(proactivePrepared.code, 0, proactivePrepared.stderr || proactivePrepared.stdout);
   const secondInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: executionWorkspace, env: invokeEnv });
   assert.equal(secondInvoke.code, 0, secondInvoke.stderr || secondInvoke.stdout);
+  const brokerProcessHistory = (await readFile(brokerProcessRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const brokerStartup = brokerProcessHistory.filter((value) => value.kind === 'broker-startup');
+  const zcodeLaunches = brokerProcessHistory.filter((value) => value.kind === 'zcode-launch');
+  const brokerProcessSummary = brokerProcessHistory.map(({ kind, processCwd }) => ({ kind, processCwd }));
+  assert.equal(brokerStartup.length, 1, `installed observer expected one broker startup, got ${JSON.stringify(brokerProcessSummary)}`);
+  assert.equal(zcodeLaunches.length, 1, `installed observer expected one ZCode protocol launch, got ${JSON.stringify(brokerProcessSummary)}`);
+  const executionStorage = await resolveWorkspaceStorage({ dataRoot, workspace: executionWorkspace });
+  const executionBrokerDirectory = join(executionStorage.directory, 'broker');
+  const brokerConfig = JSON.parse(brokerStartup[0].bytes);
+  const brokerIdentityPath = join(executionBrokerDirectory, 'identity.json'); const brokerOwnershipPath = join(executionBrokerDirectory, 'session-owners.json');
+  const brokerIdentityBytes = await readFile(brokerIdentityPath, 'utf8'); const brokerOwnershipBytes = await readFile(brokerOwnershipPath, 'utf8');
+  const brokerIdentity = JSON.parse(brokerIdentityBytes); const brokerOwners = JSON.parse(brokerOwnershipBytes);
   const filesBeforeCleanup = await recursiveFiles(dataRoot); const parsed = [];
   for (const path of filesBeforeCleanup) {
     try { const bytes = await readFile(path, 'utf8'); parsed.push({ path, bytes, value: JSON.parse(bytes) }); } catch { /* locks and non-JSON are irrelevant */ }
@@ -2224,6 +2265,8 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
   const finalArtifacts = await Promise.all(filesBeforeCleanup.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
   await runHook('session-end-hook.mjs', hookInput('SessionEnd', { reason: 'other' }));
   const remainingPaths = await recursiveFiles(dataRoot);
+  const brokerOwnershipAfterBytes = await readFile(brokerOwnershipPath, 'utf8').catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error));
+  const brokerOwnersAfter = brokerOwnershipAfterBytes === null ? null : JSON.parse(brokerOwnershipAfterBytes);
   const artifactHistory = [...firstArtifactSnapshot, ...finalArtifacts];
   const parseHistory = (predicate) => artifactHistory.filter(({ path }) => predicate(path)).map(({ bytes }) => { try { return JSON.parse(bytes); } catch { return null; } }).filter(Boolean);
   const preparationHistory = [...new Map(parseHistory((path) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`))
@@ -2235,6 +2278,14 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
     .filter((value) => value.ownerSessionId === parentSessionId).map((value) => [value.id, value])).values()];
   const authorityArtifact = parsed.findLast(({ path, value }) => basename(path).startsWith('rescue-binding-authority-') && value?.parentSessionId === parentSessionId);
   const peer = (await readFile(peerRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const sessionId = jobs[0]?.zcodeSessionId;
+  const brokerHistory = [{ originBrokerDirectory: join(originStorage.directory, 'broker'), executionBrokerDirectory,
+    configPath: brokerStartup[0].configPath, configBytes: brokerStartup[0].bytes, config: brokerConfig, brokerProcessCwd: brokerStartup[0].processCwd,
+    zcodeLaunchCwd: zcodeLaunches[0].processCwd, identityPath: brokerIdentityPath, identityBytes: brokerIdentityBytes, identity: brokerIdentity,
+    ownershipPath: brokerOwnershipPath, ownershipBytes: brokerOwnershipBytes, owners: brokerOwners, sessionId,
+    originArtifacts: artifactHistory.filter(({ path }) => path === join(originStorage.directory, 'broker') || path.startsWith(`${join(originStorage.directory, 'broker')}${process.platform === 'win32' ? '\\' : '/'}`)),
+    cleanup: { ownershipPath: brokerOwnershipPath, ownershipBytes: brokerOwnershipAfterBytes, owners: brokerOwnersAfter,
+      configPresent: remainingPaths.includes(brokerStartup[0].configPath), identityPresent: remainingPaths.includes(brokerIdentityPath) } }];
   return { pending, unbound, bound, originIndex, executor, route, preparation, dataRoot,
     raw: { pending: pendingBytes, unbound: finalUnboundBytes, bound: `${JSON.stringify(bound)}\n`, originIndex: `${JSON.stringify(originIndex)}\n`, executor: executorArtifact.bytes,
       route: routeArtifact.bytes, authority: authorityArtifact?.bytes, preparations: preparationHistory.map((value) => `${JSON.stringify(value)}\n`),
@@ -2243,7 +2294,7 @@ async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorksp
     hostCalls: [{ command: 'role-status rescue', workspace: executionWorkspace, stdout: roleResult.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: prepared.stdout },
       { command: 'invoke-prepared rescue', workspace: executionWorkspace, stdout: firstInvoke.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: proactivePrepared.stdout },
       { command: 'invoke-prepared rescue', workspace: executionWorkspace, stdout: secondInvoke.stdout }],
-    peer, preparationHistory, bindingHistory, jobs, cleanedPaths, remainingPaths };
+    peer, preparationHistory, bindingHistory, jobs, brokerHistory, cleanedPaths, remainingPaths };
 }
 
 function assertInstalledWorkspaceBoundObservation(observed, expected) {
@@ -2279,6 +2330,47 @@ function assertInstalledWorkspaceBoundObservation(observed, expected) {
   if (creates.length !== 1 || sends.length !== 2 || creates[0].params?.workspace?.workspacePath !== expected.executionWorkspace
     || new Set(sends.map((call) => call.params?.sessionId)).size !== 1 || sends[0].params.sessionId !== sends[1].params.sessionId
     || sends.some((call, index) => call.params?.inputId !== observed.jobs[index].inputId || call.params.sessionId !== observed.jobs[index].zcodeSessionId)) fail('peer history mismatch');
+  if (!Array.isArray(observed.brokerHistory) || observed.brokerHistory.length !== 1) fail('broker history mismatch');
+  const broker = observed.brokerHistory[0];
+  const parseRaw = (bytes) => { try { return JSON.parse(bytes); } catch { return undefined; } };
+  const sameJson = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  const exactKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+  const configKeys = ['endpoint', 'instanceId', 'brokerToken', 'launch', 'workspace', 'launchCwd', 'ownershipPath', 'identityPath', 'publishIdentityAfterListen'];
+  const identityKeys = ['version', 'endpoint', 'pid', 'instanceId', 'brokerToken', 'createdAt'];
+  if (broker.originBrokerDirectory !== expected.originBrokerDirectory || broker.executionBrokerDirectory !== expected.executionBrokerDirectory
+    || broker.configPath !== join(expected.executionBrokerDirectory, `config-${broker.config?.instanceId}.json`)
+    || broker.identityPath !== join(expected.executionBrokerDirectory, 'identity.json')
+    || broker.ownershipPath !== join(expected.executionBrokerDirectory, 'session-owners.json')
+    || broker.configPath.startsWith(`${expected.originBrokerDirectory}${process.platform === 'win32' ? '\\' : '/'}`)
+    || broker.identityPath.startsWith(`${expected.originBrokerDirectory}${process.platform === 'win32' ? '\\' : '/'}`)
+    || broker.ownershipPath.startsWith(`${expected.originBrokerDirectory}${process.platform === 'win32' ? '\\' : '/'}`)) fail('broker partition mismatch');
+  if (!exactKeys(broker.config, configKeys) || !sameJson(parseRaw(broker.configBytes), broker.config)
+    || broker.config.endpoint !== expected.brokerEndpoint || broker.config.workspace !== expected.executionWorkspace
+    || broker.config.launchCwd !== expected.executionWorkspace || broker.config.ownershipPath !== broker.ownershipPath || broker.config.identityPath !== broker.identityPath
+    || broker.config.publishIdentityAfterListen !== true || broker.config.launch?.command !== process.execPath
+    || !Array.isArray(broker.config.launch?.args) || broker.config.launch.args.length !== 1 || broker.config.launch.args[0] !== fakeZCode
+    || broker.config.launch.target !== fakeZCode || broker.brokerProcessCwd !== expected.brokerProcessCwd || broker.zcodeLaunchCwd !== expected.executionWorkspace
+    || broker.configBytes.includes(expected.originWorkspace)) fail(`broker config mismatch ${JSON.stringify({ keys: Object.keys(broker.config ?? {}).sort(), endpoint: broker.config?.endpoint,
+      workspace: broker.config?.workspace, launchCwd: broker.config?.launchCwd, brokerProcessCwd: broker.brokerProcessCwd, zcodeLaunchCwd: broker.zcodeLaunchCwd,
+      launch: broker.config?.launch })}`);
+  if (!exactKeys(broker.identity, identityKeys) || !sameJson(parseRaw(broker.identityBytes), broker.identity)
+    || broker.identity.version !== 1 || broker.identity.endpoint !== expected.brokerEndpoint || broker.identity.instanceId !== broker.config.instanceId
+    || broker.identity.brokerToken !== broker.config.brokerToken || !Number.isSafeInteger(broker.identity.pid) || broker.identity.pid <= 0
+    || typeof broker.identity.createdAt !== 'string' || !Number.isFinite(Date.parse(broker.identity.createdAt))
+    || broker.identityBytes.includes(expected.originWorkspace)) fail('broker identity mismatch');
+  if (!exactKeys(broker.owners, ['version', 'sessions']) || broker.owners.version !== 1 || !exactKeys(broker.owners.sessions, [broker.sessionId])
+    || broker.sessionId !== observed.jobs[0]?.zcodeSessionId || observed.jobs.some((job) => job.zcodeSessionId !== broker.sessionId)
+    || broker.owners.sessions[broker.sessionId] !== expected.ownerId || !sameJson(parseRaw(broker.ownershipBytes), broker.owners)
+    || broker.ownershipBytes.includes(expected.originWorkspace)) fail('broker ownership mismatch');
+  const cleanupOwnersValid = broker.cleanup?.owners === null && broker.cleanup.ownershipBytes === null
+    || exactKeys(broker.cleanup?.owners, ['version', 'sessions']) && broker.cleanup.owners.version === 1
+      && exactKeys(broker.cleanup.owners.sessions, []) && sameJson(parseRaw(broker.cleanup.ownershipBytes), broker.cleanup.owners);
+  if (broker.cleanup?.ownershipPath !== broker.ownershipPath || !cleanupOwnersValid || broker.cleanup.configPresent !== false
+    || typeof broker.cleanup.identityPresent !== 'boolean' || !Array.isArray(broker.originArtifacts) || broker.originArtifacts.length !== 0) fail(`broker cleanup mismatch ${JSON.stringify({
+      cleanupOwners: broker.cleanup?.owners, configPresent: broker.cleanup?.configPresent, identityPresent: broker.cleanup?.identityPresent,
+      originArtifactCount: broker.originArtifacts?.length,
+    })}`);
 }
 
 function installedWorkspaceBoundCaptureFromObservation(observed, expected) {
