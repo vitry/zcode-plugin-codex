@@ -373,13 +373,19 @@ Role inspection. An ineligible, different-bound, absent, ended, or invalid
 record maps to the existing fixed `caller-unavailable` status. No path, session,
 turn, prompt, Git output, or private error is rendered.
 
-Installed provenance remains owned by `plugin-data`. A companion invoked
-through a lexical cache symlink may supply that actual entry path only when its
-canonical target is the exact owned companion module. `plugin-data` then
+Installed provenance remains owned by `plugin-data`. The exact allowlisted
+runtime entries for UserPrompt hook, Rescue launcher, and companion may supply
+their actual lexical `process.argv[1]`; each canonical target must be the same
+relative owned file below the canonical plugin root. `plugin-data` then
 validates the control-free, traversal-free
 `CODEX_HOME/plugins/cache/<marketplace>/zcode/<version>` shape and derives the
 same marketplace namespace. Wrong targets, malformed cache shapes, and
-caller-supplied paths do not create a second provenance route.
+non-runtime files do not create a second provenance route. The validated
+runtime context also returns the lexical installed plugin root, allowing the
+hook to render the sibling installed launcher rather than erasing cache
+identity through `realpath`. The launcher imports the companion in-process, so
+the companion accepts that same exact launcher entry and reuses the one
+`plugin-data` decision; no environment variable transports provenance.
 
 Source-checkout setup keeps its existing exact-workspace active-turn and
 SessionStart diagnostics. This design changes installed Rescue readiness only.

@@ -214,6 +214,7 @@ git commit -m "feat: add compatible active-turn workspace binding"
 - Modify: `hooks/user-prompt-hook.mjs`
 - Modify: `scripts/lib/plugin-data.mjs`
 - Modify: `scripts/zcode-companion.mjs`
+- Modify: `skills/rescue/launcher.mjs`
 - Modify: `tests/hooks.test.mjs`
 - Modify: `tests/integration/companion.test.mjs`
 - Modify: `tests/plugin-data.test.mjs`
@@ -317,15 +318,20 @@ retains the target, creates no preparation, permits a same-target retry, and
 continues rejecting a second target. Use the returned caller for preparation
 save.
 
-Deepen `plugin-data` with one optional trusted lexical entry path rather than
-duplicating provenance parsing in the companion. The companion supplies it
-only when realpath of actual `process.argv[1]` is the exact owned companion and
-the lexical entry differs from the canonical source path. Validate no control
-bytes or traversal, the exact
+Deepen `plugin-data` with one optional trusted lexical runtime entry rather
+than duplicating provenance parsing in hooks, launcher, or companion. Allowlist
+only the exact UserPrompt hook, Rescue launcher, and companion relative files;
+the actual `process.argv[1]` must canonically resolve to that same owned file.
+Validate no control bytes or traversal, the exact
 `CODEX_HOME/plugins/cache/<marketplace>/zcode/<version>` shape, and canonical
-target ownership before deriving the existing marketplace namespace. Add unit
-and real-child tests for exact cache symlink acceptance and wrong target/shape
-rejection; ordinary source CLI and module import retain existing behavior.
+target/root ownership before deriving the existing marketplace namespace and
+returning its validated lexical runtime root. The hook renders the sibling
+launcher from that root; the launcher imports companion in-process, whose
+provenance resolution accepts the same exact launcher entry. Do not forward
+provenance in environment variables. Add unit and real-child tests for the
+actual cache-symlink hook -> launcher -> companion Role/prepare chain, exact
+entry acceptance, wrong target/shape/non-runtime rejection, ordinary installed
+copies, source CLI, and module import.
 IdentityStore itself owns true-absence legacy fallback and never falls back on
 invalid/ineligible/ended/mismatch.
 
