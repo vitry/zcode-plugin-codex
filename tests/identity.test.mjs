@@ -315,12 +315,17 @@ test('proved begin publishes one operation timestamp across active and session r
     sessionId: 'session-clock', turnId: 'turn-a', workspace: workspaceA,
     permissionMode: 'workspace-write', prompt: 'first',
     sessionStartedAt: startedAt, sessionSource: 'startup',
-    get now() { return new Date(Date.parse('2026-08-20T12:00:00.000Z') + reads++); },
+    get now() {
+      const timestamp = reads === 0 ? '2026-08-20T12:00:00.000Z' : '2026-08-20T11:58:00.000Z';
+      reads += 1; return new Date(timestamp);
+    },
   };
 
   await identity.beginCallerTurn(input);
   const active = JSON.parse(await readFile(await globalActivePath(dataRoot, input.sessionId), 'utf8'));
   const ledger = JSON.parse(await readFile(await globalSessionPath(dataRoot, input.sessionId), 'utf8'));
+  assert.equal(reads, 1);
+  assert.ok(Date.parse(active.createdAt) >= Date.parse(startedAt));
   assert.equal(ledger.updatedAt, active.createdAt);
 
   await identity.beginCallerTurn({

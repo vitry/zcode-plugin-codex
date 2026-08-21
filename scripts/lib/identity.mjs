@@ -87,9 +87,9 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
     },
     /** @param {CallerContextInput} input */
     async createCallerContext(input) {
-      validateCallerInput(input);
+      const operationTimestamp = validateCallerInput(input);
       const storage = await identityStorage(dataRoot, input.workspace);
-      const { token, digest, record } = callerRecord(input, storage.workspacePath);
+      const { token, digest, record } = callerRecord(input, storage.workspacePath, operationTimestamp);
       const global = await globalIdentityStorage(dataRoot);
       await withFileLock(sessionLockPath(global, input.sessionId), async () => {
         const state = await readGlobalState(global, input.sessionId, false);
@@ -114,15 +114,14 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
 
     /** Atomically starts one caller turn and revokes older turns for this exact session. @param {CallerContextInput} input @returns {Promise<any>} */
     async beginCallerTurn(input) {
-      validateCallerInput(input);
-      const operationTimestamp = toTimestamp(input.now);
+      const operationTimestamp = validateCallerInput(input);
       const storage = await identityStorage(dataRoot, input.workspace);
       const { token, digest, record } = callerRecord(input, storage.workspacePath, operationTimestamp);
       if (!hasSessionProof(input)) {
         await withFileLock(storage.lockPath, async () => {
           await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId !== input.turnId);
           await atomicWriteJson(join(storage.callersDirectory, `${digest}.json`), record);
-          const active = activeTurnRecord(input, storage.workspacePath);
+          const active = activeTurnRecord(input, storage.workspacePath, operationTimestamp);
           await atomicWriteJson(join(storage.activeTurnsDirectory, `${activeTurnKey(input.sessionId, storage.workspacePath)}.json`), active);
         });
         return token;
@@ -896,9 +895,9 @@ function provedCallerRecord(record, generationId) {
   return { version: 1, kind: 'caller-context', ...record, generationId };
 }
 
-/** @param {CallerContextInput} input @param {string} workspacePath */
-function activeTurnRecord(input, workspacePath) {
-  const createdAt = toTimestamp(input.now); const key = activeTurnKey(input.sessionId, workspacePath);
+/** @param {CallerContextInput} input @param {string} workspacePath @param {number} [timestamp] */
+function activeTurnRecord(input, workspacePath, timestamp) {
+  const createdAt = timestamp ?? toTimestamp(input.now); const key = activeTurnKey(input.sessionId, workspacePath);
   return { version: 2, kind: 'active-turn', key, sessionId: input.sessionId, turnId: input.turnId, workspace: workspacePath, permissionMode: input.permissionMode, prompt: input.prompt ?? '', createdAt: new Date(createdAt).toISOString() };
 }
 
@@ -992,21 +991,23 @@ function safeEqual(left, right) {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-/** @param {any} input */
+/** @param {any} input @returns {number} */
 function validateCallerInput(input) {
   if (!isPlainObject(input) || !isBoundedString(input.sessionId, MAX_ID_BYTES)
     || !isBoundedString(input.turnId, MAX_ID_BYTES) || !isBoundedString(input.workspace, MAX_PATH_BYTES)
     || !PERMISSION_MODES.includes(input.permissionMode)
     || input.prompt !== undefined && (typeof input.prompt !== 'string' || Buffer.byteLength(input.prompt) > 64 * 1024)) throw invalidIdentityInput();
+  const now = toTimestamp(input.now);
   const hasStartedAt = input.sessionStartedAt !== undefined; const hasSource = input.sessionSource !== undefined;
   if (hasStartedAt !== hasSource) throw invalidIdentityInput();
   if (input.lifecycleResult !== undefined && input.lifecycleResult !== true
     || input.lifecycleResult === true && !hasStartedAt) throw invalidIdentityInput();
   if (hasStartedAt) {
-    const now = toTimestamp(input.now); const startedAt = strictTimestamp(input.sessionStartedAt);
+    const startedAt = strictTimestamp(input.sessionStartedAt);
     if (!['startup', 'resume', 'clear'].includes(input.sessionSource)
       || startedAt > now || now - startedAt > MAX_SESSION_AGE_MS) throw invalidIdentityInput();
   }
+  return now;
 }
 
 /** @param {any} input */
