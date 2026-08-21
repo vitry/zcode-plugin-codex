@@ -11,8 +11,9 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { diagnoseZCodeAuth } from '../../scripts/lib/codex-config.mjs';
+import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
-import { createZCodeClient } from '../../scripts/lib/zcode-client.mjs';
+import { createExistingManagedZCodeClient } from '../../scripts/lib/zcode-client.mjs';
 import { discoverZCode } from '../../scripts/lib/zcode-discovery.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { resolveRealZCodeModelEnvironment } from '../helpers/real-zcode-model.mjs';
@@ -107,13 +108,13 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   const [firstJob] = await readBoundJobs(dataRoot, executionWorkspace);
   assert.equal(firstJob.workspace, executionWorkspace); assert.equal(firstJob.status, 'succeeded'); assert.ok(firstJob.zcodeSessionId); assert.ok(firstJob.inputId);
 
-  client = await createZCodeClient({
+  client = await createExistingManagedZCodeClient({
+    dataRoot,
     workspace: executionWorkspace,
-    launch: discovery.launch,
-    env: process.env,
+    ownerId: ownerIdForSession('real-zcode-e2e'),
     requestTimeoutMs: 30_000,
-    completionTimeoutMs: 180_000,
   });
+  assert.ok(client, 'the installed invocation must leave its exact managed broker available for observation');
   client.setPermissionHandler((request) => {
     const denied = request.options.find((option) => option.response?.decision === 'deny');
     assert.ok(denied, 'every real E2E permission request must offer an exact deny response');
@@ -123,7 +124,10 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   const sessionId = firstJob.zcodeSessionId;
   sessions.add(sessionId);
   const firstCompleted = await client.readSession(sessionId);
-  const firstAssistantResults = visibleAssistantResultsForTurn(firstCompleted, firstJob.inputId, new Set(firstJob.beforeMessageIds), firstPrompt);
+  const firstAssistantResults = visibleAssistantResultsForTurn(
+    firstCompleted, firstJob.inputId, new Set(firstJob.beforeMessageIds),
+    await readBoundPrompt(dataRoot, executionWorkspace, firstJob),
+  );
   assert.ok(firstAssistantResults.length >= 1, 'the first installed bound turn must expose a non-empty assistant result');
   await boundTurn.stopChild(childId);
   await boundTurn.prepareProactive({ task: secondPrompt, model: requestedModel });
@@ -132,7 +136,10 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   const jobs = await readBoundJobs(dataRoot, executionWorkspace); assert.equal(jobs.length, 2);
   const secondJob = jobs[1]; assert.equal(secondJob.zcodeSessionId, sessionId); assert.notEqual(secondJob.inputId, firstJob.inputId);
   const secondCompleted = await client.readSession(sessionId);
-  const secondAssistantResults = visibleAssistantResultsForTurn(secondCompleted, secondJob.inputId, new Set(secondJob.beforeMessageIds), secondPrompt);
+  const secondAssistantResults = visibleAssistantResultsForTurn(
+    secondCompleted, secondJob.inputId, new Set(secondJob.beforeMessageIds),
+    await readBoundPrompt(dataRoot, executionWorkspace, secondJob),
+  );
   assert.ok(secondAssistantResults.length >= 1, 'the second installed bound turn must expose a new non-empty assistant result');
   assert.ok(secondAssistantResults.every((message) => !new Set(firstAssistantResults.map((entry) => entry.info.messageId)).has(message.info.messageId)));
   assert.ok(secondAssistantResults.some((message) => !new Set(firstAssistantResults.map(visibleAssistantText)).has(visibleAssistantText(message))));
@@ -339,6 +346,12 @@ async function readBoundJobs(dataRoot, workspace) {
     if (value.ownerSessionId === 'real-zcode-e2e' && value.command === 'rescue') values.push(value);
   }
   return values.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+}
+
+async function readBoundPrompt(dataRoot, workspace, job) {
+  assert.equal(job.promptArtifact, `prompts/${job.id}.md`);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  return readFile(join(storage.directory, job.promptArtifact), 'utf8');
 }
 
 function runSpawn(command, args, { cwd, env, input } = {}) {
