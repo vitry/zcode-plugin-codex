@@ -1,5 +1,6 @@
 // ZCode CLI 0.16.1 response contracts, transcribed from the bundled Zod schemas
-// in /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs (`--version` = 0.16.1):
+// in /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs (`--version` = 0.16.1),
+// with captured initial-empty-session compatibility for ZCode CLI 0.16.3:
 // Kne (snapshot), ZNe (session), XHt (settings), GNe/UXn/LXn/BXn (messages),
 // VNe (parts), nto (projection), and cHt (runtime) in glm/zcode.cjs.
 
@@ -162,11 +163,11 @@ export function validSnapshot(/** @type {any} */ value, /** @type {string} */ se
 }
 
 /**
- * Compatibility validation for ZCode 0.16.1's initial empty projection.
- * The normal validSnapshot relation remains strict for reads and updates.
+ * Compatibility validation for ZCode 0.16.1 and 0.16.3 initial empty projections.
+ * The normal validSnapshot relation remains strict for reads and resumes.
  * @param {any} value @param {string} sessionId @param {string} workspacePath
  */
-function validEmptyCreateSnapshot(value, sessionId, workspacePath) {
+function validInitialEmptySnapshot(value, sessionId, workspacePath) {
   return validSnapshotEnvelope(value)
     && text(sessionId) && value.session.sessionId === sessionId
     && value.session.workspace.workspacePath === workspacePath && value.session.workspace.workspaceKey === workspacePath
@@ -178,7 +179,7 @@ function validEmptyCreateSnapshot(value, sessionId, workspacePath) {
     && value.projection.turnCount === 0 && value.projection.totalTokenCount === 0 && value.projection.contextUsed === 0
     && value.projection.pendingPermissions.length === 0 && value.projection.activeToolCalls.length === 0 && value.projection.backgroundJobs.length === 0
     && value.projection.lastError === undefined
-    && value.runtime.eventSeq === 0 && value.runtime.stateRevision === 0
+    && value.runtime.eventSeq === 0 && [0, 1].includes(value.runtime.stateRevision)
     && value.runtime.activeTurnId === undefined && value.runtime.activeTurnKind === undefined
     && value.runtime.pendingRequestIds.length === 0
     && (value.runtime.apiRetry === undefined || value.runtime.apiRetry === null)
@@ -189,9 +190,13 @@ function validEmptyCreateSnapshot(value, sessionId, workspacePath) {
 }
 
 export function validCreateSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId, /** @type {string} */ workspacePath) {
-  return validSnapshot(value, sessionId, workspacePath) || validEmptyCreateSnapshot(value, sessionId, workspacePath);
+  return validSnapshot(value, sessionId, workspacePath) || validInitialEmptySnapshot(value, sessionId, workspacePath);
+}
+
+export function validSettingsSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId, /** @type {string} */ workspacePath) {
+  return validSnapshot(value, sessionId, workspacePath) || validInitialEmptySnapshot(value, sessionId, workspacePath);
 }
 
 export function validSetupAuthProbeSnapshot(/** @type {any} */ value, /** @type {string} */ sessionId, /** @type {string} */ workspacePath) {
-  return validEmptyCreateSnapshot(value, sessionId, workspacePath);
+  return validInitialEmptySnapshot(value, sessionId, workspacePath);
 }
