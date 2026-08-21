@@ -142,8 +142,10 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
             throw authorizationError('IDENTITY_SESSION_MISMATCH', 'The identity session proof does not match the active session.');
           }
         }
+        const orphanRetry = ledger === null && existing !== null && existing.status === 'pending'
+          && strictTimestamp(input.sessionStartedAt) <= Date.parse(existing.createdAt);
         const duplicate = existing !== null && activeAuthorityEqual(existing, input, storage.workspacePath)
-          && (ledger?.endedAt === null || ledger === null && existing.status === 'pending');
+          && (ledger?.endedAt === null || orphanRetry);
         const recoverableWorkspaces = ledger !== null && ledger.endedAt === null
           ? ledger.knownWorkspaces : ledger === null && existing !== null ? [existing.originWorkspace] : [];
         priorWorkspaces = [...recoverableWorkspaces];
