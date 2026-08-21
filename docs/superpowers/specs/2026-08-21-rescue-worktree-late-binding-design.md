@@ -68,20 +68,26 @@ uses that workspace. It is simple and worktree-friendly, but it cannot prove
 that the current directory was selected by the same active parent turn. A child
 or stale process with ambient session material could redirect work.
 
-### 2. Move all active-turn authority to a global unbound schema
+### 2. Deepen IdentityStore with a compatible active-turn v3 (chosen)
 
-This is conceptually clean, but it changes the trust and storage contract for
-every command and qualification fixture. Review, status, transfer, setup, and
-legacy caller-token behavior do not need workspace mobility, so the blast
-radius is unjustified.
+`IdentityStore` already owns active-turn creation, resolution, replacement, and
+cleanup. Deepen that module so one versioned active turn can distinguish origin
+from execution workspace. Existing callers keep the exact same
+`resolveActiveTurn({sessionId, workspace})` origin semantics. Rescue callers add
+one explicit `workspaceBinding` value to the same resolution interface:
+`preview`, `claim`, or `execution`. Generic caller tokens and workspace-local
+state remain unchanged.
 
-### 3. Add a Rescue-specific two-phase authority (chosen)
+This preserves one semantic source of truth: "the active parent turn". Git
+lineage, global v3 storage, legacy fallback, locking, target ledger, and caller
+projection stay behind the existing IdentityStore seam.
 
-Generic identity stays unchanged. The trusted prompt hook additionally records
-one private Rescue lifecycle authority at the data-root level. Role preflight
-may preview it, while private prepare atomically claims an eligible execution
-workspace. All downstream Rescue state remains workspace-local. This is the
-smallest design that fixes the UX without weakening unrelated commands.
+### 3. Add a separate Rescue authority module
+
+This would reduce edits inside IdentityStore, but it would create two modules
+that independently answer which parent turn is current. Replacement prompt,
+Stop, SessionEnd, malformed-state compatibility, and tests would have to keep
+both truths synchronized. The duplicated semantic is rejected.
 
 ## Authority Model
 
@@ -127,77 +133,101 @@ conflicting Role inspection must not consume the one binding choice. `prepare`
 claims before enabling raw TTY transport or reading the private task frame, so
 rejected candidates cannot disclose or persist task material.
 
-## Rescue Authority Store
+## Deepened IdentityStore
 
-Add a deep module `scripts/lib/rescue-authority.mjs`. It owns validation,
-canonicalization, repository-lineage checks, storage, locking, compatibility,
-and fixed private errors. Hooks and the companion do not manipulate record
+Extend `scripts/lib/identity.mjs`. It already owns validation, canonicalization,
+authorization storage, locking, compatibility, and fixed private errors. The
+deepened implementation additionally hides repository-lineage checks and the
+active-turn v3 lifecycle. Hooks and the companion do not manipulate record
 bytes directly.
 
 State is stored outside workspace partitions:
 
 ```text
-<dataRoot>/rescue-authority/
+<dataRoot>/identity-lifecycle/
   .lock/
+  active-turns/<sha256(sessionId)>.json
   sessions/<sha256(sessionId)>.json
 ```
 
-The directory and files retain the existing private 0700/0600 guarantees. One
-exact bounded record is stored per parent session:
+The directory and files retain the existing private 0700/0600 guarantees. The
+active record uses the new exact schema:
+
+```json
+{
+  "version": 3,
+  "kind": "active-turn",
+  "key": "sha256 session slot key",
+  "sessionId": "parent Codex session",
+  "turnId": "current parent turn",
+  "originWorkspace": "/canonical/origin",
+  "executionWorkspace": null,
+  "permissionMode": "workspace-write",
+  "prompt": "bounded private prompt",
+  "createdAt": "RFC3339 timestamp"
+}
+```
+
+The companion session ledger is a second exact internal record:
 
 ```json
 {
   "version": 1,
-  "kind": "rescue-session-authority",
+  "kind": "identity-session",
   "key": "sha256 session slot key",
   "sessionId": "parent Codex session",
   "sessionStartedAt": "RFC3339 timestamp",
   "sessionSource": "startup",
-  "originWorkspace": "/canonical/origin",
   "knownExecutionWorkspaces": ["/canonical/origin-or-worktree"],
-  "activeTurn": {
-    "turnId": "current parent turn",
-    "originWorkspace": "/canonical/origin",
-    "executionWorkspace": null,
-    "permissionMode": "workspace-write",
-    "prompt": "bounded private prompt",
-    "createdAt": "RFC3339 timestamp"
-  },
-  "endedAt": null
+  "endedAt": null,
+  "updatedAt": "RFC3339 timestamp"
 }
 ```
 
 All object keys are exact. Identifiers, paths, prompt bytes, timestamps, file
-size, record count, and `knownExecutionWorkspaces` are bounded. The workspace
-ledger has a fixed maximum of 16 canonical entries. Claiming a seventeenth
-distinct target fails closed rather than dropping cleanup provenance.
+size, record count, and the workspace ledger are bounded. The ledger has a
+fixed maximum of 16 canonical entries. Claiming a seventeenth distinct target
+fails closed rather than dropping cleanup provenance.
 
-The store exposes only narrow operations:
+The existing interface gains compatible return metadata and one optional
+resolution discriminator:
 
 ```js
-beginTurn({ sessionId, turnId, originWorkspace, permissionMode, prompt,
-            sessionStartedAt, sessionSource })
-previewTurn({ sessionId, candidateWorkspace })
-bindTurn({ sessionId, candidateWorkspace })
-resolveBoundTurn({ sessionId, workspace })
-endTurn({ sessionId, turnId, originWorkspace })
-endSession({ sessionId, originWorkspace })
+beginCallerTurn({ sessionId, turnId, workspace, permissionMode, prompt,
+                  sessionStartedAt?, sessionSource? })
+resolveActiveTurn({ sessionId, workspace,
+                    workspaceBinding?: 'preview' | 'claim' | 'execution' })
+endCallerTurn({ sessionId, turnId, workspace })
+cleanupSession(workspace, sessionId)
 ```
 
-`previewTurn`, `bindTurn`, and `resolveBoundTurn` return defensive caller-shaped
-copies. `beginTurn` also returns the replaced turn ID and its bound workspace,
-when one existed, so the prompt hook can remove the prior private preparation
-after releasing the authority lock. `endTurn` and `endSession` return only
-canonical workspaces that were already in the validated record so cleanup never
-scans data-root state.
+Existing callers that omit SessionStart proof keep writing and resolving the
+current workspace-local v2/legacy representation only. The trusted prompt hook
+passes both proof fields together, causing IdentityStore to publish the global
+v3 representation and exact session ledger plus the unchanged workspace-local
+caller token. It does not publish a second active-turn mirror. No-option
+`resolveActiveTurn` reads v3 with exact `originWorkspace` semantics when v3
+exists, otherwise the legacy workspace record. `resolveOnlyActiveTurn` performs
+a bounded strict v3 scan filtered by canonical origin plus its existing legacy
+workspace scan; any invalid v3 slot fails closed. Omitting `workspaceBinding`
+therefore preserves today's observable exact origin-workspace behavior.
+`preview` is read-only and accepts an unbound eligible candidate or the exact
+bound target. `claim` performs the one null-to-canonical transition and returns
+the same caller shape. `execution` requires the exact already-bound target.
+`endCallerTurn` and `cleanupSession` additionally return only canonical
+workspaces already named by validated records so callers can perform advisory
+cleanup without scans. Existing callers that ignore return values remain
+compatible.
 
 ### Session proof
 
 `UserPromptSubmit` must first resolve the existing workspace-local SessionStart
 record, not merely test a boolean. It passes that record's exact `startedAt` and
-`source` into `beginTurn`. Therefore the global authority is derived only from
-the existing trusted hook chain. Role preflight no longer needs a SessionStart
-record in the target worktree; it uses the proof captured in the authority.
+`source` into `beginCallerTurn`. The method accepts both proof fields together
+or neither; a partial pair is invalid. Therefore v3 authority is derived only
+from the existing trusted hook chain. Role preflight no longer needs a
+SessionStart record in the target worktree; it resolves the original record
+using the validated `originWorkspace` returned by IdentityStore.
 
 A compact SessionStart never silently replaces a stronger startup/resume/clear
 proof. A record terminalized by SessionEnd cannot reopen unless a strictly newer
@@ -221,10 +251,10 @@ workspace and common directory resolve canonically.
 
 ### Linearization and lock order
 
-`beginTurn`, `bindTurn`, `endTurn`, and `endSession` linearize under the one
-data-root authority lock. Two candidate worktrees racing to bind can produce
-only one winner. Binding the already selected exact target is idempotent;
-binding any other target is always rejected.
+v3 creation, `claim` resolution, `endCallerTurn`, and `cleanupSession` linearize
+under the one data-root lifecycle-identity lock. Two candidate worktrees racing
+to claim can produce only one winner. Resolving the already selected exact
+target is idempotent; claiming any other target is always rejected.
 
 No operation holds the authority lock while acquiring a workspace identity,
 preparation, hook-state, job, binding, or broker lock. The required order is:
@@ -245,40 +275,42 @@ The prompt hook keeps creating the existing origin-scoped caller context,
 active-turn record, and gate baseline. It additionally:
 
 1. resolves the exact origin SessionStart record;
-2. calls `RescueAuthorityStore.beginTurn()`;
-3. cleans any replaced turn's preparation in its returned bound target;
-4. only emits the installed Rescue launcher context after both generic and
-   Rescue authority creation succeed.
+2. calls the deepened `IdentityStore.beginCallerTurn()`, which creates the
+   existing caller token plus the compatible global v3 active turn;
+3. only emits the installed Rescue launcher context after both writes succeed.
 
 Starting a newer prompt for the same session replaces only the active turn;
 the bounded workspace ledger remains available for SessionEnd cleanup.
 
 ### Role readiness
 
-Installed `role-status rescue` calls `previewTurn()` with ambient parent session
-and current cwd. An unbound eligible candidate or the exact bound candidate may
-continue to managed Role inspection. An ineligible, different-bound, absent,
-ended, or invalid record maps to the existing fixed `caller-unavailable`
-status. No path, session, turn, prompt, Git output, or private error is rendered.
+Installed `role-status rescue` calls `resolveActiveTurn()` with
+`workspaceBinding: 'preview'`, the ambient parent session, and current cwd. An
+unbound eligible candidate or the exact bound candidate may continue to managed
+Role inspection. An ineligible, different-bound, absent, ended, or invalid
+record maps to the existing fixed `caller-unavailable` status. No path, session,
+turn, prompt, Git output, or private error is rendered.
 
 Source-checkout setup keeps its existing exact-workspace active-turn and
 SessionStart diagnostics. This design changes installed Rescue readiness only.
 
 ### Private prepare
 
-`prepare rescue` calls `bindTurn()` before `withPrivatePreparationTransport()`.
-Only after binding succeeds may the launcher write readiness, switch to raw
-mode, or read the LF-terminated private envelope. Preparation is then saved
-using the returned caller with `workspace === executionWorkspace`.
+`prepare rescue` calls `resolveActiveTurn()` with `workspaceBinding: 'claim'`
+before `withPrivatePreparationTransport()`. Only after claim succeeds may the
+launcher write readiness, switch to raw mode, or read the LF-terminated private
+envelope. Preparation is then saved using the returned caller with
+`workspace === executionWorkspace`.
 
-If no global Rescue authority record exists, the companion may use the existing
-exact-workspace active-turn path as a legacy compatibility fallback. Fallback
-is allowed only on true absence. A malformed, future-version, ended, or
-mismatched global record never falls back.
+If no global v3 active-turn record exists, IdentityStore itself may resolve the
+existing workspace v2 or unversioned active-turn record only at its exact legacy
+workspace. Fallback is allowed only on true absence. A malformed,
+future-version, ended, or mismatched v3 record never falls back.
 
 ### Subagent lifecycle
 
-SubagentStart resolves the parent's bound Rescue turn by `input.session_id`.
+SubagentStart resolves the parent's turn with `workspaceBinding: 'execution'`
+and `input.session_id`.
 The forwarding marker remains discoverable from the hook's origin cwd, while
 the executor record is written to the bound execution workspace. SubagentStop
 uses the exact parent authority and agent identity to locate and stop that same
@@ -293,25 +325,27 @@ wrong permissions, and unapproved Role types remain rejected.
 
 `invoke-prepared`, choice continuation, bound status, state reservation, job
 artifacts, broker ownership, and ZCode session creation continue to use only the
-bound execution workspace. They must call `resolveBoundTurn()` at their current
-authorization boundary. The origin workspace is never substituted into a job,
-preparation, executor, binding, artifact, or peer request.
+bound execution workspace. They must call `resolveActiveTurn()` with
+`workspaceBinding: 'execution'` at their current authorization boundary. The
+origin workspace is never substituted into a job, preparation, executor,
+binding, artifact, or peer request.
 
 ### Stop and SessionEnd
 
-When Root Stop actually ends the turn, it first calls `endTurn()` under the
-authority lock. It then cleans the exact preparation in the returned bound
-target, if any, while generic caller and gate cleanup remain origin-scoped. A
-BLOCK outcome retains the active authority exactly as it retains the current
-generic active turn.
+When Root Stop actually ends the turn, it first calls the existing
+`endCallerTurn()`; the deepened method revokes both generic and v3 authority and
+returns the validated bound target. It then cleans the exact preparation in
+that target, if any. A BLOCK outcome retains the active authority exactly as it
+does today.
 
-SessionEnd first calls `endSession()`, which sets `endedAt`, clears the active
-turn, and returns the validated origin plus the bounded execution-workspace
-ledger. Authorization is therefore revoked even if later advisory cleanup is
-interrupted. Local preparation, executor, identity, and binding cleanup runs
-only for those returned workspaces. Remote job settlement and broker release
-share the existing absolute SessionEnd budget and may be attempted in bounded
-parallel; unacknowledged work retains its durable guard for normal scavenging.
+SessionEnd first calls the existing `cleanupSession()`, whose v3 lifecycle path
+sets the session ledger `endedAt`, clears the active turn, and returns the
+validated origin plus bounded execution-workspace ledger. Authorization is
+therefore revoked even if later advisory cleanup is interrupted. Local
+preparation, executor, identity, and binding cleanup runs only for those
+returned workspaces. Remote job settlement and broker release share the
+existing absolute SessionEnd budget and may be attempted in bounded parallel;
+unacknowledged work retains its durable guard for normal scavenging.
 
 Cleanup failures never restore authority. A later SessionEnd/recovery pass may
 read an ended tombstone for its bounded workspace ledger but cannot authorize
@@ -323,9 +357,9 @@ new Role, prepare, child, or invocation work.
   exact semantics for generic commands.
 - When no global Rescue authority exists, installed Rescue may use only the
   old exact-workspace route. It cannot late-bind or scan for another workspace.
-- The first valid post-upgrade UserPromptSubmit creates the global record; no
+- The first valid post-upgrade UserPromptSubmit creates the v3 record; no
   explicit setup, cache migration, or user handoff is required.
-- Once a global slot exists, any invalid bytes or identity mismatch fail closed
+- Once a v3 slot exists, any invalid bytes or identity mismatch fail closed
   and suppress legacy fallback.
 - Existing caller tokens, preparations, executors, jobs, bindings, results,
   model policy, and broker records are not rewritten.
@@ -359,7 +393,8 @@ ZCode session IDs, job IDs, or child IDs.
 
 ### Unit tests
 
-- Exact v1 schema, file bounds, private permissions, defensive copies, and
+- Exact v3 active-turn and v1 session-ledger schemas, file bounds, private
+  permissions, defensive copies, and
   fixed errors.
 - Exact-origin and same-common-dir eligibility; unrelated repo, non-Git target,
   symlink escape, malformed Git output, timeout, and oversized output reject.
@@ -387,7 +422,7 @@ ZCode session IDs, job IDs, or child IDs.
 - Turn-ending Stop and SessionEnd received at origin revoke first and clean the
   target without touching sibling sessions. BLOCK Stop retains authority.
 - Same-workspace and non-Git exact-origin routes remain green.
-- Legacy exact-workspace installed state works; invalid global state never
+- Legacy exact-workspace installed state works; invalid v3 state never
   falls back.
 
 ### Qualification and authenticated response

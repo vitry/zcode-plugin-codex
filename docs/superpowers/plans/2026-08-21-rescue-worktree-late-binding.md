@@ -4,7 +4,7 @@
 
 **Goal:** Let one active owned Codex parent turn automatically bind Rescue to an eligible linked worktree at private preparation time, without a visible handoff or weakened identity checks.
 
-**Architecture:** Add one deep `RescueAuthorityStore` at a data-root lifecycle seam. The prompt hook records an unbound Rescue turn derived from exact SessionStart proof, Role readiness previews it read-only, and private prepare atomically binds one canonical same-repository execution workspace before accepting task bytes. Existing generic caller identity stays workspace-local; all downstream Rescue state stays strictly local to the bound target.
+**Architecture:** Deepen the existing `IdentityStore` with a compatible v3 active-turn representation and optional `workspaceBinding` resolution semantics. The prompt hook supplies exact SessionStart proof, Role readiness previews read-only, and private prepare atomically claims one canonical same-repository execution workspace before accepting task bytes. Existing callers omit the option and retain exact-origin behavior; all downstream Rescue state stays strictly local to the bound target.
 
 **Tech Stack:** Node.js 22.13 ESM, strict JSON/file identity helpers, advisory file locks, Git CLI without shell, `node:test`, Codex hook integration tests, authenticated ZCode 0.16.3 opt-in qualification, generated marketplace snapshot, GitHub Actions.
 
@@ -12,9 +12,9 @@
 
 ## File and Module Map
 
-- Create `scripts/lib/rescue-authority.mjs`: deep module owning the record codec, private data-root storage, Git common-dir eligibility, atomic preview/bind/end operations, legacy absence distinction, and fixed errors.
-- Create `tests/rescue-authority.test.mjs`: tests only the module interface with real temporary repositories/worktrees and injected bounded process seams where necessary.
-- Modify `hooks/user-prompt-hook.mjs`: derive Rescue authority from the exact origin SessionStart record and clean a replaced target preparation.
+- Modify `scripts/lib/identity.mjs`: deepen the existing IdentityStore with compatible v3 active-turn modes, private data-root lifecycle storage, Git common-dir eligibility, atomic preview/claim/execution resolution, session target ledger, legacy fallback, and fixed errors.
+- Modify `tests/identity.test.mjs`: test the same IdentityStore interface with real temporary repositories/worktrees and injected bounded process seams where necessary.
+- Modify `hooks/user-prompt-hook.mjs`: derive compatible v3 active-turn authority from the exact origin SessionStart record while retaining the current caller-token and gate behavior.
 - Modify `scripts/zcode-companion.mjs`: preview authority for installed Role readiness, bind before private preparation transport, and resolve the bound target at child/invocation boundaries.
 - Modify `hooks/lib/hook-state.mjs` and `hooks/subagent-hook.mjs`: split origin forwarding markers from target executor records and locate only authority-named workspaces.
 - Modify `hooks/stop-review-gate-hook.mjs` and `hooks/session-end-hook.mjs`: revoke global authority first, then clean only validated returned targets under existing budgets.
@@ -23,98 +23,104 @@
 - Modify `README.md`, `README.zh-CN.md`, `SECURITY.md`, `CHANGELOG.md`, `docs/adr/0010-use-thread-bound-direct-companion.md`, `docs/adr/0013-bind-rescue-child-to-zcode-session.md`, and `tests/release-contracts.test.mjs`: publish the automatic, immutable, same-repository contract.
 - Regenerate `marketplace/plugins/zcode/**`, `.agents/plugins/marketplace.json`, and `.agents/plugins/provenance.json` only with `scripts/build-marketplace-snapshot.mjs` from a clean exact source SHA.
 
-## Task 1: Deep Rescue Authority Module
+## Task 1: Deepen IdentityStore for Compatible Workspace Binding
 
 **Files:**
-- Create: `scripts/lib/rescue-authority.mjs`
-- Create: `tests/rescue-authority.test.mjs`
+- Modify: `scripts/lib/identity.mjs`
+- Modify: `tests/identity.test.mjs`
 
 - [ ] **Step 1: Write RED tests for the external interface and exact record**
 
 Create a real temporary Git repository, commit one file, and create two linked
-worktrees. Exercise this wished-for interface:
+worktrees. Exercise the compatible existing interface:
 
 ```js
-import { createRescueAuthorityStore } from '../scripts/lib/rescue-authority.mjs';
-
-const authority = createRescueAuthorityStore({ dataRoot });
-const begun = await authority.beginTurn({
+const identity = createIdentityStore({ dataRoot });
+const token = await identity.beginCallerTurn({
   sessionId: 'parent-session',
   turnId: 'parent-turn',
-  originWorkspace: root,
+  workspace: root,
   permissionMode: 'workspace-write',
   prompt: 'repair the worktree',
   sessionStartedAt: '2026-08-21T06:00:00.000Z',
   sessionSource: 'startup',
   now: '2026-08-21T06:00:01.000Z',
 });
-assert.deepEqual(begun, { replacedTurn: null });
+assert.match(token, /^[A-Za-z0-9_-]+$/);
 
-const preview = await authority.previewTurn({
-  sessionId: 'parent-session', candidateWorkspace: worktreeA,
+const preview = await identity.resolveActiveTurn({
+  sessionId: 'parent-session', workspace: worktreeA, workspaceBinding: 'preview',
 });
 assert.equal(preview.workspace, await realpath(worktreeA));
 assert.equal(preview.turnId, 'parent-turn');
-assert.equal((await readPersistedAuthority()).activeTurn.executionWorkspace, null);
+assert.equal((await readPersistedActiveTurn()).executionWorkspace, null);
 
-const bound = await authority.bindTurn({
-  sessionId: 'parent-session', candidateWorkspace: worktreeA,
+const bound = await identity.resolveActiveTurn({
+  sessionId: 'parent-session', workspace: worktreeA, workspaceBinding: 'claim',
 });
 assert.equal(bound.workspace, await realpath(worktreeA));
-assert.equal((await authority.resolveBoundTurn({
-  sessionId: 'parent-session', workspace: worktreeA,
+assert.equal((await identity.resolveActiveTurn({
+  sessionId: 'parent-session', workspace: worktreeA, workspaceBinding: 'execution',
 })).workspace, await realpath(worktreeA));
 ```
 
-The raw record assertion must require the exact v1 keys from the design, one
-null-to-canonical binding transition, a canonical key/filename match, private
-file modes, and no caller token, launcher command, task frame, job/child/ZCode
-ID, or Git output.
+The raw record assertion must require exact v3 active-turn and v1 session-ledger
+keys, one null-to-canonical binding transition, canonical key/filename matches,
+private file modes, and no caller token, launcher command, task frame,
+job/child/ZCode ID, or Git output. Existing no-option resolution must still
+accept only `root` and return the existing caller shape.
 
 - [ ] **Step 2: Run the focused test and record the expected RED**
 
 Run:
 
 ```bash
-node --test tests/rescue-authority.test.mjs
+node --test --test-name-pattern='workspace binding|active turn' tests/identity.test.mjs
 ```
 
-Expected: FAIL because `scripts/lib/rescue-authority.mjs` does not exist. Do not
-write production code until this exact failure is observed.
+Expected: FAIL because `workspaceBinding` and persisted v3 lifecycle records do
+not exist. Do not write production code until this exact failure is observed.
 
 - [ ] **Step 3: Add RED coverage for eligibility, contention, lifecycle, and corruption**
 
 Add separate tests requiring:
 
 ```js
-assert.equal((await authority.previewTurn({ sessionId, candidateWorkspace: origin })).workspace, canonicalOrigin);
-await assert.rejects(authority.previewTurn({ sessionId, candidateWorkspace: unrelatedRepo }), { code: 'RESCUE_WORKSPACE_INELIGIBLE' });
-await assert.rejects(authority.previewTurn({ sessionId, candidateWorkspace: nonGitDirectory }), { code: 'RESCUE_WORKSPACE_INELIGIBLE' });
+assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: origin, workspaceBinding: 'preview' })).workspace, canonicalOrigin);
+await assert.rejects(identity.resolveActiveTurn({ sessionId, workspace: unrelatedRepo, workspaceBinding: 'preview' }), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+await assert.rejects(identity.resolveActiveTurn({ sessionId, workspace: nonGitDirectory, workspaceBinding: 'preview' }), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
 
 const outcomes = await Promise.allSettled([
-  ...Array.from({ length: 8 }, () => authority.bindTurn({ sessionId, candidateWorkspace: worktreeA })),
-  ...Array.from({ length: 8 }, () => authority.bindTurn({ sessionId, candidateWorkspace: worktreeB })),
+  ...Array.from({ length: 8 }, () => identity.resolveActiveTurn({ sessionId, workspace: worktreeA, workspaceBinding: 'claim' })),
+  ...Array.from({ length: 8 }, () => identity.resolveActiveTurn({ sessionId, workspace: worktreeB, workspaceBinding: 'claim' })),
 ]);
 const winners = outcomes.filter((entry) => entry.status === 'fulfilled');
 assert.ok(winners.length >= 1);
 assert.equal(new Set(winners.map((entry) => entry.value.workspace)).size, 1);
 ```
 
-Also require idempotent same-target bind, immutable other-target rejection,
-session/turn/permission isolation, defensive returned copies, replacement turn
-metadata, exact endTurn, crash-safe endSession tombstone, strictly newer
-SessionStart reopening, 16-workspace capacity, malformed/duplicate/oversized/
-future-version record failure, symlink/path identity failure, Git timeout and
-output bounds, and fixed errors that contain none of the private sentinels.
+Also require idempotent same-target claim, immutable other-target rejection,
+session/turn/permission isolation, defensive returned copies, exact
+`endCallerTurn` target return, crash-safe `cleanupSession` tombstone, 16-workspace
+capacity, malformed/duplicate/oversized/future-version record failure,
+symlink/path identity failure, Git timeout/output bounds, and fixed errors that
+contain none of the private sentinels. Existing v2 and unversioned active-turn
+bytes must remain readable only at their exact workspace and never be rewritten.
+A begin call without SessionStart proof must keep the legacy v2 path; a call
+with the exact proof pair must write v3 plus the v1 session ledger and no v2
+active mirror. Partial proof is invalid. No-option resolution and
+`resolveOnlyActiveTurn` must preserve exact origin semantics across both stores.
 
 - [ ] **Step 4: Implement the minimal deep module**
 
-Expose only:
+Keep the existing `createIdentityStore({dataRoot})` return object. Extend only
+these existing methods:
 
 ```js
-export function createRescueAuthorityStore({ dataRoot, dependencies = {} }) {
-  return Object.freeze({ beginTurn, previewTurn, bindTurn, resolveBoundTurn, endTurn, endSession });
-}
+beginCallerTurn(input)
+resolveActiveTurn({ sessionId, workspace, workspaceBinding? })
+endCallerTurn(input)
+cleanupSession(workspace, sessionId)
 ```
 
 Keep the Git runner, strict codec, bounded reader, storage paths, record key,
@@ -124,19 +130,20 @@ argv `['rev-parse', '--path-format=absolute', '--git-common-dir']`, `shell:false
 bounded buffer, and fixed timeout. Treat non-Git origin/candidate as eligible
 only when their canonical workspace paths are equal.
 
-Linearize every record mutation under `<dataRoot>/rescue-authority/.lock` and
-never acquire a workspace lock inside it. Validate the complete persisted record
-before reading any authority field. Return fresh caller-shaped objects:
+Linearize every v3 record mutation under `<dataRoot>/identity-lifecycle/.lock`
+and never acquire a workspace lock inside it. Preserve the existing workspace
+identity lock for caller tokens, capabilities, gates, and legacy active-turn
+records. Validate the complete persisted record before reading any authority
+field. Return fresh caller-shaped objects:
 
 ```js
 {
   sessionId: record.sessionId,
-  turnId: record.activeTurn.turnId,
+  turnId: record.turnId,
   workspace: candidateCanonicalPath,
-  permissionMode: record.activeTurn.permissionMode,
-  prompt: record.activeTurn.prompt,
-  sessionStartedAt: record.sessionStartedAt,
-  sessionSource: record.sessionSource,
+  permissionMode: record.permissionMode,
+  prompt: record.prompt,
+  originWorkspace: record.originWorkspace,
 }
 ```
 
@@ -145,7 +152,7 @@ before reading any authority field. Return fresh caller-shaped objects:
 Run:
 
 ```bash
-node --test tests/rescue-authority.test.mjs tests/identity.test.mjs
+node --test tests/identity.test.mjs
 npm run lint
 npm run typecheck
 git diff --check
@@ -157,12 +164,12 @@ errors.
 - [ ] **Step 6: Self-review and commit**
 
 Inspect exact bytes, locks, error causes, test seams, and `git diff`. Confirm the
-module passes the deletion test: removing it would force Git proof, codec,
-locking, and lifecycle logic into multiple callers. Commit only assigned files:
+deepened module keeps callers unaware of Git proof, codec, locking, lifecycle
+storage, and fallback rules. Commit only assigned files:
 
 ```bash
-git add scripts/lib/rescue-authority.mjs tests/rescue-authority.test.mjs
-git commit -m "feat: add Rescue workspace authority"
+git add scripts/lib/identity.mjs tests/identity.test.mjs
+git commit -m "feat: add compatible active-turn workspace binding"
 ```
 
 ## Task 2: Prompt, Role Preview, and Private Prepare Binding
@@ -185,7 +192,7 @@ const status = await runCompanion(['role-status', 'rescue'], {
   dependencies: { inspectRescueRoleStatus: undefined, /* existing fake App Server seams */ },
 });
 assert.deepEqual(status, { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
-assert.equal(rawAuthority.activeTurn.executionWorkspace, null);
+assert.equal(rawActiveTurn.executionWorkspace, null);
 
 const prepared = await runDirectInvocation(['prepare', 'rescue'], {
   cwd: linkedWorktree,
@@ -217,21 +224,22 @@ prepare fails `ACTIVE_TURN_NOT_FOUND` before TTY readiness.
 Require that role-status does not mutate or touch task/preparation/job/broker
 state; unrelated repository and non-Git target map to exact bounded
 `caller-unavailable`; child ambient ID cannot preview or bind; target A remains
-usable after target B fails; malformed global authority suppresses legacy
+usable after target B fails; malformed v3 authority suppresses legacy
 fallback; true absence still permits the old same-workspace path. Assert every
 public result is exact and below the current byte bound, with path/session/turn/
 prompt/error sentinels absent.
 
 - [ ] **Step 4: Integrate UserPromptSubmit**
 
-Replace the boolean-only session check with the existing exact resolver:
+Replace the boolean-only session check with the existing exact resolver, then
+call the already-deepened `beginCallerTurn` once:
 
 ```js
 const session = await resolveRecordedSessionStart(dataRoot, input.cwd, input.session_id);
-const replaced = await createRescueAuthorityStore({ dataRoot }).beginTurn({
+await createIdentityStore({ dataRoot }).beginCallerTurn({
   sessionId: input.session_id,
   turnId: input.turn_id,
-  originWorkspace: input.cwd,
+  workspace: input.cwd,
   permissionMode: input.permission_mode,
   prompt: input.prompt,
   sessionStartedAt: session.startedAt,
@@ -239,28 +247,30 @@ const replaced = await createRescueAuthorityStore({ dataRoot }).beginTurn({
 });
 ```
 
-After releasing the authority lock, clean `replaced.replacedTurn` preparation
-only in its validated returned bound workspace. Keep generic `beginCallerTurn`,
-gate baseline, unread jobs, and launcher rendering origin-scoped. Emit launcher
-context only after authority succeeds.
+The exact SessionStart resolve is the production proof; caller-token behavior
+is unchanged. Keep gate baseline, unread jobs, and launcher rendering
+origin-scoped. Emit launcher context only after both SessionStart and
+IdentityStore writes succeed.
 
 - [ ] **Step 5: Integrate read-only Role preview and prepare binding**
 
-For installed Role readiness, call `previewTurn({sessionId: CODEX_THREAD_ID,
-candidateWorkspace: cwd})`; use its recorded SessionStart timestamp for Role
-inspection. Keep source-checkout setup on the existing exact-workspace path.
+For installed Role readiness, call `resolveActiveTurn({sessionId:
+CODEX_THREAD_ID, workspace: cwd, workspaceBinding: 'preview'})`; resolve the
+SessionStart record from its validated `originWorkspace` for Role inspection.
+Keep source-checkout setup on the existing exact-workspace path.
 
-For private prepare, call `bindTurn()` before entering
+For private prepare, call `resolveActiveTurn({sessionId: ambientThreadId,
+workspace: cwd, workspaceBinding: 'claim'})` before entering
 `withPrivatePreparationTransport`. Use the returned caller for preparation save.
-Fallback to existing `resolveActiveTurn` only when the authority module returns
-its exact true-absence code. Never fallback on invalid/ineligible/ended/mismatch.
+IdentityStore itself owns true-absence legacy fallback and never falls back on
+invalid/ineligible/ended/mismatch.
 
 - [ ] **Step 6: Verify GREEN and commit**
 
 Run:
 
 ```bash
-node --test tests/rescue-authority.test.mjs tests/hooks.test.mjs tests/integration/companion.test.mjs
+node --test tests/identity.test.mjs tests/hooks.test.mjs tests/integration/companion.test.mjs
 npm run lint
 npm run typecheck
 git diff --check
@@ -321,19 +331,20 @@ forwarding marker at the hook origin and write/read the executor at the target.
 Add an interface helper that checks at most authority-provided origin and target
 locations for forwarding suppression. Do not enumerate `workspaces/`.
 
-SubagentStart resolves `resolveBoundTurn({sessionId: input.session_id,
-workspace: target})` through the authority module before executor creation.
-SubagentStop obtains the exact bound target from authority and updates only the
-matching child record. Legacy true-absence continues using input cwd.
+SubagentStart resolves `resolveActiveTurn({sessionId: input.session_id,
+workspace: target, workspaceBinding: 'execution'})` through IdentityStore before
+executor creation. SubagentStop obtains the exact bound target from the same
+compatible interface and updates only the matching child record. Legacy
+true-absence continues using input cwd.
 
 - [ ] **Step 4: Make Stop and SessionEnd revoke before cleanup**
 
-Root Stop ending paths call `authority.endTurn(...)` before generic identity and
-preparation cleanup. Use returned target metadata to remove the exact old turn's
-preparation. BLOCK paths do not call endTurn.
+Root Stop ending paths call the existing `identity.endCallerTurn(...)`; its
+deepened return includes the validated execution target. Use that metadata to
+remove the exact old turn's preparation. BLOCK paths do not end the turn.
 
-SessionEnd calls `authority.endSession(...)` first. Use its validated bounded
-workspace list for local `cleanupSession`, identity/preparation cleanup, Rescue
+SessionEnd calls the existing `identity.cleanupSession(...)` first. Use its
+validated bounded workspace list for hook-state/preparation cleanup, Rescue
 binding closure, writable settlement, and broker release. Share the current
 absolute remote deadline; attempt workspace remote cleanup with bounded
 concurrency and retain durable guards on ambiguity. Never restore authority.
@@ -341,17 +352,17 @@ concurrency and retain durable guards on ambiguity. Never restore authority.
 - [ ] **Step 5: Re-resolve bound authority at child invocation seams**
 
 Before `invoke-prepared`, choice continuation, and bound status consume
-workspace state, require `resolveBoundTurn` for the parent session and exact
-executor workspace. True-absence may use legacy exact-workspace behavior;
-invalid or mismatched global authority is terminal. Keep preparation/executor/
-binding/job calls on `caller.workspace` only.
+workspace state, require `resolveActiveTurn(..., workspaceBinding: 'execution')`
+for the parent session and exact executor workspace. True-absence may use legacy
+exact-workspace behavior; invalid or mismatched v3 authority is terminal. Keep
+preparation/executor/binding/job calls on `caller.workspace` only.
 
 - [ ] **Step 6: Verify GREEN, concurrency, and cleanup regressions**
 
 Run:
 
 ```bash
-node --test tests/rescue-authority.test.mjs tests/hooks.test.mjs tests/integration/companion.test.mjs tests/integration/skills.test.mjs tests/rescue-binding.test.mjs tests/rescue-preparation.test.mjs
+node --test tests/identity.test.mjs tests/hooks.test.mjs tests/integration/companion.test.mjs tests/integration/skills.test.mjs tests/rescue-binding.test.mjs tests/rescue-preparation.test.mjs
 npm run lint
 npm run typecheck
 git diff --check
@@ -455,7 +466,7 @@ weakening these statements fails tests.
 Run:
 
 ```bash
-node --test tests/rescue-authority.test.mjs tests/codex-rescue-qualification.test.mjs tests/e2e/codex-skills-e2e.test.mjs tests/e2e/real-zcode.test.mjs tests/release-contracts.test.mjs
+node --test tests/identity.test.mjs tests/codex-rescue-qualification.test.mjs tests/e2e/codex-skills-e2e.test.mjs tests/e2e/real-zcode.test.mjs tests/release-contracts.test.mjs
 npm run lint
 npm run typecheck
 git diff --check
