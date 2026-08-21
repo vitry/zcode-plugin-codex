@@ -53,13 +53,24 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       const cleanupWorkspace = await canonicalWorkspace(workspace);
       const global = await globalIdentityStorage(dataRoot);
       return withFileLock(sessionLockPath(global, sessionId), async () => {
-        const state = await readGlobalState(global, sessionId, false);
+        const state = await readGlobalCleanupState(global, sessionId);
         if (state === null) {
           const legacyStorage = await identityStorage(dataRoot, workspace);
           await withFileLock(legacyStorage.lockPath, () => cleanupWorkspaceSession(legacyStorage, sessionId));
           return null;
         }
         const { active, ledger } = state;
+        if (ledger === null) {
+          if (active.originWorkspace !== cleanupWorkspace) throw workspaceIneligible();
+          const endedAt = monotonicTimestamp(active.createdAt);
+          const tombstone = orphanSessionTombstone(active, endedAt);
+          await atomicWriteJson(state.sessionPath, tombstone, { privateRoot: global.directory });
+          await publicationSeam?.('after-cleanup-tombstone');
+          await unlink(state.activePath).catch((error) => { if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error; });
+          const orphanStorage = await identityStorageForCanonical(global.dataRootPath, active.originWorkspace);
+          await withFileLock(orphanStorage.lockPath, () => cleanupWorkspaceSession(orphanStorage, sessionId));
+          return { knownWorkspaces: [active.originWorkspace] };
+        }
         if (!ledger.knownWorkspaces.includes(cleanupWorkspace)) throw workspaceIneligible();
         if (ledger.endedAt === null) {
           const endedAt = monotonicTimestamp(ledger.updatedAt);
@@ -119,7 +130,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       /** @type {string[]} */ let priorWorkspaces = [];
       const lifecycleLockPath = sessionLockPath(global, input.sessionId);
       await withFileLock(lifecycleLockPath, async () => {
-        const state = await readGlobalBeginState(global, input, storage.workspacePath);
+        const state = await readGlobalBeginState(global, input);
         const existing = state?.active ?? null; const ledger = state?.ledger ?? null;
         if (ledger !== null) {
           if (ledger.endedAt !== null && Date.parse(input.sessionStartedAt) <= Date.parse(ledger.sessionStartedAt)) {
@@ -597,8 +608,8 @@ async function readGlobalState(storage, sessionId, validatePaths) {
   return { active, ledger, activePath, sessionPath };
 }
 
-/** @param {ReturnType<typeof globalIdentityStorage> extends Promise<infer T> ? T : never} storage @param {CallerContextInput & {sessionStartedAt:string,sessionSource:string}} input @param {string} originWorkspace */
-async function readGlobalBeginState(storage, input, originWorkspace) {
+/** @param {ReturnType<typeof globalIdentityStorage> extends Promise<infer T> ? T : never} storage @param {CallerContextInput & {sessionStartedAt:string,sessionSource:string}} input */
+async function readGlobalBeginState(storage, input) {
   const key = globalIdentityKey(input.sessionId);
   const activePath = join(storage.activeTurnsDirectory, `${key}.json`);
   const sessionPath = join(storage.sessionsDirectory, `${key}.json`);
@@ -612,10 +623,27 @@ async function readGlobalBeginState(storage, input, originWorkspace) {
   }
   if (ledger !== null) {
     if (!isSessionRecord(ledger) || ledger.key !== key || ledger.sessionId !== input.sessionId) throw invalidAuthorizationRecord('identity session');
-  } else if (active === null || active.status !== 'pending' || !activeAuthorityEqual(active, input, originWorkspace)) {
+    if (active !== null && !lifecycleRecordsConsistent(active, ledger)) throw invalidAuthorizationRecord('identity session');
+  } else if (!isRecoverableOrphanPending(active, toTimestamp(input.now), strictTimestamp(input.sessionStartedAt))) {
     throw invalidAuthorizationRecord('identity session');
   }
   return { active, ledger, activePath, sessionPath };
+}
+
+/** @param {ReturnType<typeof globalIdentityStorage> extends Promise<infer T> ? T : never} storage @param {string} sessionId */
+async function readGlobalCleanupState(storage, sessionId) {
+  const key = globalIdentityKey(sessionId);
+  const activePath = join(storage.activeTurnsDirectory, `${key}.json`);
+  const sessionPath = join(storage.sessionsDirectory, `${key}.json`);
+  const [active, ledger] = await Promise.all([
+    readOptionalBounded(storage.directory, activePath, MAX_ACTIVE_TURN_BYTES),
+    readOptionalBounded(storage.directory, sessionPath, MAX_SESSION_BYTES),
+  ]);
+  if (active === null && ledger === null) return null;
+  if (ledger !== null) return readGlobalState(storage, sessionId, false);
+  if (!isGlobalActiveTurnRecord(active) || active.key !== key || active.sessionId !== sessionId
+    || !isRecoverableOrphanPending(active, Date.now(), undefined)) throw invalidAuthorizationRecord('identity session');
+  return { active, ledger: null, activePath, sessionPath };
 }
 
 /** @param {string} root @param {string} path @param {number} maximumBytes */
@@ -878,6 +906,12 @@ function sessionRecord(input, key, knownWorkspaces, updatedAt) {
   return { version: 1, kind: 'identity-session', key, sessionId: input.sessionId, sessionStartedAt: input.sessionStartedAt, sessionSource: input.sessionSource, knownWorkspaces: [...knownWorkspaces], endedAt: null, updatedAt };
 }
 
+/** @param {any} active @param {string} endedAt */
+function orphanSessionTombstone(active, endedAt) {
+  return { version: 1, kind: 'identity-session', key: active.key, sessionId: active.sessionId,
+    sessionStartedAt: active.createdAt, sessionSource: 'startup', knownWorkspaces: [active.originWorkspace], endedAt, updatedAt: endedAt };
+}
+
 /** @param {string} sessionId @param {string} generationId @param {string} originWorkspace */
 function originIndexRecord(sessionId, generationId, originWorkspace) {
   const key = activeTurnKey(sessionId, originWorkspace);
@@ -889,6 +923,22 @@ function activeAuthorityEqual(record, input, originWorkspace) {
   return record.sessionId === input.sessionId && record.turnId === input.turnId
     && record.originWorkspace === originWorkspace && record.permissionMode === input.permissionMode
     && record.prompt === (input.prompt ?? '');
+}
+
+/** @param {any} record @param {number} now @param {number|undefined} sessionStartedAt */
+function isRecoverableOrphanPending(record, now, sessionStartedAt) {
+  if (record === null || record.status !== 'pending' || record.executionWorkspace !== null) return false;
+  const createdAt = Date.parse(record.createdAt);
+  return createdAt <= now && (sessionStartedAt === undefined || sessionStartedAt <= createdAt);
+}
+
+/** @param {any} active @param {any} ledger */
+function lifecycleRecordsConsistent(active, ledger) {
+  const activeAt = Date.parse(active.createdAt);
+  return ledger.knownWorkspaces.includes(active.originWorkspace)
+    && (active.executionWorkspace === null || ledger.knownWorkspaces.includes(active.executionWorkspace))
+    && Date.parse(ledger.sessionStartedAt) <= activeAt && activeAt <= Date.parse(ledger.updatedAt)
+    && (ledger.endedAt === null || activeAt <= Date.parse(ledger.endedAt));
 }
 
 /** @param {any} record */

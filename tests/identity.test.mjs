@@ -105,6 +105,28 @@ async function globalActivePath(dataRoot, sessionId) {
   return join(await realpath(dataRoot), 'identity-lifecycle', 'active-turns', `${key}.json`);
 }
 
+/** @param {string} dataRoot @param {string} sessionId */
+async function globalSessionPath(dataRoot, sessionId) {
+  const key = createHash('sha256').update(JSON.stringify([sessionId])).digest('hex');
+  return join(await realpath(dataRoot), 'identity-lifecycle', 'sessions', `${key}.json`);
+}
+
+/** @param {string} dataRoot @param {any} input */
+async function createOrphanPending(dataRoot, input) {
+  let injected = false;
+  const failing = createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => {
+      if (!injected && point === 'after-begin-pending-write') { injected = true; throw new Error('injected pending/ledger gap'); }
+    },
+  });
+  await assert.rejects(failing.beginCallerTurn(input), /injected pending\/ledger gap/);
+  const activePath = await globalActivePath(dataRoot, input.sessionId);
+  const active = JSON.parse(await readFile(activePath, 'utf8'));
+  await assert.rejects(readFile(await globalSessionPath(dataRoot, input.sessionId), 'utf8'), { code: 'ENOENT' });
+  return { active, activePath };
+}
+
 function deferred() {
   /** @type {(value?:unknown)=>void} */ let resolvePromise = () => {};
   const promise = new Promise((resolve) => { resolvePromise = resolve; });
@@ -922,6 +944,118 @@ test('begin retry preserves a pending generation when ledger publication failed'
   const pendingGeneration = JSON.parse(await readFile(await globalActivePath(dataRoot, 'session-a'), 'utf8')).generationId;
   await createIdentityStore({ dataRoot }).beginCallerTurn(input);
   assert.equal(JSON.parse(await readFile(await globalActivePath(dataRoot, 'session-a'), 'utf8')).generationId, pendingGeneration);
+});
+
+test('a conflicting trusted begin supersedes an orphan pending lifecycle and exact retry rotates only its caller token', async () => {
+  const { dataRoot, workspaceA, workspaceB } = await fixture();
+  const initial = {
+    sessionId: 'session-orphan', turnId: 'turn-initial', workspace: workspaceA, permissionMode: 'default', prompt: 'initial prompt',
+    sessionStartedAt: '2026-08-21T11:59:00.000Z', sessionSource: 'startup', now: '2026-08-21T12:00:00.000Z', lifecycleResult: true,
+  };
+  const orphan = await createOrphanPending(dataRoot, initial);
+  const replacement = /** @type {any} */ ({
+    ...initial, turnId: 'turn-replacement', workspace: workspaceB, permissionMode: 'read-only', prompt: 'replacement prompt',
+    now: '2026-08-21T12:01:00.000Z',
+  });
+  const identity = createIdentityStore({ dataRoot });
+  const first = await identity.beginCallerTurn(replacement);
+  assert.deepEqual(first.replacedTurn, {
+    turnId: initial.turnId, generationId: orphan.active.generationId, executionWorkspace: null,
+  });
+  const active = JSON.parse(await readFile(await globalActivePath(dataRoot, initial.sessionId), 'utf8'));
+  assert.equal(active.status, 'active'); assert.equal(active.turnId, replacement.turnId);
+  assert.equal(active.originWorkspace, await realpath(workspaceB)); assert.equal(active.permissionMode, replacement.permissionMode);
+  assert.equal(active.prompt, replacement.prompt); assert.notEqual(active.generationId, orphan.active.generationId);
+  const ledger = JSON.parse(await readFile(await globalSessionPath(dataRoot, initial.sessionId), 'utf8'));
+  assert.deepEqual(ledger.knownWorkspaces, [await realpath(workspaceB)]); assert.equal(ledger.endedAt, null);
+  const caller = JSON.parse(await readFile(await callerContextPath(dataRoot, workspaceB, first.token), 'utf8'));
+  assert.equal(caller.generationId, active.generationId);
+  assert.equal((await identity.consumeCallerContext(first.token, { workspace: workspaceB, now: replacement.now })).turnId, replacement.turnId);
+
+  const retry = await identity.beginCallerTurn(replacement);
+  assert.equal(retry.replacedTurn, null);
+  assert.equal(JSON.parse(await readFile(await globalActivePath(dataRoot, initial.sessionId), 'utf8')).generationId, active.generationId);
+  await assert.rejects(identity.consumeCallerContext(first.token, { workspace: workspaceB, now: replacement.now }), { code: 'CALLER_CONTEXT_INVALID' });
+  assert.equal((await identity.consumeCallerContext(retry.token, { workspace: workspaceB, now: replacement.now })).turnId, replacement.turnId);
+});
+
+test('orphan recovery rejects malformed, future, active, and ledger-conflicting authority without legacy fallback', async () => {
+  for (const state of ['malformed', 'future', 'active', 'ledger-conflict']) {
+    const { dataRoot, workspaceA, workspaceB } = await fixture();
+    const initial = {
+      sessionId: `session-${state}`, turnId: 'turn-initial', workspace: workspaceA, permissionMode: 'default', prompt: 'initial',
+      sessionStartedAt: '2026-08-21T11:59:00.000Z', sessionSource: 'startup', now: '2026-08-21T12:00:00.000Z',
+    };
+    const { active, activePath } = await createOrphanPending(dataRoot, initial);
+    if (state === 'malformed') await atomicWriteJson(activePath, { ...active, unexpected: true });
+    if (state === 'future') await atomicWriteJson(activePath, { ...active, createdAt: '2999-08-21T12:05:00.000Z' });
+    if (state === 'active') await atomicWriteJson(activePath, { ...active, status: 'active' });
+    if (state === 'ledger-conflict') {
+      await atomicWriteJson(await globalSessionPath(dataRoot, initial.sessionId), {
+        version: 1, kind: 'identity-session', key: active.key, sessionId: initial.sessionId,
+        sessionStartedAt: initial.sessionStartedAt, sessionSource: initial.sessionSource, knownWorkspaces: [await realpath(workspaceB)],
+        endedAt: null, updatedAt: '2026-08-21T12:00:00.000Z',
+      });
+    }
+    const identity = createIdentityStore({ dataRoot });
+    const replacement = { ...initial, turnId: 'turn-replacement', workspace: workspaceB, permissionMode: 'read-only', prompt: 'replacement', now: '2026-08-21T12:01:00.000Z' };
+    await assert.rejects(identity.beginCallerTurn(replacement),
+      { code: 'AUTHORIZATION_RECORD_INVALID' });
+    if (state !== 'ledger-conflict') await assert.rejects(identity.cleanupSession(workspaceA, initial.sessionId), { code: 'AUTHORIZATION_RECORD_INVALID' });
+    await assert.rejects(identity.createCallerContext({ sessionId: initial.sessionId, turnId: initial.turnId, workspace: workspaceA, permissionMode: initial.permissionMode }),
+      (error) => error instanceof PluginError && ['AUTHORIZATION_RECORD_INVALID', 'CALLER_CONTEXT_INVALID'].includes(error.code));
+    assert.deepEqual(await callerArtifactNames(dataRoot, workspaceA), []); assert.deepEqual(await callerArtifactNames(dataRoot, workspaceB), []);
+  }
+});
+
+test('cleanup terminalizes a legal orphan pending lifecycle and fences old session proof', async () => {
+  const { dataRoot, workspaceA } = await fixture();
+  const initial = {
+    sessionId: 'session-cleanup-orphan', turnId: 'turn-initial', workspace: workspaceA, permissionMode: 'default',
+    sessionStartedAt: '2026-08-21T11:59:00.000Z', sessionSource: 'startup', now: '2026-08-21T12:00:00.000Z',
+  };
+  const { active } = await createOrphanPending(dataRoot, initial);
+  const identity = createIdentityStore({ dataRoot }); const canonical = await realpath(workspaceA);
+  const cleaned = await identity.cleanupSession(workspaceA, initial.sessionId);
+  assert.deepEqual(cleaned, { knownWorkspaces: [canonical] });
+  await assert.rejects(readFile(await globalActivePath(dataRoot, initial.sessionId), 'utf8'), { code: 'ENOENT' });
+  const tombstone = JSON.parse(await readFile(await globalSessionPath(dataRoot, initial.sessionId), 'utf8'));
+  assert.deepEqual(tombstone.knownWorkspaces, [canonical]); assert.ok(tombstone.endedAt !== null);
+  assert.ok(Date.parse(tombstone.endedAt) >= Date.parse(active.createdAt));
+  assert.deepEqual(await identity.cleanupSession(workspaceA, initial.sessionId), cleaned);
+  await assert.rejects(identity.beginCallerTurn({ ...initial, turnId: 'stale-retry', now: '2026-08-21T12:01:00.000Z' }), { code: 'IDENTITY_SESSION_ENDED' });
+  const newer = await identity.beginCallerTurn({
+    ...initial, turnId: 'new-session-turn', sessionStartedAt: '2026-08-21T12:01:00.000Z', sessionSource: 'resume', now: '2026-08-21T12:02:00.000Z',
+  });
+  assert.equal((await identity.consumeCallerContext(newer, { workspace: workspaceA, now: '2026-08-21T12:02:00.000Z' })).turnId, 'new-session-turn');
+});
+
+test('orphan replacement holds the session lock until publication before cleanup terminalizes it', async () => {
+  const { dataRoot, workspaceA } = await fixture();
+  const initial = {
+    sessionId: 'session-orphan-race', turnId: 'turn-initial', workspace: workspaceA, permissionMode: 'default',
+    sessionStartedAt: '2026-08-21T11:59:00.000Z', sessionSource: 'startup', now: '2026-08-21T12:00:00.000Z',
+  };
+  await createOrphanPending(dataRoot, initial);
+  const entered = deferred(); const release = deferred(); const events = [];
+  const replacement = createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => {
+      if (point === 'before-pending') { events.push('replacement-locked'); entered.resolve(); await release.promise; }
+      if (point === 'after-active-publish') events.push('replacement-active');
+    },
+  }).beginCallerTurn({ ...initial, turnId: 'turn-replacement', prompt: 'replacement', now: '2026-08-21T12:01:00.000Z' });
+  await entered.promise;
+  events.push('cleanup-requested');
+  const cleanup = createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => { if (point === 'after-cleanup-tombstone') events.push('cleanup-tombstoned'); },
+  }).cleanupSession(workspaceA, initial.sessionId);
+  release.resolve();
+  const [token, cleaned] = await Promise.all([replacement, cleanup]);
+  assert.deepEqual(events, ['replacement-locked', 'cleanup-requested', 'replacement-active', 'cleanup-tombstoned']);
+  assert.deepEqual(cleaned, { knownWorkspaces: [await realpath(workspaceA)] });
+  await assert.rejects(createIdentityStore({ dataRoot }).consumeCallerContext(token, { workspace: workspaceA }), { code: 'CALLER_CONTEXT_INVALID' });
 });
 
 test('moved execution workspace does not prevent exact v3 turn revocation', async () => {
