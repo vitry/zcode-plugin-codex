@@ -189,7 +189,6 @@ repository root, creates a real linked worktree afterward, and then calls:
 const status = await runCompanion(['role-status', 'rescue'], {
   cwd: linkedWorktree,
   env: { ...installedEnv, CODEX_THREAD_ID: parentSessionId },
-  dependencies: { inspectRescueRoleStatus: undefined, /* existing fake App Server seams */ },
 });
 assert.deepEqual(status, { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
 assert.equal(rawActiveTurn.executionWorkspace, null);
