@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readdir, readFile, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, realpath, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
@@ -43,6 +43,14 @@ async function artifactText(directory) {
   }
   await visit(directory);
   return chunks.join('\n');
+}
+
+/** @param {string} dataRoot @param {string} workspace @param {string} sessionId */
+async function activeTurnPath(dataRoot, workspace, sessionId) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const workspacePath = await realpath(workspace);
+  const key = createHash('sha256').update(JSON.stringify([sessionId, workspacePath])).digest('hex');
+  return join(storage.directory, 'identity', 'active-turns', `${key}.json`);
 }
 
 /** @param {string} dataRoot @param {string} method @param {unknown[]} args */
@@ -153,19 +161,107 @@ test('caller contexts from interleaved sessions never become a workspace-wide fa
   );
 });
 
-test('active turns resolve only by exact session and canonical workspace without exposing a token', async () => {
-  const { identity, workspaceA, workspaceB } = await fixture();
+test('current active turns use the lifecycle-bound v2 schema and remain valid without a wall-clock expiry', async () => {
+  const { dataRoot, identity, workspaceA, workspaceB } = await fixture();
   const now = new Date('2026-08-04T00:00:00.000Z');
   await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait repair auth', now });
   await identity.beginCallerTurn({ sessionId: 'session-b', turnId: 'turn-b', workspace: workspaceA, permissionMode: 'read-only', prompt: '$zcode:review --wait', now });
 
-  assert.deepEqual(await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: workspaceA, now }), {
-    sessionId: 'session-a', turnId: 'turn-a', workspace: await realpath(workspaceA), permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait repair auth',
-    createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
-  });
+  const expected = {
+    version: 2, kind: 'active-turn', sessionId: 'session-a', turnId: 'turn-a', workspace: await realpath(workspaceA), permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait repair auth', createdAt: now.toISOString(),
+  };
+  for (const elapsed of [30 * 60_000, 60 * 60_000, 24 * 60 * 60_000]) {
+    assert.deepEqual(await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: workspaceA, now: new Date(now.getTime() + elapsed) }), expected);
+  }
+  const stored = JSON.parse(await readFile(await activeTurnPath(dataRoot, workspaceA, 'session-a'), 'utf8'));
+  assert.deepEqual(Object.keys(stored).sort(), ['createdAt', 'key', 'kind', 'permissionMode', 'prompt', 'sessionId', 'turnId', 'version', 'workspace']);
+  assert.equal(stored.version, 2); assert.equal(stored.kind, 'active-turn'); assert.equal('expiresAt' in stored, false);
   await assert.rejects(identity.resolveActiveTurn({ sessionId: 'missing', workspace: workspaceA, now }), { code: 'ACTIVE_TURN_NOT_FOUND' });
   await assert.rejects(identity.resolveActiveTurn({ sessionId: 'session-a', workspace: workspaceB, now }), { code: 'ACTIVE_TURN_NOT_FOUND' });
-  await assert.rejects(identity.resolveActiveTurn({ sessionId: 'session-a', workspace: workspaceA, now: new Date(now.getTime() + 30 * 60_000) }), { code: 'ACTIVE_TURN_EXPIRED' });
+});
+
+test('legacy unversioned active turns retain their strict expiry semantics', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture(); const createdAt = new Date('2026-08-04T00:00:00.000Z'); const workspace = await realpath(workspaceA);
+  const path = await activeTurnPath(dataRoot, workspaceA, 'legacy-session'); const key = basename(path, '.json');
+  const legacy = { key, sessionId: 'legacy-session', turnId: 'legacy-turn', workspace, permissionMode: 'default', prompt: 'legacy', createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + 30 * 60_000).toISOString() };
+  await atomicWriteJson(path, legacy);
+  assert.equal((await identity.resolveActiveTurn({ sessionId: 'legacy-session', workspace: workspaceA, now: new Date(createdAt.getTime() + 29 * 60_000) })).turnId, 'legacy-turn');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), legacy, 'reading a legacy record must not upgrade it');
+  await assert.rejects(identity.resolveActiveTurn({ sessionId: 'legacy-session', workspace: workspaceA, now: new Date(createdAt.getTime() + 30 * 60_000) }), { code: 'ACTIVE_TURN_EXPIRED' });
+});
+
+test('active turn schema validation rejects unknown, wrong-kind, expiring-v2, and mixed legacy records', async () => {
+  for (const mutate of /** @type {((record: Record<string, any>) => void)[]} */ ([
+    (record) => { record.version = 3; },
+    (record) => { record.kind = 'caller'; },
+    (record) => { record.expiresAt = '2026-08-04T00:30:00.000Z'; },
+    (record) => { delete record.version; },
+    (record) => { delete record.kind; },
+  ])) {
+    const { dataRoot, identity, workspaceA } = await fixture(); await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default', prompt: 'work', now: new Date('2026-08-04T00:00:00.000Z') });
+    const path = await activeTurnPath(dataRoot, workspaceA, 'session-a'); const record = JSON.parse(await readFile(path, 'utf8')); mutate(record); await atomicWriteJson(path, record);
+    await assert.rejects(identity.resolveActiveTurn({ sessionId: 'session-a', workspace: workspaceA }), { code: 'AUTHORIZATION_RECORD_INVALID' });
+  }
+});
+
+test('resolveOnlyActiveTurn fails closed when current and unexpired legacy turns are both present', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture(); const now = new Date('2026-08-04T00:00:00.000Z'); const workspace = await realpath(workspaceA);
+  await identity.beginCallerTurn({ sessionId: 'current', turnId: 'current-turn', workspace: workspaceA, permissionMode: 'default', prompt: 'current', now });
+  const path = await activeTurnPath(dataRoot, workspaceA, 'legacy'); const key = basename(path, '.json');
+  await atomicWriteJson(path, { key, sessionId: 'legacy', turnId: 'legacy-turn', workspace, permissionMode: 'default', prompt: 'legacy', createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 60_000).toISOString() });
+  await assert.rejects(identity.resolveOnlyActiveTurn({ workspace: workspaceA, now }), (error) => error instanceof PluginError && error.code === 'SETUP_SESSION_UNPROVEN' && error.details.activeTurnCount === 2);
+  assert.equal((await identity.resolveOnlyActiveTurn({ workspace: workspaceA, now: new Date(now.getTime() + 60_000) })).turnId, 'current-turn');
+});
+
+test('resolveOnlyActiveTurn rejects every canonical slot identity mismatch', async () => {
+  for (const variant of ['filename', 'record-key', 'computed-key', 'workspace']) {
+    const { dataRoot, identity, workspaceA, workspaceB } = await fixture();
+    await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default', prompt: 'work' });
+    const path = await activeTurnPath(dataRoot, workspaceA, 'session-a'); const record = JSON.parse(await readFile(path, 'utf8')); const forgedKey = 'f'.repeat(64);
+    if (variant === 'filename') await rename(path, join(dirname(path), `${forgedKey}.json`));
+    if (variant === 'record-key') { record.key = forgedKey; await atomicWriteJson(path, record); }
+    if (variant === 'computed-key') { record.key = forgedKey; record.sessionId = 'forged-session'; await atomicWriteJson(join(dirname(path), `${forgedKey}.json`), record); await rename(path, `${path}.ignored`); }
+    if (variant === 'workspace') { record.workspace = await realpath(workspaceB); await atomicWriteJson(path, record); }
+    await assert.rejects(identity.resolveOnlyActiveTurn({ workspace: workspaceA }), { code: 'AUTHORIZATION_RECORD_INVALID' });
+  }
+});
+
+test('endCallerTurn accepts current and legacy records and deletes only the exact turn', async () => {
+  for (const schema of ['current', 'legacy']) {
+    const { dataRoot, identity, workspaceA } = await fixture(); const input = { sessionId: `${schema}-session`, turnId: `${schema}-turn`, workspace: workspaceA, permissionMode: 'default', prompt: schema }; const path = await activeTurnPath(dataRoot, workspaceA, input.sessionId);
+    await identity.beginCallerTurn(input);
+    if (schema === 'legacy') { const current = JSON.parse(await readFile(path, 'utf8')); delete current.version; delete current.kind; current.expiresAt = new Date(Date.parse(current.createdAt) + 30 * 60_000).toISOString(); await atomicWriteJson(path, current); }
+    await identity.endCallerTurn({ sessionId: input.sessionId, turnId: 'other-turn', workspace: workspaceA });
+    assert.equal((await identity.resolveActiveTurn({ sessionId: input.sessionId, workspace: workspaceA })).turnId, input.turnId);
+    await identity.endCallerTurn({ sessionId: input.sessionId, turnId: input.turnId, workspace: workspaceA });
+    await assert.rejects(identity.resolveActiveTurn({ sessionId: input.sessionId, workspace: workspaceA }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+  }
+});
+
+test('endCallerTurn rejects mismatched slot identity without deleting the persisted record', async () => {
+  for (const field of ['key', 'sessionId', 'workspace']) {
+    const { dataRoot, identity, workspaceA, workspaceB } = await fixture(); const input = { sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default', prompt: 'work' };
+    await identity.beginCallerTurn(input); const path = await activeTurnPath(dataRoot, workspaceA, input.sessionId); const record = JSON.parse(await readFile(path, 'utf8'));
+    if (field === 'key') record.key = 'f'.repeat(64);
+    if (field === 'sessionId') record.sessionId = 'forged-session';
+    if (field === 'workspace') record.workspace = await realpath(workspaceB);
+    await atomicWriteJson(path, record); const before = await readFile(path, 'utf8');
+    await assert.rejects(identity.endCallerTurn({ sessionId: input.sessionId, turnId: input.turnId, workspace: workspaceA }), { code: 'AUTHORIZATION_RECORD_INVALID' });
+    assert.equal(await readFile(path, 'utf8'), before);
+  }
+});
+
+test('concurrent same-session replacements leave one exact active slot and one matching caller authorization', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture(); const workspace = await realpath(workspaceA);
+  const turns = Array.from({ length: 12 }, (_, index) => `turn-${index}`);
+  const tokens = await Promise.all(turns.map((turnId) => identity.beginCallerTurn({ sessionId: 'session-a', turnId, workspace: workspaceA, permissionMode: 'default', prompt: turnId })));
+  const active = await identity.resolveOnlyActiveTurn({ workspace: workspaceA }); const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA });
+  const activeFiles = await readdir(join(storage.directory, 'identity', 'active-turns')); assert.deepEqual(activeFiles, [`${createHash('sha256').update(JSON.stringify(['session-a', workspace])).digest('hex')}.json`]);
+  const attempts = await Promise.allSettled(tokens.map((token) => identity.consumeCallerContext(token, { workspace: workspaceA })));
+  const authorized = attempts.filter((attempt) => attempt.status === 'fulfilled'); assert.equal(authorized.length, 1); assert.equal(authorized[0].value.turnId, active.turnId);
+  const callerFiles = (await readdir(join(storage.directory, 'identity', 'callers'))).filter((name) => name.endsWith('.json')); assert.equal(callerFiles.length, 1);
+  const caller = JSON.parse(await readFile(join(storage.directory, 'identity', 'callers', callerFiles[0]), 'utf8'));
+  assert.equal(caller.sessionId, 'session-a'); assert.equal(caller.turnId, active.turnId); assert.equal(caller.workspace, workspace); assert.equal(callerFiles[0], `${caller.digest}.json`);
 });
 
 test('pending invocation choices preserve the exact originating turn, workspace, and permission snapshot', async () => {

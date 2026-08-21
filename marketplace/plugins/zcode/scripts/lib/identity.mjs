@@ -63,8 +63,9 @@ export function createIdentityStore({ dataRoot }) {
       validateActiveExpected(expected); const storage = await identityStorage(dataRoot, expected.workspace); const key = activeTurnKey(expected.sessionId, storage.workspacePath);
       return withFileLock(storage.lockPath, async () => {
         const record = await readAuthorizationRecord(join(storage.activeTurnsDirectory, `${key}.json`), 'ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
-        if (!isActiveTurnRecord(record) || !safeEqual(record.key, key) || !safeEqual(record.sessionId, expected.sessionId) || record.workspace !== storage.workspacePath) throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
-        if (toTimestamp(expected.now) >= Date.parse(record.expiresAt)) throw authorizationError('ACTIVE_TURN_EXPIRED', 'The active turn has expired.', 'Submit a new prompt in this Codex thread.');
+        if (!isActiveTurnRecord(record)) throw invalidAuthorizationRecord('active turn');
+        if (!safeEqual(record.key, key) || !safeEqual(record.sessionId, expected.sessionId) || record.workspace !== storage.workspacePath) throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
+        if (isLegacyActiveTurnRecord(record) && toTimestamp(expected.now) >= Date.parse(record.expiresAt)) throw authorizationError('ACTIVE_TURN_EXPIRED', 'The active turn has expired.', 'Submit a new prompt in this Codex thread.');
         return publicRecord(record);
       });
     },
@@ -77,9 +78,12 @@ export function createIdentityStore({ dataRoot }) {
         const active = [];
         for (const name of await readdir(storage.activeTurnsDirectory)) {
           if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
-          let record;
-          try { record = await readJsonFile(join(storage.activeTurnsDirectory, name)); } catch { continue; }
-          if (isActiveTurnRecord(record) && record.workspace === storage.workspacePath && toTimestamp(expected.now) < Date.parse(record.expiresAt)) active.push(record);
+          const record = await readJsonFile(join(storage.activeTurnsDirectory, name));
+          if (!isActiveTurnRecord(record)) throw invalidAuthorizationRecord('active turn');
+          const filenameKey = name.slice(0, -'.json'.length);
+          if (record.workspace !== storage.workspacePath || !safeEqual(record.key, filenameKey)
+            || !safeEqual(record.key, activeTurnKey(record.sessionId, storage.workspacePath))) throw invalidAuthorizationRecord('active turn');
+          if (isCurrentActiveTurnRecord(record) || toTimestamp(expected.now) < Date.parse(record.expiresAt)) active.push(record);
         }
         if (active.length !== 1) throw setupSessionUnproven(active.length);
         return publicRecord(active[0]);
@@ -90,9 +94,11 @@ export function createIdentityStore({ dataRoot }) {
     async endCallerTurn(input) {
       validateTurnIdentity(input); const storage = await identityStorage(dataRoot, input.workspace);
       await withFileLock(storage.lockPath, async () => {
-        await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId === input.turnId); const path = join(storage.activeTurnsDirectory, `${activeTurnKey(input.sessionId, storage.workspacePath)}.json`); let current;
+        await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId === input.turnId); const key = activeTurnKey(input.sessionId, storage.workspacePath); const path = join(storage.activeTurnsDirectory, `${key}.json`); let current;
         try { current = await readJsonFile(path); } catch (error) { if (error instanceof PluginError && error.code === 'JSON_READ_FAILED' && /** @type {any} */ (error.cause)?.code === 'ENOENT') return; throw error; }
         if (!isActiveTurnRecord(current)) throw invalidAuthorizationRecord('active turn');
+        if (!safeEqual(current.key, key) || !safeEqual(current.sessionId, input.sessionId)
+          || current.workspace !== storage.workspacePath) throw invalidAuthorizationRecord('active turn');
         if (current.turnId === input.turnId) await unlink(path);
       });
     },
@@ -349,7 +355,7 @@ function callerRecord(input, workspacePath) {
 /** @param {CallerContextInput} input @param {string} workspacePath */
 function activeTurnRecord(input, workspacePath) {
   const createdAt = toTimestamp(input.now); const key = activeTurnKey(input.sessionId, workspacePath);
-  return { key, sessionId: input.sessionId, turnId: input.turnId, workspace: workspacePath, permissionMode: input.permissionMode, prompt: input.prompt ?? '', createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + CALLER_LIFETIME_MS).toISOString() };
+  return { version: 2, kind: 'active-turn', key, sessionId: input.sessionId, turnId: input.turnId, workspace: workspacePath, permissionMode: input.permissionMode, prompt: input.prompt ?? '', createdAt: new Date(createdAt).toISOString() };
 }
 
 /** @param {string} sessionId @param {string} workspace */
@@ -465,8 +471,38 @@ function isCallerRecord(record) {
     && isDate(record.expiresAt) && Date.parse(record.expiresAt) > Date.parse(record.createdAt);
 }
 
+const CURRENT_ACTIVE_TURN_KEYS = ['createdAt', 'key', 'kind', 'permissionMode', 'prompt', 'sessionId', 'turnId', 'version', 'workspace'];
+const LEGACY_ACTIVE_TURN_KEYS = ['createdAt', 'expiresAt', 'key', 'permissionMode', 'prompt', 'sessionId', 'turnId', 'workspace'];
+
 /** @param {any} record */
-function isActiveTurnRecord(record) { return isPlainObject(record) && isDigest(record.key) && isNonEmptyString(record.sessionId) && isNonEmptyString(record.turnId) && isNonEmptyString(record.workspace) && PERMISSION_MODES.includes(record.permissionMode) && typeof record.prompt === 'string' && Buffer.byteLength(record.prompt) <= 64 * 1024 && isDate(record.createdAt) && isDate(record.expiresAt) && Date.parse(record.expiresAt) > Date.parse(record.createdAt); }
+function hasActiveTurnFields(record) {
+  return isDigest(record.key) && isNonEmptyString(record.sessionId) && isNonEmptyString(record.turnId)
+    && isNonEmptyString(record.workspace) && PERMISSION_MODES.includes(record.permissionMode)
+    && typeof record.prompt === 'string' && Buffer.byteLength(record.prompt) <= 64 * 1024
+    && isDate(record.createdAt);
+}
+
+/** @param {any} record */
+function isCurrentActiveTurnRecord(record) {
+  return isPlainObject(record) && hasExactKeys(record, CURRENT_ACTIVE_TURN_KEYS)
+    && record.version === 2 && record.kind === 'active-turn' && hasActiveTurnFields(record);
+}
+
+/** @param {any} record */
+function isLegacyActiveTurnRecord(record) {
+  return isPlainObject(record) && hasExactKeys(record, LEGACY_ACTIVE_TURN_KEYS)
+    && hasActiveTurnFields(record) && isDate(record.expiresAt)
+    && Date.parse(record.expiresAt) > Date.parse(record.createdAt);
+}
+
+/** @param {any} record */
+function isActiveTurnRecord(record) { return isCurrentActiveTurnRecord(record) || isLegacyActiveTurnRecord(record); }
+
+/** @param {Record<string, any>} record @param {string[]} keys */
+function hasExactKeys(record, keys) {
+  const actual = Object.keys(record).sort();
+  return actual.length === keys.length && actual.every((key, index) => key === keys[index]);
+}
 
 /** @param {any} record */
 function isExecutionRecord(record) {

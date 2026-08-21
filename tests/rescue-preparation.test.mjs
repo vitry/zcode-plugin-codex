@@ -179,6 +179,41 @@ async function storeFixture() {
   };
 }
 
+test('preparation store validates and invokes only its private save-lock seam', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-rescue-prepared-seam-'));
+  const dataRoot = join(root, 'plugin-data');
+  const workspace = join(root, 'workspace');
+  await mkdir(workspace);
+  assert.throws(() => createRescuePreparationStore({
+    dataRoot, testOnlyBeforeSaveLockOpen: /** @type {any} */ (true),
+  }), { code: 'RESCUE_PREPARATION_INVALID' });
+  let calls = 0;
+  const store = createRescuePreparationStore({
+    dataRoot,
+    testOnlyBeforeSaveLockOpen: async () => { calls += 1; },
+  });
+  await store.save({
+    sessionId: 'parent', turnId: 'turn-a', workspace,
+    permissionMode: 'default', recordedPrompt: 'proactive',
+    envelope: { ...validEnvelope, source: 'proactive' },
+  });
+  assert.equal(calls, 1);
+
+  const sentinel = 'PRIVATE_SAVE_LOCK_SEAM_SENTINEL';
+  const throwing = createRescuePreparationStore({
+    dataRoot,
+    testOnlyBeforeSaveLockOpen: async () => { throw new Error(sentinel); },
+  });
+  await assert.rejects(throwing.save({
+    sessionId: 'parent', turnId: 'turn-b', workspace,
+    permissionMode: 'default', recordedPrompt: 'proactive',
+    envelope: { ...validEnvelope, source: 'proactive' },
+  }), (/** @type {any} */ error) => {
+    assert.doesNotMatch(errorChainText(error), new RegExp(sentinel));
+    return true;
+  });
+});
+
 /** @param {string} sessionId @param {string} turnId @param {string} workspace */
 function preparedKey(sessionId, turnId, workspace) {
   return createHash('sha256').update(JSON.stringify([sessionId, turnId, workspace, 'rescue'])).digest('hex');
@@ -188,6 +223,12 @@ function preparedKey(sessionId, turnId, workspace) {
 async function preparedDirectory(dataRoot, workspace) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   return { storage, directory: join(storage.directory, 'invocations', 'prepared') };
+}
+
+/** @param {string} dataRoot @param {string} workspace @param {string} sessionId @param {string} turnId */
+async function preparedPath(dataRoot, workspace, sessionId, turnId) {
+  const { storage, directory } = await preparedDirectory(dataRoot, workspace);
+  return join(directory, `${preparedKey(sessionId, turnId, storage.workspacePath)}.json`);
 }
 
 test('prepared store binds an exact turn and atomically retains a consumed executor tombstone', async () => {
@@ -216,10 +257,320 @@ test('prepared store binds an exact turn and atomically retains a consumed execu
   const record = JSON.parse(await readFile(path, 'utf8'));
   assert.equal(record.consumedAt, now.toISOString());
   assert.equal(record.executorAgentId, 'rescue-child');
+  assert.equal(record.version, 2);
+  assert.equal(record.generation, 1);
+  assert.equal(record.requiredExecutorAgentId, null);
   assert.deepEqual(Object.keys(record).sort(), [
     'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'key',
-    'permissionMode', 'sessionId', 'source', 'turnId', 'version', 'workspace',
+    'generation', 'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source',
+    'turnId', 'version', 'workspace',
   ].sort());
+});
+
+test('consumed preparation advances through proactive resume generations bound to one executor', async () => {
+  const { store, workspaceA } = await storeFixture();
+  const base = {
+    sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial',
+  };
+  await store.save({ ...base, envelope: validEnvelope });
+  const first = await store.consume({ ...base, executorAgentId: 'rescue-child' });
+  assert.equal(first.generation, 1);
+  for (let generation = 2; generation <= 4; generation += 1) {
+    await store.save({
+      ...base,
+      envelope: {
+        version: 1, source: 'proactive', task: `continue generation ${generation}`,
+        options: { execution: 'foreground', resume: 'resume' },
+      },
+    });
+    await assert.rejects(store.consume({ ...base, executorAgentId: 'sibling-child' }), {
+      code: 'RESCUE_PREPARATION_MISMATCH',
+    });
+    const current = await store.consume({ ...base, executorAgentId: 'rescue-child' });
+    assert.equal(current.generation, generation);
+    assert.equal(current.requiredExecutorAgentId, 'rescue-child');
+  }
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'rescue-child' }), {
+    code: 'RESCUE_PREPARATION_CONSUMED',
+  });
+});
+
+test('consumed expired generation produces one exact-bound proactive resume successor with a fresh TTL', async () => {
+  const { store, workspaceA } = await storeFixture();
+  const createdAt = new Date('2026-08-17T00:00:00.000Z'); const resumedAt = new Date(createdAt.getTime() + 61 * 60_000);
+  const base = { sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial' };
+  await store.save({ ...base, envelope: validEnvelope, now: createdAt });
+  await store.consume({ ...base, executorAgentId: 'rescue-child', now: new Date(createdAt.getTime() + 1_000) });
+  const replacement = { ...base, now: resumedAt,
+    envelope: { version: 1, source: 'proactive', task: 'continue after long work', options: { resume: 'resume' } } };
+  const results = await Promise.allSettled(Array.from({ length: 16 }, () => store.save(replacement)));
+  assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1);
+  assert.equal(results.filter(({ status }) => status === 'rejected').length, 15);
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'sibling', now: resumedAt }), { code: 'RESCUE_PREPARATION_MISMATCH' });
+  const second = await store.consume({ ...base, executorAgentId: 'rescue-child', now: resumedAt });
+  assert.equal(second.generation, 2); assert.equal(second.requiredExecutorAgentId, 'rescue-child');
+  assert.equal(second.createdAt, resumedAt.toISOString());
+  assert.equal(Date.parse(second.expiresAt) - Date.parse(second.createdAt), 30 * 60_000);
+});
+
+test('expired unconsumed generation cannot be replaced by proactive resume', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture(); const now = new Date('2026-08-17T00:00:00.000Z');
+  const base = { sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial' };
+  await store.save({ ...base, envelope: validEnvelope, now });
+  const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a'); const before = await readFile(path);
+  await assert.rejects(store.save({ ...base, now: new Date(now.getTime() + 61 * 60_000),
+    envelope: { version: 1, source: 'proactive', task: 'unauthorized replacement', options: { resume: 'resume' } } }),
+  { code: 'RESCUE_PREPARATION_EXISTS' });
+  assert.deepEqual(await readFile(path), before);
+});
+
+test('strict consumed legacy v1 preparation upgrades once to generation 2', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const now = new Date('2026-08-17T00:00:00.000Z');
+  const base = {
+    sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial', now,
+  };
+  await store.save({ ...base, envelope: validEnvelope });
+  await store.consume({ ...base, executorAgentId: 'rescue-child' });
+  const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
+  const legacy = JSON.parse(await readFile(path, 'utf8'));
+  legacy.version = 1;
+  delete legacy.generation;
+  delete legacy.requiredExecutorAgentId;
+  await writeFile(path, `${JSON.stringify(legacy, null, 2)}\n`);
+
+  await store.save({
+    ...base, now: new Date(now.getTime() + 1),
+    envelope: { version: 1, source: 'proactive', task: 'continue', options: { resume: 'resume' } },
+  });
+  const upgraded = await store.consume({
+    ...base, executorAgentId: 'rescue-child', now: new Date(now.getTime() + 1),
+  });
+  assert.equal(upgraded.version, 2);
+  assert.equal(upgraded.generation, 2);
+  assert.equal(upgraded.requiredExecutorAgentId, 'rescue-child');
+});
+
+test('strict unconsumed legacy v1 preparation remains create-only and consumable once', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const base = {
+    sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial',
+  };
+  await store.save({ ...base, envelope: validEnvelope });
+  const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
+  const legacy = JSON.parse(await readFile(path, 'utf8'));
+  legacy.version = 1;
+  delete legacy.generation;
+  delete legacy.requiredExecutorAgentId;
+  await writeFile(path, `${JSON.stringify(legacy, null, 2)}\n`);
+  const before = await readFile(path);
+  await assert.rejects(store.save({
+    ...base,
+    envelope: { version: 1, source: 'proactive', task: 'continue', options: { resume: 'resume' } },
+  }), { code: 'RESCUE_PREPARATION_EXISTS' });
+  assert.deepEqual(await readFile(path), before);
+  const consumed = await store.consume({ ...base, executorAgentId: 'rescue-child' });
+  assert.equal(consumed.version, 1);
+  assert.equal(consumed.generation, undefined);
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'rescue-child' }), {
+    code: 'RESCUE_PREPARATION_CONSUMED',
+  });
+});
+
+test('unconsumed preparation cannot be overwritten and retains exact bytes', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const base = {
+    sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'default', recordedPrompt: 'proactive',
+    envelope: { ...validEnvelope, source: 'proactive', options: { resume: 'resume' } },
+  };
+  await store.save(base);
+  const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
+  const before = await readFile(path);
+  await assert.rejects(store.save(base), { code: 'RESCUE_PREPARATION_EXISTS' });
+  assert.deepEqual(await readFile(path), before);
+});
+
+test('v2 records reject generation and required executor cross-field mismatches', async (t) => {
+  /** @type {Array<[string, number, string|null]>} */
+  const variants = [
+    ['first generation with executor', 1, 'rescue-child'],
+    ['later generation without executor', 2, null],
+  ];
+  for (const [name, generation, requiredExecutorAgentId] of variants) await t.test(name, async () => {
+    const { dataRoot, store, workspaceA } = await storeFixture();
+    const base = {
+      sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+      permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial',
+    };
+    await store.save({ ...base, envelope: validEnvelope });
+    const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
+    const record = JSON.parse(await readFile(path, 'utf8'));
+    record.generation = generation;
+    record.requiredExecutorAgentId = requiredExecutorAgentId;
+    await writeFile(path, `${JSON.stringify(record, null, 2)}\n`);
+    const before = await readFile(path);
+    await assert.rejects(store.consume({ ...base, executorAgentId: 'rescue-child' }), {
+      code: 'RESCUE_PREPARATION_RECORD_INVALID',
+    });
+    assert.deepEqual(await readFile(path), before);
+  });
+});
+
+test('consumed preparation replacement rejects unauthorized or invalid prior state without mutation', async (t) => {
+  /** @type {Array<[string, (record:any, save:any, now:Date)=>{record?:any, save?:any}]>} */
+  const variants = [
+    ['explicit replacement', (record, save) => ({ save: { ...save, envelope: { ...save.envelope, source: 'explicit' } } })],
+    ['fresh replacement', (record, save) => ({
+      save: { ...save, envelope: { ...save.envelope, options: { resume: 'fresh' } } },
+    })],
+    ['changed permission', (record, save) => ({ save: { ...save, permissionMode: 'read-only' } })],
+    ['changed turn', (record, save) => ({ save: { ...save, turnId: 'turn-b' } })],
+    ['clock before creation', (record, save, now) => ({ save: { ...save, now: new Date(now.getTime() - 1) } })],
+    ['missing executor', (record) => { record.executorAgentId = ''; return { record }; }],
+    ['oversized executor', (record) => { record.executorAgentId = 'x'.repeat(513); return { record }; }],
+    ['generation overflow', (record) => { record.generation = Number.MAX_SAFE_INTEGER; return { record }; }],
+    ['unknown field', (record) => { record.unknown = true; return { record }; }],
+    ['mixed v1/v2', (record) => { record.version = 1; return { record }; }],
+  ];
+  for (const [name, mutate] of variants) await t.test(name, async () => {
+    const { dataRoot, store, workspaceA } = await storeFixture();
+    const now = new Date('2026-08-17T00:00:00.000Z');
+    const base = {
+      sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+      permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial', now,
+    };
+    await store.save({ ...base, envelope: validEnvelope });
+    await store.consume({ ...base, executorAgentId: 'rescue-child' });
+    const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
+    let record = JSON.parse(await readFile(path, 'utf8'));
+    let save = {
+      ...base,
+      envelope: { version: 1, source: 'proactive', task: 'continue', options: { resume: 'resume' } },
+    };
+    ({ record = record, save = save } = mutate(record, save, now));
+    await writeFile(path, `${JSON.stringify(record, null, 2)}\n`);
+    const before = await readFile(path);
+    await assert.rejects(store.save(save), (/** @type {any} */ error) => {
+      assert.doesNotMatch(errorChainText(error), /parent|turn-a|rescue-child/u);
+      return /^RESCUE_PREPARATION_/u.test(error.code);
+    });
+    assert.deepEqual(await readFile(path), before);
+  });
+});
+
+test('16-way concurrent consumed replacement permits exactly one new generation', async () => {
+  const { store, workspaceA } = await storeFixture();
+  const base = {
+    sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial',
+  };
+  await store.save({ ...base, envelope: validEnvelope });
+  await store.consume({ ...base, executorAgentId: 'rescue-child' });
+  const replacement = {
+    ...base,
+    envelope: { version: 1, source: 'proactive', task: 'continue', options: { resume: 'resume' } },
+  };
+  const results = await Promise.allSettled(Array.from({ length: 16 }, () => store.save(replacement)));
+  assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1);
+  assert.equal(results.filter(({ status }) => status === 'rejected').length, 15);
+  const second = await store.consume({ ...base, executorAgentId: 'rescue-child' });
+  assert.equal(second.generation, 2);
+});
+
+test('replacement takes a fresh TTL from lock-linearized time after prior expiry', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const createdAt = new Date('2026-08-17T00:00:00.000Z');
+  const expiresAt = createdAt.getTime() + 30 * 60_000;
+  const base = {
+    sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial',
+  };
+  await store.save({ ...base, envelope: validEnvelope, now: createdAt });
+  await store.consume({ ...base, executorAgentId: 'rescue-child', now: createdAt });
+  const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA });
+  /** @type {()=>void} */
+  let signalLockOpen = () => {};
+  /** @type {Promise<void>} */
+  const lockOpen = new Promise((resolve) => { signalLockOpen = resolve; });
+  const contendedStore = createRescuePreparationStore({
+    dataRoot,
+    testOnlyBeforeSaveLockOpen: async () => { signalLockOpen(); },
+  });
+  const originalNow = Date.now;
+  let clock = expiresAt - 1;
+  Date.now = () => clock;
+  try {
+    /** @type {Promise<void>|undefined} */
+    let pending;
+    await withFileLock(join(storage.directory, '.rescue-preparation-lock'), async () => {
+      pending = contendedStore.save({
+        ...base,
+        envelope: { version: 1, source: 'proactive', task: 'continue', options: { resume: 'resume' } },
+      });
+      await lockOpen;
+      clock = expiresAt;
+    });
+    await /** @type {Promise<void>} */ (pending);
+  } finally {
+    Date.now = originalNow;
+  }
+  const replacement = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(replacement.generation, 2); assert.equal(replacement.createdAt, new Date(expiresAt).toISOString());
+  assert.equal(Date.parse(replacement.expiresAt) - Date.parse(replacement.createdAt), 30 * 60_000);
+});
+
+test('cleanupTurn removes the current v2 generation slot', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const base = {
+    sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'default', recordedPrompt: 'proactive',
+  };
+  await store.save({
+    ...base, envelope: { ...validEnvelope, source: 'proactive', options: { resume: 'resume' } },
+  });
+  await store.consume({ ...base, executorAgentId: 'child' });
+  await store.save({
+    ...base, envelope: { ...validEnvelope, source: 'proactive', options: { resume: 'resume' } },
+  });
+  await store.cleanupTurn(base);
+  await assert.rejects(access(await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a')), {
+    code: 'ENOENT',
+  });
+});
+
+test('all cleanup APIs accept strict legacy v1 slots', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  /** @param {string} sessionId @param {string} turnId */
+  const save = (sessionId, turnId) => store.save({
+    sessionId, turnId, workspace: workspaceA, permissionMode: 'default', recordedPrompt: 'proactive',
+    envelope: { ...validEnvelope, source: 'proactive' },
+  });
+  await save('session-a', 'old');
+  await save('session-a', 'current');
+  await save('session-b', 'sibling');
+  for (const [sessionId, turnId] of [
+    ['session-a', 'old'], ['session-a', 'current'], ['session-b', 'sibling'],
+  ]) {
+    const path = await preparedPath(dataRoot, workspaceA, sessionId, turnId);
+    const legacy = JSON.parse(await readFile(path, 'utf8'));
+    legacy.version = 1;
+    delete legacy.generation;
+    delete legacy.requiredExecutorAgentId;
+    await writeFile(path, `${JSON.stringify(legacy, null, 2)}\n`);
+  }
+  await store.cleanupOlderTurns({ sessionId: 'session-a', turnId: 'current', workspace: workspaceA });
+  await assert.rejects(access(await preparedPath(dataRoot, workspaceA, 'session-a', 'old')), { code: 'ENOENT' });
+  await store.cleanupTurn({ sessionId: 'session-a', turnId: 'current', workspace: workspaceA });
+  await assert.rejects(access(await preparedPath(dataRoot, workspaceA, 'session-a', 'current')), { code: 'ENOENT' });
+  await store.cleanupSession({ sessionId: 'session-b', workspace: workspaceA });
+  await assert.rejects(access(await preparedPath(dataRoot, workspaceA, 'session-b', 'sibling')), { code: 'ENOENT' });
 });
 
 test('prepared save is create-only and cross-checks source against the recorded marker', async () => {

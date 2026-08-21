@@ -56,7 +56,7 @@ export function renderManagedRescueRole({ template, pluginRoot }) {
 /** @param {any} input */
 export async function inspectManagedRescueRole(input) {
   const prepared = await prepare(input, false);
-  if (!prepared.safe) return result('unsupported', prepared.paths.rolePath, prepared.reason);
+  if (!prepared.safe) return result('inspection-unavailable', prepared.paths.rolePath, prepared.reason);
   return inspectPrepared(prepared, input.config);
 }
 
@@ -178,7 +178,7 @@ export async function reconcileManagedRescueRole(input) {
 
 /** @param {AnyRecord} prepared @param {AnyRecord} config */
 async function inspectPrepared(prepared, config) {
-  if (!validConfigRead(config)) return result('unsupported', prepared.paths.rolePath, 'Codex configuration layers are unavailable or contain Role load errors.');
+  if (!validConfigRead(config)) return result('inspection-unavailable', prepared.paths.rolePath, 'Codex configuration layers are unavailable or contain Role load errors.');
   if (await exists(prepared.paths.transactionPath)) return result('restart-required', prepared.paths.rolePath, 'An interrupted managed Role transaction requires recovery.');
   const definitions = roleDefinitions(config);
   const projectDefinitions = definitions.filter((item) => item.type === 'project');

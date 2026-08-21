@@ -755,6 +755,28 @@ test('executor persists the accepted turn boundary and worker identity before st
   const persisted = await store.readJob(workspace, job.id); assert.equal(persisted.status, 'failed'); assert.equal(persisted.inputId, 'input-boundary'); assert.equal(persisted.childPid, 4321); assert.equal(persisted.workerLeaseId, workerLeaseId);
 });
 
+test('ordinary execution keeps a pending accepted completion alive without stopping it', async () => {
+  const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
+  let resolveCompletion = () => {}; const completion = new Promise((resolve) => { resolveCompletion = () => resolve(undefined); });
+  let signalRunning = () => {}; const running = new Promise((resolve) => { signalRunning = () => resolve(undefined); });
+  let stops = 0;
+  const client = {
+    createSession: async () => ({ session: { sessionId: 'zs-no-deadline' }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] }),
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: 'input-no-deadline', stateRevision: 4 }),
+    waitForCompletion: async () => completion,
+    readSession: async () => ({ projection: { status: 'completed' }, runtime: { stateRevision: 5 }, messages: [{ info: { role: 'assistant', messageId: 'assistant-no-deadline', parentMessageId: 'input-no-deadline' }, parts: [{ type: 'text', text: 'completed after pending' }] }] }),
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  };
+  const execution = executeJob({ job, workspace, dataRoot: join(root, 'data'), store, client, task: 'task', onBoundaryPersisted: async () => signalRunning() });
+  await running;
+  assert.equal((await store.readJob(workspace, job.id)).status, 'running');
+  assert.equal(stops, 0);
+  resolveCompletion();
+  const output = await execution;
+  assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'completed after pending'); assert.equal(stops, 0);
+});
+
 test('executor activates bounded snapshot progress only after the exact accepted boundary is durable and keeps final read authoritative', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation });
   /** @type {string[]} */

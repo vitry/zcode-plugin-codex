@@ -19,6 +19,7 @@ export const RESCUE_PREPARATION_VERSION = 1;
 export const RESCUE_TASK_MAX_BYTES = 64 * 1024;
 export const RESCUE_ENVELOPE_MAX_BYTES = RESCUE_TASK_MAX_BYTES + 4096;
 
+const RESCUE_PREPARATION_RECORD_VERSION = 2;
 const SOURCES = new Set(['explicit', 'proactive']);
 const EXECUTIONS = new Set(['foreground', 'background']);
 const RESUMES = new Set(['fresh', 'resume']);
@@ -28,10 +29,14 @@ const OPTION_KEYS = new Set(['effort', 'execution', 'model', 'resume']);
 const PREPARATION_LIFETIME_MS = 30 * 60_000;
 const PREPARATION_SCAN_MAX_RECORDS = 1024;
 const PREPARATION_RECORD_MAX_BYTES = 2 * 1024 * 1024;
-const RECORD_KEYS = [
+const V1_RECORD_KEYS = Object.freeze([
   'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'key',
   'permissionMode', 'sessionId', 'source', 'turnId', 'version', 'workspace',
-];
+]);
+const V2_RECORD_KEYS = Object.freeze([
+  'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'generation', 'key',
+  'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source', 'turnId', 'version', 'workspace',
+]);
 
 /** @param {NodeJS.ReadableStream} stream */
 export async function readRescuePreparation(stream) {
@@ -89,55 +94,83 @@ export function hasRecordedRescueMarker(prompt) {
   return typeof prompt === 'string' && /(?:^|\s)\$zcode:rescue(?=$|\s)/u.test(prompt);
 }
 
-/** @param {{dataRoot:string}} options */
-export function createRescuePreparationStore({ dataRoot }) {
+/** @param {{dataRoot:string,testOnlyBeforeSaveLockOpen?:()=>Promise<void>}} options */
+export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockOpen }) {
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) throw preparationError(
     'RESCUE_PREPARATION_INVALID', 'A plugin data root is required.',
   );
+  if (testOnlyBeforeSaveLockOpen !== undefined && typeof testOnlyBeforeSaveLockOpen !== 'function') {
+    throw invalidPreparation();
+  }
+  const beforeSaveLockOpen = testOnlyBeforeSaveLockOpen === undefined ? undefined : async () => {
+    try { await testOnlyBeforeSaveLockOpen(); } catch { throw invalidPreparation(); }
+  };
   return {
     /** @param {any} input */
     async save(input) {
       validateSaveInput(input);
       const envelope = validateRescuePreparation(input.envelope);
-      const marker = hasRecordedRescueMarker(input.recordedPrompt);
-      if ((envelope.source === 'explicit') !== marker) throw preparationError(
-        'RESCUE_PREPARATION_SOURCE_MISMATCH',
-        'The Rescue preparation source does not match the recorded prompt.',
-      );
       const storage = await preparationStorage(dataRoot, input.workspace);
       const key = preparationKey(input.sessionId, input.turnId, storage.workspacePath);
       const path = join(storage.directory, `${key}.json`);
-      const createdAt = timestamp(input.now);
-      const record = {
-        version: RESCUE_PREPARATION_VERSION,
-        key,
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        workspace: storage.workspacePath,
-        permissionMode: input.permissionMode,
-        source: envelope.source,
-        envelope,
-        createdAt: new Date(createdAt).toISOString(),
-        expiresAt: new Date(createdAt + PREPARATION_LIFETIME_MS).toISOString(),
-        consumedAt: null,
-        executorAgentId: null,
-      };
-      if (Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`) > PREPARATION_RECORD_MAX_BYTES) {
-        throw invalidPreparation();
-      }
       const cancellation = lockCancellation(input.signal);
       try {
         await withPreparationLock(storage, async () => {
+          const createdAt = timestamp(input.now);
           const names = await boundedRecordNames(storage);
-          if (names.includes(`${key}.json`) || await exists(path)) throw preparationError(
-            'RESCUE_PREPARATION_EXISTS', 'A Rescue preparation already exists for this turn.',
-          );
-          if (names.length === PREPARATION_SCAN_MAX_RECORDS) throw preparationError(
+          const occupied = names.includes(`${key}.json`) || await exists(path);
+          if (!occupied && names.length === PREPARATION_SCAN_MAX_RECORDS) throw preparationError(
             'RESCUE_PREPARATION_SCAN_LIMIT', 'The Rescue preparation record scan limit was exceeded.',
           );
+          let generation = 1;
+          let requiredExecutorAgentId = null;
+          if (occupied) {
+            const current = await readPreparedRecord(storage, path, key, false);
+            const kind = recordKind(current);
+            const boundResume = envelope.source === 'proactive'
+              && envelope.options.resume === 'resume'
+              && current.sessionId === input.sessionId
+              && current.turnId === input.turnId
+              && current.workspace === storage.workspacePath
+              && current.permissionMode === input.permissionMode
+              && current.consumedAt !== null
+              && safeIdentifier(current.executorAgentId)
+              && createdAt >= Date.parse(current.consumedAt);
+            if (!boundResume) throw preparationError(
+              'RESCUE_PREPARATION_EXISTS', 'A Rescue preparation already exists for this turn.',
+            );
+            generation = kind === 'legacy' ? 2 : current.generation + 1;
+            if (!Number.isSafeInteger(generation)) throw invalidPreparation();
+            requiredExecutorAgentId = current.executorAgentId;
+          } else {
+            const marker = hasRecordedRescueMarker(input.recordedPrompt);
+            if ((envelope.source === 'explicit') !== marker) throw preparationError(
+              'RESCUE_PREPARATION_SOURCE_MISMATCH',
+              'The Rescue preparation source does not match the recorded prompt.',
+            );
+          }
+          const record = {
+            version: RESCUE_PREPARATION_RECORD_VERSION,
+            key,
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            workspace: storage.workspacePath,
+            permissionMode: input.permissionMode,
+            source: envelope.source,
+            envelope,
+            generation,
+            requiredExecutorAgentId,
+            createdAt: new Date(createdAt).toISOString(),
+            expiresAt: new Date(createdAt + PREPARATION_LIFETIME_MS).toISOString(),
+            consumedAt: null,
+            executorAgentId: null,
+          };
+          if (Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`) > PREPARATION_RECORD_MAX_BYTES) {
+            throw invalidPreparation();
+          }
           cancellation.linearize();
           await atomicWriteJson(path, record, { privateRoot: storage.privateRoot });
-        }, { signal: cancellation.signal });
+        }, { beforeLockOpen: beforeSaveLockOpen, signal: cancellation.signal });
       } finally { cancellation.detach(); }
     },
 
@@ -158,6 +191,12 @@ export function createRescuePreparationStore({ dataRoot }) {
             'RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation executor does not match.',
           );
           throw preparationError('RESCUE_PREPARATION_CONSUMED', 'The Rescue preparation has already been consumed.');
+        }
+        if (recordKind(record) === 'current' && record.requiredExecutorAgentId !== null
+          && record.requiredExecutorAgentId !== input.executorAgentId) {
+          throw preparationError(
+            'RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation executor does not match.',
+          );
         }
         const consumedAt = timestamp(input.now);
         if (consumedAt < Date.parse(record.createdAt)) throw invalidPreparation();
@@ -344,8 +383,8 @@ function sameFileIdentity(left, right) {
 
 /** @param {any} record @param {string} key @param {string} workspace */
 function validRecord(record, key, workspace) {
-  if (!plain(record) || !sameKeys(record, RECORD_KEYS)
-    || record.version !== RESCUE_PREPARATION_VERSION || record.key !== key
+  const kind = recordKind(record);
+  if (kind === null || record.key !== key
     || !/^[a-f0-9]{64}$/u.test(record.key) || record.workspace !== workspace
     || !nonempty(record.sessionId) || !nonempty(record.turnId)
     || !PERMISSION_MODES.includes(record.permissionMode)
@@ -356,8 +395,23 @@ function validRecord(record, key, workspace) {
   try { envelope = validateRescuePreparation(record.envelope); } catch { return false; }
   if (envelope.source !== record.source) return false;
   if (record.consumedAt === null) return record.executorAgentId === null;
-  return validDate(record.consumedAt) && nonempty(record.executorAgentId)
-    && Date.parse(record.consumedAt) >= Date.parse(record.createdAt);
+  return validDate(record.consumedAt) && safeIdentifier(record.executorAgentId)
+    && Date.parse(record.consumedAt) >= Date.parse(record.createdAt)
+    && Date.parse(record.consumedAt) < Date.parse(record.expiresAt)
+    && (kind === 'legacy' || record.requiredExecutorAgentId === null
+      || record.executorAgentId === record.requiredExecutorAgentId);
+}
+
+/** @param {any} record @returns {'legacy'|'current'|null} */
+function recordKind(record) {
+  if (!plain(record)) return null;
+  if (record.version === RESCUE_PREPARATION_VERSION && sameKeys(record, V1_RECORD_KEYS)) return 'legacy';
+  if (record.version !== RESCUE_PREPARATION_RECORD_VERSION || !sameKeys(record, V2_RECORD_KEYS)
+    || !Number.isSafeInteger(record.generation) || record.generation <= 0
+    || record.requiredExecutorAgentId !== null && !safeIdentifier(record.requiredExecutorAgentId)
+    || record.generation === 1 && record.requiredExecutorAgentId !== null
+    || record.generation > 1 && record.requiredExecutorAgentId === null) return null;
+  return 'current';
 }
 
 /** @param {any} input */
@@ -374,7 +428,9 @@ function validateSaveInput(input) {
 /** @param {any} input */
 function validateConsumeInput(input) {
   validateTurnInput(input);
-  if (!PERMISSION_MODES.includes(input.permissionMode) || !nonempty(input.executorAgentId)) throw invalidPreparation();
+  if (!PERMISSION_MODES.includes(input.permissionMode) || !safeIdentifier(input.executorAgentId)) {
+    throw invalidPreparation();
+  }
   timestamp(input.now);
 }
 
@@ -412,7 +468,7 @@ async function preparationStorage(dataRoot, workspace) {
   };
 }
 
-/** @template T @param {any} storage @param {()=>Promise<T>} operation @param {{signal?:AbortSignal}} [options] @returns {Promise<T>} */
+/** @template T @param {any} storage @param {()=>Promise<T>} operation @param {{beforeLockOpen?:()=>Promise<void>,signal?:AbortSignal}} [options] @returns {Promise<T>} */
 async function withPreparationLock(storage, operation, options = {}) {
   return withFileLock(storage.lockPath, async () => {
     assertLockIdentity(storage);
@@ -537,6 +593,15 @@ function nonempty(value) {
 }
 
 /** @param {unknown} value */
+function safeIdentifier(value) {
+  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 512
+    && ![...value].some((character) => {
+      const code = /** @type {number} */ (character.codePointAt(0));
+      return code <= 31 || code === 127;
+    });
+}
+
+/** @param {unknown} value */
 function validDate(value) {
   return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }
@@ -629,7 +694,7 @@ function validModel(value) {
     });
 }
 
-/** @param {Record<string, unknown>} value @param {string[]} keys */
+/** @param {Record<string, unknown>} value @param {readonly string[]} keys */
 function sameKeys(value, keys) {
   return Object.keys(value).sort().join('\0') === [...keys].sort().join('\0');
 }

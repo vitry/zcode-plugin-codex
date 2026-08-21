@@ -25,6 +25,17 @@ async function withTestDeadlineKeepalive(operation) {
   try { return await operation(); } finally { clearInterval(keepalive); }
 }
 
+async function boundedTestPromise(promise, label, timeoutMs = 1_000) {
+  /** @type {NodeJS.Timeout|undefined} */ let timer;
+  try {
+    return await Promise.race([promise, new Promise((resolvePromise, reject) => {
+      void resolvePromise;
+      timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+      timer.unref?.();
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 async function compactBrokerTemp() {
   const base = process.platform === 'win32' ? tmpdir() : realpathSync('/tmp');
   const directory = await mkdtemp(join(base, 'zb-'));
@@ -291,14 +302,28 @@ test('ordinary empty session/create retains explicit session ID binding', async 
   }, { FAKE_ZCODE_EMPTY_SESSION: '1', FAKE_ZCODE_SESSION_ID: 'different-session' });
 });
 
-test('the unknown-projection exception remains confined to session/create', async (t) => {
-  for (const method of ['session/read', 'session/resume', 'session/setModel', 'session/setThoughtLevel']) await t.test(method, () => withClient(async (client) => {
+test('the unknown-projection exception remains confined to creation and exact pre-turn settings', async (t) => {
+  for (const method of ['session/read', 'session/resume']) await t.test(`${method} rejects it`, () => withClient(async (client) => {
     const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
     const operation = method === 'session/read' ? () => client.readSession(sessionId)
-      : method === 'session/resume' ? () => client.resumeSession(sessionId)
-        : method === 'session/setModel' ? () => client.setModel(sessionId, { providerId: 'fake2', modelId: 'other' })
-          : () => client.setThoughtLevel(sessionId, 'high');
+      : () => client.resumeSession(sessionId);
     await assert.rejects(operation(), { code: 'ZCODE_OUTPUT_INVALID' });
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
+  await t.test('session/setModel accepts the captured empty state', () => withClient(async (client) => {
+    const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
+    const selected = await client.setModel(sessionId, { providerId: 'fake2', modelId: 'other' });
+    assert.deepEqual(selected.settings.model.current, { providerId: 'fake2', modelId: 'other' });
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
+  await t.test('session/setThoughtLevel accepts the captured empty state', () => withClient(async (client) => {
+    const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
+    const selected = await client.setThoughtLevel(sessionId, 'high');
+    assert.equal(selected.settings.thoughtLevel.current, 'HIGH');
+  }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
+  await t.test('settings reject a fabricated empty state after send begins', () => withClient(async (client) => {
+    const sessionId = (await client.createSession({ workspace: '/repo' })).session.sessionId;
+    await client.send(sessionId, 'begin the first turn');
+    await assert.rejects(client.setModel(sessionId, { providerId: 'fake2', modelId: 'other' }), { code: 'ZCODE_OUTPUT_INVALID' });
+    await assert.rejects(client.setThoughtLevel(sessionId, 'high'), { code: 'ZCODE_OUTPUT_INVALID' });
   }, { FAKE_ZCODE_EMPTY_SESSION: '1' }));
 });
 
@@ -321,7 +346,7 @@ test('the empty-create validator rejects every remaining non-empty or conflictin
       ['active projection tool call', (value) => { value.projection.activeToolCalls = [{ toolCallId: 'tool-1', toolName: 'write', status: 'pending' }]; }, true],
       ['background projection job', (value) => { value.projection.backgroundJobs = [{}]; }, true],
       ['projection error', (value) => { value.projection.lastError = { type: 'runtime', message: 'not empty' }; }, true],
-      ['nonzero runtime revision', (value) => { value.runtime.stateRevision = 1; }, true],
+      ['noninitial runtime revision', (value) => { value.runtime.stateRevision = 2; }, true],
       ['active runtime turn ID', (value) => { value.runtime.activeTurnId = 'turn-1'; }, true],
       ['active runtime turn kind', (value) => { value.runtime.activeTurnKind = 'regular'; }, true],
       ['pending runtime request', (value) => { value.runtime.pendingRequestIds = ['request-1']; }, true],
@@ -347,6 +372,9 @@ test('the empty-create validator rejects every remaining non-empty or conflictin
     explicitEmpty.runtime.goalVerifications = []; explicitEmpty.runtime.goalVerificationTimeline = [];
     assert.equal(validCreateSnapshot(explicitEmpty, sessionId, workspace), true, 'explicit null and empty activity state must remain fresh');
     assert.equal(validSetupAuthProbeSnapshot(explicitEmpty, sessionId, workspace), true, 'setup probe must accept explicit null and empty activity state');
+    const cli0163Empty = structuredClone(explicitEmpty); cli0163Empty.runtime.stateRevision = 1;
+    assert.equal(validCreateSnapshot(cli0163Empty, sessionId, workspace), true, 'captured 0.16.3 empty create revision must remain fresh');
+    assert.equal(validSetupAuthProbeSnapshot(cli0163Empty, sessionId, workspace), true, 'setup probe must accept the captured 0.16.3 empty create revision');
   }, { FAKE_ZCODE_EMPTY_SESSION: '1' });
 });
 
@@ -401,6 +429,64 @@ test('completion arms after send response and requires a newer revision', async 
   }, { FAKE_ZCODE_BARRIER: '1' });
 });
 
+test('ordinary completion has no implicit deadline and cleans state after a delayed terminal', async () => {
+  await withClient(async (client) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await client.send(sessionId, 'delayed ordinary completion');
+    const waiting = client.waitForCompletion(sessionId);
+    const [waiter] = client.protocol.completionWaiters;
+    assert.ok(waiter, 'completion waiter must be registered while the delayed terminal is pending');
+    const registeredTimer = waiter.timer;
+    const completion = await boundedTestPromise(waiting, 'ordinary completion');
+    assert.equal(registeredTimer, null);
+    assert.equal(completion.reason, 'prompt_completed');
+    assert.equal(client.turnState(sessionId), null);
+    for (const map of [client.protocol.turns, client.protocol.completed, client.protocol.earlyCompletions, client.protocol.completionExpiry]) assert.equal(map.size, 0);
+    assert.equal(client.protocol.completionWaiters.size, 0);
+    assert.equal(client.protocol.waiterSessions.size, 0);
+  }, { FAKE_ZCODE_COMPLETION_DELAY_MS: '100' }, { completionTimeoutMs: undefined });
+});
+
+test('completion waiter registration rolls back when subscriber capacity is full', async () => {
+  await withClient(async (client) => {
+    const releases = Array.from({ length: 256 }, () => client.subscribe(() => {}));
+    try {
+      const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+      await client.send(sessionId, 'subscriber saturation');
+      await assert.rejects(client.waitForCompletion(sessionId), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
+      assert.equal(client.protocol.completionWaiters.size, 0);
+      assert.equal(client.protocol.waiterSessions.size, 0);
+      assert.equal(client.turnState(sessionId), 'armed');
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 30));
+      assert.equal(client.turnState(sessionId), 'armed', 'rolled-back registration timer must not abort the active turn');
+      releases.pop()?.();
+      const waiting = client.waitForCompletion(sessionId, 2_000);
+      assert.equal(client.protocol.completionWaiters.size, 1);
+      assert.ok([...client.protocol.completionWaiters][0].timer);
+      await client.stopSession(sessionId);
+      await assert.rejects(waiting, { code: 'ZCODE_SESSION_STOPPED' });
+      assert.equal(client.protocol.completionWaiters.size, 0);
+      assert.equal(client.protocol.waiterSessions.size, 0);
+      assert.equal(client.turnState(sessionId), null);
+    } finally { for (const release of releases) release(); }
+  }, { FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' }, { completionTimeoutMs: 20 });
+});
+
+test('client close rejects and cleans a completion waiter without a timer', async () => {
+  await withClient(async (client) => {
+    const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
+    await client.send(sessionId, 'close pending completion');
+    const waiting = client.waitForCompletion(sessionId);
+    assert.equal([...client.protocol.completionWaiters][0].timer, null);
+    const rejected = assert.rejects(waiting, { code: 'ZCODE_DISCONNECTED' });
+    await client.close();
+    await rejected;
+    assert.equal(client.protocol.completionWaiters.size, 0);
+    assert.equal(client.protocol.waiterSessions.size, 0);
+    assert.equal(client.protocol.subscribers.size, 0);
+  }, { FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1' }, { completionTimeoutMs: undefined });
+});
+
 test('completion in the same frame batch after response survives the arm barrier', async () => {
   await withClient(async (client) => { const created = await client.createSession({ workspace: '/repo' }); await client.send(created.session.sessionId, 'sync'); const completion = await client.waitForCompletion(created.session.sessionId); assert.equal(completion.revision, 2); }, { FAKE_ZCODE_SYNC_COMPLETE: '1' });
 });
@@ -412,7 +498,14 @@ test('stale and valid completions in the same stdout write choose the valid revi
 test('completion timeout and stop fully clean the turn and allow another send', async () => {
   await withClient(async (client) => {
     const { session: { sessionId } } = await client.createSession({ workspace: '/repo' });
-    await client.send(sessionId, 'timeout'); await assert.rejects(client.waitForCompletion(sessionId, 20), { code: 'ZCODE_COMPLETION_TIMEOUT' });
+    await client.send(sessionId, 'timeout');
+    for (const invalidTimeoutMs of [null, 0, -1, 1.5, 86_400_001, Number.MAX_SAFE_INTEGER + 1]) {
+      await assert.rejects(client.waitForCompletion(sessionId, invalidTimeoutMs), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
+      assert.equal(client.turnState(sessionId), 'armed');
+      assert.equal(client.protocol.completionWaiters.size, 0);
+      assert.equal(client.protocol.waiterSessions.size, 0);
+    }
+    await assert.rejects(client.waitForCompletion(sessionId, 20), { code: 'ZCODE_COMPLETION_TIMEOUT' });
     await client.send(sessionId, 'retry'); await client.waitForCompletion(sessionId);
     await client.send(sessionId, 'stop'); const waiter = client.waitForCompletion(sessionId, 2_000); await new Promise((resolve) => setTimeout(resolve, 20)); await client.stopSession(sessionId); await assert.rejects(waiter, { code: 'ZCODE_SESSION_STOPPED' });
     assert.equal(client.turnState(sessionId), null);
@@ -497,10 +590,14 @@ test('disconnect rejects completion waiters immediately', async () => {
   await withClient(async (client) => {
     const created = await client.createSession({ workspace: '/repo' });
     await client.send(created.session.sessionId, 'wait');
-    const waiting = client.waitForCompletion(created.session.sessionId, 2_000);
+    const waiting = client.waitForCompletion(created.session.sessionId);
+    assert.equal([...client.protocol.completionWaiters][0].timer, null);
     await assert.rejects(client.listSessions(), { code: 'ZCODE_DISCONNECTED' });
     await assert.rejects(waiting, { code: 'ZCODE_DISCONNECTED' });
-  }, { FAKE_ZCODE_DISCONNECT: 'session/list', FAKE_ZCODE_CROSS_SESSION: 'other' });
+    assert.equal(client.protocol.completionWaiters.size, 0);
+    assert.equal(client.protocol.waiterSessions.size, 0);
+    assert.equal(client.protocol.subscribers.size, 0);
+  }, { FAKE_ZCODE_DISCONNECT: 'session/list', FAKE_ZCODE_CROSS_SESSION: 'other' }, { completionTimeoutMs: undefined });
 });
 
 test('malformed, oversized, disconnect and request error fail closed', async (t) => {

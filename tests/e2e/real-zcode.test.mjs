@@ -10,6 +10,7 @@ import { diagnoseZCodeAuth } from '../../scripts/lib/codex-config.mjs';
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { createZCodeClient } from '../../scripts/lib/zcode-client.mjs';
+import { createManagedZCodeClient } from '../../scripts/lib/zcode-client.mjs';
 import { releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
 import { discoverZCode } from '../../scripts/lib/zcode-discovery.mjs';
 import { runCompanion } from '../../scripts/zcode-companion.mjs';
@@ -33,9 +34,9 @@ const skipReason = modelEnvironmentFailure || (process.env.ZCODE_REAL_E2E !== '1
 
 function unqualified(code, detail) { return `real-zcode-unqualified ${JSON.stringify({ qualified: false, code, detail })}`; }
 
-test('real ZCode discovery, read-only turn, cancellation, model, and history import', {
+test('real ZCode discovery, two-turn session, read-only Companion, cancellation, model, and history import', {
   skip: qualificationRequired ? false : skipReason,
-  timeout: 240_000,
+  timeout: 420_000,
 }, async (t) => {
   if (skipReason) assert.fail(skipReason);
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-real-e2e-'));
@@ -60,7 +61,12 @@ test('real ZCode discovery, read-only turn, cancellation, model, and history imp
 
   const dataRoot = join(temporary, 'plugin-data'); const identity = createIdentityStore({ dataRoot });
   const callerContext = await identity.createCallerContext({ sessionId: 'real-zcode-e2e', turnId: 'real-model-turn', workspace: temporary, permissionMode: 'read-only' });
-  const companion = await runCompanion(['rescue', '--fresh', '--model', requestedModel, 'Inspect this empty workspace read-only and return a short acknowledgement.'], { cwd: temporary, env: { ...process.env, ZCODE_DATA_ROOT: dataRoot, ZCODE_PATH: discovery.path }, authorization: { callerContext } });
+  const companion = await runCompanion(['rescue', '--fresh', '--model', requestedModel, 'Inspect this empty workspace read-only and return a short acknowledgement.'], {
+    cwd: temporary,
+    env: { ...process.env, ZCODE_DATA_ROOT: dataRoot, ZCODE_PATH: discovery.path },
+    authorization: { callerContext },
+    dependencies: { createManagedZCodeClient: (options) => createManagedZCodeClient({ ...options, completionTimeoutMs: 180_000 }) },
+  });
   assert.equal(companion.job.status, 'succeeded'); assert.ok(companion.result.trim()); assert.ok(companion.job.model);
 
   client = await createZCodeClient({
@@ -123,10 +129,19 @@ test('real ZCode discovery, read-only turn, cancellation, model, and history imp
 
   const sent = await client.send(sessionId, 'Inspect only this empty temporary workspace. Do not write files or run mutating commands. Reply with a short acknowledgement.');
   assert.equal(sent.accepted, true);
-  await client.waitForCompletion(sessionId, 180_000);
-  const completed = await client.readSession(sessionId);
-  assert.ok(completed.messages.some((message) => message.info?.role === 'assistant'
-    && message.parts?.some((part) => part.type === 'text' && typeof part.text === 'string' && part.text.trim())));
+  await client.waitForCompletion(sessionId);
+  const firstCompleted = await client.readSession(sessionId);
+  const firstAssistantResults = visibleAssistantResultsForTurn(firstCompleted, sent.inputId, messageIds(selected));
+  assert.ok(firstAssistantResults.length >= 1, 'the first direct real turn must expose a non-empty assistant result');
+  const continued = await client.send(sessionId, 'Continue in this exact session. Inspect only and reply with a second short acknowledgement distinct from the first.');
+  assert.equal(continued.accepted, true);
+  await client.waitForCompletion(sessionId);
+  const secondCompleted = await client.readSession(sessionId);
+  const secondAssistantResults = visibleAssistantResultsForTurn(secondCompleted, continued.inputId, messageIds(firstCompleted));
+  assert.ok(secondAssistantResults.length >= 1, 'the second direct real turn must expose a new non-empty assistant result linked to its accepted input');
+  const firstAssistantIds = new Set(firstAssistantResults.map((entry) => entry.info.messageId));
+  assert.ok(secondAssistantResults.every((message) => !firstAssistantIds.has(message.info.messageId)),
+    'the second direct real turn must not reuse a first-turn assistant result');
   await client.stopSession(sessionId, 10_000);
   sessions.delete(sessionId);
 
@@ -145,6 +160,62 @@ test('real ZCode discovery, read-only turn, cancellation, model, and history imp
   await client.stopSession(importedId, 10_000);
   sessions.delete(importedId);
 });
+
+test('visible assistant result selection is linked to the exact accepted input or its sole persisted user root', () => {
+  const snapshot = { messages: [
+    { info: { role: 'assistant', messageId: 'assistant-first', parentMessageId: 'input-first' }, parts: [{ type: 'text', text: 'first' }] },
+    { info: { role: 'assistant', messageId: 'assistant-empty', parentMessageId: 'input-second' }, parts: [{ type: 'text', text: '   ' }] },
+    { info: { role: 'assistant', messageId: 'assistant-second', parentMessageId: 'input-second' }, parts: [{ type: 'text', text: 'second' }] },
+  ] };
+  assert.deepEqual(visibleAssistantResultsForTurn(snapshot, 'input-second', new Set()).map((message) => message.info.messageId), ['assistant-second']);
+  assert.deepEqual(visibleAssistantResultsForTurn(snapshot, 'input-missing', new Set()), []);
+  const remapped = { messages: [
+    { info: { role: 'user', messageId: 'persisted-root', semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'prompt' }] },
+    { info: { role: 'assistant', messageId: 'persisted-result', parentMessageId: 'persisted-root' }, parts: [{ type: 'text', text: 'result' }] },
+  ] };
+  assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set()).map((message) => message.info.messageId), ['persisted-result']);
+  remapped.messages.push({ info: { role: 'user', messageId: 'ambiguous-root', semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'other' }] });
+  assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set()), []);
+  const unmarked = structuredClone(remapped); unmarked.messages = unmarked.messages.slice(0, 2); delete unmarked.messages[0].info.semantics;
+  assert.deepEqual(visibleAssistantResultsForTurn(unmarked, 'unpersisted-input', new Set()), []);
+  for (const origin of ['system', 'migration']) {
+    const foreign = structuredClone(unmarked); foreign.messages[0].info.semantics = { origin, kind: 'user_prompt', uiVisibility: 'visible' };
+    assert.deepEqual(visibleAssistantResultsForTurn(foreign, 'unpersisted-input', new Set()), []);
+  }
+  const hidden = structuredClone(snapshot); hidden.messages[2].info.semantics = { origin: 'agent_runtime', kind: 'assistant_response', uiVisibility: 'hidden' };
+  assert.deepEqual(visibleAssistantResultsForTurn(hidden, 'input-second', new Set()), []);
+  const wrongKind = structuredClone(snapshot); wrongKind.messages[2].info.semantics = { origin: 'agent_runtime', kind: 'timeline_event', uiVisibility: 'visible' };
+  assert.deepEqual(visibleAssistantResultsForTurn(wrongKind, 'input-second', new Set()), []);
+});
+
+function visibleAssistantResultsForTurn(session, inputId, beforeMessageIds) {
+  if (typeof inputId !== 'string' || inputId.length === 0 || !(beforeMessageIds instanceof Set) || !Array.isArray(session?.messages)) return [];
+  const newMessages = session.messages.filter((message) => typeof message?.info?.messageId === 'string' && !beforeMessageIds.has(message.info.messageId));
+  const directlyLinked = newMessages.some((message) => visibleAssistant(message, inputId));
+  let parentMessageId = inputId;
+  if (!directlyLinked) {
+    const roots = newMessages.filter((message) => message?.info?.role === 'user' && message.info.synthetic !== true
+      && message.info.visibility !== 'model-only' && message.info.source === undefined
+      && message.info.semantics?.origin === 'real_user' && message.info.semantics.kind === 'user_prompt'
+      && message.info.semantics.uiVisibility === 'visible');
+    if (roots.length !== 1) return [];
+    parentMessageId = roots[0].info.messageId;
+  }
+  return newMessages.filter((message) => visibleAssistant(message, parentMessageId));
+}
+
+function visibleAssistant(message, parentMessageId) {
+  const semantics = message?.info?.semantics;
+  return message?.info?.role === 'assistant' && message.info.parentMessageId === parentMessageId
+    && typeof message.info.messageId === 'string' && message.info.messageId.length > 0
+    && (semantics === undefined || semantics.origin === 'agent_runtime' && semantics.kind === 'assistant_response' && semantics.uiVisibility === 'visible')
+    && message.parts?.some((part) => part?.type === 'text' && typeof part.text === 'string' && part.text.trim());
+}
+
+function messageIds(session) {
+  return new Set((Array.isArray(session?.messages) ? session.messages : [])
+    .map((message) => message?.info?.messageId).filter((value) => typeof value === 'string'));
+}
 
 function boundedBarrier(promise, label, timeoutMs = 60_000) {
   let timer;

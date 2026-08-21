@@ -142,6 +142,9 @@ test('Rescue uses only its machine-bound launcher and treats root diagnostics as
   assert.match(source, /<rescueLauncherCommand> role-status rescue/);
   assert.match(source, /<rescueLauncherCommand> prepare rescue/);
   assert.match(source, /`source-session-unproven`[\s\S]+terminal[\s\S]+exact remedy/i);
+  assert.match(source, /`caller-unavailable`[^\n]+active owned parent turn[^\n]+never run setup/i);
+  assert.match(source, /`inspection-unavailable`[^\n]+retry Role preflight[^\n]+never prepare, spawn, or mutate setup/i);
+  assert.match(source, /managed install\/upgrade\/drift\/conflict\/unsupported[^\n]+fixed `\$zcode:setup` remedy/i);
   const sourceFailure = /`source-session-unproven`[\s\S]+?(?=\n\n|$)/i.exec(source)?.[0] ?? '';
   assert.match(sourceFailure, /(?:do not|never)[^\n]+\$zcode:setup[\s\S]+prepare[\s\S]+follow[ -]?up[\s\S]+spawn/i);
   assert.doesNotMatch(block, /two directories above|<plugin-root>|canonical plugin root/i);
@@ -235,6 +238,7 @@ test('Root routes active, stopped same-operation, and fresh Rescue child states 
   assert.match(block, /reuse[^\n]+`invoke-prepared rescue`/i);
   assert.match(block, /invalid[^\n]+binding[\s\S]+fail closed/i);
   assert.match(block, /permission[^\n]+change[\s\S]+fresh/i);
+  assert.match(block, /same still-active parent turn[\s\S]+exactly one proactive `resume` generation[\s\S]+same stopped child/i);
   assert.match(source, /expectedPreparedContinuationMessage[^\n]+exact original assignment[^\n]+named[^\n]+generic/i);
   assert.match(source, /Preparation authorizes exactly one next action:[^\n]+followup_task[^\n]+spawn[^\n]+never both/i);
 });
