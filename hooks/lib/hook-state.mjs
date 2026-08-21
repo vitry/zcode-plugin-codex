@@ -101,31 +101,37 @@ export async function markForwarding(dataRoot, input, parentCaller, options = {}
     await publicationSeam?.('after-route-pending');
     const executor = { kind: 'subagent-executor', agentId: input.agent_id, agentType: input.agent_type, parentSessionId: input.session_id, parentGenerationId: generationId, parentTurnId: parentCaller.turnId, parentPermissionMode: parentCaller.permissionMode, childTurnId: input.turn_id, originWorkspace: origin.workspacePath, workspace: target.workspacePath, active: true, createdAt: route.createdAt };
     await withFileLock(target.lock, () => atomicWriteJson(join(target.directory, `executor-${key('executor', input.agent_id)}.json`), executor));
-    await publicationSeam?.('after-executor-write');
-    let finalState; let finalError = null;
-    await withFileLock(origin.lock, async () => {
-      const current = await readExecutorRoute(routePath(origin, input.session_id, input.turn_id), origin.directory);
-      const exactRoute = validExecutorRoute(current, origin.workspacePath, input) && current.parentGenerationId === generationId
-        && current.parentTurnId === parentCaller.turnId && current.parentPermissionMode === parentCaller.permissionMode && current.targetWorkspace === target.workspacePath;
-      const authority = exactRoute && await routeAuthorityExists(dataRoot, origin.workspacePath, current);
-      finalState = current.state;
-      if (!exactRoute || !authority) {
-        const updatedAt = new Date().toISOString();
-        if (validExecutorRoute(current, origin.workspacePath, input)) await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), { ...current, state: 'stopped', updatedAt });
-        await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId, turnId: input.turn_id, agentId: input.agent_id, active: false, targetWorkspace: target.workspacePath, updatedAt });
-        finalState = 'stopped'; finalError = executorError(exactRoute ? 'EXECUTOR_PARENT_TURN_MISMATCH' : 'EXECUTOR_ROUTE_INVALID', exactRoute ? 'SubagentStart parent authority ended before executor publication.' : 'SubagentStart lost its exact executor route.');
-      } else if (current.state === 'pending') {
-        const updatedAt = new Date().toISOString();
-        await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), { ...current, state: 'active', updatedAt });
-        await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId, turnId: input.turn_id, agentId: input.agent_id, active: true, targetWorkspace: target.workspacePath, updatedAt });
-        finalState = 'active';
-      }
-    });
-    if (finalState === 'stopped') await withFileLock(target.lock, async () => {
-      let current; try { current = await readBoundedExecutor(join(target.directory, `executor-${key('executor', input.agent_id)}.json`)); } catch (error) { if (error?.code === 'ENOENT') return; throw error; }
-      if (!validExecutorRecord(current, target.workspacePath) || !executorMatchesRoute(current, route)) throw executorError('EXECUTOR_IDENTITY_INVALID', 'SubagentStart found an invalid stopped executor.');
-      await atomicWriteJson(join(target.directory, `executor-${key('executor', input.agent_id)}.json`), { ...current, active: false });
-    });
+    let finalState = 'failed'; let finalError = null;
+    try {
+      await publicationSeam?.('after-executor-write');
+      await withFileLock(origin.lock, async () => {
+        let current;
+        try { current = await readExecutorRoute(routePath(origin, input.session_id, input.turn_id), origin.directory); }
+        catch (cause) { throw executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStart could not finalize its exact executor route.', cause); }
+        const exactRoute = validExecutorRoute(current, origin.workspacePath, input) && current.parentGenerationId === generationId
+          && current.parentTurnId === parentCaller.turnId && current.parentPermissionMode === parentCaller.permissionMode && current.targetWorkspace === target.workspacePath;
+        if (!exactRoute) { finalError = executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStart lost its exact executor route.'); return; }
+        const authority = await routeAuthorityExists(dataRoot, origin.workspacePath, current);
+        if (!authority) {
+          const updatedAt = new Date().toISOString();
+          await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), { ...current, state: 'stopped', updatedAt });
+          await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId, turnId: input.turn_id, agentId: input.agent_id, active: false, targetWorkspace: target.workspacePath, updatedAt });
+          finalState = 'stopped'; finalError = executorError('EXECUTOR_PARENT_TURN_MISMATCH', 'SubagentStart parent authority ended before executor publication.'); return;
+        }
+        if (current.state === 'pending') {
+          const updatedAt = new Date().toISOString();
+          await atomicWriteJson(routePath(origin, input.session_id, input.turn_id), { ...current, state: 'active', updatedAt });
+          await atomicWriteJson(join(origin.directory, `forward-${id}.json`), { kind: 'forwarding', sessionId: input.session_id, generationId, turnId: input.turn_id, agentId: input.agent_id, active: true, targetWorkspace: target.workspacePath, updatedAt });
+          finalState = 'active'; return;
+        }
+        finalState = current.state;
+      });
+    } catch (error) {
+      finalError = error instanceof PluginError && `${error.code}`.startsWith('EXECUTOR_')
+        ? error : executorError('EXECUTOR_ROUTE_INVALID', 'SubagentStart could not finalize its exact executor route.', error);
+    } finally {
+      if (finalState !== 'active') await deactivateExactExecutor(target, input.agent_id, route);
+    }
     if (finalError !== null) throw finalError;
     return;
   }
@@ -279,6 +285,15 @@ async function legacyExecutorAuthorityExists(dataRoot, workspace, executor, requ
 function routePath(store, sessionId, childTurnId) { return join(store.directory, `route-${key('executor-route', sessionId, childTurnId)}.json`); }
 async function readBoundedExecutor(path) { return readBoundedJsonFile(dirname(path), path, MAX_EXECUTOR_BYTES); }
 async function readExecutorRoute(path, privateRoot) { return readBoundedJsonFile(privateRoot, path, MAX_EXECUTOR_ROUTE_BYTES); }
+async function deactivateExactExecutor(target, agentId, route) {
+  try {
+    await withFileLock(target.lock, async () => {
+      const path = join(target.directory, `executor-${key('executor', agentId)}.json`); let current;
+      try { current = await readBoundedExecutor(path); } catch { return; }
+      if (validExecutorRecord(current, target.workspacePath) && executorMatchesRoute(current, route) && current.active) await atomicWriteJson(path, { ...current, active: false });
+    });
+  } catch { /* compensation is best-effort and must not replace the fixed finalization error */ }
+}
 function boundedIdentifier(value) { return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 512 && ![...value].some((character) => { const code = character.charCodeAt(0); return code <= 31 || code === 127; }); }
 function boundedWorkspace(value) { return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 4_096 && ![...value].some((character) => ['\0', '\n', '\r'].includes(character)); }
 function canonicalTimestamp(value) { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) && Number.isFinite(Date.parse(value)); }

@@ -416,7 +416,7 @@ test('pending target rewrite neither suppresses Root Stop nor leaves an active e
   await writeFile(markerPath, JSON.stringify({ ...JSON.parse(await readFile(markerPath, 'utf8')), targetWorkspace: canonicalForged }));
   assert.equal(await isForwarding(data, { session_id: start.session_id, turn_id: start.turn_id, cwd: origin }), false);
   release(); await assert.rejects(starting, { code: 'EXECUTOR_ROUTE_INVALID' });
-  assert.equal((await resolveForwardingRoute(data, origin, start.session_id, start.turn_id)).state, 'stopped');
+  assert.equal((await resolveForwardingRoute(data, origin, start.session_id, start.turn_id)).state, 'pending', 'an untrusted rewritten route must not be blessed with a stopped transition');
   const targetStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: target }); const targetDirectory = join(targetStorage.directory, 'hook-state');
   const rawExecutor = JSON.parse(await readFile(join(targetDirectory, (await readdir(targetDirectory)).find((name) => name.startsWith('executor-'))), 'utf8')); assert.equal(rawExecutor.active, false);
   await assert.rejects(resolveForwardingExecutor(data, target, start.agent_id), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
@@ -438,6 +438,41 @@ test('active publication rejects a replacement generation that moves execution w
   assert.equal((await resolveForwardingRoute(data, origin, start.session_id, start.turn_id)).state, 'stopped');
   const targetStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: firstTarget }); const targetDirectory = join(targetStorage.directory, 'hook-state');
   const rawExecutor = JSON.parse(await readFile(join(targetDirectory, (await readdir(targetDirectory)).find((name) => name.startsWith('executor-'))), 'utf8')); assert.equal(rawExecutor.active, false);
+});
+
+test('route finalization failures compensate the exact executor without rebuilding untrusted origin state', async (t) => {
+  const run = async (name, mutate) => {
+    const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, `finalization-${name}`);
+    t.after(() => rm(target, { recursive: true, force: true }));
+    const identity = createIdentityStore({ dataRoot: data }); const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+    await identity.beginCallerTurn({ sessionId: `finalization-${name}-parent`, turnId: `finalization-${name}-parent-turn`, workspace: origin, permissionMode: 'workspace-write', prompt: name, ...proof });
+    const caller = await identity.resolveActiveTurn({ sessionId: `finalization-${name}-parent`, workspace: target, workspaceBinding: 'claim' });
+    const start = { session_id: caller.sessionId, turn_id: `finalization-${name}-child-turn`, cwd: origin, hook_event_name: 'SubagentStart', agent_id: `finalization-${name}-child`, agent_type: 'zcode-rescue' };
+    let release; let writtenResolve; const written = new Promise((resolvePromise) => { writtenResolve = resolvePromise; }); const blocker = new Promise((resolvePromise) => { release = resolvePromise; });
+    const starting = markForwarding(data, start, caller, { publicationSeam: async (point) => { if (point === 'after-executor-write') { writtenResolve(); await blocker; } } });
+    await written;
+    const originStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: origin }); const originDirectory = join(originStorage.directory, 'hook-state'); const originNames = await readdir(originDirectory);
+    const routePath = join(originDirectory, originNames.find((entry) => entry.startsWith('route-'))); const markerPath = join(originDirectory, originNames.find((entry) => entry.startsWith('forward-')));
+    const targetStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: target }); const targetDirectory = join(targetStorage.directory, 'hook-state'); const executorPath = join(targetDirectory, (await readdir(targetDirectory)).find((entry) => entry.startsWith('executor-')));
+    await mutate({ data, origin, target, routePath, markerPath, executorPath }); release();
+    await assert.rejects(starting, (error) => error?.code === 'EXECUTOR_ROUTE_INVALID' && !`${error.message}${error.remedy}`.includes(origin));
+    let executor = null; try { executor = JSON.parse(await readFile(executorPath, 'utf8')); } catch { /* SessionEnd may already have removed it. */ }
+    assert.notEqual(executor?.active, true, 'failed finalization must never retain an active exact executor');
+    return { routePath, markerPath };
+  };
+
+  await t.test('missing route', async () => {
+    const { routePath } = await run('missing-route', ({ routePath: path }) => unlink(path));
+    await assert.rejects(readFile(routePath, 'utf8'), { code: 'ENOENT' });
+  });
+  await t.test('malformed route', async () => {
+    const { routePath } = await run('malformed-route', ({ routePath: path }) => writeFile(path, '{"state":'));
+    assert.equal(await readFile(routePath, 'utf8'), '{"state":', 'compensation must not rewrite malformed origin state');
+  });
+  await t.test('SessionEnd target-first cleanup', async () => {
+    const { routePath, markerPath } = await run('session-end-target-first', async ({ data, origin, target }) => { await cleanupSession(data, target, 'finalization-session-end-target-first-parent'); await cleanupSession(data, origin, 'finalization-session-end-target-first-parent'); });
+    await assert.rejects(readFile(routePath, 'utf8'), { code: 'ENOENT' }); await assert.rejects(readFile(markerPath, 'utf8'), { code: 'ENOENT' });
+  });
 });
 
 test('executor uniqueness is scoped to parent generation while duplicate same-generation children remain ambiguous', async (t) => {
