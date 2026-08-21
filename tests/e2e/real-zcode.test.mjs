@@ -1,7 +1,8 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { access, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
@@ -24,6 +25,9 @@ const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
 const fakeZCode = join(root, 'tests', 'fixtures', 'fake-zcode-cli.mjs');
 const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
 const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
+const QUALIFICATION_JOB_MAX_BYTES = 512 * 1024;
+const QUALIFICATION_JOB_MAX_COUNT = 16;
+const QUALIFICATION_PROMPT_MAX_BYTES = 256 * 1024;
 
 let modelEnvironment; let modelEnvironmentFailure;
 try { modelEnvironment = resolveRealZCodeModelEnvironment(process.env); }
@@ -230,6 +234,55 @@ test('visible assistant result selection is linked to the exact accepted input o
   assert.deepEqual(visibleAssistantResultsForTurn(wrongKind, 'input-second', new Set()), []);
 });
 
+test('qualification evidence readers reject mismatched, escaping, linked, oversized, and replaced artifacts', async (t) => {
+  await t.test('job filename and id mismatch', async (st) => {
+    const fixture = await qualificationEvidenceFixture(st);
+    const filenameId = 'a'.repeat(64); const recordId = 'b'.repeat(64);
+    await writeFile(join(fixture.jobsDirectory, `${filenameId}.json`), `${JSON.stringify(qualificationJob(fixture.workspace, recordId))}\n`);
+    await assert.rejects(readBoundJobs(fixture.dataRoot, fixture.workspace));
+  });
+
+  await t.test('prompt path escape', async (st) => {
+    const fixture = await qualificationEvidenceFixture(st); const id = 'c'.repeat(64);
+    await assert.rejects(readBoundPrompt(fixture.dataRoot, fixture.workspace, {
+      ...qualificationJob(fixture.workspace, id), promptArtifact: '../outside.md',
+    }));
+  });
+
+  await t.test('prompt final symlink', async (st) => {
+    const fixture = await qualificationEvidenceFixture(st); const id = 'd'.repeat(64);
+    const outside = join(fixture.temporary, 'outside.md'); await writeFile(outside, 'outside');
+    await symlink(outside, join(fixture.promptsDirectory, `${id}.md`));
+    await assert.rejects(readBoundPrompt(fixture.dataRoot, fixture.workspace, qualificationJob(fixture.workspace, id)));
+  });
+
+  await t.test('prompt parent symlink', async (st) => {
+    const fixture = await qualificationEvidenceFixture(st); const id = '1'.repeat(64);
+    const outside = join(fixture.temporary, 'outside-prompts'); await mkdir(outside);
+    await writeFile(join(outside, `${id}.md`), 'outside');
+    await rm(fixture.promptsDirectory, { recursive: true });
+    await symlink(outside, fixture.promptsDirectory, 'dir');
+    await assert.rejects(readBoundPrompt(fixture.dataRoot, fixture.workspace, qualificationJob(fixture.workspace, id)));
+  });
+
+  await t.test('oversized prompt', async (st) => {
+    const fixture = await qualificationEvidenceFixture(st); const id = 'e'.repeat(64);
+    await writeFile(join(fixture.promptsDirectory, `${id}.md`), 'x'.repeat(QUALIFICATION_PROMPT_MAX_BYTES + 1));
+    await assert.rejects(readBoundPrompt(fixture.dataRoot, fixture.workspace, qualificationJob(fixture.workspace, id)));
+  });
+
+  await t.test('prompt replacement after open', async (st) => {
+    const fixture = await qualificationEvidenceFixture(st); const id = 'f'.repeat(64);
+    const path = join(fixture.promptsDirectory, `${id}.md`); await writeFile(path, 'original');
+    await assert.rejects(readBoundPrompt(fixture.dataRoot, fixture.workspace, qualificationJob(fixture.workspace, id), {
+      afterOpen: async () => {
+        await rename(path, `${path}.replaced`);
+        await writeFile(path, 'replacement');
+      },
+    }));
+  });
+});
+
 function visibleAssistantResultsForTurn(session, inputId, beforeMessageIds, acceptedPrompt) {
   if (typeof inputId !== 'string' || inputId.length === 0 || !(beforeMessageIds instanceof Set) || !Array.isArray(session?.messages)
     || acceptedPrompt !== undefined && (typeof acceptedPrompt !== 'string' || acceptedPrompt.length === 0)) return [];
@@ -338,20 +391,136 @@ async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, origi
 }
 
 async function readBoundJobs(dataRoot, workspace) {
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const directory = join(storage.directory, 'jobs');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const directory = await qualificationDirectory(storage.directory, 'jobs');
+  const entries = await readdir(directory, { withFileTypes: true });
+  assert.ok(entries.length <= QUALIFICATION_JOB_MAX_COUNT, 'qualification job evidence must remain bounded');
   const values = [];
-  for (const name of await readdir(directory)) {
-    if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
-    const value = JSON.parse(await readFile(join(directory, name), 'utf8'));
-    if (value.ownerSessionId === 'real-zcode-e2e' && value.command === 'rescue') values.push(value);
+  for (const entry of entries) {
+    if (['.job-log-publication-locks', '.job-log-append-locks'].includes(entry.name)) {
+      assert.ok(entry.isDirectory(), 'qualification log lock roots must be directories');
+      continue;
+    }
+    assert.ok(entry.isFile(), 'qualification job evidence entries must be regular files');
+    if (/^[a-f0-9]{64}\.log$/u.test(entry.name)) continue;
+    assert.match(entry.name, /^[a-f0-9]{64}\.json$/u, 'qualification job slot must be one digest JSON file');
+    const filenameId = entry.name.slice(0, -'.json'.length);
+    const bytes = await readQualificationFile(directory, join(directory, entry.name), QUALIFICATION_JOB_MAX_BYTES);
+    const value = JSON.parse(bytes);
+    validateQualificationJob(value, filenameId, storage.workspacePath);
+    values.push(value);
   }
   return values.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
 }
 
-async function readBoundPrompt(dataRoot, workspace, job) {
-  assert.equal(job.promptArtifact, `prompts/${job.id}.md`);
+async function qualificationEvidenceFixture(t) {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-qualification-evidence-'));
+  const dataRoot = join(temporary, 'data'); const workspace = join(temporary, 'workspace'); await mkdir(workspace);
+  const canonicalWorkspace = await realpath(workspace); const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const jobsDirectory = join(storage.directory, 'jobs'); const promptsDirectory = join(storage.directory, 'prompts');
+  await Promise.all([mkdir(jobsDirectory, { recursive: true }), mkdir(promptsDirectory, { recursive: true })]);
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  return { temporary, dataRoot, workspace: canonicalWorkspace, jobsDirectory, promptsDirectory };
+}
+
+function qualificationJob(workspace, id) {
+  return {
+    id, workspace, ownerSessionId: 'real-zcode-e2e', ownerTurnId: 'real-model-turn',
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'default' },
+    status: 'succeeded', createdAt: '2026-08-21T00:00:00.000Z', updatedAt: '2026-08-21T00:01:00.000Z',
+    startedAt: '2026-08-21T00:00:01.000Z', finishedAt: '2026-08-21T00:00:59.000Z', exitCode: 0,
+    zcodeSessionId: 'qualification-session', inputId: 'qualification-input', startRevision: 1,
+    beforeMessageIds: [], promptArtifact: `prompts/${id}.md`, resultArtifact: `results/${id}.md`,
+  };
+}
+
+async function readBoundPrompt(dataRoot, workspace, job, options = {}) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
-  return readFile(join(storage.directory, job.promptArtifact), 'utf8');
+  validateQualificationJob(job, job.id, storage.workspacePath);
+  assert.equal(job.promptArtifact, `prompts/${job.id}.md`);
+  const directory = await qualificationDirectory(storage.directory, 'prompts');
+  return readQualificationFile(directory, join(directory, `${job.id}.md`), QUALIFICATION_PROMPT_MAX_BYTES, options);
+}
+
+function validateQualificationJob(job, expectedId, workspace) {
+  assert.ok(job && typeof job === 'object' && !Array.isArray(job));
+  assert.match(expectedId, /^[a-f0-9]{64}$/u);
+  assert.equal(job.id, expectedId);
+  assert.equal(job.workspace, workspace);
+  assert.equal(job.ownerSessionId, 'real-zcode-e2e');
+  assert.equal(job.ownerTurnId, 'real-model-turn');
+  assert.equal(job.command, 'rescue');
+  assert.equal(job.status, 'succeeded');
+  assert.equal(job.exitCode, 0);
+  assert.equal(job.readOnly, false);
+  assert.equal(job.permissionSnapshot?.permissionMode, 'default');
+  assert.ok(qualificationIdentifier(job.zcodeSessionId));
+  assert.ok(qualificationIdentifier(job.inputId));
+  assert.ok(Number.isSafeInteger(job.startRevision) && job.startRevision >= 0);
+  assert.ok(Array.isArray(job.beforeMessageIds) && job.beforeMessageIds.length <= 4096
+    && new Set(job.beforeMessageIds).size === job.beforeMessageIds.length
+    && job.beforeMessageIds.every(qualificationIdentifier));
+  assert.equal(job.promptArtifact, `prompts/${expectedId}.md`);
+  assert.equal(job.resultArtifact, `results/${expectedId}.md`);
+  for (const field of ['createdAt', 'updatedAt', 'startedAt', 'finishedAt']) assert.ok(Number.isFinite(Date.parse(job[field])));
+}
+
+function qualificationIdentifier(value) {
+  if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value) > 4096) return false;
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if (code <= 31 || code === 127 || character === '/' || character === '\\') return false;
+  }
+  return true;
+}
+
+async function qualificationDirectory(storageDirectory, name) {
+  const root = await realpath(storageDirectory); const directory = join(root, name);
+  const info = await lstat(directory);
+  assert.ok(!info.isSymbolicLink() && info.isDirectory());
+  assert.equal(await realpath(directory), directory);
+  assert.equal(await realpath(dirname(directory)), root);
+  return directory;
+}
+
+async function readQualificationFile(parent, path, maximumBytes, options = {}) {
+  assert.ok(Number.isSafeInteger(maximumBytes) && maximumBytes > 0);
+  assert.equal(dirname(path), parent);
+  const parentBefore = await lstat(parent); const pathBefore = await lstat(path);
+  assert.ok(!parentBefore.isSymbolicLink() && parentBefore.isDirectory());
+  assert.ok(!pathBefore.isSymbolicLink() && pathBefore.isFile() && pathBefore.size <= maximumBytes);
+  assert.equal(await realpath(parent), parent);
+  let handle; let currentHandle;
+  try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const handleBefore = await handle.stat();
+    assert.ok(handleBefore.isFile() && handleBefore.size <= maximumBytes);
+    await options.afterOpen?.();
+    const buffer = Buffer.alloc(maximumBytes + 1); let offset = 0;
+    while (offset < buffer.length) {
+      const result = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (result.bytesRead === 0) break;
+      offset += result.bytesRead;
+    }
+    assert.ok(offset <= maximumBytes);
+    const handleAfter = await handle.stat(); const pathAfter = await lstat(path); const parentAfter = await lstat(parent);
+    assert.ok(!pathAfter.isSymbolicLink() && pathAfter.isFile() && pathAfter.size <= maximumBytes);
+    assert.ok(sameQualificationSnapshot(parentBefore, parentAfter));
+    assert.ok(sameQualificationSnapshot(handleBefore, handleAfter));
+    currentHandle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const current = await currentHandle.stat();
+    assert.ok(current.isFile() && sameQualificationSnapshot(handleAfter, current));
+    assert.equal(await realpath(parent), parent);
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, offset));
+  } finally {
+    await currentHandle?.close().catch(() => {});
+    await handle?.close().catch(() => {});
+  }
+}
+
+function sameQualificationSnapshot(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size
+    && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
 function runSpawn(command, args, { cwd, env, input } = {}) {
