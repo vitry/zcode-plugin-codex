@@ -307,6 +307,28 @@ test('session proof creates exact private global v3 identity records without cha
   });
 });
 
+test('proved begin publishes one operation timestamp across active and session records', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture();
+  const startedAt = '2026-08-20T11:59:00.000Z';
+  let reads = 0;
+  const input = {
+    sessionId: 'session-clock', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', prompt: 'first',
+    sessionStartedAt: startedAt, sessionSource: 'startup',
+    get now() { return new Date(Date.parse('2026-08-20T12:00:00.000Z') + reads++); },
+  };
+
+  await identity.beginCallerTurn(input);
+  const active = JSON.parse(await readFile(await globalActivePath(dataRoot, input.sessionId), 'utf8'));
+  const ledger = JSON.parse(await readFile(await globalSessionPath(dataRoot, input.sessionId), 'utf8'));
+  assert.equal(ledger.updatedAt, active.createdAt);
+
+  await identity.beginCallerTurn({
+    ...input, turnId: 'turn-b', prompt: 'second', now: '2026-08-20T12:00:01.000Z',
+  });
+  assert.equal((await identity.resolveActiveTurn({ sessionId: input.sessionId, workspace: workspaceA })).turnId, 'turn-b');
+});
+
 test('public caller creation binds to an exact active v3 generation without changing consumption', async () => {
   const { dataRoot, identity, workspaceA } = await fixture();
   const input = {
