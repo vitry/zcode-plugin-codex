@@ -17,6 +17,7 @@ const MAX_ACTIVE_TURN_BYTES = 96 * 1024;
 const MAX_SESSION_BYTES = 32 * 1024;
 const MAX_ORIGIN_INDEX_BYTES = 16 * 1024;
 const MAX_ORIGIN_INDEX_RECORDS = 64;
+const MAX_LEGACY_ACTIVE_RECORDS = 256;
 const MAX_SESSION_AGE_MS = 31 * 24 * 60 * 60_000;
 const MAX_ID_BYTES = 4 * 1024;
 const MAX_PATH_BYTES = 16 * 1024;
@@ -29,7 +30,10 @@ export const EXECUTION_OPERATIONS = Object.freeze([
   'run-reserved-job', 'continue',
 ]);
 
-/** @param {{ dataRoot: string, gitProbe?: (workspace:string)=>Promise<string>, publicationSeam?: (point:string)=>Promise<void>|void }} options */
+/**
+ * @param {{ dataRoot: string, gitProbe?: (workspace:string)=>Promise<string>, publicationSeam?: (point:string)=>Promise<void>|void }} options
+ * @private gitProbe and publicationSeam are test-only fault-injection seams.
+ */
 export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /** @type {any} */ ({})) {
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) {
     throw new PluginError('DATA_ROOT_REQUIRED', 'A plugin data root must be provided explicitly.', {
@@ -47,9 +51,13 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       if (!isNonEmptyString(sessionId)) throw invalidIdentityInput();
       const cleanupWorkspace = await canonicalWorkspace(workspace);
       const global = await globalIdentityStorage(dataRoot);
-      const globalResult = await withFileLock(global.lockPath, async () => {
+      return withFileLock(sessionLockPath(global, sessionId), async () => {
         const state = await readGlobalState(global, sessionId, false);
-        if (state === null) return null;
+        if (state === null) {
+          const legacyStorage = await identityStorage(dataRoot, workspace);
+          await withFileLock(legacyStorage.lockPath, () => cleanupWorkspaceSession(legacyStorage, sessionId));
+          return null;
+        }
         const { active, ledger } = state;
         if (!ledger.knownWorkspaces.includes(cleanupWorkspace)) throw workspaceIneligible();
         if (ledger.endedAt === null) {
@@ -57,19 +65,12 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
           await atomicWriteJson(state.sessionPath, { ...ledger, endedAt, updatedAt: endedAt }, { privateRoot: global.directory });
         }
         if (active !== null) await unlink(state.activePath).catch((error) => { if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error; });
+        for (const knownWorkspace of ledger.knownWorkspaces) {
+          const knownStorage = await identityStorageForCanonical(global.dataRootPath, knownWorkspace);
+          await withFileLock(knownStorage.lockPath, () => cleanupWorkspaceSession(knownStorage, sessionId));
+        }
         return { knownWorkspaces: [...ledger.knownWorkspaces] };
       });
-      const storage = await identityStorage(dataRoot, workspace);
-      await withFileLock(storage.lockPath, async () => {
-        for (const directory of [storage.callersDirectory, storage.activeTurnsDirectory, storage.gatesDirectory, storage.originIndexesDirectory]) {
-          for (const name of await readdir(directory)) {
-            if (!name.endsWith('.json')) continue;
-            const path = join(directory, name);
-            try { if ((await readJsonFile(path)).sessionId === sessionId) await unlink(path); } catch { /* advisory cleanup */ }
-          }
-        }
-      });
-      return globalResult;
     },
     /** @param {CallerContextInput} input */
     async createCallerContext(input) {
@@ -99,7 +100,8 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       const global = await globalIdentityStorage(dataRoot);
       /** @type {string} */ let generationId = ''; let replacedTurn = null;
       /** @type {string[]} */ let priorWorkspaces = [];
-      await withFileLock(global.lockPath, async () => {
+      const lifecycleLockPath = sessionLockPath(global, input.sessionId);
+      await withFileLock(lifecycleLockPath, async () => {
         const state = await readGlobalBeginState(global, input, storage.workspacePath);
         const existing = state?.active ?? null; const ledger = state?.ledger ?? null;
         if (ledger !== null) {
@@ -110,8 +112,8 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
             throw authorizationError('IDENTITY_SESSION_MISMATCH', 'The identity session proof does not match the active session.');
           }
         }
-        const duplicate = existing !== null && ledger?.endedAt === null
-          && activeAuthorityEqual(existing, input, storage.workspacePath);
+        const duplicate = existing !== null && activeAuthorityEqual(existing, input, storage.workspacePath)
+          && (ledger?.endedAt === null || ledger === null && existing.status === 'pending');
         priorWorkspaces = ledger !== null && ledger.endedAt === null ? [...ledger.knownWorkspaces] : [];
         generationId = duplicate ? existing.generationId : randomBytes(32).toString('hex');
         if (!duplicate && existing !== null) replacedTurn = replacedTurnMetadata(existing);
@@ -122,32 +124,40 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         const nextLedger = sessionRecord(input, globalIdentityKey(input.sessionId), knownWorkspaces, updatedAt);
         const pending = duplicate ? existing : globalActiveTurnRecord(input, storage.workspacePath, globalIdentityKey(input.sessionId), generationId, 'pending');
         await publicationSeam?.('before-pending');
-        if (!duplicate) await atomicWriteJson(state?.activePath ?? join(global.activeTurnsDirectory, `${pending.key}.json`), pending, { privateRoot: global.directory });
+        if (!duplicate) {
+          await atomicWriteJson(state?.activePath ?? join(global.activeTurnsDirectory, `${pending.key}.json`), pending, { privateRoot: global.directory });
+          await publicationSeam?.('after-begin-pending-write');
+        }
         await atomicWriteJson(state?.sessionPath ?? join(global.sessionsDirectory, `${pending.key}.json`), nextLedger, { privateRoot: global.directory });
         await publicationSeam?.('after-pending');
       });
 
       await publicationSeam?.('before-workspace-publish');
-      for (const priorWorkspace of priorWorkspaces) {
-        if (priorWorkspace === storage.workspacePath) continue;
-        const priorStorage = await identityStorageForCanonical(global.dataRootPath, priorWorkspace);
-        await withFileLock(priorStorage.lockPath, () => removeCallerRecords(
-          priorStorage.callersDirectory, (current) => current.sessionId === input.sessionId,
-        ));
-      }
-      await withFileLock(storage.lockPath, async () => {
-        await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId);
-        await atomicWriteJson(join(storage.callersDirectory, `${digest}.json`), record);
-        await publicationSeam?.('after-caller-write');
-        const index = originIndexRecord(input.sessionId, generationId, storage.workspacePath);
-        await atomicWriteJson(join(storage.originIndexesDirectory, `${index.key}.json`), index);
-        await publicationSeam?.('after-index-write');
-      });
-      await publicationSeam?.('after-workspace-publish');
-
-      await withFileLock(global.lockPath, async () => {
+      await withFileLock(lifecycleLockPath, async () => {
+        const beforeWorkspace = await readGlobalState(global, input.sessionId, false);
+        if (beforeWorkspace === null || beforeWorkspace.active === null || beforeWorkspace.ledger.endedAt !== null
+          || beforeWorkspace.active.generationId !== generationId
+          || !activeAuthorityEqual(beforeWorkspace.active, input, storage.workspacePath)) {
+          throw invalidAuthorizationRecord('active turn publication');
+        }
+        for (const priorWorkspace of priorWorkspaces) {
+          if (priorWorkspace === storage.workspacePath) continue;
+          const priorStorage = await identityStorageForCanonical(global.dataRootPath, priorWorkspace);
+          await withFileLock(priorStorage.lockPath, () => removeCallerRecords(
+            priorStorage.callersDirectory, (current) => current.sessionId === input.sessionId,
+          ));
+        }
+        await withFileLock(storage.lockPath, async () => {
+          await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId);
+          await atomicWriteJson(join(storage.callersDirectory, `${digest}.json`), record);
+          await publicationSeam?.('after-caller-write');
+          const index = originIndexRecord(input.sessionId, generationId, storage.workspacePath);
+          await atomicWriteJson(join(storage.originIndexesDirectory, `${index.key}.json`), index);
+          await publicationSeam?.('after-index-write');
+        });
+        await publicationSeam?.('after-workspace-publish');
         await publicationSeam?.('before-active-publish');
-        const state = await readGlobalState(global, input.sessionId, true);
+        const state = await readGlobalState(global, input.sessionId, false);
         if (state === null || state.active === null || state.ledger.endedAt !== null
           || state.active.generationId !== generationId || !activeAuthorityEqual(state.active, input, storage.workspacePath)) {
           throw invalidAuthorizationRecord('active turn publication');
@@ -163,42 +173,55 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
     /** Resolve only the exact ambient session and canonical workspace. @param {{sessionId:string,workspace:string,workspaceBinding?:'preview'|'claim'|'execution',now?:Date|number|string}} expected @returns {Promise<any>} */
     async resolveActiveTurn(expected) {
       validateActiveExpected(expected); const candidate = await canonicalWorkspace(expected.workspace); const global = await globalIdentityStorage(dataRoot);
-      const globalResult = await withFileLock(global.lockPath, async () => {
+      const lifecycleLockPath = sessionLockPath(global, expected.sessionId);
+      const first = await withFileLock(lifecycleLockPath, async () => {
         const state = await readGlobalState(global, expected.sessionId, true);
-        if (state === null) return null;
+        if (state === null) return { kind: 'legacy' };
         const { active, ledger } = state;
         if (active === null || active.status !== 'active' || ledger.endedAt !== null) throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
         const mode = expected.workspaceBinding;
         if (mode === undefined) {
           if (candidate !== active.originWorkspace) throw workspaceIneligible();
-          return publicActiveTurn(active, candidate, false);
+          return { kind: 'resolved', caller: publicActiveTurn(active, candidate, false) };
         }
         if (mode === 'execution') {
           if (active.executionWorkspace === null
             || candidate !== active.originWorkspace && candidate !== active.executionWorkspace) throw workspaceIneligible();
-          return publicActiveTurn(active, active.executionWorkspace, true);
+          return { kind: 'resolved', caller: publicActiveTurn(active, active.executionWorkspace, true) };
         }
         if (active.executionWorkspace !== null) {
           if (active.executionWorkspace !== candidate) throw workspaceIneligible();
-          return publicActiveTurn(active, candidate, true);
+          if (mode === 'claim') await persistClaim(state, candidate, publicationSeam, global.directory);
+          return { kind: 'resolved', caller: publicActiveTurn(active, candidate, true) };
         }
-        await assertWorkspaceEligible(active.originWorkspace, candidate, gitProbe);
-        if (mode === 'preview') return publicActiveTurn(active, candidate, true);
-        const bound = { ...active, executionWorkspace: candidate };
-        const knownWorkspaces = appendKnownWorkspace(ledger.knownWorkspaces, candidate);
-        const updatedAt = monotonicTimestamp(ledger.updatedAt);
-        await atomicWriteJson(state.activePath, bound, { privateRoot: global.directory });
-        await atomicWriteJson(state.sessionPath, { ...ledger, knownWorkspaces, updatedAt }, { privateRoot: global.directory });
-        return publicActiveTurn(bound, candidate, true);
+        if (candidate === active.originWorkspace) {
+          if (mode === 'preview') return { kind: 'resolved', caller: publicActiveTurn(active, candidate, true) };
+          const bound = await persistClaim(state, candidate, publicationSeam, global.directory);
+          return { kind: 'resolved', caller: publicActiveTurn(bound, candidate, true) };
+        }
+        return { kind: 'probe', generationId: active.generationId, originWorkspace: active.originWorkspace };
       });
-      if (globalResult !== null) return globalResult;
-      const storage = await identityStorage(dataRoot, expected.workspace); const key = activeTurnKey(expected.sessionId, storage.workspacePath);
-      return withFileLock(storage.lockPath, async () => {
-        const record = await readAuthorizationRecord(join(storage.activeTurnsDirectory, `${key}.json`), 'ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
-        if (!isActiveTurnRecord(record)) throw invalidAuthorizationRecord('active turn');
-        if (!safeEqual(record.key, key) || !safeEqual(record.sessionId, expected.sessionId) || record.workspace !== storage.workspacePath) throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
-        if (isLegacyActiveTurnRecord(record) && toTimestamp(expected.now) >= Date.parse(record.expiresAt)) throw authorizationError('ACTIVE_TURN_EXPIRED', 'The active turn has expired.', 'Submit a new prompt in this Codex thread.');
-        return publicRecord(record);
+      if (first.kind === 'resolved') return first.caller;
+      if (first.kind === 'legacy') {
+        const storage = await identityStorage(dataRoot, expected.workspace);
+        const legacy = await resolveLegacyActiveTurn(storage, expected);
+        const stillAbsent = await withFileLock(lifecycleLockPath, () => readGlobalState(global, expected.sessionId, false));
+        if (stillAbsent !== null) throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
+        return legacy;
+      }
+      await assertWorkspaceEligible(first.originWorkspace, candidate, gitProbe);
+      return withFileLock(lifecycleLockPath, async () => {
+        const state = await readGlobalState(global, expected.sessionId, true);
+        if (state === null || state.active === null || state.active.status !== 'active' || state.ledger.endedAt !== null
+          || state.active.generationId !== first.generationId) throw workspaceIneligible();
+        if (state.active.executionWorkspace !== null) {
+          if (state.active.executionWorkspace !== candidate) throw workspaceIneligible();
+          if (expected.workspaceBinding === 'claim') await persistClaim(state, candidate, publicationSeam, global.directory);
+          return publicActiveTurn(state.active, candidate, true);
+        }
+        if (expected.workspaceBinding === 'preview') return publicActiveTurn(state.active, candidate, true);
+        const bound = await persistClaim(state, candidate, publicationSeam, global.directory);
+        return publicActiveTurn(bound, candidate, true);
       });
     },
 
@@ -211,7 +234,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         const entries = await readPrivateDirectory(storage.directory, storage.originIndexesDirectory, MAX_ORIGIN_INDEX_RECORDS);
         for (const entry of entries) {
           if (!entry.isFile() || !/^[a-f0-9]{64}\.json$/.test(entry.name)) throw invalidAuthorizationRecord('active turn index');
-          const index = await readStrictBoundedJson(storage.directory, join(storage.originIndexesDirectory, entry.name), MAX_ORIGIN_INDEX_BYTES);
+          const index = await readRequiredBoundedIdentity(storage.directory, join(storage.originIndexesDirectory, entry.name), MAX_ORIGIN_INDEX_BYTES, 'active turn index');
           const filenameKey = entry.name.slice(0, -5);
           if (!isOriginIndexRecord(index) || !safeEqual(index.key, filenameKey)
             || !safeEqual(index.key, activeTurnKey(index.sessionId, storage.workspacePath))
@@ -219,9 +242,11 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
             || index.originWorkspace !== storage.workspacePath) throw invalidAuthorizationRecord('active turn index');
           indexes.push(index);
         }
-        for (const name of await readdir(storage.activeTurnsDirectory)) {
-          if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
-          const record = await readJsonFile(join(storage.activeTurnsDirectory, name));
+        const activeEntries = await readPrivateDirectory(storage.directory, storage.activeTurnsDirectory, MAX_LEGACY_ACTIVE_RECORDS);
+        for (const entry of activeEntries) {
+          if (!entry.isFile() || !/^[a-f0-9]{64}\.json$/.test(entry.name)) continue;
+          const name = entry.name;
+          const record = await readRequiredBoundedIdentity(storage.directory, join(storage.activeTurnsDirectory, name), MAX_ACTIVE_TURN_BYTES, 'active turn');
           if (!isActiveTurnRecord(record)) throw invalidAuthorizationRecord('active turn');
           const filenameKey = name.slice(0, -'.json'.length);
           if (record.workspace !== storage.workspacePath || !safeEqual(record.key, filenameKey)
@@ -231,60 +256,55 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         return { indexes, legacy };
       });
       const global = await globalIdentityStorage(dataRoot);
-      const globalResolution = await withFileLock(global.lockPath, async () => {
-        const active = []; const suppressedSessions = new Set(); const states = new Map();
-        /** @param {string} sessionId */
-        const stateFor = async (sessionId) => {
-          if (!states.has(sessionId)) states.set(sessionId, await readGlobalState(global, sessionId, true));
-          return states.get(sessionId);
-        };
-        for (const index of local.indexes) {
-          suppressedSessions.add(index.sessionId);
-          const state = await stateFor(index.sessionId);
-          if (state === null || state.active === null || state.active.status !== 'active' || state.ledger.endedAt !== null) continue;
-          if (state.active.generationId !== index.generationId) continue;
-          if (state.active.originWorkspace !== storage.workspacePath || state.active.key !== index.globalKey) throw invalidAuthorizationRecord('active turn index');
-          active.push(state.active);
+      const active = []; const suppressedSessions = new Set(); const states = new Map();
+      /** @param {string} sessionId */
+      const stateFor = async (sessionId) => {
+        if (!states.has(sessionId)) {
+          const state = await withFileLock(sessionLockPath(global, sessionId), () => readGlobalState(global, sessionId, true));
+          states.set(sessionId, state);
         }
-        for (const legacy of local.legacy) {
-          if (suppressedSessions.has(legacy.sessionId)) continue;
-          if (await stateFor(legacy.sessionId) !== null) suppressedSessions.add(legacy.sessionId);
-        }
-        return { active, suppressedSessions };
-      });
-      const active = [
-        ...local.legacy.filter((record) => !globalResolution.suppressedSessions.has(record.sessionId)),
-        ...globalResolution.active,
-      ];
-      if (active.length !== 1) throw setupSessionUnproven(active.length);
-      return isGlobalActiveTurnRecord(active[0]) ? publicActiveTurn(active[0], storage.workspacePath, false) : publicRecord(active[0]);
+        return states.get(sessionId);
+      };
+      for (const index of local.indexes) {
+        suppressedSessions.add(index.sessionId);
+        const state = await stateFor(index.sessionId);
+        if (state === null || state.active === null || state.active.status !== 'active' || state.ledger.endedAt !== null) continue;
+        if (state.active.generationId !== index.generationId) continue;
+        if (state.active.originWorkspace !== storage.workspacePath || state.active.key !== index.globalKey) throw invalidAuthorizationRecord('active turn index');
+        active.push(state.active);
+      }
+      for (const legacy of local.legacy) {
+        if (suppressedSessions.has(legacy.sessionId)) continue;
+        if (await stateFor(legacy.sessionId) !== null) suppressedSessions.add(legacy.sessionId);
+      }
+      const candidates = [...local.legacy.filter((record) => !suppressedSessions.has(record.sessionId)), ...active];
+      if (candidates.length !== 1) throw setupSessionUnproven(candidates.length);
+      return isGlobalActiveTurnRecord(candidates[0]) ? publicActiveTurn(candidates[0], storage.workspacePath, false) : publicRecord(candidates[0]);
     },
 
     /** Revokes every caller credential for one exact completed turn. @param {GateBaselineIdentity} input */
     async endCallerTurn(input) {
       validateTurnIdentity(input);
       const candidate = await canonicalWorkspace(input.workspace); const global = await globalIdentityStorage(dataRoot);
-      const globalResult = await withFileLock(global.lockPath, async () => {
-        const state = await readGlobalState(global, input.sessionId, true);
-        if (state === null) return null;
-        if (state.active === null) return { matched: false, originWorkspace: null, executionWorkspace: null };
-        const active = state.active;
-        if (active.turnId !== input.turnId) return { matched: false, originWorkspace: active.originWorkspace, executionWorkspace: active.executionWorkspace };
-        if (candidate !== active.originWorkspace && candidate !== active.executionWorkspace) throw workspaceIneligible();
-        await unlink(state.activePath);
-        return { matched: true, originWorkspace: active.originWorkspace, executionWorkspace: active.executionWorkspace };
+      return withFileLock(sessionLockPath(global, input.sessionId), async () => {
+        const state = await readGlobalState(global, input.sessionId, false);
+        let globalResult = null;
+        if (state?.active !== null && state?.active !== undefined) {
+          const active = state.active;
+          if (active.turnId !== input.turnId) globalResult = { matched: false, originWorkspace: active.originWorkspace, executionWorkspace: active.executionWorkspace };
+          else {
+            if (candidate !== active.originWorkspace && candidate !== active.executionWorkspace) throw workspaceIneligible();
+            await unlink(state.activePath);
+            globalResult = { matched: true, originWorkspace: active.originWorkspace, executionWorkspace: active.executionWorkspace };
+          }
+        } else globalResult = { matched: false, originWorkspace: null, executionWorkspace: null };
+        const storage = globalResult?.originWorkspace === null
+          ? await identityStorage(dataRoot, input.workspace)
+          : await identityStorageForCanonical(global.dataRootPath, globalResult?.originWorkspace ?? candidate);
+        await withFileLock(storage.lockPath, () => endWorkspaceTurn(storage, input));
+        if (globalResult === null || !globalResult.matched) return undefined;
+        return { originWorkspace: globalResult.originWorkspace, executionWorkspace: globalResult.executionWorkspace };
       });
-      const storage = await identityStorage(dataRoot, globalResult?.originWorkspace ?? input.workspace);
-      await withFileLock(storage.lockPath, async () => {
-        await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId && current.turnId === input.turnId); const key = activeTurnKey(input.sessionId, storage.workspacePath); const path = join(storage.activeTurnsDirectory, `${key}.json`); let current;
-        try { current = await readJsonFile(path); } catch (error) { if (error instanceof PluginError && error.code === 'JSON_READ_FAILED' && /** @type {any} */ (error.cause)?.code === 'ENOENT') return; throw error; }
-        if (!isActiveTurnRecord(current)) throw invalidAuthorizationRecord('active turn');
-        if (!safeEqual(current.key, key) || !safeEqual(current.sessionId, input.sessionId)
-          || current.workspace !== storage.workspacePath) throw invalidAuthorizationRecord('active turn');
-        if (current.turnId === input.turnId) await unlink(path);
-      });
-      if (globalResult === null || !globalResult.matched) return undefined;
-      return { originWorkspace: globalResult.originWorkspace, executionWorkspace: globalResult.executionWorkspace };
     },
 
     /** @param {string} token @param {{ workspace: string, now?: Date | number | string }} expected */
@@ -523,9 +543,19 @@ async function globalIdentityStorage(dataRoot) {
   const directory = join(dataRootPath, 'identity-lifecycle');
   const activeTurnsDirectory = join(directory, 'active-turns');
   const sessionsDirectory = join(directory, 'sessions');
+  const sessionLocksDirectory = join(directory, 'session-locks');
   await ensurePrivateDirectory(directory);
-  await Promise.all([ensurePrivateDirectory(activeTurnsDirectory), ensurePrivateDirectory(sessionsDirectory)]);
-  return { dataRootPath, directory, activeTurnsDirectory, sessionsDirectory, lockPath: join(directory, '.lock') };
+  await Promise.all([
+    ensurePrivateDirectory(activeTurnsDirectory), ensurePrivateDirectory(sessionsDirectory),
+    ensurePrivateDirectory(sessionLocksDirectory),
+  ]);
+  return { dataRootPath, directory, activeTurnsDirectory, sessionsDirectory, sessionLocksDirectory };
+}
+
+/** @param {ReturnType<typeof globalIdentityStorage> extends Promise<infer T> ? T : never} storage @param {string} sessionId */
+function sessionLockPath(storage, sessionId) {
+  // A bounded 256-stripe pool prevents attacker-chosen session IDs from creating unbounded lock paths.
+  return join(storage.sessionLocksDirectory, globalIdentityKey(sessionId).slice(0, 2));
 }
 
 /** @param {ReturnType<typeof globalIdentityStorage> extends Promise<infer T> ? T : never} storage @param {string} sessionId @param {boolean} validatePaths */
@@ -578,6 +608,12 @@ async function readOptionalBounded(root, path, maximumBytes) {
     if (error instanceof PluginError && error.code === 'JSON_READ_FAILED' && /** @type {any} */ (error.cause)?.code === 'ENOENT') return null;
     throw invalidAuthorizationRecord('identity');
   }
+}
+
+/** @param {string} root @param {string} path @param {number} maximumBytes @param {string} kind */
+async function readRequiredBoundedIdentity(root, path, maximumBytes, kind) {
+  try { return await readStrictBoundedJson(root, path, maximumBytes); }
+  catch { throw invalidAuthorizationRecord(kind); }
 }
 
 /** @param {string} root @param {string} path @param {number} maximumBytes */
@@ -692,6 +728,62 @@ function appendKnownWorkspace(workspaces, workspace) {
   if (workspaces.includes(workspace)) return [...workspaces];
   if (workspaces.length >= 16) throw authorizationError('IDENTITY_WORKSPACE_LEDGER_FULL', 'The identity workspace ledger is full.', 'End the current session before using another workspace.');
   return [...workspaces, workspace];
+}
+
+/** @param {any} state @param {string} candidate @param {((point:string)=>Promise<void>|void)|undefined} seam @param {string} privateRoot */
+async function persistClaim(state, candidate, seam, privateRoot) {
+  const knownWorkspaces = appendKnownWorkspace(state.ledger.knownWorkspaces, candidate);
+  const updatedAt = monotonicTimestamp(state.ledger.updatedAt);
+  await seam?.('before-claim-ledger-write');
+  await atomicWriteJson(state.sessionPath, { ...state.ledger, knownWorkspaces, updatedAt }, { privateRoot });
+  await seam?.('after-claim-ledger-write');
+  const bound = { ...state.active, executionWorkspace: candidate };
+  await seam?.('before-claim-active-write');
+  await atomicWriteJson(state.activePath, bound, { privateRoot });
+  await seam?.('after-claim-active-write');
+  return bound;
+}
+
+/** @param {any} storage @param {{sessionId:string,workspace:string,now?:Date|number|string}} expected */
+async function resolveLegacyActiveTurn(storage, expected) {
+  const key = activeTurnKey(expected.sessionId, storage.workspacePath);
+  return withFileLock(storage.lockPath, async () => {
+    const record = await readOptionalBounded(storage.directory, join(storage.activeTurnsDirectory, `${key}.json`), MAX_ACTIVE_TURN_BYTES);
+    if (record === null) throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
+    if (!isActiveTurnRecord(record)) throw invalidAuthorizationRecord('active turn');
+    if (!safeEqual(record.key, key) || !safeEqual(record.sessionId, expected.sessionId)
+      || record.workspace !== storage.workspacePath) throw authorizationError('ACTIVE_TURN_NOT_FOUND', 'No active turn matches this session and workspace.');
+    if (isLegacyActiveTurnRecord(record) && toTimestamp(expected.now) >= Date.parse(record.expiresAt)) {
+      throw authorizationError('ACTIVE_TURN_EXPIRED', 'The active turn has expired.', 'Submit a new prompt in this Codex thread.');
+    }
+    return publicRecord(record);
+  });
+}
+
+/** @param {any} storage @param {{sessionId:string,turnId:string}} input */
+async function endWorkspaceTurn(storage, input) {
+  await removeCallerRecords(storage.callersDirectory,
+    (current) => current.sessionId === input.sessionId && current.turnId === input.turnId);
+  const key = activeTurnKey(input.sessionId, storage.workspacePath); const path = join(storage.activeTurnsDirectory, `${key}.json`);
+  const current = await readOptionalBounded(storage.directory, path, MAX_ACTIVE_TURN_BYTES);
+  if (current === null) return;
+  if (!isActiveTurnRecord(current) || !safeEqual(current.key, key)
+    || !safeEqual(current.sessionId, input.sessionId) || current.workspace !== storage.workspacePath) throw invalidAuthorizationRecord('active turn');
+  if (current.turnId === input.turnId) await unlink(path);
+}
+
+/** @param {any} storage @param {string} sessionId */
+async function cleanupWorkspaceSession(storage, sessionId) {
+  for (const directory of [storage.callersDirectory, storage.activeTurnsDirectory, storage.gatesDirectory, storage.originIndexesDirectory]) {
+    for (const name of await readdir(directory)) {
+      if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+      const path = join(directory, name);
+      try {
+        const record = await readStrictBoundedJson(storage.directory, path, MAX_ACTIVE_TURN_BYTES);
+        if (record.sessionId === sessionId) await unlink(path);
+      } catch { /* authority was already tombstoned; malformed advisory state stays fail-closed */ }
+    }
+  }
 }
 
 /** @param {string} path @param {string} code @param {string} message */

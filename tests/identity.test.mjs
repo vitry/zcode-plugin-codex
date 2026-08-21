@@ -82,6 +82,18 @@ async function globalIdentityArtifacts(dataRoot) {
   };
 }
 
+/** @param {string} dataRoot @param {string} sessionId */
+async function globalActivePath(dataRoot, sessionId) {
+  const key = createHash('sha256').update(JSON.stringify([sessionId])).digest('hex');
+  return join(await realpath(dataRoot), 'identity-lifecycle', 'active-turns', `${key}.json`);
+}
+
+function deferred() {
+  /** @type {(value?:unknown)=>void} */ let resolvePromise = () => {};
+  const promise = new Promise((resolve) => { resolvePromise = resolve; });
+  return { promise, resolve: resolvePromise };
+}
+
 /** @param {string} dataRoot @param {string} method @param {unknown[]} args */
 function runIdentityChild(dataRoot, method, args) {
   const source = `
@@ -534,6 +546,146 @@ test('session workspace ledger retains at most sixteen origins and targets and r
   const cleanup = await identity.cleanupSession(origin, base.sessionId);
   assert.equal(cleanup.knownWorkspaces.length, 16);
   assert.deepEqual(await identity.cleanupSession(origin, base.sessionId), cleanup);
+});
+
+test('cleanup revokes exact-session caller tokens in every known workspace without touching siblings', async () => {
+  const { identity, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
+  const targetToken = await identity.createCallerContext({ sessionId: 'session-a', turnId: 'target-turn', workspace: execution, permissionMode: 'default' });
+  const siblingToken = await identity.createCallerContext({ sessionId: 'session-b', turnId: 'sibling-turn', workspace: execution, permissionMode: 'default' });
+  await identity.beginCallerTurn({
+    sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
+    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+  });
+  await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'claim' });
+  await identity.cleanupSession(origin, 'session-a');
+  await assert.rejects(identity.consumeCallerContext(targetToken, { workspace: execution }), { code: 'CALLER_CONTEXT_INVALID' });
+  assert.equal((await identity.consumeCallerContext(siblingToken, { workspace: execution })).sessionId, 'session-b');
+});
+
+test('proved begin fencing prevents a delayed loser from deleting a returned winner token or index', async () => {
+  const { dataRoot, root } = await fixture(); const { origin } = await linkedWorktreeFixture(root);
+  const reached = deferred(); const release = deferred();
+  const input = /** @type {any} */ ({
+    sessionId: 'session-race', workspace: origin, permissionMode: 'default',
+    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup', lifecycleResult: true,
+  });
+  const delayed = createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => {
+      if (point === 'before-workspace-publish') { reached.resolve(); await release.promise; }
+    },
+  }).beginCallerTurn({ ...input, turnId: 'loser-turn' });
+  await reached.promise;
+  const winner = await createIdentityStore({ dataRoot }).beginCallerTurn({ ...input, turnId: 'winner-turn' });
+  release.resolve();
+  await assert.rejects(delayed, { code: 'AUTHORIZATION_RECORD_INVALID' });
+  const identity = createIdentityStore({ dataRoot });
+  assert.equal((await identity.consumeCallerContext(winner.token, { workspace: origin })).turnId, 'winner-turn');
+  const active = await identity.resolveOnlyActiveTurn({ workspace: origin });
+  assert.equal(active.turnId, 'winner-turn');
+  assert.equal((await identity.resolveActiveTurn({ sessionId: 'session-race', workspace: origin, workspaceBinding: 'preview' })).generationId,
+    JSON.parse(await readFile(await globalActivePath(dataRoot, 'session-race'), 'utf8')).generationId);
+});
+
+test('slow Git inspection for one session does not block another session', async () => {
+  const { dataRoot, root } = await fixture();
+  const repoARoot = join(root, 'repo-a-root'); const repoBRoot = join(root, 'repo-b-root');
+  await Promise.all([mkdir(repoARoot), mkdir(repoBRoot)]);
+  const repoA = await linkedWorktreeFixture(repoARoot); const repoB = await linkedWorktreeFixture(repoBRoot);
+  const proof = { sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup' };
+  const identity = createIdentityStore({ dataRoot });
+  await identity.beginCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: repoA.origin, permissionMode: 'default', ...proof });
+  await identity.beginCallerTurn({ sessionId: 'session-b', turnId: 'turn-b', workspace: repoB.origin, permissionMode: 'default', ...proof });
+  const entered = deferred(); const release = deferred();
+  const slow = createIdentityStore({
+    dataRoot,
+    gitProbe: async (workspace) => {
+      entered.resolve(); await release.promise;
+      const { stdout } = await execFile('git', ['rev-parse', '--path-format=absolute', '--is-inside-work-tree', '--show-toplevel', '--git-common-dir'], { cwd: workspace });
+      return stdout;
+    },
+  }).resolveActiveTurn({ sessionId: 'session-a', workspace: repoA.execution, workspaceBinding: 'preview' });
+  await entered.promise;
+  let sessionBResolved = false;
+  const sessionB = identity.resolveActiveTurn({ sessionId: 'session-b', workspace: repoB.origin }).then((value) => { sessionBResolved = true; return value; });
+  await Promise.race([sessionB, new Promise((resolve) => setTimeout(resolve, 100))]);
+  const resolvedBeforeRelease = sessionBResolved;
+  release.resolve(); await slow; await sessionB;
+  assert.equal(resolvedBeforeRelease, true, 'session B must resolve before session A Git probe is released');
+});
+
+test('claim write failures are recoverable and cleanup retains the claimed target', async () => {
+  for (const point of ['before-claim-ledger-write', 'after-claim-ledger-write', 'before-claim-active-write', 'after-claim-active-write']) {
+    const { dataRoot, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
+    const input = {
+      sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
+      sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+    };
+    await createIdentityStore({ dataRoot }).beginCallerTurn(input);
+    let injected = false;
+    const failing = createIdentityStore({
+      dataRoot,
+      publicationSeam: async (current) => {
+        if (!injected && current === point) { injected = true; throw new Error(`injected ${point}`); }
+      },
+    });
+    await assert.rejects(failing.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'claim' }), /injected/);
+    const reopened = createIdentityStore({ dataRoot });
+    assert.equal((await reopened.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'claim' })).workspace, await realpath(execution));
+    const { sessionPath } = await globalIdentityArtifacts(dataRoot);
+    const ledger = JSON.parse(await readFile(sessionPath, 'utf8'));
+    await writeFile(sessionPath, `${JSON.stringify({ ...ledger, knownWorkspaces: [await realpath(origin)] })}\n`, { mode: 0o600 });
+    assert.equal((await reopened.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'claim' })).workspace, await realpath(execution));
+    assert.deepEqual(await reopened.cleanupSession(origin, 'session-a'), { knownWorkspaces: [await realpath(origin), await realpath(execution)] });
+  }
+});
+
+test('begin retry preserves a pending generation when ledger publication failed', async () => {
+  const { dataRoot, root } = await fixture(); const { origin } = await linkedWorktreeFixture(root);
+  const input = {
+    sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
+    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+  };
+  let injected = false;
+  const failing = createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => {
+      if (!injected && point === 'after-begin-pending-write') { injected = true; throw new Error('injected pending/ledger gap'); }
+    },
+  });
+  await assert.rejects(failing.beginCallerTurn(input), /injected/);
+  const pendingGeneration = JSON.parse(await readFile(await globalActivePath(dataRoot, 'session-a'), 'utf8')).generationId;
+  await createIdentityStore({ dataRoot }).beginCallerTurn(input);
+  assert.equal(JSON.parse(await readFile(await globalActivePath(dataRoot, 'session-a'), 'utf8')).generationId, pendingGeneration);
+});
+
+test('moved execution workspace does not prevent exact v3 turn revocation', async () => {
+  const { identity, root } = await fixture(); const { origin, execution } = await linkedWorktreeFixture(root);
+  await identity.beginCallerTurn({
+    sessionId: 'session-a', turnId: 'turn-a', workspace: origin, permissionMode: 'default',
+    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+  });
+  await identity.resolveActiveTurn({ sessionId: 'session-a', workspace: execution, workspaceBinding: 'claim' });
+  const canonicalExecution = await realpath(execution); await rename(execution, `${execution}-moved`);
+  assert.deepEqual(await identity.endCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: origin }), {
+    originWorkspace: await realpath(origin), executionWorkspace: canonicalExecution,
+  });
+  assert.deepEqual(await identity.cleanupSession(origin, 'session-a'), {
+    knownWorkspaces: [await realpath(origin), canonicalExecution],
+  });
+});
+
+test('legacy exact resolve and active-turn scan reject oversized JSON through bounded readers', async () => {
+  for (const method of ['resolveActiveTurn', 'resolveOnlyActiveTurn']) {
+    const { dataRoot, identity, workspaceA } = await fixture();
+    await identity.beginCallerTurn({ sessionId: 'legacy-session', turnId: 'legacy-turn', workspace: workspaceA, permissionMode: 'default' });
+    const path = await activeTurnPath(dataRoot, workspaceA, 'legacy-session');
+    await writeFile(path, `{"oversized":"${'x'.repeat(128 * 1024)}"`, { mode: 0o600 });
+    const operation = method === 'resolveActiveTurn'
+      ? identity.resolveActiveTurn({ sessionId: 'legacy-session', workspace: workspaceA })
+      : identity.resolveOnlyActiveTurn({ workspace: workspaceA });
+    await assert.rejects(operation, { code: 'AUTHORIZATION_RECORD_INVALID' });
+  }
 });
 
 test('legacy unversioned active turns retain their strict expiry semantics', async () => {
