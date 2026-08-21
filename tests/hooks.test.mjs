@@ -17,7 +17,8 @@ import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeB
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
-import { cleanupSession, resolveForwardingExecutor } from '../hooks/lib/hook-state.mjs';
+import { cleanupSession, isForwarding, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute } from '../hooks/lib/hook-state.mjs';
+import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
@@ -317,6 +318,88 @@ test('origin cwd routes a bound worktree child and exact replacement stop withou
   const terminal = await resolveForwardingExecutor(data, target, 'routed-child', { continuation: true, durableProvenance: true });
   assert.equal(terminal.active, false);
   assert.equal(terminal.parentGenerationId, bound.generationId, 'replacement authority must not redirect exact child cleanup');
+});
+
+test('pending executor route linearizes Start and Stop without an active orphan', async (t) => {
+  const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, 'pending-route-race');
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data }); const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await recordSession(data, { session_id: 'route-race-parent', cwd: origin, source: 'startup' });
+  await identity.beginCallerTurn({ sessionId: 'route-race-parent', turnId: 'route-race-parent-turn', workspace: origin, permissionMode: 'workspace-write', prompt: 'race', ...proof });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'route-race-parent', workspace: target, workspaceBinding: 'claim' });
+  const start = { session_id: 'route-race-parent', turn_id: 'route-race-parent-turn', cwd: origin, hook_event_name: 'SubagentStart', agent_id: 'route-race-child', agent_type: 'zcode-rescue' };
+  let release; let pendingReachedResolve; const pendingReached = new Promise((resolvePromise) => { pendingReachedResolve = resolvePromise; }); const blocker = new Promise((resolvePromise) => { release = resolvePromise; });
+  const starting = markForwarding(data, start, caller, { publicationSeam: async (point) => { if (point === 'after-route-pending') { pendingReachedResolve(); await blocker; } } });
+  await pendingReached;
+  assert.equal(await isForwarding(data, { session_id: start.session_id, turn_id: start.turn_id, cwd: origin }), true, 'fresh pending route must suppress the transient Root Stop window');
+  assert.deepEqual(await runStopReviewGate({ session_id: start.session_id, turn_id: start.turn_id, cwd: origin, stop_hook_active: false }, { dataRoot: data, env: {}, timeoutMs: 1 }), {});
+  assert.equal((await identity.resolveActiveTurn({ sessionId: start.session_id, workspace: origin, workspaceBinding: 'execution' })).generationId, caller.generationId, 'pending forwarding must not revoke parent authority');
+  await assert.rejects(resolveForwardingExecutor(data, target, start.agent_id), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await markForwarding(data, { ...start, hook_event_name: 'SubagentStop' });
+  release(); await starting;
+  assert.equal((await resolveForwardingRoute(data, origin, start.session_id, start.turn_id)).state, 'stopped');
+  assert.equal((await resolveForwardingExecutor(data, target, start.agent_id, { continuation: true, durableProvenance: true })).active, false);
+  await assert.rejects(resolveForwardingExecutor(data, target, start.agent_id), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+});
+
+test('pending executor route crash is short-lived, retryable, and cleanup removes exact routes', async (t) => {
+  const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, 'pending-route-retry');
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data }); const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await identity.beginCallerTurn({ sessionId: 'route-retry-parent', turnId: 'route-retry-parent-turn', workspace: origin, permissionMode: 'workspace-write', prompt: 'retry', ...proof });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'route-retry-parent', workspace: target, workspaceBinding: 'claim' });
+  const start = { session_id: 'route-retry-parent', turn_id: 'route-retry-child-turn', cwd: origin, hook_event_name: 'SubagentStart', agent_id: 'route-retry-child', agent_type: 'zcode-rescue' };
+  await assert.rejects(markForwarding(data, start, caller, { publicationSeam: (point) => { if (point === 'after-route-pending') throw new Error('injected pending crash'); } }), /injected pending crash/);
+  const pending = await resolveForwardingRoute(data, origin, start.session_id, start.turn_id); assert.equal(pending.state, 'pending');
+  assert.equal(await isForwarding(data, { session_id: start.session_id, turn_id: start.turn_id, cwd: origin }, { now: new Date(Date.parse(pending.updatedAt) + 30_000) }), false);
+  await markForwarding(data, start, caller); assert.equal((await resolveForwardingRoute(data, origin, start.session_id, start.turn_id)).state, 'active');
+  await cleanupSession(data, origin, start.session_id);
+  await assert.rejects(resolveForwardingRoute(data, origin, start.session_id, start.turn_id), { code: 'EXECUTOR_ROUTE_NOT_FOUND' });
+  const targetStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: target }); assert.ok((await readdir(join(targetStorage.directory, 'hook-state'))).some((name) => name.startsWith('executor-')), 'target cleanup remains independently retryable');
+  await cleanupSession(data, target, start.session_id); await assert.rejects(resolveForwardingExecutor(data, target, start.agent_id), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+});
+
+test('executor uniqueness is scoped to parent generation while duplicate same-generation children remain ambiguous', async (t) => {
+  const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, 'executor-generation-scope');
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data }); const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await identity.beginCallerTurn({ sessionId: 'generation-parent', turnId: 'same-parent-turn', workspace: origin, permissionMode: 'workspace-write', prompt: 'generation one', ...proof });
+  const first = await identity.resolveActiveTurn({ sessionId: 'generation-parent', workspace: target, workspaceBinding: 'claim' });
+  await markForwarding(data, { session_id: 'generation-parent', turn_id: 'child-generation-one', cwd: origin, hook_event_name: 'SubagentStart', agent_id: 'generation-child-one', agent_type: 'zcode-rescue' }, first);
+  await identity.beginCallerTurn({ sessionId: 'generation-parent', turnId: 'same-parent-turn', workspace: origin, permissionMode: 'workspace-write', prompt: 'generation two', ...proof });
+  const second = await identity.resolveActiveTurn({ sessionId: 'generation-parent', workspace: target, workspaceBinding: 'claim' }); assert.notEqual(first.generationId, second.generationId);
+  await markForwarding(data, { session_id: 'generation-parent', turn_id: 'child-generation-two', cwd: origin, hook_event_name: 'SubagentStart', agent_id: 'generation-child-two', agent_type: 'zcode-rescue' }, second);
+  assert.equal((await resolveForwardingExecutor(data, target, 'generation-child-two')).parentGenerationId, second.generationId);
+  await markForwarding(data, { session_id: 'generation-parent', turn_id: 'child-generation-two-b', cwd: origin, hook_event_name: 'SubagentStart', agent_id: 'generation-child-two-b', agent_type: 'zcode-rescue' }, second);
+  await assert.rejects(resolveForwardingExecutor(data, target, 'generation-child-two'), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
+});
+
+test('executor routes use bounded nofollow reads and bounded sibling-safe cleanup', async () => {
+  const { cwd, data } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  const make = async (sessionId, childId) => {
+    await identity.beginCallerTurn({ sessionId, turnId: `${sessionId}-turn`, workspace: cwd, permissionMode: 'workspace-write', prompt: sessionId });
+    const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd }); const input = { session_id: sessionId, turn_id: `${childId}-turn`, cwd, hook_event_name: 'SubagentStart', agent_id: childId, agent_type: 'zcode-rescue' };
+    await markForwarding(data, input, caller); return input;
+  };
+  const owner = await make('route-owner', 'route-owner-child'); const sibling = await make('route-sibling', 'route-sibling-child');
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd }); const directory = join(storage.directory, 'hook-state');
+  const routeNames = (await readdir(directory)).filter((name) => name.startsWith('route-')); assert.equal(routeNames.length, 2);
+  const exactOwnerRoute = (await Promise.all(routeNames.map(async (name) => ({ name, record: JSON.parse(await readFile(join(directory, name), 'utf8')) })))).find((entry) => entry.record.parentSessionId === owner.session_id);
+  const routePath = join(directory, exactOwnerRoute.name); const original = await readFile(routePath, 'utf8'); const outside = join(data, 'outside-route.json'); await writeFile(outside, original);
+  await unlink(routePath); await symlink(outside, routePath); await assert.rejects(resolveForwardingRoute(data, cwd, owner.session_id, owner.turn_id), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await unlink(routePath); await writeFile(routePath, original); await writeFile(routePath, `{"pad":"${'x'.repeat(17 * 1024)}"}`); await assert.rejects(resolveForwardingRoute(data, cwd, owner.session_id, owner.turn_id), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await writeFile(routePath, original);
+  const forged = JSON.stringify({ ...JSON.parse(original), parentSessionId: 'forged-route-owner' });
+  await Promise.all([
+    (async () => { for (let index = 0; index < 32; index += 1) await writeFile(routePath, index % 2 === 0 ? forged : original); })(),
+    (async () => { for (let index = 0; index < 32; index += 1) { try { assert.equal((await resolveForwardingRoute(data, cwd, owner.session_id, owner.turn_id)).parentSessionId, owner.session_id); } catch (error) { assert.equal(error.code, 'EXECUTOR_ROUTE_INVALID'); } } })(),
+  ]);
+  await writeFile(routePath, original); await cleanupSession(data, cwd, owner.session_id);
+  await assert.rejects(resolveForwardingRoute(data, cwd, owner.session_id, owner.turn_id), { code: 'EXECUTOR_ROUTE_NOT_FOUND' });
+  assert.equal((await resolveForwardingRoute(data, cwd, sibling.session_id, sibling.turn_id)).parentSessionId, sibling.session_id);
+
+  await Promise.all(Array.from({ length: 2_050 }, (_, index) => writeFile(join(directory, `junk-${String(index).padStart(4, '0')}.json`), '{}')));
+  await assert.rejects(cleanupSession(data, cwd, sibling.session_id), (error) => error?.code === 'HOOK_STATE_CAPACITY' && !`${error.message}${error.remedy}`.includes(sibling.session_id));
 });
 
 test('origin cwd Root Stop revokes authority before bound worktree preparation cleanup', async (t) => {
