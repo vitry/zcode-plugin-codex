@@ -16,13 +16,9 @@ try {
   if (input.agent_id !== undefined) { process.stdout.write('{}'); process.exit(0); }
   const dataRoot = resolvePluginDataRoot({ env: process.env, pluginRoot: resolve(fileURLToPath(new URL('../', import.meta.url))) });
   if (!await isOwnedSession(dataRoot, input)) { process.stdout.write('{}'); process.exit(0); }
-  let rescueLauncherCommand;
-  try { rescueLauncherCommand = renderRescueLauncherCommand(realpathSync(fileURLToPath(new URL('../skills/rescue/launcher.mjs', import.meta.url)))); }
-  catch { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: RESCUE_LAUNCHER_ERROR_CONTEXT } })); process.exit(0); }
   const identity = createIdentityStore({ dataRoot });
   const preparations = createRescuePreparationStore({ dataRoot });
   const session = await resolveRecordedSessionStart(dataRoot, input.cwd, input.session_id);
-  await preparations.cleanupOlderTurns({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd });
   const begun = await identity.beginCallerTurn({
     sessionId: input.session_id,
     turnId: input.turn_id,
@@ -33,6 +29,8 @@ try {
     sessionSource: session.source,
     lifecycleResult: true,
   });
+  await preparations.cleanupOlderTurns({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd })
+    .catch(() => { /* authority is already published; preparation TTL remains the fail-safe */ });
   if (begun.replacedTurn !== null && begun.replacedTurn.executionWorkspace !== null) {
     await preparations.cleanupTurn({
       sessionId: input.session_id,
@@ -40,6 +38,9 @@ try {
       workspace: begun.replacedTurn.executionWorkspace,
     }).catch(() => { /* authority is already replaced; the preparation TTL remains the fail-safe */ });
   }
+  let rescueLauncherCommand;
+  try { rescueLauncherCommand = renderRescueLauncherCommand(realpathSync(fileURLToPath(new URL('../skills/rescue/launcher.mjs', import.meta.url)))); }
+  catch { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: RESCUE_LAUNCHER_ERROR_CONTEXT } })); process.exit(0); }
   try { const fingerprint = await fingerprintWorkspace(input.cwd); await identity.recordGateBaseline({ sessionId: input.session_id, turnId: input.turn_id, workspace: input.cwd, fingerprint, permissionSnapshot: { permissionMode: input.permission_mode } }); } catch (error) { if (error?.code === 'GATE_BASELINE_EXISTS') { /* another exact hook invocation already recorded it */ } else { /* review gating is optional; caller authorization is not */ } }
   const unread = await unreadJobs(dataRoot, input.cwd, input.session_id);
   const context = renderRescueUserPromptContext(rescueLauncherCommand, unread);

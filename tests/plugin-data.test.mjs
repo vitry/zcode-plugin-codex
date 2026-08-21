@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, realpath, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { resolvePluginDataContext, resolvePluginDataRoot } from '../scripts/lib/plugin-data.mjs';
@@ -91,6 +92,30 @@ test('installed identity follows canonical symlinked plugin paths', async (t) =>
     dataRoot: join(actualHome, 'plugins', 'data', 'zcode-vitry'), provenance: 'marketplace',
   });
   assert.equal(await realpath(link), await realpath(installed));
+});
+
+test('trusted lexical companion entry preserves marketplace identity for an exact owned cache symlink only', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zpc-plugin-entry-link-'));
+  t.after(() => import('node:fs/promises').then(({ rm }) => rm(temporary, { force: true, recursive: true })));
+  const codexHome = join(temporary, 'codex-home'); const ownedRoot = resolve(fileURLToPath(new URL('../', import.meta.url)));
+  const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+  await mkdir(dirname(installed), { recursive: true }); await symlink(ownedRoot, installed, 'dir');
+  const entryPath = join(installed, 'scripts', 'zcode-companion.mjs');
+  assert.deepEqual(resolvePluginDataContext({ env: { CODEX_HOME: codexHome }, pluginRoot: ownedRoot, entryPath }), {
+    dataRoot: join(await realpath(codexHome), 'plugins', 'data', 'zcode-vitry'), provenance: 'marketplace',
+  });
+
+  const wrongRoot = join(temporary, 'wrong-plugin'); await mkdir(join(wrongRoot, 'scripts'), { recursive: true });
+  await writeFile(join(wrongRoot, 'scripts', 'zcode-companion.mjs'), 'export {};\n');
+  const wrongTarget = join(codexHome, 'plugins', 'cache', 'other', 'zcode', '0.1.0');
+  await mkdir(dirname(wrongTarget), { recursive: true }); await symlink(wrongRoot, wrongTarget, 'dir');
+  for (const candidate of [
+    join(wrongTarget, 'scripts', 'zcode-companion.mjs'),
+    join(temporary, 'outside-cache', 'scripts', 'zcode-companion.mjs'),
+    join(codexHome, 'plugins', 'cache', 'vitry', 'wrong-plugin', '0.1.0', 'scripts', 'zcode-companion.mjs'),
+    `${installed}${sep}..${sep}0.1.0${sep}scripts${sep}zcode-companion.mjs`,
+    `${entryPath}\u0000bad`,
+  ]) assert.throws(() => resolvePluginDataContext({ env: { CODEX_HOME: codexHome }, pluginRoot: ownedRoot, entryPath: candidate }), { code: 'PLUGIN_DATA_ROOT_INVALID' });
 });
 
 test('installed identity rejects malformed cache segments', () => {

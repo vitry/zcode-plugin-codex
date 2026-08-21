@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 
@@ -9,12 +9,12 @@ import { PluginError } from './errors.mjs';
  * plugins are namespaced by marketplace; source checkouts retain the legacy
  * unqualified development namespace so local development can inject a root.
  *
- * @param {{env?:NodeJS.ProcessEnv,pluginRoot?:string}} input
+ * @param {{env?:NodeJS.ProcessEnv,pluginRoot?:string,entryPath?:string}} input
  */
-export function resolvePluginDataRoot({ env = process.env, pluginRoot } = {}) {
+export function resolvePluginDataRoot({ env = process.env, pluginRoot, entryPath } = {}) {
   const explicit = nonEmpty(env.ZCODE_DATA_ROOT);
   if (explicit) return canonicalPath(explicit);
-  return resolvePluginDataContext({ env, pluginRoot }).dataRoot;
+  return resolvePluginDataContext({ env, pluginRoot, entryPath }).dataRoot;
 }
 
 /**
@@ -22,13 +22,13 @@ export function resolvePluginDataRoot({ env = process.env, pluginRoot } = {}) {
  * the executing plugin location. Explicit data roots select storage, not the
  * plugin installation identity.
  *
- * @param {{env?:NodeJS.ProcessEnv,pluginRoot?:string}} input
+ * @param {{env?:NodeJS.ProcessEnv,pluginRoot?:string,entryPath?:string}} input
  * @returns {{dataRoot:string,provenance:'marketplace'|'source'}}
  */
-export function resolvePluginDataContext({ env = process.env, pluginRoot } = {}) {
+export function resolvePluginDataContext({ env = process.env, pluginRoot, entryPath } = {}) {
   const explicit = nonEmpty(env.ZCODE_DATA_ROOT);
   const codexHome = canonicalPath(nonEmpty(env.CODEX_HOME) ?? join(homedir(), '.codex'));
-  const installed = installedIdentity(pluginRoot, codexHome);
+  const installed = installedIdentity(pluginRoot, codexHome, entryPath);
   const provenance = installed ? 'marketplace' : 'source';
   if (explicit) return { dataRoot: canonicalPath(explicit), provenance };
   if (installed) {
@@ -44,8 +44,8 @@ export function resolvePluginDataContext({ env = process.env, pluginRoot } = {})
   };
 }
 
-/** @param {string|undefined} pluginRoot @param {string} codexHome */
-function installedIdentity(pluginRoot, codexHome) {
+/** @param {string|undefined} pluginRoot @param {string} codexHome @param {string|undefined} entryPath */
+function installedIdentity(pluginRoot, codexHome, entryPath) {
   if (!pluginRoot) return null;
   if (hasControl(pluginRoot)) throw invalidRoot();
   const cache = canonicalPath(join(codexHome, 'plugins', 'cache'));
@@ -57,8 +57,28 @@ function installedIdentity(pluginRoot, codexHome) {
   const looksLikeCachePath = rawSegments.some((segment, index) => segment === 'cache' && rawSegments[index - 1] === 'plugins');
   if (looksLikeCachePath && pluginRoot.split(/[\\/]/).includes('..')) throw invalidRoot();
   if (looksLikeCachePath && !looksInstalled) throw invalidRoot();
-  if (!looksInstalled) return null;
+  if (!looksInstalled) return entryPath === undefined ? null : installedEntryIdentity(pluginRoot, codexHome, entryPath);
   const segments = relative(cache, canonical).split(sep);
+  if (segments.length !== 3 || segments.some((segment) => !segment || segment === '.' || segment === '..' || hasControl(segment))) throw invalidRoot();
+  const [marketplace, plugin, version] = segments;
+  if (!/^[A-Za-z0-9_-]+$/.test(marketplace) || plugin !== 'zcode'
+    || !/^[A-Za-z0-9._-]+(?:\+[A-Za-z0-9._-]+)?$/.test(version)) throw invalidRoot();
+  return { marketplace };
+}
+
+/** Accept only a lexical cache entry whose exact companion target belongs to pluginRoot. @param {string} pluginRoot @param {string} codexHome @param {string} entryPath */
+function installedEntryIdentity(pluginRoot, codexHome, entryPath) {
+  if (typeof entryPath !== 'string' || !entryPath || hasControl(entryPath) || !isAbsolute(entryPath)) throw invalidRoot();
+  const separator = process.platform === 'win32' ? /\\/g : /\//g;
+  if (entryPath.replace(separator, '/').split('/').includes('..')) throw invalidRoot();
+  const rawEntry = resolve(entryPath); const rawRoot = dirname(dirname(rawEntry));
+  const ownedRoot = canonicalPath(pluginRoot); const ownedEntry = canonicalPath(join(ownedRoot, 'scripts', 'zcode-companion.mjs'));
+  if (canonicalPath(rawEntry) !== ownedEntry || canonicalPath(rawRoot) !== ownedRoot) throw invalidRoot();
+  const lexicalRoot = join(canonicalPath(dirname(rawRoot)), basename(rawRoot));
+  const cache = canonicalPath(join(codexHome, 'plugins', 'cache'));
+  const rawRelative = relative(cache, lexicalRoot);
+  if (!rawRelative || rawRelative.startsWith('..') || isAbsolute(rawRelative)) throw invalidRoot();
+  const segments = rawRelative.split(sep);
   if (segments.length !== 3 || segments.some((segment) => !segment || segment === '.' || segment === '..' || hasControl(segment))) throw invalidRoot();
   const [marketplace, plugin, version] = segments;
   if (!/^[A-Za-z0-9_-]+$/.test(marketplace) || plugin !== 'zcode'

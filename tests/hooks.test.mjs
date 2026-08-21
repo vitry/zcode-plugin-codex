@@ -625,7 +625,7 @@ test('launcher descriptor and five terminal job notices stay below the declared 
   for (const job of jobs) assert.match(context, new RegExp(job.id));
 });
 
-test('unsafe owned launcher path emits a fixed non-executable error before prompt mutations', async () => {
+test('unsafe owned launcher path emits a fixed error after authoritative prompt publication', async () => {
   const { cwd, data, env } = await workspace();
   await runHook('session-lifecycle-hook.mjs', { session_id: 'owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
   const unsafeRoot = join(await mkdtemp(join(tmpdir(), 'zpc-unsafe-root-')), 'plugin $unsafe');
@@ -634,14 +634,13 @@ test('unsafe owned launcher path emits a fixed non-executable error before promp
   const dependency = dirname(createRequire(import.meta.url).resolve('fs-native-extensions'));
   await mkdir(join(unsafeRoot, 'node_modules'), { recursive: true });
   await symlink(dependency, join(unsafeRoot, 'node_modules/fs-native-extensions'), 'dir');
-  const before = Object.fromEntries(await Promise.all((await jsonFiles(data)).sort().map(async (path) => [path, await readFile(path, 'utf8')])));
   const result = await runHook(join(unsafeRoot, 'hooks/user-prompt-hook.mjs'), { session_id: 'owner', turn_id: 'must-not-mint', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'private prompt' }, env, { absolute: true });
   assert.equal(result.code, 0, result.stderr);
   const context = result.json?.hookSpecificOutput?.additionalContext;
   assert.equal(context, '[zcode-rescue-launcher-error] {"version":1,"code":"RESCUE_LAUNCHER_PATH_UNSAFE","remedy":"Reinstall the ZCode plugin and retry from a new owned parent turn."}');
   assert.doesNotMatch(context, /launcherCommand|node |private prompt|must-not-mint/);
-  const after = Object.fromEntries(await Promise.all((await jsonFiles(data)).sort().map(async (path) => [path, await readFile(path, 'utf8')])));
-  assert.deepEqual(after, before);
+  const active = await createIdentityStore({ dataRoot: data }).resolveActiveTurn({ sessionId: 'owner', workspace: cwd });
+  assert.equal(active.turnId, 'must-not-mint'); assert.equal(active.prompt, 'private prompt');
 });
 
 test('caller contexts end at the earlier turn boundary without crossing sibling sessions', async (t) => {
@@ -708,13 +707,14 @@ test('prompt, Root Stop, and SessionEnd clean only their exact prepared Rescue l
     assert.equal((await prepared.consume({ sessionId: 'sibling', turnId: 'sibling-turn', workspace: cwd, permissionMode: 'default', executorAgentId: 'sibling-child' })).envelope.task, 'sibling objective');
   });
 
-  await t.test('storage-level cleanup failure does not mint a new active caller turn', async () => {
+  await t.test('storage-level cleanup failure cannot undo a newly published active caller turn', async () => {
     const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: cwd });
     await runHook('session-lifecycle-hook.mjs', { session_id: 'cleanup-failure-owner', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
     await mkdir(join(storage.directory, 'invocations'), { recursive: true }); await writeFile(join(storage.directory, 'invocations', 'prepared'), 'unsafe non-directory');
     const submitted = await runHook('user-prompt-hook.mjs', { session_id: 'cleanup-failure-owner', turn_id: 'must-not-mint', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'private prompt bytes' }, env);
-    assert.notEqual(submitted.code, 0); assert.match(submitted.stderr, /ZCode prompt hook failed safely:/); assert.doesNotMatch(submitted.stderr, /private prompt bytes|must-not-mint|cleanup-failure-owner/);
-    await assert.rejects(identity.resolveActiveTurn({ sessionId: 'cleanup-failure-owner', workspace: cwd }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+    assertRescueLauncherContext(submitted); assert.equal(submitted.stderr, '');
+    const active = await identity.resolveActiveTurn({ sessionId: 'cleanup-failure-owner', workspace: cwd });
+    assert.equal(active.turnId, 'must-not-mint'); assert.equal(active.prompt, 'private prompt bytes');
   });
 
   await t.test('Root Stop deletes its exact preparation while a forwarding Stop preserves the parent preparation', async () => {

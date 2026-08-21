@@ -25,7 +25,7 @@ import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { runCompanion, runDirectInvocation } from '../../scripts/zcode-companion.mjs';
-import { markForwarding, recordSession } from '../../hooks/lib/hook-state.mjs';
+import { markForwarding, recordSession, resolveRecordedSessionStart } from '../../hooks/lib/hook-state.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -418,7 +418,7 @@ test('role-status rescue is bounded and returns before caller consumption, recon
   assert.equal(renderOutput(output), '{"type":"role-status","role":"zcode-rescue","status":"ready"}\n');
 });
 
-test('linked worktree Role preview stays read-only and private prepare binds before TTY readiness', async () => {
+test('linked worktree Role preview stays read-only and private prepare binds after TTY capability but before readiness', async () => {
   const context = await fixture();
   const sessionId = 'late-bind-companion-parent';
   await recordRealParentTurn(context, {
@@ -491,16 +491,61 @@ test('linked worktree Role preview stays read-only and private prepare binds bef
     assert.ok(Buffer.byteLength(result.stdout) < 1024, name);
     assert.doesNotMatch(result.stdout, /late-bind|linked-worktree|unrelated-repo|non-git-directory|repair the linked worktree|ACTIVE_TURN/u, name);
   }
+  for (const [name, workspace, threadId, code] of [
+    ['unrelated', unrelated, sessionId, 'ACTIVE_TURN_WORKSPACE_INELIGIBLE'],
+    ['non-git', nonGit, sessionId, 'ACTIVE_TURN_WORKSPACE_INELIGIBLE'],
+    ['child ambient', linked, 'late-bind-child-thread', 'ACTIVE_TURN_NOT_FOUND'],
+  ]) {
+    let reads = 0;
+    const input = { async *[Symbol.asyncIterator]() { reads += 1; yield Buffer.from('{"private":"must-not-read"}\n'); } };
+    await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
+      cwd: workspace, env: { ...context.env, CODEX_THREAD_ID: threadId }, input: /** @type {any} */ (input),
+    }), { code }, name);
+    assert.equal(reads, 0, `${name} prepare must reject before private input reads`);
+  }
+  assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: linked, workspaceBinding: 'preview' })).executionWorkspace, null);
+
+  const privateFrame = `${JSON.stringify({ version: 1, source: 'explicit', task: 'repair the linked worktree', options: { execution: 'foreground', resume: 'fresh' } })}\n`;
+  const nonTty = new PassThrough(); nonTty.end(privateFrame); const nonTtyBytes = nonTty.readableLength;
   await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
-    cwd: linked, env: { ...context.env, CODEX_THREAD_ID: 'late-bind-child-thread' }, input: new PassThrough(),
-  }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+    cwd: linked, env: { ...context.env, CODEX_THREAD_ID: sessionId }, input: nonTty,
+    preparationTransport: { writeReady: async () => { throw new Error('must not write readiness'); } },
+  }), { code: 'PREPARATION_TTY_REQUIRED' });
+  assert.equal(nonTty.readableLength, nonTtyBytes, 'TTY capability rejection must not read private task bytes');
+  assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: linked, workspaceBinding: 'preview' })).executionWorkspace, null);
+
+  const rawFailure = new PassThrough(); rawFailure.end(privateFrame); const rawFailureBytes = rawFailure.readableLength;
+  const rawFailureTty = /** @type {PassThrough & {isTTY:boolean,setRawMode:(enabled:boolean)=>void}} */ (rawFailure);
+  rawFailureTty.isTTY = true; rawFailureTty.setRawMode = () => { throw new Error('raw mode unavailable'); };
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
+    cwd: linked, env: { ...context.env, CODEX_THREAD_ID: sessionId }, input: rawFailure,
+    preparationTransport: { writeReady: async () => { throw new Error('must not write readiness'); } },
+  }), /raw mode unavailable/u);
+  assert.equal(rawFailure.readableLength, rawFailureBytes, 'raw-mode rejection must not read private task bytes');
+  assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: linked, workspaceBinding: 'preview' })).executionWorkspace, null);
+
+  const readyFailure = new PassThrough(); readyFailure.end(privateFrame); const readyFailureBytes = readyFailure.readableLength;
+  const readyFailureTty = /** @type {PassThrough & {isTTY:boolean,setRawMode:(enabled:boolean)=>void}} */ (readyFailure);
+  /** @type {boolean[]} */ const failedReadyRawModes = [];
+  readyFailureTty.isTTY = true; readyFailureTty.setRawMode = (enabled) => { failedReadyRawModes.push(enabled); };
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
+    cwd: linked, env: { ...context.env, CODEX_THREAD_ID: sessionId }, input: readyFailure,
+    preparationTransport: { writeReady: async () => { throw new Error('private readiness channel closed'); } },
+  }), /private readiness channel closed/u);
+  assert.equal(readyFailure.readableLength, readyFailureBytes, 'failed readiness must not read private task bytes');
+  assert.deepEqual(failedReadyRawModes, [true, false]);
+  assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: linked, workspaceBinding: 'execution' })).workspace, await realpath(linked));
+  await assert.rejects(createRescuePreparationStore({ dataRoot: context.dataRoot }).consume({
+    sessionId, turnId: 'late-bind-companion-turn', workspace: linked,
+    permissionMode: 'acceptEdits', executorAgentId: 'failed-ready-child',
+  }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
 
   const preparation = new PassThrough();
   const ttyPreparation = /** @type {PassThrough & {isTTY:boolean,setRawMode:(enabled:boolean)=>void}} */ (preparation);
   ttyPreparation.isTTY = true;
   /** @type {boolean[]} */ const rawModes = [];
   ttyPreparation.setRawMode = (enabled) => { rawModes.push(enabled); };
-  preparation.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'repair the linked worktree', options: { execution: 'foreground', resume: 'fresh' } })}\n`);
+  preparation.end(privateFrame);
   let readyCount = 0;
   const prepared = await runDirectInvocation(['prepare', 'rescue'], {
     cwd: linked, env: { ...context.env, CODEX_THREAD_ID: sessionId }, input: preparation,
@@ -514,20 +559,76 @@ test('linked worktree Role preview stays read-only and private prepare binds bef
   assert.deepEqual(prepared, { type: 'prepared', command: 'rescue' });
   assert.equal(readyCount, 1);
   assert.deepEqual(rawModes, [true, false]);
-  assert.equal((await createRescuePreparationStore({ dataRoot: context.dataRoot }).consume({
-    sessionId, turnId: 'late-bind-companion-turn', workspace: linked,
-    permissionMode: 'acceptEdits', executorAgentId: 'late-bind-test-child',
-  })).workspace, await realpath(linked));
 
   const linkedB = join(context.directory, 'linked-worktree-b');
   assert.equal((await run('git', ['worktree', 'add', '-q', '-b', 'late-bind-companion-target-b', linkedB], { cwd: context.workspace })).code, 0);
   const boundBytesBeforeLoser = await readFile(activePath);
   const loserRole = await installedRole(linkedB);
   assert.deepEqual(JSON.parse(loserRole.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'caller-unavailable', remedy: 'Retry from an active owned parent turn.' });
+  let loserReads = 0;
+  const loserInput = { async *[Symbol.asyncIterator]() { loserReads += 1; yield Buffer.from(privateFrame); } };
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
+    cwd: linkedB, env: { ...context.env, CODEX_THREAD_ID: sessionId }, input: /** @type {any} */ (loserInput),
+  }), { code: 'ACTIVE_TURN_WORKSPACE_INELIGIBLE' });
+  assert.equal(loserReads, 0, 'second-target prepare must reject before private input reads');
   assert.deepEqual(await readFile(activePath), boundBytesBeforeLoser);
   const winnerRole = await installedRole(linked);
   assert.deepEqual(JSON.parse(winnerRole.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
   assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: linked, workspaceBinding: 'execution' })).workspace, await realpath(linked));
+  assert.equal((await createRescuePreparationStore({ dataRoot: context.dataRoot }).consume({
+    sessionId, turnId: 'late-bind-companion-turn', workspace: linked,
+    permissionMode: 'acceptEdits', executorAgentId: 'late-bind-test-child',
+  })).workspace, await realpath(linked));
+});
+
+test('installed Role and prepare use legacy exact-workspace state only when lifecycle files are truly absent', async () => {
+  const context = await fixture(); const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  const codexHome = join(context.directory, 'installed-legacy-codex-home');
+  const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+  await mkdir(installed, { recursive: true });
+  for (const name of ['agents', 'hooks', 'schemas', 'scripts']) await cp(join(root, name), join(installed, name), { recursive: true });
+  await cp(join(root, 'package.json'), join(installed, 'package.json')); await symlink(dependencyNodeModules, join(installed, 'node_modules'), 'dir');
+  const configFile = join(context.dataRoot, 'legacy-config.toml');
+  const config = { config: {}, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: {} }] };
+  /** @param {string} sessionId */
+  const role = (sessionId) => run(process.execPath, [join(installed, 'scripts', 'zcode-companion.mjs'), 'role-status', 'rescue'], {
+    cwd: context.workspace,
+    env: {
+      ...context.env, CODEX_HOME: codexHome, CODEX_THREAD_ID: sessionId,
+      CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+      FAKE_CODEX_CONFIG_RESULT: JSON.stringify(config),
+    },
+  });
+
+  const legacySession = 'installed-legacy-parent';
+  await recordSession(context.dataRoot, { session_id: legacySession, cwd: context.workspace, source: 'startup' });
+  await identity.beginCallerTurn({ sessionId: legacySession, turnId: 'installed-legacy-turn', workspace: context.workspace, permissionMode: 'acceptEdits', prompt: '$zcode:rescue legacy exact task' });
+  const legacyRole = await role(legacySession);
+  assert.deepEqual(JSON.parse(legacyRole.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'install-required', remedy: '$zcode:setup' });
+  const legacyInput = new PassThrough(); legacyInput.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'legacy exact task', options: {} })}\n`);
+  assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: legacySession }, input: legacyInput,
+  }), { type: 'prepared', command: 'rescue' });
+
+  const corruptSession = 'installed-corrupt-lifecycle-parent';
+  await recordSession(context.dataRoot, { session_id: corruptSession, cwd: context.workspace, source: 'startup' });
+  await identity.beginCallerTurn({ sessionId: corruptSession, turnId: 'stale-v2-turn', workspace: context.workspace, permissionMode: 'acceptEdits', prompt: '$zcode:rescue private stale sentinel' });
+  const session = await resolveRecordedSessionStart(context.dataRoot, context.workspace, corruptSession);
+  await identity.beginCallerTurn({
+    sessionId: corruptSession, turnId: 'proved-turn', workspace: context.workspace, permissionMode: 'acceptEdits', prompt: '$zcode:rescue private lifecycle sentinel',
+    sessionStartedAt: session.startedAt, sessionSource: session.source,
+  });
+  const activeNames = await readdir(join(context.dataRoot, 'identity-lifecycle', 'active-turns'));
+  assert.equal(activeNames.length, 1); await writeFile(join(context.dataRoot, 'identity-lifecycle', 'active-turns', activeNames[0]), '{}\n');
+  const corruptRole = await role(corruptSession); const corruptPublic = JSON.parse(corruptRole.stdout);
+  assert.deepEqual(corruptPublic, { type: 'role-status', role: 'zcode-rescue', status: 'caller-unavailable', remedy: 'Retry from an active owned parent turn.' });
+  assert.ok(Buffer.byteLength(corruptRole.stdout) < 1024); assert.doesNotMatch(corruptRole.stdout, /private|lifecycle|stale-v2|AUTHORIZATION/u);
+  let corruptReads = 0;
+  const corruptInput = { async *[Symbol.asyncIterator]() { corruptReads += 1; yield Buffer.from('{"private":"sentinel"}\n'); } };
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: corruptSession }, input: /** @type {any} */ (corruptInput),
+  }), { code: 'AUTHORIZATION_RECORD_INVALID' });
+  assert.equal(corruptReads, 0, 'malformed lifecycle authority must reject before private input reads');
 });
 
 test('role-status rescue maps every non-ready managed state to the exact setup remedy', async () => {
@@ -618,6 +719,39 @@ test('installed companion missing-turn behavior reports caller unavailable witho
   assert.equal(result.code, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'caller-unavailable', remedy: 'Retry from an active owned parent turn.' });
   t.diagnostic('Installed provenance returns a bounded caller failure and never reads the isolated source namespace.');
+});
+
+test('symlinked marketplace companion keeps installed provenance and previews SessionStart from the origin namespace', async () => {
+  const context = await fixture(); const codexHome = join(context.directory, 'symlink-installed-codex-home');
+  const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+  await mkdir(dirname(installed), { recursive: true }); await symlink(root, installed, 'dir');
+  const installedData = join(codexHome, 'plugins', 'data', 'zcode-vitry'); await mkdir(installedData, { recursive: true });
+  const hookEnv = { ...process.env, CODEX_HOME: codexHome, ZCODE_DATA_ROOT: installedData, PLUGIN_ROOT: installed };
+  const sessionId = 'symlink-installed-parent';
+  const started = await runChild(process.execPath, [join(installed, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: context.workspace, env: hookEnv, ordinaryInput: true,
+    input: { session_id: sessionId, cwd: context.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' },
+  });
+  assert.equal(started.code, 0, started.stderr || started.stdout);
+  const prompted = await runChild(process.execPath, [join(installed, 'hooks', 'user-prompt-hook.mjs')], {
+    cwd: context.workspace, env: hookEnv, ordinaryInput: true,
+    input: { session_id: sessionId, turn_id: 'symlink-installed-turn', cwd: context.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue inspect symlink provenance' },
+  });
+  assert.equal(prompted.code, 0, prompted.stderr || prompted.stdout);
+  const linked = await addLinkedWorktree(context.workspace, context.directory, 'symlink-installed-target');
+  const configFile = join(installedData, 'config.toml');
+  const config = { config: {}, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: {} }] };
+  const result = await run(process.execPath, [join(installed, 'scripts', 'zcode-companion.mjs'), 'role-status', 'rescue'], {
+    cwd: linked,
+    env: {
+      ...process.env, CODEX_HOME: codexHome, CODEX_THREAD_ID: sessionId,
+      CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+      FAKE_CODEX_CONFIG_RESULT: JSON.stringify(config),
+    },
+  });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'install-required', remedy: '$zcode:setup' });
+  assert.ok((await readdir(join(installedData, 'identity-lifecycle', 'active-turns'))).length === 1);
 });
 
 test('source role-status does not relabel inspection and configuration failures', async () => {
