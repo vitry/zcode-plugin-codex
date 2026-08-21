@@ -948,6 +948,10 @@ test('begin retry preserves a pending generation when ledger publication failed'
 
 test('a conflicting trusted begin supersedes an orphan pending lifecycle and exact retry rotates only its caller token', async () => {
   const { dataRoot, workspaceA, workspaceB } = await fixture();
+  const identity = createIdentityStore({ dataRoot });
+  const oldToken = await identity.createCallerContext({ sessionId: 'session-orphan', turnId: 'legacy-turn', workspace: workspaceA, permissionMode: 'default' });
+  const siblingToken = await identity.createCallerContext({ sessionId: 'session-sibling', turnId: 'sibling-turn', workspace: workspaceA, permissionMode: 'default' });
+  const oldPath = await callerContextPath(dataRoot, workspaceA, oldToken); const oldBytes = await readFile(oldPath, 'utf8');
   const initial = {
     sessionId: 'session-orphan', turnId: 'turn-initial', workspace: workspaceA, permissionMode: 'default', prompt: 'initial prompt',
     sessionStartedAt: '2026-08-21T11:59:00.000Z', sessionSource: 'startup', now: '2026-08-21T12:00:00.000Z', lifecycleResult: true,
@@ -957,7 +961,6 @@ test('a conflicting trusted begin supersedes an orphan pending lifecycle and exa
     ...initial, turnId: 'turn-replacement', workspace: workspaceB, permissionMode: 'read-only', prompt: 'replacement prompt',
     now: '2026-08-21T12:01:00.000Z',
   });
-  const identity = createIdentityStore({ dataRoot });
   const first = await identity.beginCallerTurn(replacement);
   assert.deepEqual(first.replacedTurn, {
     turnId: initial.turnId, generationId: orphan.active.generationId, executionWorkspace: null,
@@ -967,9 +970,12 @@ test('a conflicting trusted begin supersedes an orphan pending lifecycle and exa
   assert.equal(active.originWorkspace, await realpath(workspaceB)); assert.equal(active.permissionMode, replacement.permissionMode);
   assert.equal(active.prompt, replacement.prompt); assert.notEqual(active.generationId, orphan.active.generationId);
   const ledger = JSON.parse(await readFile(await globalSessionPath(dataRoot, initial.sessionId), 'utf8'));
-  assert.deepEqual(ledger.knownWorkspaces, [await realpath(workspaceB)]); assert.equal(ledger.endedAt, null);
+  assert.deepEqual(ledger.knownWorkspaces, [await realpath(workspaceA), await realpath(workspaceB)]); assert.equal(ledger.endedAt, null);
   const caller = JSON.parse(await readFile(await callerContextPath(dataRoot, workspaceB, first.token), 'utf8'));
   assert.equal(caller.generationId, active.generationId);
+  await assert.rejects(identity.consumeCallerContext(oldToken, { workspace: workspaceA, now: replacement.now }), { code: 'CALLER_CONTEXT_INVALID' });
+  await assert.rejects(readFile(oldPath, 'utf8'), { code: 'ENOENT' });
+  assert.equal((await identity.consumeCallerContext(siblingToken, { workspace: workspaceA })).sessionId, 'session-sibling');
   assert.equal((await identity.consumeCallerContext(first.token, { workspace: workspaceB, now: replacement.now })).turnId, replacement.turnId);
 
   const retry = await identity.beginCallerTurn(replacement);
@@ -977,6 +983,49 @@ test('a conflicting trusted begin supersedes an orphan pending lifecycle and exa
   assert.equal(JSON.parse(await readFile(await globalActivePath(dataRoot, initial.sessionId), 'utf8')).generationId, active.generationId);
   await assert.rejects(identity.consumeCallerContext(first.token, { workspace: workspaceB, now: replacement.now }), { code: 'CALLER_CONTEXT_INVALID' });
   assert.equal((await identity.consumeCallerContext(retry.token, { workspace: workspaceB, now: replacement.now })).turnId, replacement.turnId);
+  await writeFile(oldPath, oldBytes, { mode: 0o600 });
+  assert.deepEqual(await identity.cleanupSession(workspaceB, initial.sessionId), {
+    knownWorkspaces: [await realpath(workspaceA), await realpath(workspaceB)],
+  });
+  await assert.rejects(readFile(oldPath, 'utf8'), { code: 'ENOENT' });
+  assert.equal((await identity.consumeCallerContext(siblingToken, { workspace: workspaceA })).sessionId, 'session-sibling');
+});
+
+test('strictly newer trusted resume and clear proofs supersede an orphan without cleanup', async () => {
+  for (const sessionSource of ['resume', 'clear']) {
+    const { dataRoot, workspaceA } = await fixture();
+    const initial = {
+      sessionId: `session-newer-${sessionSource}`, turnId: 'turn-initial', workspace: workspaceA, permissionMode: 'default',
+      sessionStartedAt: '2026-08-21T11:59:00.000Z', sessionSource: 'startup', now: '2026-08-21T12:00:00.000Z', lifecycleResult: true,
+    };
+    const { active: orphan } = await createOrphanPending(dataRoot, initial);
+    const newer = await createIdentityStore({ dataRoot }).beginCallerTurn(/** @type {any} */ ({
+      ...initial, turnId: `turn-${sessionSource}`, prompt: sessionSource,
+      sessionStartedAt: '2026-08-21T12:01:00.000Z', sessionSource, now: '2026-08-21T12:02:00.000Z',
+    }));
+    assert.deepEqual(newer.replacedTurn, { turnId: initial.turnId, generationId: orphan.generationId, executionWorkspace: null });
+    const active = JSON.parse(await readFile(await globalActivePath(dataRoot, initial.sessionId), 'utf8'));
+    assert.equal(active.status, 'active'); assert.equal(active.turnId, `turn-${sessionSource}`); assert.notEqual(active.generationId, orphan.generationId);
+    const ledger = JSON.parse(await readFile(await globalSessionPath(dataRoot, initial.sessionId), 'utf8'));
+    assert.equal(ledger.sessionStartedAt, '2026-08-21T12:01:00.000Z'); assert.equal(ledger.sessionSource, sessionSource);
+    assert.equal((await createIdentityStore({ dataRoot }).consumeCallerContext(newer.token, { workspace: workspaceA, now: '2026-08-21T12:02:00.000Z' })).turnId, `turn-${sessionSource}`);
+  }
+});
+
+test('orphan recovery rejects rollback snapshots and future trusted proofs', async () => {
+  for (const kind of ['rollback', 'future-proof']) {
+    const { dataRoot, workspaceA } = await fixture();
+    const initial = {
+      sessionId: `session-${kind}`, turnId: 'turn-initial', workspace: workspaceA, permissionMode: 'default',
+      sessionStartedAt: '2026-08-21T11:59:00.000Z', sessionSource: 'startup', now: '2026-08-21T12:00:00.000Z',
+    };
+    await createOrphanPending(dataRoot, initial);
+    const candidate = kind === 'rollback'
+      ? { ...initial, turnId: 'rollback', now: '2026-08-21T11:59:30.000Z' }
+      : { ...initial, turnId: 'future', sessionStartedAt: '2026-08-21T12:02:00.000Z', sessionSource: 'resume', now: '2026-08-21T12:01:00.000Z' };
+    await assert.rejects(createIdentityStore({ dataRoot }).beginCallerTurn(candidate),
+      { code: kind === 'rollback' ? 'AUTHORIZATION_RECORD_INVALID' : 'IDENTITY_INPUT_INVALID' });
+  }
 });
 
 test('orphan recovery rejects malformed, future, active, and ledger-conflicting authority without legacy fallback', async () => {

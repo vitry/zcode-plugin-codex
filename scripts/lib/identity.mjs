@@ -142,11 +142,13 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         }
         const duplicate = existing !== null && activeAuthorityEqual(existing, input, storage.workspacePath)
           && (ledger?.endedAt === null || ledger === null && existing.status === 'pending');
-        priorWorkspaces = ledger !== null && ledger.endedAt === null ? [...ledger.knownWorkspaces] : [];
+        const recoverableWorkspaces = ledger !== null && ledger.endedAt === null
+          ? ledger.knownWorkspaces : ledger === null && existing !== null ? [existing.originWorkspace] : [];
+        priorWorkspaces = [...recoverableWorkspaces];
         generationId = duplicate ? existing.generationId : randomBytes(32).toString('hex');
         if (!duplicate && existing !== null) replacedTurn = replacedTurnMetadata(existing);
         const knownWorkspaces = appendKnownWorkspace(
-          ledger !== null && ledger.endedAt === null ? ledger.knownWorkspaces : [], storage.workspacePath,
+          recoverableWorkspaces, storage.workspacePath,
         );
         const updatedAt = new Date(Math.max(toTimestamp(input.now), ledger === null ? 0 : Date.parse(ledger.updatedAt))).toISOString();
         const nextLedger = sessionRecord(input, globalIdentityKey(input.sessionId), knownWorkspaces, updatedAt);
@@ -929,7 +931,7 @@ function activeAuthorityEqual(record, input, originWorkspace) {
 function isRecoverableOrphanPending(record, now, sessionStartedAt) {
   if (record === null || record.status !== 'pending' || record.executionWorkspace !== null) return false;
   const createdAt = Date.parse(record.createdAt);
-  return createdAt <= now && (sessionStartedAt === undefined || sessionStartedAt <= createdAt);
+  return createdAt <= now && (sessionStartedAt === undefined || sessionStartedAt <= now);
 }
 
 /** @param {any} active @param {any} ledger */
