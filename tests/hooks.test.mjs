@@ -89,6 +89,17 @@ async function workspace() {
   return { cwd, data, env: { PLUGIN_DATA: data } };
 }
 
+async function addLinkedWorktree(cwd, name = 'late-bind-target') {
+  const target = await mkdtemp(join(tmpdir(), 'zpc-hooks-linked-parent-'));
+  await rm(target, { recursive: true, force: true });
+  await new Promise((resolvePromise, reject) => {
+    const child = spawn('git', ['worktree', 'add', '-q', '-b', name, target], { cwd, shell: false });
+    child.once('error', reject);
+    child.once('exit', (code) => code === 0 ? resolvePromise() : reject(new Error(`git worktree add ${code}`)));
+  });
+  return target;
+}
+
 async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId, peerEnv = {} }) {
   const store = createStateStore({ dataRoot: data });
   let value = await store.reserveJob({ workspace: cwd, ownerSessionId, ownerTurnId: `turn-${ownerSessionId}`, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
@@ -147,13 +158,41 @@ test('two sessions in one workspace get isolated caller capabilities, permission
   assert.doesNotMatch(`${a.stdout}${b.stdout}`, /transcript_path|\/never\/read|brokerToken|executionCapability/);
   const files = await jsonFiles(join(data, 'workspaces'));
   const records = await Promise.all(files.map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
-  const active = records.filter((record) => record.kind === 'active-turn');
-  assert.equal(active.length, 2); assert.ok(active.every((record) => record.version === 2 && !('expiresAt' in record)));
+  const allRecords = await Promise.all((await jsonFiles(data)).map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
+  const active = allRecords.filter((record) => record.kind === 'active-turn');
+  assert.equal(active.length, 2); assert.ok(active.every((record) => record.version === 3 && record.status === 'active' && record.executionWorkspace === null));
+  assert.equal(records.filter((record) => record.kind === 'active-turn').length, 0, 'proved prompt hooks must not write a v2 active mirror');
   assert.ok(records.some((record) => record.sessionId === 'session-a' && record.permissionMode === 'plan'));
   assert.ok(records.some((record) => record.sessionId === 'session-b' && record.permissionMode === 'dontAsk'));
   assert.ok(records.filter((record) => record.kind === 'baseline').every((record) => /^[a-f0-9]{64}$/.test(record.fingerprint)));
   const allStored = (await Promise.all((await jsonFiles(data)).map((path) => readFile(path, 'utf8')))).join('\n');
   assert.doesNotMatch(allStored, /ZCODE_CALLER_CONTEXT/);
+});
+
+test('UserPromptSubmit publishes one lifecycle-backed turn that can preview a linked worktree created afterward', async () => {
+  const { cwd, data, env } = await workspace();
+  const sessionId = 'late-bind-hook-session';
+  const started = await runHook('session-lifecycle-hook.mjs', {
+    session_id: sessionId, cwd, hook_event_name: 'SessionStart', transcript_path: null,
+    model: 'gpt', permission_mode: 'acceptEdits', source: 'startup',
+  }, env);
+  assert.equal(started.code, 0, started.stderr);
+  const prompt = await runHook('user-prompt-hook.mjs', {
+    session_id: sessionId, turn_id: 'late-bind-hook-turn', cwd,
+    hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt',
+    permission_mode: 'acceptEdits', prompt: 'repair the linked worktree',
+  }, env);
+  assertRescueLauncherContext(prompt);
+
+  const linked = await addLinkedWorktree(cwd);
+  const identity = createIdentityStore({ dataRoot: data });
+  const preview = await identity.resolveActiveTurn({
+    sessionId, workspace: linked, workspaceBinding: 'preview',
+  });
+  assert.equal(preview.workspace, await realpath(linked));
+  assert.equal(preview.originWorkspace, await realpath(cwd));
+  assert.equal(preview.executionWorkspace, null);
+  assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: cwd })).turnId, 'late-bind-hook-turn');
 });
 
 test('owned parent turns receive one task-free launcher descriptor from this plugin instance only', async () => {
@@ -362,8 +401,11 @@ test('SessionEnd removes only its session contexts and leaves sibling jobs/sessi
   }
   const ended = await runHook('session-end-hook.mjs', { session_id: 'a', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
   assert.equal(ended.code, 0); assert.equal(ended.stdout, '');
-  const contents = (await Promise.all((await jsonFiles(data)).map((path) => readFile(path, 'utf8')))).join('\n');
-  assert.doesNotMatch(contents, /"sessionId": "a"/); assert.match(contents, /"sessionId": "b"/);
+  const records = await Promise.all((await jsonFiles(data)).map(async (path) => JSON.parse(await readFile(path, 'utf8'))));
+  const endedRecords = records.filter((record) => record.sessionId === 'a');
+  assert.equal(endedRecords.length, 1, 'ended v3 sessions retain only their revoking lifecycle tombstone');
+  assert.equal(endedRecords[0].kind, 'identity-session'); assert.equal(typeof endedRecords[0].endedAt, 'string');
+  assert.ok(records.some((record) => record.sessionId === 'b' && record.kind === 'active-turn'));
   const inventedModel = await runHook('session-end-hook.mjs', { session_id: 'b', cwd, hook_event_name: 'SessionEnd', transcript_path: null, model: 'gpt', reason: 'other' }, env); assert.notEqual(inventedModel.code, 0, 'SessionEnd must keep an exact native field contract');
 });
 
@@ -635,6 +677,24 @@ test('Stop suppresses continuation, forwarding and external sessions before star
 });
 
 test('prompt, Root Stop, and SessionEnd clean only their exact prepared Rescue lifecycle', async (t) => {
+  await t.test('new proved prompt revokes authority before cleaning the replaced bound target preparation', async () => {
+    const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); const prepared = createRescuePreparationStore({ dataRoot: data });
+    const sessionId = 'bound-replacement-owner';
+    await runHook('session-lifecycle-hook.mjs', { session_id: sessionId, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
+    const first = await runHook('user-prompt-hook.mjs', { session_id: sessionId, turn_id: 'old-bound-turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: '$zcode:rescue old bound objective' }, env);
+    assert.equal(first.code, 0, first.stderr);
+    const target = await addLinkedWorktree(cwd, 'bound-replacement-target');
+    const caller = await identity.resolveActiveTurn({ sessionId, workspace: target, workspaceBinding: 'claim' });
+    await prepared.save({ ...caller, recordedPrompt: caller.prompt, envelope: { version: 1, source: 'explicit', task: 'old bound objective', options: {} } });
+    const replacedGeneration = caller.generationId;
+
+    const next = await runHook('user-prompt-hook.mjs', { session_id: sessionId, turn_id: 'new-root-turn', cwd, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: 'new root objective' }, env);
+    assert.equal(next.code, 0, next.stderr);
+    const current = await identity.resolveActiveTurn({ sessionId, workspace: cwd, workspaceBinding: 'preview' });
+    assert.notEqual(current.generationId, replacedGeneration); assert.equal(current.executionWorkspace, null);
+    await assert.rejects(prepared.consume({ sessionId, turnId: 'old-bound-turn', workspace: target, permissionMode: 'default', executorAgentId: 'old-child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
+  });
+
   await t.test('new top-level prompt removes only older turns in the same session and workspace', async () => {
     const { cwd, data, env } = await workspace(); const identity = createIdentityStore({ dataRoot: data }); const prepared = createRescuePreparationStore({ dataRoot: data });
     for (const sessionId of ['owner', 'sibling']) await runHook('session-lifecycle-hook.mjs', { session_id: sessionId, cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);

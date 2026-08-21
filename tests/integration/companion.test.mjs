@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -15,6 +15,7 @@ import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
+import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparation.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
@@ -54,6 +55,29 @@ async function fixture() {
   const caller = await identity.createCallerContext({ sessionId: 'codex-session', turnId: 'turn-1', workspace, permissionMode: 'workspace-write' });
   const env = { ...process.env, ZCODE_DATA_ROOT: dataRoot, ZCODE_PATH: fake };
   return { caller, dataRoot, directory, env, identity, workspace };
+}
+
+/** @param {string} workspace @param {string} directory @param {string} [name] */
+async function addLinkedWorktree(workspace, directory, name = 'late-bind-companion-target') {
+  const target = join(directory, 'linked-worktree');
+  const result = await run('git', ['worktree', 'add', '-q', '-b', name, target], { cwd: workspace });
+  assert.equal(result.code, 0, result.stderr);
+  return target;
+}
+
+/** @param {any} context @param {{sessionId:string,turnId:string,permissionMode:string,prompt:string}} input */
+async function recordRealParentTurn(context, input) {
+  const hookEnv = { ...context.env, PLUGIN_ROOT: root };
+  const started = await runChild(process.execPath, [join(root, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: context.workspace, env: hookEnv, ordinaryInput: true,
+    input: { session_id: input.sessionId, cwd: context.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: input.permissionMode, source: 'startup' },
+  });
+  assert.equal(started.code, 0, started.stderr || started.stdout);
+  const prompted = await runChild(process.execPath, [join(root, 'hooks', 'user-prompt-hook.mjs')], {
+    cwd: context.workspace, env: hookEnv, ordinaryInput: true,
+    input: { session_id: input.sessionId, turn_id: input.turnId, cwd: context.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: input.permissionMode, prompt: input.prompt },
+  });
+  assert.equal(prompted.code, 0, prompted.stderr || prompted.stdout);
 }
 
 /** @param {string} command @param {string[]} args @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:unknown,rawInput?:string}} [options] */
@@ -392,6 +416,118 @@ test('role-status rescue is bounded and returns before caller consumption, recon
   });
   assert.deepEqual(output, { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
   assert.equal(renderOutput(output), '{"type":"role-status","role":"zcode-rescue","status":"ready"}\n');
+});
+
+test('linked worktree Role preview stays read-only and private prepare binds before TTY readiness', async () => {
+  const context = await fixture();
+  const sessionId = 'late-bind-companion-parent';
+  await recordRealParentTurn(context, {
+    sessionId, turnId: 'late-bind-companion-turn', permissionMode: 'acceptEdits',
+    prompt: '$zcode:rescue --fresh --wait repair the linked worktree',
+  });
+  const linked = await addLinkedWorktree(context.workspace, context.directory);
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+
+  const codexHome = join(context.directory, 'installed-late-bind-codex-home');
+  const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+  await mkdir(installed, { recursive: true });
+  for (const name of ['agents', 'hooks', 'schemas', 'scripts']) await cp(join(root, name), join(installed, name), { recursive: true });
+  await cp(join(root, 'package.json'), join(installed, 'package.json'));
+  await symlink(dependencyNodeModules, join(installed, 'node_modules'), 'dir');
+  const canonicalDataRoot = await realpath(context.dataRoot);
+  const configFile = join(canonicalDataRoot, 'config.toml');
+  const rolePaths = managedRolePaths(canonicalDataRoot);
+  const installedRoot = await realpath(installed);
+  const roleBytes = Buffer.from(renderManagedRescueRole({ template: await readFile(join(installed, 'agents', 'zcode-rescue.toml.template'), 'utf8'), pluginRoot: installedRoot }));
+  await mkdir(dirname(rolePaths.rolePath), { recursive: true });
+  await writeFile(rolePaths.rolePath, roleBytes);
+  await writeFile(rolePaths.receiptPath, `${JSON.stringify({
+    schemaVersion: '1.0.0', roleName: 'zcode-rescue',
+    plugin: { identity: 'zcode@vitry', version: '0.1.0', root: installedRoot },
+    configTarget: { filePath: configFile },
+    role: { path: rolePaths.rolePath, schemaVersion: 1, sha256: createHash('sha256').update(roleBytes).digest('hex') },
+    mutatedAt: new Date().toISOString(),
+  }, null, 2)}\n`);
+  const registration = { description: MANAGED_ROLE_DESCRIPTION, config_file: rolePaths.rolePath };
+  const configured = { features: { multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { 'zcode-rescue': registration } };
+  const config = { config: configured, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: configured }] };
+  const [activeName] = await readdir(join(context.dataRoot, 'identity-lifecycle', 'active-turns'));
+  assert.ok(activeName);
+  const activePath = join(context.dataRoot, 'identity-lifecycle', 'active-turns', activeName);
+  const activeBytesBeforeRole = await readFile(activePath);
+  const activeStatBeforeRole = await stat(activePath);
+  const workspacePartitionsBeforeRole = (await readdir(join(context.dataRoot, 'workspaces'))).sort();
+  /** @param {string} cwd @param {string} [threadId] */
+  const installedRole = (cwd, threadId = sessionId) => run(process.execPath, [join(installed, 'scripts', 'zcode-companion.mjs'), 'role-status', 'rescue'], {
+    cwd,
+    env: {
+      ...context.env, CODEX_HOME: codexHome,
+      CODEX_APP_SERVER_PATH: process.execPath,
+      CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+      FAKE_CODEX_CONFIG_RESULT: JSON.stringify(config),
+      CODEX_THREAD_ID: threadId,
+    },
+  });
+  const roleResult = await installedRole(linked);
+  assert.equal(roleResult.code, 0, roleResult.stderr || roleResult.stdout);
+  const roleOutput = JSON.parse(roleResult.stdout);
+  assert.deepEqual(roleOutput, { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.deepEqual(await readFile(activePath), activeBytesBeforeRole);
+  assert.equal((await stat(activePath)).mtimeMs, activeStatBeforeRole.mtimeMs);
+  assert.deepEqual((await readdir(join(context.dataRoot, 'workspaces'))).sort(), workspacePartitionsBeforeRole);
+  assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: linked, workspaceBinding: 'preview' })).executionWorkspace, null);
+
+  const unrelated = join(context.directory, 'unrelated-repo');
+  const nonGit = join(context.directory, 'non-git-directory');
+  await mkdir(unrelated); await mkdir(nonGit);
+  assert.equal((await run('git', ['init', '-q'], { cwd: unrelated })).code, 0);
+  for (const [name, result] of [
+    ['unrelated', await installedRole(unrelated)],
+    ['non-git', await installedRole(nonGit)],
+    ['child ambient', await installedRole(linked, 'late-bind-child-thread')],
+  ]) {
+    assert.equal(result.code, 0, `${name}: ${result.stderr || result.stdout}`);
+    assert.deepEqual(JSON.parse(result.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'caller-unavailable', remedy: 'Retry from an active owned parent turn.' }, name);
+    assert.ok(Buffer.byteLength(result.stdout) < 1024, name);
+    assert.doesNotMatch(result.stdout, /late-bind|linked-worktree|unrelated-repo|non-git-directory|repair the linked worktree|ACTIVE_TURN/u, name);
+  }
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
+    cwd: linked, env: { ...context.env, CODEX_THREAD_ID: 'late-bind-child-thread' }, input: new PassThrough(),
+  }), { code: 'ACTIVE_TURN_NOT_FOUND' });
+
+  const preparation = new PassThrough();
+  const ttyPreparation = /** @type {PassThrough & {isTTY:boolean,setRawMode:(enabled:boolean)=>void}} */ (preparation);
+  ttyPreparation.isTTY = true;
+  /** @type {boolean[]} */ const rawModes = [];
+  ttyPreparation.setRawMode = (enabled) => { rawModes.push(enabled); };
+  preparation.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'repair the linked worktree', options: { execution: 'foreground', resume: 'fresh' } })}\n`);
+  let readyCount = 0;
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: linked, env: { ...context.env, CODEX_THREAD_ID: sessionId }, input: preparation,
+    preparationTransport: { writeReady: async () => {
+      readyCount += 1;
+      const bound = await identity.resolveActiveTurn({ sessionId, workspace: linked, workspaceBinding: 'execution' });
+      assert.equal(bound.workspace, await realpath(linked));
+      assert.equal(bound.executionWorkspace, await realpath(linked));
+    } },
+  });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue' });
+  assert.equal(readyCount, 1);
+  assert.deepEqual(rawModes, [true, false]);
+  assert.equal((await createRescuePreparationStore({ dataRoot: context.dataRoot }).consume({
+    sessionId, turnId: 'late-bind-companion-turn', workspace: linked,
+    permissionMode: 'acceptEdits', executorAgentId: 'late-bind-test-child',
+  })).workspace, await realpath(linked));
+
+  const linkedB = join(context.directory, 'linked-worktree-b');
+  assert.equal((await run('git', ['worktree', 'add', '-q', '-b', 'late-bind-companion-target-b', linkedB], { cwd: context.workspace })).code, 0);
+  const boundBytesBeforeLoser = await readFile(activePath);
+  const loserRole = await installedRole(linkedB);
+  assert.deepEqual(JSON.parse(loserRole.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'caller-unavailable', remedy: 'Retry from an active owned parent turn.' });
+  assert.deepEqual(await readFile(activePath), boundBytesBeforeLoser);
+  const winnerRole = await installedRole(linked);
+  assert.deepEqual(JSON.parse(winnerRole.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  assert.equal((await identity.resolveActiveTurn({ sessionId, workspace: linked, workspaceBinding: 'execution' })).workspace, await realpath(linked));
 });
 
 test('role-status rescue maps every non-ready managed state to the exact setup remedy', async () => {

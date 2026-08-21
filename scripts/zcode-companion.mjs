@@ -70,8 +70,13 @@ export async function runCompanion(argv, runtime = {}) {
       if (runtime.dependencies?.inspectRescueRoleStatus) { inspectionStarted = true; inspection = await runtime.dependencies.inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, env }); }
       else {
         if (typeof env.CODEX_THREAD_ID !== 'string' || !env.CODEX_THREAD_ID) throw new PluginError('AMBIENT_THREAD_UNAVAILABLE', 'The ambient Codex thread is unavailable.', { category: 'authorization', remedy: 'Invoke Rescue from one active Codex parent turn.' });
-        const activeTurn = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: env.CODEX_THREAD_ID, workspace: cwd });
-        const session = await resolveRecordedSessionStart(dataRoot, cwd, activeTurn.sessionId);
+        const installed = pluginData.provenance === 'marketplace';
+        const activeTurn = await createIdentityStore({ dataRoot }).resolveActiveTurn({
+          sessionId: env.CODEX_THREAD_ID,
+          workspace: cwd,
+          ...(installed ? { workspaceBinding: 'preview' } : {}),
+        });
+        const session = await resolveRecordedSessionStart(dataRoot, installed ? activeTurn.originWorkspace : cwd, activeTurn.sessionId);
         inspectionStarted = true;
         inspection = await inspectRescueRoleStatus({ pluginRoot: activePluginRoot, dataRoot, cwd, sessionStartedAt: session.startedAt, env, codex: codexAppServerOptions(env, cwd) });
       }
@@ -134,7 +139,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
   const ambientThreadId = env.CODEX_THREAD_ID; if (typeof ambientThreadId !== 'string' || !ambientThreadId) throw new PluginError('THREAD_ID_REQUIRED', 'The active Codex thread identity is unavailable.', { category: 'authorization', remedy: 'Invoke this installed skill from an active Codex turn.' });
   const identity = createIdentityStore({ dataRoot });
   if (prepareInvocation) {
-    const caller = await identity.resolveActiveTurn({ sessionId: ambientThreadId, workspace: cwd });
+    const caller = await identity.resolveActiveTurn({ sessionId: ambientThreadId, workspace: cwd, workspaceBinding: 'claim' });
     const input = runtime.input ?? process.stdin;
     return withPrivatePreparationTransport(input, runtime.preparationTransport, async () => {
       const envelope = await readRescuePreparationFrame(input, runtime.signal);
