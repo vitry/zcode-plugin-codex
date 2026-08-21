@@ -359,6 +359,87 @@ test('pending executor route crash is short-lived, retryable, and cleanup remove
   await cleanupSession(data, target, start.session_id); await assert.rejects(resolveForwardingExecutor(data, target, start.agent_id), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
 });
 
+test('expired pending retry refreshes its lease but cannot publish after parent authority is revoked', async (t) => {
+  const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, 'pending-route-expired-retry');
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data }); const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await identity.beginCallerTurn({ sessionId: 'expired-retry-parent', turnId: 'expired-retry-parent-turn', workspace: origin, permissionMode: 'workspace-write', prompt: 'expired retry', ...proof });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'expired-retry-parent', workspace: target, workspaceBinding: 'claim' });
+  const start = { session_id: caller.sessionId, turn_id: 'expired-retry-child-turn', cwd: origin, hook_event_name: 'SubagentStart', agent_id: 'expired-retry-child', agent_type: 'zcode-rescue' };
+  await assert.rejects(markForwarding(data, start, caller, { publicationSeam: (point) => { if (point === 'after-route-pending') throw new Error('initial pending crash'); } }), /initial pending crash/);
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: origin }); const directory = join(storage.directory, 'hook-state');
+  const routePath = join(directory, (await readdir(directory)).find((name) => name.startsWith('route-'))); const stale = JSON.parse(await readFile(routePath, 'utf8'));
+  const staleAt = new Date(Date.now() - 31_000).toISOString(); await writeFile(routePath, JSON.stringify({ ...stale, createdAt: staleAt, updatedAt: staleAt }));
+  let releasePending; let pendingResolve; const pending = new Promise((resolvePromise) => { pendingResolve = resolvePromise; }); const pendingBlocker = new Promise((resolvePromise) => { releasePending = resolvePromise; });
+  let releaseExecutor; let executorResolve; const executor = new Promise((resolvePromise) => { executorResolve = resolvePromise; }); const executorBlocker = new Promise((resolvePromise) => { releaseExecutor = resolvePromise; });
+  const retry = markForwarding(data, start, caller, { publicationSeam: async (point) => {
+    if (point === 'after-route-pending') { pendingResolve(); await pendingBlocker; }
+    if (point === 'after-executor-write') { executorResolve(); await executorBlocker; }
+  } });
+  await pending;
+  const refreshed = await resolveForwardingRoute(data, origin, start.session_id, start.turn_id); assert.ok(Date.parse(refreshed.updatedAt) > Date.parse(staleAt));
+  assert.equal(await isForwarding(data, { session_id: start.session_id, turn_id: start.turn_id, cwd: origin }), true);
+  assert.deepEqual(await runStopReviewGate({ session_id: start.session_id, turn_id: start.turn_id, cwd: origin, stop_hook_active: false }, { dataRoot: data, env: {}, timeoutMs: 1 }), {});
+  releasePending(); await executor;
+  await identity.endCallerTurn({ sessionId: caller.sessionId, turnId: caller.turnId, workspace: origin });
+  releaseExecutor(); await assert.rejects(retry, { code: 'EXECUTOR_PARENT_TURN_MISMATCH' });
+  assert.equal((await resolveForwardingRoute(data, origin, start.session_id, start.turn_id)).state, 'stopped');
+  assert.equal((await resolveForwardingExecutor(data, target, start.agent_id, { continuation: true, durableProvenance: true })).active, false);
+});
+
+test('legacy pending authority is proved without a generation and Stop still wins the publication race', async () => {
+  const { cwd, data } = await workspace(); const identity = createIdentityStore({ dataRoot: data });
+  await identity.beginCallerTurn({ sessionId: 'legacy-pending-parent', turnId: 'legacy-pending-parent-turn', workspace: cwd, permissionMode: 'workspace-write', prompt: 'legacy pending' });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'legacy-pending-parent', workspace: cwd }); assert.equal(caller.generationId, undefined);
+  const start = { session_id: caller.sessionId, turn_id: 'legacy-pending-child-turn', cwd, hook_event_name: 'SubagentStart', agent_id: 'legacy-pending-child', agent_type: 'zcode-rescue' };
+  let release; let pendingResolve; const pending = new Promise((resolvePromise) => { pendingResolve = resolvePromise; }); const blocker = new Promise((resolvePromise) => { release = resolvePromise; });
+  const starting = markForwarding(data, start, caller, { publicationSeam: async (point) => { if (point === 'after-route-pending') { pendingResolve(); await blocker; } } });
+  await pending; assert.equal(await isForwarding(data, { session_id: start.session_id, turn_id: start.turn_id, cwd }), true);
+  await markForwarding(data, { ...start, hook_event_name: 'SubagentStop' }); release(); await starting;
+  assert.equal((await resolveForwardingRoute(data, cwd, start.session_id, start.turn_id)).state, 'stopped');
+  assert.equal((await resolveForwardingExecutor(data, cwd, start.agent_id, { continuation: true, durableProvenance: true })).active, false);
+});
+
+test('pending target rewrite neither suppresses Root Stop nor leaves an active executor', async (t) => {
+  const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, 'route-target-original'); const forgedTarget = await addLinkedWorktree(origin, 'route-target-forged');
+  t.after(() => Promise.all([target, forgedTarget].map((path) => rm(path, { recursive: true, force: true }))));
+  const identity = createIdentityStore({ dataRoot: data }); const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await identity.beginCallerTurn({ sessionId: 'target-rewrite-parent', turnId: 'target-rewrite-parent-turn', workspace: origin, permissionMode: 'workspace-write', prompt: 'target rewrite', ...proof });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'target-rewrite-parent', workspace: target, workspaceBinding: 'claim' });
+  const start = { session_id: caller.sessionId, turn_id: 'target-rewrite-child-turn', cwd: origin, hook_event_name: 'SubagentStart', agent_id: 'target-rewrite-child', agent_type: 'zcode-rescue' };
+  let release; let writtenResolve; const written = new Promise((resolvePromise) => { writtenResolve = resolvePromise; }); const blocker = new Promise((resolvePromise) => { release = resolvePromise; });
+  const starting = markForwarding(data, start, caller, { publicationSeam: async (point) => { if (point === 'after-executor-write') { writtenResolve(); await blocker; } } });
+  await written;
+  const storage = await resolveWorkspaceStorage({ dataRoot: data, workspace: origin }); const directory = join(storage.directory, 'hook-state'); const names = await readdir(directory);
+  const routePath = join(directory, names.find((name) => name.startsWith('route-'))); const markerPath = join(directory, names.find((name) => name.startsWith('forward-'))); const canonicalForged = await realpath(forgedTarget);
+  await writeFile(routePath, JSON.stringify({ ...JSON.parse(await readFile(routePath, 'utf8')), targetWorkspace: canonicalForged }));
+  await writeFile(markerPath, JSON.stringify({ ...JSON.parse(await readFile(markerPath, 'utf8')), targetWorkspace: canonicalForged }));
+  assert.equal(await isForwarding(data, { session_id: start.session_id, turn_id: start.turn_id, cwd: origin }), false);
+  release(); await assert.rejects(starting, { code: 'EXECUTOR_ROUTE_INVALID' });
+  assert.equal((await resolveForwardingRoute(data, origin, start.session_id, start.turn_id)).state, 'stopped');
+  const targetStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: target }); const targetDirectory = join(targetStorage.directory, 'hook-state');
+  const rawExecutor = JSON.parse(await readFile(join(targetDirectory, (await readdir(targetDirectory)).find((name) => name.startsWith('executor-'))), 'utf8')); assert.equal(rawExecutor.active, false);
+  await assert.rejects(resolveForwardingExecutor(data, target, start.agent_id), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+});
+
+test('active publication rejects a replacement generation that moves execution worktrees', async (t) => {
+  const { cwd: origin, data } = await workspace(); const firstTarget = await addLinkedWorktree(origin, 'publication-target-first'); const replacementTarget = await addLinkedWorktree(origin, 'publication-target-replacement');
+  t.after(() => Promise.all([firstTarget, replacementTarget].map((path) => rm(path, { recursive: true, force: true }))));
+  const identity = createIdentityStore({ dataRoot: data }); const proof = { sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true };
+  await identity.beginCallerTurn({ sessionId: 'publication-replacement-parent', turnId: 'same-publication-turn', workspace: origin, permissionMode: 'workspace-write', prompt: 'first generation', ...proof });
+  const first = await identity.resolveActiveTurn({ sessionId: 'publication-replacement-parent', workspace: firstTarget, workspaceBinding: 'claim' });
+  const start = { session_id: first.sessionId, turn_id: 'publication-replacement-child-turn', cwd: origin, hook_event_name: 'SubagentStart', agent_id: 'publication-replacement-child', agent_type: 'zcode-rescue' };
+  let release; let writtenResolve; const written = new Promise((resolvePromise) => { writtenResolve = resolvePromise; }); const blocker = new Promise((resolvePromise) => { release = resolvePromise; });
+  const starting = markForwarding(data, start, first, { publicationSeam: async (point) => { if (point === 'after-executor-write') { writtenResolve(); await blocker; } } });
+  await written;
+  await identity.beginCallerTurn({ sessionId: first.sessionId, turnId: first.turnId, workspace: origin, permissionMode: first.permissionMode, prompt: 'replacement generation', ...proof });
+  const replacement = await identity.resolveActiveTurn({ sessionId: first.sessionId, workspace: replacementTarget, workspaceBinding: 'claim' }); assert.notEqual(replacement.generationId, first.generationId);
+  release(); await assert.rejects(starting, { code: 'EXECUTOR_PARENT_TURN_MISMATCH' });
+  assert.equal((await resolveForwardingRoute(data, origin, start.session_id, start.turn_id)).state, 'stopped');
+  const targetStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: firstTarget }); const targetDirectory = join(targetStorage.directory, 'hook-state');
+  const rawExecutor = JSON.parse(await readFile(join(targetDirectory, (await readdir(targetDirectory)).find((name) => name.startsWith('executor-'))), 'utf8')); assert.equal(rawExecutor.active, false);
+});
+
 test('executor uniqueness is scoped to parent generation while duplicate same-generation children remain ambiguous', async (t) => {
   const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, 'executor-generation-scope');
   t.after(() => rm(target, { recursive: true, force: true }));
