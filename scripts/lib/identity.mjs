@@ -151,7 +151,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         }
         await withFileLock(storage.lockPath, async () => {
           await removeCallerRecords(storage.callersDirectory, (current) => current.sessionId === input.sessionId);
-          await atomicWriteJson(join(storage.callersDirectory, `${digest}.json`), record);
+          await atomicWriteJson(join(storage.callersDirectory, `${digest}.json`), provedCallerRecord(record, generationId));
           await publicationSeam?.('after-caller-write');
           const index = originIndexRecord(input.sessionId, generationId, storage.workspacePath);
           await atomicWriteJson(join(storage.originIndexesDirectory, `${index.key}.json`), index);
@@ -297,6 +297,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
           else {
             if (candidate !== active.originWorkspace && candidate !== active.executionWorkspace) throw workspaceIneligible();
             await unlink(state.activePath);
+            await publicationSeam?.('after-active-revoke');
             globalResult = { matched: true, originWorkspace: active.originWorkspace, executionWorkspace: active.executionWorkspace };
           }
         } else globalResult = { matched: false, originWorkspace: null, executionWorkspace: null };
@@ -320,11 +321,14 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       const global = await globalIdentityStorage(dataRoot);
       return withFileLock(sessionLockPath(global, discovered.sessionId), async () => {
         const state = await readGlobalState(global, discovered.sessionId, false);
-        if (state !== null && state.ledger.endedAt !== null) throw invalidCallerContext();
+        if (state !== null && (state.ledger.endedAt !== null || state.active === null || state.active.status !== 'active')) {
+          throw invalidCallerContext();
+        }
         return withFileLock(storage.lockPath, async () => {
           const current = await readCallerContextRecord(storage, digest, expected);
           if (!safeEqual(current.sessionId, discovered.sessionId)) throw invalidCallerContext();
-          return publicRecord(current);
+          if (state === null ? isProvedCallerRecord(current) : !callerMatchesActive(current, state.active)) throw invalidCallerContext();
+          return publicCallerRecord(current);
         });
       });
     },
@@ -837,6 +841,11 @@ function callerRecord(input, workspacePath) {
   return { token, digest, record: { digest, sessionId: input.sessionId, turnId: input.turnId, workspace: workspacePath, permissionMode: input.permissionMode, createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + CALLER_LIFETIME_MS).toISOString() } };
 }
 
+/** @param {any} record @param {string} generationId */
+function provedCallerRecord(record, generationId) {
+  return { version: 1, kind: 'caller-context', ...record, generationId };
+}
+
 /** @param {CallerContextInput} input @param {string} workspacePath */
 function activeTurnRecord(input, workspacePath) {
   const createdAt = toTimestamp(input.now); const key = activeTurnKey(input.sessionId, workspacePath);
@@ -994,11 +1003,32 @@ function invalidAuthorizationRecord(kind) {
 }
 
 /** @param {any} record */
-function isCallerRecord(record) {
+function hasCallerFields(record) {
   return isPlainObject(record) && isDigest(record.digest) && isNonEmptyString(record.sessionId)
     && isNonEmptyString(record.turnId) && isNonEmptyString(record.workspace)
     && PERMISSION_MODES.includes(record.permissionMode) && isDate(record.createdAt)
     && isDate(record.expiresAt) && Date.parse(record.expiresAt) > Date.parse(record.createdAt);
+}
+
+const PROVED_CALLER_KEYS = ['createdAt', 'digest', 'expiresAt', 'generationId', 'kind', 'permissionMode', 'sessionId', 'turnId', 'version', 'workspace'];
+
+/** @param {any} record */
+function isProvedCallerRecord(record) {
+  return hasCallerFields(record) && hasExactKeys(record, PROVED_CALLER_KEYS)
+    && record.version === 1 && record.kind === 'caller-context' && isDigest(record.generationId);
+}
+
+/** @param {any} record */
+function isCallerRecord(record) {
+  return hasCallerFields(record) && (isProvedCallerRecord(record)
+    || !('version' in record) && !('kind' in record) && !('generationId' in record));
+}
+
+/** @param {any} caller @param {any} active */
+function callerMatchesActive(caller, active) {
+  return isProvedCallerRecord(caller) && caller.sessionId === active.sessionId
+    && caller.turnId === active.turnId && caller.workspace === active.originWorkspace
+    && caller.permissionMode === active.permissionMode && caller.generationId === active.generationId;
 }
 
 const CURRENT_ACTIVE_TURN_KEYS = ['createdAt', 'key', 'kind', 'permissionMode', 'prompt', 'sessionId', 'turnId', 'version', 'workspace'];
@@ -1174,6 +1204,15 @@ function publicRecord(record) {
   delete visible.digest;
   delete visible.key;
   return visible;
+}
+
+/** @param {any} record */
+function publicCallerRecord(record) {
+  if (!isProvedCallerRecord(record)) return publicRecord(record);
+  return {
+    sessionId: record.sessionId, turnId: record.turnId, workspace: record.workspace,
+    permissionMode: record.permissionMode, createdAt: record.createdAt, expiresAt: record.expiresAt,
+  };
 }
 
 /** @param {any} record @param {string} workspace @param {boolean} bindingMetadata */

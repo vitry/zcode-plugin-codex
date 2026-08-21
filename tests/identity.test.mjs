@@ -56,6 +56,13 @@ async function activeTurnPath(dataRoot, workspace, sessionId) {
   return join(storage.directory, 'identity', 'active-turns', `${key}.json`);
 }
 
+/** @param {string} dataRoot @param {string} workspace @param {string} token */
+async function callerContextPath(dataRoot, workspace, token) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const digest = createHash('sha256').update(token).digest('hex');
+  return join(storage.directory, 'identity', 'callers', `${digest}.json`);
+}
+
 /** @param {string} root */
 async function linkedWorktreeFixture(root) {
   const origin = join(root, 'origin');
@@ -250,6 +257,15 @@ test('session proof creates exact private global v3 identity records without cha
     sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
     knownWorkspaces: [originPath], endedAt: null, updatedAt: '<time>',
   });
+  const caller = JSON.parse(await readFile(await callerContextPath(dataRoot, origin, token), 'utf8'));
+  assert.deepEqual(Object.keys(caller).sort(), [
+    'createdAt', 'digest', 'expiresAt', 'generationId', 'kind', 'permissionMode',
+    'sessionId', 'turnId', 'version', 'workspace',
+  ]);
+  assert.equal(caller.version, 1); assert.equal(caller.kind, 'caller-context');
+  assert.equal(caller.generationId, active.generationId); assert.equal('token' in caller, false);
+  const consumed = await identity.consumeCallerContext(token, { workspace: origin, now });
+  assert.equal('version' in consumed, false); assert.equal('generationId' in consumed, false);
   assert.equal((await stat(dirname(activePath))).mode & 0o777, 0o700);
   assert.equal((await stat(activePath)).mode & 0o777, 0o600);
   assert.equal((await stat(sessionPath)).mode & 0o777, 0o600);
@@ -595,6 +611,66 @@ test('an ended session ledger revokes caller tokens before workspace cleanup com
     createIdentityStore({ dataRoot }).consumeCallerContext(token, { workspace: origin }),
     { code: 'AUTHORIZATION_RECORD_INVALID' },
   );
+});
+
+test('a newer proof from another origin cannot revive a token left behind by failed cleanup', async () => {
+  const { dataRoot, workspaceA, workspaceB } = await fixture();
+  const identity = createIdentityStore({ dataRoot });
+  const oldToken = await identity.beginCallerTurn({
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default',
+    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+  });
+  await assert.rejects(createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => {
+      if (point === 'after-cleanup-tombstone') throw new Error('injected after tombstone');
+    },
+  }).cleanupSession(workspaceA, 'session-a'), /injected after tombstone/);
+  const newToken = await identity.beginCallerTurn({
+    sessionId: 'session-a', turnId: 'turn-b', workspace: workspaceB, permissionMode: 'default',
+    sessionStartedAt: '2026-08-20T12:01:00.000Z', sessionSource: 'resume',
+  });
+  await assert.rejects(identity.consumeCallerContext(oldToken, { workspace: workspaceA }), { code: 'CALLER_CONTEXT_INVALID' });
+  assert.equal((await identity.consumeCallerContext(newToken, { workspace: workspaceB })).turnId, 'turn-b');
+});
+
+test('a newer same-origin generation cannot authorize a restored old caller token', async () => {
+  const { dataRoot, workspaceA } = await fixture(); const identity = createIdentityStore({ dataRoot });
+  const base = { sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default' };
+  const oldToken = await identity.beginCallerTurn({
+    ...base, sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+  });
+  const oldPath = await callerContextPath(dataRoot, workspaceA, oldToken);
+  const oldRecord = await readFile(oldPath, 'utf8');
+  await assert.rejects(createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => {
+      if (point === 'after-cleanup-tombstone') throw new Error('injected after tombstone');
+    },
+  }).cleanupSession(workspaceA, 'session-a'), /injected after tombstone/);
+  const newToken = await identity.beginCallerTurn({
+    ...base, sessionStartedAt: '2026-08-20T12:01:00.000Z', sessionSource: 'resume',
+  });
+  await writeFile(oldPath, oldRecord, { mode: 0o600 });
+  await assert.rejects(identity.consumeCallerContext(oldToken, { workspace: workspaceA }), { code: 'CALLER_CONTEXT_INVALID' });
+  assert.equal((await identity.consumeCallerContext(newToken, { workspace: workspaceA })).turnId, 'turn-a');
+});
+
+test('revoking the global active turn invalidates its caller before token deletion completes', async () => {
+  const { dataRoot, workspaceA } = await fixture();
+  const input = {
+    sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA, permissionMode: 'default',
+    sessionStartedAt: '2026-08-20T11:59:00.000Z', sessionSource: 'startup',
+  };
+  const token = await createIdentityStore({ dataRoot }).beginCallerTurn(input);
+  const ending = createIdentityStore({
+    dataRoot,
+    publicationSeam: async (point) => {
+      if (point === 'after-active-revoke') throw new Error('injected after active revoke');
+    },
+  });
+  await assert.rejects(ending.endCallerTurn({ sessionId: 'session-a', turnId: 'turn-a', workspace: workspaceA }), /injected after active revoke/);
+  await assert.rejects(createIdentityStore({ dataRoot }).consumeCallerContext(token, { workspace: workspaceA }), { code: 'CALLER_CONTEXT_INVALID' });
 });
 
 test('proved begin fencing prevents a delayed loser from deleting a returned winner token or index', async () => {
