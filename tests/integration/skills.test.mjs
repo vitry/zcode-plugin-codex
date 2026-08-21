@@ -204,12 +204,14 @@ test('private prepare transport enables raw mode before readiness and accepts on
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const input = new PassThrough(); const events = []; const task = '--fresh ; $(echo private)';
   input.isTTY = true; input.setRawMode = (enabled) => { events.push(`raw:${enabled}`); return input; };
   await identity.beginCallerTurn({ sessionId: 'transport-parent', turnId: 'transport-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${task}` });
-  const fallback = setTimeout(() => input.destroy(), 250); t.after(() => { clearTimeout(fallback); input.destroy(); });
+  let timeout;
+  t.after(() => { clearTimeout(timeout); input.destroy(); });
   const operation = runDirectInvocation(['prepare', 'rescue'], {
     cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'transport-parent' }, input,
     preparationTransport: { writeReady: (line) => { events.push(`ready:${line}`); input.write(`${JSON.stringify({ version: 1, source: 'explicit', task, options: { resume: 'fresh' } })}\n`); } },
   });
-  assert.deepEqual(await operation, { type: 'prepared', command: 'rescue' });
+  const bounded = Promise.race([operation, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('private preparation did not consume its LF frame')), process.platform === 'win32' ? 30_000 : 5_000); })]);
+  assert.deepEqual(await bounded, { type: 'prepared', command: 'rescue' }); clearTimeout(timeout);
   assert.deepEqual(events, ['raw:true', 'ready:{"type":"preparation-input-ready","command":"rescue"}\n', 'raw:false']);
   assert.equal(events.join('').includes(task), false); assert.equal(input.destroyed, false, 'one complete LF frame must not require or force EOF');
 });
