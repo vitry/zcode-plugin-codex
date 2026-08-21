@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -18,7 +19,6 @@ import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
 import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
-import { brokerEndpointFor } from '../../scripts/zcode-broker.mjs';
 import {
   assertCodexRescueDisplayName,
   CodexRescueEvidenceMismatchError,
@@ -682,6 +682,17 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
   }
 });
 
+test('installed broker oracle fixes endpoint and launch cwd contracts across POSIX and Windows', () => {
+  assert.equal(installedBrokerEndpointOracle({ platform: 'linux', dataRoot: '/oracle-data', workspace: '/oracle-workspace', uid: 501 }),
+    '/tmp/zcode-501/d07fa5b711f3b5301051242f97ddbd1b.sock');
+  assert.equal(installedBrokerEndpointOracle({ platform: 'win32', dataRoot: 'C:\\oracle-data', workspace: 'C:\\oracle-workspace', uid: 501 }),
+    '\\\\.\\pipe\\zcode-b86f3cfefc611380478c4ad8aa53889f');
+  assert.deepEqual(installedBrokerCwdOracle({ platform: 'linux', executionWorkspace: '/execution', canonicalTemp: '/temp' }),
+    { daemon: '/temp', protocol: '/execution' });
+  assert.deepEqual(installedBrokerCwdOracle({ platform: 'win32', executionWorkspace: 'C:\\execution', canonicalTemp: 'C:\\temp' }),
+    { daemon: 'C:\\temp', protocol: 'C:\\temp' });
+});
+
 test('installed continuation capture qualifies one parent turn from origin hooks into a linked execution worktree', async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-installed-worktree-capture-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
@@ -695,11 +706,17 @@ test('installed continuation capture qualifies one parent turn from origin hooks
     resolveWorkspaceStorage({ dataRoot: observerDataRoot, workspace: originWorkspace }),
     resolveWorkspaceStorage({ dataRoot: observerDataRoot, workspace: executionWorkspace }),
   ]);
+  const endpointInput = { platform: process.platform, dataRoot: observerDataRoot, workspace: executionWorkspace };
+  const brokerEndpoint = installedBrokerEndpointOracle(endpointInput);
+  const originBrokerEndpoint = installedBrokerEndpointOracle({ platform: process.platform, dataRoot: observerDataRoot, workspace: originWorkspace });
+  const wrongSharedEndpoint = installedBrokerEndpointOracle({ ...endpointInput, identity: 'wrong-shared' });
+  assert.notEqual(brokerEndpoint, originBrokerEndpoint);
+  const brokerCwds = installedBrokerCwdOracle({ platform: process.platform, executionWorkspace, canonicalTemp: await realpath(tmpdir()) });
   const observerExpected = { parentSessionId: '019fe6df-faa2-7851-8edb-55f1be7d5489', parentTurnId: 'turn-original', childThreadId: '019fe6e0-4764-7192-83ba-0b0cc2c48660',
     childTurnId: 'child-turn', originWorkspace, executionWorkspace, permissionMode: 'acceptEdits',
     ownerId: createHash('sha256').update(JSON.stringify(['zcode-owner-v1', '019fe6df-faa2-7851-8edb-55f1be7d5489'])).digest('hex'),
     originBrokerDirectory: join(observerOriginStorage.directory, 'broker'), executionBrokerDirectory: join(observerExecutionStorage.directory, 'broker'),
-    brokerEndpoint: brokerEndpointFor({ dataRoot: observerExecutionStorage.dataRootPath, workspace: observerExecutionStorage.workspacePath }), brokerProcessCwd: await realpath(tmpdir()) };
+    brokerEndpoint, originBrokerEndpoint, wrongSharedEndpoint, brokerProcessCwd: brokerCwds.daemon, protocolLaunchCwd: brokerCwds.protocol };
   assertInstalledWorkspaceBoundObservation(observed, observerExpected);
   assert.equal(observed.pending.status, 'pending');
   assert.equal(observed.unbound.status, 'active'); assert.equal(observed.unbound.executionWorkspace, null);
@@ -734,6 +751,14 @@ test('installed continuation capture qualifies one parent turn from origin hooks
     (value) => { value.brokerHistory[0].config.workspace = originWorkspace; },
     (value) => { value.brokerHistory[0].configBytes = value.brokerHistory[0].configBytes.replaceAll(executionWorkspace, originWorkspace); },
     (value) => { value.brokerHistory[0].config.launchCwd = originWorkspace; },
+    (value) => {
+      value.brokerHistory[0].config.endpoint = observerExpected.originBrokerEndpoint; value.brokerHistory[0].identity.endpoint = observerExpected.originBrokerEndpoint;
+      value.brokerHistory[0].configBytes = JSON.stringify(value.brokerHistory[0].config); value.brokerHistory[0].identityBytes = JSON.stringify(value.brokerHistory[0].identity);
+    },
+    (value) => {
+      value.brokerHistory[0].config.endpoint = observerExpected.wrongSharedEndpoint; value.brokerHistory[0].identity.endpoint = observerExpected.wrongSharedEndpoint;
+      value.brokerHistory[0].configBytes = JSON.stringify(value.brokerHistory[0].config); value.brokerHistory[0].identityBytes = JSON.stringify(value.brokerHistory[0].identity);
+    },
     (value) => { value.brokerHistory[0].configPath = join(value.brokerHistory[0].originBrokerDirectory, basename(value.brokerHistory[0].configPath)); },
     (value) => { value.brokerHistory[0].owners.sessions[value.brokerHistory[0].sessionId] = 'wrong-owner'; },
     (value) => { value.brokerHistory[0].owners.sessions = { 'wrong-session': observerExpected.ownerId }; },
@@ -1948,6 +1973,19 @@ function pathWithin(root, path) {
   return descendant === '' || descendant !== '..' && !descendant.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(descendant);
 }
 
+// Independent test oracle for the broker endpoint contract: SHA-256 over the
+// canonical data root, canonical workspace, and profile identity, truncated to
+// 128 bits and placed in the platform's fixed local endpoint namespace.
+function installedBrokerEndpointOracle({ platform, dataRoot, workspace, identity = 'shared', uid = typeof process.getuid === 'function' ? process.getuid() : 'user' }) {
+  const canonical = (path) => { try { return realpathSync.native(resolve(path)); } catch { return path; } };
+  const digest = createHash('sha256').update(JSON.stringify([canonical(dataRoot), canonical(workspace), identity])).digest('hex').slice(0, 32);
+  return platform === 'win32' ? `\\\\.\\pipe\\zcode-${digest}` : join('/tmp', `zcode-${uid}`, `${digest}.sock`);
+}
+
+function installedBrokerCwdOracle({ platform, executionWorkspace, canonicalTemp }) {
+  return { daemon: canonicalTemp, protocol: platform === 'win32' ? canonicalTemp : executionWorkspace };
+}
+
 async function recursiveFiles(directory, found = []) {
   let entries; try { entries = await readdir(directory, { withFileTypes: true }); } catch { return found; }
   for (const entry of entries) {
@@ -2338,6 +2376,7 @@ function assertInstalledWorkspaceBoundObservation(observed, expected) {
     && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
   const configKeys = ['endpoint', 'instanceId', 'brokerToken', 'launch', 'workspace', 'launchCwd', 'ownershipPath', 'identityPath', 'publishIdentityAfterListen'];
   const identityKeys = ['version', 'endpoint', 'pid', 'instanceId', 'brokerToken', 'createdAt'];
+  const canonicalConfigLaunchCwd = (() => { try { return realpathSync.native(resolve(broker.config?.launchCwd)); } catch { return broker.config?.launchCwd; } })();
   if (broker.originBrokerDirectory !== expected.originBrokerDirectory || broker.executionBrokerDirectory !== expected.executionBrokerDirectory
     || broker.configPath !== join(expected.executionBrokerDirectory, `config-${broker.config?.instanceId}.json`)
     || broker.identityPath !== join(expected.executionBrokerDirectory, 'identity.json')
@@ -2347,18 +2386,18 @@ function assertInstalledWorkspaceBoundObservation(observed, expected) {
     || broker.ownershipPath.startsWith(`${expected.originBrokerDirectory}${process.platform === 'win32' ? '\\' : '/'}`)) fail('broker partition mismatch');
   if (!exactKeys(broker.config, configKeys) || !sameJson(parseRaw(broker.configBytes), broker.config)
     || broker.config.endpoint !== expected.brokerEndpoint || broker.config.workspace !== expected.executionWorkspace
-    || broker.config.launchCwd !== expected.executionWorkspace || broker.config.ownershipPath !== broker.ownershipPath || broker.config.identityPath !== broker.identityPath
+    || canonicalConfigLaunchCwd !== expected.protocolLaunchCwd || broker.config.ownershipPath !== broker.ownershipPath || broker.config.identityPath !== broker.identityPath
     || broker.config.publishIdentityAfterListen !== true || broker.config.launch?.command !== process.execPath
     || !Array.isArray(broker.config.launch?.args) || broker.config.launch.args.length !== 1 || broker.config.launch.args[0] !== fakeZCode
-    || broker.config.launch.target !== fakeZCode || broker.brokerProcessCwd !== expected.brokerProcessCwd || broker.zcodeLaunchCwd !== expected.executionWorkspace
-    || broker.configBytes.includes(expected.originWorkspace)) fail(`broker config mismatch ${JSON.stringify({ keys: Object.keys(broker.config ?? {}).sort(), endpoint: broker.config?.endpoint,
+    || broker.config.launch.target !== fakeZCode || broker.brokerProcessCwd !== expected.brokerProcessCwd || broker.zcodeLaunchCwd !== expected.protocolLaunchCwd
+    || broker.configBytes.includes(expected.originWorkspace) || broker.configBytes.includes(expected.originBrokerEndpoint)) fail(`broker config mismatch ${JSON.stringify({ keys: Object.keys(broker.config ?? {}).sort(), endpoint: broker.config?.endpoint,
       workspace: broker.config?.workspace, launchCwd: broker.config?.launchCwd, brokerProcessCwd: broker.brokerProcessCwd, zcodeLaunchCwd: broker.zcodeLaunchCwd,
       launch: broker.config?.launch })}`);
   if (!exactKeys(broker.identity, identityKeys) || !sameJson(parseRaw(broker.identityBytes), broker.identity)
     || broker.identity.version !== 1 || broker.identity.endpoint !== expected.brokerEndpoint || broker.identity.instanceId !== broker.config.instanceId
     || broker.identity.brokerToken !== broker.config.brokerToken || !Number.isSafeInteger(broker.identity.pid) || broker.identity.pid <= 0
     || typeof broker.identity.createdAt !== 'string' || !Number.isFinite(Date.parse(broker.identity.createdAt))
-    || broker.identityBytes.includes(expected.originWorkspace)) fail('broker identity mismatch');
+    || broker.identityBytes.includes(expected.originWorkspace) || broker.identityBytes.includes(expected.originBrokerEndpoint)) fail('broker identity mismatch');
   if (!exactKeys(broker.owners, ['version', 'sessions']) || broker.owners.version !== 1 || !exactKeys(broker.owners.sessions, [broker.sessionId])
     || broker.sessionId !== observed.jobs[0]?.zcodeSessionId || observed.jobs.some((job) => job.zcodeSessionId !== broker.sessionId)
     || broker.owners.sessions[broker.sessionId] !== expected.ownerId || !sameJson(parseRaw(broker.ownershipBytes), broker.owners)
