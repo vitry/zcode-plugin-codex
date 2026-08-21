@@ -1,6 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { access, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -40,6 +41,14 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
 }, async (t) => {
   if (skipReason) assert.fail(skipReason);
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-real-e2e-'));
+  const originDirectory = join(temporary, 'origin'); const executionDirectory = join(temporary, 'execution');
+  await mkdir(originDirectory);
+  await runGit(['init', '-q'], originDirectory);
+  await writeFile(join(originDirectory, 'fixture.txt'), 'base\n');
+  await runGit(['add', 'fixture.txt'], originDirectory);
+  await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
+  await runGit(['worktree', 'add', '-qb', 'real-zcode-target', executionDirectory], originDirectory);
+  const executionWorkspace = await realpath(executionDirectory);
   const sessions = new Set();
   let client;
   t.after(async () => {
@@ -47,22 +56,22 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
       for (const sessionId of sessions) await client.stopSession(sessionId, 10_000).catch(() => {});
       await client.close().catch(() => {});
     }
-    await releaseManagedZCodeOwner({ dataRoot: join(temporary, 'plugin-data'), workspace: temporary, ownerId: ownerIdForSession('real-zcode-e2e'), requestTimeoutMs: 10_000 }).catch(() => {});
+    await releaseManagedZCodeOwner({ dataRoot: join(temporary, 'plugin-data'), workspace: executionWorkspace, ownerId: ownerIdForSession('real-zcode-e2e'), requestTimeoutMs: 10_000 }).catch(() => {});
     await rm(temporary, { force: true, recursive: true });
   });
   const discovery = await discoverZCode({ explicitPath: process.env.ZCODE_PATH, env: process.env });
   assert.match(discovery.version, /^\d+\.\d+\.\d+/);
   assert.deepEqual(await diagnoseZCodeAuth({
-    workspace: temporary,
+    workspace: executionWorkspace,
     discovery,
     env: process.env,
     requestTimeoutMs: 30_000,
   }), { ready: true, status: 'authenticated' });
 
   const dataRoot = join(temporary, 'plugin-data'); const identity = createIdentityStore({ dataRoot });
-  const callerContext = await identity.createCallerContext({ sessionId: 'real-zcode-e2e', turnId: 'real-model-turn', workspace: temporary, permissionMode: 'read-only' });
+  const callerContext = await identity.createCallerContext({ sessionId: 'real-zcode-e2e', turnId: 'real-model-turn', workspace: executionWorkspace, permissionMode: 'read-only' });
   const companion = await runCompanion(['rescue', '--fresh', '--model', requestedModel, 'Inspect this empty workspace read-only and return a short acknowledgement.'], {
-    cwd: temporary,
+    cwd: executionWorkspace,
     env: { ...process.env, ZCODE_DATA_ROOT: dataRoot, ZCODE_PATH: discovery.path },
     authorization: { callerContext },
     dependencies: { createManagedZCodeClient: (options) => createManagedZCodeClient({ ...options, completionTimeoutMs: 180_000 }) },
@@ -70,7 +79,7 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   assert.equal(companion.job.status, 'succeeded'); assert.ok(companion.result.trim()); assert.ok(companion.job.model);
 
   client = await createZCodeClient({
-    workspace: temporary,
+    workspace: executionWorkspace,
     launch: discovery.launch,
     env: process.env,
     requestTimeoutMs: 30_000,
@@ -84,7 +93,7 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
 
   let created;
   try {
-    created = await client.createSession({ workspace: temporary });
+    created = await client.createSession({ workspace: executionWorkspace });
   } catch (error) {
     assert.fail(`ZCode authentication/readiness failed during session/create: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -95,7 +104,7 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   const selected = await client.setModel(sessionId, model);
   assert.deepEqual(selected.settings.model.current, model);
 
-  const cancellation = await client.createSession({ workspace: temporary });
+  const cancellation = await client.createSession({ workspace: executionWorkspace });
   const cancellationId = cancellation.session.sessionId;
   sessions.add(cancellationId);
   let permissionReachedResolve; const permissionReached = new Promise((resolve) => { permissionReachedResolve = resolve; });
@@ -120,7 +129,7 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   await boundedBarrier(permissionAborted, 'permission abort after stop');
   assert.equal(client.turnState(cancellationId), null);
   await assert.rejects(client.waitForCompletion(cancellationId, 10_000), { code: 'ZCODE_PROTOCOL_INPUT_INVALID' });
-  await assert.rejects(access(join(temporary, 'cancellation-probe.txt')), { code: 'ENOENT' });
+  await assert.rejects(access(join(executionWorkspace, 'cancellation-probe.txt')), { code: 'ENOENT' });
   client.setPermissionHandler((request) => {
     const denied = request.options.find((option) => option.response?.decision === 'deny');
     assert.ok(denied); return denied.response;
@@ -129,24 +138,27 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
 
   const sent = await client.send(sessionId, 'Inspect only this empty temporary workspace. Do not write files or run mutating commands. Reply with a short acknowledgement.');
   assert.equal(sent.accepted, true);
-  await client.waitForCompletion(sessionId);
+  await client.waitForCompletion(sessionId, 180_000);
   const firstCompleted = await client.readSession(sessionId);
   const firstAssistantResults = visibleAssistantResultsForTurn(firstCompleted, sent.inputId, messageIds(selected));
   assert.ok(firstAssistantResults.length >= 1, 'the first direct real turn must expose a non-empty assistant result');
   const continued = await client.send(sessionId, 'Continue in this exact session. Inspect only and reply with a second short acknowledgement distinct from the first.');
   assert.equal(continued.accepted, true);
-  await client.waitForCompletion(sessionId);
+  await client.waitForCompletion(sessionId, 180_000);
   const secondCompleted = await client.readSession(sessionId);
   const secondAssistantResults = visibleAssistantResultsForTurn(secondCompleted, continued.inputId, messageIds(firstCompleted));
   assert.ok(secondAssistantResults.length >= 1, 'the second direct real turn must expose a new non-empty assistant result linked to its accepted input');
   const firstAssistantIds = new Set(firstAssistantResults.map((entry) => entry.info.messageId));
   assert.ok(secondAssistantResults.every((message) => !firstAssistantIds.has(message.info.messageId)),
     'the second direct real turn must not reuse a first-turn assistant result');
+  const firstAssistantTexts = new Set(firstAssistantResults.map(visibleAssistantText));
+  assert.ok(secondAssistantResults.some((message) => !firstAssistantTexts.has(visibleAssistantText(message))),
+    'the second direct real turn must expose visible assistant text distinct from the first result');
   await client.stopSession(sessionId, 10_000);
   sessions.delete(sessionId);
 
   const imported = await client.createSession({
-    workspace: temporary,
+    workspace: executionWorkspace,
     importedHistory: { messages: [
       { role: 'user', content: 'Synthetic Codex user turn.' },
       { role: 'assistant', content: 'Synthetic Codex assistant turn.' },
@@ -212,6 +224,10 @@ function visibleAssistant(message, parentMessageId) {
     && message.parts?.some((part) => part?.type === 'text' && typeof part.text === 'string' && part.text.trim());
 }
 
+function visibleAssistantText(message) {
+  return message.parts.filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text.trim()).filter(Boolean).join('\n');
+}
+
 function messageIds(session) {
   return new Set((Array.isArray(session?.messages) ? session.messages : [])
     .map((message) => message?.info?.messageId).filter((value) => typeof value === 'string'));
@@ -221,4 +237,8 @@ function boundedBarrier(promise, label, timeoutMs = 60_000) {
   let timer;
   const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), timeoutMs); });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function runGit(args, cwd) {
+  return new Promise((resolve, reject) => execFile('git', args, { cwd, encoding: 'utf8', shell: false }, (error, stdout) => error ? reject(error) : resolve(stdout)));
 }

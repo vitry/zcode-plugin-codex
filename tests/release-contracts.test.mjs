@@ -206,6 +206,33 @@ test('binding ADR defines current status at durable continuation publication', (
   assert.doesNotMatch(adr, /advances `currentJobId` only after a successful continuation/i);
 });
 
+test('release docs define automatic immutable Rescue worktree late binding', () => {
+  const english = read('README.md'); const chinese = read('README.zh-CN.md');
+  const security = read('SECURITY.md'); const changelog = read('CHANGELOG.md');
+  const authorityAdr = read('docs/adr/0010-use-thread-bound-direct-companion.md');
+  const bindingAdr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');
+  assert.match(english, /origin workspace.{0,200}execution workspace/is);
+  assert.match(english, /first trusted `?prepare rescue`?.{0,200}automatically binds/is);
+  assert.match(english, /no manual handoff/i);
+  assert.match(english, /same canonical Git common[- ]dir/i);
+  assert.match(english, /immutable.{0,100}(?:turn|target)/i);
+  assert.match(english, /child.{0,100}(?:cannot|must not).{0,80}claim/i);
+  assert.match(english, /Stop.{0,200}new prompt.{0,200}SessionEnd.{0,200}(?:revoke|replace)/is);
+  assert.match(chinese, /origin workspace.{0,200}execution workspace/is);
+  assert.match(chinese, /第一次可信的 `?prepare rescue`?.{0,200}自动绑定/is);
+  assert.match(chinese, /不需要手动 handoff/i);
+  assert.match(chinese, /相同的 canonical Git common[- ]dir/i);
+  assert.match(chinese, /同一 turn.{0,100}不可变/is);
+  assert.match(chinese, /child.{0,100}不能.{0,80}claim/i);
+  assert.match(chinese, /Stop.{0,200}新 prompt.{0,200}SessionEnd.{0,200}(?:撤销|替换)/is);
+  for (const source of [security, changelog, authorityAdr, bindingAdr]) {
+    assert.match(source, /origin workspace.{0,220}execution workspace/is);
+    assert.match(source, /same canonical Git common[- ]dir/i);
+    assert.match(source, /first (?:trusted )?prepare.{0,180}(?:immutable|bind)/is);
+  }
+  assert.equal(JSON.parse(read('package.json')).version, '0.1.0');
+});
+
 test('security confines task material to exact single-consume prepared state', () => {
   const security = read('SECURITY.md');
   assert.match(security, /task.{0,180}parent.{0,120}write_stdin/is);

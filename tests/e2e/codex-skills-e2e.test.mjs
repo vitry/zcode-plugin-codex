@@ -676,6 +676,25 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
   }
 });
 
+test('installed continuation capture qualifies one parent turn from origin hooks into a linked execution worktree', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-installed-worktree-capture-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const originDirectory = join(temporary, 'origin'); const executionDirectory = join(temporary, 'execution');
+  await initializeGitWorkspace(originDirectory);
+  await git(['worktree', 'add', '-qb', 'installed-capture-target', executionDirectory], originDirectory);
+  const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(executionDirectory);
+  const capture = installedWorkspaceBoundContinuationCapture('named', originWorkspace, executionWorkspace);
+  const evidence = await qualifyCodexRescuePreparedContinuationEvidence(capture);
+  assert.equal(evidence.originWorkspace, originWorkspace);
+  assert.equal(evidence.executionWorkspace, executionWorkspace);
+  assert.equal(evidence.workspaceBindingChecked, true);
+  assert.notEqual(evidence.originWorkspace, evidence.executionWorkspace);
+  const hooks = JSON.parse(capture.hookLifecycleJson);
+  assert.ok(hooks.every((event) => event.cwd === originWorkspace));
+  const peerCreate = JSON.parse(capture.fakePeerJson).find((event) => event.method === 'session/create');
+  assert.equal(peerCreate.params.workspace.workspacePath, executionWorkspace);
+});
+
 test('deterministic installed observer artifacts flow through the live continuation capture path', async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-live-capture-characterization-')); t.after(() => rm(temporary, { recursive: true, force: true }));
   const workspaceDirectory = join(temporary, 'workspace'); const dataRoot = join(temporary, 'data'); const captures = join(temporary, 'captures');
@@ -2068,6 +2087,43 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     ]),
     fakePeerJson: JSON.stringify([{ id: 1, method: 'session/create', params: { workspace: { workspacePath: workspace, workspaceKey: workspace } } }, { id: 2, method: 'session/send', params: { sessionId: 'zcode-session-original', inputId: 'input-original', queryId: 'input-original', content: 'initial objective' } }, { id: 3, method: 'session/resume', params: { sessionId: 'zcode-session-original' } }, { id: 4, method: 'session/send', params: { sessionId: 'zcode-session-original', inputId: 'input-continuation', queryId: 'input-continuation', content: 'continuation objective' } }]),
   };
+}
+
+function installedWorkspaceBoundContinuationCapture(route, originWorkspace, executionWorkspace) {
+  const input = installedPreparedContinuationCapture(route, { workspace: executionWorkspace });
+  const generationId = '9'.repeat(64); const parentSessionId = input.expected.parentSessionId;
+  const childThreadId = input.expected.childThreadId;
+  const globalKey = createHash('sha256').update(JSON.stringify([parentSessionId])).digest('hex');
+  input.expected.originWorkspace = originWorkspace; input.expected.executionWorkspace = executionWorkspace;
+  const hooks = JSON.parse(input.hookLifecycleJson); for (const hook of hooks) hook.cwd = originWorkspace; input.hookLifecycleJson = JSON.stringify(hooks);
+  const unbound = { version: 3, kind: 'active-turn', key: globalKey, sessionId: parentSessionId, generationId,
+    turnId: 'turn-original', originWorkspace, executionWorkspace: null, permissionMode: 'acceptEdits',
+    prompt: '$zcode:rescue repair fixture', createdAt: '2026-08-09T23:59:59.000Z', status: 'active' };
+  const pending = { ...unbound, status: 'pending' }; const bound = { ...unbound, executionWorkspace };
+  input.activeTurnRecordBytes = `${JSON.stringify(bound)}\n`;
+  input.authorityTransitionBytesJson = JSON.stringify([pending, unbound, unbound, bound].map((record) => `${JSON.stringify(record)}\n`));
+  input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: executionWorkspace,
+    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
+  input.originIndexRecordBytes = `${JSON.stringify({ version: 1, kind: 'active-turn-index',
+    key: createHash('sha256').update(JSON.stringify([parentSessionId, originWorkspace])).digest('hex'), sessionId: parentSessionId,
+    generationId, globalKey, originWorkspace })}\n`;
+  input.executorRouteRecordBytes = `${JSON.stringify({ version: 1, kind: 'executor-route', agentId: childThreadId,
+    agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId, parentGenerationId: generationId,
+    parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', originWorkspace,
+    targetWorkspace: executionWorkspace, state: 'stopped', createdAt: '2026-08-10T00:00:02.000Z', updatedAt: '2026-08-10T00:00:05.000Z' })}\n`;
+  input.executorRecordBytes = `${JSON.stringify({ kind: 'subagent-executor', agentId: childThreadId,
+    agentType: route === 'named' ? 'zcode-rescue' : 'default', parentSessionId, parentGenerationId: generationId,
+    parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', originWorkspace,
+    workspace: executionWorkspace, active: false, createdAt: '2026-08-10T00:00:02.000Z' })}\n`;
+  input.authorityLifecycleJson = JSON.stringify([
+    ['session-start', originWorkspace, null, '2026-08-09T23:59:58.000Z'], ['user-prompt', originWorkspace, null, '2026-08-09T23:59:59.000Z'],
+    ['pending', originWorkspace, generationId, '2026-08-09T23:59:59.100Z'], ['active-unbound', originWorkspace, generationId, '2026-08-09T23:59:59.200Z'],
+    ['role-preview', executionWorkspace, generationId, '2026-08-10T00:00:00.100Z'], ['prepare', executionWorkspace, generationId, '2026-08-10T00:00:00.250Z'],
+    ['active-bound', executionWorkspace, generationId, '2026-08-10T00:00:00.300Z'], ['subagent-start', originWorkspace, generationId, '2026-08-10T00:00:02.000Z'],
+    ['peer-create', executionWorkspace, generationId, '2026-08-10T00:00:02.500Z'], ['authority-revoked', originWorkspace, generationId, '2026-08-10T01:02:00.000Z'],
+    ['target-cleanup', executionWorkspace, generationId, '2026-08-10T01:02:00.100Z'],
+  ].map(([phase, workspace, generation, at]) => ({ phase, workspace, ...(generation === null ? {} : { generationId: generation }), at })));
+  return input;
 }
 
 function installedRawJob(id, ownerSessionId, workspace, ownerTurnId, status, extra = {}) {
