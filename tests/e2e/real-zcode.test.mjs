@@ -1,7 +1,11 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { access, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { access, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -10,12 +14,19 @@ import { resolveModel } from '../../scripts/lib/args.mjs';
 import { diagnoseZCodeAuth } from '../../scripts/lib/codex-config.mjs';
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
+import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { createZCodeClient } from '../../scripts/lib/zcode-client.mjs';
 import { createManagedZCodeClient } from '../../scripts/lib/zcode-client.mjs';
 import { releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
 import { discoverZCode } from '../../scripts/lib/zcode-discovery.mjs';
 import { runCompanion } from '../../scripts/zcode-companion.mjs';
 import { resolveRealZCodeModelEnvironment } from '../helpers/real-zcode-model.mjs';
+import { runChild } from '../helpers/run-child.mjs';
+
+const root = fileURLToPath(new URL('../..', import.meta.url));
+const fakeCodex = join(root, 'tests', 'fixtures', 'fake-codex-app-server.mjs');
+const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
+const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
 
 let modelEnvironment; let modelEnvironmentFailure;
 try { modelEnvironment = resolveRealZCodeModelEnvironment(process.env); }
@@ -35,6 +46,20 @@ const skipReason = modelEnvironmentFailure || (process.env.ZCODE_REAL_E2E !== '1
 
 function unqualified(code, detail) { return `real-zcode-unqualified ${JSON.stringify({ qualified: false, code, detail })}`; }
 
+test('real qualification preflight proves the installed origin-to-worktree authority path before spending ZCode credits', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-real-authority-preflight-'));
+  const originDirectory = join(temporary, 'origin'); const executionDirectory = join(temporary, 'execution');
+  await mkdir(originDirectory); await runGit(['init', '-q'], originDirectory); await writeFile(join(originDirectory, 'fixture.txt'), 'base\n');
+  await runGit(['add', 'fixture.txt'], originDirectory); await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
+  await runGit(['worktree', 'add', '-qb', 'real-preflight-target', executionDirectory], originDirectory);
+  const observed = await establishInstalledWorkspaceBoundTurn({ temporary, dataRoot: join(temporary, 'plugin-data'),
+    originWorkspace: await realpath(originDirectory), executionWorkspace: await realpath(executionDirectory) });
+  t.after(async () => { await observed.cleanup(); await rm(temporary, { recursive: true, force: true }); });
+  assert.equal(observed.active.originWorkspace, await realpath(originDirectory));
+  assert.equal(observed.active.executionWorkspace, await realpath(executionDirectory));
+  assert.equal(observed.roleMutated, false);
+});
+
 test('real ZCode discovery, two-turn session, read-only Companion, cancellation, model, and history import', {
   skip: qualificationRequired ? false : skipReason,
   timeout: 420_000,
@@ -48,7 +73,7 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   await runGit(['add', 'fixture.txt'], originDirectory);
   await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
   await runGit(['worktree', 'add', '-qb', 'real-zcode-target', executionDirectory], originDirectory);
-  const executionWorkspace = await realpath(executionDirectory);
+  const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(executionDirectory);
   const sessions = new Set();
   let client;
   t.after(async () => {
@@ -69,14 +94,21 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   }), { ready: true, status: 'authenticated' });
 
   const dataRoot = join(temporary, 'plugin-data'); const identity = createIdentityStore({ dataRoot });
+  const boundTurn = await establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, originWorkspace, executionWorkspace });
+  t.after(boundTurn.cleanup);
+  assert.equal(boundTurn.active.executionWorkspace, executionWorkspace);
+  assert.equal(boundTurn.roleMutated, false);
   const callerContext = await identity.createCallerContext({ sessionId: 'real-zcode-e2e', turnId: 'real-model-turn', workspace: executionWorkspace, permissionMode: 'read-only' });
+  let companionManagedWorkspace;
   const companion = await runCompanion(['rescue', '--fresh', '--model', requestedModel, 'Inspect this empty workspace read-only and return a short acknowledgement.'], {
     cwd: executionWorkspace,
     env: { ...process.env, ZCODE_DATA_ROOT: dataRoot, ZCODE_PATH: discovery.path },
     authorization: { callerContext },
-    dependencies: { createManagedZCodeClient: (options) => createManagedZCodeClient({ ...options, completionTimeoutMs: 180_000 }) },
+    dependencies: { createManagedZCodeClient: (options) => { companionManagedWorkspace = options.workspace; return createManagedZCodeClient({ ...options, completionTimeoutMs: 180_000 }); } },
   });
   assert.equal(companion.job.status, 'succeeded'); assert.ok(companion.result.trim()); assert.ok(companion.job.model);
+  assert.equal(companionManagedWorkspace, executionWorkspace, 'bound Companion must create its managed ZCode peer in the execution worktree');
+  assert.equal(JSON.parse(await readFile(boundTurn.activePath, 'utf8')).executionWorkspace, executionWorkspace);
 
   client = await createZCodeClient({
     workspace: executionWorkspace,
@@ -136,17 +168,19 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   });
   sessions.delete(cancellationId);
 
-  const sent = await client.send(sessionId, 'Inspect only this empty temporary workspace. Do not write files or run mutating commands. Reply with a short acknowledgement.');
+  const firstPrompt = 'Inspect only this empty temporary workspace. Do not write files or run mutating commands. Reply with a short acknowledgement.';
+  const sent = await client.send(sessionId, firstPrompt);
   assert.equal(sent.accepted, true);
   await client.waitForCompletion(sessionId, 180_000);
   const firstCompleted = await client.readSession(sessionId);
-  const firstAssistantResults = visibleAssistantResultsForTurn(firstCompleted, sent.inputId, messageIds(selected));
+  const firstAssistantResults = visibleAssistantResultsForTurn(firstCompleted, sent.inputId, messageIds(selected), firstPrompt);
   assert.ok(firstAssistantResults.length >= 1, 'the first direct real turn must expose a non-empty assistant result');
-  const continued = await client.send(sessionId, 'Continue in this exact session. Inspect only and reply with a second short acknowledgement distinct from the first.');
+  const secondPrompt = 'Continue in this exact session. Inspect only and reply with a second short acknowledgement distinct from the first.';
+  const continued = await client.send(sessionId, secondPrompt);
   assert.equal(continued.accepted, true);
   await client.waitForCompletion(sessionId, 180_000);
   const secondCompleted = await client.readSession(sessionId);
-  const secondAssistantResults = visibleAssistantResultsForTurn(secondCompleted, continued.inputId, messageIds(firstCompleted));
+  const secondAssistantResults = visibleAssistantResultsForTurn(secondCompleted, continued.inputId, messageIds(firstCompleted), secondPrompt);
   assert.ok(secondAssistantResults.length >= 1, 'the second direct real turn must expose a new non-empty assistant result linked to its accepted input');
   const firstAssistantIds = new Set(firstAssistantResults.map((entry) => entry.info.messageId));
   assert.ok(secondAssistantResults.every((message) => !firstAssistantIds.has(message.info.messageId)),
@@ -173,7 +207,7 @@ test('real ZCode discovery, two-turn session, read-only Companion, cancellation,
   sessions.delete(importedId);
 });
 
-test('visible assistant result selection is linked to the exact accepted input or its sole persisted user root', () => {
+test('visible assistant result selection is linked to the exact accepted input or its sole prompt-matching persisted user root', () => {
   const snapshot = { messages: [
     { info: { role: 'assistant', messageId: 'assistant-first', parentMessageId: 'input-first' }, parts: [{ type: 'text', text: 'first' }] },
     { info: { role: 'assistant', messageId: 'assistant-empty', parentMessageId: 'input-second' }, parts: [{ type: 'text', text: '   ' }] },
@@ -185,9 +219,16 @@ test('visible assistant result selection is linked to the exact accepted input o
     { info: { role: 'user', messageId: 'persisted-root', semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'prompt' }] },
     { info: { role: 'assistant', messageId: 'persisted-result', parentMessageId: 'persisted-root' }, parts: [{ type: 'text', text: 'result' }] },
   ] };
-  assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set()).map((message) => message.info.messageId), ['persisted-result']);
+  assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set(), 'prompt').map((message) => message.info.messageId), ['persisted-result']);
+  assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set(), 'wrong prompt'), []);
+  const stale = structuredClone(remapped);
+  stale.messages[0].info.createdAt = '2026-08-21T00:00:00.000Z';
+  assert.deepEqual(visibleAssistantResultsForTurn(stale, 'unpersisted-input', new Set(['persisted-root']), 'prompt'), []);
+  const unrelated = structuredClone(remapped);
+  unrelated.messages.unshift({ info: { role: 'user', messageId: 'unrelated-real-root', semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'unrelated prompt' }] });
+  assert.deepEqual(visibleAssistantResultsForTurn(unrelated, 'unpersisted-input', new Set(), 'prompt'), []);
   remapped.messages.push({ info: { role: 'user', messageId: 'ambiguous-root', semantics: { origin: 'real_user', kind: 'user_prompt', uiVisibility: 'visible' } }, parts: [{ type: 'text', text: 'other' }] });
-  assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set()), []);
+  assert.deepEqual(visibleAssistantResultsForTurn(remapped, 'unpersisted-input', new Set(), 'prompt'), []);
   const unmarked = structuredClone(remapped); unmarked.messages = unmarked.messages.slice(0, 2); delete unmarked.messages[0].info.semantics;
   assert.deepEqual(visibleAssistantResultsForTurn(unmarked, 'unpersisted-input', new Set()), []);
   for (const origin of ['system', 'migration']) {
@@ -200,8 +241,9 @@ test('visible assistant result selection is linked to the exact accepted input o
   assert.deepEqual(visibleAssistantResultsForTurn(wrongKind, 'input-second', new Set()), []);
 });
 
-function visibleAssistantResultsForTurn(session, inputId, beforeMessageIds) {
-  if (typeof inputId !== 'string' || inputId.length === 0 || !(beforeMessageIds instanceof Set) || !Array.isArray(session?.messages)) return [];
+function visibleAssistantResultsForTurn(session, inputId, beforeMessageIds, acceptedPrompt) {
+  if (typeof inputId !== 'string' || inputId.length === 0 || !(beforeMessageIds instanceof Set) || !Array.isArray(session?.messages)
+    || acceptedPrompt !== undefined && (typeof acceptedPrompt !== 'string' || acceptedPrompt.length === 0)) return [];
   const newMessages = session.messages.filter((message) => typeof message?.info?.messageId === 'string' && !beforeMessageIds.has(message.info.messageId));
   const directlyLinked = newMessages.some((message) => visibleAssistant(message, inputId));
   let parentMessageId = inputId;
@@ -211,6 +253,7 @@ function visibleAssistantResultsForTurn(session, inputId, beforeMessageIds) {
       && message.info.semantics?.origin === 'real_user' && message.info.semantics.kind === 'user_prompt'
       && message.info.semantics.uiVisibility === 'visible');
     if (roots.length !== 1) return [];
+    if (acceptedPrompt === undefined || visibleMessageText(roots[0]) !== acceptedPrompt) return [];
     parentMessageId = roots[0].info.messageId;
   }
   return newMessages.filter((message) => visibleAssistant(message, parentMessageId));
@@ -228,6 +271,11 @@ function visibleAssistantText(message) {
   return message.parts.filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text.trim()).filter(Boolean).join('\n');
 }
 
+function visibleMessageText(message) {
+  return (Array.isArray(message?.parts) ? message.parts : []).filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text).join('');
+}
+
 function messageIds(session) {
   return new Set((Array.isArray(session?.messages) ? session.messages : [])
     .map((message) => message?.info?.messageId).filter((value) => typeof value === 'string'));
@@ -241,4 +289,59 @@ function boundedBarrier(promise, label, timeoutMs = 60_000) {
 
 function runGit(args, cwd) {
   return new Promise((resolve, reject) => execFile('git', args, { cwd, encoding: 'utf8', shell: false }, (error, stdout) => error ? reject(error) : resolve(stdout)));
+}
+
+async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, originWorkspace, executionWorkspace }) {
+  const sessionId = 'real-zcode-e2e'; const turnId = 'real-model-turn';
+  const codexHome = join(temporary, 'installed-codex-home');
+  const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+  await mkdir(installed, { recursive: true });
+  for (const name of ['agents', 'hooks', 'schemas', 'scripts', 'skills']) await cp(join(root, name), join(installed, name), { recursive: true });
+  await cp(join(root, 'package.json'), join(installed, 'package.json'));
+  await symlink(dependencyNodeModules, join(installed, 'node_modules'), 'dir');
+  const env = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+  const hook = (script, input) => runChild(process.execPath, [join(installed, 'hooks', script)], { cwd: originWorkspace, env, ordinaryInput: true, input });
+  const started = await hook('session-lifecycle-hook.mjs', { session_id: sessionId, cwd: originWorkspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' });
+  assert.equal(started.code, 0, started.stderr || started.stdout);
+  const promptText = '$zcode:rescue inspect real linked worktree';
+  const prompted = await hook('user-prompt-hook.mjs', { session_id: sessionId, turn_id: turnId, cwd: originWorkspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'default', prompt: promptText });
+  assert.equal(prompted.code, 0, prompted.stderr || prompted.stdout);
+  const [activeName] = await readdir(join(dataRoot, 'identity-lifecycle', 'active-turns'));
+  const activePath = join(dataRoot, 'identity-lifecycle', 'active-turns', activeName);
+  const beforeRole = await readFile(activePath); const beforeRoleStat = await stat(activePath);
+  const canonicalDataRoot = await realpath(dataRoot); const rolePaths = managedRolePaths(canonicalDataRoot);
+  const configFile = join(canonicalDataRoot, 'config.toml'); const installedRoot = await realpath(installed);
+  const roleBytes = Buffer.from(renderManagedRescueRole({ template: await readFile(join(installed, 'agents', 'zcode-rescue.toml.template'), 'utf8'), pluginRoot: installedRoot }));
+  await mkdir(dirname(rolePaths.rolePath), { recursive: true }); await writeFile(rolePaths.rolePath, roleBytes);
+  await writeFile(rolePaths.receiptPath, `${JSON.stringify({ schemaVersion: '1.0.0', roleName: 'zcode-rescue', plugin: { identity: 'zcode@vitry', version: '0.1.0', root: installedRoot }, configTarget: { filePath: configFile }, role: { path: rolePaths.rolePath, schemaVersion: 1, sha256: createHash('sha256').update(roleBytes).digest('hex') }, mutatedAt: new Date().toISOString() }, null, 2)}\n`);
+  const registration = { description: MANAGED_ROLE_DESCRIPTION, config_file: rolePaths.rolePath };
+  const configured = { features: { multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { 'zcode-rescue': registration } };
+  const config = { config: configured, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: configured }] };
+  const launcherEnv = { ...env, CODEX_HOME: codexHome, CODEX_THREAD_ID: sessionId, CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]), FAKE_CODEX_CONFIG_RESULT: JSON.stringify(config) };
+  const role = await runSpawn(process.execPath, [join(installed, 'skills', 'rescue', 'launcher.mjs'), 'role-status', 'rescue'], { cwd: executionWorkspace, env: launcherEnv });
+  assert.equal(role.code, 0, role.stderr || role.stdout);
+  assert.deepEqual(JSON.parse(role.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  const afterRoleStat = await stat(activePath);
+  const roleMutated = !beforeRole.equals(await readFile(activePath)) || beforeRoleStat.mtimeMs !== afterRoleStat.mtimeMs;
+  const frame = `${JSON.stringify({ version: 1, source: 'explicit', task: 'inspect real linked worktree', options: { execution: 'foreground', resume: 'fresh' } })}\n`;
+  const prepared = await runSpawn(process.execPath, [join(installed, 'skills', 'rescue', 'launcher.mjs'), 'prepare', 'rescue'], { cwd: executionWorkspace, env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: frame });
+  assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout);
+  assert.match(prepared.stdout, /"type":"prepared"/u);
+  const active = JSON.parse(await readFile(activePath, 'utf8'));
+  return {
+    active, activePath, roleMutated,
+    cleanup: async () => {
+      const ended = await hook('session-end-hook.mjs', { session_id: sessionId, cwd: originWorkspace, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' });
+      assert.equal(ended.code, 0, ended.stderr || ended.stdout);
+      await assert.rejects(access(activePath), { code: 'ENOENT' });
+    },
+  };
+}
+
+function runSpawn(command, args, { cwd, env, input } = {}) {
+  const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+  let stdout = ''; let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+  if (input === undefined) child.stdin.end(); else child.stdin.end(input);
+  return new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({ code, signal, stdout, stderr })); });
 }

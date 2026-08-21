@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
@@ -16,6 +17,7 @@ import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-c
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
+import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import {
   assertCodexRescueDisplayName,
   CodexRescueEvidenceMismatchError,
@@ -43,6 +45,9 @@ import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
+const fakeCodex = fileURLToPath(new URL('../fixtures/fake-codex-app-server.mjs', import.meta.url));
+const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
+const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
 const TEST_PROCESS_NONCE = 'a'.repeat(64);
 const STALE_PROCESS_NONCE = 'b'.repeat(64);
 const SUPPORTED_CODEX_LINES = Object.freeze(['0.147']);
@@ -683,7 +688,31 @@ test('installed continuation capture qualifies one parent turn from origin hooks
   await initializeGitWorkspace(originDirectory);
   await git(['worktree', 'add', '-qb', 'installed-capture-target', executionDirectory], originDirectory);
   const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(executionDirectory);
-  const capture = installedWorkspaceBoundContinuationCapture('named', originWorkspace, executionWorkspace);
+  const observed = await observeInstalledWorkspaceBoundAuthority({ temporary, originWorkspace, executionWorkspace });
+  assert.equal(observed.pending.status, 'pending');
+  assert.equal(observed.unbound.status, 'active'); assert.equal(observed.unbound.executionWorkspace, null);
+  assert.deepEqual(observed.role.activeBytesAfter, observed.role.activeBytesBefore);
+  assert.equal(observed.role.mtimeAfter, observed.role.mtimeBefore);
+  assert.equal(observed.bound.executionWorkspace, executionWorkspace);
+  assert.equal(observed.originIndex.originWorkspace, originWorkspace);
+  assert.equal(observed.executor.workspace, executionWorkspace);
+  assert.equal(observed.route.originWorkspace, originWorkspace);
+  assert.equal(observed.route.targetWorkspace, executionWorkspace);
+  assert.equal(observed.preparation.workspace, executionWorkspace);
+  assert.deepEqual(observed.hostCalls.map(({ command, workspace }) => ({ command, workspace })), [
+    { command: 'role-status rescue', workspace: executionWorkspace },
+    { command: 'prepare rescue', workspace: executionWorkspace },
+    { command: 'invoke-prepared rescue', workspace: executionWorkspace },
+    { command: 'prepare rescue', workspace: executionWorkspace },
+    { command: 'invoke-prepared rescue', workspace: executionWorkspace },
+  ]);
+  const creates = observed.peer.filter((call) => call.method === 'session/create'); const sends = observed.peer.filter((call) => call.method === 'session/send');
+  assert.equal(creates.length, 1); assert.equal(creates[0].params.workspace.workspacePath, executionWorkspace);
+  assert.equal(sends.length, 2); assert.equal(new Set(sends.map((call) => call.params.sessionId)).size, 1);
+  assert.ok(observed.preparationHistory.length >= 2); assert.ok(observed.bindingHistory.length >= 2); assert.ok(observed.jobs.length >= 2);
+  assert.equal(JSON.stringify(observed.hostCalls).includes('installed-observer-private-sentinel'), false);
+  assert.deepEqual(observed.cleanedPaths.filter((path) => observed.remainingPaths.includes(path)), []);
+  const capture = syntheticWorkspaceBoundContinuationFixture('named', originWorkspace, executionWorkspace);
   const evidence = await qualifyCodexRescuePreparedContinuationEvidence(capture);
   assert.equal(evidence.originWorkspace, originWorkspace);
   assert.equal(evidence.executionWorkspace, executionWorkspace);
@@ -2089,7 +2118,119 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
   };
 }
 
-function installedWorkspaceBoundContinuationCapture(route, originWorkspace, executionWorkspace) {
+async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorkspace, executionWorkspace }) {
+  const parentSessionId = '019fe6df-faa2-7851-8edb-55f1be7d5489'; const parentTurnId = 'turn-original';
+  const childThreadId = '019fe6e0-4764-7192-83ba-0b0cc2c48660'; const childTurnId = 'child-turn';
+  const dataRoot = join(temporary, 'installed-observer-data'); const codexHome = join(temporary, 'installed-observer-codex-home');
+  const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+  await mkdir(installed, { recursive: true });
+  for (const name of ['agents', 'hooks', 'schemas', 'scripts', 'skills']) await cp(join(root, name), join(installed, name), { recursive: true });
+  await cp(join(root, 'package.json'), join(installed, 'package.json')); await symlink(dependencyNodeModules, join(installed, 'node_modules'), 'dir');
+  const hookEnv = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+  const hookInput = (event, extra = {}) => event === 'SessionEnd'
+    ? { session_id: parentSessionId, cwd: originWorkspace, hook_event_name: event, transcript_path: null, ...extra }
+    : { session_id: parentSessionId, turn_id: event === 'SessionStart' ? undefined : event === 'UserPromptSubmit' ? parentTurnId : childTurnId,
+      cwd: originWorkspace, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', ...extra };
+  const runHook = async (script, input) => {
+    const result = await runChild(process.execPath, [join(installed, 'hooks', script)], { cwd: originWorkspace, env: hookEnv, ordinaryInput: true, input });
+    assert.equal(result.code, 0, result.stderr || result.stdout); return result;
+  };
+  await runHook('session-lifecycle-hook.mjs', hookInput('SessionStart', { source: 'startup' }));
+  const globalKey = createHash('sha256').update(JSON.stringify([parentSessionId])).digest('hex');
+  const activePath = join(dataRoot, 'identity-lifecycle', 'active-turns', `${globalKey}.json`);
+  const prompt = hookInput('UserPromptSubmit', { prompt: '$zcode:rescue installed-observer-private-sentinel' });
+  const originStorage = await resolveWorkspaceStorage({ dataRoot, workspace: originWorkspace });
+  const originIdentityLock = join(originStorage.directory, 'identity', '.lock'); await mkdir(dirname(originIdentityLock), { recursive: true });
+  const lockProcess = spawn(process.execPath, [join(root, 'tests', 'fixtures', 'lock-holder.mjs'), originIdentityLock], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let lockStdout = ''; let lockStderr = ''; lockProcess.stdout.on('data', (chunk) => { lockStdout += chunk; }); lockProcess.stderr.on('data', (chunk) => { lockStderr += chunk; });
+  await waitUntil(() => lockStdout.includes('acquired\n'), 5_000, `installed observer identity lock did not arm: ${lockStderr}`);
+  const promptProcess = runRawChild(process.execPath, [join(installed, 'hooks', 'user-prompt-hook.mjs')], { cwd: originWorkspace, env: hookEnv, input: `${JSON.stringify(prompt)}\n` });
+  const pendingBytes = await waitForValue(async () => {
+    const bytes = await readFile(activePath, 'utf8').catch(() => null);
+    if (!bytes) return undefined;
+    try { return JSON.parse(bytes).status === 'pending' ? bytes : undefined; } catch { return undefined; }
+  }, 5_000, 'installed observer did not reach the deterministic pending publication barrier');
+  lockProcess.stdin.end('release\n');
+  const promptResult = await promptProcess; assert.equal(promptResult.code, 0, promptResult.stderr || promptResult.stdout);
+  const finalUnboundBytes = await readFile(activePath, 'utf8');
+  const pending = JSON.parse(pendingBytes); const unbound = JSON.parse(finalUnboundBytes);
+
+  const canonicalDataRoot = await realpath(dataRoot); const installedRoot = await realpath(installed); const rolePaths = managedRolePaths(canonicalDataRoot);
+  const configFile = join(canonicalDataRoot, 'config.toml');
+  const roleBytes = Buffer.from(renderManagedRescueRole({ template: await readFile(join(installed, 'agents', 'zcode-rescue.toml.template'), 'utf8'), pluginRoot: installedRoot }));
+  await mkdir(dirname(rolePaths.rolePath), { recursive: true }); await writeFile(rolePaths.rolePath, roleBytes);
+  await writeFile(rolePaths.receiptPath, `${JSON.stringify({ schemaVersion: '1.0.0', roleName: 'zcode-rescue', plugin: { identity: 'zcode@vitry', version: '0.1.0', root: installedRoot }, configTarget: { filePath: configFile }, role: { path: rolePaths.rolePath, schemaVersion: 1, sha256: createHash('sha256').update(roleBytes).digest('hex') }, mutatedAt: new Date().toISOString() }, null, 2)}\n`);
+  const registration = { description: MANAGED_ROLE_DESCRIPTION, config_file: rolePaths.rolePath };
+  const configured = { features: { multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { 'zcode-rescue': registration } };
+  const config = { config: configured, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: configured }] };
+  const launcher = join(installed, 'skills', 'rescue', 'launcher.mjs');
+  const launcherEnv = { ...hookEnv, CODEX_HOME: codexHome, CODEX_THREAD_ID: parentSessionId, CODEX_APP_SERVER_PATH: process.execPath,
+    CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]), FAKE_CODEX_CONFIG_RESULT: JSON.stringify(config) };
+  const roleBefore = await readFile(activePath, 'utf8'); const roleStatBefore = await stat(activePath);
+  const roleResult = await runRawChild(process.execPath, [launcher, 'role-status', 'rescue'], { cwd: executionWorkspace, env: launcherEnv });
+  assert.equal(roleResult.code, 0, roleResult.stderr || roleResult.stdout);
+  assert.deepEqual(JSON.parse(roleResult.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  const roleAfter = await readFile(activePath, 'utf8'); const roleStatAfter = await stat(activePath);
+  const frame = `${JSON.stringify({ version: 1, source: 'explicit', task: 'installed-observer-private-sentinel', options: { execution: 'foreground', resume: 'fresh' } })}\n`;
+  const prepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
+    env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: frame });
+  assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout); assert.match(prepared.stdout, /"type":"prepared"/u);
+  const bound = JSON.parse(await readFile(activePath, 'utf8'));
+  const agentType = 'zcode-rescue';
+  const childBase = { agent_id: childThreadId, agent_type: agentType };
+  await runHook('subagent-hook.mjs', hookInput('SubagentStart', childBase));
+  const peerRecord = join(temporary, 'installed-observer-peer.jsonl'); await writeFile(peerRecord, '');
+  const invokeEnv = { ...launcherEnv, CODEX_THREAD_ID: childThreadId, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: peerRecord, FAKE_ZCODE_GATE_RESULT: 'observer result' };
+  const firstInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: executionWorkspace, env: invokeEnv });
+  assert.equal(firstInvoke.code, 0, firstInvoke.stderr || firstInvoke.stdout);
+  const firstArtifactPaths = await recursiveFiles(dataRoot);
+  const firstArtifactSnapshot = await Promise.all(firstArtifactPaths.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
+  await runHook('subagent-hook.mjs', hookInput('SubagentStop', { ...childBase, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }));
+  const proactiveFrame = `${JSON.stringify({ version: 1, source: 'proactive', task: 'continue fixture', options: { execution: 'foreground', resume: 'resume' } })}\n`;
+  const proactivePrepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
+    env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: proactiveFrame });
+  assert.equal(proactivePrepared.code, 0, proactivePrepared.stderr || proactivePrepared.stdout);
+  const secondInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: executionWorkspace, env: invokeEnv });
+  assert.equal(secondInvoke.code, 0, secondInvoke.stderr || secondInvoke.stdout);
+  const filesBeforeCleanup = await recursiveFiles(dataRoot); const parsed = [];
+  for (const path of filesBeforeCleanup) {
+    try { parsed.push({ path, value: JSON.parse(await readFile(path, 'utf8')) }); } catch { /* locks and non-JSON are irrelevant */ }
+  }
+  const originIndex = parsed.find(({ value }) => value?.kind === 'active-turn-index' && value.sessionId === parentSessionId)?.value;
+  const executor = parsed.findLast(({ value }) => value?.kind === 'subagent-executor' && value.agentId === childThreadId)?.value;
+  const route = parsed.findLast(({ value }) => value?.kind === 'executor-route' && value.agentId === childThreadId)?.value;
+  const preparation = parsed.findLast(({ path, value }) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`)
+    && value?.sessionId === parentSessionId && value?.envelope?.version === 1)?.value;
+  assert.ok(originIndex && executor && route && preparation, `installed observer artifacts missing ${JSON.stringify({ originIndex: !!originIndex, executor: !!executor, route: !!route, preparation: !!preparation, kinds: parsed.map(({ value }) => value?.kind).filter(Boolean) })}`);
+  const cleanedPaths = parsed.filter(({ path, value }) => value?.kind !== 'identity-session'
+    && (value?.sessionId === parentSessionId || value?.parentSessionId === parentSessionId)
+    && !path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`)
+    && !basename(path).startsWith('rescue-binding-')).map(({ path }) => path);
+  const finalArtifacts = await Promise.all(filesBeforeCleanup.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
+  await runHook('session-end-hook.mjs', hookInput('SessionEnd', { reason: 'other' }));
+  const remainingPaths = await recursiveFiles(dataRoot);
+  const artifactHistory = [...firstArtifactSnapshot, ...finalArtifacts];
+  const parseHistory = (predicate) => artifactHistory.filter(({ path }) => predicate(path)).map(({ bytes }) => { try { return JSON.parse(bytes); } catch { return null; } }).filter(Boolean);
+  const preparationHistory = parseHistory((path) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`))
+    .filter((value) => value.sessionId === parentSessionId && value.executorAgentId === childThreadId);
+  const bindingHistory = parseHistory((path) => basename(path).startsWith('rescue-binding-session-')).filter((value) => value.parentSessionId === parentSessionId);
+  const jobs = parseHistory((path) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`)).filter((value) => value.ownerSessionId === parentSessionId);
+  const peer = (await readFile(peerRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  return { pending, unbound, bound, originIndex, executor, route, preparation,
+    role: { activeBytesBefore: roleBefore, activeBytesAfter: roleAfter, mtimeBefore: roleStatBefore.mtimeMs, mtimeAfter: roleStatAfter.mtimeMs },
+    hostCalls: [{ command: 'role-status rescue', workspace: executionWorkspace, stdout: roleResult.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: prepared.stdout },
+      { command: 'invoke-prepared rescue', workspace: executionWorkspace, stdout: firstInvoke.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: proactivePrepared.stdout },
+      { command: 'invoke-prepared rescue', workspace: executionWorkspace, stdout: secondInvoke.stdout }],
+    peer, preparationHistory, bindingHistory, jobs, cleanedPaths, remainingPaths };
+}
+
+function runRawChild(command, args, { cwd, env, input } = {}) {
+  const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false }); let stdout = ''; let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.stdin.end(input);
+  return new Promise((resolvePromise, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolvePromise({ code, signal, stdout, stderr })); });
+}
+
+function syntheticWorkspaceBoundContinuationFixture(route, originWorkspace, executionWorkspace) {
   const input = installedPreparedContinuationCapture(route, { workspace: executionWorkspace });
   const generationId = '9'.repeat(64); const parentSessionId = input.expected.parentSessionId;
   const childThreadId = input.expected.childThreadId;
@@ -2103,6 +2244,7 @@ function installedWorkspaceBoundContinuationCapture(route, originWorkspace, exec
   input.activeTurnRecordBytes = `${JSON.stringify(bound)}\n`;
   input.authorityTransitionBytesJson = JSON.stringify([pending, unbound, unbound, bound].map((record) => `${JSON.stringify(record)}\n`));
   input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: executionWorkspace,
+    activeBytesBefore: `${JSON.stringify(unbound)}\n`, activeBytesAfter: `${JSON.stringify(unbound)}\n`, mtimeBefore: 1, mtimeAfter: 1,
     result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
   input.originIndexRecordBytes = `${JSON.stringify({ version: 1, kind: 'active-turn-index',
     key: createHash('sha256').update(JSON.stringify([parentSessionId, originWorkspace])).digest('hex'), sessionId: parentSessionId,

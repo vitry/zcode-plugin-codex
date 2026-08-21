@@ -91,6 +91,7 @@ test('qualifies raw v3 origin-to-execution workspace authority and immutable gen
     `${JSON.stringify(pending)}\n`, `${JSON.stringify(unbound)}\n`, `${JSON.stringify(unbound)}\n`, `${JSON.stringify(bound)}\n`,
   ]);
   input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: expectedWorkspace,
+    activeBytesBefore: `${JSON.stringify(unbound)}\n`, activeBytesAfter: `${JSON.stringify(unbound)}\n`, mtimeBefore: 1, mtimeAfter: 1,
     result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
   input.originIndexRecordBytes = `${JSON.stringify({
     version: 1, kind: 'active-turn-index', key: createHash('sha256').update(JSON.stringify([parentId, expectedWorkspace])).digest('hex'),
@@ -174,8 +175,15 @@ test('workspace-binding qualification rejects authority, route, peer, and cleanu
     ['continuation-authority-transition', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const unbound = JSON.parse(rows[1]); unbound.sessionId = 'sibling-session'; rows[1] = `${JSON.stringify(unbound)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
     ['continuation-authority-order', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const pending = JSON.parse(rows[0]); pending.executionWorkspace = expectedWorkspace; rows[0] = `${JSON.stringify(pending)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
     ['continuation-role-mutation', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const preview = JSON.parse(rows[2]); preview.prompt = 'mutated by role'; rows[2] = `${JSON.stringify(preview)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
+    ['continuation-role-preview', (input) => { const role = JSON.parse(input.roleStatusEvidenceJson); role.mtimeAfter += 1; input.roleStatusEvidenceJson = JSON.stringify(role); }],
     ['continuation-origin-index', (input) => { const index = JSON.parse(input.originIndexRecordBytes); index.generationId = '8'.repeat(64); input.originIndexRecordBytes = `${JSON.stringify(index)}\n`; }],
+    ['continuation-origin-index', (input) => { delete input.originIndexRecordBytes; }],
     ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.parentGenerationId = '8'.repeat(64); input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.agentType = 'default'; input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.childTurnId = 'wrong-child-turn'; input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.createdAt = 'invalid'; input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.updatedAt = '2026-08-10T00:00:01.000Z'; input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.state = 'active'; input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
     ['continuation-executor-provenance', (input) => { const executor = JSON.parse(input.executorRecordBytes); executor.parentGenerationId = '8'.repeat(64); input.executorRecordBytes = `${JSON.stringify(executor)}\n`; }],
     ['continuation-peer-method', (input) => { const peer = JSON.parse(input.fakePeerJson); peer[0].params.workspace.workspacePath = '/origin-instead-of-target'; input.fakePeerJson = JSON.stringify(peer); }],
     ['continuation-authority-order', (input) => { const lifecycle = JSON.parse(input.authorityLifecycleJson); [lifecycle[9], lifecycle[10]] = [lifecycle[10], lifecycle[9]]; input.authorityLifecycleJson = JSON.stringify(lifecycle); }],
@@ -2155,6 +2163,7 @@ function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) 
   input.activeTurnRecordBytes = `${JSON.stringify(bound)}\n`;
   input.authorityTransitionBytesJson = JSON.stringify([pending, unbound, unbound, bound].map((record) => `${JSON.stringify(record)}\n`));
   input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: executionWorkspace,
+    activeBytesBefore: `${JSON.stringify(unbound)}\n`, activeBytesAfter: `${JSON.stringify(unbound)}\n`, mtimeBefore: 1, mtimeAfter: 1,
     result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
   input.originIndexRecordBytes = `${JSON.stringify({ version: 1, kind: 'active-turn-index',
     key: createHash('sha256').update(JSON.stringify([parentId, originWorkspace])).digest('hex'), sessionId: parentId,
