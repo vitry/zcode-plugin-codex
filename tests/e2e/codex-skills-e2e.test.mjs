@@ -772,7 +772,10 @@ test('installed continuation capture qualifies one parent turn from origin hooks
     (value) => { value.bindingHistory.at(-1).workspace = originWorkspace; },
     (value) => { value.jobs[1].workspace = originWorkspace; },
     (value) => { value.brokerHistory[0].config.workspace = originWorkspace; },
-    (value) => { value.brokerHistory[0].configBytes = value.brokerHistory[0].configBytes.replaceAll(executionWorkspace, originWorkspace); },
+    (value) => {
+      const config = JSON.parse(value.brokerHistory[0].configBytes); config.workspace = originWorkspace;
+      value.brokerHistory[0].configBytes = JSON.stringify(config);
+    },
     (value) => { value.brokerHistory[0].config.launchCwd = originWorkspace; },
     (value) => {
       value.brokerHistory[0].config.endpoint = observerExpected.originBrokerEndpoint; value.brokerHistory[0].identity.endpoint = observerExpected.originBrokerEndpoint;

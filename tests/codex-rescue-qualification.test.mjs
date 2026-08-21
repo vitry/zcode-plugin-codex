@@ -2128,7 +2128,7 @@ function activeTurnRecord(sessionId, turnId, workspace) {
 function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) {
   const input = preparedContinuationFixture('named');
   for (const field of ['parentRolloutJson', 'childRolloutJson', 'fakePeerJson']) {
-    input[field] = input[field].replaceAll(expectedWorkspace, executionWorkspace);
+    input[field] = JSON.stringify(replaceCapturedWorkspace(JSON.parse(input[field]), expectedWorkspace, executionWorkspace));
   }
   input.expected.workspace = executionWorkspace;
   input.expected.originWorkspace = originWorkspace;
@@ -2189,6 +2189,18 @@ function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) 
     ['target-cleanup', executionWorkspace, generationId, '2026-08-10T01:02:00.100Z'],
   ].map(([phase, workspace, generation, at]) => ({ phase, workspace, ...(generation === null ? {} : { generationId: generation }), at })));
   return input;
+}
+
+function replaceCapturedWorkspace(value, sourceWorkspace, targetWorkspace) {
+  if (typeof value === 'string') {
+    const escapedSource = JSON.stringify(sourceWorkspace).slice(1, -1);
+    const escapedTarget = JSON.stringify(targetWorkspace).slice(1, -1);
+    return value.replaceAll(escapedSource, escapedTarget).replaceAll(sourceWorkspace, targetWorkspace);
+  }
+  if (Array.isArray(value)) return value.map((entry) => replaceCapturedWorkspace(entry, sourceWorkspace, targetWorkspace));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
+    .map(([key, entry]) => [key, replaceCapturedWorkspace(entry, sourceWorkspace, targetWorkspace)]));
+  return value;
 }
 
 function runGit(args, cwd) {
