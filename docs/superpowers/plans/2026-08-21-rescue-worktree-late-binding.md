@@ -177,6 +177,13 @@ require one active v3 record whose generation/session/turn/origin/permission
 matches the caller. Ended, pending, active-missing, malformed, future, or
 superseded lifecycle state revokes the token before advisory file deletion.
 Only true absence of both lifecycle files permits legacy caller consumption.
+Keep `createCallerContext` as the compatible minting entry: true absence writes
+the byte-compatible 30-minute legacy record; an exact active v3
+session/turn/canonical-origin/permission match writes a generation-bound proved
+record with the unchanged opaque token and public projection. Pending, ended,
+missing, malformed, future, superseded, or mismatched lifecycle state writes no
+artifact. Fence publication from replacement and cleanup under the sole
+session -> workspace lock order.
 
 `workspaceBinding:'execution'` accepts only the origin or exact bound target and
 returns `workspace` as the bound target. `resolveOnlyActiveTurn` follows the

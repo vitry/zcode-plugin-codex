@@ -222,6 +222,16 @@ v3 record. Pending, ended, missing-active, malformed, future, or superseded
 state rejects the token even if advisory workspace cleanup was interrupted.
 Only true absence of both lifecycle files permits the legacy caller schema.
 
+The existing `createCallerContext` entry remains the compatibility minting
+surface. When both lifecycle files are truly absent it writes the exact legacy
+record with its 30-minute expiry. When a valid active v3 lifecycle exists, it
+instead mints the same opaque public token backed by a proved caller record
+bound to that active generation, but only for an exact session, turn,
+canonical origin workspace, and permission match. Every other lifecycle state
+or mismatch fails closed without creating an artifact. Publication revalidates
+under the sole session-to-workspace lock order so replacement and cleanup
+cannot race a stale generation into existence.
+
 The existing interface gains compatible return metadata and one optional
 resolution discriminator:
 
