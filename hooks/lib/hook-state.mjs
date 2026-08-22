@@ -40,27 +40,32 @@ async function readOnlyPaths(dataRoot, workspace) {
   let dataRootPath;
   try { dataRootPath = await realpath(resolve(dataRoot)); } catch (error) { if (error?.code === 'ENOENT') return { workspacePath, workspaceKey, existing: false }; throw error; }
   const workspacesDirectory = join(dataRootPath, 'workspaces'); const directory = join(workspacesDirectory, workspaceKey); const hookState = join(directory, 'hook-state'); const lock = join(hookState, '.lock');
+  for (const path of [dataRootPath, workspacesDirectory, directory, hookState]) {
+    try { await validateExistingDirectory(path); }
+    catch (error) { if (error?.code === 'ENOENT') return { dataRootPath, directory, workspaceKey, workspacePath, lock, existing: false }; throw error; }
+  }
   try {
-    for (const path of [dataRootPath, workspacesDirectory, directory, hookState, lock]) await validateExistingDirectory(path);
+    await validateExistingDirectory(lock);
     const lockFile = join(lock, 'advisory.lock'); const lockStats = await lstat(lockFile);
     if (lockStats.isSymbolicLink() || !lockStats.isFile() || await realpath(lockFile) !== lockFile) throw new Error('unsafe private lock file');
-  } catch (error) {
-    if (error?.code === 'ENOENT') return { dataRootPath, directory, workspaceKey, workspacePath, lock, existing: false };
-    throw error;
-  }
+  } catch (cause) { throw executorError('EXECUTOR_ROUTE_INVALID', 'The private hook-state lock layout is invalid.', cause); }
   return { dataRootPath, directory: hookState, workspaceKey, workspacePath, lock, existing: true };
 }
 async function validateExistingDirectory(path) {
   const stats = await lstat(path); if (stats.isSymbolicLink() || !stats.isDirectory() || await realpath(path) !== path) throw new Error('unsafe private directory');
 }
-async function withExistingFileLock(lockPath, operation) {
+async function withExistingFileLock(lockPath, operation, seam) {
   const lockDirectoryStats = await lstat(lockPath); const lockFilePath = join(lockPath, 'advisory.lock'); const lockFileStats = await lstat(lockFilePath);
   if (lockDirectoryStats.isSymbolicLink() || !lockDirectoryStats.isDirectory() || lockFileStats.isSymbolicLink() || !lockFileStats.isFile()) throw new Error('unsafe private lock');
-  const handle = await open(lockFilePath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0)); let acquired = false;
+  await seam?.('after-initial-lock-snapshot', lockPath);
+  const handle = await open(lockFilePath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0)); let confirmationHandle; let acquired = false;
   try {
-    const openedStats = await handle.stat(); const currentDirectoryStats = await lstat(lockPath); const currentFileStats = await lstat(lockFilePath);
-    if (openedStats.ino !== currentFileStats.ino || process.platform !== 'win32' && openedStats.dev !== currentFileStats.dev
-      || lockDirectoryStats.ino !== currentDirectoryStats.ino || process.platform !== 'win32' && lockDirectoryStats.dev !== currentDirectoryStats.dev) throw new Error('unsafe private lock');
+    const openedStats = await handle.stat(); confirmationHandle = await open(lockFilePath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+    const confirmationStats = await confirmationHandle.stat(); const currentDirectoryStats = await lstat(lockPath); const currentFileStats = await lstat(lockFilePath);
+    if (!openedStats.isFile() || !confirmationStats.isFile() || currentDirectoryStats.isSymbolicLink() || !currentDirectoryStats.isDirectory() || currentFileStats.isSymbolicLink() || !currentFileStats.isFile()
+      || !sameLockIdentity(lockDirectoryStats, currentDirectoryStats) || !sameLockIdentity(lockFileStats, openedStats)
+      || !sameLockIdentity(lockFileStats, currentFileStats) || !sameLockIdentity(lockFileStats, confirmationStats)) throw new Error('unsafe private lock');
+    await confirmationHandle.close(); confirmationHandle = undefined;
     const startedAt = Date.now();
     while (!acquired) {
       acquired = tryLock(handle.fd);
@@ -70,10 +75,12 @@ async function withExistingFileLock(lockPath, operation) {
     }
     return await operation();
   } finally {
+    await confirmationHandle?.close().catch(() => {});
     if (acquired) unlock(handle.fd);
     await handle.close();
   }
 }
+function sameLockIdentity(left, right) { return left.ino === right.ino && (process.platform === 'win32' || left.dev === right.dev); }
 function key(...values) { return createHash('sha256').update(JSON.stringify(values)).digest('hex'); }
 
 export async function fingerprintWorkspace(workspace) {
@@ -216,7 +223,7 @@ export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionI
     return { ...route };
   });
 }
-async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, sessionId, childTurnId) {
+async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, sessionId, childTurnId, seam) {
   let origin; try { origin = await readOnlyPaths(dataRoot, originWorkspace); } catch (cause) { throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.', cause); }
   if (!origin.existing) throw executorError('EXECUTOR_ROUTE_NOT_FOUND', 'No exact trusted executor route matches this child.');
   return withExistingFileLock(origin.lock, async () => {
@@ -225,20 +232,21 @@ async function resolveForwardingRouteReadOnly(dataRoot, originWorkspace, session
     catch (error) { throw executorError(error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT' ? 'EXECUTOR_ROUTE_NOT_FOUND' : 'EXECUTOR_ROUTE_INVALID', 'No exact trusted executor route matches this child.', error); }
     if (!validExecutorRoute(route, origin.workspacePath) || route.parentSessionId !== sessionId || route.childTurnId !== childTurnId) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.');
     return { ...route };
-  }).catch((cause) => {
+  }, seam).catch((cause) => {
     if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route is invalid.', cause);
   });
 }
 export async function resolveForwardingExecutor(dataRoot, workspace, agentId, options = {}) {
-  const probe = await probeForwardingExecutor(dataRoot, workspace, agentId, options, false);
+  const probe = await probeForwardingExecutor(dataRoot, workspace, agentId, options, false, undefined);
   if (probe.kind === 'absent') throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
-  return validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, false);
+  return validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, false, undefined);
 }
 export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId, options = {}) {
-  const probe = await probeForwardingExecutor(dataRoot, ambientWorkspace, agentId, options, true);
+  if (options.readOnlyLockSeam !== undefined && typeof options.readOnlyLockSeam !== 'function') throw executorError('EXECUTOR_ROUTE_INVALID', 'The private read-only lock seam is invalid.');
+  const probe = await probeForwardingExecutor(dataRoot, ambientWorkspace, agentId, options, true, options.readOnlyLockSeam);
   if (probe.kind === 'selected') {
-    const executor = await validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, true);
+    const executor = await validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor, true, options.readOnlyLockSeam);
     return { executor, executionWorkspace: probe.store.workspacePath };
   }
   if (!probe.store.existing) throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
@@ -264,12 +272,12 @@ export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace
       if (options.durableProvenance === true || routes[0].state !== 'active') throw executorError('EXECUTOR_STATE_MISMATCH', 'The private executor route is not active.');
     }
     return { ...routes[0] };
-  }); } catch (cause) {
+  }, options.readOnlyLockSeam); } catch (cause) {
     if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route store is invalid.', cause);
   }
   let targetProbe;
-  try { targetProbe = await probeForwardingExecutor(dataRoot, route.targetWorkspace, agentId, options, true); }
+  try { targetProbe = await probeForwardingExecutor(dataRoot, route.targetWorkspace, agentId, options, true, undefined); }
   catch (cause) {
     if (['EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_ROLE_UNAPPROVED', 'EXECUTOR_STATE_MISMATCH'].includes(cause?.code)) throw cause;
     throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route target is invalid.', cause);
@@ -279,10 +287,13 @@ export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace
   if (!executorMatchesRoute(executor, route)) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route does not match its executor.');
   return { executor, executionWorkspace: executor.workspace };
 }
-async function probeForwardingExecutor(dataRoot, workspace, agentId, options, routed) {
+async function probeForwardingExecutor(dataRoot, workspace, agentId, options, routed, lockSeam) {
   let store;
   try { store = routed ? await readOnlyPaths(dataRoot, workspace) : await paths(dataRoot, workspace); }
-  catch (cause) { throw executorError('EXECUTOR_IDENTITY_INVALID', 'The private subagent executor store is invalid.', cause); }
+  catch (cause) {
+    if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
+    throw executorError('EXECUTOR_IDENTITY_INVALID', 'The private subagent executor store is invalid.', cause);
+  }
   if (routed && !store.existing) return { kind: 'absent', store };
   const canonicalName = `executor-${key('executor', agentId)}.json`;
   let selected;
@@ -324,19 +335,19 @@ async function probeForwardingExecutor(dataRoot, workspace, agentId, options, ro
     }
     if (candidates.length !== 1) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'The parent turn does not have exactly one active Rescue executor.');
     return selected;
-  }); } catch (cause) {
+  }, routed ? lockSeam : undefined); } catch (cause) {
     if (cause instanceof PluginError && `${cause.code}`.startsWith('EXECUTOR_')) throw cause;
     throw executorError('EXECUTOR_IDENTITY_INVALID', 'The private subagent executor store is invalid.', cause);
   }
   return selected === null ? { kind: 'absent', store } : { kind: 'selected', store, executor: selected };
 }
-async function validateForwardingExecutorRoute(dataRoot, store, selected, readOnly) {
+async function validateForwardingExecutorRoute(dataRoot, store, selected, readOnly, seam) {
   if (isLegacyExecutorRecord(selected, store.workspacePath)) {
     if (!await legacyExecutorAuthorityExists(dataRoot, store.workspacePath, selected)) throw executorError('EXECUTOR_ROUTE_INVALID', 'Legacy executor routing is unavailable while lifecycle authority exists.');
     return selected;
   }
   const route = readOnly
-    ? await resolveForwardingRouteReadOnly(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId)
+    ? await resolveForwardingRouteReadOnly(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId, seam)
     : await resolveForwardingRoute(dataRoot, selected.originWorkspace, selected.parentSessionId, selected.childTurnId);
   if (!executorMatchesRoute(selected, route)) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route does not match this executor.');
   if (selected.active && route.state !== 'active' || !selected.active && route.state !== 'stopped') throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route state does not match this executor.');

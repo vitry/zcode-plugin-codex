@@ -457,6 +457,34 @@ test('routed executor never creates or mutates storage while rejecting an unprov
   assert.deepEqual(await privateTreeSnapshot(fixture.data), before, 'a forged target without an existing partition must leave the entire private data tree unchanged');
 });
 
+test('routed executor treats a missing lock directory in populated hook state as corruption', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'routed-missing-lock-directory');
+  await rm(join(fixture.originDirectory, '.lock'), { recursive: true });
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_ROUTE_INVALID' });
+});
+
+test('routed executor treats a missing advisory lock in populated hook state as corruption', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'routed-missing-advisory-lock');
+  await unlink(join(fixture.originDirectory, '.lock', 'advisory.lock'));
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_ROUTE_INVALID' });
+});
+
+test('routed executor rejects advisory lock replacement after its initial identity snapshot', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'routed-lock-replacement'); const advisoryLock = join(fixture.originDirectory, '.lock', 'advisory.lock'); let replaced = false;
+  let caught; try { await resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id, { readOnlyLockSeam: async (point, lockPath) => {
+    if (point !== 'after-initial-lock-snapshot' || lockPath !== join(fixture.originDirectory, '.lock') || replaced) return;
+    replaced = true; await unlink(advisoryLock); await writeFile(advisoryLock, '');
+  } }); } catch (error) { caught = error; }
+  assert.equal(replaced, true, 'the deterministic seam must replace the lock between initial lstat and open');
+  assert.equal(caught?.code, 'EXECUTOR_IDENTITY_INVALID');
+});
+
+test('read-only lock test seam cannot observe the routed target lock path', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'routed-lock-seam-scope'); const observed = new Set();
+  await resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id, { readOnlyLockSeam: async (point, lockPath) => { if (point === 'after-initial-lock-snapshot') observed.add(lockPath); } });
+  assert.deepEqual([...observed], [join(fixture.originDirectory, '.lock')]);
+});
+
 test('routed executor requires every route and executor authority field to match exactly', async (t) => {
   const fixture = await routedExecutorFixture(t, 'routed-exact-match'); const routeBytes = await readFile(fixture.routePath); const route = JSON.parse(routeBytes); const executorBytes = await readFile(fixture.executorPath); const executor = JSON.parse(executorBytes);
   for (const changes of [
