@@ -1,7 +1,7 @@
 ---
 status: accepted
 supersedes: caller-capability-through-model-and-fd
-amended: 2026-08-20
+amended: 2026-08-20; 2026-08-21
 ---
 
 # Use a thread-bound direct companion for installed Skills
@@ -81,6 +81,12 @@ All earlier rationale about keeping secrets out of model-visible commands,
 binding child identity through native lifecycle hooks, and failing closed is
 retained. Only Rescue command-location selection is superseded: the model no
 longer constructs or directly invokes `scripts/zcode-companion.mjs`.
+
+## Rescue worktree late-binding amendment (2026-08-21)
+
+The active parent turn now distinguishes its trusted origin workspace from one optional execution workspace. The first trusted prepare automatically binds an immutable target for the turn, without manual handoff. A different target is eligible only when it is an exact canonical linked-worktree top level with the same canonical Git common-dir as the origin workspace. Role inspection remains read-only and a child cannot claim or redirect this authority.
+
+SubagentStart and SubagentStop may continue to arrive at the origin workspace. A generation-bound private route points to executor storage in the execution workspace, where preparation, job, binding, broker, and peer state remain isolated. Root Stop, a new prompt, and SessionEnd revoke or replace authority before advisory cleanup. This deepens the existing thread-bound active-turn semantic; it does not create a second handoff authority or weaken the launcher boundary.
 
 ## Rejected alternative
 

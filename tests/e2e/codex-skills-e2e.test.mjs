@@ -2,8 +2,10 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
@@ -16,6 +18,7 @@ import { renderRescueLauncherCommand } from '../../scripts/lib/rescue-launcher-c
 import { codexLaunch, npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
+import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import {
   assertCodexRescueDisplayName,
   CodexRescueEvidenceMismatchError,
@@ -43,6 +46,9 @@ import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const fakeZCode = fileURLToPath(new URL('../fixtures/fake-zcode-cli.mjs', import.meta.url));
+const fakeCodex = fileURLToPath(new URL('../fixtures/fake-codex-app-server.mjs', import.meta.url));
+const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
+const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
 const TEST_PROCESS_NONCE = 'a'.repeat(64);
 const STALE_PROCESS_NONCE = 'b'.repeat(64);
 const SUPPORTED_CODEX_LINES = Object.freeze(['0.147']);
@@ -656,24 +662,147 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
   ]) {
     const temporary = await mkdtemp(join(tmpdir(), 'zcode-raw-continuation-')); t.after(() => rm(temporary, { recursive: true, force: true }));
     const workspaceDirectory = join(temporary, 'workspace'); const dataRoot = join(temporary, 'data'); await Promise.all([mkdir(workspaceDirectory), mkdir(dataRoot)]); const workspace = await realpath(workspaceDirectory);
-    const installedHooks = join(root, 'marketplace', 'plugins', 'zcode', 'hooks'); const hookEnv = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+    const parentSessionId = '019fe6df-faa2-7851-8edb-55f1be7d5489';
+    const installedRoot = join(root, 'marketplace', 'plugins', 'zcode');
+    const installedHooks = join(installedRoot, 'hooks'); const hookEnv = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
     const hook = async (script, input) => runChild(process.execPath, [join(installedHooks, script)], { cwd: workspace, env: hookEnv, ordinaryInput: true, input });
-    assert.equal((await hook('session-lifecycle-hook.mjs', { session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' })).code, 0);
-    assert.equal((await hook('user-prompt-hook.mjs', { session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', turn_id: 'turn-original', cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue --fresh repair' })).code, 0);
+    assert.equal((await hook('session-lifecycle-hook.mjs', { session_id: parentSessionId, cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' })).code, 0);
+    assert.equal((await hook('user-prompt-hook.mjs', { session_id: parentSessionId, turn_id: 'turn-original', cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue --fresh repair' })).code, 0);
+    const prepared = await runRawChild(process.execPath, [join(installedRoot, 'skills', 'rescue', 'launcher.mjs'), 'prepare', 'rescue'], {
+      cwd: workspace,
+      env: { ...process.env, ZCODE_DATA_ROOT: dataRoot, CODEX_THREAD_ID: parentSessionId,
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() },
+      input: `${JSON.stringify({ version: 1, source: 'explicit', task: 'repair', options: { execution: 'foreground', resume: 'fresh' } })}\n`,
+    });
+    assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout); assert.match(prepared.stdout, /"type":"prepared"/u);
+    const activeKey = createHash('sha256').update(JSON.stringify([parentSessionId])).digest('hex');
+    const active = JSON.parse(await readFile(join(dataRoot, 'identity-lifecycle', 'active-turns', `${activeKey}.json`), 'utf8'));
+    assert.equal(active.originWorkspace, workspace); assert.equal(active.executionWorkspace, active.originWorkspace);
     const agentType = route === 'named' ? 'zcode-rescue' : 'default';
-    const lifecycle = (event) => ({ session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', turn_id: 'child-turn', cwd: workspace, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: '019fe6e0-4764-7192-83ba-0b0cc2c48660', agent_type: agentType, ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
+    const lifecycle = (event) => ({ session_id: parentSessionId, turn_id: 'child-turn', cwd: workspace, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: '019fe6e0-4764-7192-83ba-0b0cc2c48660', agent_type: agentType, ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
     assert.equal((await hook('subagent-hook.mjs', lifecycle('SubagentStart'))).code, 0);
     assert.equal((await hook('subagent-hook.mjs', lifecycle('SubagentStop'))).code, 0);
-    const executorPath = (await recursiveFiles(dataRoot)).find((path) => basename(path).startsWith('executor-'));
-    assert.ok(executorPath, 'installed hooks must persist the exact stopped executor record');
+    const executorArtifacts = await Promise.all((await recursiveFiles(dataRoot)).filter((path) => basename(path).startsWith('executor-'))
+      .map((path) => readFile(path, 'utf8')));
+    const executorArtifact = executorArtifacts.find((bytes) => JSON.parse(bytes).kind === 'subagent-executor');
+    assert.ok(executorArtifact, 'installed hooks must persist the exact stopped executor record');
+    const executor = JSON.parse(executorArtifact);
+    assert.deepEqual(Object.keys(executor).sort(), ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
+    assert.equal(executor.kind, 'subagent-executor'); assert.equal(executor.active, false);
+    assert.equal(executor.agentId, '019fe6e0-4764-7192-83ba-0b0cc2c48660'); assert.equal(executor.agentType, agentType);
+    assert.equal(executor.parentSessionId, parentSessionId); assert.equal(executor.parentTurnId, 'turn-original');
+    assert.equal(executor.parentPermissionMode, 'acceptEdits'); assert.equal(executor.childTurnId, 'child-turn');
+    assert.equal(executor.parentGenerationId, active.generationId); assert.equal(executor.originWorkspace, workspace); assert.equal(executor.workspace, workspace);
+    assert.ok(Number.isFinite(Date.parse(executor.createdAt)));
     assert.match(skill, /stopped exact same-operation child/i);
     const evidence = await assertInstalledPreparedContinuationContract(source, installedPreparedContinuationCapture(route, {
-      workspace, executorRecordBytes: await readFile(executorPath, 'utf8'),
-      hookLifecycleJson: JSON.stringify([{ hook_event_name: 'UserPromptSubmit', session_id: '019fe6df-faa2-7851-8edb-55f1be7d5489', turn_id: 'turn-original', cwd: workspace, permission_mode: 'acceptEdits' }, { ...lifecycle('SubagentStart'), parent_turn_id: 'turn-original' }, { ...lifecycle('SubagentStop'), parent_turn_id: 'turn-original' }]),
+      workspace,
+      hookLifecycleJson: JSON.stringify([{ hook_event_name: 'UserPromptSubmit', session_id: parentSessionId, turn_id: 'turn-original', cwd: workspace, permission_mode: 'acceptEdits' }, { ...lifecycle('SubagentStart'), parent_turn_id: 'turn-original' }, { ...lifecycle('SubagentStop'), parent_turn_id: 'turn-original' }]),
     }), { expectedLauncherCommand });
     assert.equal(evidence.continuationSpawnCount, 0);
     assert.equal(evidence.peerResumeChecked, true);
   }
+});
+
+test('installed broker oracle fixes endpoint and launch cwd contracts across POSIX and Windows', () => {
+  assert.equal(installedBrokerEndpointOracle({ platform: 'linux', dataRoot: '/oracle-data', workspace: '/oracle-workspace', uid: 501 }),
+    '/tmp/zcode-501/d07fa5b711f3b5301051242f97ddbd1b.sock');
+  assert.equal(installedBrokerEndpointOracle({ platform: 'win32', dataRoot: 'C:\\oracle-data', workspace: 'C:\\oracle-workspace', uid: 501 }),
+    '\\\\.\\pipe\\zcode-b86f3cfefc611380478c4ad8aa53889f');
+  assert.deepEqual(installedBrokerCwdOracle({ platform: 'linux', executionWorkspace: '/execution', canonicalTemp: '/temp' }),
+    { daemon: '/temp', protocol: '/execution' });
+  assert.deepEqual(installedBrokerCwdOracle({ platform: 'win32', executionWorkspace: 'C:\\execution', canonicalTemp: 'C:\\temp' }),
+    { daemon: 'C:\\temp', protocol: 'C:\\temp' });
+  assert.equal(sameCanonicalInstalledPath(process.cwd(), join(process.cwd(), '.')), true);
+});
+
+test('installed continuation capture qualifies one parent turn from origin hooks into a linked execution worktree', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-installed-worktree-capture-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const originDirectory = join(temporary, 'origin'); const executionDirectory = join(temporary, 'execution');
+  await initializeGitWorkspace(originDirectory);
+  await git(['worktree', 'add', '-qb', 'installed-capture-target', executionDirectory], originDirectory);
+  const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(executionDirectory);
+  const observed = await observeInstalledWorkspaceBoundAuthority({ temporary, originWorkspace, executionWorkspace });
+  const observerDataRoot = join(temporary, 'installed-observer-data');
+  const [observerOriginStorage, observerExecutionStorage] = await Promise.all([
+    resolveWorkspaceStorage({ dataRoot: observerDataRoot, workspace: originWorkspace }),
+    resolveWorkspaceStorage({ dataRoot: observerDataRoot, workspace: executionWorkspace }),
+  ]);
+  const endpointInput = { platform: process.platform, dataRoot: observerDataRoot, workspace: executionWorkspace };
+  const brokerEndpoint = installedBrokerEndpointOracle(endpointInput);
+  const originBrokerEndpoint = installedBrokerEndpointOracle({ platform: process.platform, dataRoot: observerDataRoot, workspace: originWorkspace });
+  const wrongSharedEndpoint = installedBrokerEndpointOracle({ ...endpointInput, identity: 'wrong-shared' });
+  assert.notEqual(brokerEndpoint, originBrokerEndpoint);
+  const brokerCwds = installedBrokerCwdOracle({ platform: process.platform, executionWorkspace, canonicalTemp: await realpath(tmpdir()) });
+  const observerExpected = { parentSessionId: '019fe6df-faa2-7851-8edb-55f1be7d5489', parentTurnId: 'turn-original', childThreadId: '019fe6e0-4764-7192-83ba-0b0cc2c48660',
+    childTurnId: 'child-turn', originWorkspace, executionWorkspace, permissionMode: 'acceptEdits',
+    ownerId: createHash('sha256').update(JSON.stringify(['zcode-owner-v1', '019fe6df-faa2-7851-8edb-55f1be7d5489'])).digest('hex'),
+    originBrokerDirectory: join(observerOriginStorage.directory, 'broker'), executionBrokerDirectory: join(observerExecutionStorage.directory, 'broker'),
+    brokerEndpoint, originBrokerEndpoint, wrongSharedEndpoint, brokerProcessCwd: brokerCwds.daemon, protocolLaunchCwd: brokerCwds.protocol };
+  assertInstalledWorkspaceBoundObservation(observed, observerExpected);
+  assert.equal(observed.pending.status, 'pending');
+  assert.equal(observed.unbound.status, 'active'); assert.equal(observed.unbound.executionWorkspace, null);
+  assert.deepEqual(observed.role.activeBytesAfter, observed.role.activeBytesBefore);
+  assert.equal(observed.role.mtimeAfter, observed.role.mtimeBefore);
+  assert.equal(observed.bound.executionWorkspace, executionWorkspace);
+  assert.equal(observed.originIndex.originWorkspace, originWorkspace);
+  assert.equal(observed.executor.workspace, executionWorkspace);
+  assert.equal(observed.route.originWorkspace, originWorkspace);
+  assert.equal(observed.route.targetWorkspace, executionWorkspace);
+  assert.equal(observed.preparation.workspace, executionWorkspace);
+  assert.deepEqual(observed.hostCalls.map(({ command, workspace }) => ({ command, workspace })), [
+    { command: 'role-status rescue', workspace: executionWorkspace },
+    { command: 'prepare rescue', workspace: executionWorkspace },
+    { command: 'invoke-prepared rescue', workspace: executionWorkspace },
+    { command: 'prepare rescue', workspace: executionWorkspace },
+    { command: 'invoke-prepared rescue', workspace: executionWorkspace },
+  ]);
+  const creates = observed.peer.filter((call) => call.method === 'session/create'); const sends = observed.peer.filter((call) => call.method === 'session/send');
+  assert.equal(creates.length, 1); assert.equal(creates[0].params.workspace.workspacePath, executionWorkspace);
+  assert.equal(sends.length, 2); assert.equal(new Set(sends.map((call) => call.params.sessionId)).size, 1);
+  assert.ok(observed.preparationHistory.length >= 2); assert.ok(observed.bindingHistory.length >= 2); assert.ok(observed.jobs.length >= 2);
+  assert.equal(JSON.stringify(observed.hostCalls).includes('installed-observer-private-sentinel'), false);
+  assert.deepEqual(observed.cleanedPaths.filter((path) => observed.remainingPaths.includes(path)), []);
+  for (const mutate of [
+    (value) => { value.preparationHistory[0].workspace = originWorkspace; },
+    (value) => { value.preparationHistory[1].generation = value.preparationHistory[0].generation; },
+    (value) => { value.jobs[1].id = value.jobs[0].id; },
+    (value) => { value.bindingHistory.at(-1).records[0].currentJobId = value.bindingHistory[0].records[0].currentJobId; },
+    (value) => { value.bindingHistory.at(-1).workspace = originWorkspace; },
+    (value) => { value.jobs[1].workspace = originWorkspace; },
+    (value) => { value.brokerHistory[0].config.workspace = originWorkspace; },
+    (value) => {
+      const config = JSON.parse(value.brokerHistory[0].configBytes); config.workspace = originWorkspace;
+      value.brokerHistory[0].configBytes = JSON.stringify(config);
+    },
+    (value) => { value.brokerHistory[0].config.launchCwd = originWorkspace; },
+    (value) => {
+      value.brokerHistory[0].config.endpoint = observerExpected.originBrokerEndpoint; value.brokerHistory[0].identity.endpoint = observerExpected.originBrokerEndpoint;
+      value.brokerHistory[0].configBytes = JSON.stringify(value.brokerHistory[0].config); value.brokerHistory[0].identityBytes = JSON.stringify(value.brokerHistory[0].identity);
+    },
+    (value) => {
+      value.brokerHistory[0].config.endpoint = observerExpected.wrongSharedEndpoint; value.brokerHistory[0].identity.endpoint = observerExpected.wrongSharedEndpoint;
+      value.brokerHistory[0].configBytes = JSON.stringify(value.brokerHistory[0].config); value.brokerHistory[0].identityBytes = JSON.stringify(value.brokerHistory[0].identity);
+    },
+    (value) => { value.brokerHistory[0].configPath = join(value.brokerHistory[0].originBrokerDirectory, basename(value.brokerHistory[0].configPath)); },
+    (value) => { value.brokerHistory[0].owners.sessions[value.brokerHistory[0].sessionId] = 'wrong-owner'; },
+    (value) => { value.brokerHistory[0].owners.sessions = { 'wrong-session': observerExpected.ownerId }; },
+    (value) => { value.brokerHistory = []; },
+  ]) {
+    const changed = structuredClone(observed); mutate(changed);
+    assert.throws(() => assertInstalledWorkspaceBoundObservation(changed, observerExpected), /installed observer/u);
+  }
+  const capture = installedWorkspaceBoundCaptureFromObservation(observed, observerExpected);
+  const evidence = await qualifyCodexRescuePreparedContinuationEvidence(capture);
+  assert.equal(evidence.originWorkspace, originWorkspace);
+  assert.equal(evidence.executionWorkspace, executionWorkspace);
+  assert.equal(evidence.workspaceBindingChecked, true);
+  assert.notEqual(evidence.originWorkspace, evidence.executionWorkspace);
+  const hooks = JSON.parse(capture.hookLifecycleJson);
+  assert.ok(hooks.every((event) => event.cwd === originWorkspace));
+  const peerCreate = JSON.parse(capture.fakePeerJson).find((event) => event.method === 'session/create');
+  assert.equal(peerCreate.params.workspace.workspacePath, executionWorkspace);
 });
 
 test('deterministic installed observer artifacts flow through the live continuation capture path', async (t) => {
@@ -1870,6 +1999,27 @@ function pathWithin(root, path) {
   return descendant === '' || descendant !== '..' && !descendant.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(descendant);
 }
 
+// Independent test oracle for the broker endpoint contract: SHA-256 over the
+// canonical data root, canonical workspace, and profile identity, truncated to
+// 128 bits and placed in the platform's fixed local endpoint namespace.
+function installedBrokerEndpointOracle({ platform, dataRoot, workspace, identity = 'shared', uid = typeof process.getuid === 'function' ? process.getuid() : 'user' }) {
+  const canonical = (path) => { try { return realpathSync.native(resolve(path)); } catch { return path; } };
+  const digest = createHash('sha256').update(JSON.stringify([canonical(dataRoot), canonical(workspace), identity])).digest('hex').slice(0, 32);
+  return platform === 'win32' ? `\\\\.\\pipe\\zcode-${digest}` : `/tmp/zcode-${uid}/${digest}.sock`;
+}
+
+function installedBrokerCwdOracle({ platform, executionWorkspace, canonicalTemp }) {
+  return { daemon: canonicalTemp, protocol: platform === 'win32' ? canonicalTemp : executionWorkspace };
+}
+
+function sameCanonicalInstalledPath(left, right) {
+  const canonical = (path) => { try { return realpathSync.native(resolve(path)); } catch { return resolve(path); } };
+  const [canonicalLeft, canonicalRight] = [canonical(left), canonical(right)];
+  return process.platform === 'win32'
+    ? canonicalLeft.toLocaleLowerCase('en-US') === canonicalRight.toLocaleLowerCase('en-US')
+    : canonicalLeft === canonicalRight;
+}
+
 async function recursiveFiles(directory, found = []) {
   let entries; try { entries = await readdir(directory, { withFileTypes: true }); } catch { return found; }
   for (const entry of entries) {
@@ -2068,6 +2218,291 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     ]),
     fakePeerJson: JSON.stringify([{ id: 1, method: 'session/create', params: { workspace: { workspacePath: workspace, workspaceKey: workspace } } }, { id: 2, method: 'session/send', params: { sessionId: 'zcode-session-original', inputId: 'input-original', queryId: 'input-original', content: 'initial objective' } }, { id: 3, method: 'session/resume', params: { sessionId: 'zcode-session-original' } }, { id: 4, method: 'session/send', params: { sessionId: 'zcode-session-original', inputId: 'input-continuation', queryId: 'input-continuation', content: 'continuation objective' } }]),
   };
+}
+
+async function observeInstalledWorkspaceBoundAuthority({ temporary, originWorkspace, executionWorkspace }) {
+  const parentSessionId = '019fe6df-faa2-7851-8edb-55f1be7d5489'; const parentTurnId = 'turn-original';
+  const childThreadId = '019fe6e0-4764-7192-83ba-0b0cc2c48660'; const childTurnId = 'child-turn';
+  const dataRoot = join(temporary, 'installed-observer-data'); const codexHome = join(temporary, 'installed-observer-codex-home');
+  const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+  await mkdir(installed, { recursive: true });
+  for (const name of ['agents', 'hooks', 'schemas', 'scripts', 'skills']) await cp(join(root, name), join(installed, name), { recursive: true });
+  await cp(join(root, 'package.json'), join(installed, 'package.json')); await symlink(dependencyNodeModules, join(installed, 'node_modules'), 'dir');
+  const hookEnv = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+  const hookInput = (event, extra = {}) => event === 'SessionEnd'
+    ? { session_id: parentSessionId, cwd: originWorkspace, hook_event_name: event, transcript_path: null, ...extra }
+    : { session_id: parentSessionId, turn_id: event === 'SessionStart' ? undefined : event === 'UserPromptSubmit' ? parentTurnId : childTurnId,
+      cwd: originWorkspace, hook_event_name: event, transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', ...extra };
+  const runHook = async (script, input) => {
+    const result = await runChild(process.execPath, [join(installed, 'hooks', script)], { cwd: originWorkspace, env: hookEnv, ordinaryInput: true, input });
+    assert.equal(result.code, 0, result.stderr || result.stdout); return result;
+  };
+  await runHook('session-lifecycle-hook.mjs', hookInput('SessionStart', { source: 'startup' }));
+  const globalKey = createHash('sha256').update(JSON.stringify([parentSessionId])).digest('hex');
+  const activePath = join(dataRoot, 'identity-lifecycle', 'active-turns', `${globalKey}.json`);
+  const prompt = hookInput('UserPromptSubmit', { prompt: '$zcode:rescue installed-observer-private-sentinel' });
+  const originStorage = await resolveWorkspaceStorage({ dataRoot, workspace: originWorkspace });
+  const originIdentityLock = join(originStorage.directory, 'identity', '.lock'); await mkdir(dirname(originIdentityLock), { recursive: true });
+  const lockProcess = spawn(process.execPath, [join(root, 'tests', 'fixtures', 'lock-holder.mjs'), originIdentityLock], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let lockStdout = ''; let lockStderr = ''; lockProcess.stdout.on('data', (chunk) => { lockStdout += chunk; }); lockProcess.stderr.on('data', (chunk) => { lockStderr += chunk; });
+  await waitUntil(() => lockStdout.includes('acquired\n'), 5_000, `installed observer identity lock did not arm: ${lockStderr}`);
+  const promptProcess = runRawChild(process.execPath, [join(installed, 'hooks', 'user-prompt-hook.mjs')], { cwd: originWorkspace, env: hookEnv, input: `${JSON.stringify(prompt)}\n` });
+  const pendingBytes = await waitForValue(async () => {
+    const bytes = await readFile(activePath, 'utf8').catch(() => null);
+    if (!bytes) return undefined;
+    try { return JSON.parse(bytes).status === 'pending' ? bytes : undefined; } catch { return undefined; }
+  }, 5_000, 'installed observer did not reach the deterministic pending publication barrier');
+  lockProcess.stdin.end('release\n');
+  const promptResult = await promptProcess; assert.equal(promptResult.code, 0, promptResult.stderr || promptResult.stdout);
+  const finalUnboundBytes = await readFile(activePath, 'utf8');
+  const pending = JSON.parse(pendingBytes); const unbound = JSON.parse(finalUnboundBytes);
+
+  const canonicalDataRoot = await realpath(dataRoot); const installedRoot = await realpath(installed); const rolePaths = managedRolePaths(canonicalDataRoot);
+  const configFile = join(canonicalDataRoot, 'config.toml');
+  const roleBytes = Buffer.from(renderManagedRescueRole({ template: await readFile(join(installed, 'agents', 'zcode-rescue.toml.template'), 'utf8'), pluginRoot: installedRoot }));
+  await mkdir(dirname(rolePaths.rolePath), { recursive: true }); await writeFile(rolePaths.rolePath, roleBytes);
+  await writeFile(rolePaths.receiptPath, `${JSON.stringify({ schemaVersion: '1.0.0', roleName: 'zcode-rescue', plugin: { identity: 'zcode@vitry', version: '0.1.0', root: installedRoot }, configTarget: { filePath: configFile }, role: { path: rolePaths.rolePath, schemaVersion: 1, sha256: createHash('sha256').update(roleBytes).digest('hex') }, mutatedAt: new Date().toISOString() }, null, 2)}\n`);
+  const registration = { description: MANAGED_ROLE_DESCRIPTION, config_file: rolePaths.rolePath };
+  const configured = { features: { multi_agent_v2: { hide_spawn_agent_metadata: false } }, agents: { 'zcode-rescue': registration } };
+  const config = { config: configured, origins: {}, layers: [{ name: { type: 'user', file: configFile }, version: 'version-1', config: configured }] };
+  const launcher = join(installed, 'skills', 'rescue', 'launcher.mjs');
+  const launcherEnv = { ...hookEnv, CODEX_HOME: codexHome, CODEX_THREAD_ID: parentSessionId, CODEX_APP_SERVER_PATH: process.execPath,
+    CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]), FAKE_CODEX_CONFIG_RESULT: JSON.stringify(config) };
+  const roleBefore = await readFile(activePath, 'utf8'); const roleStatBefore = await stat(activePath);
+  const roleResult = await runRawChild(process.execPath, [launcher, 'role-status', 'rescue'], { cwd: executionWorkspace, env: launcherEnv });
+  assert.equal(roleResult.code, 0, roleResult.stderr || roleResult.stdout);
+  assert.deepEqual(JSON.parse(roleResult.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'ready' });
+  const roleAfter = await readFile(activePath, 'utf8'); const roleStatAfter = await stat(activePath);
+  const frame = `${JSON.stringify({ version: 1, source: 'explicit', task: 'installed-observer-private-sentinel', options: { execution: 'foreground', resume: 'fresh' } })}\n`;
+  const prepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
+    env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: frame });
+  assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout); assert.match(prepared.stdout, /"type":"prepared"/u);
+  const bound = JSON.parse(await readFile(activePath, 'utf8'));
+  const agentType = 'zcode-rescue';
+  const childBase = { agent_id: childThreadId, agent_type: agentType };
+  await runHook('subagent-hook.mjs', hookInput('SubagentStart', childBase));
+  const peerRecord = join(temporary, 'installed-observer-peer.jsonl'); await writeFile(peerRecord, '');
+  const brokerProcessRecord = join(temporary, 'installed-observer-broker-process.jsonl'); await writeFile(brokerProcessRecord, '');
+  const brokerProcessObserver = join(temporary, 'installed-observer-broker-process.mjs');
+  await writeFile(brokerProcessObserver, `import { appendFileSync, readFileSync } from 'node:fs';
+const record = process.env.INSTALLED_BROKER_PROCESS_RECORD;
+if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-broker.mjs') && process.argv[2]) {
+  const configPath = process.argv[2]; const bytes = readFileSync(configPath, 'utf8');
+  appendFileSync(record, JSON.stringify({ kind: 'broker-startup', configPath, bytes, processCwd: process.cwd() }) + '\\n');
+} else if (record && process.argv[1] === process.env.INSTALLED_ZCODE_MAIN && !process.argv.includes('--version')) {
+  appendFileSync(record, JSON.stringify({ kind: 'zcode-launch', processCwd: process.cwd() }) + '\\n');
+}
+`);
+  const invokeNodeOptions = `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(brokerProcessObserver).href}`.trim();
+  const invokeEnv = { ...launcherEnv, CODEX_THREAD_ID: childThreadId, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: peerRecord, FAKE_ZCODE_GATE_RESULT: 'observer result',
+    NODE_OPTIONS: invokeNodeOptions, INSTALLED_BROKER_PROCESS_RECORD: brokerProcessRecord, INSTALLED_ZCODE_MAIN: fakeZCode };
+  const firstInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: executionWorkspace, env: invokeEnv });
+  assert.equal(firstInvoke.code, 0, firstInvoke.stderr || firstInvoke.stdout);
+  const firstArtifactPaths = await recursiveFiles(dataRoot);
+  const firstArtifactSnapshot = await Promise.all(firstArtifactPaths.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
+  await runHook('subagent-hook.mjs', hookInput('SubagentStop', { ...childBase, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }));
+  const proactiveFrame = `${JSON.stringify({ version: 1, source: 'proactive', task: 'continue fixture', options: { execution: 'foreground', resume: 'resume' } })}\n`;
+  const proactivePrepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
+    env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: proactiveFrame });
+  assert.equal(proactivePrepared.code, 0, proactivePrepared.stderr || proactivePrepared.stdout);
+  const secondInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: executionWorkspace, env: invokeEnv });
+  assert.equal(secondInvoke.code, 0, secondInvoke.stderr || secondInvoke.stdout);
+  const brokerProcessHistory = (await readFile(brokerProcessRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const brokerStartup = brokerProcessHistory.filter((value) => value.kind === 'broker-startup');
+  const zcodeLaunches = brokerProcessHistory.filter((value) => value.kind === 'zcode-launch');
+  const brokerProcessSummary = brokerProcessHistory.map(({ kind, processCwd }) => ({ kind, processCwd }));
+  assert.equal(brokerStartup.length, 1, `installed observer expected one broker startup, got ${JSON.stringify(brokerProcessSummary)}`);
+  assert.equal(zcodeLaunches.length, 1, `installed observer expected one ZCode protocol launch, got ${JSON.stringify(brokerProcessSummary)}`);
+  const executionStorage = await resolveWorkspaceStorage({ dataRoot, workspace: executionWorkspace });
+  const executionBrokerDirectory = join(executionStorage.directory, 'broker');
+  const brokerConfig = JSON.parse(brokerStartup[0].bytes);
+  const brokerIdentityPath = join(executionBrokerDirectory, 'identity.json'); const brokerOwnershipPath = join(executionBrokerDirectory, 'session-owners.json');
+  const brokerIdentityBytes = await readFile(brokerIdentityPath, 'utf8'); const brokerOwnershipBytes = await readFile(brokerOwnershipPath, 'utf8');
+  const brokerIdentity = JSON.parse(brokerIdentityBytes); const brokerOwners = JSON.parse(brokerOwnershipBytes);
+  const filesBeforeCleanup = await recursiveFiles(dataRoot); const parsed = [];
+  for (const path of filesBeforeCleanup) {
+    try { const bytes = await readFile(path, 'utf8'); parsed.push({ path, bytes, value: JSON.parse(bytes) }); } catch { /* locks and non-JSON are irrelevant */ }
+  }
+  const originIndex = parsed.find(({ value }) => value?.kind === 'active-turn-index' && value.sessionId === parentSessionId)?.value;
+  const executorArtifact = parsed.findLast(({ value }) => value?.kind === 'subagent-executor' && value.agentId === childThreadId);
+  const routeArtifact = parsed.findLast(({ value }) => value?.kind === 'executor-route' && value.agentId === childThreadId);
+  const preparationArtifact = parsed.findLast(({ path, value }) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`)
+    && value?.sessionId === parentSessionId && value?.envelope?.version === 1);
+  const executor = executorArtifact?.value; const route = routeArtifact?.value; const preparation = preparationArtifact?.value;
+  assert.ok(originIndex && executor && route && preparation, `installed observer artifacts missing ${JSON.stringify({ originIndex: !!originIndex, executor: !!executor, route: !!route, preparation: !!preparation, kinds: parsed.map(({ value }) => value?.kind).filter(Boolean) })}`);
+  const cleanedPaths = parsed.filter(({ path, value }) => value?.kind !== 'identity-session'
+    && (value?.sessionId === parentSessionId || value?.parentSessionId === parentSessionId)
+    && !path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`)
+    && !basename(path).startsWith('rescue-binding-')).map(({ path }) => path);
+  const finalArtifacts = await Promise.all(filesBeforeCleanup.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
+  await runHook('session-end-hook.mjs', hookInput('SessionEnd', { reason: 'other' }));
+  const remainingPaths = await recursiveFiles(dataRoot);
+  const brokerOwnershipAfterBytes = await readFile(brokerOwnershipPath, 'utf8').catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error));
+  const brokerOwnersAfter = brokerOwnershipAfterBytes === null ? null : JSON.parse(brokerOwnershipAfterBytes);
+  const artifactHistory = [...firstArtifactSnapshot, ...finalArtifacts];
+  const parseHistory = (predicate) => artifactHistory.filter(({ path }) => predicate(path)).map(({ bytes }) => { try { return JSON.parse(bytes); } catch { return null; } }).filter(Boolean);
+  const preparationHistory = [...new Map(parseHistory((path) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`))
+    .filter((value) => value.sessionId === parentSessionId && value.executorAgentId === childThreadId).map((value) => [value.generation, value])).values()]
+    .sort((left, right) => left.generation - right.generation);
+  const bindingHistory = [...new Map(parseHistory((path) => basename(path).startsWith('rescue-binding-session-')).filter((value) => value.parentSessionId === parentSessionId)
+    .map((value) => [value.records?.[0]?.currentJobId, value])).values()].filter((value) => value.records?.length === 1);
+  const jobs = [...new Map(parseHistory((path) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`))
+    .filter((value) => value.ownerSessionId === parentSessionId).map((value) => [value.id, value])).values()];
+  const authorityArtifact = parsed.findLast(({ path, value }) => basename(path).startsWith('rescue-binding-authority-') && value?.parentSessionId === parentSessionId);
+  const peer = (await readFile(peerRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const sessionId = jobs[0]?.zcodeSessionId;
+  const brokerHistory = [{ originBrokerDirectory: join(originStorage.directory, 'broker'), executionBrokerDirectory,
+    configPath: brokerStartup[0].configPath, configBytes: brokerStartup[0].bytes, config: brokerConfig, brokerProcessCwd: brokerStartup[0].processCwd,
+    zcodeLaunchCwd: zcodeLaunches[0].processCwd, identityPath: brokerIdentityPath, identityBytes: brokerIdentityBytes, identity: brokerIdentity,
+    ownershipPath: brokerOwnershipPath, ownershipBytes: brokerOwnershipBytes, owners: brokerOwners, sessionId,
+    originArtifacts: artifactHistory.filter(({ path }) => path === join(originStorage.directory, 'broker') || path.startsWith(`${join(originStorage.directory, 'broker')}${process.platform === 'win32' ? '\\' : '/'}`)),
+    cleanup: { ownershipPath: brokerOwnershipPath, ownershipBytes: brokerOwnershipAfterBytes, owners: brokerOwnersAfter,
+      configPresent: remainingPaths.includes(brokerStartup[0].configPath), identityPresent: remainingPaths.includes(brokerIdentityPath) } }];
+  return { pending, unbound, bound, originIndex, executor, route, preparation, dataRoot,
+    raw: { pending: pendingBytes, unbound: finalUnboundBytes, bound: `${JSON.stringify(bound)}\n`, originIndex: `${JSON.stringify(originIndex)}\n`, executor: executorArtifact.bytes,
+      route: routeArtifact.bytes, authority: authorityArtifact?.bytes, preparations: preparationHistory.map((value) => `${JSON.stringify(value)}\n`),
+      bindings: bindingHistory.map((value) => `${JSON.stringify(value)}\n`), jobs: jobs.map((value) => parsed.find(({ path, value: candidate }) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`) && candidate?.id === value.id)?.bytes) },
+    role: { activeBytesBefore: roleBefore, activeBytesAfter: roleAfter, mtimeBefore: roleStatBefore.mtimeMs, mtimeAfter: roleStatAfter.mtimeMs },
+    hostCalls: [{ command: 'role-status rescue', workspace: executionWorkspace, stdout: roleResult.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: prepared.stdout },
+      { command: 'invoke-prepared rescue', workspace: executionWorkspace, stdout: firstInvoke.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: proactivePrepared.stdout },
+      { command: 'invoke-prepared rescue', workspace: executionWorkspace, stdout: secondInvoke.stdout }],
+    peer, preparationHistory, bindingHistory, jobs, brokerHistory, cleanedPaths, remainingPaths };
+}
+
+function assertInstalledWorkspaceBoundObservation(observed, expected) {
+  const fail = (detail) => { throw new Error(`installed observer ${detail}`); };
+  if (!observed || observed.pending?.status !== 'pending' || observed.unbound?.status !== 'active' || observed.unbound.executionWorkspace !== null
+    || observed.bound?.status !== 'active' || observed.bound.executionWorkspace !== expected.executionWorkspace
+    || observed.bound.originWorkspace !== expected.originWorkspace || observed.bound.sessionId !== expected.parentSessionId
+    || observed.bound.turnId !== expected.parentTurnId || observed.bound.permissionMode !== expected.permissionMode) fail('authority mismatch');
+  if (observed.role.activeBytesBefore !== observed.role.activeBytesAfter || observed.role.mtimeBefore !== observed.role.mtimeAfter) fail('Role mutated authority');
+  if (observed.originIndex?.originWorkspace !== expected.originWorkspace || observed.originIndex.generationId !== observed.bound.generationId) fail('origin index mismatch');
+  if (observed.route?.agentId !== expected.childThreadId || observed.route.childTurnId !== expected.childTurnId || observed.route.agentType !== 'zcode-rescue'
+    || observed.route.originWorkspace !== expected.originWorkspace || observed.route.targetWorkspace !== expected.executionWorkspace
+    || observed.route.parentGenerationId !== observed.bound.generationId || observed.route.state !== 'stopped') fail('route mismatch');
+  if (observed.executor?.agentId !== expected.childThreadId || observed.executor.childTurnId !== expected.childTurnId
+    || observed.executor.workspace !== expected.executionWorkspace || observed.executor.originWorkspace !== expected.originWorkspace
+    || observed.executor.parentGenerationId !== observed.bound.generationId || observed.executor.active !== false) fail('executor mismatch');
+  if (!Array.isArray(observed.preparationHistory) || observed.preparationHistory.length !== 2
+    || observed.preparationHistory.map((value) => value.generation).join(',') !== '1,2'
+    || new Set(observed.preparationHistory.map((value) => value.key)).size !== 1
+    || observed.preparationHistory.some((value) => value.workspace !== expected.executionWorkspace || value.sessionId !== expected.parentSessionId
+      || value.turnId !== expected.parentTurnId || value.executorAgentId !== expected.childThreadId || value.consumedAt === null)) fail('preparation history mismatch');
+  if (!Array.isArray(observed.jobs) || observed.jobs.length !== 2 || new Set(observed.jobs.map((value) => value.id)).size !== 2
+    || observed.jobs.some((value) => value.workspace !== expected.executionWorkspace || value.ownerSessionId !== expected.parentSessionId
+      || value.ownerTurnId !== expected.parentTurnId || value.status !== 'succeeded')
+    || observed.jobs.some((value, index) => Date.parse(value.createdAt) < Date.parse(observed.preparationHistory[index].consumedAt))) fail('job history mismatch');
+  if (!Array.isArray(observed.bindingHistory) || observed.bindingHistory.length !== 2) fail('binding history mismatch');
+  const [firstBinding, secondBinding] = observed.bindingHistory.map((value) => value.records?.[0]);
+  if (!firstBinding || !secondBinding || observed.bindingHistory.some((value) => value.workspace !== expected.executionWorkspace)
+    || firstBinding.anchorJobId !== firstBinding.currentJobId || secondBinding.anchorJobId !== firstBinding.anchorJobId || secondBinding.operationId !== firstBinding.operationId
+    || secondBinding.currentJobId === firstBinding.currentJobId || !observed.jobs.some((value) => value.id === firstBinding.currentJobId)
+    || !observed.jobs.some((value) => value.id === secondBinding.currentJobId)) fail('binding did not advance');
+  const creates = observed.peer?.filter((call) => call.method === 'session/create') ?? []; const sends = observed.peer?.filter((call) => call.method === 'session/send') ?? [];
+  if (creates.length !== 1 || sends.length !== 2 || creates[0].params?.workspace?.workspacePath !== expected.executionWorkspace
+    || new Set(sends.map((call) => call.params?.sessionId)).size !== 1 || sends[0].params.sessionId !== sends[1].params.sessionId
+    || sends.some((call, index) => call.params?.inputId !== observed.jobs[index].inputId || call.params.sessionId !== observed.jobs[index].zcodeSessionId)) fail('peer history mismatch');
+  if (!Array.isArray(observed.brokerHistory) || observed.brokerHistory.length !== 1) fail('broker history mismatch');
+  const broker = observed.brokerHistory[0];
+  const parseRaw = (bytes) => { try { return JSON.parse(bytes); } catch { return undefined; } };
+  const sameJson = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  const exactKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+  const configKeys = ['endpoint', 'instanceId', 'brokerToken', 'launch', 'workspace', 'launchCwd', 'ownershipPath', 'identityPath', 'publishIdentityAfterListen'];
+  const identityKeys = ['version', 'endpoint', 'pid', 'instanceId', 'brokerToken', 'createdAt'];
+  if (broker.originBrokerDirectory !== expected.originBrokerDirectory || broker.executionBrokerDirectory !== expected.executionBrokerDirectory
+    || broker.configPath !== join(expected.executionBrokerDirectory, `config-${broker.config?.instanceId}.json`)
+    || broker.identityPath !== join(expected.executionBrokerDirectory, 'identity.json')
+    || broker.ownershipPath !== join(expected.executionBrokerDirectory, 'session-owners.json')
+    || broker.configPath.startsWith(`${expected.originBrokerDirectory}${process.platform === 'win32' ? '\\' : '/'}`)
+    || broker.identityPath.startsWith(`${expected.originBrokerDirectory}${process.platform === 'win32' ? '\\' : '/'}`)
+    || broker.ownershipPath.startsWith(`${expected.originBrokerDirectory}${process.platform === 'win32' ? '\\' : '/'}`)) fail('broker partition mismatch');
+  if (!exactKeys(broker.config, configKeys) || !sameJson(parseRaw(broker.configBytes), broker.config)
+    || broker.config.endpoint !== expected.brokerEndpoint || broker.config.workspace !== expected.executionWorkspace
+    || !sameCanonicalInstalledPath(broker.config.launchCwd, expected.protocolLaunchCwd) || broker.config.ownershipPath !== broker.ownershipPath || broker.config.identityPath !== broker.identityPath
+    || broker.config.publishIdentityAfterListen !== true || broker.config.launch?.command !== process.execPath
+    || !Array.isArray(broker.config.launch?.args) || broker.config.launch.args.length !== 1 || broker.config.launch.args[0] !== fakeZCode
+    || broker.config.launch.target !== fakeZCode || !sameCanonicalInstalledPath(broker.brokerProcessCwd, expected.brokerProcessCwd)
+    || !sameCanonicalInstalledPath(broker.zcodeLaunchCwd, expected.protocolLaunchCwd)
+    || broker.configBytes.includes(expected.originWorkspace) || broker.configBytes.includes(expected.originBrokerEndpoint)) fail(`broker config mismatch ${JSON.stringify({ keys: Object.keys(broker.config ?? {}).sort(), endpoint: broker.config?.endpoint,
+      workspace: broker.config?.workspace, launchCwd: broker.config?.launchCwd, brokerProcessCwd: broker.brokerProcessCwd, zcodeLaunchCwd: broker.zcodeLaunchCwd,
+      launch: broker.config?.launch })}`);
+  if (!exactKeys(broker.identity, identityKeys) || !sameJson(parseRaw(broker.identityBytes), broker.identity)
+    || broker.identity.version !== 1 || broker.identity.endpoint !== expected.brokerEndpoint || broker.identity.instanceId !== broker.config.instanceId
+    || broker.identity.brokerToken !== broker.config.brokerToken || !Number.isSafeInteger(broker.identity.pid) || broker.identity.pid <= 0
+    || typeof broker.identity.createdAt !== 'string' || !Number.isFinite(Date.parse(broker.identity.createdAt))
+    || broker.identityBytes.includes(expected.originWorkspace) || broker.identityBytes.includes(expected.originBrokerEndpoint)) fail('broker identity mismatch');
+  if (!exactKeys(broker.owners, ['version', 'sessions']) || broker.owners.version !== 1 || !exactKeys(broker.owners.sessions, [broker.sessionId])
+    || broker.sessionId !== observed.jobs[0]?.zcodeSessionId || observed.jobs.some((job) => job.zcodeSessionId !== broker.sessionId)
+    || broker.owners.sessions[broker.sessionId] !== expected.ownerId || !sameJson(parseRaw(broker.ownershipBytes), broker.owners)
+    || broker.ownershipBytes.includes(expected.originWorkspace)) fail('broker ownership mismatch');
+  const cleanupOwnersValid = broker.cleanup?.owners === null && broker.cleanup.ownershipBytes === null
+    || exactKeys(broker.cleanup?.owners, ['version', 'sessions']) && broker.cleanup.owners.version === 1
+      && exactKeys(broker.cleanup.owners.sessions, []) && sameJson(parseRaw(broker.cleanup.ownershipBytes), broker.cleanup.owners);
+  if (broker.cleanup?.ownershipPath !== broker.ownershipPath || !cleanupOwnersValid || broker.cleanup.configPresent !== false
+    || typeof broker.cleanup.identityPresent !== 'boolean' || !Array.isArray(broker.originArtifacts) || broker.originArtifacts.length !== 0) fail(`broker cleanup mismatch ${JSON.stringify({
+      cleanupOwners: broker.cleanup?.owners, configPresent: broker.cleanup?.configPresent, identityPresent: broker.cleanup?.identityPresent,
+      originArtifactCount: broker.originArtifacts?.length,
+    })}`);
+}
+
+function installedWorkspaceBoundCaptureFromObservation(observed, expected) {
+  assertInstalledWorkspaceBoundObservation(observed, expected);
+  const input = installedPreparedContinuationCapture('named', { workspace: expected.executionWorkspace });
+  input.expected = { ...input.expected, ...expected, originalParentTurnId: expected.parentTurnId, continuationParentTurnId: expected.parentTurnId };
+  input.hookLifecycleJson = JSON.stringify([
+    { hook_event_name: 'UserPromptSubmit', session_id: expected.parentSessionId, turn_id: expected.parentTurnId, cwd: expected.originWorkspace, permission_mode: expected.permissionMode },
+    { hook_event_name: 'SubagentStart', session_id: expected.parentSessionId, turn_id: expected.childTurnId, parent_turn_id: expected.parentTurnId, cwd: expected.originWorkspace, permission_mode: expected.permissionMode, agent_id: expected.childThreadId, agent_type: 'zcode-rescue' },
+    { hook_event_name: 'SubagentStop', session_id: expected.parentSessionId, turn_id: expected.childTurnId, parent_turn_id: expected.parentTurnId, cwd: expected.originWorkspace, permission_mode: expected.permissionMode, agent_id: expected.childThreadId, agent_type: 'zcode-rescue' },
+  ]);
+  input.activeTurnRecordBytes = observed.raw.bound;
+  input.authorityTransitionBytesJson = JSON.stringify([observed.raw.pending, observed.raw.unbound, observed.raw.unbound, observed.raw.bound]);
+  input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: expected.executionWorkspace,
+    activeBytesBefore: observed.role.activeBytesBefore, activeBytesAfter: observed.role.activeBytesAfter, mtimeBefore: observed.role.mtimeBefore, mtimeAfter: observed.role.mtimeAfter,
+    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
+  input.originIndexRecordBytes = observed.raw.originIndex; input.executorRouteRecordBytes = observed.raw.route; input.executorRecordBytes = observed.raw.executor;
+  input.bindingAuthorityBytes = observed.raw.authority; input.bindingPreReservationBytes = observed.raw.bindings[0]; input.bindingPartitionBytes = observed.raw.bindings[1];
+  input.preparationRecordBytesJson = JSON.stringify(observed.raw.preparations); input.jobRecordBytesJson = JSON.stringify(observed.raw.jobs);
+  input.installedDataRoot = observed.dataRoot;
+  const parent = JSON.parse(input.parentRolloutJson);
+  for (const [index, preparation] of observed.preparationHistory.entries()) {
+    const prepareId = `prepare-${index + 1}`; const writeId = `prepare-write-${index + 1}`; const created = Date.parse(preparation.createdAt);
+    const prepareCall = parent.find((event) => event?.payload?.call_id === prepareId && event.payload.type === 'custom_tool_call');
+    const prepareOutput = parent.find((event) => event?.payload?.call_id === prepareId && event.payload.type === 'custom_tool_call_output');
+    const writeCall = parent.find((event) => event?.payload?.call_id === writeId && event.payload.type === 'custom_tool_call');
+    const writeOutput = parent.find((event) => event?.payload?.call_id === writeId && event.payload.type === 'custom_tool_call_output');
+    for (const [event, offset] of [[prepareCall, -2], [prepareOutput, -1], [writeCall, 0], [writeOutput, 1]]) if (event) event.timestamp = new Date(created + offset).toISOString();
+    if (writeCall) writeCall.payload.input = installedPreparationInput(71 + index, `${JSON.stringify(preparation.envelope)}\n`);
+  }
+  const firstCreated = Date.parse(observed.preparationHistory[0].createdAt); const firstConsumed = Date.parse(observed.preparationHistory[0].consumedAt);
+  const secondCreated = Date.parse(observed.preparationHistory[1].createdAt);
+  const spawnEvent = parent.find((event) => event?.payload?.name === 'spawn_agent'); const startEvent = parent.find((event) => event?.payload?.kind === 'started');
+  const stopEvent = parent.find((event) => event?.payload?.kind === 'stopped'); const followupEvent = parent.find((event) => event?.payload?.name === 'followup_task');
+  const spawnOutput = parent.find((event) => event?.payload?.call_id === 'spawn-1' && event.payload.type === 'function_call_output');
+  const followupOutput = parent.find((event) => event?.payload?.call_id === 'followup-1' && event.payload.type === 'function_call_output');
+  spawnEvent.timestamp = new Date(firstCreated + 2).toISOString(); startEvent.timestamp = new Date(firstCreated + 3).toISOString();
+  stopEvent.timestamp = observed.route.updatedAt; followupEvent.timestamp = new Date(secondCreated + 2).toISOString();
+  spawnOutput.timestamp = new Date(firstConsumed + 2).toISOString(); followupOutput.timestamp = new Date(Date.parse(observed.preparationHistory[1].consumedAt) + 2).toISOString();
+  input.parentRolloutJson = JSON.stringify(parent);
+  const child = JSON.parse(input.childRolloutJson);
+  for (const [index, preparation] of observed.preparationHistory.entries()) {
+    const invoke = child.find((event) => event?.payload?.call_id === `invoke-${index + 1}` && event.payload.type === 'custom_tool_call');
+    const output = child.find((event) => event?.payload?.call_id === `invoke-${index + 1}` && event.payload.type === 'custom_tool_call_output');
+    invoke.timestamp = new Date(Date.parse(preparation.consumedAt) - 1).toISOString(); output.timestamp = new Date(Date.parse(preparation.consumedAt) + 1).toISOString();
+  }
+  input.childRolloutJson = JSON.stringify(child);
+  const peer = observed.peer; input.fakePeerJson = JSON.stringify([peer.find((call) => call.method === 'session/create'), peer.find((call) => call.method === 'session/send'),
+    peer.find((call) => call.method === 'session/resume'), peer.filter((call) => call.method === 'session/send')[1]]);
+  const start = Date.parse(observed.bound.createdAt); const phases = ['session-start', 'user-prompt', 'pending', 'active-unbound', 'role-preview', 'prepare', 'active-bound', 'subagent-start', 'peer-create', 'authority-revoked', 'target-cleanup'];
+  input.authorityLifecycleJson = JSON.stringify(phases.map((phase, index) => ({ phase, workspace: index <= 3 || index === 7 || index === 9 ? expected.originWorkspace : expected.executionWorkspace,
+    ...(index < 2 ? {} : { generationId: observed.bound.generationId }), at: new Date(start + index + 1).toISOString() })));
+  return input;
+}
+
+function runRawChild(command, args, { cwd, env, input } = {}) {
+  const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false }); let stdout = ''; let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.stdin.end(input);
+  return new Promise((resolvePromise, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolvePromise({ code, signal, stdout, stderr })); });
 }
 
 function installedRawJob(id, ownerSessionId, workspace, ownerTurnId, status, extra = {}) {

@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -145,6 +145,9 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   const parentTurnEvents = [preparations[0], spawns[0], starts[0], stops[0], preparations[1], followups[0]];
   if (parentTurnEvents.some((event) => event?.turn_id !== originalParentTurnId)) mismatch('continuation-parent-turns', 'Raw parent events do not prove one exact active parent turn.');
   const activeTurn = validateContinuationActiveTurn(input.activeTurnRecordBytes, { ...expected, originalParentTurnId });
+  const workspaceAuthority = activeTurn.version === 3
+    ? await validateContinuationWorkspaceBinding(input, { ...expected, childTurnId: executorChildTurnId(input.executorRecordBytes), originalParentTurnId }, activeTurn)
+    : { originWorkspace: expected.workspace, executionWorkspace: expected.workspace, generationId: undefined, checked: false };
   const preparationRecords = await validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution }, activeTurn, requireLongLifecycle);
   const observedAgentPath = boundedString(starts[0].payload.agent_path); const observedTaskName = boundedString(spawn.task_name);
   if (!observedTaskName || !observedAgentPath || observedAgentPath !== `/root/${observedTaskName}`
@@ -154,10 +157,13 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   let spawnResult; let followupResult; try { spawnResult = JSON.parse(spawnOutput.payload.output); followupResult = JSON.parse(followupOutput.payload.output); } catch { mismatch('continuation-call-linkage', 'Parent lifecycle outputs are malformed.'); }
   if (spawnResult?.agent_id !== childThreadId || followupResult?.accepted !== true || followupResult?.target !== childThreadId) mismatch('continuation-call-linkage', 'Parent lifecycle outputs do not acknowledge the exact child.');
   const executor = parseObject(input.executorRecordBytes, 'continuation-executor-provenance');
-  const exactExecutorKeys = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+  const exactExecutorKeys = activeTurn.version === 3
+    ? ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']
+    : ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
   assertExactKeys(executor, exactExecutorKeys, 'continuation-executor-provenance');
   if (executor.kind !== 'subagent-executor' || executor.active !== false || executor.agentId !== childThreadId || executor.parentSessionId !== parentSessionId
-    || executor.parentTurnId !== originalParentTurnId || executor.parentPermissionMode !== expected.permissionMode || executor.workspace !== expected.workspace
+    || executor.parentTurnId !== originalParentTurnId || executor.parentPermissionMode !== expected.permissionMode || executor.workspace !== workspaceAuthority.executionWorkspace
+    || activeTurn.version === 3 && (executor.parentGenerationId !== activeTurn.generationId || executor.originWorkspace !== workspaceAuthority.originWorkspace)
     || executor.agentType !== (input.route === 'named' ? 'zcode-rescue' : 'default')) mismatch('continuation-executor-provenance', 'Raw stopped executor provenance is invalid.');
   if (!Number.isFinite(Date.parse(executor.createdAt))) mismatch('continuation-executor-provenance', 'Raw executor creation time is invalid.');
   const startHooks = hooks.filter((event) => event?.hook_event_name === 'SubagentStart'); const stopHooks = hooks.filter((event) => event?.hook_event_name === 'SubagentStop');
@@ -170,8 +176,8 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || stopHooks[0].parent_turn_id !== undefined && stopHooks[0].parent_turn_id !== originalParentTurnId
     || startHooks[0].agent_type !== executor.agentType || stopHooks[0].agent_type !== executor.agentType
     || startHooks[0].permission_mode !== expected.permissionMode || stopHooks[0].permission_mode !== expected.permissionMode
-    || promptHooks[0].permission_mode !== expected.permissionMode || startHooks[0].cwd !== expected.workspace
-    || stopHooks[0].cwd !== expected.workspace || promptHooks[0].cwd !== expected.workspace) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle does not prove one prompt and one Start/Stop in the same parent turn.');
+    || promptHooks[0].permission_mode !== expected.permissionMode || startHooks[0].cwd !== workspaceAuthority.originWorkspace
+    || stopHooks[0].cwd !== workspaceAuthority.originWorkspace || promptHooks[0].cwd !== workspaceAuthority.originWorkspace) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle does not prove one prompt and one Start/Stop in the same parent turn.');
   if (!(hooks.indexOf(promptHooks[0]) < hooks.indexOf(startHooks[0]) && hooks.indexOf(startHooks[0]) < hooks.indexOf(stopHooks[0]))) mismatch('continuation-hook-lifecycle', 'Raw hook lifecycle order is invalid.');
   let authority; let prePartition; let partition; try { authority = parseRescueBindingAuthority(input.bindingAuthorityBytes, { parentSessionId, workspace: expected.workspace }); prePartition = parseRescueBindingPartition(input.bindingPreReservationBytes, { parentSessionId, workspace: expected.workspace }); partition = parseRescueBindingPartition(input.bindingPartitionBytes, { parentSessionId, workspace: expected.workspace }); } catch { mismatch('continuation-binding-invalid', 'Raw Rescue binding files are invalid.'); }
   if (authority.key !== partition.key || authority.key !== prePartition.key || prePartition.records.length !== 1 || partition.records.length !== 1) mismatch('continuation-binding-invalid', 'Raw Rescue binding authority and partitions do not match.');
@@ -185,7 +191,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || preBinding.operationId !== binding.operationId || preBinding.anchorJobId !== binding.anchorJobId) mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
   if (preBinding.state !== 'active' || preBinding.currentJobId !== preBinding.anchorJobId
     || binding.currentJobId === preBinding.currentJobId) mismatch('continuation-current-job-stale', 'Raw current job binding does not prove the exact pre-reservation CAS transition.');
-  const jobs = await parseRawJobsWithProduction(jobBytes, expected);
+  const jobs = await parseRawJobsWithProduction(jobBytes, expected, input.installedDataRoot);
   if (jobs.length !== 2 || new Set(jobs.map((job) => job?.id)).size !== jobs.length) mismatch('continuation-job-identity', 'Raw job evidence contains extra or duplicate identities.');
   const anchor = jobs.find((job) => job?.id === binding.anchorJobId); const current = jobs.find((job) => job?.id === binding.currentJobId);
   if (!current) mismatch('continuation-current-job-stale', 'Raw current job evidence is absent.');
@@ -245,12 +251,14 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     && eventTimestamp(followups[0]) < eventTimestamp(calls[1]))) mismatch('continuation-child-order', 'Cross-rollout child chronology is invalid.');
   assertMandatoryContinuationPublicSurfaces(parent, child, jobs, observedAgentPath, execFrames);
   const privateValues = [activeTurn.key, binding.key, binding.operationId, binding.anchorJobId, binding.currentJobId, anchor.zcodeSessionId,
-    backgroundObserver?.executionCapability, current.workerLeaseId, executor.childTurnId].filter((value) => typeof value === 'string' && value);
+    activeTurn.generationId, backgroundObserver?.executionCapability, current.workerLeaseId, executor.childTurnId].filter((value) => typeof value === 'string' && value);
   if (privateValues.length < 6) mismatch('continuation-private-sentinels', 'Raw artifacts do not provide mandatory private sentinels.');
   const publicText = JSON.stringify({ parent: redactValidatedPreparationInputs(parent), child, execFrames, rawCapture: rawCapture?.publicEvidence });
   if (privateValues.some((value) => publicText.includes(value))) mismatch('continuation-private-leak', 'A public or host surface leaks a private identifier.');
   return {
     route: input.route, parentSessionId, childThreadId, agentPath: observedAgentPath, originalParentTurnId, continuationParentTurnId,
+    ...(workspaceAuthority.checked ? { originWorkspace: workspaceAuthority.originWorkspace, executionWorkspace: workspaceAuthority.executionWorkspace,
+      generationId: workspaceAuthority.generationId, workspaceBindingChecked: true } : {}),
     spawnCount: 1, startCount: 1, stopCount: 1, followupCount: 1, continuationSpawnCount: 0,
     childInvocationCount: 2, peerResumeChecked: true, activeTurnLifecycleChecked: true,
     longLifecycleChecked: requireLongLifecycle, execution: input.execution,
@@ -1191,34 +1199,149 @@ function assertGlobalCallOwnership(...rollouts) {
   }
 }
 
-async function parseRawJobsWithProduction(jobBytes, expected) {
+async function parseRawJobsWithProduction(jobBytes, expected, installedDataRoot) {
   if (!Array.isArray(jobBytes) || jobBytes.length !== 2) mismatch('continuation-job-identity', 'Exactly two raw persisted job files are required.');
   if (jobBytes.some((bytes) => typeof bytes !== 'string' || !bytes.endsWith('\n'))) mismatch('continuation-job-record', 'Raw persisted job file bytes are invalid.');
   const routed = jobBytes.map((bytes) => { let value; try { value = JSON.parse(bytes); } catch { mismatch('continuation-job-record', 'Raw persisted job bytes are malformed.'); } if (!/^[a-f0-9]{64}$/u.test(value?.id)) mismatch('continuation-job-record', 'Raw persisted job identity is invalid.'); return { bytes, id: value.id }; });
-  const dataRoot = await mkdtemp(join(tmpdir(), 'zcode-qualification-state-'));
+  const suppliedRoot = typeof installedDataRoot === 'string' && installedDataRoot.length > 0 ? installedDataRoot : undefined;
+  const dataRoot = suppliedRoot ?? await mkdtemp(join(tmpdir(), 'zcode-qualification-state-'));
   try {
     const storage = await resolveWorkspaceStorage({ dataRoot, workspace: expected.workspace }); await mkdir(storage.directory, { recursive: true }); const jobsDirectory = join(storage.directory, 'jobs'); await mkdir(jobsDirectory, { recursive: true });
-    await Promise.all(routed.map(({ bytes, id }) => writeFile(join(jobsDirectory, `${id}.json`), bytes)));
+    if (suppliedRoot === undefined) await Promise.all(routed.map(({ bytes, id }) => writeFile(join(jobsDirectory, `${id}.json`), bytes)));
+    else for (const { bytes, id } of routed) if (await readFile(join(jobsDirectory, `${id}.json`), 'utf8').catch(() => null) !== bytes) mismatch('continuation-job-record', 'Observed installed job bytes do not match their persisted source files.');
     const store = createStateStore({ dataRoot });
     const jobs = []; for (const { id } of routed) { try { jobs.push(await store.readJob(expected.workspace, id)); } catch { mismatch('continuation-job-record', 'Production StateStore rejected raw persisted job bytes.'); } }
     for (const job of jobs) if (job.ownerSessionId !== expected.parentSessionId || job.workspace !== expected.workspace || job.command !== 'rescue'
       || job.readOnly !== false || job.permissionSnapshot?.permissionMode !== expected.permissionMode) mismatch('continuation-job-record', 'Production job authority does not match the continuation.');
     return jobs;
-  } finally { await rm(dataRoot, { recursive: true, force: true }); }
+  } finally { if (suppliedRoot === undefined) await rm(dataRoot, { recursive: true, force: true }); }
 }
 
 function validateContinuationActiveTurn(rawBytes, expected) {
   let record; try { record = JSON.parse(rawBytes); } catch { mismatch('continuation-active-turn', 'Raw active-turn bytes are malformed.'); }
-  const keys = ['createdAt', 'key', 'kind', 'permissionMode', 'prompt', 'sessionId', 'turnId', 'version', 'workspace'];
-  const expectedKey = createHash('sha256').update(JSON.stringify([expected.parentSessionId, expected.workspace])).digest('hex');
-  if (!rawBytes.endsWith('\n') || Object.keys(record ?? {}).sort().join('\0') !== keys.sort().join('\0')
-    || record.version !== 2 || record.kind !== 'active-turn' || record.key !== expectedKey
-    || record.sessionId !== expected.parentSessionId || record.turnId !== expected.originalParentTurnId
-    || record.workspace !== expected.workspace || record.permissionMode !== expected.permissionMode
-    || typeof record.prompt !== 'string' || !Number.isFinite(Date.parse(record.createdAt))) {
+  const legacyKeys = ['createdAt', 'key', 'kind', 'permissionMode', 'prompt', 'sessionId', 'turnId', 'version', 'workspace'];
+  const currentKeys = ['createdAt', 'executionWorkspace', 'generationId', 'key', 'kind', 'originWorkspace', 'permissionMode', 'prompt', 'sessionId', 'status', 'turnId', 'version'];
+  const legacyKey = createHash('sha256').update(JSON.stringify([expected.parentSessionId, expected.workspace])).digest('hex');
+  const globalKey = createHash('sha256').update(JSON.stringify([expected.parentSessionId])).digest('hex');
+  const legacy = record?.version === 2 && Object.keys(record).sort().join('\0') === legacyKeys.sort().join('\0')
+    && record.key === legacyKey && record.workspace === expected.workspace;
+  const current = record?.version === 3 && Object.keys(record).sort().join('\0') === currentKeys.sort().join('\0')
+    && record.key === globalKey && /^[a-f0-9]{64}$/u.test(record.generationId)
+    && record.originWorkspace === (expected.originWorkspace ?? expected.workspace)
+    && record.executionWorkspace === (expected.executionWorkspace ?? expected.workspace) && record.status === 'active';
+  if (!rawBytes.endsWith('\n') || !(legacy || current)
+    || record.kind !== 'active-turn' || record.sessionId !== expected.parentSessionId || record.turnId !== expected.originalParentTurnId
+    || record.permissionMode !== expected.permissionMode || typeof record.prompt !== 'string' || !Number.isFinite(Date.parse(record.createdAt))) {
     mismatch('continuation-active-turn', 'Raw lifecycle-bound active-turn authority is invalid.');
   }
   return record;
+}
+
+async function validateContinuationWorkspaceBinding(input, expected, active) {
+  const originWorkspace = boundedString(expected.originWorkspace);
+  const executionWorkspace = boundedString(expected.executionWorkspace);
+  if (!originWorkspace || !executionWorkspace || expected.workspace !== executionWorkspace) {
+    mismatch('continuation-workspace-lineage', 'Workspace-binding evidence does not distinguish its canonical origin and execution target.');
+  }
+  const parseBytes = (value, code) => {
+    if (typeof value !== 'string' || !value.endsWith('\n') || Buffer.byteLength(value) > MAX_TEXT_BYTES) mismatch(code, 'Raw workspace authority bytes are absent or oversized.');
+    try { return JSON.parse(value); } catch { mismatch(code, 'Raw workspace authority bytes are malformed.'); }
+  };
+  let transitions;
+  if (typeof input.authorityTransitionBytesJson !== 'string' || Buffer.byteLength(input.authorityTransitionBytesJson) > MAX_ROLLOUT_BYTES) mismatch('continuation-authority-transition', 'Raw authority transitions are absent or oversized.');
+  try { transitions = JSON.parse(input.authorityTransitionBytesJson); } catch { mismatch('continuation-authority-transition', 'Raw authority transitions are absent or malformed.'); }
+  if (!Array.isArray(transitions) || transitions.length !== 4) mismatch('continuation-authority-transition', 'Raw authority transitions must contain pending, active-unbound, preview, and active-bound snapshots.');
+  const [pending, unbound, preview, bound] = transitions.map((bytes) => parseBytes(bytes, 'continuation-authority-transition'));
+  const activeKeys = ['createdAt', 'executionWorkspace', 'generationId', 'key', 'kind', 'originWorkspace', 'permissionMode', 'prompt', 'sessionId', 'status', 'turnId', 'version'].sort().join('\0');
+  if ([pending, unbound, preview, bound].some((record) => Object.keys(record ?? {}).sort().join('\0') !== activeKeys)) mismatch('continuation-authority-transition', 'Raw authority transition records do not use the exact v3 schema.');
+  const stableKeys = ['version', 'kind', 'key', 'sessionId', 'generationId', 'turnId', 'originWorkspace', 'permissionMode', 'prompt', 'createdAt'];
+  const stable = (record) => JSON.stringify(Object.fromEntries(stableKeys.map((key) => [key, record?.[key]])));
+  if (transitions.some((bytes) => typeof bytes !== 'string' || !bytes.endsWith('\n'))
+    || [pending, unbound, bound].some((record) => stable(record) !== stable(active))) {
+    mismatch('continuation-authority-transition', 'Workspace authority identity changed across publication, preview, or claim.');
+  }
+  if (JSON.stringify(preview) !== JSON.stringify(unbound)) mismatch('continuation-role-mutation', 'Role preview changed active-turn authority.');
+  let roleStatus;
+  if (typeof input.roleStatusEvidenceJson !== 'string' || Buffer.byteLength(input.roleStatusEvidenceJson) > MAX_TEXT_BYTES) mismatch('continuation-role-preview', 'Raw Role preflight evidence is absent or oversized.');
+  try { roleStatus = JSON.parse(input.roleStatusEvidenceJson); } catch { mismatch('continuation-role-preview', 'Raw Role preflight evidence is absent or malformed.'); }
+  if (Object.keys(roleStatus ?? {}).sort().join('\0') !== ['activeBytesAfter', 'activeBytesBefore', 'command', 'mtimeAfter', 'mtimeBefore', 'result', 'workspace'].sort().join('\0')
+    || roleStatus.command !== 'role-status rescue' || roleStatus.workspace !== executionWorkspace
+    || roleStatus.activeBytesBefore !== transitions[1] || roleStatus.activeBytesAfter !== transitions[2]
+    || roleStatus.activeBytesAfter !== roleStatus.activeBytesBefore
+    || !Number.isFinite(roleStatus.mtimeBefore) || roleStatus.mtimeAfter !== roleStatus.mtimeBefore
+    || JSON.stringify(roleStatus.result) !== JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })) {
+    mismatch('continuation-role-preview', 'Raw Role preflight did not inspect the exact execution workspace.');
+  }
+  if (pending.status !== 'pending' || pending.executionWorkspace !== null
+    || unbound.status !== 'active' || unbound.executionWorkspace !== null) {
+    mismatch(pending.executionWorkspace !== null ? 'continuation-authority-order' : 'continuation-authority-transition', 'Workspace authority publication order is invalid.');
+  }
+  if (bound.status !== 'active' || bound.executionWorkspace === null) mismatch('continuation-workspace-claim', 'Private prepare did not claim an execution workspace.');
+  if (bound.executionWorkspace !== executionWorkspace || JSON.stringify(bound) !== JSON.stringify(active)) mismatch('continuation-second-target', 'Active-turn authority was rebound to another target.');
+
+  const index = parseBytes(input.originIndexRecordBytes, 'continuation-origin-index');
+  const indexKeys = ['generationId', 'globalKey', 'key', 'kind', 'originWorkspace', 'sessionId', 'version'];
+  const expectedIndexKey = createHash('sha256').update(JSON.stringify([expected.parentSessionId, originWorkspace])).digest('hex');
+  if (Object.keys(index ?? {}).sort().join('\0') !== indexKeys.sort().join('\0') || index.version !== 1 || index.kind !== 'active-turn-index'
+    || index.key !== expectedIndexKey || index.globalKey !== active.key || index.sessionId !== expected.parentSessionId
+    || index.generationId !== active.generationId || index.originWorkspace !== originWorkspace) mismatch('continuation-origin-index', 'Raw origin index does not name the exact active generation.');
+
+  const route = parseBytes(input.executorRouteRecordBytes, 'continuation-executor-route');
+  const routedExecutor = parseObject(input.executorRecordBytes, 'continuation-executor-route');
+  const routeKeys = ['agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'state', 'targetWorkspace', 'updatedAt', 'version'];
+  if (Object.keys(route ?? {}).sort().join('\0') !== routeKeys.sort().join('\0') || route.version !== 1 || route.kind !== 'executor-route'
+    || route.agentId !== expected.childThreadId || route.parentSessionId !== expected.parentSessionId || route.parentTurnId !== expected.originalParentTurnId
+    || route.parentGenerationId !== active.generationId || route.parentPermissionMode !== expected.permissionMode
+    || route.agentType !== (input.route === 'named' ? 'zcode-rescue' : 'default') || route.childTurnId !== expected.childTurnId
+    || route.originWorkspace !== originWorkspace || route.targetWorkspace !== executionWorkspace || route.state !== 'stopped'
+    || !Number.isFinite(Date.parse(route.createdAt)) || !Number.isFinite(Date.parse(route.updatedAt))
+    || Date.parse(route.updatedAt) < Date.parse(route.createdAt)
+    || route.agentType !== routedExecutor.agentType || route.childTurnId !== routedExecutor.childTurnId
+    || route.createdAt !== routedExecutor.createdAt || routedExecutor.active !== false) {
+    mismatch('continuation-executor-route', 'Raw executor route does not fence the exact workspace-bound generation.');
+  }
+
+  let lifecycle;
+  if (typeof input.authorityLifecycleJson !== 'string' || Buffer.byteLength(input.authorityLifecycleJson) > MAX_ROLLOUT_BYTES) mismatch('continuation-authority-order', 'Raw authority lifecycle is absent or oversized.');
+  try { lifecycle = JSON.parse(input.authorityLifecycleJson); } catch { mismatch('continuation-authority-order', 'Raw authority lifecycle is absent or malformed.'); }
+  const phases = ['session-start', 'user-prompt', 'pending', 'active-unbound', 'role-preview', 'prepare', 'active-bound', 'subagent-start', 'peer-create', 'authority-revoked', 'target-cleanup'];
+  if (!Array.isArray(lifecycle) || lifecycle.length !== phases.length || lifecycle.some((event, index) => event?.phase !== phases[index]
+    || Object.keys(event).some((key) => !['at', 'generationId', 'phase', 'workspace'].includes(key))
+    || !Number.isFinite(Date.parse(event.at)) || index > 0 && Date.parse(event.at) <= Date.parse(lifecycle[index - 1].at))) {
+    mismatch('continuation-authority-order', 'Raw workspace authority lifecycle is reordered or incomplete.');
+  }
+  if (lifecycle.slice(2).some((event) => event.generationId !== active.generationId)
+    || lifecycle.slice(0, 4).some((event) => event.workspace !== originWorkspace)
+    || lifecycle.slice(4, 7).some((event) => event.workspace !== executionWorkspace)
+    || lifecycle[7].workspace !== originWorkspace || lifecycle[8].workspace !== executionWorkspace
+    || lifecycle[9].workspace !== originWorkspace || lifecycle[10].workspace !== executionWorkspace) {
+    mismatch('continuation-authority-order', 'Raw workspace authority lifecycle targets the wrong generation or workspace.');
+  }
+  if (originWorkspace !== executionWorkspace) await validateCanonicalGitLineage(originWorkspace, executionWorkspace);
+  return { originWorkspace, executionWorkspace, generationId: active.generationId, checked: true };
+}
+
+async function validateCanonicalGitLineage(originWorkspace, executionWorkspace) {
+  const probe = async (workspace) => {
+    const { execFile } = await import('node:child_process');
+    const result = await new Promise((resolve, reject) => execFile('git', ['rev-parse', '--path-format=absolute', '--is-inside-work-tree', '--show-toplevel', '--git-common-dir'],
+      { cwd: workspace, encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024, shell: false }, (error, stdout) => error ? reject(error) : resolve(stdout)));
+    const [inside, topLevel, commonDir, ...extra] = result.trimEnd().split(/\r?\n/u);
+    if (inside !== 'true' || extra.length > 0 || !topLevel || !commonDir) throw new Error('invalid Git lineage');
+    const [canonicalWorkspace, canonicalTopLevel, canonicalCommonDir] = await Promise.all([
+      realpath(workspace), realpath(topLevel), realpath(commonDir),
+    ]);
+    if (canonicalTopLevel !== canonicalWorkspace) throw new Error('invalid Git lineage');
+    return canonicalCommonDir;
+  };
+  let originCommon; let targetCommon;
+  try { [originCommon, targetCommon] = await Promise.all([probe(originWorkspace), probe(executionWorkspace)]); } catch { mismatch('continuation-workspace-lineage', 'Origin and execution workspaces are not canonical linked worktrees.'); }
+  if (originCommon !== targetCommon) mismatch('continuation-workspace-lineage', 'Origin and execution workspaces do not share one canonical Git common directory.');
+}
+
+function executorChildTurnId(rawBytes) {
+  try { return boundedString(JSON.parse(rawBytes)?.childTurnId); }
+  catch { return undefined; }
 }
 
 async function validateContinuationPreparations(parent, rawRecordsJson, expected, activeTurn, requireLongLifecycle) {

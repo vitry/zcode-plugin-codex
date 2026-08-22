@@ -391,6 +391,20 @@ async function ensureLockLayout(lockPath) {
     await rename(temporaryPath, lockPath);
   } catch (error) {
     if (!isLockPublishCollision(error)) throw error;
+    if (process.platform === 'win32' && isNodeError(error, 'EPERM')) {
+      let removedEmptyDirectory = false;
+      try {
+        await rmdir(lockPath);
+        removedEmptyDirectory = true;
+      } catch (removeError) {
+        if (isNodeError(removeError, 'ENOENT')) removedEmptyDirectory = true;
+        else if (!isNodeError(removeError, 'ENOTEMPTY') && !isNodeError(removeError, 'EEXIST')) throw removeError;
+      }
+      if (removedEmptyDirectory) {
+        try { await rename(temporaryPath, lockPath); }
+        catch (retryError) { if (!isLockPublishCollision(retryError)) throw retryError; }
+      }
+    }
   } finally {
     await unlink(join(temporaryPath, 'advisory.lock')).catch(() => {});
     await rmdir(temporaryPath).catch(() => {});

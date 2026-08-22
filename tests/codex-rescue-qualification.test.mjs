@@ -1,7 +1,8 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -68,6 +69,130 @@ test('qualifies named and generic foreground/background continuation in one acti
       longLifecycleChecked: true,
       execution,
     });
+  }
+});
+
+test('qualifies raw v3 origin-to-execution workspace authority and immutable generation routing', async () => {
+  const input = preparedContinuationFixture('named');
+  const generationId = '9'.repeat(64);
+  const globalKey = createHash('sha256').update(JSON.stringify([parentId])).digest('hex');
+  const unbound = {
+    version: 3, kind: 'active-turn', key: globalKey, sessionId: parentId, generationId,
+    turnId: 'turn-original', originWorkspace: expectedWorkspace, executionWorkspace: null,
+    permissionMode: 'acceptEdits', prompt: '$zcode:rescue repair fixture',
+    createdAt: '2026-08-09T23:59:59.000Z', status: 'active',
+  };
+  const pending = { ...unbound, status: 'pending' };
+  const bound = { ...unbound, executionWorkspace: expectedWorkspace };
+  input.expected.originWorkspace = expectedWorkspace;
+  input.expected.executionWorkspace = expectedWorkspace;
+  input.activeTurnRecordBytes = `${JSON.stringify(bound)}\n`;
+  input.authorityTransitionBytesJson = JSON.stringify([
+    `${JSON.stringify(pending)}\n`, `${JSON.stringify(unbound)}\n`, `${JSON.stringify(unbound)}\n`, `${JSON.stringify(bound)}\n`,
+  ]);
+  input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: expectedWorkspace,
+    activeBytesBefore: `${JSON.stringify(unbound)}\n`, activeBytesAfter: `${JSON.stringify(unbound)}\n`, mtimeBefore: 1, mtimeAfter: 1,
+    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
+  input.originIndexRecordBytes = `${JSON.stringify({
+    version: 1, kind: 'active-turn-index', key: createHash('sha256').update(JSON.stringify([parentId, expectedWorkspace])).digest('hex'),
+    sessionId: parentId, generationId, globalKey, originWorkspace: expectedWorkspace,
+  })}\n`;
+  input.executorRouteRecordBytes = `${JSON.stringify({
+    version: 1, kind: 'executor-route', agentId: childId, agentType: 'zcode-rescue', parentSessionId: parentId,
+    parentGenerationId: generationId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits',
+    childTurnId: 'child-turn', originWorkspace: expectedWorkspace, targetWorkspace: expectedWorkspace,
+    state: 'stopped', createdAt: '2026-08-10T00:00:02.000Z', updatedAt: '2026-08-10T00:00:05.000Z',
+  })}\n`;
+  input.executorRecordBytes = `${JSON.stringify({
+    kind: 'subagent-executor', agentId: childId, agentType: 'zcode-rescue', parentSessionId: parentId,
+    parentGenerationId: generationId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn',
+    originWorkspace: expectedWorkspace, workspace: expectedWorkspace, active: false, createdAt: '2026-08-10T00:00:02.000Z',
+  })}\n`;
+  input.authorityLifecycleJson = JSON.stringify([
+    { phase: 'session-start', workspace: expectedWorkspace, at: '2026-08-09T23:59:58.000Z' },
+    { phase: 'user-prompt', workspace: expectedWorkspace, at: '2026-08-09T23:59:59.000Z' },
+    { phase: 'pending', workspace: expectedWorkspace, generationId, at: '2026-08-09T23:59:59.100Z' },
+    { phase: 'active-unbound', workspace: expectedWorkspace, generationId, at: '2026-08-09T23:59:59.200Z' },
+    { phase: 'role-preview', workspace: expectedWorkspace, generationId, at: '2026-08-10T00:00:00.100Z' },
+    { phase: 'prepare', workspace: expectedWorkspace, generationId, at: '2026-08-10T00:00:00.250Z' },
+    { phase: 'active-bound', workspace: expectedWorkspace, generationId, at: '2026-08-10T00:00:00.300Z' },
+    { phase: 'subagent-start', workspace: expectedWorkspace, generationId, at: '2026-08-10T00:00:02.000Z' },
+    { phase: 'peer-create', workspace: expectedWorkspace, generationId, at: '2026-08-10T00:00:02.500Z' },
+    { phase: 'authority-revoked', workspace: expectedWorkspace, generationId, at: '2026-08-10T01:02:00.000Z' },
+    { phase: 'target-cleanup', workspace: expectedWorkspace, generationId, at: '2026-08-10T01:02:00.100Z' },
+  ]);
+
+  const evidence = await qualifyCodexRescuePreparedContinuationEvidence(input);
+  assert.equal(evidence.originWorkspace, expectedWorkspace);
+  assert.equal(evidence.executionWorkspace, expectedWorkspace);
+  assert.equal(evidence.generationId, generationId);
+  assert.equal(evidence.workspaceBindingChecked, true);
+});
+
+test('qualifies distinct canonical linked worktree execution while hooks remain at the origin', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-worktree-qualification-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const originDirectory = join(temporary, 'origin'); const executionDirectory = join(temporary, 'execution');
+  await mkdir(originDirectory);
+  await runGit(['init', '-q'], originDirectory);
+  await writeFile(join(originDirectory, 'fixture.txt'), 'base\n');
+  await runGit(['add', 'fixture.txt'], originDirectory);
+  await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
+  await runGit(['worktree', 'add', '-qb', 'qualification-target', executionDirectory], originDirectory);
+  const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(executionDirectory);
+  const input = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace);
+  const evidence = await qualifyCodexRescuePreparedContinuationEvidence(input);
+  assert.equal(evidence.originWorkspace, originWorkspace);
+  assert.equal(evidence.executionWorkspace, executionWorkspace);
+  assert.notEqual(evidence.originWorkspace, evidence.executionWorkspace);
+  assert.equal(evidence.workspaceBindingChecked, true);
+
+  const swapped = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace);
+  const swappedActive = JSON.parse(swapped.activeTurnRecordBytes);
+  [swappedActive.originWorkspace, swappedActive.executionWorkspace] = [swappedActive.executionWorkspace, swappedActive.originWorkspace];
+  swapped.activeTurnRecordBytes = `${JSON.stringify(swappedActive)}\n`;
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(swapped),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-active-turn');
+
+  const unrelatedDirectory = join(temporary, 'unrelated');
+  await mkdir(unrelatedDirectory);
+  await runGit(['init', '-q'], unrelatedDirectory);
+  await writeFile(join(unrelatedDirectory, 'fixture.txt'), 'unrelated\n');
+  await runGit(['add', 'fixture.txt'], unrelatedDirectory);
+  await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'unrelated'], unrelatedDirectory);
+  const unrelated = workspaceBoundContinuationFixture(originWorkspace, await realpath(unrelatedDirectory));
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(unrelated),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-workspace-lineage');
+});
+
+test('workspace-binding qualification rejects authority, route, peer, and cleanup mutations with stable codes', async () => {
+  const mutations = [
+    ['continuation-workspace-claim', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const bound = JSON.parse(rows[3]); bound.executionWorkspace = null; rows[3] = `${JSON.stringify(bound)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
+    ['continuation-second-target', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const bound = JSON.parse(rows[3]); bound.executionWorkspace = '/second-target'; rows[3] = `${JSON.stringify(bound)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
+    ['continuation-authority-transition', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const unbound = JSON.parse(rows[1]); unbound.generationId = '8'.repeat(64); rows[1] = `${JSON.stringify(unbound)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
+    ['continuation-authority-transition', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const unbound = JSON.parse(rows[1]); unbound.turnId = 'wrong-turn'; rows[1] = `${JSON.stringify(unbound)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
+    ['continuation-authority-transition', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const unbound = JSON.parse(rows[1]); unbound.permissionMode = 'read-only'; rows[1] = `${JSON.stringify(unbound)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
+    ['continuation-authority-transition', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const unbound = JSON.parse(rows[1]); unbound.sessionId = 'sibling-session'; rows[1] = `${JSON.stringify(unbound)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
+    ['continuation-authority-order', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const pending = JSON.parse(rows[0]); pending.executionWorkspace = expectedWorkspace; rows[0] = `${JSON.stringify(pending)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
+    ['continuation-role-mutation', (input) => { const rows = JSON.parse(input.authorityTransitionBytesJson); const preview = JSON.parse(rows[2]); preview.prompt = 'mutated by role'; rows[2] = `${JSON.stringify(preview)}\n`; input.authorityTransitionBytesJson = JSON.stringify(rows); }],
+    ['continuation-role-preview', (input) => { const role = JSON.parse(input.roleStatusEvidenceJson); role.mtimeAfter += 1; input.roleStatusEvidenceJson = JSON.stringify(role); }],
+    ['continuation-origin-index', (input) => { const index = JSON.parse(input.originIndexRecordBytes); index.generationId = '8'.repeat(64); input.originIndexRecordBytes = `${JSON.stringify(index)}\n`; }],
+    ['continuation-origin-index', (input) => { delete input.originIndexRecordBytes; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.parentGenerationId = '8'.repeat(64); input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.agentType = 'default'; input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.childTurnId = 'wrong-child-turn'; input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.createdAt = 'invalid'; input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.updatedAt = '2026-08-10T00:00:01.000Z'; input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-route', (input) => { const route = JSON.parse(input.executorRouteRecordBytes); route.state = 'active'; input.executorRouteRecordBytes = `${JSON.stringify(route)}\n`; }],
+    ['continuation-executor-provenance', (input) => { const executor = JSON.parse(input.executorRecordBytes); executor.parentGenerationId = '8'.repeat(64); input.executorRecordBytes = `${JSON.stringify(executor)}\n`; }],
+    ['continuation-peer-method', (input) => { const peer = JSON.parse(input.fakePeerJson); peer[0].params.workspace.workspacePath = '/origin-instead-of-target'; input.fakePeerJson = JSON.stringify(peer); }],
+    ['continuation-authority-order', (input) => { const lifecycle = JSON.parse(input.authorityLifecycleJson); [lifecycle[9], lifecycle[10]] = [lifecycle[10], lifecycle[9]]; input.authorityLifecycleJson = JSON.stringify(lifecycle); }],
+    ['continuation-private-leak', (input) => { const rows = JSON.parse(input.parentRolloutJson); const call = rows.find((row) => row?.payload?.call_id === 'prepare-1'); const host = parseFixtureHostInput(call.payload.input); host.env.GENERATION_LEAK = JSON.parse(input.activeTurnRecordBytes).generationId; call.payload.input = fixtureExecInput(host); input.parentRolloutJson = JSON.stringify(rows); }],
+  ];
+  for (const [code, mutate] of mutations) {
+    const input = workspaceBoundContinuationFixture(expectedWorkspace, expectedWorkspace); mutate(input);
+    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(input),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, code);
   }
 });
 
@@ -1998,6 +2123,88 @@ function preparationRecord(turnId, generation, source, resume, execution, requir
 function activeTurnRecord(sessionId, turnId, workspace) {
   return { version: 2, kind: 'active-turn', key: createHash('sha256').update(JSON.stringify([sessionId, workspace])).digest('hex'),
     sessionId, turnId, workspace, permissionMode: 'acceptEdits', prompt: '$zcode:rescue repair fixture', createdAt: '2026-08-09T23:59:59.000Z' };
+}
+
+function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) {
+  const input = preparedContinuationFixture('named');
+  for (const field of ['parentRolloutJson', 'childRolloutJson', 'fakePeerJson']) {
+    input[field] = JSON.stringify(replaceCapturedWorkspace(JSON.parse(input[field]), expectedWorkspace, executionWorkspace));
+  }
+  input.expected.workspace = executionWorkspace;
+  input.expected.originWorkspace = originWorkspace;
+  input.expected.executionWorkspace = executionWorkspace;
+  const hooks = JSON.parse(input.hookLifecycleJson);
+  for (const hook of hooks) hook.cwd = originWorkspace;
+  input.hookLifecycleJson = JSON.stringify(hooks);
+  const preparations = JSON.parse(input.preparationRecordBytesJson).map((bytes) => {
+    const record = JSON.parse(bytes); record.workspace = executionWorkspace;
+    record.key = createHash('sha256').update(JSON.stringify([record.sessionId, record.turnId, executionWorkspace, 'rescue'])).digest('hex');
+    return `${JSON.stringify(record)}\n`;
+  });
+  input.preparationRecordBytesJson = JSON.stringify(preparations);
+  const jobs = JSON.parse(input.jobRecordBytesJson).map((bytes) => { const record = JSON.parse(bytes); record.workspace = executionWorkspace; return `${JSON.stringify(record)}\n`; });
+  input.jobRecordBytesJson = JSON.stringify(jobs);
+  const currentPartition = JSON.parse(input.bindingPartitionBytes); const current = currentPartition.records[0];
+  const rebound = createRescueBinding({ parentSessionId: parentId, executorAgentId: childId, executorAgentType: 'zcode-rescue',
+    executorParentTurnId: 'turn-original', executorParentPermissionMode: 'acceptEdits', workspace: executionWorkspace,
+    permissionMode: 'acceptEdits', anchorJobId: current.anchorJobId, currentJobId: current.currentJobId, operationId: current.operationId,
+    now: current.createdAt });
+  rebound.updatedAt = current.updatedAt;
+  const pre = { ...rebound, currentJobId: rebound.anchorJobId, updatedAt: '2026-08-10T00:00:05.000Z' };
+  input.bindingAuthorityBytes = `${JSON.stringify(createRescueBindingAuthority({ parentSessionId: parentId, workspace: executionWorkspace, createdAt: '2026-08-10T00:00:00.000Z' }))}\n`;
+  input.bindingPreReservationBytes = `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: executionWorkspace, records: [pre] }))}\n`;
+  input.bindingPartitionBytes = `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: executionWorkspace, records: [rebound] }))}\n`;
+  const generationId = '9'.repeat(64);
+  const globalKey = createHash('sha256').update(JSON.stringify([parentId])).digest('hex');
+  const unbound = { version: 3, kind: 'active-turn', key: globalKey, sessionId: parentId, generationId, turnId: 'turn-original',
+    originWorkspace, executionWorkspace: null, permissionMode: 'acceptEdits', prompt: '$zcode:rescue repair fixture',
+    createdAt: '2026-08-09T23:59:59.000Z', status: 'active' };
+  const pending = { ...unbound, status: 'pending' }; const bound = { ...unbound, executionWorkspace };
+  input.activeTurnRecordBytes = `${JSON.stringify(bound)}\n`;
+  input.authorityTransitionBytesJson = JSON.stringify([pending, unbound, unbound, bound].map((record) => `${JSON.stringify(record)}\n`));
+  input.roleStatusEvidenceJson = JSON.stringify({ command: 'role-status rescue', workspace: executionWorkspace,
+    activeBytesBefore: `${JSON.stringify(unbound)}\n`, activeBytesAfter: `${JSON.stringify(unbound)}\n`, mtimeBefore: 1, mtimeAfter: 1,
+    result: { type: 'role-status', role: 'zcode-rescue', status: 'ready' } });
+  input.originIndexRecordBytes = `${JSON.stringify({ version: 1, kind: 'active-turn-index',
+    key: createHash('sha256').update(JSON.stringify([parentId, originWorkspace])).digest('hex'), sessionId: parentId,
+    generationId, globalKey, originWorkspace })}\n`;
+  input.executorRouteRecordBytes = `${JSON.stringify({ version: 1, kind: 'executor-route', agentId: childId,
+    agentType: 'zcode-rescue', parentSessionId: parentId, parentGenerationId: generationId, parentTurnId: 'turn-original',
+    parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', originWorkspace, targetWorkspace: executionWorkspace,
+    state: 'stopped', createdAt: '2026-08-10T00:00:02.000Z', updatedAt: '2026-08-10T00:00:05.000Z' })}\n`;
+  input.executorRecordBytes = `${JSON.stringify({ kind: 'subagent-executor', agentId: childId, agentType: 'zcode-rescue',
+    parentSessionId: parentId, parentGenerationId: generationId, parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits',
+    childTurnId: 'child-turn', originWorkspace, workspace: executionWorkspace, active: false, createdAt: '2026-08-10T00:00:02.000Z' })}\n`;
+  input.authorityLifecycleJson = JSON.stringify([
+    ['session-start', originWorkspace, null, '2026-08-09T23:59:58.000Z'],
+    ['user-prompt', originWorkspace, null, '2026-08-09T23:59:59.000Z'],
+    ['pending', originWorkspace, generationId, '2026-08-09T23:59:59.100Z'],
+    ['active-unbound', originWorkspace, generationId, '2026-08-09T23:59:59.200Z'],
+    ['role-preview', executionWorkspace, generationId, '2026-08-10T00:00:00.100Z'],
+    ['prepare', executionWorkspace, generationId, '2026-08-10T00:00:00.250Z'],
+    ['active-bound', executionWorkspace, generationId, '2026-08-10T00:00:00.300Z'],
+    ['subagent-start', originWorkspace, generationId, '2026-08-10T00:00:02.000Z'],
+    ['peer-create', executionWorkspace, generationId, '2026-08-10T00:00:02.500Z'],
+    ['authority-revoked', originWorkspace, generationId, '2026-08-10T01:02:00.000Z'],
+    ['target-cleanup', executionWorkspace, generationId, '2026-08-10T01:02:00.100Z'],
+  ].map(([phase, workspace, generation, at]) => ({ phase, workspace, ...(generation === null ? {} : { generationId: generation }), at })));
+  return input;
+}
+
+function replaceCapturedWorkspace(value, sourceWorkspace, targetWorkspace) {
+  if (typeof value === 'string') {
+    const escapedSource = JSON.stringify(sourceWorkspace).slice(1, -1);
+    const escapedTarget = JSON.stringify(targetWorkspace).slice(1, -1);
+    return value.replaceAll(escapedSource, escapedTarget).replaceAll(sourceWorkspace, targetWorkspace);
+  }
+  if (Array.isArray(value)) return value.map((entry) => replaceCapturedWorkspace(entry, sourceWorkspace, targetWorkspace));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
+    .map(([key, entry]) => [key, replaceCapturedWorkspace(entry, sourceWorkspace, targetWorkspace)]));
+  return value;
+}
+
+function runGit(args, cwd) {
+  return new Promise((resolve, reject) => execFile('git', args, { cwd, encoding: 'utf8', shell: false }, (error, stdout) => error ? reject(error) : resolve(stdout)));
 }
 
 function rawJob(id, ownerTurnId, status, extra = {}) {

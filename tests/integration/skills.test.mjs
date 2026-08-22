@@ -118,6 +118,34 @@ async function rewriteOnlyExecutor(ctx, patch) {
   await writeFile(path, `${JSON.stringify({ ...record, ...patch }, null, 2)}\n`);
 }
 
+test('origin hook cwd executes prepared Rescue only in its bound linked worktree', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
+  const target = join(ctx.directory, 'linked-execution');
+  await run('git', ['worktree', 'add', '-q', '-b', 'linked-execution', target], ctx.workspace);
+  const canonicalTarget = await realpath(target);
+  const record = join(ctx.directory, 'linked-execution.jsonl'); await writeFile(record, '');
+  await identity.beginCallerTurn({
+    sessionId: 'linked-parent', turnId: 'linked-parent-turn', workspace: ctx.workspace, permissionMode: 'workspace-write',
+    prompt: '$zcode:rescue --fresh repair linked execution', sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true,
+  });
+  assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: canonicalTarget,
+    env: { ...ctx.env, CODEX_THREAD_ID: 'linked-parent' },
+    input: Readable.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'repair linked execution', options: { execution: 'foreground', resume: 'fresh' } })}\n`]),
+  }), { type: 'prepared', command: 'rescue' });
+  const start = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], {
+    cwd: ctx.workspace, env: ctx.env, ordinaryInput: true,
+    input: { session_id: 'linked-parent', turn_id: 'linked-child-turn', cwd: ctx.workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'linked-child', agent_type: 'zcode-rescue' },
+  });
+  assert.equal(start.code, 0, start.stderr || start.stdout);
+  const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: canonicalTarget, env: { ...ctx.env, CODEX_THREAD_ID: 'linked-child', FAKE_ZCODE_RECORD: record } });
+  assert.equal(invoked.code, 0, invoked.stderr || invoked.stdout);
+  const created = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).find((frame) => frame.method === 'session/create');
+  assert.equal(created.params.workspace.workspacePath, canonicalTarget);
+  assert.equal((await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace)).length, 0);
+  assert.equal((await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(canonicalTarget)).length, 1);
+});
+
 test('prepared Rescue forwards only the normalized incident objective to ZCode', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const record = join(ctx.directory, 'prepared-objective.jsonl');
   const objective = 'implement the approved authentication specification';
@@ -176,12 +204,14 @@ test('private prepare transport enables raw mode before readiness and accepts on
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const input = new PassThrough(); const events = []; const task = '--fresh ; $(echo private)';
   input.isTTY = true; input.setRawMode = (enabled) => { events.push(`raw:${enabled}`); return input; };
   await identity.beginCallerTurn({ sessionId: 'transport-parent', turnId: 'transport-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${task}` });
-  const fallback = setTimeout(() => input.destroy(), 250); t.after(() => { clearTimeout(fallback); input.destroy(); });
+  let timeout;
+  t.after(() => { clearTimeout(timeout); input.destroy(); });
   const operation = runDirectInvocation(['prepare', 'rescue'], {
     cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'transport-parent' }, input,
     preparationTransport: { writeReady: (line) => { events.push(`ready:${line}`); input.write(`${JSON.stringify({ version: 1, source: 'explicit', task, options: { resume: 'fresh' } })}\n`); } },
   });
-  assert.deepEqual(await operation, { type: 'prepared', command: 'rescue' });
+  const bounded = Promise.race([operation, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('private preparation did not consume its LF frame')), process.platform === 'win32' ? 30_000 : 5_000); })]);
+  assert.deepEqual(await bounded, { type: 'prepared', command: 'rescue' }); clearTimeout(timeout);
   assert.deepEqual(events, ['raw:true', 'ready:{"type":"preparation-input-ready","command":"rescue"}\n', 'raw:false']);
   assert.equal(events.join('').includes(task), false); assert.equal(input.destroyed, false, 'one complete LF frame must not require or force EOF');
 });
@@ -333,8 +363,9 @@ test('aged stopped executor cannot resume an eligible latest job when its exact 
   assert.equal((await invokePreparedRescue(ctx, 'unbound-parent', 'unbound-child', 'seed')).code, 0);
   await stopRescueChild(ctx, 'unbound-parent', 'unbound-child', 'unbound-child-turn');
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
-  const executorName = (await readdir(join(storage.directory, 'hook-state'))).find((name) => name.startsWith('executor-')); const executorPath = join(storage.directory, 'hook-state', executorName); const executor = JSON.parse(await readFile(executorPath, 'utf8'));
-  await writeFile(executorPath, `${JSON.stringify({ ...executor, createdAt: new Date(Date.now() - 31 * 60_000).toISOString() })}\n`);
+  const hookStateNames = await readdir(join(storage.directory, 'hook-state')); const executorName = hookStateNames.find((name) => name.startsWith('executor-')); const routeName = hookStateNames.find((name) => name.startsWith('route-'));
+  const executorPath = join(storage.directory, 'hook-state', executorName); const routePath = join(storage.directory, 'hook-state', routeName); const executor = JSON.parse(await readFile(executorPath, 'utf8')); const route = JSON.parse(await readFile(routePath, 'utf8')); const agedAt = new Date(Date.now() - 31 * 60_000).toISOString();
+  await writeFile(executorPath, `${JSON.stringify({ ...executor, createdAt: agedAt })}\n`); await writeFile(routePath, `${JSON.stringify({ ...route, createdAt: agedAt })}\n`);
   for (const name of await readdir(storage.directory)) if (name.startsWith('rescue-binding-')) await rm(join(storage.directory, name));
   await identity.beginCallerTurn({ sessionId: 'unbound-parent', turnId: 'later-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'Continue the exact same stopped Rescue child.' });
   await prepareRescue(ctx, 'unbound-parent', { version: 1, source: 'proactive', task: 'continue', options: { execution: 'foreground', resume: 'resume' } });
@@ -687,9 +718,12 @@ test('invoke-prepared retains an exact terminal stopped executor beyond thirty m
   assert.equal((await invokePreparedRescue(ctx, 'aged-parent', 'aged-child', 'first')).code, 0);
   await stopRescueChild(ctx, 'aged-parent', 'aged-child', 'only-start');
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
-  const executorName = (await readdir(join(storage.directory, 'hook-state'))).find((name) => name.startsWith('executor-'));
-  assert.ok(executorName); const executorPath = join(storage.directory, 'hook-state', executorName); const executor = JSON.parse(await readFile(executorPath, 'utf8'));
-  await writeFile(executorPath, `${JSON.stringify({ ...executor, createdAt: new Date(Date.now() - 31 * 60_000).toISOString() }, null, 2)}\n`);
+  const hookStateNames = await readdir(join(storage.directory, 'hook-state'));
+  const executorName = hookStateNames.find((name) => name.startsWith('executor-')); const routeName = hookStateNames.find((name) => name.startsWith('route-'));
+  assert.ok(executorName); assert.ok(routeName); const executorPath = join(storage.directory, 'hook-state', executorName); const routePath = join(storage.directory, 'hook-state', routeName);
+  const executor = JSON.parse(await readFile(executorPath, 'utf8')); const route = JSON.parse(await readFile(routePath, 'utf8')); const agedAt = new Date(Date.now() - 31 * 60_000).toISOString();
+  await writeFile(executorPath, `${JSON.stringify({ ...executor, createdAt: agedAt }, null, 2)}\n`);
+  await writeFile(routePath, `${JSON.stringify({ ...route, createdAt: agedAt }, null, 2)}\n`);
   await identity.beginCallerTurn({ sessionId: 'aged-parent', turnId: 'later-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume later' });
   const resumed = await invokePreparedRescue(ctx, 'aged-parent', 'aged-child', 'later', { execution: 'foreground', resume: 'resume' });
   assert.equal(resumed.code, 0, resumed.stderr || resumed.stdout);
@@ -704,7 +738,7 @@ test('invoke-prepared resume rejects a structurally valid rewritten executor tur
   await prepareRescue(ctx, 'forged-parent', { version: 1, source: 'explicit', task: 'later', options: { execution: 'foreground', resume: 'resume' } });
   await rewriteOnlyExecutor(ctx, { parentTurnId: 'rewritten-origin' });
   const rejected = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'forged-child' } });
-  assert.notEqual(rejected.code, 0); assert.match(rejected.stdout, /RESCUE_BINDING_INVALID/);
+  assert.notEqual(rejected.code, 0); assert.match(rejected.stdout, /EXECUTOR_ROUTE_INVALID/);
   assert.equal((await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace)).length, 1);
 });
 

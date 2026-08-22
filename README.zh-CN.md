@@ -48,6 +48,8 @@ source checkout 和已安装插件使用刻意隔离的命名空间：source dev
 
 在每个受管父 turn 中，受管 `UserPromptSubmit` hook 都会注入一条由执行该 hook 的精确插件实例机器渲染的 instance-bound launcher command。Root 和 Rescue 子 agent 原样复用这些精确字节，并且只追加固定 Rescue 参数。它们绝不从 cwd 或 Skill 文本构造路径，绝不调用直接 companion 形式 `node scripts/zcode-companion.mjs`，也绝不通过 PATH、全局包或 cache 搜索选择另一个插件实例。这样无需模型自行选择路径，同时不削弱实例或命名空间隔离。
 
+Rescue 会区分对话的 origin workspace 与 execution workspace。Root 在同一个 parent turn 中创建或进入 linked worktree 时，第一次可信的 `prepare rescue` 会自动绑定到该 execution workspace，不需要手动 handoff。只有 origin 本身，或与它共享相同的 canonical Git common-dir 的 canonical linked-worktree 顶层目录才合格。目标在同一 turn 内不可变，因此其他 worktree 或无关仓库会被拒绝。Role inspection 只读，child 不能 claim 或更改目标。Root `Stop`、新 prompt 与 `SessionEnd` 会先撤销或替换 origin 和已绑定目标之间的授权，再执行清理。
+
 `source-session-unproven` 对该 Rescue 路由是终态：应使用活动受管 lifecycle context 中的 launcher，但不要从未证明的 source checkout 运行 `$zcode:setup`、prepare、follow up 或 spawn。launcher error 由 shell-unsafe 安装路径触发时同样是终态，并给出固定的重新安装 remedy；请把插件重新安装到 shell-safe 路径，再从新的受管父 turn 重试。两种情况都不授权 fallback launcher 或自动重定向。
 
 Rescue 有两种等价入口：显式 `$zcode:rescue` 是请求中字面且适用的入口；Root 也可以根据完整业务目标主动选择 Rescue。这就是自动路由，不提供 `--auto` 选项。显式 `--fresh` 或 `--resume` 始终权威；明确的主动续做会在 child 启动前物化为 resume，明确的独立工作会物化为 fresh。
