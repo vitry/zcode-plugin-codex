@@ -191,8 +191,10 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || preBinding.operationId !== binding.operationId || preBinding.anchorJobId !== binding.anchorJobId) mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
   if (preBinding.state !== 'active' || preBinding.currentJobId !== preBinding.anchorJobId
     || binding.currentJobId === preBinding.currentJobId) mismatch('continuation-current-job-stale', 'Raw current job binding does not prove the exact pre-reservation CAS transition.');
-  if (workspaceAuthority.checked) await validateContinuationArtifactLocations(input, { ...workspaceAuthority, route: workspaceAuthority.route });
-  const jobs = await parseRawJobsWithProduction(jobBytes, expected, input.installedDataRoot);
+  const installedStoragePermissionModel = boundedString(input.installedDataRoot)
+    ? qualificationStoragePermissionModel(input.installedStoragePermissionModel) : undefined;
+  if (workspaceAuthority.checked) await validateContinuationArtifactLocations(input, { ...workspaceAuthority, route: workspaceAuthority.route }, installedStoragePermissionModel);
+  const jobs = await parseRawJobsWithProduction(jobBytes, expected, input.installedDataRoot, installedStoragePermissionModel);
   if (jobs.length !== 2 || new Set(jobs.map((job) => job?.id)).size !== jobs.length) mismatch('continuation-job-identity', 'Raw job evidence contains extra or duplicate identities.');
   const anchor = jobs.find((job) => job?.id === binding.anchorJobId); const current = jobs.find((job) => job?.id === binding.currentJobId);
   if (!current) mismatch('continuation-current-job-stale', 'Raw current job evidence is absent.');
@@ -1204,13 +1206,13 @@ function assertGlobalCallOwnership(...rollouts) {
   }
 }
 
-async function parseRawJobsWithProduction(jobBytes, expected, installedDataRoot) {
+async function parseRawJobsWithProduction(jobBytes, expected, installedDataRoot, permissionModel) {
   if (!Array.isArray(jobBytes) || jobBytes.length !== 2) mismatch('continuation-job-identity', 'Exactly two raw persisted job files are required.');
   if (jobBytes.some((bytes) => typeof bytes !== 'string' || !bytes.endsWith('\n'))) mismatch('continuation-job-record', 'Raw persisted job file bytes are invalid.');
   const routed = jobBytes.map((bytes) => { let value; try { value = JSON.parse(bytes); } catch { mismatch('continuation-job-record', 'Raw persisted job bytes are malformed.'); } if (!/^[a-f0-9]{64}$/u.test(value?.id)) mismatch('continuation-job-record', 'Raw persisted job identity is invalid.'); return { bytes, id: value.id, value }; });
   const suppliedRoot = typeof installedDataRoot === 'string' && installedDataRoot.length > 0 ? installedDataRoot : undefined;
   if (suppliedRoot !== undefined) {
-    const installedStorage = await resolveReadonlyQualificationStorage(suppliedRoot, expected.workspace).catch(() => mismatch('continuation-job-record', 'Observed installed job storage is unsafe or absent.'));
+    const installedStorage = await resolveReadonlyQualificationStorage(suppliedRoot, expected.workspace, permissionModel).catch(() => mismatch('continuation-job-record', 'Observed installed job storage is unsafe or absent.'));
     const installedJobs = join(installedStorage.directory, 'jobs');
     for (const { bytes, id, value } of routed) {
       if (await readFile(join(installedJobs, `${id}.json`), 'utf8').catch(() => null) !== bytes) mismatch('continuation-job-record', 'Observed installed job bytes do not match their persisted source files.');
@@ -1339,7 +1341,7 @@ async function validateContinuationWorkspaceBinding(input, expected, active) {
   return { originWorkspace, executionWorkspace, generationId: active.generationId, route, checked: true };
 }
 
-async function validateContinuationArtifactLocations(input, evidence) {
+async function validateContinuationArtifactLocations(input, evidence, permissionModel) {
   if (typeof input.artifactLocationsJson !== 'string' || Buffer.byteLength(input.artifactLocationsJson) > MAX_ROLLOUT_BYTES) {
     mismatch('continuation-artifact-location', 'Workspace-bound artifact locations are absent or oversized.');
   }
@@ -1355,8 +1357,8 @@ async function validateContinuationArtifactLocations(input, evidence) {
   if (boundedString(input.installedDataRoot)) {
     let originStorage; let executionStorage;
     try { [originStorage, executionStorage] = await Promise.all([
-      resolveReadonlyQualificationStorage(input.installedDataRoot, evidence.originWorkspace),
-      resolveReadonlyQualificationStorage(input.installedDataRoot, evidence.executionWorkspace),
+      resolveReadonlyQualificationStorage(input.installedDataRoot, evidence.originWorkspace, permissionModel),
+      resolveReadonlyQualificationStorage(input.installedDataRoot, evidence.executionWorkspace, permissionModel),
     ]); } catch { mismatch('continuation-artifact-location', 'Workspace-bound artifact storage could not be resolved canonically.'); }
     if (originStorage.workspacePath !== evidence.originWorkspace || executionStorage.workspacePath !== evidence.executionWorkspace) {
       mismatch('continuation-artifact-location', 'Workspace-bound artifact storage resolved to another workspace.');
@@ -1402,13 +1404,19 @@ async function validateContinuationArtifactLocations(input, evidence) {
   if (remaining.length !== 0) mismatch('continuation-artifact-location', 'Workspace-bound artifact evidence contains an unaccounted duplicate or substitute.');
 }
 
-async function resolveReadonlyQualificationStorage(dataRoot, workspace) {
+function qualificationStoragePermissionModel(value) {
+  if (value === undefined) return process.platform === 'win32' ? 'windows' : 'posix';
+  if (value === 'windows' || value === 'posix') return value;
+  mismatch('continuation-artifact-location', 'Installed storage permission model is invalid.');
+}
+
+async function resolveReadonlyQualificationStorage(dataRoot, workspace, permissionModel) {
   const workspacePath = await realpath(resolve(workspace)); const dataRootPath = await realpath(resolve(dataRoot));
   const workspaceKey = createHash('sha256').update(workspacePath).digest('hex');
   const workspacesDirectory = join(dataRootPath, 'workspaces'); const directory = join(workspacesDirectory, workspaceKey);
   for (const path of [dataRootPath, workspacesDirectory, directory]) {
     const stats = await lstat(path);
-    if (!stats.isDirectory() || stats.isSymbolicLink() || (process.platform !== 'win32' && (stats.mode & 0o077) !== 0) || await realpath(path) !== path) {
+    if (!stats.isDirectory() || stats.isSymbolicLink() || (permissionModel === 'posix' && (stats.mode & 0o077) !== 0) || await realpath(path) !== path) {
       throw new Error('unsafe qualification storage');
     }
   }

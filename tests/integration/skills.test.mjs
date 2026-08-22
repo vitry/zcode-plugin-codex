@@ -144,6 +144,7 @@ function assertPrivateRouteFailure(result, scenario, origin, target) {
 }
 
 function normalizeRelativeKey(value) { return value.replace(/[\\/]+/gu, '/'); }
+function findPr39RouteRecord(records) { return records.find((record) => normalizeRelativeKey(record.path).includes('/hook-state/route-')); }
 
 async function fileTree(directory, prefix = '') {
   let entries; try { entries = await readdir(directory, { withFileTypes: true }); } catch (error) { if (error?.code === 'ENOENT') return []; throw error; }
@@ -209,12 +210,12 @@ test('PR #39 fixture manifests contain four independent literal record byte sets
   const manifests = Object.values(PR39_ORIGIN_ROUTE_TEMPLATES); assert.equal(manifests.length, 4); assert.equal(new Set(manifests).size, 4);
   const expected = {
     prepared: { count: 9, digest: 'ecefe94305f0d20e4de9da226326773a99bf25fb692b21ff41efc9b3854c6cea', oneShot: '/invocations/prepared/' },
-    status: { count: 14, digest: '12b25b1df92eed719c11bebcf9eafefd817349dc753a5134e38e12c0f5eeb062' },
-    choice: { count: 15, digest: '51a6c3bab1a3c7a43870212c80ef7d165c9b5f2267a46b1575319bd867ccb8e7', oneShot: '/invocations/pending/' },
-    stopped: { count: 15, digest: '89e33efb5c4285bf4487ba8a891a1d46bb320de974d2d1505382075219f5bf10', oneShot: '/invocations/prepared/' },
+    status: { count: 14, digest: '5876c7822d8275ba7eaebb073fe159e5697ee3679a2f0a451a6a8b2e83fd162b' },
+    choice: { count: 15, digest: 'ef78e516d83e5bd0dab5a91c4a8bff58a1e461931d0b29b56c28e63bebe2ed8f', oneShot: '/invocations/pending/' },
+    stopped: { count: 15, digest: 'ccf4d21122c37b0f9a8d169da591c1acc76cd6cf22c68d82d603ffc6f4e2d716', oneShot: '/invocations/prepared/' },
   };
   const filenameTokens = new Set(['ORIGIN_WORKSPACE_HASH', 'TARGET_WORKSPACE_HASH', 'GLOBAL_KEY', 'ORIGIN_INDEX_KEY', 'TARGET_INDEX_KEY', 'CALLER_DIGEST', 'ROUTE_KEY', 'FORWARD_KEY', 'EXECUTOR_KEY', 'PREPARATION_KEY', 'PENDING_KEY', 'BINDING_PARTITION_KEY', 'BINDING_KEY', 'OWNER_DIRECTORY', 'OWNER_ID']);
-  const byteTokens = new Set([...filenameTokens, 'DATA_ROOT_JSON', 'ORIGIN_JSON', 'TARGET_JSON']);
+  const byteTokens = new Set([...filenameTokens, 'JOB_LOG_JSON', 'ORIGIN_JSON', 'TARGET_JSON']);
   const tokens = (value) => [...value.matchAll(/\{\{([A-Z_]+)\}\}/gu)].map((match) => match[1]);
   for (const [name, raw] of Object.entries(PR39_ORIGIN_ROUTE_TEMPLATES)) {
     const manifest = JSON.parse(raw); assert.equal(manifest.name, name); assert.equal(manifest.records.length, expected[name].count); assert.equal(createHash('sha256').update(raw).digest('hex'), expected[name].digest);
@@ -244,11 +245,16 @@ test('PR #39 fixture JSON-escapes cross-platform paths without changing raw file
     origin: 'C:\\Users\\A B\\origin\tworkspace',
     target: 'C:\\Users\\A B\\target\nworkspace',
   };
-  const scenario = instantiatePr39OriginRouteTemplate(PR39_ORIGIN_ROUTE_TEMPLATES.prepared, paths);
-  assert.ok(scenario.records.every((record) => record.path.startsWith(paths.dataRoot)));
-  for (const record of scenario.records) assert.doesNotThrow(() => JSON.parse(record.bytes), record.path);
-  const activeTurn = JSON.parse(scenario.records.find((record) => record.path.includes('active-turns')).bytes);
-  assert.equal(activeTurn.originWorkspace, paths.origin); assert.equal(activeTurn.executionWorkspace, paths.target);
+  for (const name of ['status', 'choice', 'stopped']) {
+    const scenario = instantiatePr39OriginRouteTemplate(PR39_ORIGIN_ROUTE_TEMPLATES[name], paths);
+    assert.ok(scenario.records.every((record) => record.path.startsWith(paths.dataRoot)));
+    for (const record of scenario.records) assert.doesNotThrow(() => JSON.parse(record.bytes), record.path);
+    const activeTurn = JSON.parse(scenario.records.find((record) => record.path.includes('active-turns')).bytes);
+    assert.equal(activeTurn.originWorkspace, paths.origin); assert.equal(activeTurn.executionWorkspace, paths.target);
+    const job = JSON.parse(scenario.records.find((record) => record.path.endsWith(`${scenario.operation.jobId}.json`)).bytes);
+    const targetHash = createHash('sha256').update(paths.target).digest('hex');
+    assert.equal(job.logFile, join(paths.dataRoot, 'workspaces', targetHash, 'jobs', `${scenario.operation.jobId}.log`));
+  }
 });
 
 test('PR #39 operation snapshots expose unexpected namespaces and job log mutations', async (t) => {
@@ -262,6 +268,8 @@ test('PR #39 operation snapshots expose unexpected namespaces and job log mutati
 
 test('PR #39 scenario relative keys use the snapshot separator on Windows', () => {
   assert.equal(normalizeRelativeKey(win32.relative('C:\\data\\target', 'C:\\data\\target\\jobs\\job.json')), 'jobs/job.json');
+  const route = findPr39RouteRecord([{ path: 'C:\\data\\workspaces\\origin\\hook-state\\route-key.json' }]);
+  assert.equal(route?.path, 'C:\\data\\workspaces\\origin\\hook-state\\route-key.json');
 });
 
 test('importing the PR #39 manifest never freezes the runner clock', async () => {
@@ -459,7 +467,7 @@ test('PR #39 frozen status bytes select the exact target binding without mutatio
 
 test('origin status preserves malformed executor route vocabulary without leaking authority', async (t) => {
   const { ctx, scenario, target, env } = await materializePr39Scenario(t, 'status');
-  const route = scenario.records.find((record) => record.path.includes('/hook-state/route-')); assert.ok(route);
+  const route = findPr39RouteRecord(scenario.records); assert.ok(route);
   await writeFile(route.path, '{"version":1}\n', { mode: 0o600 });
   const result = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, ZCODE_DEBUG: '1' } });
   assertPrivateRouteFailure(result, scenario, ctx.workspace, target); assert.match(result.stdout, /EXECUTOR_ROUTE_INVALID/); assert.equal(result.stderr, '');

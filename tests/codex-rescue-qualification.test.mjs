@@ -195,13 +195,14 @@ test('qualifies distinct canonical linked worktree execution while hooks remain 
   const snapshotStorage = async () => Promise.all(windowsDirectories.map(async (path) => {
     const metadata = await stat(path); return { path, entries: (await readdir(path)).sort(), mode: metadata.mode, mtimeMs: metadata.mtimeMs, ctimeMs: metadata.ctimeMs };
   }));
-  const windowsBefore = await snapshotStorage(); const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-  Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
-  try { await qualifyCodexRescuePreparedContinuationEvidence(windowsInput); } finally { Object.defineProperty(process, 'platform', platformDescriptor); }
+  const windowsBefore = await snapshotStorage(); const platformBefore = process.platform;
+  windowsInput.installedStoragePermissionModel = 'windows';
+  await qualifyCodexRescuePreparedContinuationEvidence(windowsInput);
+  assert.equal(process.platform, platformBefore);
   assert.deepEqual(await snapshotStorage(), windowsBefore);
-  Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'linux' });
-  try { await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(windowsInput), CodexRescueEvidenceMismatchError); }
-  finally { Object.defineProperty(process, 'platform', platformDescriptor); }
+  windowsInput.installedStoragePermissionModel = 'posix';
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(windowsInput), CodexRescueEvidenceMismatchError);
+  assert.equal(process.platform, platformBefore);
   assert.deepEqual(await snapshotStorage(), windowsBefore);
 
   const swapped = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace);
