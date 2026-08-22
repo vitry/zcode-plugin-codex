@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -169,6 +169,15 @@ test('qualifies distinct canonical linked worktree execution while hooks remain 
   misplacedRoute.artifactLocationsJson = JSON.stringify(locations);
   await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(misplacedRoute),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-location');
+
+  const readOnlyDataRoot = join(temporary, 'readonly-data-root'); await mkdir(readOnlyDataRoot, { mode: 0o700 });
+  const beforeEntries = await readdir(readOnlyDataRoot); const beforeStat = await stat(readOnlyDataRoot);
+  const missingStorage = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace); missingStorage.installedDataRoot = readOnlyDataRoot;
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(missingStorage), CodexRescueEvidenceMismatchError);
+  const afterEntries = await readdir(readOnlyDataRoot); const afterStat = await stat(readOnlyDataRoot);
+  assert.deepEqual(afterEntries, beforeEntries);
+  assert.deepEqual({ mode: afterStat.mode, mtimeMs: afterStat.mtimeMs, ctimeMs: afterStat.ctimeMs },
+    { mode: beforeStat.mode, mtimeMs: beforeStat.mtimeMs, ctimeMs: beforeStat.ctimeMs });
 
   const swapped = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace);
   const swappedActive = JSON.parse(swapped.activeTurnRecordBytes);

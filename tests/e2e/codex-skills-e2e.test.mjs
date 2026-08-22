@@ -800,6 +800,10 @@ test('installed continuation capture qualifies one parent turn from origin hooks
   assert.equal(evidence.executionWorkspace, executionWorkspace);
   assert.equal(evidence.workspaceBindingChecked, true);
   assert.notEqual(evidence.originWorkspace, evidence.executionWorkspace);
+  assert.ok(observed.raw.preparations[0].startsWith('{\r\n  ') && observed.raw.preparations[0].endsWith('\r\n'),
+    'installed observer must retain noncanonical preparation bytes');
+  assert.ok(observed.raw.bindings[0].startsWith('{\r\n  ') && observed.raw.bindings[0].endsWith('\r\n'),
+    'installed observer must retain noncanonical binding bytes');
   const originKey = observerOriginStorage.workspaceKey; const executionKey = observerExecutionStorage.workspaceKey;
   for (const role of ['executor-route', 'forwarding', 'executor', 'binding-authority', 'binding-partition', 'preparation']) {
     const misplaced = structuredClone(capture); const locations = JSON.parse(misplaced.artifactLocationsJson);
@@ -2315,6 +2319,12 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
   const firstInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: originWorkspace, env: invokeEnv });
   assert.equal(firstInvoke.code, 0, firstInvoke.stderr || firstInvoke.stdout);
   const firstArtifactPaths = await recursiveFiles(canonicalDataRoot);
+  for (const path of firstArtifactPaths.filter((value) => value.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`)
+    || basename(value).startsWith('rescue-binding-session-'))) {
+    const value = JSON.parse(await readFile(path, 'utf8'));
+    const reversed = Object.fromEntries(Object.entries(value).reverse());
+    await writeFile(path, `${JSON.stringify(reversed, null, 2).replaceAll('\n', '\r\n')}\r\n`);
+  }
   const firstArtifactSnapshot = await Promise.all(firstArtifactPaths.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
   await runHook('subagent-hook.mjs', hookInput('SubagentStop', { ...childBase, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }));
   const proactiveFrame = `${JSON.stringify({ version: 1, source: 'proactive', task: 'continue fixture', options: { execution: 'foreground', resume: 'resume' } })}\n`;
@@ -2377,11 +2387,12 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
   assert.ok(preparationCandidates.length >= 2 && preparationCandidates.every(({ path }) => path === preparationPath), 'installed observer found a duplicate or mispartitioned preparation');
   assert.ok(bindingCandidates.length >= 2 && bindingCandidates.every(({ path }) => path === bindingPath), 'installed observer found a duplicate or mispartitioned binding partition');
   const parseHistory = (predicate) => artifactHistory.filter(({ path }) => predicate(path)).map(({ bytes }) => { try { return JSON.parse(bytes); } catch { return null; } }).filter(Boolean);
-  const preparationHistory = [...new Map(parseHistory((path) => path === preparationPath)
-    .filter((value) => value.sessionId === parentSessionId && value.executorAgentId === childThreadId).map((value) => [value.generation, value])).values()]
-    .sort((left, right) => left.generation - right.generation);
-  const bindingHistory = [...new Map(parseHistory((path) => path === bindingPath).filter((value) => value.parentSessionId === parentSessionId)
-    .map((value) => [value.records?.[0]?.currentJobId, value])).values()].filter((value) => value.records?.length === 1);
+  const preparationArtifacts = [...new Map(preparationCandidates.map((artifact) => [artifact.value.generation, artifact])).values()]
+    .sort((left, right) => left.value.generation - right.value.generation);
+  const preparationHistory = preparationArtifacts.map(({ value }) => value);
+  const bindingArtifacts = [...new Map(bindingCandidates.map((artifact) => [artifact.value.records?.[0]?.currentJobId, artifact])).values()]
+    .filter((artifact) => artifact.value.records?.length === 1);
+  const bindingHistory = bindingArtifacts.map(({ value }) => value);
   const jobs = [...new Map(parseHistory((path) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`))
     .filter((value) => value.ownerSessionId === parentSessionId).map((value) => [value.id, value])).values()];
   const authorityCandidates = parsed.filter(({ path, value }) => basename(path).startsWith('rescue-binding-authority-')
@@ -2403,13 +2414,13 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
     { role: 'forwarding', path: relativeArtifactPath(forwardPath), bytes: forwardArtifact.bytes },
     { role: 'executor', path: relativeArtifactPath(executorPath), bytes: executorArtifact.bytes },
     { role: 'binding-authority', path: relativeArtifactPath(authorityPath), bytes: authorityArtifact.bytes },
-    ...bindingHistory.map((value) => ({ role: 'binding-partition', path: relativeArtifactPath(bindingPath), bytes: `${JSON.stringify(value)}\n` })),
-    ...preparationHistory.map((value) => ({ role: 'preparation', path: relativeArtifactPath(preparationPath), bytes: `${JSON.stringify(value)}\n` })),
+    ...bindingArtifacts.map((artifact) => ({ role: 'binding-partition', path: relativeArtifactPath(bindingPath), bytes: artifact.bytes })),
+    ...preparationArtifacts.map((artifact) => ({ role: 'preparation', path: relativeArtifactPath(preparationPath), bytes: artifact.bytes })),
   ];
   return { pending, unbound, bound, originIndex, executor, route, forward, preparation, artifactLocations, dataRoot,
     raw: { pending: pendingBytes, unbound: finalUnboundBytes, bound: `${JSON.stringify(bound)}\n`, originIndex: `${JSON.stringify(originIndex)}\n`, executor: executorArtifact.bytes,
-      route: routeArtifact.bytes, authority: authorityArtifact?.bytes, preparations: preparationHistory.map((value) => `${JSON.stringify(value)}\n`),
-      bindings: bindingHistory.map((value) => `${JSON.stringify(value)}\n`), jobs: jobs.map((value) => parsed.find(({ path, value: candidate }) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`) && candidate?.id === value.id)?.bytes) },
+      route: routeArtifact.bytes, authority: authorityArtifact?.bytes, preparations: preparationArtifacts.map(({ bytes }) => bytes),
+      bindings: bindingArtifacts.map(({ bytes }) => bytes), jobs: jobs.map((value) => parsed.find(({ path, value: candidate }) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`) && candidate?.id === value.id)?.bytes) },
     role: { activeBytesBefore: roleBefore, activeBytesAfter: roleAfter, mtimeBefore: roleStatBefore.mtimeMs, mtimeAfter: roleStatAfter.mtimeMs },
     hostCalls: [{ command: 'role-status rescue', workspace: executionWorkspace, stdout: roleResult.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: prepared.stdout },
       { command: 'invoke-prepared rescue', workspace: originWorkspace, stdout: firstInvoke.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: proactivePrepared.stdout },
