@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, relative, win32 } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
@@ -143,11 +143,13 @@ function assertPrivateRouteFailure(result, scenario, origin, target) {
   for (const secret of [origin, target, scenario.agentId, scenario.sessionId, scenario.parentTurnId, scenario.activeTurnId, scenario.childTurnId, scenario.generationId].filter(Boolean)) assert.equal(output.includes(secret), false, `public failure leaked ${secret}`);
 }
 
+function normalizeRelativeKey(value) { return value.replace(/[\\/]+/gu, '/'); }
+
 async function fileTree(directory, prefix = '') {
   let entries; try { entries = await readdir(directory, { withFileTypes: true }); } catch (error) { if (error?.code === 'ENOENT') return []; throw error; }
   const files = [];
   for (const entry of entries) {
-    const relative = prefix ? `${prefix}/${entry.name}` : entry.name; const path = join(directory, entry.name);
+    const relative = normalizeRelativeKey(prefix ? `${prefix}/${entry.name}` : entry.name); const path = join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await fileTree(path, relative)); else if (entry.isFile()) files.push(relative);
   }
   return files.sort();
@@ -171,7 +173,9 @@ async function documentedOperationSnapshot(workspaceDirectory) {
 }
 
 function assertSnapshotMatchesScenario(snapshot, scenario) {
-  const expected = scenario.records.map((record) => relative(scenario.targetDirectory, record.path)).filter((path) => path !== '..' && !path.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(path)).sort();
+  const expected = scenario.records.map((record) => {
+    const nativeRelative = relative(scenario.targetDirectory, record.path); return { nativeRelative, key: normalizeRelativeKey(nativeRelative) };
+  }).filter(({ nativeRelative, key }) => key !== '..' && !key.startsWith('../') && !isAbsolute(nativeRelative)).map(({ key }) => key).sort();
   assert.deepEqual([...snapshot.keys()], expected, 'initial target tree diverged from the frozen manifest');
 }
 
@@ -254,6 +258,10 @@ test('PR #39 operation snapshots expose unexpected namespaces and job log mutati
   await writeFile(join(directory, 'jobs', 'known.log'), 'after\n'); await mkdir(join(directory, 'unexpected'), { recursive: true }); await writeFile(join(directory, 'unexpected', 'record.bin'), 'surprise');
   const disguised = join(directory, 'jobs', '.job-log-publication-locks', 'a'.repeat(64)); await mkdir(disguised, { recursive: true }); await writeFile(join(disguised, 'unexpected.bin'), 'surprise');
   assert.deepEqual(snapshotDelta(before, await documentedOperationSnapshot(directory)), { added: [`jobs/.job-log-publication-locks/${'a'.repeat(64)}/unexpected.bin`, 'unexpected/record.bin'], deleted: [], updated: ['jobs/known.log'], unchanged: [] });
+});
+
+test('PR #39 scenario relative keys use the snapshot separator on Windows', () => {
+  assert.equal(normalizeRelativeKey(win32.relative('C:\\data\\target', 'C:\\data\\target\\jobs\\job.json')), 'jobs/job.json');
 });
 
 test('importing the PR #39 manifest never freezes the runner clock', async () => {
