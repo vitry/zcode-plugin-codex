@@ -188,20 +188,16 @@ test('qualifies distinct canonical linked worktree execution while hooks remain 
   await mkdir(windowsDirectories.at(-1), { recursive: true });
   await mkdir(windowsDirectories[2], { recursive: true });
   await Promise.all(windowsDirectories.map((path) => chmod(path, 0o755)));
-  const windowsInput = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace); windowsInput.installedDataRoot = windowsDataRoot;
-  for (const bytes of JSON.parse(windowsInput.jobRecordBytesJson)) {
+  const installedInput = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace); installedInput.installedDataRoot = windowsDataRoot;
+  for (const bytes of JSON.parse(installedInput.jobRecordBytesJson)) {
     const job = JSON.parse(bytes); await writeFile(join(windowsDirectories.at(-1), `${job.id}.json`), bytes);
   }
   const snapshotStorage = async () => Promise.all(windowsDirectories.map(async (path) => {
     const metadata = await stat(path); return { path, entries: (await readdir(path)).sort(), mode: metadata.mode, mtimeMs: metadata.mtimeMs, ctimeMs: metadata.ctimeMs };
   }));
   const windowsBefore = await snapshotStorage(); const platformBefore = process.platform;
-  windowsInput.installedStoragePermissionModel = 'windows';
-  await qualifyCodexRescuePreparedContinuationEvidence(windowsInput);
-  assert.equal(process.platform, platformBefore);
-  assert.deepEqual(await snapshotStorage(), windowsBefore);
-  windowsInput.installedStoragePermissionModel = 'posix';
-  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(windowsInput), CodexRescueEvidenceMismatchError);
+  if (process.platform === 'win32') await qualifyCodexRescuePreparedContinuationEvidence(installedInput);
+  else await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(installedInput), CodexRescueEvidenceMismatchError);
   assert.equal(process.platform, platformBefore);
   assert.deepEqual(await snapshotStorage(), windowsBefore);
 
