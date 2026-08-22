@@ -191,6 +191,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || preBinding.operationId !== binding.operationId || preBinding.anchorJobId !== binding.anchorJobId) mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
   if (preBinding.state !== 'active' || preBinding.currentJobId !== preBinding.anchorJobId
     || binding.currentJobId === preBinding.currentJobId) mismatch('continuation-current-job-stale', 'Raw current job binding does not prove the exact pre-reservation CAS transition.');
+  if (workspaceAuthority.checked) await validateContinuationArtifactLocations(input, { ...workspaceAuthority, route: workspaceAuthority.route });
   const jobs = await parseRawJobsWithProduction(jobBytes, expected, input.installedDataRoot);
   if (jobs.length !== 2 || new Set(jobs.map((job) => job?.id)).size !== jobs.length) mismatch('continuation-job-identity', 'Raw job evidence contains extra or duplicate identities.');
   const anchor = jobs.find((job) => job?.id === binding.anchorJobId); const current = jobs.find((job) => job?.id === binding.currentJobId);
@@ -1322,7 +1323,70 @@ async function validateContinuationWorkspaceBinding(input, expected, active) {
     mismatch('continuation-authority-order', 'Raw workspace authority lifecycle targets the wrong generation or workspace.');
   }
   if (originWorkspace !== executionWorkspace) await validateCanonicalGitLineage(originWorkspace, executionWorkspace);
-  return { originWorkspace, executionWorkspace, generationId: active.generationId, checked: true };
+  return { originWorkspace, executionWorkspace, generationId: active.generationId, route, checked: true };
+}
+
+async function validateContinuationArtifactLocations(input, evidence) {
+  if (typeof input.artifactLocationsJson !== 'string' || Buffer.byteLength(input.artifactLocationsJson) > MAX_ROLLOUT_BYTES) {
+    mismatch('continuation-artifact-location', 'Workspace-bound artifact locations are absent or oversized.');
+  }
+  let artifacts; try { artifacts = JSON.parse(input.artifactLocationsJson); } catch { mismatch('continuation-artifact-location', 'Workspace-bound artifact locations are malformed.'); }
+  if (!Array.isArray(artifacts) || artifacts.length !== 8 || artifacts.some((artifact) => !artifact || typeof artifact !== 'object' || Array.isArray(artifact)
+    || Object.keys(artifact).sort().join('\0') !== ['bytes', 'path', 'role'].join('\0') || !boundedString(artifact.role)
+    || !boundedString(artifact.path) || Buffer.byteLength(artifact.path) > 4096 || artifact.path.includes('\\')
+    || typeof artifact.bytes !== 'string' || Buffer.byteLength(artifact.bytes) > MAX_ROLLOUT_BYTES)) {
+    mismatch('continuation-artifact-location', 'Workspace-bound artifact location evidence has an invalid shape.');
+  }
+  let originKey = createHash('sha256').update(evidence.originWorkspace).digest('hex');
+  let executionKey = createHash('sha256').update(evidence.executionWorkspace).digest('hex');
+  if (boundedString(input.installedDataRoot)) {
+    let originStorage; let executionStorage;
+    try { [originStorage, executionStorage] = await Promise.all([
+      resolveWorkspaceStorage({ dataRoot: input.installedDataRoot, workspace: evidence.originWorkspace }),
+      resolveWorkspaceStorage({ dataRoot: input.installedDataRoot, workspace: evidence.executionWorkspace }),
+    ]); } catch { mismatch('continuation-artifact-location', 'Workspace-bound artifact storage could not be resolved canonically.'); }
+    if (originStorage.workspacePath !== evidence.originWorkspace || executionStorage.workspacePath !== evidence.executionWorkspace) {
+      mismatch('continuation-artifact-location', 'Workspace-bound artifact storage resolved to another workspace.');
+    }
+    originKey = originStorage.workspaceKey; executionKey = executionStorage.workspaceKey;
+  }
+  let executor; let authority; let prePartition; let partition;
+  try {
+    executor = JSON.parse(input.executorRecordBytes); authority = JSON.parse(input.bindingAuthorityBytes);
+    prePartition = JSON.parse(input.bindingPreReservationBytes); partition = JSON.parse(input.bindingPartitionBytes);
+  } catch { mismatch('continuation-artifact-location', 'Authority location bytes are malformed.'); }
+  const prefix = (workspaceKey, suffix) => `workspaces/${workspaceKey}/${suffix}`;
+  const routeKey = createHash('sha256').update(JSON.stringify(['executor-route', evidence.route.parentSessionId, evidence.route.childTurnId])).digest('hex');
+  const forwardKey = createHash('sha256').update(JSON.stringify(['forward', evidence.route.parentSessionId, evidence.route.childTurnId])).digest('hex');
+  const executorKey = createHash('sha256').update(JSON.stringify(['executor', executor.agentId])).digest('hex');
+  let preparationBytes; try { preparationBytes = JSON.parse(input.preparationRecordBytesJson); } catch { mismatch('continuation-artifact-location', 'Preparation location bytes are malformed.'); }
+  const preparations = preparationBytes.map((bytes) => { try { return { bytes, value: JSON.parse(bytes) }; } catch { mismatch('continuation-artifact-location', 'Preparation location bytes are malformed.'); } });
+  const expected = [
+    { role: 'executor-route', path: prefix(originKey, `hook-state/route-${routeKey}.json`), bytes: input.executorRouteRecordBytes },
+    { role: 'executor', path: prefix(executionKey, `hook-state/executor-${executorKey}.json`), bytes: input.executorRecordBytes },
+    { role: 'binding-authority', path: prefix(executionKey, `rescue-binding-authority-${authority.key}.json`), bytes: input.bindingAuthorityBytes },
+    { role: 'binding-partition', path: prefix(executionKey, `rescue-binding-session-${prePartition.key}.json`), bytes: input.bindingPreReservationBytes },
+    { role: 'binding-partition', path: prefix(executionKey, `rescue-binding-session-${partition.key}.json`), bytes: input.bindingPartitionBytes },
+    ...preparations.map(({ bytes, value }) => ({ role: 'preparation', path: prefix(executionKey, `invocations/prepared/${value.key}.json`), bytes })),
+  ];
+  const forwardPath = prefix(originKey, `hook-state/forward-${forwardKey}.json`);
+  const forwards = artifacts.filter((artifact) => artifact.role === 'forwarding' && artifact.path === forwardPath);
+  if (forwards.length !== 1) mismatch('continuation-artifact-location', 'Forwarding evidence is absent, duplicated, or stored outside the origin partition.');
+  let forward; try { forward = JSON.parse(forwards[0].bytes); } catch { mismatch('continuation-artifact-location', 'Forwarding evidence bytes are malformed.'); }
+  const forwardKeys = ['active', 'agentId', 'generationId', 'kind', 'sessionId', 'targetWorkspace', 'turnId', 'updatedAt'];
+  if (Object.keys(forward ?? {}).sort().join('\0') !== forwardKeys.sort().join('\0') || forward.kind !== 'forwarding' || forward.active !== false
+    || forward.agentId !== evidence.route.agentId || forward.generationId !== evidence.route.parentGenerationId
+    || forward.sessionId !== evidence.route.parentSessionId || forward.turnId !== evidence.route.childTurnId
+    || forward.targetWorkspace !== evidence.executionWorkspace || !Number.isFinite(Date.parse(forward.updatedAt))) {
+    mismatch('continuation-artifact-location', 'Forwarding evidence does not match the exact stopped route.');
+  }
+  const remaining = artifacts.filter((artifact) => artifact !== forwards[0]);
+  for (const artifact of expected) {
+    const matches = remaining.filter((candidate) => candidate.role === artifact.role && candidate.path === artifact.path && candidate.bytes === artifact.bytes);
+    if (matches.length !== 1) mismatch('continuation-artifact-location', 'An authority artifact is missing, duplicated, substituted, or stored in another workspace partition.');
+    remaining.splice(remaining.indexOf(matches[0]), 1);
+  }
+  if (remaining.length !== 0) mismatch('continuation-artifact-location', 'Workspace-bound artifact evidence contains an unaccounted duplicate or substitute.');
 }
 
 async function validateCanonicalGitLineage(originWorkspace, executionWorkspace) {

@@ -800,6 +800,21 @@ test('installed continuation capture qualifies one parent turn from origin hooks
   assert.equal(evidence.executionWorkspace, executionWorkspace);
   assert.equal(evidence.workspaceBindingChecked, true);
   assert.notEqual(evidence.originWorkspace, evidence.executionWorkspace);
+  const originKey = observerOriginStorage.workspaceKey; const executionKey = observerExecutionStorage.workspaceKey;
+  for (const role of ['executor-route', 'forwarding', 'executor', 'binding-authority', 'binding-partition', 'preparation']) {
+    const misplaced = structuredClone(capture); const locations = JSON.parse(misplaced.artifactLocationsJson);
+    for (const artifact of locations.filter((value) => value.role === role)) artifact.path = artifact.path.replace(
+      role === 'executor-route' || role === 'forwarding' ? originKey : executionKey,
+      role === 'executor-route' || role === 'forwarding' ? executionKey : originKey,
+    );
+    misplaced.artifactLocationsJson = JSON.stringify(locations);
+    await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(misplaced),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-location', role);
+  }
+  const duplicated = structuredClone(capture); const duplicatedLocations = JSON.parse(duplicated.artifactLocationsJson);
+  duplicatedLocations.push(structuredClone(duplicatedLocations[0])); duplicated.artifactLocationsJson = JSON.stringify(duplicatedLocations);
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(duplicated),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-location');
   const hooks = JSON.parse(capture.hookLifecycleJson);
   assert.ok(hooks.every((event) => event.cwd === originWorkspace));
   const peerCreate = JSON.parse(capture.fakePeerJson).find((event) => event.method === 'session/create');
@@ -2299,7 +2314,7 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
     NODE_OPTIONS: invokeNodeOptions, INSTALLED_BROKER_PROCESS_RECORD: brokerProcessRecord, INSTALLED_ZCODE_MAIN: fakeZCode };
   const firstInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: originWorkspace, env: invokeEnv });
   assert.equal(firstInvoke.code, 0, firstInvoke.stderr || firstInvoke.stdout);
-  const firstArtifactPaths = await recursiveFiles(dataRoot);
+  const firstArtifactPaths = await recursiveFiles(canonicalDataRoot);
   const firstArtifactSnapshot = await Promise.all(firstArtifactPaths.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
   await runHook('subagent-hook.mjs', hookInput('SubagentStop', { ...childBase, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }));
   const proactiveFrame = `${JSON.stringify({ version: 1, source: 'proactive', task: 'continue fixture', options: { execution: 'foreground', resume: 'resume' } })}\n`;
@@ -2320,36 +2335,59 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
   const brokerIdentityPath = join(executionBrokerDirectory, 'identity.json'); const brokerOwnershipPath = join(executionBrokerDirectory, 'session-owners.json');
   const brokerIdentityBytes = await readFile(brokerIdentityPath, 'utf8'); const brokerOwnershipBytes = await readFile(brokerOwnershipPath, 'utf8');
   const brokerIdentity = JSON.parse(brokerIdentityBytes); const brokerOwners = JSON.parse(brokerOwnershipBytes);
-  const filesBeforeCleanup = await recursiveFiles(dataRoot); const parsed = [];
+  const filesBeforeCleanup = await recursiveFiles(canonicalDataRoot); const parsed = [];
   for (const path of filesBeforeCleanup) {
     try { const bytes = await readFile(path, 'utf8'); parsed.push({ path, bytes, value: JSON.parse(bytes) }); } catch { /* locks and non-JSON are irrelevant */ }
   }
+  const routeKey = createHash('sha256').update(JSON.stringify(['executor-route', parentSessionId, childTurnId])).digest('hex');
+  const forwardKey = createHash('sha256').update(JSON.stringify(['forward', parentSessionId, childTurnId])).digest('hex');
+  const executorKey = createHash('sha256').update(JSON.stringify(['executor', childThreadId])).digest('hex');
+  const preparationKey = createHash('sha256').update(JSON.stringify([parentSessionId, parentTurnId, executionWorkspace, 'rescue'])).digest('hex');
+  const bindingKey = createRescueBindingAuthority({ parentSessionId, workspace: executionWorkspace, createdAt: bound.createdAt }).key;
+  const routePath = join(originStorage.directory, 'hook-state', `route-${routeKey}.json`);
+  const forwardPath = join(originStorage.directory, 'hook-state', `forward-${forwardKey}.json`);
+  const executorPath = join(executionStorage.directory, 'hook-state', `executor-${executorKey}.json`);
+  const preparationPath = join(executionStorage.directory, 'invocations', 'prepared', `${preparationKey}.json`);
+  const authorityPath = join(executionStorage.directory, `rescue-binding-authority-${bindingKey}.json`);
+  const bindingPath = join(executionStorage.directory, `rescue-binding-session-${bindingKey}.json`);
   const originIndex = parsed.find(({ value }) => value?.kind === 'active-turn-index' && value.sessionId === parentSessionId)?.value;
-  const executorArtifact = parsed.findLast(({ value }) => value?.kind === 'subagent-executor' && value.agentId === childThreadId);
-  const routeArtifact = parsed.findLast(({ value }) => value?.kind === 'executor-route' && value.agentId === childThreadId);
-  const preparationArtifact = parsed.findLast(({ path, value }) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`)
-    && value?.sessionId === parentSessionId && value?.envelope?.version === 1);
-  const executor = executorArtifact?.value; const route = routeArtifact?.value; const preparation = preparationArtifact?.value;
-  assert.ok(originIndex && executor && route && preparation, `installed observer artifacts missing ${JSON.stringify({ originIndex: !!originIndex, executor: !!executor, route: !!route, preparation: !!preparation, kinds: parsed.map(({ value }) => value?.kind).filter(Boolean) })}`);
+  const executorCandidates = parsed.filter(({ value }) => value?.kind === 'subagent-executor' && value.agentId === childThreadId);
+  const routeCandidates = parsed.filter(({ value }) => value?.kind === 'executor-route' && value.agentId === childThreadId);
+  const forwardCandidates = parsed.filter(({ value }) => value?.kind === 'forwarding' && value.sessionId === parentSessionId && value.turnId === childTurnId && value.agentId === childThreadId);
+  assert.deepEqual(executorCandidates.map(({ path }) => path), [executorPath], 'installed observer found a duplicate or mispartitioned executor');
+  assert.deepEqual(routeCandidates.map(({ path }) => path), [routePath], 'installed observer found a duplicate or mispartitioned route');
+  assert.deepEqual(forwardCandidates.map(({ path }) => path), [forwardPath], 'installed observer found a duplicate or mispartitioned forwarding marker');
+  const [executorArtifact] = executorCandidates; const [routeArtifact] = routeCandidates; const [forwardArtifact] = forwardCandidates;
+  const preparationArtifact = parsed.find(({ path }) => path === preparationPath);
+  const executor = executorArtifact?.value; const route = routeArtifact?.value; const forward = forwardArtifact?.value; const preparation = preparationArtifact?.value;
+  assert.ok(originIndex && executor && route && forward && preparation, `installed observer artifacts missing ${JSON.stringify({ originIndex: !!originIndex, executor: !!executor, route: !!route, forward: !!forward, preparation: !!preparation, kinds: parsed.map(({ value }) => value?.kind).filter(Boolean) })}`);
   const cleanedPaths = parsed.filter(({ path, value }) => value?.kind !== 'identity-session'
     && (value?.sessionId === parentSessionId || value?.parentSessionId === parentSessionId)
     && !path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`)
     && !basename(path).startsWith('rescue-binding-')).map(({ path }) => path);
   const finalArtifacts = await Promise.all(filesBeforeCleanup.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
   await runHook('session-end-hook.mjs', hookInput('SessionEnd', { reason: 'other' }));
-  const remainingPaths = await recursiveFiles(dataRoot);
+  const remainingPaths = await recursiveFiles(canonicalDataRoot);
   const brokerOwnershipAfterBytes = await readFile(brokerOwnershipPath, 'utf8').catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error));
   const brokerOwnersAfter = brokerOwnershipAfterBytes === null ? null : JSON.parse(brokerOwnershipAfterBytes);
   const artifactHistory = [...firstArtifactSnapshot, ...finalArtifacts];
+  const parsedHistoryArtifacts = artifactHistory.map((artifact) => { try { return { ...artifact, value: JSON.parse(artifact.bytes) }; } catch { return { ...artifact, value: null }; } });
+  const preparationCandidates = parsedHistoryArtifacts.filter(({ value }) => value?.sessionId === parentSessionId && value?.executorAgentId === childThreadId && value?.consumedAt);
+  const bindingCandidates = parsedHistoryArtifacts.filter(({ value }) => value?.parentSessionId === parentSessionId && value?.workspace === executionWorkspace && Array.isArray(value?.records));
+  assert.ok(preparationCandidates.length >= 2 && preparationCandidates.every(({ path }) => path === preparationPath), 'installed observer found a duplicate or mispartitioned preparation');
+  assert.ok(bindingCandidates.length >= 2 && bindingCandidates.every(({ path }) => path === bindingPath), 'installed observer found a duplicate or mispartitioned binding partition');
   const parseHistory = (predicate) => artifactHistory.filter(({ path }) => predicate(path)).map(({ bytes }) => { try { return JSON.parse(bytes); } catch { return null; } }).filter(Boolean);
-  const preparationHistory = [...new Map(parseHistory((path) => path.includes(`${join('invocations', 'prepared')}${process.platform === 'win32' ? '\\' : '/'}`))
+  const preparationHistory = [...new Map(parseHistory((path) => path === preparationPath)
     .filter((value) => value.sessionId === parentSessionId && value.executorAgentId === childThreadId).map((value) => [value.generation, value])).values()]
     .sort((left, right) => left.generation - right.generation);
-  const bindingHistory = [...new Map(parseHistory((path) => basename(path).startsWith('rescue-binding-session-')).filter((value) => value.parentSessionId === parentSessionId)
+  const bindingHistory = [...new Map(parseHistory((path) => path === bindingPath).filter((value) => value.parentSessionId === parentSessionId)
     .map((value) => [value.records?.[0]?.currentJobId, value])).values()].filter((value) => value.records?.length === 1);
   const jobs = [...new Map(parseHistory((path) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`))
     .filter((value) => value.ownerSessionId === parentSessionId).map((value) => [value.id, value])).values()];
-  const authorityArtifact = parsed.findLast(({ path, value }) => basename(path).startsWith('rescue-binding-authority-') && value?.parentSessionId === parentSessionId);
+  const authorityCandidates = parsed.filter(({ path, value }) => basename(path).startsWith('rescue-binding-authority-')
+    && value?.parentSessionId === parentSessionId && value.workspace === executionWorkspace);
+  assert.deepEqual(authorityCandidates.map(({ path }) => path), [authorityPath], 'installed observer found a duplicate or mispartitioned binding authority');
+  const [authorityArtifact] = authorityCandidates;
   const peer = (await readFile(peerRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   const sessionId = jobs[0]?.zcodeSessionId;
   const brokerHistory = [{ originBrokerDirectory: join(originStorage.directory, 'broker'), executionBrokerDirectory,
@@ -2359,7 +2397,16 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
     originArtifacts: artifactHistory.filter(({ path }) => path === join(originStorage.directory, 'broker') || path.startsWith(`${join(originStorage.directory, 'broker')}${process.platform === 'win32' ? '\\' : '/'}`)),
     cleanup: { ownershipPath: brokerOwnershipPath, ownershipBytes: brokerOwnershipAfterBytes, owners: brokerOwnersAfter,
       configPresent: remainingPaths.includes(brokerStartup[0].configPath), identityPresent: remainingPaths.includes(brokerIdentityPath) } }];
-  return { pending, unbound, bound, originIndex, executor, route, preparation, dataRoot,
+  const relativeArtifactPath = (path) => relative(canonicalDataRoot, path).split(process.platform === 'win32' ? '\\' : '/').join('/');
+  const artifactLocations = [
+    { role: 'executor-route', path: relativeArtifactPath(routePath), bytes: routeArtifact.bytes },
+    { role: 'forwarding', path: relativeArtifactPath(forwardPath), bytes: forwardArtifact.bytes },
+    { role: 'executor', path: relativeArtifactPath(executorPath), bytes: executorArtifact.bytes },
+    { role: 'binding-authority', path: relativeArtifactPath(authorityPath), bytes: authorityArtifact.bytes },
+    ...bindingHistory.map((value) => ({ role: 'binding-partition', path: relativeArtifactPath(bindingPath), bytes: `${JSON.stringify(value)}\n` })),
+    ...preparationHistory.map((value) => ({ role: 'preparation', path: relativeArtifactPath(preparationPath), bytes: `${JSON.stringify(value)}\n` })),
+  ];
+  return { pending, unbound, bound, originIndex, executor, route, forward, preparation, artifactLocations, dataRoot,
     raw: { pending: pendingBytes, unbound: finalUnboundBytes, bound: `${JSON.stringify(bound)}\n`, originIndex: `${JSON.stringify(originIndex)}\n`, executor: executorArtifact.bytes,
       route: routeArtifact.bytes, authority: authorityArtifact?.bytes, preparations: preparationHistory.map((value) => `${JSON.stringify(value)}\n`),
       bindings: bindingHistory.map((value) => `${JSON.stringify(value)}\n`), jobs: jobs.map((value) => parsed.find(({ path, value: candidate }) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`) && candidate?.id === value.id)?.bytes) },
@@ -2471,6 +2518,7 @@ function installedWorkspaceBoundCaptureFromObservation(observed, expected) {
   input.originIndexRecordBytes = observed.raw.originIndex; input.executorRouteRecordBytes = observed.raw.route; input.executorRecordBytes = observed.raw.executor;
   input.bindingAuthorityBytes = observed.raw.authority; input.bindingPreReservationBytes = observed.raw.bindings[0]; input.bindingPartitionBytes = observed.raw.bindings[1];
   input.preparationRecordBytesJson = JSON.stringify(observed.raw.preparations); input.jobRecordBytesJson = JSON.stringify(observed.raw.jobs);
+  input.artifactLocationsJson = JSON.stringify(observed.artifactLocations);
   input.installedDataRoot = observed.dataRoot;
   const parent = JSON.parse(input.parentRolloutJson);
   for (const [index, preparation] of observed.preparationHistory.entries()) {
