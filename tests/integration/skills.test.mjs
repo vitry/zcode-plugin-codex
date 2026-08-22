@@ -482,7 +482,7 @@ test('PR #39 frozen choice bytes consume once and keep fresh and resume transiti
     assertSnapshotMatchesScenario(beforeOperation, scenario);
     const oldJobRecord = scenario.records.find((item) => item.path.endsWith(`${scenario.operation.jobId}.json`)); const oldJobBytes = await readFile(oldJobRecord.path);
     const beforeBinding = JSON.parse(await readFile(scenario.records.find((item) => item.path.includes('rescue-binding-session-')).path, 'utf8')).records[0];
-    const selected = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', choice], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
+    const selected = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', choice], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_WORKSPACE: target } });
     assert.equal(selected.code, 0, selected.stderr || selected.stdout);
     await assert.rejects(readFile(pending.path), { code: 'ENOENT' }); await assertPr39Immutable(immutable);
     assert.equal((await store.listJobs(ctx.workspace)).length, 0); const jobs = await store.listJobs(target); assert.equal(jobs.length, 2); assert.deepEqual(await readFile(oldJobRecord.path), oldJobBytes);
@@ -523,7 +523,7 @@ test('PR #39 frozen stopped continuation consumes generation two and resumes its
   const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
   assertSnapshotMatchesScenario(beforeOperation, scenario);
   const oldJobRecord = scenario.records.find((item) => item.path.endsWith(`${scenario.operation.jobId}.json`)); const oldJobBytes = await readFile(oldJobRecord.path);
-  const continued = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
+  const continued = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_WORKSPACE: target } });
   assert.equal(continued.code, 0, continued.stderr || continued.stdout); await assertPr39Immutable(immutable);
   const consumed = JSON.parse(await readFile(preparation.path, 'utf8'));
   assert.equal(consumed.generation, 2); assert.equal(consumed.requiredExecutorAgentId, scenario.agentId); assert.equal(consumed.executorAgentId, scenario.agentId); assert.notEqual(consumed.consumedAt, null);
