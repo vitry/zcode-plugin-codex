@@ -141,6 +141,64 @@ function assertPrivateRouteFailure(result, scenario, origin, target) {
   for (const secret of [origin, target, scenario.agentId, scenario.sessionId, scenario.parentTurnId, scenario.activeTurnId, scenario.childTurnId, scenario.generationId].filter(Boolean)) assert.equal(output.includes(secret), false, `public failure leaked ${secret}`);
 }
 
+async function fileTree(directory, prefix = '') {
+  let entries; try { entries = await readdir(directory, { withFileTypes: true }); } catch (error) { if (error?.code === 'ENOENT') return []; throw error; }
+  const files = [];
+  for (const entry of entries) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name; const path = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await fileTree(path, relative)); else if (entry.isFile()) files.push(relative);
+  }
+  return files.sort();
+}
+
+async function assertOriginExecutionStateAbsent(dataRoot, origin) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: origin }); const files = await fileTree(storage.directory);
+  const forbidden = files.filter((path) => /^(?:invocations\/(?:prepared|pending)|jobs|job-owners|broker|results|prompts|worker-leases|cancel-locks)(?:\/|$)|^rescue-binding-(?:authority|session)-|^hook-state\/executor-/u.test(path));
+  assert.deepEqual(forbidden, [], `origin contains Rescue execution state: ${forbidden.join(', ')}`);
+}
+
+async function documentedOperationSnapshot(workspaceDirectory) {
+  const snapshot = new Map();
+  for (const relative of await fileTree(workspaceDirectory)) {
+    if (!/^(?:invocations\/(?:prepared|pending)\/[^/]+\.json|jobs\/[^/]+\.json|job-owners\/.+\.json|broker\/[^/]+\.json|results\/[^/]+\.md|prompts\/[^/]+\.md|rescue-binding-(?:authority|session)-[^/]+\.json)$/u.test(relative)) continue;
+    snapshot.set(relative, await readFile(join(workspaceDirectory, relative)));
+  }
+  return snapshot;
+}
+
+function snapshotDelta(before, after) {
+  const added = [...after.keys()].filter((path) => !before.has(path)).sort();
+  const deleted = [...before.keys()].filter((path) => !after.has(path)).sort();
+  const updated = [...after.keys()].filter((path) => before.has(path) && !after.get(path).equals(before.get(path))).sort();
+  const unchanged = [...after.keys()].filter((path) => before.has(path) && after.get(path).equals(before.get(path))).sort();
+  return { added, deleted, updated, unchanged };
+}
+
+function exactlyOnePath(paths, predicate, description) {
+  const matches = [...paths].filter(predicate); assert.equal(matches.length, 1, `expected one ${description}, found ${matches.join(', ')}`); return matches[0];
+}
+
+async function assertNoTransientTargetState(workspaceDirectory) {
+  const files = await fileTree(workspaceDirectory);
+  const transient = files.filter((path) => /^(?:worker-leases|cancel-locks)(?:\/|$)/u.test(path));
+  assert.equal(transient.length, 2);
+  assert.equal(transient.every((path) => /\.lock\/advisory\.lock$/u.test(path)), true, `transient execution record survived cleanup: ${transient.join(', ')}`);
+}
+
+test('PR #39 fixture manifests contain four independent literal record byte sets', async () => {
+  const source = await readFile(pr39Fixture, 'utf8');
+  assert.doesNotMatch(source, /JSON\.stringify|records\.push|\bconst add\b|createIdentityStore|createRescuePreparationStore|createInvocationStore|createStateStore|SubagentStart/);
+  const manifests = Object.values(PR39_ORIGIN_ROUTE_TEMPLATES); assert.equal(manifests.length, 4); assert.equal(new Set(manifests).size, 4);
+  for (const raw of manifests) {
+    const manifest = JSON.parse(raw); assert.ok(Array.isArray(manifest.records)); assert.ok(manifest.records.length >= 6);
+    for (const record of manifest.records) {
+      assert.deepEqual(Object.keys(record).sort(), ['bytes', 'classification', 'path']);
+      assert.equal(typeof record.path, 'string'); assert.equal(typeof record.bytes, 'string'); assert.match(record.bytes, /^\{[\s\S]*\}\n$/);
+      assert.ok(['immutable', 'one-shot', 'operation'].includes(record.classification));
+    }
+  }
+});
+
 async function rewriteOnlyExecutor(ctx, patch) {
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
   const names = (await readdir(join(storage.directory, 'hook-state'))).filter((name) => name.startsWith('executor-'));
@@ -174,6 +232,7 @@ test('origin hook cwd executes prepared Rescue only in its bound linked worktree
   assert.equal(created.params.workspace.workspacePath, canonicalTarget);
   assert.equal((await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace)).length, 0);
   assert.equal((await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(canonicalTarget)).length, 1);
+  await assertOriginExecutionStateAbsent(ctx.dataRoot, ctx.workspace);
 });
 
 test('origin cwd status reads only the exact foreground job bound in the linked worktree', async (t) => {
@@ -195,11 +254,14 @@ test('origin cwd status reads only the exact foreground job bound in the linked 
   const originJob = (await store.reserveFreshRescueJob({ workspace: ctx.workspace, reservation: originReservation, executor: originExecutor })).job;
   await store.transitionJob(ctx.workspace, originJob.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'route-status-origin-session' });
   await store.updateJobProgress(ctx.workspace, originJob.id, { phase: 'running', message: 'origin-unrelated progress', observedAt: new Date().toISOString() });
+  const originStorage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  const originOperation = await documentedOperationSnapshot(originStorage.directory);
 
   const result = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'route-status-child' } });
   assert.equal(result.code, 0, result.stderr || result.stdout);
   assert.deepEqual(JSON.parse(result.stdout), { type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: targetObservedAt, progressPreview: ['target-only progress'], terminal: false });
   assert.doesNotMatch(result.stdout, /origin-unrelated|route-status-origin-session/);
+  assert.deepEqual(await documentedOperationSnapshot(originStorage.directory), originOperation);
 });
 
 test('origin cwd choice fresh and resume consume and execute only in the linked worktree', async (t) => {
@@ -230,6 +292,7 @@ test('origin cwd choice fresh and resume consume and execute only in the linked 
     if (choice === 'fresh') assert.equal(frames.filter((frame) => frame.method === 'session/create').length, 2);
     else assert.ok(frames.some((frame) => frame.method === 'session/resume'));
     for (const frame of frames.filter((item) => item.method === 'session/create')) assert.equal(frame.params.workspace.workspacePath, canonicalTarget);
+    await assertOriginExecutionStateAbsent(ctx.dataRoot, ctx.workspace);
   }
 });
 
@@ -256,6 +319,7 @@ test('origin cwd stopped continuation preserves the routed target for named and 
     const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
     assert.ok(frames.some((frame) => frame.method === 'session/resume'));
     for (const frame of frames.filter((item) => item.method === 'session/create')) assert.equal(frame.params.workspace.workspacePath, canonicalTarget);
+    await assertOriginExecutionStateAbsent(ctx.dataRoot, ctx.workspace);
   }
 });
 
@@ -263,6 +327,7 @@ test('PR #39 frozen prepared bytes execute from origin without rewriting authori
   const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'prepared');
   const record = join(ctx.directory, 'pr39-prepared-zcode.jsonl'); await writeFile(record, '');
   const preparation = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(preparation);
+  const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
   const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
   assert.equal(invoked.code, 0, invoked.stderr || invoked.stdout);
   await assertPr39Immutable(immutable);
@@ -270,6 +335,23 @@ test('PR #39 frozen prepared bytes execute from origin without rewriting authori
   assert.equal(consumed.generation, 1); assert.equal(consumed.requiredExecutorAgentId, null); assert.equal(consumed.executorAgentId, scenario.agentId); assert.notEqual(consumed.consumedAt, null);
   const store = createStateStore({ dataRoot: ctx.dataRoot }); assert.equal((await store.listJobs(ctx.workspace)).length, 0);
   const [job] = await store.listJobs(target); assert.equal(job.status, 'succeeded'); assert.ok(job.resultArtifact); assert.equal(await readFile(join(scenario.targetDirectory, job.resultArtifact), 'utf8'), 'done');
+  const afterOperation = await documentedOperationSnapshot(scenario.targetDirectory); const operationDelta = snapshotDelta(beforeOperation, afterOperation);
+  const preparationPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('invocations/prepared/'), 'prepared invocation');
+  const ownerPath = exactlyOnePath(operationDelta.added, (path) => path.startsWith('job-owners/') && path.endsWith(`/${job.id}.json`), 'new owner binding');
+  const authorityPath = exactlyOnePath(operationDelta.added, (path) => path.startsWith('rescue-binding-authority-'), 'new binding authority');
+  const sessionPath = exactlyOnePath(operationDelta.added, (path) => path.startsWith('rescue-binding-session-'), 'new binding session');
+  assert.deepEqual(operationDelta, {
+    added: ['broker/identity.json', 'broker/session-owners.json', ownerPath, 'job-owners/index.json', `jobs/${job.id}.json`, `prompts/${job.id}.md`, authorityPath, sessionPath, `results/${job.id}.md`].sort(),
+    deleted: [], updated: [preparationPath], unchanged: [],
+  });
+  assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, ownerPath), 'utf8')), { jobId: job.id, ownerSessionId: scenario.sessionId, version: 1 });
+  const ownerIndex = JSON.parse(await readFile(join(scenario.targetDirectory, 'job-owners', 'index.json'), 'utf8')); assert.equal(ownerIndex.version, 3); assert.equal(ownerIndex.complete, true); assert.equal(ownerIndex.canonicalJobIds.count, 1); assert.equal(ownerIndex.bindingTuples.count, 1);
+  const authority = JSON.parse(await readFile(join(scenario.targetDirectory, authorityPath), 'utf8')); assert.equal(authority.parentSessionId, scenario.sessionId); assert.equal(authority.workspace, target);
+  const bindingSession = JSON.parse(await readFile(join(scenario.targetDirectory, sessionPath), 'utf8')); assert.equal(bindingSession.records.length, 1); assert.equal(bindingSession.records[0].anchorJobId, job.id); assert.equal(bindingSession.records[0].currentJobId, job.id);
+  const brokerIdentity = JSON.parse(await readFile(join(scenario.targetDirectory, 'broker', 'identity.json'), 'utf8')); assert.equal(typeof brokerIdentity.endpoint, 'string');
+  const brokerOwners = JSON.parse(await readFile(join(scenario.targetDirectory, 'broker', 'session-owners.json'), 'utf8')); assert.equal(Object.keys(brokerOwners.sessions).length, 1);
+  await assertNoTransientTargetState(scenario.targetDirectory);
+  await assertOriginExecutionStateAbsent(ctx.dataRoot, ctx.workspace);
   const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(frames.find((frame) => frame.method === 'session/create').params.workspace.workspacePath, target);
   const replay = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId } });
@@ -278,16 +360,27 @@ test('PR #39 frozen prepared bytes execute from origin without rewriting authori
 
 test('PR #39 frozen status bytes select the exact target binding without mutation', async (t) => {
   const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'status'); const store = createStateStore({ dataRoot: ctx.dataRoot });
-  const beforeOperation = new Map();
-  for (const record of scenario.records.filter((item) => item.classification === 'operation')) beforeOperation.set(record.path, await readFile(record.path));
+  const frozenOperation = new Map();
+  for (const record of scenario.records.filter((item) => item.classification === 'operation')) frozenOperation.set(record.path, await readFile(record.path));
+  const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
   const result = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId } });
   assert.equal(result.code, 0, result.stderr || result.stdout);
   assert.deepEqual(JSON.parse(result.stdout), { type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-22T00:05:00.000Z', progressPreview: ['frozen target progress'], terminal: false });
   await assertPr39Immutable(immutable);
-  for (const [path, bytes] of beforeOperation) assert.deepEqual(await readFile(path), bytes, `status mutated ${path.split('/').at(-1)}`);
+  for (const [path, bytes] of frozenOperation) assert.deepEqual(await readFile(path), bytes, `status mutated ${path.split('/').at(-1)}`);
+  assert.deepEqual(await documentedOperationSnapshot(scenario.targetDirectory), beforeOperation);
+  await assertOriginExecutionStateAbsent(ctx.dataRoot, ctx.workspace);
   assert.equal((await store.listJobs(ctx.workspace)).length, 0); assert.equal((await store.listJobs(target)).length, 1);
   const missing = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: `${scenario.agentId}-unrelated` } });
   assertPrivateRouteFailure(missing, scenario, ctx.workspace, target); assert.match(missing.stdout, /EXECUTOR_IDENTITY_NOT_FOUND/);
+});
+
+test('origin status preserves malformed executor route vocabulary without leaking authority', async (t) => {
+  const { ctx, scenario, target, env } = await materializePr39Scenario(t, 'status');
+  const route = scenario.records.find((record) => record.path.includes('/hook-state/route-')); assert.ok(route);
+  await writeFile(route.path, '{"version":1}\n', { mode: 0o600 });
+  const result = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, ZCODE_DEBUG: '1' } });
+  assertPrivateRouteFailure(result, scenario, ctx.workspace, target); assert.match(result.stdout, /EXECUTOR_ROUTE_INVALID/); assert.equal(result.stderr, '');
 });
 
 test('PR #39 frozen choice bytes consume once and keep fresh and resume transitions in target', async (t) => {
@@ -295,6 +388,7 @@ test('PR #39 frozen choice bytes consume once and keep fresh and resume transiti
     const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'choice'); const store = createStateStore({ dataRoot: ctx.dataRoot });
     const record = join(ctx.directory, `pr39-choice-${choice}-zcode.jsonl`); await writeFile(record, '');
     const pending = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(pending);
+    const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
     const oldJobRecord = scenario.records.find((item) => item.path.endsWith(`${scenario.operation.jobId}.json`)); const oldJobBytes = await readFile(oldJobRecord.path);
     const beforeBinding = JSON.parse(await readFile(scenario.records.find((item) => item.path.includes('rescue-binding-session-')).path, 'utf8')).records[0];
     const selected = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', choice], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
@@ -310,6 +404,22 @@ test('PR #39 frozen choice bytes consume once and keep fresh and resume transiti
     if (choice === 'fresh') assert.ok(frames.some((frame) => frame.method === 'session/create'));
     else assert.ok(frames.some((frame) => frame.method === 'session/resume' && frame.params.sessionId === 'pr39-choice-zcode-session'));
     const brokerOwners = JSON.parse(await readFile(join(scenario.targetDirectory, 'broker', 'session-owners.json'), 'utf8')); assert.ok(brokerOwners.sessions['pr39-choice-zcode-session']);
+    const afterOperation = await documentedOperationSnapshot(scenario.targetDirectory); const operationDelta = snapshotDelta(beforeOperation, afterOperation);
+    const oldOwnerPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('job-owners/') && path.endsWith(`/${scenario.operation.jobId}.json`), 'anchor owner binding');
+    const nextOwnerPath = exactlyOnePath(operationDelta.added, (path) => path.startsWith('job-owners/') && path.endsWith(`/${nextJob.id}.json`), 'new owner binding');
+    const pendingPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('invocations/pending/'), 'pending invocation');
+    const authorityPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('rescue-binding-authority-'), 'binding authority');
+    const sessionPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('rescue-binding-session-'), 'binding session');
+    assert.deepEqual(operationDelta, {
+      added: ['broker/identity.json', nextOwnerPath, `jobs/${nextJob.id}.json`, `prompts/${nextJob.id}.md`, `results/${nextJob.id}.md`].sort(),
+      deleted: [pendingPath],
+      updated: [...(choice === 'fresh' ? ['broker/session-owners.json'] : []), 'job-owners/index.json', sessionPath].sort(),
+      unchanged: [...(choice === 'resume' ? ['broker/session-owners.json'] : []), oldOwnerPath, `jobs/${scenario.operation.jobId}.json`, authorityPath].sort(),
+    });
+    assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, nextOwnerPath), 'utf8')), { jobId: nextJob.id, ownerSessionId: scenario.sessionId, version: 1 });
+    const ownerIndex = JSON.parse(await readFile(join(scenario.targetDirectory, 'job-owners', 'index.json'), 'utf8')); assert.equal(ownerIndex.canonicalJobIds.count, 2); assert.equal(ownerIndex.bindingTuples.count, 2); assert.equal(ownerIndex.complete, true);
+    await assertNoTransientTargetState(scenario.targetDirectory);
+    await assertOriginExecutionStateAbsent(ctx.dataRoot, ctx.workspace);
     const replay = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', choice], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId } });
     assertPrivateRouteFailure(replay, scenario, ctx.workspace, target); assert.match(replay.stdout, /PENDING_INVOCATION_NOT_FOUND/);
   }
@@ -319,6 +429,7 @@ test('PR #39 frozen stopped continuation consumes generation two and resumes its
   const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'stopped'); const store = createStateStore({ dataRoot: ctx.dataRoot });
   const record = join(ctx.directory, 'pr39-stopped-zcode.jsonl'); await writeFile(record, '');
   const preparation = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(preparation);
+  const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
   const oldJobRecord = scenario.records.find((item) => item.path.endsWith(`${scenario.operation.jobId}.json`)); const oldJobBytes = await readFile(oldJobRecord.path);
   const continued = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
   assert.equal(continued.code, 0, continued.stderr || continued.stdout); await assertPr39Immutable(immutable);
@@ -330,6 +441,21 @@ test('PR #39 frozen stopped continuation consumes generation two and resumes its
   assert.ok(frames.some((frame) => frame.method === 'session/resume' && frame.params.sessionId === 'pr39-stopped-zcode-session'));
   const binding = await store.resolveRescueBinding({ workspace: target, parentSessionId: scenario.sessionId, executorAgentId: scenario.agentId, executorAgentType: scenario.agentType, executorParentTurnId: scenario.parentTurnId, executorParentPermissionMode: 'workspace-write', permissionMode: 'workspace-write' });
   assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.anchorJobId, scenario.operation.jobId); assert.equal(binding.binding.currentJobId, nextJob.id); assert.equal(binding.binding.operationId, scenario.operation.operationId);
+  const afterOperation = await documentedOperationSnapshot(scenario.targetDirectory); const operationDelta = snapshotDelta(beforeOperation, afterOperation);
+  const oldOwnerPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('job-owners/') && path.endsWith(`/${scenario.operation.jobId}.json`), 'anchor owner binding');
+  const nextOwnerPath = exactlyOnePath(operationDelta.added, (path) => path.startsWith('job-owners/') && path.endsWith(`/${nextJob.id}.json`), 'new owner binding');
+  const preparationPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('invocations/prepared/'), 'prepared invocation');
+  const authorityPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('rescue-binding-authority-'), 'binding authority');
+  const sessionPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('rescue-binding-session-'), 'binding session');
+  assert.deepEqual(operationDelta, {
+    added: ['broker/identity.json', nextOwnerPath, `jobs/${nextJob.id}.json`, `prompts/${nextJob.id}.md`, `results/${nextJob.id}.md`].sort(),
+    deleted: [], updated: [preparationPath, 'job-owners/index.json', sessionPath].sort(),
+    unchanged: ['broker/session-owners.json', oldOwnerPath, `jobs/${scenario.operation.jobId}.json`, authorityPath].sort(),
+  });
+  assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, nextOwnerPath), 'utf8')), { jobId: nextJob.id, ownerSessionId: scenario.sessionId, version: 1 });
+  const ownerIndex = JSON.parse(await readFile(join(scenario.targetDirectory, 'job-owners', 'index.json'), 'utf8')); assert.equal(ownerIndex.canonicalJobIds.count, 2); assert.equal(ownerIndex.bindingTuples.count, 2); assert.equal(ownerIndex.complete, true);
+  await assertNoTransientTargetState(scenario.targetDirectory);
+  await assertOriginExecutionStateAbsent(ctx.dataRoot, ctx.workspace);
   const replay = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId } });
   assertPrivateRouteFailure(replay, scenario, ctx.workspace, target); assert.match(replay.stdout, /RESCUE_PREPARATION_CONSUMED/);
 });

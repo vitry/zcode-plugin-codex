@@ -50,7 +50,7 @@ const SAFE_BOUND_STATUS_ERRORS = new Set([
   'BOUND_RESCUE_STATUS_NOT_FOUND', 'BOUND_RESCUE_STATUS_UNAVAILABLE',
   'EXECUTOR_IDENTITY_AMBIGUOUS', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_IDENTITY_INVALID',
   'EXECUTOR_IDENTITY_NOT_FOUND', 'EXECUTOR_PARENT_TURN_MISMATCH', 'EXECUTOR_ROLE_UNAPPROVED',
-  'EXECUTOR_STATE_MISMATCH',
+  'EXECUTOR_ROUTE_INVALID', 'EXECUTOR_ROUTE_NOT_FOUND', 'EXECUTOR_STATE_MISMATCH',
 ]);
 
 /** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,executor?:any,rescueRoute?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
