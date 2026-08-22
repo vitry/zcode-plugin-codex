@@ -76,11 +76,11 @@ export async function ensurePrivateDirectoryWithin(root, path) {
 /**
  * Reads one trusted directory with containment and identity checks around the
  * enumeration so callers can validate a stable bounded filename set.
- * @param {string} root @param {string} path @param {number} maximumEntries
+ * @param {string} root @param {string} path @param {number} maximumEntries @param {{ requirePrivatePermissions?: boolean, platform?: NodeJS.Platform }} [options]
  */
-export async function readPrivateDirectory(root, path, maximumEntries) {
+export async function readPrivateDirectory(root, path, maximumEntries, options = {}) {
   if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 0) throw new TypeError('maximumEntries must be a nonnegative safe integer');
-  const before = await safeContainedDirectoryStats(root, path);
+  const before = await safeContainedDirectoryStats(root, path, options);
   const directory = await opendir(path); const entries = [];
   try {
     for await (const entry of directory) {
@@ -88,7 +88,7 @@ export async function readPrivateDirectory(root, path, maximumEntries) {
       if (entries.length > maximumEntries) throw unsafePrivatePath(path);
     }
   } finally { await directory.close().catch(() => {}); }
-  const after = await safeContainedDirectoryStats(root, path);
+  const after = await safeContainedDirectoryStats(root, path, options);
   if (!sameIdentity(before, after)) throw unsafePrivatePath(path);
   return entries;
 }
@@ -98,20 +98,22 @@ export async function readPrivateDirectory(root, path, maximumEntries) {
  * declared size before allocating, and reads at most maximumBytes + 1 so a
  * concurrent growth cannot bypass the bound.
  * @param {string} root @param {string} path @param {number} maximumBytes
- * @param {{platform?:NodeJS.Platform}} [options]
+ * @param {{platform?:NodeJS.Platform, requirePrivatePermissions?:boolean}} [options]
  */
 export async function readBoundedJsonFile(root, path, maximumBytes, options = {}) {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new TypeError('maximumBytes must be a positive safe integer');
   const platform = options.platform ?? process.platform;
   const maximumFileSize = BigInt(maximumBytes);
-  const parent = dirname(path); const parentBefore = await safeContainedDirectoryStats(root, parent);
+  const parent = dirname(path); const parentBefore = await safeContainedDirectoryStats(root, parent, options);
   const pathBefore = await lstat(path, { bigint: true });
-  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > maximumFileSize) throw unsafePrivatePath(path);
+  if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.size > maximumFileSize
+    || options.requirePrivatePermissions === true && platform !== 'win32' && Number(pathBefore.mode & 0o777n) !== 0o600) throw unsafePrivatePath(path);
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const handleBefore = await handle.stat({ bigint: true });
-    if (!handleBefore.isFile() || handleBefore.size > maximumFileSize) throw unsafePrivatePath(path);
+    if (!handleBefore.isFile() || handleBefore.size > maximumFileSize
+      || options.requirePrivatePermissions === true && platform !== 'win32' && Number(handleBefore.mode & 0o777n) !== 0o600) throw unsafePrivatePath(path);
     const bytes = Buffer.alloc(maximumBytes + 1); let offset = 0;
     while (offset < bytes.length) {
       const result = await handle.read(bytes, offset, bytes.length - offset, offset);
@@ -125,7 +127,7 @@ export async function readBoundedJsonFile(root, path, maximumBytes, options = {}
     try {
       current = await currentHandle.stat({ bigint: true });
     } finally { await currentHandle.close(); }
-    const [pathAfter, parentAfter] = await Promise.all([lstat(path, { bigint: true }), safeContainedDirectoryStats(root, parent)]);
+    const [pathAfter, parentAfter] = await Promise.all([lstat(path, { bigint: true }), safeContainedDirectoryStats(root, parent, options)]);
     if (pathAfter.isSymbolicLink() || !pathAfter.isFile() || pathAfter.size > maximumFileSize
       || !handleAfter.isFile() || handleAfter.size > maximumFileSize || !current.isFile() || current.size > maximumFileSize
       || !sameFileSnapshot(pathBefore, pathAfter) || !sameFileSnapshot(handleBefore, handleAfter)
@@ -247,7 +249,7 @@ export async function readJsonFile(path) {
  * @template T
  * @param {string} lockPath
  * @param {() => Promise<T>} operation
- * @param {{ pollIntervalMs?: number, timeoutMs?: number, beforeLockOpen?: () => Promise<void>, signal?:AbortSignal }} [options]
+ * @param {{ pollIntervalMs?: number, timeoutMs?: number, beforeLockOpen?: () => Promise<void>, createLayout?: boolean, signal?:AbortSignal }} [options]
  * @returns {Promise<T>}
  */
 export async function withFileLock(lockPath, operation, options = {}) {
@@ -256,6 +258,7 @@ export async function withFileLock(lockPath, operation, options = {}) {
   if (
     !Number.isSafeInteger(settings.timeoutMs) || settings.timeoutMs < 0
     || !Number.isSafeInteger(settings.pollIntervalMs) || settings.pollIntervalMs <= 0
+    || typeof settings.createLayout !== 'undefined' && typeof settings.createLayout !== 'boolean'
   ) {
     throw new PluginError('LOCK_OPTIONS_INVALID', 'Lock timing options must be safe integer milliseconds.', {
       category: 'storage',
@@ -264,31 +267,36 @@ export async function withFileLock(lockPath, operation, options = {}) {
     });
   }
   const startedAt = Date.now();
-  await ensureLockLayout(lockPath);
-  options.signal?.throwIfAborted();
   const lockFilePath = join(lockPath, 'advisory.lock');
-  const lockDirectoryStats = await safeLockStats(lockPath, 'lock directory', 'directory');
-  const lockFileStats = await safeLockStats(lockFilePath, 'advisory lock file', 'file');
   let handle;
   let confirmationHandle;
   try {
+    if (settings.createLayout !== false) await ensureLockLayout(lockPath);
+    options.signal?.throwIfAborted();
+    const lockDirectoryStats = await safeLockStats(lockPath, 'lock directory', 'directory');
+    await safeLockStats(lockFilePath, 'advisory lock file', 'file');
+    const lockFileStats = await lstat(lockFilePath, { bigint: true });
+    if (settings.createLayout === false && process.platform !== 'win32'
+      && ((lockDirectoryStats.mode & 0o777) !== 0o700 || Number(lockFileStats.mode & 0o777n) !== 0o600)) throw unsafeLockPath(lockFilePath, 'private advisory lock layout');
     handle = await open(lockFilePath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
     options.signal?.throwIfAborted();
-    const openedStats = await handle.stat();
+    const openedStats = await handle.stat({ bigint: true });
     await options.beforeLockOpen?.();
     options.signal?.throwIfAborted();
     confirmationHandle = await open(lockFilePath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
     const [confirmationStats, currentDirectoryStats, currentFileStats] = await Promise.all([
-      confirmationHandle.stat(),
+      confirmationHandle.stat({ bigint: true }),
       safeLockStats(lockPath, 'lock directory', 'directory'),
-      safeLockStats(lockFilePath, 'advisory lock file', 'file'),
+      lstat(lockFilePath, { bigint: true }),
     ]);
     if (!sameIdentity(lockDirectoryStats, currentDirectoryStats)
+      || currentFileStats.isSymbolicLink() || !currentFileStats.isFile()
       || !sameIdentity(lockFileStats, currentFileStats)
-      || !sameIdentity(openedStats, confirmationStats)) throw unsafeLockPath(lockFilePath, 'advisory lock file');
+      || !samePathHandleIdentity(lockFileStats, openedStats)
+      || !samePathHandleIdentity(lockFileStats, confirmationStats)) throw unsafeLockPath(lockFilePath, 'advisory lock file');
     await confirmationHandle.close();
     confirmationHandle = undefined;
-    await handle.chmod(0o600);
+    if (settings.createLayout !== false) await handle.chmod(0o600);
     options.signal?.throwIfAborted();
   } catch (error) {
     if (confirmationHandle) await confirmationHandle.close().catch(() => {});
@@ -426,12 +434,13 @@ async function safeLockStats(path, kind, type) {
   return stats;
 }
 
-/** @param {string} root @param {string} path */
-async function safeContainedDirectoryStats(root, path) {
+/** @param {string} root @param {string} path @param {{ requirePrivatePermissions?: boolean, platform?: NodeJS.Platform }} [options] */
+async function safeContainedDirectoryStats(root, path, options = {}) {
   const { rootPath, targetPath } = containedPath(root, path);
   const [rootStats, targetStats] = await Promise.all([lstat(rootPath), lstat(targetPath)]);
   if (rootStats.isSymbolicLink() || !rootStats.isDirectory()
-    || targetStats.isSymbolicLink() || !targetStats.isDirectory()) throw unsafePrivatePath(targetPath);
+    || targetStats.isSymbolicLink() || !targetStats.isDirectory()
+    || options.requirePrivatePermissions === true && (options.platform ?? process.platform) !== 'win32' && (targetStats.mode & 0o777) !== 0o700) throw unsafePrivatePath(targetPath);
   const [canonicalRoot, canonicalTarget] = await Promise.all([realpath(rootPath), realpath(targetPath)]);
   if (!pathIsWithin(canonicalRoot, canonicalTarget)) throw unsafePrivatePath(targetPath);
   return targetStats;
@@ -477,6 +486,11 @@ export function samePathHandleFileSnapshot(pathStats, handleStats, platform = pr
   return pathStats.ino === handleStats.ino
     && (platform === 'win32' || pathStats.dev === handleStats.dev)
     && sameFileMetadata(pathStats, handleStats);
+}
+
+/** @param {{dev:number|bigint,ino:number|bigint}} pathStats @param {{dev:number|bigint,ino:number|bigint}} handleStats @param {NodeJS.Platform} [platform] */
+function samePathHandleIdentity(pathStats, handleStats, platform = process.platform) {
+  return pathStats.ino === handleStats.ino && (platform === 'win32' || pathStats.dev === handleStats.dev);
 }
 
 /**

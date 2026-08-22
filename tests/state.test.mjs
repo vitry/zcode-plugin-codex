@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import {
   access,
+  chmod,
   mkdtemp,
   mkdir,
   readFile,
@@ -13,6 +14,7 @@ import {
   stat,
   symlink,
   truncate,
+  unlink,
   utimes,
   writeFile,
 } from 'node:fs/promises';
@@ -1262,6 +1264,33 @@ test('the advisory lock keeps one stable inode and never renames ownership metad
   await withFileLock(lockPath, async () => {
     assert.equal((await stat(join(lockPath, 'advisory.lock'))).ino, inodeWhileHeld);
   });
+});
+
+test('non-mutating advisory lock mode requires an existing safe layout and never creates it', async () => {
+  const { root } = await fixture(); const lockPath = join(root, 'existing-only.lock');
+  await assert.rejects(withFileLock(lockPath, async () => undefined, { createLayout: false }), { code: 'LOCK_OPEN_FAILED' });
+  await assert.rejects(access(lockPath));
+  await mkdir(lockPath, { mode: 0o700 }); await symlink(join(root, 'missing-lock-target'), join(lockPath, 'advisory.lock'));
+  await assert.rejects(withFileLock(lockPath, async () => undefined, { createLayout: false }), { code: 'LOCK_PATH_UNSAFE' });
+});
+
+test('non-mutating advisory lock mode rejects replacement and releases safely after operation errors', async () => {
+  const { root } = await fixture(); const lockPath = join(root, 'existing-race.lock'); const lockFile = join(lockPath, 'advisory.lock');
+  await withFileLock(lockPath, async () => undefined); const sentinel = new Error('operation sentinel');
+  await assert.rejects(withFileLock(lockPath, async () => 'must-not-enter', {
+    createLayout: false,
+    beforeLockOpen: async () => { await unlink(lockFile); await writeFile(lockFile, '', { mode: 0o600 }); },
+  }), { code: 'LOCK_PATH_UNSAFE' });
+  await assert.rejects(withFileLock(lockPath, async () => { throw sentinel; }, { createLayout: false }), (error) => error === sentinel);
+  assert.equal(await withFileLock(lockPath, async () => 'reused', { createLayout: false }), 'reused');
+});
+
+test('non-mutating advisory lock mode rejects permissive modes without repairing them', { skip: process.platform === 'win32' ? 'Windows does not expose POSIX private modes.' : false }, async () => {
+  const { root } = await fixture(); const lockPath = join(root, 'existing-modes.lock'); const lockFile = join(lockPath, 'advisory.lock'); await withFileLock(lockPath, async () => undefined);
+  for (const scenario of [{ path: lockPath, permissive: 0o777, privateMode: 0o700 }, { path: lockFile, permissive: 0o666, privateMode: 0o600 }]) {
+    await chmod(scenario.path, scenario.permissive); await assert.rejects(withFileLock(lockPath, async () => undefined, { createLayout: false }), { code: 'LOCK_PATH_UNSAFE' });
+    assert.equal((await stat(scenario.path)).mode & 0o777, scenario.permissive); await chmod(scenario.path, scenario.privateMode);
+  }
 });
 
 test('concurrent first use publishes one valid advisory lock layout', async () => {
