@@ -1,10 +1,11 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
@@ -24,6 +25,7 @@ const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
 const pr39Fixture = join(root, 'tests/fixtures/pr39-origin-route-compatibility.mjs');
+const pr39ClockPreload = join(root, 'tests/fixtures/pr39-frozen-clock-preload.mjs');
 
 async function cleanupFixture(directory) {
   const delays = process.platform === 'win32' ? [80, 100, 250, 500, 1_000] : [80];
@@ -127,7 +129,7 @@ async function materializePr39Scenario(t, name) {
   }
   const immutable = new Map();
   for (const record of scenario.records.filter((item) => item.classification === 'immutable')) immutable.set(record.path, await readFile(record.path));
-  const env = { ...ctx.env, PLUGIN_DATA: canonicalDataRoot, PR39_FROZEN_CLOCK: '1', NODE_OPTIONS: `${ctx.env.NODE_OPTIONS ?? ''} --import=${pr39Fixture}`.trim() };
+  const env = { ...ctx.env, PLUGIN_DATA: canonicalDataRoot, PR39_FROZEN_CLOCK: '1', NODE_OPTIONS: `${ctx.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(pr39ClockPreload).href}`.trim() };
   return { ctx, scenario, target: canonicalTarget, immutable, env };
 }
 
@@ -160,10 +162,21 @@ async function assertOriginExecutionStateAbsent(dataRoot, origin) {
 async function documentedOperationSnapshot(workspaceDirectory) {
   const snapshot = new Map();
   for (const relative of await fileTree(workspaceDirectory)) {
-    if (!/^(?:invocations\/(?:prepared|pending)\/[^/]+\.json|jobs\/[^/]+\.json|job-owners\/.+\.json|broker\/[^/]+\.json|results\/[^/]+\.md|prompts\/[^/]+\.md|rescue-binding-(?:authority|session)-[^/]+\.json)$/u.test(relative)) continue;
+    const advisoryLock = /^(?:\.artifacts\.lock|\.rescue-preparation-lock|\.state\.lock|(?:hook-state|broker|invocations)\/\.lock|broker\/session-owners\.json\.lock|cancel-locks\/[0-9a-f]{64}\.lock|worker-leases\/[0-9a-f]{64}-[0-9a-f]{64}\.lock|jobs\/\.job-log-(?:append|publication)-locks\/[0-9a-f]{64})\/advisory\.lock$/u.test(relative);
+    const publicationTemp = /^jobs\/\.job-log-publication-locks\/([0-9a-f]{64})\/\.\1\.[0-9a-f]{32}\.tmp$/u.test(relative);
+    if (advisoryLock || publicationTemp) continue;
     snapshot.set(relative, await readFile(join(workspaceDirectory, relative)));
   }
   return snapshot;
+}
+
+function assertSnapshotMatchesScenario(snapshot, scenario) {
+  const expected = scenario.records.map((record) => relative(scenario.targetDirectory, record.path)).filter((path) => path !== '..' && !path.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(path)).sort();
+  assert.deepEqual([...snapshot.keys()], expected, 'initial target tree diverged from the frozen manifest');
+}
+
+function unchangedSnapshotPaths(before, changed) {
+  const excluded = new Set(changed); return [...before.keys()].filter((path) => !excluded.has(path)).sort();
 }
 
 function snapshotDelta(before, after) {
@@ -187,16 +200,75 @@ async function assertNoTransientTargetState(workspaceDirectory) {
 
 test('PR #39 fixture manifests contain four independent literal record byte sets', async () => {
   const source = await readFile(pr39Fixture, 'utf8');
-  assert.doesNotMatch(source, /JSON\.stringify|records\.push|\bconst add\b|createIdentityStore|createRescuePreparationStore|createInvocationStore|createStateStore|SubagentStart/);
+  assert.doesNotMatch(source, /records\.push|\bconst add\b|createIdentityStore|createRescuePreparationStore|createInvocationStore|createStateStore|SubagentStart/);
+  assert.equal(source.match(/String\.raw`/gu)?.length, 4);
   const manifests = Object.values(PR39_ORIGIN_ROUTE_TEMPLATES); assert.equal(manifests.length, 4); assert.equal(new Set(manifests).size, 4);
-  for (const raw of manifests) {
-    const manifest = JSON.parse(raw); assert.ok(Array.isArray(manifest.records)); assert.ok(manifest.records.length >= 6);
+  const expected = {
+    prepared: { count: 9, digest: 'ecefe94305f0d20e4de9da226326773a99bf25fb692b21ff41efc9b3854c6cea', oneShot: '/invocations/prepared/' },
+    status: { count: 14, digest: '12b25b1df92eed719c11bebcf9eafefd817349dc753a5134e38e12c0f5eeb062' },
+    choice: { count: 15, digest: '51a6c3bab1a3c7a43870212c80ef7d165c9b5f2267a46b1575319bd867ccb8e7', oneShot: '/invocations/pending/' },
+    stopped: { count: 15, digest: '89e33efb5c4285bf4487ba8a891a1d46bb320de974d2d1505382075219f5bf10', oneShot: '/invocations/prepared/' },
+  };
+  const filenameTokens = new Set(['ORIGIN_WORKSPACE_HASH', 'TARGET_WORKSPACE_HASH', 'GLOBAL_KEY', 'ORIGIN_INDEX_KEY', 'TARGET_INDEX_KEY', 'CALLER_DIGEST', 'ROUTE_KEY', 'FORWARD_KEY', 'EXECUTOR_KEY', 'PREPARATION_KEY', 'PENDING_KEY', 'BINDING_PARTITION_KEY', 'BINDING_KEY', 'OWNER_DIRECTORY', 'OWNER_ID']);
+  const byteTokens = new Set([...filenameTokens, 'DATA_ROOT_JSON', 'ORIGIN_JSON', 'TARGET_JSON']);
+  const tokens = (value) => [...value.matchAll(/\{\{([A-Z_]+)\}\}/gu)].map((match) => match[1]);
+  for (const [name, raw] of Object.entries(PR39_ORIGIN_ROUTE_TEMPLATES)) {
+    const manifest = JSON.parse(raw); assert.equal(manifest.name, name); assert.equal(manifest.records.length, expected[name].count); assert.equal(createHash('sha256').update(raw).digest('hex'), expected[name].digest);
+    const paths = manifest.records.map((record) => record.path);
+    for (const required of ['identity-lifecycle/active-turns/', 'identity-lifecycle/sessions/', '/identity/callers/', '/hook-state/route-', '/hook-state/forward-', '/hook-state/executor-']) assert.ok(paths.some((path) => path.includes(required)), `${name} lacks ${required}`);
+    if (expected[name].oneShot) assert.ok(paths.some((path) => path.includes(expected[name].oneShot)));
+    if (name !== 'prepared') for (const required of ['/jobs/', '/job-owners/index.json', '/broker/session-owners.json', '/rescue-binding-authority-', '/rescue-binding-session-']) assert.ok(paths.some((path) => path.includes(required)), `${name} lacks ${required}`);
+    const instantiated = instantiatePr39OriginRouteTemplate(raw, { dataRoot: '/oracle/data', origin: '/repo/origin', target: '/repo/target' });
     for (const record of manifest.records) {
       assert.deepEqual(Object.keys(record).sort(), ['bytes', 'classification', 'path']);
       assert.equal(typeof record.path, 'string'); assert.equal(typeof record.bytes, 'string'); assert.match(record.bytes, /^\{[\s\S]*\}\n$/);
       assert.ok(['immutable', 'one-shot', 'operation'].includes(record.classification));
+      assert.equal(tokens(record.path).every((token) => filenameTokens.has(token)), true, `${name} path has a non-filename token`);
+      assert.equal(tokens(record.bytes).every((token) => byteTokens.has(token)), true, `${name} bytes have an unknown token`);
+      assert.doesNotMatch(record.bytes, /\{\{(?:DATA_ROOT|ORIGIN|TARGET)\}\}/u);
+    }
+    for (let index = 0; index < manifest.records.length; index += 1) {
+      const literal = manifest.records[index]; const instance = instantiated.records[index]; assert.equal(instance.classification, literal.classification); assert.doesNotThrow(() => JSON.parse(instance.bytes)); assert.doesNotMatch(instance.bytes, /\{\{[^}]+\}\}/u);
+      let cursor = 0; for (const segment of literal.bytes.split(/\{\{[A-Z_]+\}\}/gu)) { const found = instance.bytes.indexOf(segment, cursor); assert.notEqual(found, -1, `${name} instantiated bytes changed literal content`); cursor = found + segment.length; }
     }
   }
+});
+
+test('PR #39 fixture JSON-escapes cross-platform paths without changing raw filename paths', () => {
+  const paths = {
+    dataRoot: 'C:\\Users\\A B\\data"root',
+    origin: 'C:\\Users\\A B\\origin\tworkspace',
+    target: 'C:\\Users\\A B\\target\nworkspace',
+  };
+  const scenario = instantiatePr39OriginRouteTemplate(PR39_ORIGIN_ROUTE_TEMPLATES.prepared, paths);
+  assert.ok(scenario.records.every((record) => record.path.startsWith(paths.dataRoot)));
+  for (const record of scenario.records) assert.doesNotThrow(() => JSON.parse(record.bytes), record.path);
+  const activeTurn = JSON.parse(scenario.records.find((record) => record.path.includes('active-turns')).bytes);
+  assert.equal(activeTurn.originWorkspace, paths.origin); assert.equal(activeTurn.executionWorkspace, paths.target);
+});
+
+test('PR #39 operation snapshots expose unexpected namespaces and job log mutations', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pr39-operation-snapshot-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(join(directory, 'jobs'), { recursive: true }); await writeFile(join(directory, 'jobs', 'known.log'), 'before\n');
+  const before = await documentedOperationSnapshot(directory);
+  await writeFile(join(directory, 'jobs', 'known.log'), 'after\n'); await mkdir(join(directory, 'unexpected'), { recursive: true }); await writeFile(join(directory, 'unexpected', 'record.bin'), 'surprise');
+  const disguised = join(directory, 'jobs', '.job-log-publication-locks', 'a'.repeat(64)); await mkdir(disguised, { recursive: true }); await writeFile(join(disguised, 'unexpected.bin'), 'surprise');
+  assert.deepEqual(snapshotDelta(before, await documentedOperationSnapshot(directory)), { added: [`jobs/.job-log-publication-locks/${'a'.repeat(64)}/unexpected.bin`, 'unexpected/record.bin'], deleted: [], updated: ['jobs/known.log'], unchanged: [] });
+});
+
+test('importing the PR #39 manifest never freezes the runner clock', async () => {
+  const script = `await import(${JSON.stringify(pathToFileURL(pr39Fixture).href)}); process.stdout.write(String(Date.now()));`;
+  const result = await runChild(process.execPath, ['--input-type=module', '--eval', script], { cwd: root, env: { ...process.env, PR39_FROZEN_CLOCK: '1' } });
+  assert.equal(result.code, 0, result.stderr); assert.ok(Number(result.stdout) > Date.parse('2026-08-22T00:10:01.000Z'));
+});
+
+test('the PR #39 clock freezes only through a file-URL preload', async () => {
+  const preloadUrl = pathToFileURL(pr39ClockPreload).href; assert.match(preloadUrl, /^file:\/\//u);
+  assert.match(pathToFileURL(join(tmpdir(), 'checkout with space', 'clock preload.mjs')).href, /checkout%20with%20space\/clock%20preload\.mjs$/u);
+  const result = await runChild(process.execPath, ['--input-type=module', '--eval', 'process.stdout.write(String(Date.now()))'], {
+    cwd: root, env: { ...process.env, PR39_FROZEN_CLOCK: '1', NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${preloadUrl}`.trim() },
+  });
+  assert.equal(result.code, 0, result.stderr); assert.equal(Number(result.stdout), Date.parse('2026-08-22T00:10:00.000Z'));
 });
 
 async function rewriteOnlyExecutor(ctx, patch) {
@@ -328,6 +400,7 @@ test('PR #39 frozen prepared bytes execute from origin without rewriting authori
   const record = join(ctx.directory, 'pr39-prepared-zcode.jsonl'); await writeFile(record, '');
   const preparation = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(preparation);
   const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
+  assertSnapshotMatchesScenario(beforeOperation, scenario);
   const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
   assert.equal(invoked.code, 0, invoked.stderr || invoked.stdout);
   await assertPr39Immutable(immutable);
@@ -341,8 +414,8 @@ test('PR #39 frozen prepared bytes execute from origin without rewriting authori
   const authorityPath = exactlyOnePath(operationDelta.added, (path) => path.startsWith('rescue-binding-authority-'), 'new binding authority');
   const sessionPath = exactlyOnePath(operationDelta.added, (path) => path.startsWith('rescue-binding-session-'), 'new binding session');
   assert.deepEqual(operationDelta, {
-    added: ['broker/identity.json', 'broker/session-owners.json', ownerPath, 'job-owners/index.json', `jobs/${job.id}.json`, `prompts/${job.id}.md`, authorityPath, sessionPath, `results/${job.id}.md`].sort(),
-    deleted: [], updated: [preparationPath], unchanged: [],
+    added: ['broker/identity.json', 'broker/session-owners.json', ownerPath, 'job-owners/index.json', `jobs/${job.id}.json`, `jobs/${job.id}.log`, `prompts/${job.id}.md`, authorityPath, sessionPath, `results/${job.id}.md`].sort(),
+    deleted: [], updated: [preparationPath], unchanged: unchangedSnapshotPaths(beforeOperation, [preparationPath]),
   });
   assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, ownerPath), 'utf8')), { jobId: job.id, ownerSessionId: scenario.sessionId, version: 1 });
   const ownerIndex = JSON.parse(await readFile(join(scenario.targetDirectory, 'job-owners', 'index.json'), 'utf8')); assert.equal(ownerIndex.version, 3); assert.equal(ownerIndex.complete, true); assert.equal(ownerIndex.canonicalJobIds.count, 1); assert.equal(ownerIndex.bindingTuples.count, 1);
@@ -363,6 +436,7 @@ test('PR #39 frozen status bytes select the exact target binding without mutatio
   const frozenOperation = new Map();
   for (const record of scenario.records.filter((item) => item.classification === 'operation')) frozenOperation.set(record.path, await readFile(record.path));
   const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
+  assertSnapshotMatchesScenario(beforeOperation, scenario);
   const result = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId } });
   assert.equal(result.code, 0, result.stderr || result.stdout);
   assert.deepEqual(JSON.parse(result.stdout), { type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-22T00:05:00.000Z', progressPreview: ['frozen target progress'], terminal: false });
@@ -389,6 +463,7 @@ test('PR #39 frozen choice bytes consume once and keep fresh and resume transiti
     const record = join(ctx.directory, `pr39-choice-${choice}-zcode.jsonl`); await writeFile(record, '');
     const pending = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(pending);
     const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
+    assertSnapshotMatchesScenario(beforeOperation, scenario);
     const oldJobRecord = scenario.records.find((item) => item.path.endsWith(`${scenario.operation.jobId}.json`)); const oldJobBytes = await readFile(oldJobRecord.path);
     const beforeBinding = JSON.parse(await readFile(scenario.records.find((item) => item.path.includes('rescue-binding-session-')).path, 'utf8')).records[0];
     const selected = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', choice], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
@@ -405,16 +480,16 @@ test('PR #39 frozen choice bytes consume once and keep fresh and resume transiti
     else assert.ok(frames.some((frame) => frame.method === 'session/resume' && frame.params.sessionId === 'pr39-choice-zcode-session'));
     const brokerOwners = JSON.parse(await readFile(join(scenario.targetDirectory, 'broker', 'session-owners.json'), 'utf8')); assert.ok(brokerOwners.sessions['pr39-choice-zcode-session']);
     const afterOperation = await documentedOperationSnapshot(scenario.targetDirectory); const operationDelta = snapshotDelta(beforeOperation, afterOperation);
-    const oldOwnerPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('job-owners/') && path.endsWith(`/${scenario.operation.jobId}.json`), 'anchor owner binding');
+    exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('job-owners/') && path.endsWith(`/${scenario.operation.jobId}.json`), 'anchor owner binding');
     const nextOwnerPath = exactlyOnePath(operationDelta.added, (path) => path.startsWith('job-owners/') && path.endsWith(`/${nextJob.id}.json`), 'new owner binding');
     const pendingPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('invocations/pending/'), 'pending invocation');
-    const authorityPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('rescue-binding-authority-'), 'binding authority');
+    exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('rescue-binding-authority-'), 'binding authority');
     const sessionPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('rescue-binding-session-'), 'binding session');
     assert.deepEqual(operationDelta, {
-      added: ['broker/identity.json', nextOwnerPath, `jobs/${nextJob.id}.json`, `prompts/${nextJob.id}.md`, `results/${nextJob.id}.md`].sort(),
+      added: ['broker/identity.json', nextOwnerPath, `jobs/${nextJob.id}.json`, `jobs/${nextJob.id}.log`, `prompts/${nextJob.id}.md`, `results/${nextJob.id}.md`].sort(),
       deleted: [pendingPath],
       updated: [...(choice === 'fresh' ? ['broker/session-owners.json'] : []), 'job-owners/index.json', sessionPath].sort(),
-      unchanged: [...(choice === 'resume' ? ['broker/session-owners.json'] : []), oldOwnerPath, `jobs/${scenario.operation.jobId}.json`, authorityPath].sort(),
+      unchanged: unchangedSnapshotPaths(beforeOperation, [pendingPath, ...(choice === 'fresh' ? ['broker/session-owners.json'] : []), 'job-owners/index.json', sessionPath]),
     });
     assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, nextOwnerPath), 'utf8')), { jobId: nextJob.id, ownerSessionId: scenario.sessionId, version: 1 });
     const ownerIndex = JSON.parse(await readFile(join(scenario.targetDirectory, 'job-owners', 'index.json'), 'utf8')); assert.equal(ownerIndex.canonicalJobIds.count, 2); assert.equal(ownerIndex.bindingTuples.count, 2); assert.equal(ownerIndex.complete, true);
@@ -430,6 +505,7 @@ test('PR #39 frozen stopped continuation consumes generation two and resumes its
   const record = join(ctx.directory, 'pr39-stopped-zcode.jsonl'); await writeFile(record, '');
   const preparation = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(preparation);
   const beforeOperation = await documentedOperationSnapshot(scenario.targetDirectory);
+  assertSnapshotMatchesScenario(beforeOperation, scenario);
   const oldJobRecord = scenario.records.find((item) => item.path.endsWith(`${scenario.operation.jobId}.json`)); const oldJobBytes = await readFile(oldJobRecord.path);
   const continued = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
   assert.equal(continued.code, 0, continued.stderr || continued.stdout); await assertPr39Immutable(immutable);
@@ -442,15 +518,15 @@ test('PR #39 frozen stopped continuation consumes generation two and resumes its
   const binding = await store.resolveRescueBinding({ workspace: target, parentSessionId: scenario.sessionId, executorAgentId: scenario.agentId, executorAgentType: scenario.agentType, executorParentTurnId: scenario.parentTurnId, executorParentPermissionMode: 'workspace-write', permissionMode: 'workspace-write' });
   assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.anchorJobId, scenario.operation.jobId); assert.equal(binding.binding.currentJobId, nextJob.id); assert.equal(binding.binding.operationId, scenario.operation.operationId);
   const afterOperation = await documentedOperationSnapshot(scenario.targetDirectory); const operationDelta = snapshotDelta(beforeOperation, afterOperation);
-  const oldOwnerPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('job-owners/') && path.endsWith(`/${scenario.operation.jobId}.json`), 'anchor owner binding');
+  exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('job-owners/') && path.endsWith(`/${scenario.operation.jobId}.json`), 'anchor owner binding');
   const nextOwnerPath = exactlyOnePath(operationDelta.added, (path) => path.startsWith('job-owners/') && path.endsWith(`/${nextJob.id}.json`), 'new owner binding');
   const preparationPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('invocations/prepared/'), 'prepared invocation');
-  const authorityPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('rescue-binding-authority-'), 'binding authority');
+  exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('rescue-binding-authority-'), 'binding authority');
   const sessionPath = exactlyOnePath(beforeOperation.keys(), (path) => path.startsWith('rescue-binding-session-'), 'binding session');
   assert.deepEqual(operationDelta, {
-    added: ['broker/identity.json', nextOwnerPath, `jobs/${nextJob.id}.json`, `prompts/${nextJob.id}.md`, `results/${nextJob.id}.md`].sort(),
+    added: ['broker/identity.json', nextOwnerPath, `jobs/${nextJob.id}.json`, `jobs/${nextJob.id}.log`, `prompts/${nextJob.id}.md`, `results/${nextJob.id}.md`].sort(),
     deleted: [], updated: [preparationPath, 'job-owners/index.json', sessionPath].sort(),
-    unchanged: ['broker/session-owners.json', oldOwnerPath, `jobs/${scenario.operation.jobId}.json`, authorityPath].sort(),
+    unchanged: unchangedSnapshotPaths(beforeOperation, [preparationPath, 'job-owners/index.json', sessionPath]),
   });
   assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, nextOwnerPath), 'utf8')), { jobId: nextJob.id, ownerSessionId: scenario.sessionId, version: 1 });
   const ownerIndex = JSON.parse(await readFile(join(scenario.targetDirectory, 'job-owners', 'index.json'), 'utf8')); assert.equal(ownerIndex.canonicalJobIds.count, 2); assert.equal(ownerIndex.bindingTuples.count, 2); assert.equal(ownerIndex.complete, true);
