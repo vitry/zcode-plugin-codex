@@ -1293,6 +1293,20 @@ test('non-mutating advisory lock mode rejects permissive modes without repairing
   }
 });
 
+test('non-mutating advisory lock mode rejects permission drift before entering the critical section', { skip: process.platform === 'win32' ? 'Windows does not expose POSIX private modes.' : false }, async () => {
+  const { root } = await fixture(); const lockPath = join(root, 'existing-mode-race.lock'); const lockFile = join(lockPath, 'advisory.lock'); await withFileLock(lockPath, async () => undefined);
+  for (const scenario of [{ path: lockPath, permissive: 0o777, privateMode: 0o700 }, { path: lockFile, permissive: 0o666, privateMode: 0o600 }]) {
+    let entered = false;
+    await assert.rejects(withFileLock(lockPath, async () => { entered = true; }, {
+      createLayout: false,
+      beforeLockOpen: async () => chmod(scenario.path, scenario.permissive),
+    }), { code: 'LOCK_PATH_UNSAFE' });
+    assert.equal(entered, false);
+    assert.equal((await stat(scenario.path)).mode & 0o777, scenario.permissive);
+    await chmod(scenario.path, scenario.privateMode);
+  }
+});
+
 test('concurrent first use publishes one valid advisory lock layout', async () => {
   const { root } = await fixture(); const lockPath = join(root, 'concurrent-layout.lock'); let inside = 0; let maximumInside = 0;
   try {

@@ -284,8 +284,9 @@ export async function withFileLock(lockPath, operation, options = {}) {
     await options.beforeLockOpen?.();
     options.signal?.throwIfAborted();
     confirmationHandle = await open(lockFilePath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
-    const [confirmationStats, currentDirectoryStats, currentFileStats] = await Promise.all([
+    const [confirmationStats, openedCurrentStats, currentDirectoryStats, currentFileStats] = await Promise.all([
       confirmationHandle.stat({ bigint: true }),
+      handle.stat({ bigint: true }),
       safeLockStats(lockPath, 'lock directory', 'directory'),
       lstat(lockFilePath, { bigint: true }),
     ]);
@@ -293,7 +294,13 @@ export async function withFileLock(lockPath, operation, options = {}) {
       || currentFileStats.isSymbolicLink() || !currentFileStats.isFile()
       || !sameIdentity(lockFileStats, currentFileStats)
       || !samePathHandleIdentity(lockFileStats, openedStats)
-      || !samePathHandleIdentity(lockFileStats, confirmationStats)) throw unsafeLockPath(lockFilePath, 'advisory lock file');
+      || !samePathHandleIdentity(lockFileStats, openedCurrentStats)
+      || !samePathHandleIdentity(lockFileStats, confirmationStats)
+      || settings.createLayout === false && process.platform !== 'win32'
+        && ((currentDirectoryStats.mode & 0o777) !== 0o700
+          || Number(currentFileStats.mode & 0o777n) !== 0o600
+          || Number(openedCurrentStats.mode & 0o777n) !== 0o600
+          || Number(confirmationStats.mode & 0o777n) !== 0o600)) throw unsafeLockPath(lockFilePath, 'advisory lock file');
     await confirmationHandle.close();
     confirmationHandle = undefined;
     if (settings.createLayout !== false) await handle.chmod(0o600);
