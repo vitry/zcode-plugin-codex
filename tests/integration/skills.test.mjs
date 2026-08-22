@@ -16,12 +16,14 @@ import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { runCompanion, runDirectInvocation } from '../../scripts/zcode-companion.mjs';
+import { instantiatePr39OriginRouteTemplate, PR39_ORIGIN_ROUTE_TEMPLATES } from '../fixtures/pr39-origin-route-compatibility.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const cli = join(root, 'scripts', 'zcode-companion.mjs');
 const fakeZCode = join(root, 'tests/fixtures/fake-zcode-cli.mjs');
 const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
+const pr39Fixture = join(root, 'tests/fixtures/pr39-origin-route-compatibility.mjs');
 
 async function cleanupFixture(directory) {
   const delays = process.platform === 'win32' ? [80, 100, 250, 500, 1_000] : [80];
@@ -111,6 +113,34 @@ async function invokePreparedRescue(ctx, parentSessionId, childId, task, options
   return runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: childId } });
 }
 
+async function materializePr39Scenario(t, name) {
+  const ctx = await fixture(t); const target = join(ctx.directory, `pr39-${name}-target`);
+  await run('git', ['worktree', 'add', '-q', '-b', `pr39-${name}-target`, target], ctx.workspace);
+  const canonicalTarget = await realpath(target); await mkdir(ctx.dataRoot, { recursive: true, mode: 0o700 }); const canonicalDataRoot = await realpath(ctx.dataRoot);
+  const scenario = instantiatePr39OriginRouteTemplate(PR39_ORIGIN_ROUTE_TEMPLATES[name], { dataRoot: canonicalDataRoot, origin: ctx.workspace, target: canonicalTarget });
+  for (const record of scenario.records) {
+    await mkdir(join(record.path, '..'), { recursive: true, mode: 0o700 });
+    await writeFile(record.path, record.bytes, { mode: 0o600 });
+  }
+  for (const directory of [join(scenario.originDirectory, 'hook-state', '.lock'), join(scenario.targetDirectory, 'hook-state', '.lock')]) {
+    await mkdir(directory, { recursive: true, mode: 0o700 }); await writeFile(join(directory, 'advisory.lock'), '', { mode: 0o600 });
+  }
+  const immutable = new Map();
+  for (const record of scenario.records.filter((item) => item.classification === 'immutable')) immutable.set(record.path, await readFile(record.path));
+  const env = { ...ctx.env, PLUGIN_DATA: canonicalDataRoot, PR39_FROZEN_CLOCK: '1', NODE_OPTIONS: `${ctx.env.NODE_OPTIONS ?? ''} --import=${pr39Fixture}`.trim() };
+  return { ctx, scenario, target: canonicalTarget, immutable, env };
+}
+
+async function assertPr39Immutable(snapshot) {
+  for (const [path, bytes] of snapshot) assert.deepEqual(await readFile(path), bytes, `frozen authority changed: ${path.split('/').at(-1)}`);
+}
+
+function assertPrivateRouteFailure(result, scenario, origin, target) {
+  const output = `${result.stdout}${result.stderr}`;
+  assert.notEqual(result.code, 0);
+  for (const secret of [origin, target, scenario.agentId, scenario.sessionId, scenario.parentTurnId, scenario.activeTurnId, scenario.childTurnId, scenario.generationId].filter(Boolean)) assert.equal(output.includes(secret), false, `public failure leaked ${secret}`);
+}
+
 async function rewriteOnlyExecutor(ctx, patch) {
   const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
   const names = (await readdir(join(storage.directory, 'hook-state'))).filter((name) => name.startsWith('executor-'));
@@ -138,12 +168,170 @@ test('origin hook cwd executes prepared Rescue only in its bound linked worktree
     input: { session_id: 'linked-parent', turn_id: 'linked-child-turn', cwd: ctx.workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'linked-child', agent_type: 'zcode-rescue' },
   });
   assert.equal(start.code, 0, start.stderr || start.stdout);
-  const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: canonicalTarget, env: { ...ctx.env, CODEX_THREAD_ID: 'linked-child', FAKE_ZCODE_RECORD: record } });
+  const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'linked-child', FAKE_ZCODE_RECORD: record } });
   assert.equal(invoked.code, 0, invoked.stderr || invoked.stdout);
   const created = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).find((frame) => frame.method === 'session/create');
   assert.equal(created.params.workspace.workspacePath, canonicalTarget);
   assert.equal((await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace)).length, 0);
   assert.equal((await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(canonicalTarget)).length, 1);
+});
+
+test('origin cwd status reads only the exact foreground job bound in the linked worktree', async (t) => {
+  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const target = join(ctx.directory, 'status-linked-execution');
+  await run('git', ['worktree', 'add', '-q', '-b', 'status-linked-execution', target], ctx.workspace);
+  const canonicalTarget = await realpath(target);
+  await identity.beginCallerTurn({ sessionId: 'route-status-parent', turnId: 'route-status-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair route status', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  await prepareRescue({ ...ctx, workspace: canonicalTarget }, 'route-status-parent', { version: 1, source: 'explicit', task: 'repair route status', options: { execution: 'foreground', resume: 'fresh' } });
+  await startRescueChild(ctx, 'route-status-parent', 'route-status-child', 'route-status-child-turn');
+  const targetReservation = { workspace: canonicalTarget, ownerSessionId: 'route-status-parent', ownerTurnId: 'route-status-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
+  const targetExecutor = { agentId: 'route-status-child', agentType: 'zcode-rescue', parentSessionId: 'route-status-parent', parentTurnId: 'route-status-turn', parentPermissionMode: 'workspace-write', workspace: canonicalTarget };
+  const targetJob = (await store.reserveFreshRescueJob({ workspace: canonicalTarget, reservation: targetReservation, executor: targetExecutor })).job;
+  const targetStartedAt = new Date().toISOString(); const targetObservedAt = new Date().toISOString();
+  await store.transitionJob(canonicalTarget, targetJob.id, ['queued'], 'running', { startedAt: targetStartedAt, zcodeSessionId: 'route-status-target-session' });
+  await store.updateJobProgress(canonicalTarget, targetJob.id, { phase: 'running', message: 'target-only progress', observedAt: targetObservedAt });
+  const originReservation = { workspace: ctx.workspace, ownerSessionId: 'unrelated-origin-parent', ownerTurnId: 'unrelated-origin-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
+  const originExecutor = { agentId: 'unrelated-origin-child', agentType: 'zcode-rescue', parentSessionId: 'unrelated-origin-parent', parentTurnId: 'unrelated-origin-turn', parentPermissionMode: 'workspace-write', workspace: ctx.workspace };
+  const originJob = (await store.reserveFreshRescueJob({ workspace: ctx.workspace, reservation: originReservation, executor: originExecutor })).job;
+  await store.transitionJob(ctx.workspace, originJob.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'route-status-origin-session' });
+  await store.updateJobProgress(ctx.workspace, originJob.id, { phase: 'running', message: 'origin-unrelated progress', observedAt: new Date().toISOString() });
+
+  const result = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'route-status-child' } });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout), { type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: targetObservedAt, progressPreview: ['target-only progress'], terminal: false });
+  assert.doesNotMatch(result.stdout, /origin-unrelated|route-status-origin-session/);
+});
+
+test('origin cwd choice fresh and resume consume and execute only in the linked worktree', async (t) => {
+  for (const choice of ['fresh', 'resume']) {
+    const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
+    const target = join(ctx.directory, `choice-${choice}-linked-execution`);
+    await run('git', ['worktree', 'add', '-q', '-b', `choice-${choice}-linked-execution`, target], ctx.workspace);
+    const canonicalTarget = await realpath(target); const record = join(ctx.directory, `choice-${choice}.jsonl`); await writeFile(record, '');
+    const parentId = `route-choice-${choice}-parent`; const childId = `route-choice-${choice}-child`; const childTurnId = `route-choice-${choice}-child-turn`;
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-origin`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh seed', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${choice} seed`, options: { execution: 'foreground', resume: 'fresh' } });
+    await startRescueChild(ctx, parentId, childId, childTurnId);
+    const first = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
+    assert.equal(first.code, 0, first.stderr || first.stdout);
+    await stopRescueChild(ctx, parentId, childId, childTurnId);
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-later`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${choice} later`, sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${choice} later`, options: { execution: 'foreground' } });
+    const pending = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: canonicalTarget, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
+    assert.equal(pending.code, 3, pending.stderr || pending.stdout); assert.match(pending.stdout, /needs-choice/);
+    assert.equal((await store.listJobs(ctx.workspace)).length, 0);
+
+    const selected = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', choice], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
+    assert.equal(selected.code, 0, selected.stderr || selected.stdout);
+    await assert.rejects(createInvocationStore({ dataRoot: ctx.dataRoot }).consumePending({ sessionId: parentId, workspace: canonicalTarget, command: 'rescue', choice, executorAgentId: childId }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+    assert.equal((await store.listJobs(ctx.workspace)).length, 0);
+    assert.equal((await store.listJobs(canonicalTarget)).length, 2);
+    const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    if (choice === 'fresh') assert.equal(frames.filter((frame) => frame.method === 'session/create').length, 2);
+    else assert.ok(frames.some((frame) => frame.method === 'session/resume'));
+    for (const frame of frames.filter((item) => item.method === 'session/create')) assert.equal(frame.params.workspace.workspacePath, canonicalTarget);
+  }
+});
+
+test('origin cwd stopped continuation preserves the routed target for named and qualified default children', async (t) => {
+  for (const [routeName, agentType] of [['named', 'zcode-rescue'], ['qualified-default', 'default']]) {
+    const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
+    const target = join(ctx.directory, `${routeName}-stopped-linked-execution`);
+    await run('git', ['worktree', 'add', '-q', '-b', `${routeName}-stopped-linked-execution`, target], ctx.workspace);
+    const canonicalTarget = await realpath(target); const record = join(ctx.directory, `${routeName}-stopped.jsonl`); await writeFile(record, '');
+    const parentId = `${routeName}-stopped-parent`; const childId = `${routeName}-stopped-child`; const childTurnId = `${routeName}-stopped-child-turn`;
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-origin-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh first', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${routeName} first`, options: { execution: 'foreground', resume: 'fresh' } });
+    await startRescueChild(ctx, parentId, childId, childTurnId, agentType);
+    const first = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
+    assert.equal(first.code, 0, first.stderr || first.stdout);
+    await stopRescueChild(ctx, parentId, childId, childTurnId, agentType);
+    await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-continuation-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume continue', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${routeName} continue`, options: { execution: 'foreground', resume: 'resume' } });
+
+    const continued = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
+    assert.equal(continued.code, 0, continued.stderr || continued.stdout);
+    assert.equal((await store.listJobs(ctx.workspace)).length, 0);
+    assert.equal((await store.listJobs(canonicalTarget)).length, 2);
+    const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    assert.ok(frames.some((frame) => frame.method === 'session/resume'));
+    for (const frame of frames.filter((item) => item.method === 'session/create')) assert.equal(frame.params.workspace.workspacePath, canonicalTarget);
+  }
+});
+
+test('PR #39 frozen prepared bytes execute from origin without rewriting authority', async (t) => {
+  const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'prepared');
+  const record = join(ctx.directory, 'pr39-prepared-zcode.jsonl'); await writeFile(record, '');
+  const preparation = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(preparation);
+  const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
+  assert.equal(invoked.code, 0, invoked.stderr || invoked.stdout);
+  await assertPr39Immutable(immutable);
+  const consumed = JSON.parse(await readFile(preparation.path, 'utf8'));
+  assert.equal(consumed.generation, 1); assert.equal(consumed.requiredExecutorAgentId, null); assert.equal(consumed.executorAgentId, scenario.agentId); assert.notEqual(consumed.consumedAt, null);
+  const store = createStateStore({ dataRoot: ctx.dataRoot }); assert.equal((await store.listJobs(ctx.workspace)).length, 0);
+  const [job] = await store.listJobs(target); assert.equal(job.status, 'succeeded'); assert.ok(job.resultArtifact); assert.equal(await readFile(join(scenario.targetDirectory, job.resultArtifact), 'utf8'), 'done');
+  const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.equal(frames.find((frame) => frame.method === 'session/create').params.workspace.workspacePath, target);
+  const replay = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId } });
+  assertPrivateRouteFailure(replay, scenario, ctx.workspace, target); assert.match(replay.stdout, /RESCUE_PREPARATION_CONSUMED/);
+});
+
+test('PR #39 frozen status bytes select the exact target binding without mutation', async (t) => {
+  const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'status'); const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const beforeOperation = new Map();
+  for (const record of scenario.records.filter((item) => item.classification === 'operation')) beforeOperation.set(record.path, await readFile(record.path));
+  const result = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId } });
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout), { type: 'rescue-status', status: 'running', phase: 'running', lastActivityAt: '2026-08-22T00:05:00.000Z', progressPreview: ['frozen target progress'], terminal: false });
+  await assertPr39Immutable(immutable);
+  for (const [path, bytes] of beforeOperation) assert.deepEqual(await readFile(path), bytes, `status mutated ${path.split('/').at(-1)}`);
+  assert.equal((await store.listJobs(ctx.workspace)).length, 0); assert.equal((await store.listJobs(target)).length, 1);
+  const missing = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: `${scenario.agentId}-unrelated` } });
+  assertPrivateRouteFailure(missing, scenario, ctx.workspace, target); assert.match(missing.stdout, /EXECUTOR_IDENTITY_NOT_FOUND/);
+});
+
+test('PR #39 frozen choice bytes consume once and keep fresh and resume transitions in target', async (t) => {
+  for (const choice of ['fresh', 'resume']) {
+    const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'choice'); const store = createStateStore({ dataRoot: ctx.dataRoot });
+    const record = join(ctx.directory, `pr39-choice-${choice}-zcode.jsonl`); await writeFile(record, '');
+    const pending = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(pending);
+    const oldJobRecord = scenario.records.find((item) => item.path.endsWith(`${scenario.operation.jobId}.json`)); const oldJobBytes = await readFile(oldJobRecord.path);
+    const beforeBinding = JSON.parse(await readFile(scenario.records.find((item) => item.path.includes('rescue-binding-session-')).path, 'utf8')).records[0];
+    const selected = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', choice], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
+    assert.equal(selected.code, 0, selected.stderr || selected.stdout);
+    await assert.rejects(readFile(pending.path), { code: 'ENOENT' }); await assertPr39Immutable(immutable);
+    assert.equal((await store.listJobs(ctx.workspace)).length, 0); const jobs = await store.listJobs(target); assert.equal(jobs.length, 2); assert.deepEqual(await readFile(oldJobRecord.path), oldJobBytes);
+    const nextJob = jobs.find((job) => job.id !== scenario.operation.jobId); assert.equal(nextJob.status, 'succeeded'); assert.ok(nextJob.resultArtifact); assert.equal(await readFile(join(scenario.targetDirectory, nextJob.resultArtifact), 'utf8'), 'done');
+    const binding = await store.resolveRescueBinding({ workspace: target, parentSessionId: scenario.sessionId, executorAgentId: scenario.agentId, executorAgentType: scenario.agentType, executorParentTurnId: scenario.parentTurnId, executorParentPermissionMode: 'workspace-write', permissionMode: 'workspace-write' });
+    assert.equal(binding.kind, 'bound');
+    if (choice === 'fresh') { assert.notEqual(binding.binding.anchorJobId, beforeBinding.anchorJobId); assert.equal(binding.binding.currentJobId, binding.binding.anchorJobId); assert.notEqual(binding.binding.operationId, beforeBinding.operationId); }
+    else { assert.equal(binding.binding.anchorJobId, beforeBinding.anchorJobId); assert.notEqual(binding.binding.currentJobId, beforeBinding.currentJobId); assert.equal(binding.binding.operationId, beforeBinding.operationId); }
+    const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    if (choice === 'fresh') assert.ok(frames.some((frame) => frame.method === 'session/create'));
+    else assert.ok(frames.some((frame) => frame.method === 'session/resume' && frame.params.sessionId === 'pr39-choice-zcode-session'));
+    const brokerOwners = JSON.parse(await readFile(join(scenario.targetDirectory, 'broker', 'session-owners.json'), 'utf8')); assert.ok(brokerOwners.sessions['pr39-choice-zcode-session']);
+    const replay = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', choice], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId } });
+    assertPrivateRouteFailure(replay, scenario, ctx.workspace, target); assert.match(replay.stdout, /PENDING_INVOCATION_NOT_FOUND/);
+  }
+});
+
+test('PR #39 frozen stopped continuation consumes generation two and resumes its target session', async (t) => {
+  const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'stopped'); const store = createStateStore({ dataRoot: ctx.dataRoot });
+  const record = join(ctx.directory, 'pr39-stopped-zcode.jsonl'); await writeFile(record, '');
+  const preparation = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(preparation);
+  const oldJobRecord = scenario.records.find((item) => item.path.endsWith(`${scenario.operation.jobId}.json`)); const oldJobBytes = await readFile(oldJobRecord.path);
+  const continued = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId, FAKE_ZCODE_RECORD: record } });
+  assert.equal(continued.code, 0, continued.stderr || continued.stdout); await assertPr39Immutable(immutable);
+  const consumed = JSON.parse(await readFile(preparation.path, 'utf8'));
+  assert.equal(consumed.generation, 2); assert.equal(consumed.requiredExecutorAgentId, scenario.agentId); assert.equal(consumed.executorAgentId, scenario.agentId); assert.notEqual(consumed.consumedAt, null);
+  assert.equal((await store.listJobs(ctx.workspace)).length, 0); const jobs = await store.listJobs(target); assert.equal(jobs.length, 2); assert.deepEqual(await readFile(oldJobRecord.path), oldJobBytes);
+  const nextJob = jobs.find((job) => job.id !== scenario.operation.jobId); assert.equal(nextJob.status, 'succeeded'); assert.ok(nextJob.resultArtifact); assert.equal(await readFile(join(scenario.targetDirectory, nextJob.resultArtifact), 'utf8'), 'done');
+  const frames = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  assert.ok(frames.some((frame) => frame.method === 'session/resume' && frame.params.sessionId === 'pr39-stopped-zcode-session'));
+  const binding = await store.resolveRescueBinding({ workspace: target, parentSessionId: scenario.sessionId, executorAgentId: scenario.agentId, executorAgentType: scenario.agentType, executorParentTurnId: scenario.parentTurnId, executorParentPermissionMode: 'workspace-write', permissionMode: 'workspace-write' });
+  assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.anchorJobId, scenario.operation.jobId); assert.equal(binding.binding.currentJobId, nextJob.id); assert.equal(binding.binding.operationId, scenario.operation.operationId);
+  const replay = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: scenario.agentId } });
+  assertPrivateRouteFailure(replay, scenario, ctx.workspace, target); assert.match(replay.stdout, /RESCUE_PREPARATION_CONSUMED/);
 });
 
 test('prepared Rescue forwards only the normalized incident objective to ZCode', async (t) => {
@@ -751,7 +939,7 @@ test('bound invoke-choice resume rejects a structurally valid rewritten executor
   assert.equal((await invokePreparedRescue(ctx, 'choice-forged-parent', 'choice-forged-child', 'later', { execution: 'foreground' })).code, 3);
   await rewriteOnlyExecutor(ctx, { parentPermissionMode: 'read-only' });
   const rejected = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'choice-forged-child' } });
-  assert.notEqual(rejected.code, 0); assert.match(rejected.stdout, /RESCUE_BINDING_INVALID/);
+  assert.notEqual(rejected.code, 0); assert.match(rejected.stdout, /EXECUTOR_ROUTE_INVALID/);
   assert.equal((await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace)).length, 1);
 });
 
