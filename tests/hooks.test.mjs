@@ -17,7 +17,7 @@ import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeB
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
-import { cleanupSession, isForwarding, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute } from '../hooks/lib/hook-state.mjs';
+import { cleanupSession, isForwarding, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -99,6 +99,22 @@ async function addLinkedWorktree(cwd, name = 'late-bind-target') {
     child.once('exit', (code) => code === 0 ? resolvePromise() : reject(new Error(`git worktree add ${code}`)));
   });
   return target;
+}
+
+async function routedExecutorFixture(t, label) {
+  const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, label);
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data }); const sessionId = `${label}-parent`; const agentId = `${label}-child`;
+  await recordSession(data, { session_id: sessionId, cwd: origin, source: 'startup' });
+  await identity.beginCallerTurn({ sessionId, turnId: `${label}-parent-turn`, workspace: origin, permissionMode: 'workspace-write', prompt: label, sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  const caller = await identity.resolveActiveTurn({ sessionId, workspace: target, workspaceBinding: 'claim' });
+  const start = { session_id: sessionId, turn_id: `${label}-child-turn`, cwd: origin, hook_event_name: 'SubagentStart', agent_id: agentId, agent_type: 'zcode-rescue' };
+  await markForwarding(data, start, caller);
+  const originStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: origin }); const targetStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: target });
+  const originDirectory = join(originStorage.directory, 'hook-state'); const targetDirectory = join(targetStorage.directory, 'hook-state');
+  const routePath = join(originDirectory, (await readdir(originDirectory)).find((name) => name.startsWith('route-')));
+  const executorPath = join(targetDirectory, (await readdir(targetDirectory)).find((name) => name.startsWith('executor-')));
+  return { origin, data, target, start, caller, originDirectory, targetDirectory, routePath, executorPath };
 }
 
 async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId, peerEnv = {} }) {
@@ -311,6 +327,13 @@ test('origin cwd routes a bound worktree child and exact replacement stop withou
   assert.equal(executor.workspace, await realpath(target));
   assert.equal(executor.parentGenerationId, bound.generationId);
   await assert.rejects(resolveForwardingExecutor(data, origin, 'routed-child'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  const originStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: origin });
+  const targetStorage = await resolveWorkspaceStorage({ dataRoot: data, workspace: target });
+  const originRoutePath = join(originStorage.directory, 'hook-state', (await readdir(join(originStorage.directory, 'hook-state'))).find((name) => name.startsWith('route-')));
+  const targetExecutorPath = join(targetStorage.directory, 'hook-state', (await readdir(join(targetStorage.directory, 'hook-state'))).find((name) => name.startsWith('executor-')));
+  const before = { route: await readFile(originRoutePath), executor: await readFile(targetExecutorPath) };
+  assert.deepEqual(await resolveRoutedForwardingExecutor(data, origin, 'routed-child'), { executor, executionWorkspace: await realpath(target) });
+  assert.deepEqual({ route: await readFile(originRoutePath), executor: await readFile(targetExecutorPath) }, before, 'routed lookup must not rewrite authority bytes');
 
   await runHook('user-prompt-hook.mjs', { session_id: 'routed-parent', turn_id: 'parent-turn-b', cwd: origin, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: 'replacement turn' }, env);
   const stopped = await runHook('subagent-hook.mjs', { ...start, hook_event_name: 'SubagentStop', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }, env);
@@ -318,6 +341,94 @@ test('origin cwd routes a bound worktree child and exact replacement stop withou
   const terminal = await resolveForwardingExecutor(data, target, 'routed-child', { continuation: true, durableProvenance: true });
   assert.equal(terminal.active, false);
   assert.equal(terminal.parentGenerationId, bound.generationId, 'replacement authority must not redirect exact child cleanup');
+});
+
+test('routed executor preserves active and stopped invocation modes', async (t) => {
+  const { cwd: origin, data } = await workspace(); const target = await addLinkedWorktree(origin, 'routed-executor-modes');
+  t.after(() => rm(target, { recursive: true, force: true }));
+  const identity = createIdentityStore({ dataRoot: data });
+  await recordSession(data, { session_id: 'routed-mode-parent', cwd: origin, source: 'startup' });
+  await identity.beginCallerTurn({ sessionId: 'routed-mode-parent', turnId: 'routed-mode-parent-turn', workspace: origin, permissionMode: 'workspace-write', prompt: 'route modes', sessionStartedAt: '2026-08-21T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  const caller = await identity.resolveActiveTurn({ sessionId: 'routed-mode-parent', workspace: target, workspaceBinding: 'claim' });
+  const start = { session_id: caller.sessionId, turn_id: 'routed-mode-child-turn', cwd: origin, hook_event_name: 'SubagentStart', agent_id: 'routed-mode-child', agent_type: 'zcode-rescue' };
+  await markForwarding(data, start, caller);
+  await assert.rejects(resolveRoutedForwardingExecutor(data, origin, start.agent_id, { continuation: true }), { code: 'EXECUTOR_STATE_MISMATCH' });
+  await markForwarding(data, { ...start, hook_event_name: 'SubagentStop' });
+  await assert.rejects(resolveRoutedForwardingExecutor(data, origin, start.agent_id), { code: 'EXECUTOR_STATE_MISMATCH' });
+  const routed = await resolveRoutedForwardingExecutor(data, origin, start.agent_id, { continuation: true, durableProvenance: true });
+  assert.equal(routed.executor.active, false); assert.equal(routed.executionWorkspace, await realpath(target));
+});
+
+test('routed executor treats every ambient executor claim or corruption as terminal', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'routed-ambient-boundaries');
+  const targetExecutor = JSON.parse(await readFile(fixture.executorPath, 'utf8'));
+  const canonicalName = fixture.executorPath.split(sep).at(-1); const canonicalPath = join(fixture.originDirectory, canonicalName);
+  const ambient = { ...targetExecutor, originWorkspace: await realpath(fixture.origin), workspace: await realpath(fixture.origin) };
+  const expect = async (record, code, name = canonicalName) => {
+    await writeFile(join(fixture.originDirectory, name), typeof record === 'string' ? record : JSON.stringify(record));
+    await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code });
+    await rm(join(fixture.originDirectory, name), { force: true });
+  };
+  await expect({ ...ambient, active: false }, 'EXECUTOR_IDENTITY_NOT_FOUND');
+  await expect({ ...ambient, createdAt: new Date(Date.now() - 31 * 60_000).toISOString() }, 'EXECUTOR_IDENTITY_EXPIRED');
+  await expect({ ...ambient, createdAt: new Date(Date.now() + 60_000).toISOString() }, 'EXECUTOR_IDENTITY_INVALID');
+  await expect({ ...ambient, agentType: 'explorer' }, 'EXECUTOR_ROLE_UNAPPROVED');
+  await writeFile(canonicalPath, JSON.stringify(ambient));
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id, { continuation: true }), { code: 'EXECUTOR_STATE_MISMATCH' });
+  await rm(canonicalPath);
+  await expect(ambient, 'EXECUTOR_IDENTITY_AMBIGUOUS', 'executor-noncanonical-same-child.json');
+  await writeFile(canonicalPath, JSON.stringify(ambient)); await writeFile(join(fixture.originDirectory, 'executor-duplicate-same-child.json'), JSON.stringify(ambient));
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
+  await rm(canonicalPath); await rm(join(fixture.originDirectory, 'executor-duplicate-same-child.json'));
+  await expect('{', 'EXECUTOR_IDENTITY_INVALID', 'executor-malformed-unrelated.json');
+  await expect(`{"pad":"${'x'.repeat(17 * 1024)}"}`, 'EXECUTOR_IDENTITY_INVALID', 'executor-oversized-unrelated.json');
+});
+
+test('routed executor validates the complete route set before selecting one claim', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'routed-route-boundaries'); const originalBytes = await readFile(fixture.routePath); const original = JSON.parse(originalBytes);
+  const reset = async () => { for (const name of await readdir(fixture.originDirectory)) if (name.startsWith('route-')) await rm(join(fixture.originDirectory, name)); await writeFile(fixture.routePath, originalBytes); };
+  await rm(fixture.routePath); await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await writeFile(fixture.routePath, JSON.stringify({ ...original, agentId: 'unrelated-child' })); await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+  await reset(); await writeFile(join(fixture.originDirectory, 'route-duplicate.json'), JSON.stringify({ ...original, state: 'stopped' })); await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
+  await reset(); await writeFile(join(fixture.originDirectory, 'route-malformed-unrelated.json'), '{'); await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await reset(); await writeFile(join(fixture.originDirectory, 'route-oversized-unrelated.json'), `{"pad":"${'x'.repeat(17 * 1024)}"}`); await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_ROUTE_INVALID' });
+  for (const age of [0, 31_000]) {
+    await reset(); const stamp = new Date(Date.now() - age).toISOString(); await writeFile(fixture.routePath, JSON.stringify({ ...original, state: 'pending', createdAt: stamp, updatedAt: stamp }));
+    await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_STATE_MISMATCH' });
+  }
+  await reset(); await writeFile(fixture.routePath, JSON.stringify({ ...original, updatedAt: new Date(Date.now() + 60_000).toISOString() }));
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await reset(); await writeFile(fixture.routePath, JSON.stringify({ ...original, createdAt: new Date(Date.now() + 60_000).toISOString(), updatedAt: new Date(Date.now() + 60_000).toISOString() }));
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_ROUTE_INVALID' });
+  await reset();
+});
+
+test('routed executor rejects target drift, expiry, symlinks, and route count overflow without leaking authority', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'routed-target-boundaries'); const originalExecutor = await readFile(fixture.executorPath); const originalRoute = await readFile(fixture.routePath);
+  const mutateExecutor = async (changes, code) => {
+    await writeFile(fixture.executorPath, JSON.stringify({ ...JSON.parse(originalExecutor), ...changes }));
+    await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code });
+    await writeFile(fixture.executorPath, originalExecutor);
+  };
+  await mutateExecutor({ parentTurnId: 'wrong-target-turn' }, 'EXECUTOR_ROUTE_INVALID');
+  await mutateExecutor({ parentGenerationId: 'f'.repeat(64) }, 'EXECUTOR_ROUTE_INVALID');
+  await mutateExecutor({ createdAt: new Date(Date.now() - 31 * 60_000).toISOString() }, 'EXECUTOR_IDENTITY_EXPIRED');
+  await mutateExecutor({ agentType: 'explorer' }, 'EXECUTOR_ROLE_UNAPPROVED');
+  const symlinkPath = join(fixture.originDirectory, 'route-symlink.json'); await symlink(fixture.routePath, symlinkPath);
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_ROUTE_INVALID' }); await unlink(symlinkPath);
+  const executorLink = join(fixture.originDirectory, fixture.executorPath.split(sep).at(-1)); await symlink(fixture.executorPath, executorLink);
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_IDENTITY_INVALID' }); await unlink(executorLink);
+  const targetLinkSource = join(fixture.targetDirectory, 'executor-link-source.json'); await writeFile(targetLinkSource, originalExecutor); await unlink(fixture.executorPath); await symlink(targetLinkSource, fixture.executorPath);
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_ROUTE_INVALID' }); await unlink(fixture.executorPath); await writeFile(fixture.executorPath, originalExecutor); await unlink(targetLinkSource);
+  const canonicalOrigin = await realpath(fixture.origin);
+  await Promise.all(Array.from({ length: 1_025 }, (_, index) => writeFile(join(fixture.originDirectory, `executor-overflow-${index}.json`), JSON.stringify({ ...JSON.parse(originalExecutor), agentId: `unrelated-executor-${index}`, originWorkspace: canonicalOrigin, workspace: canonicalOrigin }))));
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
+  for (const name of await readdir(fixture.originDirectory)) if (name.startsWith('executor-overflow-')) await unlink(join(fixture.originDirectory, name));
+  const route = JSON.parse(originalRoute); await Promise.all(Array.from({ length: 1_025 }, (_, index) => writeFile(join(fixture.originDirectory, `route-overflow-${index}.json`), JSON.stringify({ ...route, agentId: `unrelated-${index}` }))));
+  await assert.rejects(resolveRoutedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code: 'EXECUTOR_IDENTITY_AMBIGUOUS' });
+  let caught; try { await resolveRoutedForwardingExecutor(fixture.data, fixture.origin, 'public-missing-child'); } catch (error) { caught = error; }
+  const rendered = `${caught?.message ?? ''} ${caught?.remedy ?? ''}`;
+  for (const secret of [fixture.origin, fixture.target, fixture.start.agent_id, fixture.start.session_id, fixture.start.turn_id, fixture.caller.generationId]) assert.doesNotMatch(rendered, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
 
 test('pending executor route linearizes Start and Stop without an active orphan', async (t) => {

@@ -174,10 +174,54 @@ export async function resolveForwardingRoute(dataRoot, originWorkspace, sessionI
   });
 }
 export async function resolveForwardingExecutor(dataRoot, workspace, agentId, options = {}) {
+  const probe = await probeForwardingExecutor(dataRoot, workspace, agentId, options, false);
+  if (probe.kind === 'absent') throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
+  return validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor);
+}
+export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId, options = {}) {
+  const probe = await probeForwardingExecutor(dataRoot, ambientWorkspace, agentId, options, true);
+  if (probe.kind === 'selected') {
+    const executor = await validateForwardingExecutorRoute(dataRoot, probe.store, probe.executor);
+    return { executor, executionWorkspace: probe.store.workspacePath };
+  }
+  const route = await withFileLock(probe.store.lock, async () => {
+    let entries; try { entries = await readPrivateDirectory(probe.store.directory, probe.store.directory, MAX_HOOK_STATE_RECORDS); } catch (error) { throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'Too many private executor route records exist.', error); }
+    const routeEntries = entries.filter((entry) => entry.name.startsWith('route-') && entry.name.endsWith('.json'));
+    if (routeEntries.length > 1_024) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'Too many private executor route records exist.');
+    const routes = [];
+    for (const entry of routeEntries) {
+      if (!entry.isFile()) throw executorError('EXECUTOR_ROUTE_INVALID', 'A private executor route is invalid.');
+      let record; try { record = await readExecutorRoute(join(probe.store.directory, entry.name), probe.store.directory); } catch (error) { throw executorError('EXECUTOR_ROUTE_INVALID', 'A private executor route is invalid.', error); }
+      if (!validExecutorRoute(record, probe.store.workspacePath)) throw executorError('EXECUTOR_ROUTE_INVALID', 'A private executor route is invalid.');
+      if (record.agentId === agentId) routes.push(record);
+    }
+    if (routes.length === 0) throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
+    if (routes.length !== 1) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'More than one private executor route claims this child identity.');
+    const timestamp = options.now === undefined ? Date.now() : new Date(options.now).getTime();
+    if (!Number.isFinite(timestamp) || timestamp < Date.parse(routes[0].createdAt) || timestamp < Date.parse(routes[0].updatedAt)) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route has a future timestamp.');
+    if (options.continuation === true) {
+      if (routes[0].state !== 'stopped') throw executorError('EXECUTOR_STATE_MISMATCH', 'A pending Rescue choice requires the original child to be stopped.');
+    } else {
+      if (options.durableProvenance === true || routes[0].state !== 'active') throw executorError('EXECUTOR_STATE_MISMATCH', 'The private executor route is not active.');
+    }
+    return { ...routes[0] };
+  });
+  let executor;
+  try { executor = await resolveForwardingExecutor(dataRoot, route.targetWorkspace, agentId, options); }
+  catch (cause) {
+    if (['EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_IDENTITY_INVALID', 'EXECUTOR_ROLE_UNAPPROVED', 'EXECUTOR_STATE_MISMATCH'].includes(cause?.code)) throw cause;
+    throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route target is invalid.', cause);
+  }
+  if (!executorMatchesRoute(executor, route)) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route does not match its executor.');
+  return { executor, executionWorkspace: executor.workspace };
+}
+async function probeForwardingExecutor(dataRoot, workspace, agentId, options, routed) {
   const store = await paths(dataRoot, workspace); const canonicalName = `executor-${key('executor', agentId)}.json`;
   const selected = await withFileLock(store.lock, async () => {
     let entries; try { entries = await readPrivateDirectory(store.directory, store.directory, MAX_HOOK_STATE_RECORDS); } catch (error) { throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'Too many private subagent executor records exist.', error); }
-    const names = entries.filter((entry) => entry.isFile() && entry.name.startsWith('executor-') && entry.name.endsWith('.json')).map((entry) => entry.name);
+    const executorEntries = entries.filter((entry) => entry.name.startsWith('executor-') && entry.name.endsWith('.json'));
+    if (routed && executorEntries.some((entry) => !entry.isFile())) throw executorError('EXECUTOR_IDENTITY_INVALID', 'A private subagent executor record is invalid.');
+    const names = executorEntries.filter((entry) => entry.isFile()).map((entry) => entry.name);
     if (names.length > 1_024) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'Too many private subagent executor records exist.');
     const matches = [];
     for (const name of names) {
@@ -186,7 +230,7 @@ export async function resolveForwardingExecutor(dataRoot, workspace, agentId, op
       if (name === canonicalName) { if (!validExecutorRecord(record, store.workspacePath) || record.agentId !== agentId) throw executorError('EXECUTOR_IDENTITY_INVALID', 'The private subagent executor record is invalid.'); matches.push(record); continue; }
       if (record?.agentId === agentId) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'More than one private executor record claims this child identity.');
     }
-    if (matches.length === 0) throw executorError('EXECUTOR_IDENTITY_NOT_FOUND', 'No trusted SubagentStart record matches this executor.');
+    if (matches.length === 0) return null;
     if (matches.length !== 1) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'More than one trusted SubagentStart record matches this executor.');
     const selected = matches[0];
     if (!['zcode-rescue', 'default'].includes(selected.agentType)) throw executorError('EXECUTOR_ROLE_UNAPPROVED', 'Only the installed zcode-rescue Role or the qualified 0.147 default compatibility route may execute Rescue.');
@@ -212,6 +256,9 @@ export async function resolveForwardingExecutor(dataRoot, workspace, agentId, op
     if (candidates.length !== 1) throw executorError('EXECUTOR_IDENTITY_AMBIGUOUS', 'The parent turn does not have exactly one active Rescue executor.');
     return selected;
   });
+  return selected === null ? { kind: 'absent', store } : { kind: 'selected', store, executor: selected };
+}
+async function validateForwardingExecutorRoute(dataRoot, store, selected) {
   if (isLegacyExecutorRecord(selected, store.workspacePath)) {
     if (!await legacyExecutorAuthorityExists(dataRoot, store.workspacePath, selected)) throw executorError('EXECUTOR_ROUTE_INVALID', 'Legacy executor routing is unavailable while lifecycle authority exists.');
     return selected;
