@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -178,6 +178,31 @@ test('qualifies distinct canonical linked worktree execution while hooks remain 
   assert.deepEqual(afterEntries, beforeEntries);
   assert.deepEqual({ mode: afterStat.mode, mtimeMs: afterStat.mtimeMs, ctimeMs: afterStat.ctimeMs },
     { mode: beforeStat.mode, mtimeMs: beforeStat.mtimeMs, ctimeMs: beforeStat.ctimeMs });
+
+  const windowsDataRoot = join(temporary, 'windows-data-root');
+  const originKey = createHash('sha256').update(originWorkspace).digest('hex');
+  const executionKey = createHash('sha256').update(executionWorkspace).digest('hex');
+  const windowsDirectories = [windowsDataRoot, join(windowsDataRoot, 'workspaces'),
+    join(windowsDataRoot, 'workspaces', originKey), join(windowsDataRoot, 'workspaces', executionKey),
+    join(windowsDataRoot, 'workspaces', executionKey, 'jobs')];
+  await mkdir(windowsDirectories.at(-1), { recursive: true });
+  await mkdir(windowsDirectories[2], { recursive: true });
+  await Promise.all(windowsDirectories.map((path) => chmod(path, 0o755)));
+  const windowsInput = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace); windowsInput.installedDataRoot = windowsDataRoot;
+  for (const bytes of JSON.parse(windowsInput.jobRecordBytesJson)) {
+    const job = JSON.parse(bytes); await writeFile(join(windowsDirectories.at(-1), `${job.id}.json`), bytes);
+  }
+  const snapshotStorage = async () => Promise.all(windowsDirectories.map(async (path) => {
+    const metadata = await stat(path); return { path, entries: (await readdir(path)).sort(), mode: metadata.mode, mtimeMs: metadata.mtimeMs, ctimeMs: metadata.ctimeMs };
+  }));
+  const windowsBefore = await snapshotStorage(); const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
+  try { await qualifyCodexRescuePreparedContinuationEvidence(windowsInput); } finally { Object.defineProperty(process, 'platform', platformDescriptor); }
+  assert.deepEqual(await snapshotStorage(), windowsBefore);
+  Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'linux' });
+  try { await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(windowsInput), CodexRescueEvidenceMismatchError); }
+  finally { Object.defineProperty(process, 'platform', platformDescriptor); }
+  assert.deepEqual(await snapshotStorage(), windowsBefore);
 
   const swapped = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace);
   const swappedActive = JSON.parse(swapped.activeTurnRecordBytes);

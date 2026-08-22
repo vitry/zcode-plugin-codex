@@ -1408,7 +1408,7 @@ async function resolveReadonlyQualificationStorage(dataRoot, workspace) {
   const workspacesDirectory = join(dataRootPath, 'workspaces'); const directory = join(workspacesDirectory, workspaceKey);
   for (const path of [dataRootPath, workspacesDirectory, directory]) {
     const stats = await lstat(path);
-    if (!stats.isDirectory() || stats.isSymbolicLink() || (stats.mode & 0o077) !== 0 || await realpath(path) !== path) {
+    if (!stats.isDirectory() || stats.isSymbolicLink() || (process.platform !== 'win32' && (stats.mode & 0o077) !== 0) || await realpath(path) !== path) {
       throw new Error('unsafe qualification storage');
     }
   }
