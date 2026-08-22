@@ -754,9 +754,9 @@ test('installed continuation capture qualifies one parent turn from origin hooks
   assert.deepEqual(observed.hostCalls.map(({ command, workspace }) => ({ command, workspace })), [
     { command: 'role-status rescue', workspace: executionWorkspace },
     { command: 'prepare rescue', workspace: executionWorkspace },
-    { command: 'invoke-prepared rescue', workspace: executionWorkspace },
+    { command: 'invoke-prepared rescue', workspace: originWorkspace },
     { command: 'prepare rescue', workspace: executionWorkspace },
-    { command: 'invoke-prepared rescue', workspace: executionWorkspace },
+    { command: 'invoke-prepared rescue', workspace: originWorkspace },
   ]);
   const creates = observed.peer.filter((call) => call.method === 'session/create'); const sends = observed.peer.filter((call) => call.method === 'session/send');
   assert.equal(creates.length, 1); assert.equal(creates[0].params.workspace.workspacePath, executionWorkspace);
@@ -765,6 +765,7 @@ test('installed continuation capture qualifies one parent turn from origin hooks
   assert.equal(JSON.stringify(observed.hostCalls).includes('installed-observer-private-sentinel'), false);
   assert.deepEqual(observed.cleanedPaths.filter((path) => observed.remainingPaths.includes(path)), []);
   for (const mutate of [
+    (value) => { value.hostCalls[2].workspace = executionWorkspace; },
     (value) => { value.preparationHistory[0].workspace = originWorkspace; },
     (value) => { value.preparationHistory[1].generation = value.preparationHistory[0].generation; },
     (value) => { value.jobs[1].id = value.jobs[0].id; },
@@ -2296,7 +2297,7 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
   const invokeNodeOptions = `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(brokerProcessObserver).href}`.trim();
   const invokeEnv = { ...launcherEnv, CODEX_THREAD_ID: childThreadId, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: peerRecord, FAKE_ZCODE_GATE_RESULT: 'observer result',
     NODE_OPTIONS: invokeNodeOptions, INSTALLED_BROKER_PROCESS_RECORD: brokerProcessRecord, INSTALLED_ZCODE_MAIN: fakeZCode };
-  const firstInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: executionWorkspace, env: invokeEnv });
+  const firstInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: originWorkspace, env: invokeEnv });
   assert.equal(firstInvoke.code, 0, firstInvoke.stderr || firstInvoke.stdout);
   const firstArtifactPaths = await recursiveFiles(dataRoot);
   const firstArtifactSnapshot = await Promise.all(firstArtifactPaths.map(async (path) => ({ path, bytes: await readFile(path, 'utf8').catch(() => '') })));
@@ -2305,7 +2306,7 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
   const proactivePrepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
     env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: proactiveFrame });
   assert.equal(proactivePrepared.code, 0, proactivePrepared.stderr || proactivePrepared.stdout);
-  const secondInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: executionWorkspace, env: invokeEnv });
+  const secondInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: originWorkspace, env: invokeEnv });
   assert.equal(secondInvoke.code, 0, secondInvoke.stderr || secondInvoke.stdout);
   const brokerProcessHistory = (await readFile(brokerProcessRecord, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   const brokerStartup = brokerProcessHistory.filter((value) => value.kind === 'broker-startup');
@@ -2364,8 +2365,8 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
       bindings: bindingHistory.map((value) => `${JSON.stringify(value)}\n`), jobs: jobs.map((value) => parsed.find(({ path, value: candidate }) => path.includes(`${process.platform === 'win32' ? '\\' : '/'}jobs${process.platform === 'win32' ? '\\' : '/'}`) && candidate?.id === value.id)?.bytes) },
     role: { activeBytesBefore: roleBefore, activeBytesAfter: roleAfter, mtimeBefore: roleStatBefore.mtimeMs, mtimeAfter: roleStatAfter.mtimeMs },
     hostCalls: [{ command: 'role-status rescue', workspace: executionWorkspace, stdout: roleResult.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: prepared.stdout },
-      { command: 'invoke-prepared rescue', workspace: executionWorkspace, stdout: firstInvoke.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: proactivePrepared.stdout },
-      { command: 'invoke-prepared rescue', workspace: executionWorkspace, stdout: secondInvoke.stdout }],
+      { command: 'invoke-prepared rescue', workspace: originWorkspace, stdout: firstInvoke.stdout }, { command: 'prepare rescue', workspace: executionWorkspace, stdout: proactivePrepared.stdout },
+      { command: 'invoke-prepared rescue', workspace: originWorkspace, stdout: secondInvoke.stdout }],
     peer, preparationHistory, bindingHistory, jobs, brokerHistory, cleanedPaths, remainingPaths };
 }
 
@@ -2376,6 +2377,13 @@ function assertInstalledWorkspaceBoundObservation(observed, expected) {
     || observed.bound.originWorkspace !== expected.originWorkspace || observed.bound.sessionId !== expected.parentSessionId
     || observed.bound.turnId !== expected.parentTurnId || observed.bound.permissionMode !== expected.permissionMode) fail('authority mismatch');
   if (observed.role.activeBytesBefore !== observed.role.activeBytesAfter || observed.role.mtimeBefore !== observed.role.mtimeAfter) fail('Role mutated authority');
+  if (JSON.stringify(observed.hostCalls?.map(({ command, workspace }) => ({ command, workspace }))) !== JSON.stringify([
+    { command: 'role-status rescue', workspace: expected.executionWorkspace },
+    { command: 'prepare rescue', workspace: expected.executionWorkspace },
+    { command: 'invoke-prepared rescue', workspace: expected.originWorkspace },
+    { command: 'prepare rescue', workspace: expected.executionWorkspace },
+    { command: 'invoke-prepared rescue', workspace: expected.originWorkspace },
+  ])) fail('host workspace mismatch');
   if (observed.originIndex?.originWorkspace !== expected.originWorkspace || observed.originIndex.generationId !== observed.bound.generationId) fail('origin index mismatch');
   if (observed.route?.agentId !== expected.childThreadId || observed.route.childTurnId !== expected.childTurnId || observed.route.agentType !== 'zcode-rescue'
     || observed.route.originWorkspace !== expected.originWorkspace || observed.route.targetWorkspace !== expected.executionWorkspace
@@ -2488,6 +2496,8 @@ function installedWorkspaceBoundCaptureFromObservation(observed, expected) {
   for (const [index, preparation] of observed.preparationHistory.entries()) {
     const invoke = child.find((event) => event?.payload?.call_id === `invoke-${index + 1}` && event.payload.type === 'custom_tool_call');
     const output = child.find((event) => event?.payload?.call_id === `invoke-${index + 1}` && event.payload.type === 'custom_tool_call_output');
+    const host = parseInstalledToolInput(invoke.payload.input); host.value.workdir = expected.originWorkspace;
+    invoke.payload.input = installedExecInput(host.value.cmd, host.value);
     invoke.timestamp = new Date(Date.parse(preparation.consumedAt) - 1).toISOString(); output.timestamp = new Date(Date.parse(preparation.consumedAt) + 1).toISOString();
   }
   input.childRolloutJson = JSON.stringify(child);

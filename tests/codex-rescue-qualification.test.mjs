@@ -147,6 +147,17 @@ test('qualifies distinct canonical linked worktree execution while hooks remain 
   assert.notEqual(evidence.originWorkspace, evidence.executionWorkspace);
   assert.equal(evidence.workspaceBindingChecked, true);
 
+  const childAtTarget = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace);
+  const childRows = JSON.parse(childAtTarget.childRolloutJson);
+  for (const row of childRows.filter((event) => event?.payload?.type === 'custom_tool_call')) {
+    const host = parseFixtureHostInput(row.payload.input);
+    if (host.cmd === expectedCommand) host.workdir = executionWorkspace;
+    row.payload.input = fixtureExecInput(host);
+  }
+  childAtTarget.childRolloutJson = JSON.stringify(childRows);
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(childAtTarget),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-child-exec-envelope-mismatch');
+
   const swapped = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace);
   const swappedActive = JSON.parse(swapped.activeTurnRecordBytes);
   [swappedActive.originWorkspace, swappedActive.executionWorkspace] = [swappedActive.executionWorkspace, swappedActive.originWorkspace];
@@ -2133,6 +2144,13 @@ function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) 
   input.expected.workspace = executionWorkspace;
   input.expected.originWorkspace = originWorkspace;
   input.expected.executionWorkspace = executionWorkspace;
+  const child = JSON.parse(input.childRolloutJson);
+  for (const row of child.filter((event) => event?.payload?.type === 'custom_tool_call')) {
+    const host = parseFixtureHostInput(row.payload.input);
+    if (host.cmd === expectedCommand) host.workdir = originWorkspace;
+    row.payload.input = fixtureExecInput(host);
+  }
+  input.childRolloutJson = JSON.stringify(child);
   const hooks = JSON.parse(input.hookLifecycleJson);
   for (const hook of hooks) hook.cwd = originWorkspace;
   input.hookLifecycleJson = JSON.stringify(hooks);

@@ -241,6 +241,10 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || childCommands.some((command) => typeof command !== 'string' || !command.endsWith('/skills/rescue/launcher.mjs" invoke-prepared rescue'))
     || new Set(childCommands).size !== 1
     || calls.some((call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)) mismatch('continuation-child-invocations', 'Raw child rollout does not prove two exact linked invoke-prepared turns.');
+  for (const call of calls) {
+    assertExecEnvelope(parseCapturedHostCall(call.payload.input).envelope, childCommands[0], workspaceAuthority.originWorkspace,
+      'continuation-child-exec-envelope-mismatch');
+  }
   const childTurns = calls.map((call) => boundedString(call.turn_id));
   if (childTurns.some((turnId) => !turnId) || new Set(childTurns).size !== 2
     || calls.some((call) => outputs.find((output) => output.payload.call_id === call.payload.call_id)?.turn_id !== call.turn_id)) mismatch('continuation-child-turns', 'Raw child rollout does not prove one exact invocation in each of two turns.');
@@ -293,7 +297,7 @@ function validateLiveRawContinuationCapture(input, core) {
       if (consumedChildWriteIds.has(call.payload.call_id)) mismatch('continuation-raw-child-events', 'A child poll belongs to more than one invoke segment.'); consumedChildWriteIds.add(call.payload.call_id);
     }
     const ids = new Set(calls.map((event) => event.payload.call_id)); const outputs = rawChild.filter((event) => event?.turn_id === invoke.turn_id && event?.payload?.type === 'custom_tool_call_output' && ids.has(event.payload.call_id));
-    validateChildExecution(rawChild, calls, outputs, parseCapturedHostCall(invoke.payload.input).envelope.get('cmd'), core.expected.workspace, { codePrefix: 'continuation-raw-child', expectedExitCode: 0 });
+    validateChildExecution(rawChild, calls, outputs, parseCapturedHostCall(invoke.payload.input).envelope.get('cmd'), core.expected.originWorkspace ?? core.expected.workspace, { codePrefix: 'continuation-raw-child', expectedExitCode: 0 });
   }
   const allChildWriteIds = rawChild.filter((event) => event?.payload?.type === 'custom_tool_call' && parseCapturedHostCall(event.payload.input).kind === 'write_stdin').map((event) => event.payload.call_id);
   if (allChildWriteIds.length !== consumedChildWriteIds.size || allChildWriteIds.some((id) => !consumedChildWriteIds.has(id))) mismatch('continuation-raw-child-events', 'A raw child poll is not owned by exactly one invoke segment.');
