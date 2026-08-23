@@ -36,8 +36,11 @@ function assertRescueNamingContract(source) {
   assert.match(namingText, /prepared[^\n]+route[^\n]+action[^\n]+followup[\s\S]+exact[^\n]+target/i);
   assert.match(namingText, /prepared[^\n]+route[^\n]+action[^\n]+spawn[\s\S]+exact[^\n]+taskName/i);
   assert.match(namingText, /malformed[^\n]+extra key[^\n]+wrong action[^\n]+unsafe[^\n]+path[^\n]+invalid task name/i);
-  assert.match(namingText, /exactly one host action/i);
+  assert.match(namingText, /exactly one child-producing activation/i);
   assert.match(namingText, /must not[^\n]+collision[^\n]+fallback/i);
+  assert.match(namingText, /trusted[^\n]+original spawn provenance[\s\S]+exact target/i);
+  assert.match(namingText, /named[^\n]+named assignment[\s\S]+generic[^\n]+complete fixed generic message/i);
+  assert.match(namingText, /missing[^\n]+ambiguous[^\n]+mismatched[\s\S]+fail closed/i);
   assert.doesNotMatch(namingText, /Root chooses[^\n]+rescueTaskName/i);
 }
 
@@ -234,8 +237,8 @@ test('Root routes active, stopped same-operation, and fresh Rescue child states 
   assert.match(block, /invalid[^\n]+binding[\s\S]+fail closed/i);
   assert.match(block, /permission[^\n]+change[\s\S]+fresh/i);
   assert.match(block, /companion discovers host children[\s\S]+private stopped-executor provenance[\s\S]+exact persisted child/i);
-  assert.match(source, /expectedPreparedContinuationMessage[^\n]+exactly `Run the installed prepared ZCode Rescue forwarder now/i);
-  assert.match(source, /Preparation authorizes exactly one host action[^\n]+follow-up[^\n]+spawn[^\n]+never both/i);
+  assert.match(source, /named assignment is exactly `Run the installed prepared ZCode Rescue forwarder now/i);
+  assert.match(source, /Preparation authorizes exactly one child-producing activation[^\n]+follow-up[^\n]+spawn[^\n]+never both/i);
 });
 
 test('stale spawn-only prose cannot contradict stopped-child continuation', () => {
@@ -311,6 +314,9 @@ test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task
   assert.match(source, /unknown\/unavailable\/invalid (?:value|Role value) `zcode-rescue`/i);
   assert.match(source, /timeout[\s\S]+ambiguous[\s\S]+never generic fallback/i);
   assert.match(source, /may have created a child[\s\S]+same child/i);
+  assert.match(source, /one prepared `spawn` directive[^\n]+one child-producing activation/i);
+  assert.match(source, /pre-child schema rejection[^\n]+schema negotiation[\s\S]+one generic child-producing call/i);
+  assert.match(source, /collision[\s\S]+runtime[\s\S]+ambiguity[\s\S]+terminal/i);
   assert.doesNotMatch(source, /If spawning fails[^\n]+no queued job or authorization artifact/i);
   assert.doesNotMatch(source, /spawn[^\n]*(?:task text|job ID|capability|permission snapshot)/i);
 });

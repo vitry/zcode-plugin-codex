@@ -83,15 +83,15 @@ Task, source, and options are allowed only in the parent `write_stdin` payload. 
 
 Accept preparation only when the same handle exits with zero exit status and its sole accepted terminal object is an exact prepared object whose keys are `type`, `command`, and `route`, where `type` is `prepared`, `command` is `rescue`, and `route` is one of the two forms below. A signal, failed prepare, nonzero exit, extra field, malformed output, or any other result must stop the operation and must not follow up or spawn.
 
-Strictly parse the terminal prepared route object before any collaboration action. It is exactly `{ version: 1, action: 'followup', target: '<absolute agent path>' }` or `{ version: 1, action: 'spawn', taskName: '<bounded Rescue task name>' }`. Reject malformed objects, every extra key, a missing or wrong action, an unsafe or non-absolute path, and an invalid task name. A `followup` route uses the exact `target`; a `spawn` route uses the exact `taskName`. Root must perform exactly one host action and no second action after success or rejection. It must not derive an ordinal, choose or substitute a name or target, spawn before the directive, follow up another target, retry after rejection, or use collision as fallback. Collision handling belongs only to the plugin planner; collision fallback is never authorized. Preparation authorizes exactly one host action, follow-up or spawn, never both.
+Strictly parse the terminal prepared route object before any collaboration action. It is exactly `{ version: 1, action: 'followup', target: '<absolute agent path>' }` or `{ version: 1, action: 'spawn', taskName: '<bounded Rescue task name>' }`. Reject malformed objects, every extra key, a missing or wrong action, an unsafe or non-absolute path, and an invalid task name. A `followup` route uses the exact `target`; a `spawn` route uses the exact `taskName`. Root must perform exactly one host action and no second action after success or rejection, except for the explicitly bounded pre-child schema negotiation below. It must not derive an ordinal, choose or substitute a name or target, spawn before the directive, follow up another target, retry after rejection, or use collision as fallback. Collision handling belongs only to the plugin planner; collision fallback is never authorized. Preparation authorizes exactly one child-producing activation, follow-up or spawn, never both.
 
-For a follow-up route, send the fixed task-free prepared assignment and do nothing else:
+For a follow-up route, use trusted retained original spawn provenance for that exact target to select `routeSpecificPreparedAssignment`: a named Role child requires the exact named assignment literal, while a qualified generic/default child requires its complete fixed generic message rendered with the same immutable `rescueLauncherCommand`. Missing, ambiguous, or mismatched exact target-to-original-route or assignment provenance must fail closed; do not guess the named assignment, spawn, or fall back. Then send that exact historical task-free assignment and do nothing else:
 
 ```text
-followup_task({ target: prepared.route.target, message: expectedPreparedContinuationMessage })
+followup_task({ target: prepared.route.target, message: routeSpecificPreparedAssignment })
 ```
 
-Here `expectedPreparedContinuationMessage` is exactly `Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.`. The target is the plugin-prescribed agent path, not a child ID guessed or selected by Root. A host rejection is terminal for this preparation and must not fall back to a spawn.
+The named assignment is exactly `Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.`. The generic assignment is the complete fixed generic message below after its one immutable launcher substitution. The target is the plugin-prescribed agent path, not a child ID guessed or selected by Root. A host rejection is terminal for this preparation and must not fall back to a spawn.
 
 When `prepared.route.action` is exactly `spawn` and the active `spawn_agent` tool schema exposes `agent_type`, prefer this exact named spawn with a fresh context:
 
@@ -104,14 +104,16 @@ spawn_agent({
 })
 ```
 
-Only after the preflight returned `ready`, classify routing exactly as follows:
+Only after the preflight returned `ready`, classify schema negotiation exactly as follows. One prepared `spawn` directive authorizes one child-producing activation:
 
 | Observed condition | Required action |
 |---|---|
 | The active tool schema omits `agent_type` | Use the generic route. |
-| The named tool request is rejected for an unknown/unrecognized/unsupported/reserved field/key/parameter `agent_type`, and the rejection proves there is no agent ID, start event, or activity | Use the generic route; this was a pre-child schema rejection. |
+| The named tool request is rejected for an unknown/unrecognized/unsupported/reserved field/key/parameter `agent_type`, and the rejection proves there is no agent ID, start event, or activity | This was a pre-child schema rejection and schema negotiation may continue with the one generic child-producing call. |
 | The schema recognizes `agent_type`, but reports an unknown/unavailable/invalid Role value `zcode-rescue`, a missing Role, Role/config mismatch, drift, shadowing, or outdated state | Fail closed with `$zcode:setup`; do not use generic fallback. |
-| A timeout, ambiguous result, runtime failure, or any returned agent ID, start event, or activity | It may have created a child. Never generic fallback and never issue a second spawn. If an ID exists, wait or rejoin that same child; otherwise stop with the original failure. |
+| A Role-value rejection, collision, timeout, ambiguous result, runtime failure, or any returned agent ID, start event, or activity | Terminal for this preparation. It may have created a child. Never generic fallback, never issue a second spawn, and never issue another child-producing call. If an ID exists, wait or rejoin that same child; otherwise stop with the original failure. |
+
+Collision, runtime failure, and ambiguity are terminal; none authorizes schema negotiation or generic fallback.
 
 Do not infer field incompatibility merely from the words `unknown`, `invalid`, or `unsupported`: the error must identify the `agent_type` field/key/parameter rather than its `zcode-rescue` value. Only a proven pre-child schema rejection guarantees that no child ran the companion and therefore no queued job or authorization artifact exists.
 

@@ -597,18 +597,25 @@ test('captured restored-child qualification reactivates the unloaded original pa
   const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(targetDirectory);
   const parentSessionId = 'restored-parent'; const childThreadId = 'restored-child'; const agentPath = '/root/zcode_rescue_task';
   const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs"'; const publicOutput = 'fake restored e2e response';
-  const expected = { parentSessionId, childThreadId, agentPath, originalParentTurnId: 'old-turn', resumedParentTurnId: 'new-turn',
-    originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput };
-  const evidence = await qualifyCodexRescueRestoredChildEvidence({ expected,
-    parentRolloutJson: JSON.stringify([{ type: 'session_meta', payload: { id: parentSessionId } },
-      { type: 'response_item', turn_id: 'new-turn', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: agentPath, message: expectedNamedRescueMessage }) } }]),
-    hostChildrenJson: JSON.stringify([{ id: childThreadId, parentThreadId: parentSessionId, agentPath, agentRole: 'zcode-rescue', cwd: originWorkspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 }]),
-    executorRecordBytes: JSON.stringify({ agentId: childThreadId, parentSessionId, parentTurnId: 'old-turn', active: false, originWorkspace, workspace: executionWorkspace }),
-    preparationRecordBytes: JSON.stringify({ version: 3, generation: 1, requiredExecutorAgentId: null, activation: { kind: 'reactivate', executorAgentId: childThreadId, agentPathDigest: createHash('sha256').update(agentPath).digest('hex') } }),
-    childRolloutJson: JSON.stringify([{ type: 'exec', threadId: childThreadId, command: `${launcherCommand} invoke-prepared rescue`, workdir: originWorkspace }, { type: 'result', output: publicOutput }]),
-    fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } }, { method: 'session/send', params: { response: publicOutput } }]),
-  });
-  assert.equal(evidence.childThreadId, childThreadId); assert.equal(evidence.followupCount, 1); assert.equal(evidence.spawnCount, 0); assert.equal(evidence.collisionCount, 0);
+  for (const route of ['named', 'generic']) {
+    const expected = { route, parentSessionId, childThreadId, agentPath, originalParentTurnId: 'old-turn', resumedParentTurnId: 'new-turn',
+      originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput };
+    const agentRole = route === 'named' ? 'zcode-rescue' : null; const agentType = route === 'named' ? 'zcode-rescue' : 'default';
+    const assignment = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', launcherCommand);
+    const thread = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath, cwd: originWorkspace, agentRole });
+    const routeDirective = { version: 1, action: 'followup', target: agentPath };
+    const evidence = await qualifyCodexRescueRestoredChildEvidence({ expected,
+      parentRolloutJson: JSON.stringify([{ type: 'session_meta', payload: { id: parentSessionId } },
+        { type: 'response_item', turn_id: 'new-turn', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: agentPath, message: assignment }) } }]),
+      appServerTranscriptJson: JSON.stringify(installedRestoredAppServerTranscript(thread, childThreadId)),
+      preparedOutput: installedPreparedAck(routeDirective),
+      executorRecordBytes: JSON.stringify({ agentId: childThreadId, agentType, parentSessionId, parentTurnId: 'old-turn', active: false, originWorkspace, workspace: executionWorkspace }),
+      preparationRecordBytes: JSON.stringify({ version: 3, generation: 1, requiredExecutorAgentId: null, activation: { kind: 'reactivate', executorAgentId: childThreadId, agentPathDigest: createHash('sha256').update(agentPath).digest('hex') } }),
+      childRolloutJson: JSON.stringify([{ type: 'exec', threadId: childThreadId, command: `${launcherCommand} invoke-prepared rescue`, workdir: originWorkspace }, { type: 'result', output: publicOutput }]),
+      fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } }, { method: 'session/send', params: { response: publicOutput } }]),
+    });
+    assert.equal(evidence.route, route); assert.equal(evidence.childThreadId, childThreadId); assert.equal(evidence.followupCount, 1); assert.equal(evidence.spawnCount, 0); assert.equal(evidence.collisionCount, 0);
+  }
 });
 
 test('synthetic captured qualification fixtures keep proactive clear fresh and resume routes one-shot', async () => {
@@ -2616,11 +2623,20 @@ function installedContinuationPreparationRecord(sessionId, workspace, executorAg
 
 function installedPreparedAck(route) { return `${JSON.stringify({ type: 'prepared', command: 'rescue', route })}\n`; }
 
-function installedCodexThreadSpawnChild({ id, parentThreadId, agentPath, cwd }) {
+function installedCodexThreadSpawnChild({ id, parentThreadId, agentPath, cwd, agentRole = 'zcode-rescue' }) {
   return { id, sessionId: parentThreadId, parentThreadId, ephemeral: false, preview: '', projectId: null, historyMode: 'legacy',
     modelProvider: 'openai', createdAt: 1, updatedAt: 2, recencyAt: 2, status: { type: 'notLoaded' }, path: null, cwd,
-    source: { subAgent: { thread_spawn: { parent_thread_id: parentThreadId, depth: 1, agent_path: agentPath, agent_nickname: null, agent_role: 'zcode-rescue' } } },
-    canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole: 'zcode-rescue', gitInfo: null, name: null, turns: [] };
+    source: { subAgent: { thread_spawn: { parent_thread_id: parentThreadId, depth: 1, agent_path: agentPath, agent_nickname: null, agent_role: agentRole } } },
+    canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole, gitInfo: null, name: null, turns: [] };
+}
+
+function installedRestoredAppServerTranscript(thread, childThreadId) {
+  return [
+    { direction: 'request', id: 1, method: 'thread/list', params: { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
+    { direction: 'response', id: 1, result: { data: [thread], nextCursor: null, backwardsCursor: null } },
+    { direction: 'request', id: 2, method: 'thread/read', params: { threadId: childThreadId, includeTurns: false } },
+    { direction: 'response', id: 2, result: { thread } },
+  ];
 }
 
 function installedActiveTurnRecord(sessionId, turnId, workspace) {

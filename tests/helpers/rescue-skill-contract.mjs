@@ -133,8 +133,8 @@ export function assertExactChildContinuationContract(source, { assertionPrefix =
   assert.match(block, /Stopped exact same-operation child[\s\S]+companion[\s\S]+prepared route[\s\S]+exact persisted child/i);
   assert.match(block, /Fresh or independent operation[\s\S]+`fresh`[\s\S]+new Rescue child/i);
   assert.match(block, /Root[^\n]+owns[^\n]+semantic choice/i);
-  assert.match(source, /followup_task\(\{\s*target:\s*prepared\.route\.target,\s*message:\s*expectedPreparedContinuationMessage,?\s*\}\)/s);
-  assert.match(source, /Preparation authorizes exactly one host action[^\n]+never both/i);
+  assert.match(source, /followup_task\(\{\s*target:\s*prepared\.route\.target,\s*message:\s*routeSpecificPreparedAssignment,?\s*\}\)/s);
+  assert.match(source, /Preparation authorizes exactly one child-producing activation[^\n]+never both/i);
   assert.match(source, /must not[^\n]+collision[^\n]+fallback/i);
   assert.doesNotMatch(source, /Root chooses[^\n]+rescueTaskName/i);
   assert.doesNotMatch(source, /Preparation authorizes exactly one (?:named or generic )?spawn\./i);

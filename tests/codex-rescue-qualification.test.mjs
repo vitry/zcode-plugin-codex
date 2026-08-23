@@ -57,18 +57,42 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
   const restoredPath = '/root/zcode_rescue_task'; const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs"';
   const input = restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: restoredPath, launcherCommand });
   const evidence = await qualifyCodexRescueRestoredChildEvidence(input);
-  assert.deepEqual(evidence, { parentSessionId: parentId, childThreadId: childId, agentPath: restoredPath,
+  assert.deepEqual(evidence, { route: 'named', parentSessionId: parentId, childThreadId: childId, agentPath: restoredPath,
     originalParentTurnId: 'turn-original', resumedParentTurnId: 'turn-resumed', originWorkspace, executionWorkspace,
     followupCount: 1, spawnCount: 0, childInvocationCount: 1, restoredInitiallyUnloaded: true, collisionCount: 0 });
   for (const [code, mutate] of [
     ['restored-child-one-action', (value) => JSON.parse(value.parentRolloutJson).concat({ type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', arguments: '{}' } })],
-    ['restored-child-host', (value) => { const rows = JSON.parse(value.hostChildrenJson); rows[0].agentPath = '/root/sibling'; return rows; }],
+    ['restored-child-host', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[1].result.data[0].source.subAgent.thread_spawn.agent_path = '/root/sibling'; return rows; }],
+    ['restored-child-app-server', (value) => JSON.parse(value.appServerTranscriptJson).slice(2)],
+    ['restored-child-app-server', (value) => JSON.parse(value.appServerTranscriptJson).filter((frame) => frame.method !== 'thread/read')],
+    ['restored-child-directive', () => `${JSON.stringify({ type: 'prepared', command: 'rescue', route: { version: 1, action: 'followup', target: '/root/sibling' } })}\n`],
+    ['restored-child-directive', () => ''],
     ['restored-child-activation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.activation.executorAgentId = 'sibling'; return record; }],
   ]) {
-    const changed = structuredClone(input); const field = code === 'restored-child-one-action' ? 'parentRolloutJson' : code === 'restored-child-host' ? 'hostChildrenJson' : 'preparationRecordBytes';
-    changed[field] = JSON.stringify(mutate(changed));
+    const changed = structuredClone(input); const field = code === 'restored-child-one-action' ? 'parentRolloutJson'
+      : ['restored-child-host', 'restored-child-app-server'].includes(code) ? 'appServerTranscriptJson'
+        : code === 'restored-child-directive' ? 'preparedOutput' : 'preparationRecordBytes';
+    const mutated = mutate(changed); changed[field] = field === 'preparedOutput' ? mutated : JSON.stringify(mutated);
     await assert.rejects(qualifyCodexRescueRestoredChildEvidence(changed), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
   }
+  const fabricatedHostArray = structuredClone(input); fabricatedHostArray.hostChildrenJson = JSON.stringify([{ id: childId, agentPath: restoredPath }]);
+  await assert.rejects(qualifyCodexRescueRestoredChildEvidence(fabricatedHostArray),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-contract');
+});
+
+test('qualifies a restored generic child only with its exact historical generic assignment', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-restored-generic-')); t.after(() => rm(temporary, { recursive: true, force: true }));
+  const originDirectory = join(temporary, 'origin'); const targetDirectory = join(temporary, 'target');
+  await mkdir(originDirectory); await runGit(['init', '-q'], originDirectory); await writeFile(join(originDirectory, 'fixture.txt'), 'base\n');
+  await runGit(['add', 'fixture.txt'], originDirectory); await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
+  await runGit(['worktree', 'add', '-qb', 'restored-generic-target', targetDirectory], originDirectory);
+  const input = restoredChildFixture({ originWorkspace: await realpath(originDirectory), executionWorkspace: await realpath(targetDirectory),
+    agentPath: '/root/zcode_rescue_task', launcherCommand: 'node "/installed/zcode/skills/rescue/launcher.mjs"', route: 'generic' });
+  const evidence = await qualifyCodexRescueRestoredChildEvidence(input);
+  assert.equal(evidence.route, 'generic'); assert.equal(evidence.followupCount, 1); assert.equal(evidence.spawnCount, 0);
+  const wrong = structuredClone(input); const rows = JSON.parse(wrong.parentRolloutJson);
+  rows[1].payload.arguments = JSON.stringify({ target: '/root/zcode_rescue_task', message: expectedNamedRescueMessage }); wrong.parentRolloutJson = JSON.stringify(rows);
+  await assert.rejects(qualifyCodexRescueRestoredChildEvidence(wrong), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-followup');
 });
 
 test('qualifies named and generic foreground/background continuation in one active parent turn on one stopped child and exact peer session', async () => {
@@ -2189,23 +2213,43 @@ function preparedContinuationFixture(route, execution = 'foreground') {
   };
 }
 
-function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: restoredPath, launcherCommand }) {
+function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: restoredPath, launcherCommand, route = 'named' }) {
   const activation = { kind: 'reactivate', executorAgentId: childId, agentPathDigest: createHash('sha256').update(restoredPath).digest('hex') };
+  const agentRole = route === 'named' ? 'zcode-rescue' : null; const agentType = route === 'named' ? 'zcode-rescue' : 'default';
+  const assignment = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', launcherCommand);
+  const thread = restoredRawCodexChild({ originWorkspace, restoredPath, agentRole });
+  const preparedRoute = { version: 1, action: 'followup', target: restoredPath };
   return {
-    expected: { parentSessionId: parentId, childThreadId: childId, agentPath: restoredPath, originalParentTurnId: 'turn-original',
+    expected: { route, parentSessionId: parentId, childThreadId: childId, agentPath: restoredPath, originalParentTurnId: 'turn-original',
       resumedParentTurnId: 'turn-resumed', originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput: 'fake restored response' },
     parentRolloutJson: JSON.stringify([
       { type: 'session_meta', payload: { id: parentId, session_id: parentId, thread_source: 'user' } },
-      { type: 'response_item', turn_id: 'turn-resumed', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-restored', arguments: JSON.stringify({ target: restoredPath, message: expectedNamedRescueMessage }) } },
+      { type: 'response_item', turn_id: 'turn-resumed', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-restored', arguments: JSON.stringify({ target: restoredPath, message: assignment }) } },
       { type: 'response_item', turn_id: 'turn-resumed', payload: { type: 'function_call_output', call_id: 'followup-restored', output: JSON.stringify({ accepted: true, target: restoredPath }) } },
     ]),
-    hostChildrenJson: JSON.stringify([{ id: childId, parentThreadId: parentId, agentPath: restoredPath, agentRole: 'zcode-rescue', cwd: originWorkspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 }]),
-    executorRecordBytes: JSON.stringify({ kind: 'subagent-executor', agentId: childId, agentType: 'zcode-rescue', parentSessionId: parentId,
+    appServerTranscriptJson: JSON.stringify(restoredAppServerTranscript(thread)),
+    preparedOutput: `${JSON.stringify({ type: 'prepared', command: 'rescue', route: preparedRoute })}\n`,
+    executorRecordBytes: JSON.stringify({ kind: 'subagent-executor', agentId: childId, agentType, parentSessionId: parentId,
       parentTurnId: 'turn-original', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', originWorkspace, workspace: executionWorkspace, active: false, createdAt: '2026-08-10T00:00:00.000Z' }),
     preparationRecordBytes: JSON.stringify({ version: 3, generation: 1, requiredExecutorAgentId: null, activation }),
     childRolloutJson: JSON.stringify([{ type: 'exec', threadId: childId, command: `${launcherCommand} invoke-prepared rescue`, workdir: originWorkspace }, { type: 'result', output: 'fake restored response' }]),
     fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } }, { method: 'session/send', params: { response: 'fake restored response' } }]),
   };
+}
+
+function restoredRawCodexChild({ originWorkspace, restoredPath, agentRole }) {
+  return { id: childId, sessionId: parentId, parentThreadId: parentId, ephemeral: false, preview: '', projectId: null, historyMode: 'legacy',
+    modelProvider: 'openai', createdAt: 1, updatedAt: 2, recencyAt: 2, status: { type: 'notLoaded' }, path: null, cwd: originWorkspace,
+    source: { subAgent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_path: restoredPath, agent_nickname: null, agent_role: agentRole } } },
+    canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole, gitInfo: null, name: null, turns: [] };
+}
+function restoredAppServerTranscript(thread) {
+  return [
+    { direction: 'request', id: 1, method: 'thread/list', params: { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
+    { direction: 'response', id: 1, result: { data: [thread], nextCursor: null, backwardsCursor: null } },
+    { direction: 'request', id: 2, method: 'thread/read', params: { threadId: childId, includeTurns: false } },
+    { direction: 'response', id: 2, result: { thread } },
+  ];
 }
 
 const PREPARATION_READY = `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`;

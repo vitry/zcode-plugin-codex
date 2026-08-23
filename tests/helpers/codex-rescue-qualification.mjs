@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
 import { parseRescueBindingAuthority, parseRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
 import { createRescuePreparationStore, readRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
+import { sanitizeCodexThreadSpawnChild } from '../../scripts/lib/codex-app-server.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { expectedGenericRescueMessage, expectedNamedRescueMessage } from './rescue-skill-contract.mjs';
 
@@ -272,13 +273,13 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
 /** Qualify a resumed parent that lazily reloads one exact persisted Rescue child. */
 export async function qualifyCodexRescueRestoredChildEvidence(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) mismatch('restored-child-contract', 'Restored-child evidence is absent.');
-  const expectedKeys = ['childRolloutJson', 'executorRecordBytes', 'expected', 'fakePeerJson', 'hostChildrenJson', 'parentRolloutJson', 'preparationRecordBytes'];
+  const expectedKeys = ['appServerTranscriptJson', 'childRolloutJson', 'executorRecordBytes', 'expected', 'fakePeerJson', 'parentRolloutJson', 'preparationRecordBytes', 'preparedOutput'];
   if (Object.keys(input).sort().join('\0') !== expectedKeys.sort().join('\0')) mismatch('restored-child-contract', 'Restored-child evidence has an invalid shape.');
   const expected = input.expected;
-  const expectedFields = ['agentPath', 'childThreadId', 'executionWorkspace', 'launcherCommand', 'originalParentTurnId', 'originWorkspace', 'parentSessionId', 'permissionMode', 'publicOutput', 'resumedParentTurnId'];
+  const expectedFields = ['agentPath', 'childThreadId', 'executionWorkspace', 'launcherCommand', 'originalParentTurnId', 'originWorkspace', 'parentSessionId', 'permissionMode', 'publicOutput', 'resumedParentTurnId', 'route'];
   if (!expected || Object.keys(expected).sort().join('\0') !== expectedFields.sort().join('\0')) mismatch('restored-child-contract', 'Restored-child expectations have an invalid shape.');
   const ids = ['parentSessionId', 'childThreadId', 'originalParentTurnId', 'resumedParentTurnId'].map((key) => boundedString(expected[key]));
-  if (ids.some((value) => !value) || expected.originalParentTurnId === expected.resumedParentTurnId
+  if (ids.some((value) => !value) || !['named', 'generic'].includes(expected.route) || expected.originalParentTurnId === expected.resumedParentTurnId
     || !/^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u.test(boundedString(expected.agentPath) ?? '') || !boundedString(expected.launcherCommand)
     || !boundedString(expected.originWorkspace) || !boundedString(expected.executionWorkspace)
     || !boundedString(expected.permissionMode) || !boundedString(expected.publicOutput)) mismatch('restored-child-identity', 'Restored-child identity is invalid.');
@@ -286,7 +287,7 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
     let value; try { value = JSON.parse(text); } catch { mismatch(code, 'Captured evidence is malformed.'); }
     return boundedArray(value, MAX_EVENTS_PER_ROLLOUT, code); };
   const parent = parseArray(input.parentRolloutJson, 'restored-child-parent'); const child = parseArray(input.childRolloutJson, 'restored-child-child');
-  const children = parseArray(input.hostChildrenJson, 'restored-child-host'); const peer = parseArray(input.fakePeerJson, 'restored-child-peer');
+  const transcript = parseArray(input.appServerTranscriptJson, 'restored-child-app-server'); const peer = parseArray(input.fakePeerJson, 'restored-child-peer');
   const calls = namedCalls(parent, 'followup_task'); const spawns = namedCalls(parent, 'spawn_agent');
   const parentFunctions = parent.filter((event) => event?.payload?.type === 'function_call');
   const parentMeta = parent.filter((event) => event?.type === 'session_meta');
@@ -297,15 +298,32 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   }
   const followup = parseObject(calls[0].payload.arguments, 'restored-child-followup');
   assertExactKeys(followup, ['message', 'target'], 'restored-child-followup');
-  if (followup.target !== expected.agentPath || followup.message !== expectedNamedRescueMessage) mismatch('restored-child-followup', 'The parent did not follow up the exact original child path with the fixed assignment.');
+  const expectedAssignment = expected.route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', expected.launcherCommand);
+  if (followup.target !== expected.agentPath || followup.message !== expectedAssignment) mismatch('restored-child-followup', 'The parent did not follow up the exact original child path with its route-specific historical assignment.');
   if (parent.some((event) => JSON.stringify(event).toLowerCase().includes('collision'))) mismatch('restored-child-collision', 'Restored-child evidence contains collision handling.');
-  if (children.length !== 1) mismatch('restored-child-host', 'Host discovery must contain exactly one original child.');
-  const host = children[0];
+  if (transcript.length !== 4) mismatch('restored-child-app-server', 'Installed app-server capture must contain one list and one read request/response pair.');
+  const [listRequest, listResponse, readRequest, readResponse] = transcript;
+  const listParams = { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' };
+  if (!isDeepStrictEqual(listRequest, { direction: 'request', id: 1, method: 'thread/list', params: listParams })
+    || listResponse?.direction !== 'response' || listResponse?.id !== 1 || !Array.isArray(listResponse?.result?.data) || listResponse.result.data.length !== 1
+    || listResponse.result.nextCursor !== null || listResponse.result.backwardsCursor !== null
+    || !isDeepStrictEqual(readRequest, { direction: 'request', id: 2, method: 'thread/read', params: { threadId: expected.childThreadId, includeTurns: false } })
+    || readResponse?.direction !== 'response' || readResponse?.id !== 2 || !readResponse?.result?.thread) mismatch('restored-child-app-server', 'Installed app-server capture is missing or changed its exact list/read protocol.');
+  let host; let reread;
+  try { host = sanitizeCodexThreadSpawnChild(listResponse.result.data[0], expected.parentSessionId); reread = sanitizeCodexThreadSpawnChild(readResponse.result.thread, expected.parentSessionId, expected.childThreadId); }
+  catch { mismatch('restored-child-host', 'Raw installed app-server child metadata is invalid.'); }
+  if (!isDeepStrictEqual(host, reread)) mismatch('restored-child-host', 'List and read captures do not identify the same original child.');
   if (host?.id !== expected.childThreadId || host?.parentThreadId !== expected.parentSessionId || host?.agentPath !== expected.agentPath
     || host?.cwd !== expected.originWorkspace || host?.status?.type !== 'notLoaded') mismatch('restored-child-host', 'Host discovery did not preserve the exact unloaded child identity.');
+  let prepared;
+  if (typeof input.preparedOutput !== 'string' || Buffer.byteLength(input.preparedOutput) > MAX_TEXT_BYTES || !input.preparedOutput.endsWith('\n') || input.preparedOutput.slice(0, -1).includes('\n')) mismatch('restored-child-directive', 'Captured prepared acknowledgement is absent or malformed.');
+  try { prepared = JSON.parse(input.preparedOutput); } catch { mismatch('restored-child-directive', 'Captured prepared acknowledgement is malformed.'); }
+  const exactDirective = { type: 'prepared', command: 'rescue', route: { version: 1, action: 'followup', target: expected.agentPath } };
+  if (!isDeepStrictEqual(prepared, exactDirective) || followup.target !== prepared.route.target) mismatch('restored-child-directive', 'Prepared follow-up directive is not linked to the exact original path and parent action.');
   if ([input.executorRecordBytes, input.preparationRecordBytes].some((bytes) => typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TEXT_BYTES)) mismatch('restored-child-private', 'Private restored-child records are absent or oversized.');
   let executor; let preparation; try { executor = JSON.parse(input.executorRecordBytes); preparation = JSON.parse(input.preparationRecordBytes); } catch { mismatch('restored-child-private', 'Private restored-child records are malformed.'); }
-  if (executor?.agentId !== expected.childThreadId || executor?.parentSessionId !== expected.parentSessionId || executor?.parentTurnId !== expected.originalParentTurnId
+  const expectedAgentType = expected.route === 'named' ? 'zcode-rescue' : 'default'; const expectedRole = expected.route === 'named' ? 'zcode-rescue' : null;
+  if (host.agentRole !== expectedRole || executor?.agentType !== expectedAgentType || executor?.agentId !== expected.childThreadId || executor?.parentSessionId !== expected.parentSessionId || executor?.parentTurnId !== expected.originalParentTurnId
     || executor?.active !== false || executor?.workspace !== expected.executionWorkspace || executor?.originWorkspace !== expected.originWorkspace) mismatch('restored-child-executor', 'Stopped executor provenance does not identify the original child and immutable worktree.');
   const activationKeys = ['agentPathDigest', 'executorAgentId', 'kind'];
   if (preparation?.version !== 3 || preparation?.generation !== 1 || preparation?.requiredExecutorAgentId !== null
@@ -321,7 +339,7 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   if (peer.length !== 2 || peer[0]?.method !== 'session/create' || peer[0]?.params?.workspace?.workspacePath !== expected.executionWorkspace
     || peer[1]?.method !== 'session/send' || peer[1]?.params?.response !== expected.publicOutput) mismatch('restored-child-peer', 'Fake ZCode evidence does not execute in the immutable target worktree.');
   if (expected.originWorkspace !== expected.executionWorkspace) await validateCanonicalGitLineage(expected.originWorkspace, expected.executionWorkspace);
-  return { parentSessionId: expected.parentSessionId, childThreadId: expected.childThreadId, agentPath: expected.agentPath,
+  return { route: expected.route, parentSessionId: expected.parentSessionId, childThreadId: expected.childThreadId, agentPath: expected.agentPath,
     originalParentTurnId: expected.originalParentTurnId, resumedParentTurnId: expected.resumedParentTurnId,
     originWorkspace: expected.originWorkspace, executionWorkspace: expected.executionWorkspace,
     followupCount: 1, spawnCount: 0, childInvocationCount: 1, restoredInitiallyUnloaded: true, collisionCount: 0 };
