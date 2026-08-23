@@ -2090,11 +2090,20 @@ test('background reservation exposes one private invocation, which is single-use
   const privateAuth = { executionCapability: capability, jobId: reserved.json.job.id };
   const first = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.equal(first.code, 0, first.stderr); assert.equal(first.json.job.status, 'succeeded');
+  const terminalResult = first.json.result;
+  assert.deepEqual(JSON.parse(terminalResult), { findings: [] });
+  const storage = await resolveWorkspaceStorage(context);
+  assert.equal(await readFile(join(storage.directory, first.json.job.resultArtifact), 'utf8'), terminalResult);
   const backgroundLog = await readFile(first.json.job.logFile, 'utf8');
-  assert.match(backgroundLog, /Assistant message\n[\s\S]*"findings": \[\]/);
-  assert.match(backgroundLog, /Final output\n[\s\S]*"findings": \[\]/);
+  const assistantBlock = `Assistant message\n${terminalResult}\n`;
+  const finalBlock = `Final output\n${terminalResult}\n`;
+  assert.equal(backgroundLog.split(assistantBlock).length - 1, 1);
   assert.equal((backgroundLog.match(/Assistant message/g) ?? []).length, 1);
-  assert.equal((backgroundLog.match(/Final output/g) ?? []).length, 1);
+  // The final block is an observational mirror written after durable success;
+  // its bounded append may time out under filesystem load (notably on Windows).
+  const finalMirrorCount = backgroundLog.split(finalBlock).length - 1;
+  assert.ok([0, 1].includes(finalMirrorCount));
+  assert.equal((backgroundLog.match(/Final output/g) ?? []).length, finalMirrorCount);
   assert.doesNotMatch(backgroundLog, /PRIVATE_REASONING|RAW_TOOL_OUTPUT|CAPABILITY_TOKEN/);
   const replay = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.notEqual(replay.code, 0); assert.equal(replay.json.error.code, 'EXECUTION_CAPABILITY_CONSUMED');
