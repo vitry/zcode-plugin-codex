@@ -722,7 +722,7 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
     const parentSessionId = '019fe6df-faa2-7851-8edb-55f1be7d5489';
     const installedRoot = join(root, 'marketplace', 'plugins', 'zcode');
     const unrelatedLegacyChild = {
-      id: 'legacy-child', parentThreadId: 'legacy-parent', agentRole: 'default', cwd: workspace,
+      id: 'legacy-child', parentThreadId: null, agentRole: 'default', cwd: workspace,
       createdAt: 1, updatedAt: 2, status: { type: 'notLoaded' },
       source: { subAgent: { thread_spawn: {
         parent_thread_id: 'legacy-parent', depth: 1, agent_path: null, agent_nickname: 'Legacy', agent_role: 'default',
@@ -739,7 +739,7 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
     assert.equal((await hook('user-prompt-hook.mjs', { session_id: parentSessionId, turn_id: 'turn-original', cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue --fresh repair' })).code, 0);
     const prepared = await runRawChild(process.execPath, [join(installedRoot, 'skills', 'rescue', 'launcher.mjs'), 'prepare', 'rescue'], {
       cwd: workspace,
-      env: { ...process.env, ZCODE_DATA_ROOT: dataRoot, CODEX_THREAD_ID: parentSessionId,
+      env: { ...hookEnv, CODEX_THREAD_ID: parentSessionId,
         NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() },
       input: `${JSON.stringify({ version: 1, source: 'explicit', task: 'repair', options: { execution: 'foreground', resume: 'fresh' } })}\n`,
     });

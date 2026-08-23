@@ -75,7 +75,7 @@ function thread(id) {
 
 function unrelatedLegacySpawnChild(workspace) {
   return {
-    id: 'legacy-child', parentThreadId: 'legacy-parent', agentRole: 'default', cwd: workspace,
+    id: 'legacy-child', parentThreadId: null, agentRole: 'default', cwd: workspace,
     createdAt: 1, updatedAt: 2, status: { type: 'notLoaded' },
     source: { subAgent: { thread_spawn: {
       parent_thread_id: 'legacy-parent', depth: 1, agent_path: null, agent_nickname: 'Legacy', agent_role: 'default',

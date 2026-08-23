@@ -104,6 +104,33 @@ test('lists exact-parent persisted spawn children over bounded stable pages and 
   assert.deepEqual(allCalls.filter((call) => call.method === 'thread/read').at(-1).params, { threadId: 'child-1', includeTurns: false });
 });
 
+test('global list ignores only provably foreign legacy rows with an absent top-level parent', async (t) => {
+  const legacy = childThread({
+    id: 'legacy-child', parentThreadId: null, agentRole: 'worker',
+    source: { subAgent: { thread_spawn: {
+      parent_thread_id: 'legacy-parent', depth: 1, agent_path: null, agent_nickname: 'Legacy', agent_role: 'worker',
+    } } },
+  });
+  const list = async (/** @type {any} */ thread) => {
+    const { options } = await appOptions({
+      FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [thread], nextCursor: null, backwardsCursor: null }),
+    });
+    return listCodexThreadSpawnChildren('parent-1', options);
+  };
+  assert.deepEqual(await list(legacy), []);
+  const rejected = /** @type {[string,(thread:any)=>void][]} */ ([
+    ['missing top parent', (thread) => { delete thread.parentThreadId; }],
+    ['non-string top parent', (thread) => { thread.parentThreadId = 7; }],
+    ['unsafe top parent', (thread) => { thread.parentThreadId = 'legacy-parent\n'; }],
+    ['contradictory top parent', (thread) => { thread.parentThreadId = 'other-parent'; }],
+    ['requested nested parent', (thread) => { thread.source.subAgent.thread_spawn.parent_thread_id = 'parent-1'; }],
+  ]);
+  for (const [name, mutate] of rejected) await t.test(name, async () => {
+    const thread = structuredClone(legacy); mutate(thread);
+    await assert.rejects(list(thread), { code: 'CODEX_CHILD_METADATA_INVALID' });
+  });
+});
+
 test('shared SpawnChild sanitizer accepts raw and sanitized snapshots with defensive status cloning', () => {
   const raw = childThread({ status: { type: 'active', activeFlags: ['waitingOnApproval'] } });
   const first = sanitizeCodexThreadSpawnChild(raw, 'parent-1', 'child-1');
