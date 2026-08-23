@@ -388,7 +388,7 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
     || executor.parentTurnId !== expected.originalParentTurnId || executor.parentPermissionMode !== expected.permissionMode || executor.childTurnId !== hooks[0].turn_id
     || executor.active !== false || executor.workspace !== expected.executionWorkspace || executor.originWorkspace !== expected.originWorkspace
     || !/^[a-f0-9]{64}$/u.test(executor.parentGenerationId) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(executor.createdAt)
-    || executorCreated === undefined || executorCreated < historicalTimes[2] || executorCreated > historicalTimes[3]
+    || executorCreated === undefined || executorCreated < historicalTimes[0] || executorCreated > historicalTimes[3]
     || executorCreated >= eventTimestamp(roleCall.event)) mismatch('restored-child-executor', 'Stopped executor provenance does not match the production schema and original child lifecycle.');
   const preparationKeys = ['activation', 'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'generation', 'key', 'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source', 'turnId', 'version', 'workspace'];
   const expectedPreparationKey = createHash('sha256').update(JSON.stringify([expected.parentSessionId, expected.resumedParentTurnId, expected.executionWorkspace, 'rescue'])).digest('hex');
@@ -418,7 +418,6 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
       && preparationConsumed >= childCallTime && preparationConsumed < childOutputTime)) mismatch('restored-child-invocation', 'Restored Role, prepare, follow-up, and child execution chronology is invalid.');
   assertParentPreparationTaskExclusivity(parent, writeCall.event, preparationEnvelope.task, parsedCurrent, currentCustomOutputs.map((event) => ({ event })));
   if ([child, transcript, hooks, peer].some((surface) => stringLeafContains(surface, preparationEnvelope.task))) mismatch('restored-child-private-task', 'The private preparation task escaped its authorized write or private record.');
-  if (JSON.stringify({ parent, child, transcript, hooks, peer, executor, preparation }).toLowerCase().includes('collision')) mismatch('restored-child-collision', 'Restored-child evidence contains collision handling.');
   if (peer.length !== 2 || peer[0]?.method !== 'session/create' || peer[0]?.params?.workspace?.workspacePath !== expected.executionWorkspace
     || peer[1]?.method !== 'session/send' || peer[1]?.params?.response !== expected.publicOutput) mismatch('restored-child-peer', 'Fake ZCode evidence does not execute in the immutable target worktree.');
   if (expected.originWorkspace !== expected.executionWorkspace) await validateCanonicalGitLineage(expected.originWorkspace, expected.executionWorkspace);

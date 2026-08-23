@@ -596,7 +596,7 @@ test('captured restored-child qualification reactivates the unloaded original pa
   await git(['worktree', 'add', '-qb', 'e2e-restored-target', targetDirectory], originDirectory);
   const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(targetDirectory);
   const parentSessionId = 'restored-parent'; const childThreadId = 'restored-child'; const agentPath = '/root/zcode_rescue_task';
-  const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs"'; const publicOutput = 'fake restored e2e response';
+  const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs"'; const publicOutput = 'fake restored e2e response: agent path collision diagnosed';
   for (const route of ['named', 'generic']) {
     const expected = { parentSessionId, childThreadId, agentPath, originalParentTurnId: 'old-turn', resumedParentTurnId: 'new-turn',
       originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput };
@@ -605,7 +605,7 @@ test('captured restored-child qualification reactivates the unloaded original pa
     const thread = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath, cwd: originWorkspace, agentRole });
     const routeDirective = { version: 1, action: 'followup', target: agentPath };
     const childTurnId = `restored-${route}-child-turn-7`;
-    const preparationEnvelope = { version: 1, source: 'proactive', task: `private restored ${route} e2e task`, options: { execution: 'foreground', resume: 'resume' } };
+    const preparationEnvelope = { version: 1, source: 'proactive', task: `diagnose the agent path collision in restored ${route} e2e`, options: { execution: 'foreground', resume: 'resume' } };
     const spawnArgs = { fork_turns: 'none', task_name: 'zcode_rescue_task', message: assignment, ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) };
     const preparationRecord = { version: 3, key: createHash('sha256').update(JSON.stringify([parentSessionId, 'new-turn', executionWorkspace, 'rescue'])).digest('hex'),
       sessionId: parentSessionId, turnId: 'new-turn', workspace: executionWorkspace, permissionMode: 'acceptEdits', source: 'proactive', envelope: preparationEnvelope,

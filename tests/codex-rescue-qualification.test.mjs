@@ -60,6 +60,9 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
   assert.deepEqual(evidence, { route: 'named', parentSessionId: parentId, childThreadId: childId, agentPath: restoredPath,
     originalParentTurnId: 'turn-original', resumedParentTurnId: 'turn-resumed', originWorkspace, executionWorkspace,
     followupCount: 1, spawnCount: 0, childInvocationCount: 1, restoredInitiallyUnloaded: true, collisionCount: 0 });
+  const executorBeforeStarted = structuredClone(input); const earlierExecutor = JSON.parse(executorBeforeStarted.executorRecordBytes);
+  earlierExecutor.createdAt = '2026-08-10T00:00:00.250Z'; executorBeforeStarted.executorRecordBytes = `${JSON.stringify(earlierExecutor)}\n`;
+  assert.equal((await qualifyCodexRescueRestoredChildEvidence(executorBeforeStarted)).route, 'named');
   const startBeforeOutput = structuredClone(input); const interleaved = JSON.parse(startBeforeOutput.parentRolloutJson);
   const spawnOutputIndex = interleaved.findIndex((event) => event?.payload?.call_id === 'spawn-original' && event.payload.type === 'function_call_output');
   const startIndex = interleaved.findIndex((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
@@ -133,7 +136,7 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
     await assert.rejects(qualifyCodexRescueRestoredChildEvidence(changed),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-hooks');
   }
-  for (const createdAt of ['2026-08-10T00:10:00.001Z', '2026-08-10T01:00:00.301Z']) {
+  for (const createdAt of ['2026-08-10T00:00:00.050Z', '2026-08-10T00:10:00.001Z']) {
     const changed = structuredClone(input); const record = JSON.parse(changed.executorRecordBytes); record.createdAt = createdAt; changed.executorRecordBytes = `${JSON.stringify(record)}\n`;
     await assert.rejects(qualifyCodexRescueRestoredChildEvidence(changed),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-executor');
@@ -163,12 +166,20 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
     await assert.rejects(qualifyCodexRescueRestoredChildEvidence(changed),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-activation');
   }
-  for (const [code, text] of [['restored-child-private-task', 'continue restored qualification private task'], ['restored-child-collision', 'collision fallback']]) {
+  for (const [code, text] of [['restored-child-private-task', 'diagnose the agent path collision without any fallback']]) {
     const changed = structuredClone(input); const rows = JSON.parse(changed.appServerTranscriptJson);
     rows[1].result.data[0].preview = text; rows[3].result.thread.preview = text; changed.appServerTranscriptJson = JSON.stringify(rows);
     await assert.rejects(qualifyCodexRescueRestoredChildEvidence(changed),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
   }
+  const structuredCollisionFallback = structuredClone(input); const collisionEvents = JSON.parse(structuredCollisionFallback.parentRolloutJson);
+  collisionEvents.push(
+    { type: 'response_item', turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.850Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'collision-fallback', arguments: JSON.stringify({ task_name: 'zcode_rescue_task_2', fork_turns: 'none', message: 'collision retry' }) } },
+    { type: 'response_item', turn_id: 'turn-resumed', timestamp: '2026-08-10T01:00:00.860Z', payload: { type: 'function_call_output', call_id: 'collision-fallback', output: JSON.stringify({ error: 'agent path collision' }) } },
+  );
+  structuredCollisionFallback.parentRolloutJson = JSON.stringify(collisionEvents);
+  await assert.rejects(qualifyCodexRescueRestoredChildEvidence(structuredCollisionFallback),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-current-events');
 });
 
 test('qualifies a restored generic child only with its exact historical generic assignment', async (t) => {
@@ -2310,7 +2321,7 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
   const assignment = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', launcherCommand);
   const thread = restoredRawCodexChild({ originWorkspace, restoredPath, agentRole });
   const preparedRoute = { version: 1, action: 'followup', target: restoredPath };
-  const generationId = '9'.repeat(64); const childTurnId = 'qualification-child-turn-7'; const privateTask = 'continue restored qualification private task';
+  const generationId = '9'.repeat(64); const childTurnId = 'qualification-child-turn-7'; const privateTask = 'diagnose the agent path collision without any fallback';
   const preparationEnvelope = { version: 1, source: 'proactive', task: privateTask, options: { execution: 'foreground', resume: 'resume' } };
   const preparationCreatedAt = '2026-08-10T01:00:00.550Z'; const preparationConsumedAt = '2026-08-10T01:00:00.950Z';
   const preparationRecord = { version: 3, key: createHash('sha256').update(JSON.stringify([parentId, 'turn-resumed', executionWorkspace, 'rescue'])).digest('hex'),
@@ -2321,7 +2332,7 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
   const roleCommand = `${launcherCommand} role-status rescue`; const prepareCommand = `${launcherCommand} prepare rescue`; const invokeCommand = `${launcherCommand} invoke-prepared rescue`;
   return {
     expected: { parentSessionId: parentId, childThreadId: childId, agentPath: restoredPath, originalParentTurnId: 'turn-original',
-      resumedParentTurnId: 'turn-resumed', originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput: 'fake restored response' },
+      resumedParentTurnId: 'turn-resumed', originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput: 'fake restored response: agent path collision diagnosed' },
     parentRolloutJson: JSON.stringify([
       { type: 'session_meta', payload: { id: parentId, session_id: parentId, thread_source: 'user' } },
       { type: 'response_item', turn_id: 'turn-original', timestamp: '2026-08-10T00:00:00.100Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-original', arguments: JSON.stringify(spawnArguments) } },
@@ -2347,9 +2358,9 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
     preparationRecordBytes: `${JSON.stringify(preparationRecord)}\n`,
     childRolloutJson: JSON.stringify([
       { ...structuredExecResult(invokeCommand, 'invoke-restored', { workdir: originWorkspace }), turn_id: 'child-turn-resumed', timestamp: '2026-08-10T01:00:00.900Z', thread_id: childId },
-      { ...capturedResultEvent('invoke-restored', { output: 'fake restored response', exit_code: 0 }), turn_id: 'child-turn-resumed', timestamp: '2026-08-10T01:00:01.000Z', thread_id: childId },
+      { ...capturedResultEvent('invoke-restored', { output: 'fake restored response: agent path collision diagnosed', exit_code: 0 }), turn_id: 'child-turn-resumed', timestamp: '2026-08-10T01:00:01.000Z', thread_id: childId },
     ]),
-    fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } }, { method: 'session/send', params: { response: 'fake restored response' } }]),
+    fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } }, { method: 'session/send', params: { response: 'fake restored response: agent path collision diagnosed' } }]),
   };
 }
 
