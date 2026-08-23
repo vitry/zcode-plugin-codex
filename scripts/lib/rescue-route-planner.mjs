@@ -88,10 +88,10 @@ export async function planRescueActivation(input) {
       if (unboundLegacy.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
       selected = unboundLegacy[0] ?? null;
     }
-  } else if (legacyCandidates.filter((candidate) => candidate.binding !== null).length > 1) {
-    throw plannerError('RESCUE_CHILD_AMBIGUOUS');
   } else if (provenCandidates.length > 0) {
     selected = preferredCandidate(provenCandidates);
+  } else if (legacyCandidates.filter((candidate) => candidate.binding !== null).length > 1) {
+    throw plannerError('RESCUE_CHILD_AMBIGUOUS');
   } else if (legacyCandidates.length > 0) {
     selected = preferredCandidate(legacyCandidates);
   }

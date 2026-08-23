@@ -296,6 +296,25 @@ test('fresh planning rejects multiple exact adoption bindings as ambiguous', asy
   await assert.rejects(planRescueActivation({ ...input, ...adapters([base, ordinal], new Map(), bindings) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
 });
 
+test('fresh proven executor candidate outranks multiple legacy adoption bindings', async () => {
+  const input = await context();
+  const proved = child(input.caller.workspace, { id: 'proved', agentPath: '/root/zcode_rescue_task_3', createdAt: 50 });
+  const legacyBase = child(input.caller.workspace, { id: 'legacy-base', createdAt: 300 });
+  const legacyOrdinal = child(input.caller.workspace, { id: 'legacy-ordinal', agentPath: '/root/zcode_rescue_task_2', createdAt: 200 });
+  const executors = new Map([
+    [proved.id, { executor: executor(input.caller.workspace, { agentId: proved.id }), executionWorkspace: input.caller.workspace }],
+  ]);
+  const bindings = new Map([
+    [legacyBase.id, { kind: 'bound', binding: adoptionBinding(input, legacyBase) }],
+    [legacyOrdinal.id, { kind: 'bound', binding: adoptionBinding(input, legacyOrdinal) }],
+  ]);
+  const planned = await planRescueActivation({ ...input, ...adapters([legacyBase, legacyOrdinal, proved], executors, bindings) });
+  assert.deepEqual(planned, {
+    activation: { kind: 'reactivate', executorAgentId: proved.id, agentPathDigest: digest(proved.agentPath) },
+    directive: { version: 2, action: 'followup', target: proved.agentPath, assignment: 'zcode-rescue' },
+  });
+});
+
 test('wrong parent, permission, or immutable workspace rejects without public metadata', async (t) => {
   const input = await context(); const secrets = ['child-secret', '/root/private_path', input.caller.workspace, 'secret-role'];
   const cases = [
