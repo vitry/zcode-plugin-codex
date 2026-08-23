@@ -14,6 +14,8 @@ const moduleRoot = fileURLToPath(new URL('..', import.meta.url));
 const MAX_MARKETPLACE_CONTENT_FILES = 4096;
 const MAX_MARKETPLACE_CONTENT_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_MARKETPLACE_CONTENT_BYTES = 512 * 1024 * 1024;
+const MAX_MARKETPLACE_CONTENT_PATH_BYTES = 4096;
+const MARKETPLACE_PROVENANCE_PATH = '.agents/plugins/provenance.json';
 
 export const REQUIRED_RESCUE_PAYLOAD = Object.freeze([
   'agents/zcode-rescue.toml.template',
@@ -85,18 +87,21 @@ export function validateResolvedSource(input) {
  * @param {string} snapshotRoot
  */
 export async function createMarketplaceContentManifest(snapshotRoot) {
+  const rootMetadata = await lstat(snapshotRoot);
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) throw new Error('Marketplace content manifest accepts only a real snapshot root.');
   const root = await realpath(snapshotRoot);
   /** @type {{path:string,size:number,sha256:string}[]} */
   const files = [];
   let totalBytes = 0;
-  /** @param {string} absolutePath @param {string} relativePath */
-  const addFile = async (absolutePath, relativePath) => {
-    const metadata = await lstat(absolutePath);
+  /** @param {string} absolutePath @param {string} relativePath @param {import('node:fs').Stats} metadata */
+  const addFile = async (absolutePath, relativePath, metadata) => {
     if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_MARKETPLACE_CONTENT_FILE_BYTES) throw new Error('Marketplace content manifest accepts only bounded regular files.');
+    const manifestPath = relativePath.split(sep).join('/');
+    if (!manifestPath || isAbsolute(manifestPath) || Buffer.byteLength(manifestPath) > MAX_MARKETPLACE_CONTENT_PATH_BYTES) throw new Error('Marketplace content manifest contains an unsafe path.');
     totalBytes += metadata.size;
     if (files.length >= MAX_MARKETPLACE_CONTENT_FILES || totalBytes > MAX_MARKETPLACE_CONTENT_BYTES) throw new Error('Marketplace content manifest exceeds its bounded payload.');
     const bytes = await readFile(absolutePath);
-    files.push({ path: relativePath.split(sep).join('/'), size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
+    files.push({ path: manifestPath, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
   };
   /** @param {string} absoluteDirectory @param {string} relativeDirectory */
   const walk = async (absoluteDirectory, relativeDirectory) => {
@@ -107,13 +112,16 @@ export async function createMarketplaceContentManifest(snapshotRoot) {
       const absolutePath = join(absoluteDirectory, name);
       const relativePath = join(relativeDirectory, name);
       const entry = await lstat(absolutePath);
-      if (entry.isDirectory() && !entry.isSymbolicLink()) await walk(absolutePath, relativePath);
-      else await addFile(absolutePath, relativePath);
+      const manifestPath = relativePath.split(sep).join('/');
+      if (entry.isSymbolicLink()) throw new Error('Marketplace content manifest accepts only real directories and bounded regular files.');
+      if (manifestPath === MARKETPLACE_PROVENANCE_PATH) {
+        if (!entry.isFile()) throw new Error('Marketplace provenance must be a regular file.');
+      } else if (entry.isDirectory()) await walk(absolutePath, relativePath);
+      else await addFile(absolutePath, relativePath, entry);
     }
   };
-  await addFile(join(root, '.agents', 'plugins', 'marketplace.json'), join('.agents', 'plugins', 'marketplace.json'));
-  await walk(join(root, 'plugins'), 'plugins');
-  files.sort((left, right) => left.path.localeCompare(right.path));
+  await walk(root, '');
+  files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
   return {
     algorithm: 'sha256',
     sha256: createHash('sha256').update(JSON.stringify(files)).digest('hex'),
