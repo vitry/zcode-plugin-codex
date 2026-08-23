@@ -71,14 +71,53 @@ test('initializes before reading a full thread and ignores unrelated frames', as
   assert.deepEqual(calls[2], { id: 2, method: 'thread/read', params: { threadId: 'thread-1', includeTurns: true } });
 });
 
-test('lists exact-parent persisted spawn children over bounded stable pages and rereads one child', async () => {
-  const foreign = childThread({
-    id: 'foreign-child', sessionId: 'parent-2', parentThreadId: 'parent-2',
-    source: { subAgent: { thread_spawn: { parent_thread_id: 'parent-2', depth: 1, agent_path: '/root/foreign', agent_nickname: null, agent_role: 'default' } } },
+test('empty-preview exact-parent discovery uses relationship semantics', async () => {
+  const emptyPreviewChild = childThread();
+  const visibleForeignChild = childThread({
+    id: 'foreign-child', sessionId: 'parent-2', parentThreadId: 'parent-2', preview: 'visible globally',
+    source: { subAgent: { thread_spawn: {
+      parent_thread_id: 'parent-2', depth: 1, agent_path: '/root/foreign', agent_nickname: null, agent_role: 'default',
+    } } },
     agentRole: 'default',
   });
+  const { options, record } = await appOptions({
+    FAKE_CODEX_USER_AGENT: 'zcode-plugin-codex/0.147.0 (fake)',
+    FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: JSON.stringify([emptyPreviewChild, visibleForeignChild]),
+  });
+
+  const children = await listCodexThreadSpawnChildren('parent-1', options);
+
+  assert.equal(children.length, 1);
+  assert.equal(children[0].agentPath, '/root/zcode_rescue_task');
+  const calls = await recordedCalls(record);
+  assert.deepEqual(calls.find((call) => call.method === 'initialize').params.capabilities, { experimentalApi: true });
+  assert.equal(calls.find((call) => call.method === 'thread/list').params.parentThreadId, 'parent-1');
+});
+
+test('exact-parent discovery supports 0.149 and rejects silent-ignore app-server versions', async (t) => {
+  const graph = JSON.stringify([childThread()]);
+  await t.test('0.149 supported', async () => {
+    const { options } = await appOptions({
+      FAKE_CODEX_USER_AGENT: 'zcode-plugin-codex/0.149.0 (fake)',
+      FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: graph,
+    });
+    assert.equal((await listCodexThreadSpawnChildren('parent-1', options)).length, 1);
+  });
+  for (const [name, userAgent] of [['0.117 silent ignore', 'zcode-plugin-codex/0.117.0 (fake)'], ['unparseable', 'fake-codex']]) {
+    await t.test(name, async () => {
+      const { options, record } = await appOptions({
+        FAKE_CODEX_USER_AGENT: userAgent,
+        FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: graph,
+      });
+      await assert.rejects(listCodexThreadSpawnChildren('parent-1', options), { code: 'CODEX_THREAD_LIST_FAILED' });
+      assert.equal((await recordedCalls(record)).some((call) => call.method === 'thread/list'), false);
+    });
+  }
+});
+
+test('lists exact-parent persisted spawn children over bounded stable pages and rereads one child', async () => {
   const pages = [
-    { data: [foreign], nextCursor: 'page-2', backwardsCursor: 'ignored' },
+    { data: [], nextCursor: 'page-2', backwardsCursor: 'ignored' },
     { data: [childThread()], nextCursor: null, backwardsCursor: 'ignored-too' },
   ];
   const { options, record } = await appOptions({
@@ -94,18 +133,19 @@ test('lists exact-parent persisted spawn children over bounded stable pages and 
   const calls = await recordedCalls(record);
   const lists = calls.filter((call) => call.method === 'thread/list');
   assert.deepEqual(lists.map((call) => call.params), [
-    { sourceKinds: ['subAgentThreadSpawn'], limit: 50, sortKey: 'created_at', sortDirection: 'desc' },
-    { sourceKinds: ['subAgentThreadSpawn'], limit: 50, sortKey: 'created_at', sortDirection: 'desc', cursor: 'page-2' },
+    { parentThreadId: 'parent-1', sourceKinds: ['subAgentThreadSpawn'], limit: 50, sortKey: 'created_at', sortDirection: 'desc' },
+    { parentThreadId: 'parent-1', sourceKinds: ['subAgentThreadSpawn'], limit: 50, sortKey: 'created_at', sortDirection: 'desc', cursor: 'page-2' },
   ]);
-  assert.equal(calls.some((call) => Object.hasOwn(call.params ?? {}, 'parentThreadId')), false);
+  assert.deepEqual(calls.find((call) => call.method === 'initialize').params.capabilities, { experimentalApi: true });
 
   const reread = await readCodexThreadSpawnChild('child-1', 'parent-1', options);
   assert.deepEqual(reread, children[0]);
   const allCalls = await recordedCalls(record);
   assert.deepEqual(allCalls.filter((call) => call.method === 'thread/read').at(-1).params, { threadId: 'child-1', includeTurns: false });
+  assert.equal(allCalls.filter((call) => call.method === 'initialize').at(-1).params.capabilities, null);
 });
 
-test('global list ignores only provably foreign legacy rows with an absent top-level parent', async (t) => {
+test('exact-parent list rejects every foreign or incomplete row', async (t) => {
   const legacy = childThread({
     id: 'legacy-child', parentThreadId: null, agentRole: 'worker',
     source: { subAgent: { thread_spawn: {
@@ -118,8 +158,8 @@ test('global list ignores only provably foreign legacy rows with an absent top-l
     });
     return listCodexThreadSpawnChildren('parent-1', options);
   };
-  assert.deepEqual(await list(legacy), []);
   const rejected = /** @type {[string,(thread:any)=>void][]} */ ([
+    ['foreign legacy row', () => {}],
     ['missing top parent', (thread) => { delete thread.parentThreadId; }],
     ['non-string top parent', (thread) => { thread.parentThreadId = 7; }],
     ['unsafe top parent', (thread) => { thread.parentThreadId = 'legacy-parent\n'; }],
@@ -227,12 +267,11 @@ test('rejects duplicate child IDs and paths', async (t) => {
   const duplicateCases = [
     ['id', [{ data: [childThread(), childThread({ cwd: '/other' })], nextCursor: null, backwardsCursor: null }]],
     ['path', [{ data: [childThread(), childThread({ id: 'child-2' })], nextCursor: null, backwardsCursor: null }]],
-    ['cross-page cross-parent id', [
-      { data: [childThread({
-        parentThreadId: 'parent-2', agentRole: 'default',
-        source: { subAgent: { thread_spawn: { parent_thread_id: 'parent-2', depth: 1, agent_path: '/root/foreign', agent_nickname: null, agent_role: 'default' } } },
-      })], nextCursor: 'page-2', backwardsCursor: null },
-      { data: [childThread()], nextCursor: null, backwardsCursor: null },
+    ['cross-page id', [
+      { data: [childThread()], nextCursor: 'page-2', backwardsCursor: null },
+      { data: [childThread({ cwd: '/other', source: { subAgent: { thread_spawn: {
+        parent_thread_id: 'parent-1', depth: 1, agent_path: '/root/task_2', agent_nickname: null, agent_role: 'zcode-rescue',
+      } } } })], nextCursor: null, backwardsCursor: null },
     ]],
   ];
   for (const [name, pages] of duplicateCases) await t.test(name, async () => {
@@ -289,6 +328,7 @@ test('list and sanitized read reject malformed, remote error, timeout, disconnec
   const cases = [
     ['malformed list', 'list', { FAKE_CODEX_MALFORMED: 'thread/list' }, {}, 'CODEX_APP_SERVER_MALFORMED'],
     ['remote list error', 'list', { FAKE_CODEX_ERROR: 'thread/list', FAKE_CODEX_STDERR_TEXT: ' token=super-secret ', FAKE_CODEX_STDERR_BYTES: '2000' }, { maxStderrBytes: 256 }, 'CODEX_THREAD_LIST_FAILED'],
+    ['unsupported list initialization', 'list', { FAKE_CODEX_ERROR: 'initialize' }, {}, 'CODEX_APP_SERVER_INITIALIZE_FAILED'],
     ['list timeout', 'list', { FAKE_CODEX_HANG: 'thread/list' }, { timeoutMs: 50 }, 'CODEX_APP_SERVER_TIMEOUT'],
     ['list disconnect', 'list', { FAKE_CODEX_DISCONNECT: 'thread/list' }, {}, 'CODEX_APP_SERVER_DISCONNECTED'],
     ['wrong read identity', 'read', { FAKE_CODEX_THREAD_JSON: JSON.stringify(childThread({ id: 'secret-child-id' })) }, {}, 'CODEX_CHILD_METADATA_INVALID'],

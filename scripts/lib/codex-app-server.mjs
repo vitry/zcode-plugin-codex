@@ -16,10 +16,12 @@ const MAX_CURSOR_BYTES = 4096;
 const MAX_AGENT_PATH_BYTES = 1024;
 const MAX_CWD_BYTES = 4096;
 const MAX_ROLE_BYTES = 256;
+const MAX_USER_AGENT_BYTES = 4096;
 const SHUTDOWN_GRACE_MS = 1_000;
 const MAX_VALUE_DEPTH = 128;
 const MAX_VALUE_NODES = 100_000;
 const INITIALIZE_PARAMS = { clientInfo: { name: 'zcode-plugin-codex', title: 'ZCode plugin for Codex', version: '0.1.0' }, capabilities: null };
+const LIST_INITIALIZE_PARAMS = { clientInfo: INITIALIZE_PARAMS.clientInfo, capabilities: { experimentalApi: true } };
 
 /** @typedef {{executable?:string,args?:string[],cwd?:string,env?:NodeJS.ProcessEnv,timeoutMs?:number,maxLineBytes?:number,maxOutputBytes?:number,maxStderrBytes?:number,spawn?:(command:string,args:string[],options:any)=>any,pageSize?:number,maxPages?:number,maxItems?:number,signal?:AbortSignal}} AppServerOptions */
 /** @typedef {{id:string,parentThreadId:string,agentPath:string,agentRole:string|null,cwd:string,status:Record<string,unknown>,createdAt:number,updatedAt:number}} SpawnChild */
@@ -42,30 +44,22 @@ export async function listCodexThreadSpawnChildren(parentThreadId, options = {})
   const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
   const maxItems = options.maxItems ?? DEFAULT_MAX_ITEMS;
   if (!boundedPositive(pageSize, 100) || !boundedPositive(maxPages, 32) || !boundedPositive(maxItems, 1024)) throw inputError();
-  return withAppServer(options, async (request, notify) => {
+  return withAppServer(options, async (request, notify, initializeResult) => {
     notify({ method: 'initialized', params: {} });
+    if (!supportsExactParentList(initializeResult)) throw remoteRequestError('thread/list');
     /** @type {SpawnChild[]} */ const children = [];
     const ids = new Set(); const paths = new Set(); const cursors = new Set();
     /** @type {string|null} */ let cursor = null; let itemCount = 0;
     for (let page = 0; page < maxPages; page += 1) {
-      const result = await request('thread/list', { sourceKinds: ['subAgentThreadSpawn'], limit: pageSize, sortKey: 'created_at', sortDirection: 'desc', ...(cursor === null ? {} : { cursor }) });
+      const result = await request('thread/list', { parentThreadId, sourceKinds: ['subAgentThreadSpawn'], limit: pageSize, sortKey: 'created_at', sortDirection: 'desc', ...(cursor === null ? {} : { cursor }) });
       if (!safePlainValue(result) || !Array.isArray(result.data) || !Object.hasOwn(result, 'nextCursor') || !Object.hasOwn(result, 'backwardsCursor')
         || result.backwardsCursor !== null && !validBoundedString(result.backwardsCursor, MAX_CURSOR_BYTES)) throw listInvalid();
       itemCount += result.data.length;
       if (itemCount > maxItems) throw listLimit();
       for (const thread of result.data) {
-        if (isDefinitelyForeignThreadSpawnChild(thread, parentThreadId)) {
-          const foreignId = thread.id;
-          if (validBoundedString(foreignId, CODEX_THREAD_ID_MAX_BYTES)) {
-            if (ids.has(foreignId)) throw metadataInvalid();
-            ids.add(foreignId);
-          }
-          continue;
-        }
-        const child = validateRawThreadSpawnChild(thread);
+        const child = validateRawThreadSpawnChild(thread, parentThreadId);
         if (ids.has(child.id)) throw metadataInvalid();
         ids.add(child.id);
-        if (child.parentThreadId !== parentThreadId) continue;
         if (paths.has(child.agentPath)) throw metadataInvalid();
         paths.add(child.agentPath); children.push(child);
       }
@@ -75,21 +69,7 @@ export async function listCodexThreadSpawnChildren(parentThreadId, options = {})
       cursors.add(result.nextCursor); cursor = result.nextCursor;
     }
     throw listLimit();
-  });
-}
-
-/**
- * The app-server list is global. Ignore a legacy or future-schema row before full
- * validation only when both independent parent fields safely agree it is foreign.
- * @param {unknown} thread @param {string} expectedParentId
- */
-function isDefinitelyForeignThreadSpawnChild(thread, expectedParentId) {
-  if (!plainObject(thread)) return false;
-  const source = thread.source; const subAgent = plainObject(source) ? source.subAgent : null;
-  const spawn = plainObject(subAgent) ? subAgent.thread_spawn : null;
-  const parentThreadId = thread.parentThreadId; const nestedParentId = plainObject(spawn) ? spawn.parent_thread_id : null;
-  return validBoundedString(nestedParentId, CODEX_THREAD_ID_MAX_BYTES) && nestedParentId !== expectedParentId
-    && (parentThreadId === null || validBoundedString(parentThreadId, CODEX_THREAD_ID_MAX_BYTES) && parentThreadId === nestedParentId);
+  }, false, LIST_INITIALIZE_PARAMS);
 }
 
 /** @param {string} threadId @param {string} parentThreadId @param {AppServerOptions} [options] */
@@ -103,8 +83,8 @@ export async function readCodexThreadSpawnChild(threadId, parentThreadId, option
   });
 }
 
-/** @template T @param {AppServerOptions} options @param {(request:(method:string,params:Record<string,unknown>)=>Promise<Record<string,any>>,notify:(value:unknown)=>void)=>Promise<T>} work @param {boolean} [rawReadDiagnostics] @returns {Promise<T>} */
-async function withAppServer(options, work, rawReadDiagnostics = false) {
+/** @template T @param {AppServerOptions} options @param {(request:(method:string,params:Record<string,unknown>)=>Promise<Record<string,any>>,notify:(value:unknown)=>void,initializeResult:Record<string,any>)=>Promise<T>} work @param {boolean} [rawReadDiagnostics] @param {Record<string,unknown>} [initializeParams] @returns {Promise<T>} */
+async function withAppServer(options, work, rawReadDiagnostics = false, initializeParams = INITIALIZE_PARAMS) {
   if (options.signal?.aborted) throw interruptionError(options.signal.reason);
   const executable = options.executable ?? 'codex'; const args = options.args ?? ['app-server'];
   const timeoutMs = options.timeoutMs ?? CODEX_APP_SERVER_DEFAULT_TIMEOUT_MS;
@@ -178,7 +158,7 @@ async function withAppServer(options, work, rawReadDiagnostics = false) {
     try { writeFrame(child, value, maxLineBytes); }
     catch (cause) { throw attachDetails(protocolError('CODEX_APP_SERVER_WRITE_FAILED', 'Could not write to Codex app-server.', cause), detail()); }
   };
-  try { await request('initialize', INITIALIZE_PARAMS); return await work(request, notify); }
+  try { const initializeResult = await request('initialize', initializeParams); return await work(request, notify, initializeResult); }
   finally {
     clearTimeout(timer); options.signal?.removeEventListener('abort', onAbort); await terminate(child);
     child.stdout?.off('data', onStdoutData); child.stderr?.off('data', onStderrData);
@@ -192,6 +172,17 @@ function remoteRequestError(method) {
   if (method === 'initialize') return new PluginError('CODEX_APP_SERVER_INITIALIZE_FAILED', 'Codex app-server initialization failed.', { category: 'protocol', remedy: 'Upgrade or restart Codex and retry.' });
   if (method === 'thread/list') return new PluginError('CODEX_THREAD_LIST_FAILED', 'Codex could not list persisted threads.', { category: 'configuration', remedy: 'Confirm this Codex version supports stable thread listing.' });
   return new PluginError('CODEX_THREAD_READ_FAILED', 'Codex could not read the requested thread.', { category: 'configuration', remedy: 'Confirm the Codex thread ID is persisted and accessible from this Codex home.' });
+}
+
+/** Codex versions before 0.141 silently ignore thread/list.parentThreadId. @param {Record<string,any>} result */
+function supportsExactParentList(result) {
+  const userAgent = result.userAgent;
+  if (!validBoundedString(userAgent, MAX_USER_AGENT_BYTES)) return false;
+  const match = /^zcode-plugin-codex\/(\d{1,4})\.(\d{1,4})\.(\d{1,4})(?:[ -][^\r\n]*)?$/.exec(userAgent);
+  if (!match) return false;
+  const major = Number(match[1]); const minor = Number(match[2]); const patch = Number(match[3]);
+  return Number.isSafeInteger(major) && Number.isSafeInteger(minor) && Number.isSafeInteger(patch)
+    && (major > 0 || minor >= 141);
 }
 
 /** Sanitize one raw or already-sanitized Codex thread-spawn child snapshot. @param {unknown} thread @param {string} [expectedParentId] @param {string} [expectedChildId] @returns {SpawnChild} */

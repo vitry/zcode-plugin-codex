@@ -70,7 +70,7 @@ async function handleLine(line) {
   if (process.env.FAKE_CODEX_AMBIGUOUS === request.method) { write({ id: request.id, result: {}, error: { code: -32001, message: 'ambiguous' } }); return; }
   if (process.env.FAKE_CODEX_DISCONNECT === request.method) { clearInterval(keepAlive); process.exit(1); }
   if (request.method === 'initialize') {
-    write({ id: request.id, result: { userAgent: 'fake-codex' } });
+    write({ id: request.id, result: { userAgent: process.env.FAKE_CODEX_USER_AGENT ?? 'zcode-plugin-codex/0.147.0 (fake)' } });
     return;
   }
   if (request.method === 'thread/read') {
@@ -85,6 +85,15 @@ async function handleLine(line) {
     return;
   }
   if (request.method === 'thread/list') {
+    if (process.env.FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON) {
+      const graph = JSON.parse(process.env.FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON);
+      const parentThreadId = request.params?.parentThreadId;
+      const data = parentThreadId === undefined
+        ? graph.filter((thread) => thread.preview !== '')
+        : graph.filter((thread) => thread.parentThreadId === parentThreadId);
+      write({ id: request.id, result: { data, nextCursor: null, backwardsCursor: null } });
+      return;
+    }
     const pages = JSON.parse(process.env.FAKE_CODEX_THREAD_LIST_RESULTS_JSON
       ?? '{"data":[],"nextCursor":null,"backwardsCursor":null}');
     const result = Array.isArray(pages)
