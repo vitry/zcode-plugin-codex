@@ -50,7 +50,7 @@ const legacyPreparationDependencies = Object.freeze({
 /** @param {string} executorAgentId */
 const reactivationDependencies = (executorAgentId) => ({ planRescueActivation: async () => ({
   activation: { kind: 'reactivate', executorAgentId, agentPathDigest: baseAgentPathDigest },
-  directive: { version: 1, action: 'followup', target: '/root/zcode_rescue_task' },
+  directive: { version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'zcode-rescue' },
 }) });
 
 /** @param {{id:string,parentThreadId:string,cwd:string,agentRole?:string|null,agentPath?:string}} input */
@@ -433,7 +433,7 @@ test('reactivates the exact persisted stopped Rescue child into a fresh linked-w
   });
   assert.deepEqual(prepared, {
     type: 'prepared', command: 'rescue',
-    route: { version: 1, action: 'followup', target: agentPath },
+    route: { version: 2, action: 'followup', target: agentPath, assignment: 'zcode-rescue' },
   });
 
   /** @param {string} ambientChildId @param {()=>Promise<any>} readHost @param {string} code */
@@ -617,7 +617,7 @@ test('cross-parent resume reactivates only the exact persisted child binding and
     cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId }, input,
     dependencies: { planRescueActivation: (/** @type {any} */ plannerInput) => planRescueActivation({ ...plannerInput, listChildren: async () => [competingHost, host] }) },
   });
-  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue', route: { version: 1, action: 'followup', target: agentPath } });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue', route: { version: 2, action: 'followup', target: agentPath, assignment: 'zcode-rescue' } });
   const callsBeforeCompeting = await readFile(record, 'utf8'); const jobsBeforeCompeting = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
     cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: competingChildId, FAKE_ZCODE_RECORD: record },
@@ -1058,7 +1058,7 @@ test('symlinked marketplace hook renders its lexical launcher and the real launc
   })).envelope.task, 'symlink installed task');
 });
 
-test('installed prepare reserves a new ordinal when exact-parent discovery finds an empty-preview host-only child', async (t) => {
+test('installed prepare fails closed when exact-parent discovery finds an active host-only Rescue child', async (t) => {
   const context = await fixture(); const codexHome = join(context.directory, 'collision-installed-codex-home');
   const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
   await mkdir(dirname(installed), { recursive: true }); await symlink(root, installed, 'dir');
@@ -1102,19 +1102,19 @@ test('installed prepare reserves a new ordinal when exact-parent discovery finds
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
   await waitFor(async () => stdout.includes('preparation-input-ready'), 'collision prepare did not reach input readiness');
   child.stdin?.end(`${JSON.stringify({ version: 1, source: 'explicit', task: privateTask, options: {} })}\n`);
-  assert.deepEqual(await exit, { code: 0, signal: null }, stderr || stdout);
+  assert.deepEqual(await exit, { code: 1, signal: null }, stderr || stdout);
   assert.equal(stderr, '');
-  assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n{"type":"prepared","command":"rescue","route":{"version":1,"action":"spawn","taskName":"zcode_rescue_task_2"}}\n');
+  assert.match(stdout, /^\{"type":"preparation-input-ready","command":"rescue"\}\n\{"error":\{"code":"EXECUTOR_STATE_MISMATCH"/u);
 
   const requests = (await readFile(appServerRecord, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const listRequests = requests.filter((request) => request.method === 'thread/list');
   assert.equal(listRequests.length, 1, 'prepare must issue exactly one collision-discovery request without retrying');
   assert.equal(listRequests[0].params.parentThreadId, sessionId, 'collision discovery must query the exact parent relationship');
-  assert.equal(requests.filter((request) => request.method === 'thread/read').length, 0, 'host-only occupancy must not authorize a follow-up read');
+  assert.equal(requests.filter((request) => request.method === 'thread/read').length, 0, 'planner must not add a second app-server child read');
   assert.equal(await readFile(zcodeRecord, 'utf8'), '', 'prepare must not invoke ZCode');
   const storage = await resolveWorkspaceStorage({ dataRoot: installedData, workspace: linked });
-  const preparations = (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json'));
-  assert.equal(preparations.length, 1, 'prepare must save one directive generation without retrying preparation');
+  const preparations = (await readdir(join(storage.directory, 'invocations', 'prepared')).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error))).filter((name) => name.endsWith('.json'));
+  assert.equal(preparations.length, 0, 'active host mismatch must fail before saving a preparation');
   assert.doesNotMatch(`${stdout}${stderr}${await readFile(appServerRecord, 'utf8')}`, new RegExp(privateTask));
 });
 

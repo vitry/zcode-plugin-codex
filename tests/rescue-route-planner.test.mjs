@@ -34,7 +34,7 @@ function adapters(children, executors, bindings = new Map()) {
       assert.equal(origin, children.find((item) => item.id === id).cwd);
       return found;
     },
-    resolveBinding: async ({ executor: found }) => bindings.get(found.agentId) ?? { kind: 'missing' },
+    resolveBinding: async ({ executor: found, host }) => bindings.get(found?.agentId ?? host.id) ?? { kind: 'missing' },
   };
 }
 
@@ -43,7 +43,7 @@ test('fresh planning joins a stopped root executor and returns the exact base fo
   const planned = await planRescueActivation({ ...input, ...adapters([host], new Map([[host.id, { executor: trusted, executionWorkspace: input.caller.workspace }]])) });
   assert.deepEqual(planned, {
     activation: { kind: 'reactivate', executorAgentId: 'child-1', agentPathDigest: digest('/root/zcode_rescue_task') },
-    directive: { version: 1, action: 'followup', target: '/root/zcode_rescue_task' },
+    directive: { version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'zcode-rescue' },
   });
 });
 
@@ -66,8 +66,8 @@ test('resume selects only the exact eligible durable binding', async () => {
 });
 
 test('fresh prefers the managed base path and otherwise the deterministic newest compatible child', async () => {
-  const input = await context(); const base = child(input.caller.workspace, { createdAt: 1 }); const newest = child(input.caller.workspace, { id: 'child-z', agentPath: '/root/ordinary_newest', createdAt: 300, updatedAt: 300 });
-  const tiedLower = child(input.caller.workspace, { id: 'child-a', agentPath: '/root/ordinary_tied', createdAt: 300, updatedAt: 300 });
+  const input = await context(); const base = child(input.caller.workspace, { createdAt: 1 }); const newest = child(input.caller.workspace, { id: 'child-z', agentPath: '/root/zcode_rescue_task_3', createdAt: 300, updatedAt: 300 });
+  const tiedLower = child(input.caller.workspace, { id: 'child-a', agentPath: '/root/zcode_rescue_task_2', createdAt: 300, updatedAt: 300 });
   const values = new Map([base, newest, tiedLower].map((host) => [host.id, { executor: executor(input.caller.workspace, { agentId: host.id }), executionWorkspace: input.caller.workspace }]));
   assert.equal((await planRescueActivation({ ...input, ...adapters([newest, base, tiedLower], values) })).directive.target, base.agentPath);
   values.delete(base.id);
@@ -76,8 +76,8 @@ test('fresh prefers the managed base path and otherwise the deterministic newest
 
 test('unproved children remain occupied and spawn allocation chooses the first free bounded ordinal', async () => {
   const input = await context(); const occupied = [
-    child(input.caller.workspace, { id: 'other-1' }),
-    child(input.caller.workspace, { id: 'other-2', agentPath: '/root/zcode_rescue_task_2' }),
+    child(input.caller.workspace, { id: 'other-1', agentRole: 'default' }),
+    child(input.caller.workspace, { id: 'other-2', agentPath: '/root/zcode_rescue_task_2', agentRole: 'explorer' }),
   ];
   const planned = await planRescueActivation({ ...input, ...adapters(occupied, new Map()) });
   assert.deepEqual(planned, {
@@ -89,16 +89,140 @@ test('unproved children remain occupied and spawn allocation chooses the first f
 test('generic compatibility requires matching null host Role and qualified default executor provenance', async () => {
   const input = await context(); const host = child(input.caller.workspace, { agentRole: null });
   const trusted = executor(input.caller.workspace, { agentType: 'default' });
-  assert.equal((await planRescueActivation({ ...input, ...adapters([host], new Map([[host.id, { executor: trusted, executionWorkspace: input.caller.workspace }]])) })).directive.action, 'followup');
+  assert.deepEqual((await planRescueActivation({ ...input, ...adapters([host], new Map([[host.id, { executor: trusted, executionWorkspace: input.caller.workspace }]])) })).directive,
+    { version: 2, action: 'followup', target: host.agentPath, assignment: 'default' });
 });
 
-test('wrong parent, Role, permission, or immutable workspace rejects without public metadata', async (t) => {
+test('managed candidates reject mismatched qualified executor Role instead of downgrading', async () => {
+  const input = await context(); const host = child(input.caller.workspace);
+  const wrongRole = executor(input.caller.workspace, { agentType: 'default' });
+  await assert.rejects(planRescueActivation({
+    ...input, ...adapters([host], new Map([[host.id, { executor: wrongRole, executionWorkspace: input.caller.workspace }]])),
+  }), { code: 'EXECUTOR_ROLE_UNAPPROVED' });
+});
+
+test('ordinary persisted children are occupancy-only and cannot block exact bound Rescue resume', async () => {
+  const input = await context(); input.envelope.options.resume = 'resume';
+  const ordinaryDefault = child(input.caller.workspace, { id: 'ordinary-default', agentPath: '/root/t1_spec_review', agentRole: 'default', createdAt: 400 });
+  const ordinaryExplorer = child(input.caller.workspace, { id: 'ordinary-explorer', agentPath: '/root/plan_audit', agentRole: 'explorer', createdAt: 300 });
+  const legacyBase = child(input.caller.workspace, { id: 'legacy-base', createdAt: 200 });
+  const boundOrdinal = child(input.caller.workspace, { id: 'bound-ordinal', agentPath: '/root/zcode_rescue_task_2', createdAt: 100 });
+  const resolvedIds = [];
+  const planned = await planRescueActivation({
+    ...input,
+    listChildren: async () => [ordinaryDefault, ordinaryExplorer, legacyBase, boundOrdinal],
+    resolveStoppedExecutor: async (_dataRoot, _origin, id) => {
+      resolvedIds.push(id);
+      if (id === legacyBase.id) throw Object.assign(new Error('missing'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' });
+      return { executor: executor(input.caller.workspace, { agentId: id }), executionWorkspace: input.caller.workspace };
+    },
+    resolveBinding: async ({ host }) => host.id === boundOrdinal.id
+      ? { kind: 'bound', binding: { key: 'b'.repeat(64) } }
+      : { kind: 'missing' },
+  });
+  assert.deepEqual(resolvedIds, ['legacy-base', 'bound-ordinal']);
+  assert.deepEqual(planned, {
+    activation: { kind: 'reactivate', executorAgentId: 'bound-ordinal', agentPathDigest: digest('/root/zcode_rescue_task_2') },
+    directive: { version: 2, action: 'followup', target: '/root/zcode_rescue_task_2', assignment: 'zcode-rescue' },
+  });
+});
+
+test('legacy named Rescue host is adopted instead of allocating an ordinal', async () => {
+  const input = await context(); const legacy = child(input.caller.workspace, { id: 'legacy-base' });
+  const planned = await planRescueActivation({ ...input, ...adapters([legacy], new Map()) });
+  assert.deepEqual(planned, {
+    activation: { kind: 'legacy-adopt', childThreadId: 'legacy-base', agentPathDigest: digest('/root/zcode_rescue_task') },
+    directive: { version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'zcode-rescue' },
+  });
+});
+
+test('generic and ordinary host-only children never become legacy adoption candidates', async () => {
+  const input = await context();
+  const hosts = [
+    child(input.caller.workspace, { id: 'generic', agentRole: null }),
+    child(input.caller.workspace, { id: 'default', agentPath: '/root/zcode_rescue_task_2', agentRole: 'default' }),
+    child(input.caller.workspace, { id: 'explorer', agentPath: '/root/zcode_rescue_task_3', agentRole: 'explorer' }),
+    child(input.caller.workspace, { id: 'ordinary', agentPath: '/root/unmanaged', agentRole: 'zcode-rescue' }),
+  ];
+  const resolved = [];
+  const planned = await planRescueActivation({
+    ...input,
+    listChildren: async () => hosts,
+    resolveStoppedExecutor: async (_dataRoot, _cwd, id) => { resolved.push(id); throw Object.assign(new Error('missing'), { code: 'EXECUTOR_IDENTITY_NOT_FOUND' }); },
+  });
+  assert.deepEqual(resolved, ['generic']);
+  assert.equal(planned.directive.action, 'spawn');
+  assert.equal(planned.directive.taskName, 'zcode_rescue_task_4');
+});
+
+test('active host-only named Rescue child fails closed instead of legacy adoption', async () => {
+  const input = await context(); const active = child(input.caller.workspace, { status: { type: 'active', activeFlags: [] } });
+  await assert.rejects(planRescueActivation({ ...input, ...adapters([active], new Map()) }), { code: 'EXECUTOR_STATE_MISMATCH' });
+});
+
+test('named legacy adoption downgrades only exact executor identity not found', async (t) => {
+  const input = await context(); const host = child(input.caller.workspace);
+  for (const code of ['EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_STATE_MISMATCH', 'EXECUTOR_IDENTITY_AMBIGUOUS', 'EXECUTOR_IDENTITY_INVALID', 'EXECUTOR_ROUTE_INVALID', 'EXECUTOR_ROLE_UNAPPROVED']) {
+    await t.test(code, async () => {
+      await assert.rejects(planRescueActivation({
+        ...input,
+        listChildren: async () => [host],
+        resolveStoppedExecutor: async () => { throw Object.assign(new Error('private'), { code }); },
+      }), { code });
+    });
+  }
+});
+
+test('fresh executor proof outranks a legacy base host', async () => {
+  const input = await context();
+  const legacyBase = child(input.caller.workspace, { id: 'legacy-base', createdAt: 300 });
+  const proved = child(input.caller.workspace, { id: 'proved', agentPath: '/root/zcode_rescue_task_2', createdAt: 100 });
+  const planned = await planRescueActivation({ ...input, ...adapters([legacyBase, proved], new Map([
+    [proved.id, { executor: executor(input.caller.workspace, { agentId: proved.id }), executionWorkspace: input.caller.workspace }],
+  ])) });
+  assert.equal(planned.directive.target, proved.agentPath);
+  assert.equal(planned.activation.kind, 'reactivate');
+});
+
+test('resume rejects multiple unbound legacy hosts as ambiguous', async () => {
+  const input = await context(); input.envelope.options.resume = 'resume';
+  const base = child(input.caller.workspace, { id: 'legacy-base' });
+  const ordinal = child(input.caller.workspace, { id: 'legacy-ordinal', agentPath: '/root/zcode_rescue_task_2' });
+  await assert.rejects(planRescueActivation({ ...input, ...adapters([base, ordinal], new Map()) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
+});
+
+test('previously adopted exact binding produces legacy-bound activation', async () => {
+  const input = await context(); input.envelope.options.resume = 'resume';
+  const legacy = child(input.caller.workspace, { id: 'legacy-base' }); const bindingKey = 'b'.repeat(64);
+  const planned = await planRescueActivation({
+    ...input,
+    ...adapters([legacy], new Map(), new Map([[legacy.id, {
+      kind: 'bound',
+      binding: { key: bindingKey, childAuthority: { kind: 'codex-legacy-adoption', childAgentId: legacy.id } },
+    }]])),
+  });
+  assert.deepEqual(planned.activation, {
+    kind: 'legacy-bound', childThreadId: legacy.id, agentPathDigest: digest(legacy.agentPath), bindingKey,
+  });
+});
+
+test('legacy host rejects a contradictory Hook-backed binding', async () => {
+  const input = await context(); const legacy = child(input.caller.workspace, { id: 'legacy-base' });
+  await assert.rejects(planRescueActivation({
+    ...input,
+    ...adapters([legacy], new Map(), new Map([[legacy.id, {
+      kind: 'bound',
+      binding: { key: 'b'.repeat(64), childAuthority: { kind: 'subagent-start', childAgentId: legacy.id } },
+    }]])),
+  }), { code: 'RESCUE_BINDING_INVALID' });
+});
+
+test('wrong parent, permission, or immutable workspace rejects without public metadata', async (t) => {
   const input = await context(); const secrets = ['child-secret', '/root/private_path', input.caller.workspace, 'secret-role'];
   const cases = [
     ['parent', child(input.caller.workspace, { id: 'child-secret', agentPath: '/root/private_path', parentThreadId: 'wrong-parent' }), executor(input.caller.workspace, { agentId: 'child-secret' }), 'CODEX_CHILD_METADATA_INVALID'],
-    ['role', child(input.caller.workspace, { id: 'child-secret', agentPath: '/root/private_path', agentRole: 'secret-role' }), executor(input.caller.workspace, { agentId: 'child-secret' }), 'EXECUTOR_ROLE_UNAPPROVED'],
-    ['permission', child(input.caller.workspace, { id: 'child-secret', agentPath: '/root/private_path' }), executor(input.caller.workspace, { agentId: 'child-secret', parentPermissionMode: 'read-only' }), 'EXECUTOR_IDENTITY_INVALID'],
-    ['workspace', child(input.caller.workspace, { id: 'child-secret', agentPath: '/root/private_path' }), executor('/private/other', { agentId: 'child-secret', originWorkspace: input.caller.workspace }), 'EXECUTOR_ROUTE_INVALID'],
+    ['permission', child(input.caller.workspace, { id: 'child-secret', agentPath: '/root/zcode_rescue_task_9' }), executor(input.caller.workspace, { agentId: 'child-secret', parentPermissionMode: 'read-only' }), 'EXECUTOR_IDENTITY_INVALID'],
+    ['workspace', child(input.caller.workspace, { id: 'child-secret', agentPath: '/root/zcode_rescue_task_9' }), executor('/private/other', { agentId: 'child-secret', originWorkspace: input.caller.workspace }), 'EXECUTOR_ROUTE_INVALID'],
   ];
   for (const [name, badHost, badExecutor, code] of cases) await t.test(name, async () => {
     let caught; try { await planRescueActivation({ ...input, ...adapters([badHost], new Map([[badHost.id, { executor: badExecutor, executionWorkspace: badExecutor.workspace }]])) }); } catch (error) { caught = error; }
@@ -113,7 +237,7 @@ test('duplicate IDs, duplicate paths, and multiple exact resume bindings fail as
   await assert.rejects(planRescueActivation({ ...input, ...adapters([one, duplicatePath], new Map()) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
   input.envelope.options.resume = 'resume';
   const values = new Map([[one.id, { executor: executor(input.caller.workspace), executionWorkspace: input.caller.workspace }], [duplicatePath.id, { executor: executor(input.caller.workspace, { agentId: duplicatePath.id }), executionWorkspace: input.caller.workspace }]]);
-  const bound = new Map([[one.id, { kind: 'bound' }], [duplicatePath.id, { kind: 'bound' }]]);
+  const bound = new Map([[one.id, { kind: 'bound', binding: { key: 'a'.repeat(64) } }], [duplicatePath.id, { kind: 'bound', binding: { key: 'b'.repeat(64) } }]]);
   await assert.rejects(planRescueActivation({ ...input, ...adapters([one, { ...duplicatePath, agentPath: '/root/zcode_rescue_task_2' }], values, bound) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
 });
 
@@ -166,8 +290,8 @@ test('host discovery boundary rejects malformed exact SpawnChild records before 
 
 test('independent nonnegative host timestamps allow updatedAt before createdAt and selection uses createdAt', async () => {
   const input = await context();
-  const newest = child(input.caller.workspace, { id: 'child-z', agentPath: '/root/ordinary_newest', createdAt: 300, updatedAt: 1 });
-  const older = child(input.caller.workspace, { id: 'child-a', agentPath: '/root/ordinary_older', createdAt: 200, updatedAt: 500 });
+  const newest = child(input.caller.workspace, { id: 'child-z', agentPath: '/root/zcode_rescue_task_3', createdAt: 300, updatedAt: 1 });
+  const older = child(input.caller.workspace, { id: 'child-a', agentPath: '/root/zcode_rescue_task_2', createdAt: 200, updatedAt: 500 });
   const values = new Map([newest, older].map((host) => [host.id, { executor: executor(input.caller.workspace, { agentId: host.id }), executionWorkspace: input.caller.workspace }]));
   const planned = await planRescueActivation({ ...input, ...adapters([older, newest], values) });
   assert.equal(planned.directive.target, newest.agentPath);
@@ -197,13 +321,15 @@ test('stopped executor proof boundary rejects partial, extra, or structurally in
 });
 
 test('route directives accept only exact bounded task-free keys', () => {
-  const followup = { version: 1, action: 'followup', target: '/root/zcode_rescue_task' };
+  const followup = { version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'zcode-rescue' };
   const spawn = { version: 1, action: 'spawn', taskName: 'zcode_rescue_task_2' };
   assert.deepEqual(validateRescueRouteDirective(followup), followup);
   assert.deepEqual(validateRescueRouteDirective(spawn), spawn);
   for (const invalid of [
     { ...followup, childId: 'secret' }, { ...followup, target: '/root' }, { ...followup, target: '/root/../bad' },
+    { ...followup, assignment: 'explorer' }, { ...followup, version: 1 },
     { ...spawn, target: '/root/zcode_rescue_task_2' }, { ...spawn, taskName: 'zcode_rescue_task_1' },
-    { version: 2, action: 'spawn', taskName: 'zcode_rescue_task' }, null,
+    { version: 2, action: 'spawn', taskName: 'zcode_rescue_task' },
+    { version: 1, action: 'followup', target: '/root/zcode_rescue_task' }, null,
   ]) assert.throws(() => validateRescueRouteDirective(invalid), { code: 'RESCUE_ROUTE_INVALID' });
 });

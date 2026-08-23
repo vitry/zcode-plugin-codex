@@ -48,38 +48,57 @@ export async function planRescueActivation(input) {
   }
   if (!Array.isArray(children) || children.length > MAX_CHILDREN) throw plannerError('CODEX_CHILD_DISCOVERY_FAILED');
   const hostChildren = validateChildren(children, input.caller.sessionId);
-  const candidates = [];
+  const provenCandidates = []; const legacyCandidates = [];
   for (const host of hostChildren) {
+    const hostClass = classifyHost(host);
+    if (hostClass === 'occupancy') continue;
     let resolved;
     try { resolved = await resolveStoppedExecutor(input.dataRoot, host.cwd, host.id); }
     catch (error) {
-      if (/** @type {any} */ (error)?.code === 'EXECUTOR_IDENTITY_NOT_FOUND') continue;
+      if (/** @type {any} */ (error)?.code === 'EXECUTOR_IDENTITY_NOT_FOUND') {
+        if (hostClass === 'generic') continue;
+        if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
+        const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, host, executionWorkspace });
+        if (binding.kind === 'missing') legacyCandidates.push({ binding: null, host });
+        else legacyCandidates.push({ binding: validateLegacyBinding(binding.binding, host), host });
+        continue;
+      }
       throw sanitizeExecutorError(error);
     }
     const candidate = validateCandidate(resolved, host, input.caller, originWorkspace, executionWorkspace);
-    candidates.push(candidate);
+    provenCandidates.push(candidate);
   }
 
   const resume = input.envelope.options?.resume === 'resume';
   let selected = null;
   if (resume) {
     const bound = [];
-    for (const candidate of candidates) {
-      let binding;
-      try { binding = await resolveBinding({ caller: input.caller, envelope: input.envelope, executor: candidate.executor, executionWorkspace }); }
-      catch { throw plannerError('RESCUE_BINDING_INVALID'); }
-      if (!binding || !['missing', 'bound'].includes(binding.kind)) throw plannerError('RESCUE_BINDING_INVALID');
+    for (const candidate of provenCandidates) {
+      const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, executor: candidate.executor, host: candidate.host, executionWorkspace });
       if (binding.kind === 'bound') bound.push(candidate);
     }
+    for (const candidate of legacyCandidates) if (candidate.binding !== null) bound.push(candidate);
     if (bound.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
     selected = bound[0] ?? null;
-  } else if (candidates.length > 0) {
-    selected = candidates.find((candidate) => candidate.host.agentPath === BASE_AGENT_PATH) ?? [...candidates].sort(compareNewest)[0];
+    if (selected === null) {
+      const unboundLegacy = legacyCandidates.filter((candidate) => candidate.binding === null);
+      if (unboundLegacy.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
+      selected = unboundLegacy[0] ?? null;
+    }
+  } else if (provenCandidates.length > 0) {
+    selected = preferredCandidate(provenCandidates);
+  } else if (legacyCandidates.length > 0) {
+    selected = preferredCandidate(legacyCandidates);
   }
 
   if (selected !== null) {
-    const activation = { kind: 'reactivate', executorAgentId: selected.executor.agentId, agentPathDigest: pathDigest(selected.host.agentPath) };
-    return { activation, directive: validateRescueRouteDirective({ version: 1, action: 'followup', target: selected.host.agentPath }) };
+    const activation = selected.executor
+      ? { kind: 'reactivate', executorAgentId: selected.executor.agentId, agentPathDigest: pathDigest(selected.host.agentPath) }
+      : selected.binding
+        ? { kind: 'legacy-bound', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath), bindingKey: selected.binding.key }
+        : { kind: 'legacy-adopt', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) };
+    const assignment = selected.executor?.agentType ?? 'zcode-rescue';
+    return { activation, directive: validateRescueRouteDirective({ version: 2, action: 'followup', target: selected.host.agentPath, assignment }) };
   }
   const occupied = new Set(hostChildren.map((host) => host.agentPath));
   const taskName = allocateTaskName(occupied);
@@ -90,12 +109,13 @@ export async function planRescueActivation(input) {
 
 /** @param {unknown} value */
 export function validateRescueRouteDirective(value) {
-  if (!plain(value) || /** @type {any} */ (value).version !== 1) throw plannerError('RESCUE_ROUTE_INVALID');
+  if (!plain(value)) throw plannerError('RESCUE_ROUTE_INVALID');
   const object = /** @type {Record<string,any>} */ (value);
   let directive;
-  if (object.action === 'followup' && sameKeys(object, ['action', 'target', 'version']) && validAgentPath(object.target)) {
-    directive = { version: 1, action: 'followup', target: object.target };
-  } else if (object.action === 'spawn' && sameKeys(object, ['action', 'taskName', 'version']) && validTaskName(object.taskName)) {
+  if (object.version === 2 && object.action === 'followup' && sameKeys(object, ['action', 'assignment', 'target', 'version'])
+    && validAgentPath(object.target) && ['zcode-rescue', 'default'].includes(object.assignment)) {
+    directive = { version: 2, action: 'followup', target: object.target, assignment: object.assignment };
+  } else if (object.version === 1 && object.action === 'spawn' && sameKeys(object, ['action', 'taskName', 'version']) && validTaskName(object.taskName)) {
     directive = { version: 1, action: 'spawn', taskName: object.taskName };
   } else throw plannerError('RESCUE_ROUTE_INVALID');
   if (Buffer.byteLength(JSON.stringify(directive)) > MAX_DIRECTIVE_BYTES) throw plannerError('RESCUE_ROUTE_INVALID');
@@ -129,6 +149,39 @@ function validateChildren(children, parentId) {
   return result;
 }
 
+/** @param {any} host */
+function classifyHost(host) {
+  if (!directManagedPath(host.agentPath)) return 'occupancy';
+  if (host.agentRole === 'zcode-rescue') return 'named';
+  if (host.agentRole === null) return 'generic';
+  return 'occupancy';
+}
+
+/** @param {any[]} candidates */
+function preferredCandidate(candidates) {
+  return candidates.find((candidate) => candidate.host.agentPath === BASE_AGENT_PATH) ?? [...candidates].sort(compareNewest)[0];
+}
+
+/** @param {Function} resolveBinding @param {any} input */
+async function resolveExactBinding(resolveBinding, input) {
+  let binding;
+  try { binding = await resolveBinding(input); }
+  catch { throw plannerError('RESCUE_BINDING_INVALID'); }
+  if (!binding || !['missing', 'bound'].includes(binding.kind)
+    || binding.kind === 'missing' && !sameKeys(binding, ['kind'])
+    || binding.kind === 'bound' && !plain(binding.binding)) throw plannerError('RESCUE_BINDING_INVALID');
+  return binding;
+}
+
+/** @param {any} binding @param {any} host */
+function validateLegacyBinding(binding, host) {
+  if (!plain(binding) || !digest(binding.key) || !plain(binding.childAuthority)
+    || binding.childAuthority.kind !== 'codex-legacy-adoption' || binding.childAuthority.childAgentId !== host.id) {
+    throw plannerError('RESCUE_BINDING_INVALID');
+  }
+  return binding;
+}
+
 /** @param {any} resolved @param {any} host @param {any} caller @param {string} originWorkspace @param {string} executionWorkspace */
 function validateCandidate(resolved, host, caller, originWorkspace, executionWorkspace) {
   const found = resolved?.executor;
@@ -148,13 +201,15 @@ function validateCandidate(resolved, host, caller, originWorkspace, executionWor
 /** @param {string} dataRoot */
 function defaultBindingResolver(dataRoot) {
   const store = createStateStore({ dataRoot });
-  return (/** @type {any} */ { caller, executor, executionWorkspace }) => store.resolveRescueBindingForResume({
+  return (/** @type {any} */ { caller, executor, host, executionWorkspace }) => store.resolveRescueBindingForResume({
     workspace: executionWorkspace,
     parentSessionId: caller.sessionId,
-    executorAgentId: executor.agentId,
-    executorAgentType: executor.agentType,
-    executorParentTurnId: executor.parentTurnId,
-    executorParentPermissionMode: executor.parentPermissionMode,
+    executorAgentId: executor?.agentId ?? host.id,
+    ...(executor ? {
+      executorAgentType: executor.agentType,
+      executorParentTurnId: executor.parentTurnId,
+      executorParentPermissionMode: executor.parentPermissionMode,
+    } : {}),
     permissionMode: caller.permissionMode,
   });
 }
@@ -188,6 +243,10 @@ function boundedIdentifier(value) { return safeId(value, 512); }
 function validAgentPath(value) { return typeof value === 'string' && Buffer.byteLength(value) <= 1024 && AGENT_PATH_PATTERN.test(value); }
 /** @param {unknown} value */
 function validTaskName(value) { return typeof value === 'string' && Buffer.byteLength(value) <= 64 && TASK_NAME_PATTERN.test(value); }
+/** @param {unknown} value */
+function directManagedPath(value) { return typeof value === 'string' && value.startsWith('/root/') && validTaskName(value.slice('/root/'.length)); }
+/** @param {unknown} value */
+function digest(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value); }
 /** @param {unknown} value */
 function boundedWorkspace(value) {
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 4096
