@@ -211,6 +211,40 @@ test('uses codex app-server and a 15 second deadline by default', async () => {
   assert.equal(CODEX_APP_SERVER_DEFAULT_TIMEOUT_MS, 15_000);
 });
 
+test('preserves raw read timeout, disconnect, and invalid-input diagnostics', async (t) => {
+  await t.test('timeout', async () => {
+    await assert.rejects(run({ FAKE_CODEX_HANG: 'thread/read' }, { timeoutMs: 25 }), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'CODEX_APP_SERVER_TIMEOUT');
+      assert.equal(error.message, 'Codex app-server timed out while reading the source thread.');
+      assert.equal(error.remedy, 'Retry after confirming Codex can read the requested thread.');
+      return true;
+    });
+  });
+  await t.test('disconnect', async () => {
+    await assert.rejects(run({ FAKE_CODEX_DISCONNECT: 'thread/read' }), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'CODEX_APP_SERVER_DISCONNECTED');
+      assert.equal(error.message, 'Codex app-server exited before returning the source thread.');
+      assert.equal(error.remedy, 'Restart Codex and retry.');
+      assert.deepEqual(error.details, { code: 1, signal: null, stderrTail: '' });
+      return true;
+    });
+  });
+  await t.test('invalid input', async () => {
+    await assert.rejects(readCodexThread('', {}), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'CODEX_APP_SERVER_INPUT_INVALID');
+      assert.equal(error.message, 'Codex app-server input is invalid.');
+      assert.equal(error.remedy, 'Provide a bounded thread ID and positive protocol limits.');
+      return true;
+    });
+  });
+});
+
+test('rejects cumulative app-server output beyond the configured total budget', async () => {
+  await assert.rejects(run({ FAKE_CODEX_NOTIFICATION: '1', FAKE_CODEX_OTHER_ID: '1' }, { maxOutputBytes: 100 }), {
+    code: 'CODEX_APP_SERVER_OUTPUT_TOO_LARGE',
+  });
+});
+
 test('fake app-server persists lifecycle markers synchronously before exiting', async () => {
   const source = await readFile(fake, 'utf8');
   assert.match(source, /appendFileSync/);

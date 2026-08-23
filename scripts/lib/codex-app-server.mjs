@@ -26,13 +26,13 @@ const INITIALIZE_PARAMS = { clientInfo: { name: 'zcode-plugin-codex', title: 'ZC
 
 /** @param {string} threadId @param {AppServerOptions} [options] */
 export async function readCodexThread(threadId, options = {}) {
-  validateInput(threadId, options);
+  validateInput(threadId, options, true);
   return withAppServer(options, async (request, notify) => {
     notify({ method: 'initialized', params: {} });
     const result = await request('thread/read', { threadId, includeTurns: true });
     if (!Object.hasOwn(result, 'thread')) throw malformed('Codex thread/read response omitted its thread.');
     return result.thread;
-  });
+  }, true);
 }
 
 /** @param {string} parentThreadId @param {AppServerOptions} [options] */
@@ -79,8 +79,8 @@ export async function readCodexThreadSpawnChild(threadId, parentThreadId, option
   });
 }
 
-/** @template T @param {AppServerOptions} options @param {(request:(method:string,params:Record<string,unknown>)=>Promise<Record<string,any>>,notify:(value:unknown)=>void)=>Promise<T>} work @returns {Promise<T>} */
-async function withAppServer(options, work) {
+/** @template T @param {AppServerOptions} options @param {(request:(method:string,params:Record<string,unknown>)=>Promise<Record<string,any>>,notify:(value:unknown)=>void)=>Promise<T>} work @param {boolean} [rawReadDiagnostics] @returns {Promise<T>} */
+async function withAppServer(options, work, rawReadDiagnostics = false) {
   const executable = options.executable ?? 'codex'; const args = options.args ?? ['app-server'];
   const timeoutMs = options.timeoutMs ?? CODEX_APP_SERVER_DEFAULT_TIMEOUT_MS;
   const maxLineBytes = options.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
@@ -94,7 +94,11 @@ async function withAppServer(options, work) {
   /** @type {{id:number,method:string,resolve:(value:Record<string,any>)=>void,reject:(error:any)=>void}|null} */ let pending = null;
   const detail = () => { stderrTail.close(); return { stderrTail: stderrTail.value() }; };
   const fail = (/** @type {any} */ error) => { if (fatalError) return; fatalError = attachDetails(error, detail()); if (pending) { const current = pending; pending = null; current.reject(fatalError); } };
-  const timer = setTimeout(() => fail(new PluginError('CODEX_APP_SERVER_TIMEOUT', 'Codex app-server timed out.', { category: 'timeout', remedy: 'Retry after confirming Codex can serve the requested thread operation.' })), timeoutMs);
+  const timer = setTimeout(() => fail(new PluginError('CODEX_APP_SERVER_TIMEOUT', rawReadDiagnostics
+    ? 'Codex app-server timed out while reading the source thread.' : 'Codex app-server timed out.', {
+    category: 'timeout', remedy: rawReadDiagnostics
+      ? 'Retry after confirming Codex can read the requested thread.' : 'Retry after confirming Codex can serve the requested thread operation.',
+  })), timeoutMs);
   const onStderrData = (/** @type {Buffer|string} */ chunk) => stderrTail.append(chunk);
   const onStdoutData = (/** @type {Buffer|string} */ chunk) => {
     try {
@@ -125,7 +129,10 @@ async function withAppServer(options, work) {
   const onStderrError = (/** @type {unknown} */ cause) => fail(protocolError('CODEX_APP_SERVER_STREAM_FAILED', 'Codex app-server stderr failed.', cause));
   const onStdinError = (/** @type {unknown} */ cause) => fail(protocolError('CODEX_APP_SERVER_WRITE_FAILED', 'Could not write to Codex app-server.', cause));
   const onChildError = (/** @type {unknown} */ cause) => fail(spawnError(cause));
-  const onChildExit = (/** @type {number|null} */ code, /** @type {NodeJS.Signals|null} */ signal) => fail(new PluginError('CODEX_APP_SERVER_DISCONNECTED', 'Codex app-server exited before completing the request.', { category: 'runtime', remedy: 'Restart Codex and retry.', details: { code, signal } }));
+  const onChildExit = (/** @type {number|null} */ code, /** @type {NodeJS.Signals|null} */ signal) => fail(new PluginError('CODEX_APP_SERVER_DISCONNECTED', rawReadDiagnostics
+    ? 'Codex app-server exited before returning the source thread.' : 'Codex app-server exited before completing the request.', {
+    category: 'runtime', remedy: 'Restart Codex and retry.', details: { code, signal },
+  }));
   child.stderr?.on('data', onStderrData); child.stdout?.on('data', onStdoutData);
   child.stdout?.once('error', onStdoutError); child.stderr?.once('error', onStderrError); child.stdin?.once('error', onStdinError);
   child.once('error', onChildError); child.once('exit', onChildExit);
@@ -212,17 +219,21 @@ function waitForExit(child, timeoutMs) {
   return new Promise((resolve) => { let settled = false; const finish = (/** @type {boolean} */ value) => { if (settled) return; settled = true; clearTimeout(timer); child.off('exit', onExit); resolve(value); }; const onExit = () => finish(true); const timer = setTimeout(() => finish(false), timeoutMs); timer.unref?.(); child.once('exit', onExit); });
 }
 
-/** @param {string} threadId @param {any} options */
-function validateInput(threadId, options) {
+/** @param {string} threadId @param {any} options @param {boolean} [rawReadDiagnostics] */
+function validateInput(threadId, options, rawReadDiagnostics = false) {
   const positive = (/** @type {unknown} */ value) => Number.isSafeInteger(value) && /** @type {number} */ (value) > 0;
   if (!validBoundedString(threadId, CODEX_THREAD_ID_MAX_BYTES) || !plainObject(options) || options.executable !== undefined && (typeof options.executable !== 'string' || !options.executable)
     || options.args !== undefined && (!Array.isArray(options.args) || options.args.some((item) => typeof item !== 'string')) || options.spawn !== undefined && typeof options.spawn !== 'function'
     || ['timeoutMs', 'maxLineBytes', 'maxOutputBytes', 'maxStderrBytes'].some((key) => options[key] !== undefined && !positive(options[key]))
-    || options.timeoutMs > 120_000 || options.maxLineBytes > 16 * 1024 * 1024 || options.maxOutputBytes > 32 * 1024 * 1024 || options.maxStderrBytes > 64 * 1024) throw inputError();
+    || options.timeoutMs > 120_000 || options.maxLineBytes > 16 * 1024 * 1024 || options.maxOutputBytes > 32 * 1024 * 1024 || options.maxStderrBytes > 64 * 1024) throw inputError(rawReadDiagnostics);
 }
 /** @param {unknown} value @param {number} maximum */
 function boundedPositive(value, maximum) { return Number.isSafeInteger(value) && /** @type {number} */ (value) > 0 && /** @type {number} */ (value) <= maximum; }
-function inputError() { return new PluginError('CODEX_APP_SERVER_INPUT_INVALID', 'Codex app-server input is invalid.', { category: 'validation', remedy: 'Provide bounded identifiers and positive protocol limits.' }); }
+/** @param {boolean} [rawReadDiagnostics] */
+function inputError(rawReadDiagnostics = false) { return new PluginError('CODEX_APP_SERVER_INPUT_INVALID', 'Codex app-server input is invalid.', {
+  category: 'validation', remedy: rawReadDiagnostics
+    ? 'Provide a bounded thread ID and positive protocol limits.' : 'Provide bounded identifiers and positive protocol limits.',
+}); }
 function metadataInvalid() { return new PluginError('CODEX_THREAD_METADATA_INVALID', 'Codex returned invalid persisted child metadata.', { category: 'protocol', remedy: 'Upgrade or restart Codex and retry.' }); }
 function listInvalid() { return new PluginError('CODEX_THREAD_LIST_INVALID', 'Codex returned an invalid persisted thread page.', { category: 'protocol', remedy: 'Upgrade or restart Codex and retry.' }); }
 function listLimit() { return new PluginError('CODEX_THREAD_LIST_LIMIT_EXCEEDED', 'Codex persisted thread pagination exceeded its safety limit.', { category: 'protocol', remedy: 'Narrow the persisted thread set and retry.' }); }
