@@ -61,6 +61,11 @@ async function run(env = {}, options = {}) {
   return { value, calls: (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)), record };
 }
 
+/** @param {string} originator @param {string} version @param {string} [terminal] @param {boolean} [suffix] */
+function codexUserAgent(originator, version, terminal = 'dumb', suffix = true) {
+  return `${originator}/${version} (Mac OS 26.5.2; arm64) ${terminal}${suffix ? ' (zcode-plugin-codex; 0.1.0)' : ''}`;
+}
+
 test('initializes before reading a full thread and ignores unrelated frames', async () => {
   const { value, calls } = await run({ FAKE_CODEX_NOTIFICATION: '1', FAKE_CODEX_OTHER_ID: '1', FAKE_CODEX_PARTIAL: '1', FAKE_CODEX_CRLF: '1' });
   assert.deepEqual(value, validThread);
@@ -81,7 +86,7 @@ test('empty-preview exact-parent discovery uses relationship semantics', async (
     agentRole: 'default',
   });
   const { options, record } = await appOptions({
-    FAKE_CODEX_USER_AGENT: 'zcode-plugin-codex/0.147.0 (fake)',
+    FAKE_CODEX_USER_AGENT: codexUserAgent('zcode-plugin-codex', '0.147.0'),
     FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: JSON.stringify([emptyPreviewChild, visibleForeignChild]),
   });
 
@@ -97,13 +102,15 @@ test('empty-preview exact-parent discovery uses relationship semantics', async (
 test('exact-parent discovery accepts supported originators and rejects silent-ignore app-server versions', async (t) => {
   const graph = JSON.stringify([childThread()]);
   for (const [name, userAgent] of [
-    ['alternate originator 0.149', 'codex_originator_via_env_var/0.149.0 (fake)'],
-    ['slash originator 0.149', 'team/originator/0.149.0 (fake)'],
-    ['space originator 0.149', 'Codex Something Else/0.149.0 (fake)'],
-    ['space and slash originator 0.149', 'Codex Team/Else Product/0.149.0 (fake)'],
-    ['newer prerelease', 'originator/0.149.0-alpha.8 (fake)'],
-    ['minimum 0.141', 'zcode-plugin-codex/0.141.0 (fake)'],
-    ['minimum build metadata', 'originator/0.141.0+build.8 (fake)'],
+    ['alternate originator 0.149', codexUserAgent('codex_originator_via_env_var', '0.149.0')],
+    ['slash originator 0.149', codexUserAgent('team/originator', '0.149.0')],
+    ['space originator 0.149', codexUserAgent('Codex Something Else', '0.149.0')],
+    ['space and slash originator 0.149', codexUserAgent('Codex Team/Else Product', '0.149.0')],
+    ['newer prerelease', codexUserAgent('originator', '0.149.0-alpha.8')],
+    ['minimum 0.141', codexUserAgent('zcode-plugin-codex', '0.141.0')],
+    ['minimum build metadata', codexUserAgent('originator', '0.141.0+build.8')],
+    ['old versioned terminal', codexUserAgent('originator', '0.149.0', 'legacy/0.100.0')],
+    ['no initialize suffix', codexUserAgent('Codex Something Else', '0.149.0', 'dumb', false)],
   ]) {
     await t.test(name, async () => {
       const { options } = await appOptions({
@@ -114,16 +121,17 @@ test('exact-parent discovery accepts supported originators and rejects silent-ig
     });
   }
   for (const [name, userAgent] of [
-    ['minimum prerelease', 'originator/0.141.0-alpha.8 (fake)'],
-    ['0.140 boundary', 'zcode-plugin-codex/0.140.0 (fake)'],
-    ['0.117 silent ignore', 'zcode-plugin-codex/0.117.0 (fake)'],
-    ['leading-zero core', 'originator/0.0141.0 (fake)'],
-    ['leading-zero prerelease', 'originator/0.149.0-08 (fake)'],
-    ['earlier originator semver cannot mask old host', 'Codex/9.9.9 (originator) Else/0.140.0 (fake)'],
-    ['earlier originator semver cannot mask malformed host', 'Codex/9.9.9 (originator) Else/not-semver (fake)'],
+    ['new terminal cannot mask 0.117 host', codexUserAgent('originator', '0.117.0', 'vscode/1.104.0')],
+    ['minimum prerelease', codexUserAgent('originator', '0.141.0-alpha.8')],
+    ['0.140 boundary', codexUserAgent('zcode-plugin-codex', '0.140.0')],
+    ['0.117 silent ignore', codexUserAgent('zcode-plugin-codex', '0.117.0')],
+    ['leading-zero core', codexUserAgent('originator', '0.0141.0')],
+    ['leading-zero prerelease', codexUserAgent('originator', '0.149.0-08')],
+    ['earlier originator semver cannot mask old host', codexUserAgent('Codex/9.9.9 (originator) Else', '0.140.0')],
+    ['earlier originator semver cannot mask malformed host', codexUserAgent('Codex/9.9.9 (originator) Else', 'not-semver')],
     ['missing platform delimiter', 'originator/0.149.0 fake'],
     ['unparseable', 'fake-codex'],
-    ['oversized', `originator/0.149.0 ${'x'.repeat(4096)}`],
+    ['oversized', codexUserAgent('originator', '0.149.0', `dumb${'x'.repeat(4096)}`)],
   ]) {
     await t.test(name, async () => {
       const { options, record } = await appOptions({

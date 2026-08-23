@@ -70,7 +70,7 @@ async function handleLine(line) {
   if (process.env.FAKE_CODEX_AMBIGUOUS === request.method) { write({ id: request.id, result: {}, error: { code: -32001, message: 'ambiguous' } }); return; }
   if (process.env.FAKE_CODEX_DISCONNECT === request.method) { clearInterval(keepAlive); process.exit(1); }
   if (request.method === 'initialize') {
-    write({ id: request.id, result: { userAgent: process.env.FAKE_CODEX_USER_AGENT ?? 'zcode-plugin-codex/0.147.0 (fake)' } });
+    write({ id: request.id, result: { userAgent: process.env.FAKE_CODEX_USER_AGENT ?? 'zcode-plugin-codex/0.147.0 (Mac OS 26.5.2; arm64) dumb (zcode-plugin-codex; 0.1.0)' } });
     return;
   }
   if (request.method === 'thread/read') {

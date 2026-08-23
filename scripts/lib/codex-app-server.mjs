@@ -179,8 +179,9 @@ function remoteRequestError(method) {
 function supportsExactParentList(result) {
   const userAgent = result.userAgent;
   if (!validBoundedString(userAgent, MAX_USER_AGENT_BYTES)) return false;
-  let version = null;
-  for (const candidate of userAgent.matchAll(/\/([^\s/]+)(?=\s+\()/g)) version = candidate[1];
+  const shape = /^(.*)\/(\S+) \(([^();]+); ([^();\s]+)\) (\S+)(?: \(zcode-plugin-codex; 0\.1\.0\))?$/.exec(userAgent);
+  if (!shape || !validBoundedString(shape[1], MAX_USER_AGENT_BYTES) || shape[3].trim() !== shape[3] || shape[3].lastIndexOf(' ') <= 0) return false;
+  const version = shape[2];
   if (!validBoundedString(version, MAX_VERSION_BYTES)) return false;
   const match = /^(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(version);
   if (!match) return false;
