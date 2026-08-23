@@ -5,10 +5,10 @@ import { closeSync as closeFdSync, realpathSync } from 'node:fs';
 import { Socket } from 'node:net';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { join, posix, resolve, sep, win32 } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import { parseArgs, resolveModel } from './lib/args.mjs';
-import { readCodexThread, readCodexThreadSpawnChild } from './lib/codex-app-server.mjs';
+import { readCodexThread, readCodexThreadSpawnChild, sanitizeCodexThreadSpawnChild } from './lib/codex-app-server.mjs';
 import { inspectRescueRoleStatus, runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
@@ -149,7 +149,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
       await transport.writeReady();
       const envelope = await readRescuePreparationFrame(input, runtime.signal);
       const planned = validatePlannedRescueActivation(await (runtime.dependencies?.planRescueActivation ?? planRescueActivation)({
-        dataRoot, caller, envelope, appServerOptions: codexAppServerOptions(env, caller.originWorkspace ?? caller.workspace),
+        dataRoot, caller, envelope, appServerOptions: codexAppServerOptions(env, caller.originWorkspace ?? caller.workspace, runtime.signal),
       }));
       await createRescuePreparationStore({ dataRoot }).save({ ...caller, recordedPrompt: caller.prompt, envelope, activation: planned.activation, signal: runtime.signal });
       return { type: 'prepared', command: 'rescue', route: planned.directive };
@@ -164,9 +164,9 @@ export async function runDirectInvocation(argv, runtime = {}) {
     try { prepared = await preparations.consume({ ...caller, executorAgentId: executor.agentId }); }
     catch (error) {
       if (!(error instanceof PluginError) || error.code !== 'RESCUE_PREPARATION_MISMATCH') throw error;
-      const host = validatePreparedHostChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
-        ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace),
-      ), executor);
+      const host = sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
+        ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
+      ), executor.parentSessionId, executor.agentId);
       const activationProof = preparedActivationProof(host, executor);
       prepared = await preparations.consume({ ...caller, executorAgentId: executor.agentId, activationProof });
     }
@@ -259,35 +259,6 @@ function validatePlannedRescueActivation(value) {
   return { activation: { kind: 'reactivate', executorAgentId: activation.executorAgentId, agentPathDigest: activation.agentPathDigest }, directive };
 }
 
-/** @param {unknown} value @param {any} executor */
-function validatePreparedHostChild(value, executor) {
-  if (!exactPlainObject(value, ['agentPath', 'agentRole', 'createdAt', 'cwd', 'id', 'parentThreadId', 'status', 'updatedAt'])) throw childMetadataInvalid();
-  const host = /** @type {Record<string,any>} */ (value);
-  const expectedRole = executor.agentType === 'zcode-rescue' ? 'zcode-rescue' : executor.agentType === 'default' ? null : undefined;
-  if (!safeCompanionIdentifier(host.id) || !safeCompanionIdentifier(host.parentThreadId)
-    || host.id !== executor.agentId || host.parentThreadId !== executor.parentSessionId
-    || !validCompanionRole(host.agentRole) || host.agentRole !== expectedRole
-    || !canonicalCompanionAgentPath(host.agentPath) || !canonicalCompanionCwd(host.cwd) || host.cwd !== executor.originWorkspace
-    || !Number.isSafeInteger(host.createdAt) || host.createdAt < 0
-    || !Number.isSafeInteger(host.updatedAt) || host.updatedAt < 0) throw childMetadataInvalid();
-  const status = cloneCompanionChildStatus(host.status);
-  return { id: host.id, parentThreadId: host.parentThreadId, agentPath: host.agentPath, agentRole: host.agentRole,
-    cwd: host.cwd, status, createdAt: host.createdAt, updatedAt: host.updatedAt };
-}
-
-/** @param {unknown} value */
-function cloneCompanionChildStatus(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw childMetadataInvalid();
-  const status = /** @type {Record<string,any>} */ (value);
-  if (['notLoaded', 'idle', 'systemError'].includes(status.type) && Object.keys(status).length === 1) return { type: status.type };
-  if (status.type === 'active' && Object.keys(status).length === 2 && Array.isArray(status.activeFlags)
-    && new Set(status.activeFlags).size === status.activeFlags.length
-    && status.activeFlags.every((/** @type {unknown} */ flag) => ['waitingOnApproval', 'waitingOnUserInput'].includes(/** @type {any} */ (flag)))) {
-    return { type: 'active', activeFlags: [...status.activeFlags] };
-  }
-  throw childMetadataInvalid();
-}
-
 /** @param {unknown} value @param {string[]} keys */
 function exactPlainObject(value, keys) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype
@@ -298,14 +269,7 @@ function safeCompanionIdentifier(value, maxBytes = 512) {
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= maxBytes
     && ![...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code <= 31 || code === 127; });
 }
-/** @param {unknown} value */
-function validCompanionRole(value) { return value === null || safeCompanionIdentifier(value, 256); }
-/** @param {unknown} value */
-function canonicalCompanionAgentPath(value) { return typeof value === 'string' && safeCompanionIdentifier(value, 1024) && posix.normalize(value) === value && /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u.test(value); }
-/** @param {unknown} value */
-function canonicalCompanionCwd(value) { return typeof value === 'string' && safeCompanionIdentifier(value, 4096) && (posix.isAbsolute(value) && posix.normalize(value) === value || win32.isAbsolute(value) && win32.normalize(value) === value); }
 function rescueRouteInvalid() { return new PluginError('RESCUE_ROUTE_INVALID', 'The Rescue activation route is invalid.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' }); }
-function childMetadataInvalid() { return new PluginError('CODEX_CHILD_METADATA_INVALID', 'Codex returned invalid persisted child metadata.', { category: 'protocol', remedy: 'Restart or upgrade Codex, then retry the Rescue request.' }); }
 
 /** @param {any} host @param {any} executor */
 function preparedActivationProof(host, executor) {
@@ -480,7 +444,7 @@ async function startPublic(context) {
   } else job = await reservePublicJob(context, reservation);
   if (parsed.command === 'transfer') {
     return executeTransfer({ job, workspace: job.workspace, dataRoot, store, sourceThreadId: /** @type {string} */ (transferSource), signal: context.signal, progressWriter: context.progressWriter, resolveLaunch: () => discoverLaunch(context.env),
-      readThread: () => (context.dependencies?.readCodexThread ?? readCodexThread)(transferSource, codexAppServerOptions(context.env, job.workspace)),
+      readThread: () => (context.dependencies?.readCodexThread ?? readCodexThread)(transferSource, codexAppServerOptions(context.env, job.workspace, context.signal)),
       createClient: (launch) => (context.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: job.workspace, launch, ownerId: ownerIdForSession(caller.sessionId), env: context.env, ...managedWireOptionsForJob(job) }),
     });
   }
@@ -566,14 +530,14 @@ async function reservePublicJob(context, reservation) {
 /** @param {any} job */
 function managedWireOptionsForJob(job) { return job?.command === 'transfer' ? { maxFrameBytes: TRANSFER_WIRE_LIMITS.maxFrameBytes, maxOutboundBytes: TRANSFER_WIRE_LIMITS.maxOutboundBytes, drainTimeoutMs: TRANSFER_WIRE_LIMITS.drainTimeoutMs } : {}; }
 
-/** @param {NodeJS.ProcessEnv} env @param {string} cwd */
-function codexAppServerOptions(env, cwd) {
+/** @param {NodeJS.ProcessEnv} env @param {string} cwd @param {AbortSignal} [signal] */
+function codexAppServerOptions(env, cwd, signal) {
   let args;
   if (env.CODEX_APP_SERVER_ARGS_JSON !== undefined) {
     try { args = JSON.parse(env.CODEX_APP_SERVER_ARGS_JSON); } catch (cause) { throw new PluginError('CODEX_APP_SERVER_CONFIG_INVALID', 'Codex app-server arguments are invalid.', { category: 'configuration', remedy: 'Run $zcode:setup and repair the Codex app-server launcher.', cause }); }
     if (!Array.isArray(args) || args.some((value) => typeof value !== 'string')) throw new PluginError('CODEX_APP_SERVER_CONFIG_INVALID', 'Codex app-server arguments are invalid.', { category: 'configuration', remedy: 'Run $zcode:setup and repair the Codex app-server launcher.' });
   }
-  return { ...(env.CODEX_APP_SERVER_PATH ? { executable: env.CODEX_APP_SERVER_PATH } : {}), ...(args ? { args } : {}), cwd, env };
+  return { ...(env.CODEX_APP_SERVER_PATH ? { executable: env.CODEX_APP_SERVER_PATH } : {}), ...(args ? { args } : {}), cwd, env, ...(signal ? { signal } : {}) };
 }
 
 /** @param {any} input */

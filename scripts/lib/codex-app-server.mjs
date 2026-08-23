@@ -21,7 +21,7 @@ const MAX_VALUE_DEPTH = 128;
 const MAX_VALUE_NODES = 100_000;
 const INITIALIZE_PARAMS = { clientInfo: { name: 'zcode-plugin-codex', title: 'ZCode plugin for Codex', version: '0.1.0' }, capabilities: null };
 
-/** @typedef {{executable?:string,args?:string[],cwd?:string,env?:NodeJS.ProcessEnv,timeoutMs?:number,maxLineBytes?:number,maxOutputBytes?:number,maxStderrBytes?:number,spawn?:(command:string,args:string[],options:any)=>any,pageSize?:number,maxPages?:number,maxItems?:number}} AppServerOptions */
+/** @typedef {{executable?:string,args?:string[],cwd?:string,env?:NodeJS.ProcessEnv,timeoutMs?:number,maxLineBytes?:number,maxOutputBytes?:number,maxStderrBytes?:number,spawn?:(command:string,args:string[],options:any)=>any,pageSize?:number,maxPages?:number,maxItems?:number,signal?:AbortSignal}} AppServerOptions */
 /** @typedef {{id:string,parentThreadId:string,agentPath:string,agentRole:string|null,cwd:string,status:Record<string,unknown>,createdAt:number,updatedAt:number}} SpawnChild */
 
 /** @param {string} threadId @param {AppServerOptions} [options] */
@@ -54,7 +54,7 @@ export async function listCodexThreadSpawnChildren(parentThreadId, options = {})
       itemCount += result.data.length;
       if (itemCount > maxItems) throw listLimit();
       for (const thread of result.data) {
-        const child = validateThreadSpawnChild(thread);
+        const child = sanitizeCodexThreadSpawnChild(thread);
         if (ids.has(child.id)) throw metadataInvalid();
         ids.add(child.id);
         if (child.parentThreadId !== parentThreadId) continue;
@@ -77,12 +77,13 @@ export async function readCodexThreadSpawnChild(threadId, parentThreadId, option
     notify({ method: 'initialized', params: {} });
     const result = await request('thread/read', { threadId, includeTurns: false });
     if (!Object.hasOwn(result, 'thread')) throw malformed('Codex thread/read response omitted its thread.');
-    return validateThreadSpawnChild(result.thread, parentThreadId, threadId);
+    return sanitizeCodexThreadSpawnChild(result.thread, parentThreadId, threadId);
   });
 }
 
 /** @template T @param {AppServerOptions} options @param {(request:(method:string,params:Record<string,unknown>)=>Promise<Record<string,any>>,notify:(value:unknown)=>void)=>Promise<T>} work @param {boolean} [rawReadDiagnostics] @returns {Promise<T>} */
 async function withAppServer(options, work, rawReadDiagnostics = false) {
+  if (options.signal?.aborted) throw interruptionError(options.signal.reason);
   const executable = options.executable ?? 'codex'; const args = options.args ?? ['app-server'];
   const timeoutMs = options.timeoutMs ?? CODEX_APP_SERVER_DEFAULT_TIMEOUT_MS;
   const maxLineBytes = options.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
@@ -96,6 +97,9 @@ async function withAppServer(options, work, rawReadDiagnostics = false) {
   /** @type {{id:number,method:string,resolve:(value:Record<string,any>)=>void,reject:(error:any)=>void}|null} */ let pending = null;
   const detail = () => { stderrTail.close(); return { stderrTail: stderrTail.value() }; };
   const fail = (/** @type {any} */ error) => { if (fatalError) return; fatalError = attachDetails(error, detail()); if (pending) { const current = pending; pending = null; current.reject(fatalError); } };
+  const onAbort = () => fail(interruptionError(options.signal?.reason));
+  options.signal?.addEventListener('abort', onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
   const timer = setTimeout(() => fail(new PluginError('CODEX_APP_SERVER_TIMEOUT', rawReadDiagnostics
     ? 'Codex app-server timed out while reading the source thread.' : 'Codex app-server timed out.', {
     category: 'timeout', remedy: rawReadDiagnostics
@@ -154,7 +158,7 @@ async function withAppServer(options, work, rawReadDiagnostics = false) {
   };
   try { await request('initialize', INITIALIZE_PARAMS); return await work(request, notify); }
   finally {
-    clearTimeout(timer); await terminate(child);
+    clearTimeout(timer); options.signal?.removeEventListener('abort', onAbort); await terminate(child);
     child.stdout?.off('data', onStdoutData); child.stderr?.off('data', onStderrData);
     child.stdout?.off('error', onStdoutError); child.stderr?.off('error', onStderrError); child.stdin?.off('error', onStdinError);
     child.off('error', onChildError); child.off('exit', onChildExit);
@@ -168,8 +172,9 @@ function remoteRequestError(method) {
   return new PluginError('CODEX_THREAD_READ_FAILED', 'Codex could not read the requested thread.', { category: 'configuration', remedy: 'Confirm the Codex thread ID is persisted and accessible from this Codex home.' });
 }
 
-/** @param {unknown} thread @param {string} [expectedParentId] @param {string} [expectedChildId] @returns {SpawnChild} */
-function validateThreadSpawnChild(thread, expectedParentId, expectedChildId) {
+/** Sanitize one raw or already-sanitized Codex thread-spawn child snapshot. @param {unknown} thread @param {string} [expectedParentId] @param {string} [expectedChildId] @returns {SpawnChild} */
+export function sanitizeCodexThreadSpawnChild(thread, expectedParentId, expectedChildId) {
+  if (isSanitizedSpawnChild(thread)) return validateSanitizedSpawnChild(thread, expectedParentId, expectedChildId);
   if (!plainObject(thread) || !safePlainValue(thread)) throw metadataInvalid();
   const source = thread.source; const subAgent = plainObject(source) ? source.subAgent : null; const spawn = plainObject(subAgent) ? subAgent.thread_spawn : null;
   if (!plainObject(source) || Object.keys(source).length !== 1 || !plainObject(subAgent) || Object.keys(subAgent).length !== 1 || !plainObject(spawn)
@@ -188,6 +193,23 @@ function validateThreadSpawnChild(thread, expectedParentId, expectedChildId) {
     cwd: /** @type {string} */ (thread.cwd), status,
     createdAt: /** @type {number} */ (thread.createdAt), updatedAt: /** @type {number} */ (thread.updatedAt),
   };
+}
+
+/** @param {unknown} thread */
+function isSanitizedSpawnChild(thread) {
+  return plainObject(thread) && Object.keys(thread).sort().join('\0') === ['agentPath', 'agentRole', 'createdAt', 'cwd', 'id', 'parentThreadId', 'status', 'updatedAt'].sort().join('\0');
+}
+
+/** @param {unknown} thread @param {string} [expectedParentId] @param {string} [expectedChildId] @returns {SpawnChild} */
+function validateSanitizedSpawnChild(thread, expectedParentId, expectedChildId) {
+  if (!plainObject(thread) || !safePlainValue(thread)) throw metadataInvalid();
+  const child = /** @type {Record<string,any>} */ (thread);
+  if (!validBoundedString(child.id, CODEX_THREAD_ID_MAX_BYTES) || !validBoundedString(child.parentThreadId, CODEX_THREAD_ID_MAX_BYTES)
+    || expectedChildId !== undefined && child.id !== expectedChildId || expectedParentId !== undefined && child.parentThreadId !== expectedParentId
+    || !validRole(child.agentRole) || !canonicalAgentPath(child.agentPath) || !canonicalCwd(child.cwd)
+    || !Number.isSafeInteger(child.createdAt) || child.createdAt < 0 || !Number.isSafeInteger(child.updatedAt) || child.updatedAt < 0) throw metadataInvalid();
+  return { id: child.id, parentThreadId: child.parentThreadId, agentPath: child.agentPath, agentRole: child.agentRole,
+    cwd: child.cwd, status: cloneStatus(child.status), createdAt: child.createdAt, updatedAt: child.updatedAt };
 }
 
 /** @param {unknown} value */
@@ -226,6 +248,7 @@ function validateInput(threadId, options, rawReadDiagnostics = false) {
   const positive = (/** @type {unknown} */ value) => Number.isSafeInteger(value) && /** @type {number} */ (value) > 0;
   if (!validBoundedString(threadId, CODEX_THREAD_ID_MAX_BYTES) || !plainObject(options) || options.executable !== undefined && (typeof options.executable !== 'string' || !options.executable)
     || options.args !== undefined && (!Array.isArray(options.args) || options.args.some((item) => typeof item !== 'string')) || options.spawn !== undefined && typeof options.spawn !== 'function'
+    || options.signal !== undefined && !(options.signal instanceof AbortSignal)
     || ['timeoutMs', 'maxLineBytes', 'maxOutputBytes', 'maxStderrBytes'].some((key) => options[key] !== undefined && !positive(options[key]))
     || options.timeoutMs > 120_000 || options.maxLineBytes > 16 * 1024 * 1024 || options.maxOutputBytes > 32 * 1024 * 1024 || options.maxStderrBytes > 64 * 1024) throw inputError(rawReadDiagnostics);
 }
@@ -237,6 +260,12 @@ function inputError(rawReadDiagnostics = false) { return new PluginError('CODEX_
     ? 'Provide a bounded thread ID and positive protocol limits.' : 'Provide bounded identifiers and positive protocol limits.',
 }); }
 function metadataInvalid() { return new PluginError('CODEX_CHILD_METADATA_INVALID', 'Codex returned invalid persisted child metadata.', { category: 'protocol', remedy: 'Upgrade or restart Codex and retry.' }); }
+/** @param {unknown} reason */
+function interruptionError(reason) {
+  return reason instanceof PluginError && reason.code === 'JOB_INTERRUPTED' && reason.category === 'interruption'
+    ? reason
+    : new PluginError('JOB_INTERRUPTED', 'Codex app-server operation was interrupted.', { category: 'interruption', remedy: 'Retry the operation.' });
+}
 function listInvalid() { return new PluginError('CODEX_THREAD_LIST_INVALID', 'Codex returned an invalid persisted thread page.', { category: 'protocol', remedy: 'Upgrade or restart Codex and retry.' }); }
 function listLimit() { return new PluginError('CODEX_THREAD_LIST_LIMIT_EXCEEDED', 'Codex persisted thread pagination exceeded its safety limit.', { category: 'protocol', remedy: 'Narrow the persisted thread set and retry.' }); }
 /** @param {string} message */

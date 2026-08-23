@@ -464,8 +464,8 @@ test('reactivates the exact persisted stopped Rescue child into a fresh linked-w
   const hostMutations = [
     [{ agentPath: '/root/zcode_rescue_task_2' }, 'RESCUE_PREPARATION_MISMATCH'],
     [{ parentThreadId: 'other-parent' }, 'CODEX_CHILD_METADATA_INVALID'],
-    [{ agentRole: null }, 'CODEX_CHILD_METADATA_INVALID'],
-    [{ cwd: target }, 'CODEX_CHILD_METADATA_INVALID'],
+    [{ agentRole: null }, 'EXECUTOR_IDENTITY_INVALID'],
+    [{ cwd: target }, 'EXECUTOR_IDENTITY_INVALID'],
   ];
   for (const [mutation, code] of hostMutations) await assertRejectedBeforePipeline(childId, async () => ({ ...host, ...mutation }), code);
   const storage = routedStorage;
@@ -543,7 +543,7 @@ test('spawn-route preparation binds the newly active child path before ZCode exe
     { ...host, cwd: 'relative/repo' }, { ...host, createdAt: -1 },
   ]) await assertSpawnRejected(async () => malformed, 'CODEX_CHILD_METADATA_INVALID');
   await assertSpawnRejected(async () => ({ ...host, agentPath: '/root/zcode_rescue_task_2' }), 'RESCUE_PREPARATION_MISMATCH');
-  await assertSpawnRejected(async () => ({ ...host, agentRole: null }), 'CODEX_CHILD_METADATA_INVALID');
+  await assertSpawnRejected(async () => ({ ...host, agentRole: null }), 'EXECUTOR_IDENTITY_INVALID');
   await assertSpawnRejected(async () => { throw new PluginError('CODEX_APP_SERVER_FAILED', 'reader failed', { category: 'protocol', remedy: 'retry' }); }, 'CODEX_APP_SERVER_FAILED');
   const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
     cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId },
@@ -1464,6 +1464,53 @@ test('prepare Rescue exits on SIGTERM after readiness and frame delivery while t
   assert.deepEqual(bounded, { code: 143, signal: null }); assert.equal(stdout, readiness); assert.match(stderr, /Interrupted by SIGTERM\./); assert.doesNotMatch(stderr, /locked objective|prepare-save/); assert.equal(await readFile(ttyRecord, 'utf8'), 'true\nfalse\n');
   holder.stdin?.end('release\n'); assert.equal(await holderExit, 0);
   await assert.rejects(createRescuePreparationStore({ dataRoot: context.dataRoot }).consume({ sessionId: 'prepare-save-parent', turnId: 'prepare-save-turn', workspace: context.workspace, permissionMode: 'workspace-write', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
+});
+
+test('prepare Rescue SIGTERM cancels a hung Codex child list and reaps app-server without saving', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const appRecord = join(context.directory, 'hung-list-app-server.jsonl'); await writeFile(appRecord, '');
+  await context.identity.beginCallerTurn({ sessionId: 'hung-list-parent', turnId: 'hung-list-turn', workspace: context.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh hung list task' });
+  const ttyRecord = join(context.directory, 'hung-list-tty.txt'); await writeFile(ttyRecord, '');
+  const child = spawn(process.execPath, [cli, 'prepare', 'rescue'], {
+    cwd: context.workspace,
+    env: { ...context.env, CODEX_THREAD_ID: 'hung-list-parent', FAKE_CODEX_RECORD: appRecord, FAKE_CODEX_HANG: 'thread/list', NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord },
+    stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let exited = false; child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  const exit = new Promise((resolveExit, reject) => child.once('error', reject).once('exit', (code, signal) => { exited = true; resolveExit({ code, signal }); }));
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  await waitFor(async () => stdout.includes('preparation-input-ready'), 'hung-list prepare did not publish readiness');
+  child.stdin?.write(`${JSON.stringify({ version: 1, source: 'explicit', task: 'hung list task', options: { resume: 'fresh' } })}\n`);
+  await waitFor(async () => (await readFile(appRecord, 'utf8')).includes('thread/list'), 'hung-list app-server request was not observed');
+  const startedAt = Date.now(); child.kill('SIGTERM');
+  const exitedResult = await exit;
+  assert.deepEqual(exitedResult, { code: 143, signal: null }, `${stdout}${stderr}`); assert.ok(Date.now() - startedAt < 1_000);
+  assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n'); assert.match(stderr, /Interrupted by SIGTERM\./);
+  const frames = (await readFile(appRecord, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(frames.some((frame) => frame.lifecycle === 'SIGTERM'), true);
+  await assert.rejects(createRescuePreparationStore({ dataRoot: context.dataRoot }).consume({ sessionId: 'hung-list-parent', turnId: 'hung-list-turn', workspace: context.workspace, permissionMode: 'workspace-write', executorAgentId: 'child' }), { code: 'RESCUE_PREPARATION_NOT_FOUND' });
+});
+
+test('invoke-prepared SIGINT cancels a hung Codex child read before consuming or starting ZCode', { skip: windowsRealSignalSkip }, async (t) => {
+  const context = await fixture(); const parentSessionId = 'hung-read-parent'; const childId = 'hung-read-child';
+  await prepareDirectRescueChild(context, { parentSessionId, parentTurnId: 'hung-read-parent-turn', childId, childTurnId: 'hung-read-child-turn', prompt: '$zcode:rescue --fresh --wait hung read task' });
+  const appRecord = join(context.directory, 'hung-read-app-server.jsonl'); await writeFile(appRecord, '');
+  const child = spawn(process.execPath, [cli, 'invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_CODEX_RECORD: appRecord, FAKE_CODEX_HANG: 'thread/read' },
+    stdio: ['ignore', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let exited = false; child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  const exit = new Promise((resolveExit, reject) => child.once('error', reject).once('exit', (code, signal) => { exited = true; resolveExit({ code, signal }); }));
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  await waitFor(async () => (await readFile(appRecord, 'utf8')).includes('thread/read'), 'hung-read app-server request was not observed');
+  const startedAt = Date.now(); child.kill('SIGINT');
+  assert.deepEqual(await exit, { code: 130, signal: null }); assert.ok(Date.now() - startedAt < 1_000);
+  assert.equal(stdout, ''); assert.match(stderr, /Interrupted by SIGINT\./);
+  const frames = (await readFile(appRecord, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(frames.some((frame) => frame.lifecycle === 'SIGTERM'), true);
+  assert.equal(frames.some((frame) => ['session/create', 'session/send'].includes(frame.method)), false);
+  assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace), []);
+  const storage = await resolveWorkspaceStorage(context); const [name] = (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((entry) => entry.endsWith('.json'));
+  assert.equal(JSON.parse(await readFile(join(storage.directory, 'invocations', 'prepared', name), 'utf8')).consumedAt, null);
 });
 
 test('isolated Rescue child SIGTERM after accepted send stops once and keeps the parent thread as durable owner', { skip: windowsRealSignalSkip }, async (t) => {

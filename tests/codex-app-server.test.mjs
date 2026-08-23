@@ -12,7 +12,9 @@ import {
   listCodexThreadSpawnChildren,
   readCodexThread,
   readCodexThreadSpawnChild,
+  sanitizeCodexThreadSpawnChild,
 } from '../scripts/lib/codex-app-server.mjs';
+import { PluginError } from '../scripts/lib/errors.mjs';
 
 const fake = fileURLToPath(new URL('./fixtures/fake-codex-app-server.mjs', import.meta.url));
 const validThread = { id: 'thread-1', ephemeral: false, turns: [] };
@@ -100,6 +102,52 @@ test('lists exact-parent persisted spawn children over bounded stable pages and 
   assert.deepEqual(reread, children[0]);
   const allCalls = await recordedCalls(record);
   assert.deepEqual(allCalls.filter((call) => call.method === 'thread/read').at(-1).params, { threadId: 'child-1', includeTurns: false });
+});
+
+test('shared SpawnChild sanitizer accepts raw and sanitized snapshots with defensive status cloning', () => {
+  const raw = childThread({ status: { type: 'active', activeFlags: ['waitingOnApproval'] } });
+  const first = sanitizeCodexThreadSpawnChild(raw, 'parent-1', 'child-1');
+  const second = sanitizeCodexThreadSpawnChild(first, 'parent-1', 'child-1');
+  assert.deepEqual(second, first); assert.notEqual(second, first); assert.notEqual(second.status, first.status);
+  /** @type {any} */ (first.status).activeFlags.push('waitingOnUserInput');
+  assert.deepEqual(second.status, { type: 'active', activeFlags: ['waitingOnApproval'] });
+  assert.throws(() => sanitizeCodexThreadSpawnChild({ ...second, extra: true }), { code: 'CODEX_CHILD_METADATA_INVALID' });
+  assert.throws(() => sanitizeCodexThreadSpawnChild(second, 'wrong-parent', 'child-1'), { code: 'CODEX_CHILD_METADATA_INVALID' });
+});
+
+test('app-server operations honor pre-abort and promptly reap hung list/read children', async (t) => {
+  await t.test('pre-aborted does not spawn', async () => {
+    const controller = new AbortController();
+    const interruption = new PluginError('JOB_INTERRUPTED', 'Preparation interrupted.', { category: 'interruption', remedy: 'Retry.' });
+    controller.abort(interruption); let spawned = false;
+    await assert.rejects(listCodexThreadSpawnChildren('parent-1', { signal: controller.signal, spawn: () => { spawned = true; throw new Error('must not spawn'); } }), (error) => error === interruption);
+    assert.equal(spawned, false);
+  });
+  await t.test('untrusted abort reason is replaced', async () => {
+    const controller = new AbortController(); controller.abort('PRIVATE_ABORT_REASON');
+    await assert.rejects(readCodexThreadSpawnChild('child-1', 'parent-1', { signal: controller.signal }), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'JOB_INTERRUPTED'); assert.equal(error.category, 'interruption');
+      assert.doesNotMatch(`${error.message}${error.remedy}${error.stack}`, /PRIVATE_ABORT_REASON/); return true;
+    });
+  });
+  /** @type {Array<[string,string,(options:any)=>Promise<any>]>} */
+  const operations = [
+    ['initialize', 'initialize', (options) => readCodexThreadSpawnChild('child-1', 'parent-1', options)],
+    ['list', 'thread/list', (options) => listCodexThreadSpawnChildren('parent-1', options)],
+    ['read', 'thread/read', (options) => readCodexThreadSpawnChild('child-1', 'parent-1', options)],
+  ];
+  for (const [name, method, operation] of operations) await t.test(name, async () => {
+    const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', `${name} interrupted.`, { category: 'interruption', remedy: 'Retry.' });
+    const { options, record } = await appOptions({ FAKE_CODEX_HANG: method }, { timeoutMs: 15_000, signal: controller.signal });
+    const promise = operation(options); const observedDeadline = Date.now() + 2_000;
+    while (!(await recordedCalls(record)).some((call) => call.method === method) && Date.now() < observedDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal((await recordedCalls(record)).some((call) => call.method === method), true);
+    const startedAt = Date.now(); controller.abort(interruption);
+    await assert.rejects(promise, (error) => error === interruption);
+    assert.ok(Date.now() - startedAt < 1_000, `${name} cancellation was not prompt`);
+    const calls = await recordedCalls(record);
+    assert.equal(calls.some((call) => call.lifecycle === 'SIGTERM'), true);
+  });
 });
 
 test('rejects contradictory or unsafe thread-spawn metadata', async (t) => {
@@ -303,6 +351,7 @@ test('deep unrelated notifications are ignored without preventing a valid respon
 test('rejects malformed options and unsafe thread identifiers before spawn', async () => {
   for (const threadId of ['', 'x'.repeat(513)]) await assert.rejects(readCodexThread(threadId, { spawn: () => { throw new Error('must not spawn'); } }), { code: 'CODEX_APP_SERVER_INPUT_INVALID' });
   await assert.rejects(readCodexThread('ok', { timeoutMs: 0 }), { code: 'CODEX_APP_SERVER_INPUT_INVALID' });
+  await assert.rejects(readCodexThread('ok', { signal: /** @type {any} */ ({ aborted: false }) }), { code: 'CODEX_APP_SERVER_INPUT_INVALID' });
 });
 
 test('termination has a finite reap deadline when an injected child never emits exit', async () => {
