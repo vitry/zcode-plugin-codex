@@ -273,13 +273,13 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
 /** Qualify a resumed parent that lazily reloads one exact persisted Rescue child. */
 export async function qualifyCodexRescueRestoredChildEvidence(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) mismatch('restored-child-contract', 'Restored-child evidence is absent.');
-  const expectedKeys = ['appServerTranscriptJson', 'childRolloutJson', 'executorRecordBytes', 'expected', 'fakePeerJson', 'parentRolloutJson', 'preparationRecordBytes', 'preparedOutput'];
+  const expectedKeys = ['appServerTranscriptJson', 'childRolloutJson', 'executorRecordBytes', 'expected', 'fakePeerJson', 'parentRolloutJson', 'preparationRecordBytes'];
   if (Object.keys(input).sort().join('\0') !== expectedKeys.sort().join('\0')) mismatch('restored-child-contract', 'Restored-child evidence has an invalid shape.');
   const expected = input.expected;
-  const expectedFields = ['agentPath', 'childThreadId', 'executionWorkspace', 'launcherCommand', 'originalParentTurnId', 'originWorkspace', 'parentSessionId', 'permissionMode', 'publicOutput', 'resumedParentTurnId', 'route'];
+  const expectedFields = ['agentPath', 'childThreadId', 'executionWorkspace', 'launcherCommand', 'originalParentTurnId', 'originWorkspace', 'parentSessionId', 'permissionMode', 'publicOutput', 'resumedParentTurnId'];
   if (!expected || Object.keys(expected).sort().join('\0') !== expectedFields.sort().join('\0')) mismatch('restored-child-contract', 'Restored-child expectations have an invalid shape.');
   const ids = ['parentSessionId', 'childThreadId', 'originalParentTurnId', 'resumedParentTurnId'].map((key) => boundedString(expected[key]));
-  if (ids.some((value) => !value) || !['named', 'generic'].includes(expected.route) || expected.originalParentTurnId === expected.resumedParentTurnId
+  if (ids.some((value) => !value) || expected.originalParentTurnId === expected.resumedParentTurnId
     || !/^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u.test(boundedString(expected.agentPath) ?? '') || !boundedString(expected.launcherCommand)
     || !boundedString(expected.originWorkspace) || !boundedString(expected.executionWorkspace)
     || !boundedString(expected.permissionMode) || !boundedString(expected.publicOutput)) mismatch('restored-child-identity', 'Restored-child identity is invalid.');
@@ -289,18 +289,70 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   const parent = parseArray(input.parentRolloutJson, 'restored-child-parent'); const child = parseArray(input.childRolloutJson, 'restored-child-child');
   const transcript = parseArray(input.appServerTranscriptJson, 'restored-child-app-server'); const peer = parseArray(input.fakePeerJson, 'restored-child-peer');
   const calls = namedCalls(parent, 'followup_task'); const spawns = namedCalls(parent, 'spawn_agent');
-  const parentFunctions = parent.filter((event) => event?.payload?.type === 'function_call');
   const parentMeta = parent.filter((event) => event?.type === 'session_meta');
-  if (calls.length !== 1 || spawns.length !== 0 || parentFunctions.length !== 1 || calls[0].turn_id !== expected.resumedParentTurnId
-    || parentMeta.length !== 1 || parentMeta[0].payload?.id !== expected.parentSessionId
-    || parent.some((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started')) {
-    mismatch('restored-child-one-action', 'A restored child requires exactly one follow-up and zero spawns or new starts.');
+  if (parentMeta.length !== 1 || parentMeta[0].payload?.id !== expected.parentSessionId) mismatch('restored-child-one-action', 'The resumed parent identity is invalid.');
+
+  const original = parent.filter((event) => event?.turn_id === expected.originalParentTurnId);
+  const originalSpawns = namedCalls(original, 'spawn_agent'); const originalOutputs = original.filter((event) => event?.payload?.type === 'function_call_output');
+  const starts = original.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'started');
+  const stops = original.filter((event) => event?.payload?.type === 'sub_agent_activity' && event.payload.kind === 'stopped');
+  if (originalSpawns.length !== 1 || originalOutputs.length !== 1 || starts.length !== 1 || stops.length !== 1 || original.length !== 4) mismatch('restored-child-history', 'Historical spawn provenance must contain one exact spawn, output, start, and stop.');
+  const originalSpawn = originalSpawns[0]; const spawnArgs = parseObject(originalSpawn.payload.arguments, 'restored-child-history');
+  const taskName = expected.agentPath.slice('/root/'.length); const namedKeys = ['agent_type', 'fork_turns', 'message', 'task_name']; const genericKeys = ['fork_turns', 'message', 'task_name'];
+  const route = Object.keys(spawnArgs).sort().join('\0') === namedKeys.sort().join('\0') && spawnArgs.agent_type === 'zcode-rescue' ? 'named'
+    : Object.keys(spawnArgs).sort().join('\0') === genericKeys.sort().join('\0') ? 'generic' : null;
+  const historicalAssignment = route === 'named' ? expectedNamedRescueMessage
+    : route === 'generic' ? expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', expected.launcherCommand) : null;
+  let spawnResult; try { spawnResult = JSON.parse(originalOutputs[0].payload.output); } catch { mismatch('restored-child-history', 'Historical spawn output is malformed.'); }
+  const historicalTimes = [originalSpawn, originalOutputs[0], starts[0], stops[0]].map(eventTimestamp);
+  if (!route || spawnArgs.fork_turns !== 'none' || spawnArgs.task_name !== taskName || spawnArgs.message !== historicalAssignment
+    || Object.keys(spawnResult ?? {}).join('\0') !== 'agent_id' || spawnResult.agent_id !== expected.childThreadId
+    || originalOutputs[0].payload.call_id !== originalSpawn.payload.call_id || starts[0].payload.event_id !== originalSpawn.payload.call_id
+    || starts[0].payload.agent_thread_id !== expected.childThreadId || stops[0].payload.agent_thread_id !== expected.childThreadId
+    || starts[0].payload.agent_path !== expected.agentPath || stops[0].payload.agent_path !== expected.agentPath
+    || starts[0].payload.parent_turn_id !== expected.originalParentTurnId || stops[0].payload.parent_turn_id !== expected.originalParentTurnId
+    || historicalTimes.some((value) => value === undefined) || !(historicalTimes[0] < historicalTimes[1] && historicalTimes[1] < historicalTimes[2] && historicalTimes[2] < historicalTimes[3])
+    || !(parent.indexOf(originalSpawn) < parent.indexOf(originalOutputs[0]) && parent.indexOf(originalOutputs[0]) < parent.indexOf(starts[0]) && parent.indexOf(starts[0]) < parent.indexOf(stops[0]))) {
+    mismatch('restored-child-history', 'Historical spawn assignment, child linkage, or chronology is invalid.');
   }
-  const followup = parseObject(calls[0].payload.arguments, 'restored-child-followup');
+
+  const current = parent.filter((event) => event?.turn_id === expected.resumedParentTurnId);
+  const currentCustomCalls = current.filter((event) => event?.payload?.type === 'custom_tool_call'); const currentCustomOutputs = current.filter((event) => event?.payload?.type === 'custom_tool_call_output');
+  const currentFunctions = current.filter((event) => event?.payload?.type === 'function_call'); const currentFunctionOutputs = current.filter((event) => event?.payload?.type === 'function_call_output');
+  if (parent.length !== 13 || current.length !== 8 || currentCustomCalls.length !== 3 || currentCustomOutputs.length !== 3 || currentFunctions.length !== 1 || currentFunctionOutputs.length !== 1
+    || currentFunctions[0].payload.name !== 'followup_task' || current.some((event) => event?.payload?.type === 'sub_agent_activity') || calls.length !== 1 || spawns.length !== 1) {
+    mismatch('restored-child-current-events', 'The resumed phase must contain only Role readiness, one TTY prepare, one follow-up, and their exact outputs.');
+  }
+  const allCalls = [...originalSpawns, ...currentCustomCalls, ...currentFunctions, ...child.filter((event) => event?.payload?.type === 'custom_tool_call')];
+  const allOutputs = [...originalOutputs, ...currentCustomOutputs, ...currentFunctionOutputs, ...child.filter((event) => event?.payload?.type === 'custom_tool_call_output')];
+  const callIds = allCalls.map((event) => boundedString(event.payload.call_id));
+  if (callIds.some((id) => !id) || new Set(callIds).size !== callIds.length || allCalls.length !== allOutputs.length
+    || allCalls.some((call) => allOutputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)
+    || allOutputs.some((output) => allCalls.filter((call) => call.payload.call_id === output.payload.call_id).length !== 1)) mismatch('restored-child-call-linkage', 'Restored host calls and outputs require global one-to-one call ownership.');
+
+  const parsedCurrent = currentCustomCalls.map((event) => ({ event, host: parseCapturedHostCall(event.payload.input) }));
+  const roleCall = parsedCurrent.find(({ host }) => host.kind === 'exec_command' && host.envelope.get('cmd') === `${expected.launcherCommand} role-status rescue`);
+  const prepareCall = parsedCurrent.find(({ host }) => host.kind === 'exec_command' && host.envelope.get('cmd') === `${expected.launcherCommand} prepare rescue`);
+  const writeCall = parsedCurrent.find(({ host }) => host.kind === 'write_stdin');
+  if (!roleCall || !prepareCall || !writeCall || parsedCurrent.some(({ host }) => ![roleCall.host, prepareCall.host, writeCall.host].includes(host))
+    || Object.keys(Object.fromEntries(roleCall.host.envelope)).sort().join('\0') !== ['cmd', 'workdir'].join('\0') || roleCall.host.envelope.get('workdir') !== expected.executionWorkspace
+    || Object.keys(Object.fromEntries(prepareCall.host.envelope)).sort().join('\0') !== ['cmd', 'tty', 'workdir'].join('\0') || prepareCall.host.envelope.get('tty') !== true || prepareCall.host.envelope.get('workdir') !== expected.executionWorkspace
+    || Object.keys(Object.fromEntries(writeCall.host.envelope)).sort().join('\0') !== ['chars', 'session_id'].join('\0')) mismatch('restored-child-current-events', 'Restored Role and prepare host calls are not exact.');
+  const outputFor = (call) => currentCustomOutputs.find((output) => output.payload.call_id === call.event.payload.call_id);
+  const roleOutput = parseCapturedHostResult(outputFor(roleCall)?.payload?.output); const readyOutput = parseCapturedHostResult(outputFor(prepareCall)?.payload?.output); const preparedOutput = parseCapturedHostResult(outputFor(writeCall)?.payload?.output);
+  if (roleOutput.output !== `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n` || roleOutput.exit_code !== 0 || Object.hasOwn(roleOutput, 'session_id')
+    || readyOutput.output !== PREPARATION_READY_LINE || !Number.isSafeInteger(readyOutput.session_id) || Object.hasOwn(readyOutput, 'exit_code')
+    || writeCall.host.envelope.get('session_id') !== readyOutput.session_id || preparedOutput.exit_code !== 0 || Object.hasOwn(preparedOutput, 'session_id')) mismatch('restored-child-directive', 'Restored Role readiness or TTY prepare handshake is invalid.');
+  const chars = writeCall.host.envelope.get('chars'); let preparationEnvelope;
+  try { preparationEnvelope = await readRescuePreparation(Readable.from([chars])); } catch { mismatch('restored-child-directive', 'Restored TTY write does not contain one production-valid preparation envelope.'); }
+  const exactPreparedLine = `${JSON.stringify({ type: 'prepared', command: 'rescue', route: { version: 1, action: 'followup', target: expected.agentPath } })}\n`;
+  if (preparedOutput.output !== exactPreparedLine) mismatch('restored-child-directive', 'Prepared follow-up directive is not linked to the exact original path.');
+
+  const followupCall = currentFunctions[0]; const followup = parseObject(followupCall.payload.arguments, 'restored-child-followup');
   assertExactKeys(followup, ['message', 'target'], 'restored-child-followup');
-  const expectedAssignment = expected.route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', expected.launcherCommand);
-  if (followup.target !== expected.agentPath || followup.message !== expectedAssignment) mismatch('restored-child-followup', 'The parent did not follow up the exact original child path with its route-specific historical assignment.');
-  if (parent.some((event) => JSON.stringify(event).toLowerCase().includes('collision'))) mismatch('restored-child-collision', 'Restored-child evidence contains collision handling.');
+  let followupResult; try { followupResult = JSON.parse(currentFunctionOutputs[0].payload.output); } catch { mismatch('restored-child-followup', 'Restored follow-up output is malformed.'); }
+  if (followup.target !== expected.agentPath || followup.message !== spawnArgs.message || currentFunctionOutputs[0].payload.call_id !== followupCall.payload.call_id
+    || !isDeepStrictEqual(followupResult, { accepted: true, target: expected.agentPath })) mismatch('restored-child-followup', 'The parent did not follow up the exact original child path with its exact historical assignment.');
   if (transcript.length !== 4) mismatch('restored-child-app-server', 'Installed app-server capture must contain one list and one read request/response pair.');
   const [listRequest, listResponse, readRequest, readResponse] = transcript;
   const listParams = { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' };
@@ -315,34 +367,70 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   if (!isDeepStrictEqual(host, reread)) mismatch('restored-child-host', 'List and read captures do not identify the same original child.');
   if (host?.id !== expected.childThreadId || host?.parentThreadId !== expected.parentSessionId || host?.agentPath !== expected.agentPath
     || host?.cwd !== expected.originWorkspace || host?.status?.type !== 'notLoaded') mismatch('restored-child-host', 'Host discovery did not preserve the exact unloaded child identity.');
-  let prepared;
-  if (typeof input.preparedOutput !== 'string' || Buffer.byteLength(input.preparedOutput) > MAX_TEXT_BYTES || !input.preparedOutput.endsWith('\n') || input.preparedOutput.slice(0, -1).includes('\n')) mismatch('restored-child-directive', 'Captured prepared acknowledgement is absent or malformed.');
-  try { prepared = JSON.parse(input.preparedOutput); } catch { mismatch('restored-child-directive', 'Captured prepared acknowledgement is malformed.'); }
-  const exactDirective = { type: 'prepared', command: 'rescue', route: { version: 1, action: 'followup', target: expected.agentPath } };
-  if (!isDeepStrictEqual(prepared, exactDirective) || followup.target !== prepared.route.target) mismatch('restored-child-directive', 'Prepared follow-up directive is not linked to the exact original path and parent action.');
   if ([input.executorRecordBytes, input.preparationRecordBytes].some((bytes) => typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TEXT_BYTES)) mismatch('restored-child-private', 'Private restored-child records are absent or oversized.');
+  if (!input.executorRecordBytes.endsWith('\n') || !input.preparationRecordBytes.endsWith('\n')) mismatch('restored-child-private', 'Private restored-child records are not exact file bytes.');
   let executor; let preparation; try { executor = JSON.parse(input.executorRecordBytes); preparation = JSON.parse(input.preparationRecordBytes); } catch { mismatch('restored-child-private', 'Private restored-child records are malformed.'); }
-  const expectedAgentType = expected.route === 'named' ? 'zcode-rescue' : 'default'; const expectedRole = expected.route === 'named' ? 'zcode-rescue' : null;
-  if (host.agentRole !== expectedRole || executor?.agentType !== expectedAgentType || executor?.agentId !== expected.childThreadId || executor?.parentSessionId !== expected.parentSessionId || executor?.parentTurnId !== expected.originalParentTurnId
-    || executor?.active !== false || executor?.workspace !== expected.executionWorkspace || executor?.originWorkspace !== expected.originWorkspace) mismatch('restored-child-executor', 'Stopped executor provenance does not identify the original child and immutable worktree.');
+  const executorKeys = ['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace'];
+  const expectedAgentType = route === 'named' ? 'zcode-rescue' : 'default'; const expectedRole = route === 'named' ? 'zcode-rescue' : null;
+  if (Object.keys(executor ?? {}).sort().join('\0') !== executorKeys.sort().join('\0') || executor.kind !== 'subagent-executor' || host.agentRole !== expectedRole
+    || executor.agentType !== expectedAgentType || executor.agentId !== expected.childThreadId || executor.parentSessionId !== expected.parentSessionId
+    || executor.parentTurnId !== expected.originalParentTurnId || executor.parentPermissionMode !== expected.permissionMode || executor.childTurnId !== 'child-turn'
+    || executor.active !== false || executor.workspace !== expected.executionWorkspace || executor.originWorkspace !== expected.originWorkspace
+    || !/^[a-f0-9]{64}$/u.test(executor.parentGenerationId) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(executor.createdAt)
+    || eventTimestamp({ timestamp: executor.createdAt }) !== historicalTimes[2]) mismatch('restored-child-executor', 'Stopped executor provenance does not match the production schema and original child lifecycle.');
+  const preparationKeys = ['activation', 'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'generation', 'key', 'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source', 'turnId', 'version', 'workspace'];
+  const expectedPreparationKey = createHash('sha256').update(JSON.stringify([expected.parentSessionId, expected.resumedParentTurnId, expected.executionWorkspace, 'rescue'])).digest('hex');
   const activationKeys = ['agentPathDigest', 'executorAgentId', 'kind'];
-  if (preparation?.version !== 3 || preparation?.generation !== 1 || preparation?.requiredExecutorAgentId !== null
-    || Object.keys(preparation?.activation ?? {}).sort().join('\0') !== activationKeys.sort().join('\0')
+  const preparationCreated = eventTimestamp({ timestamp: preparation?.createdAt }); const preparationExpires = eventTimestamp({ timestamp: preparation?.expiresAt }); const preparationConsumed = eventTimestamp({ timestamp: preparation?.consumedAt });
+  if (Object.keys(preparation ?? {}).sort().join('\0') !== preparationKeys.sort().join('\0') || preparation.version !== 3 || preparation.key !== expectedPreparationKey
+    || preparation.sessionId !== expected.parentSessionId || preparation.turnId !== expected.resumedParentTurnId || preparation.workspace !== expected.executionWorkspace
+    || preparation.permissionMode !== expected.permissionMode || preparation.source !== 'proactive' || !isDeepStrictEqual(preparation.envelope, preparationEnvelope)
+    || preparationEnvelope.source !== preparation.source || preparationEnvelope.options.execution !== 'foreground' || preparationEnvelope.options.resume !== 'resume'
+    || preparation.generation !== 1 || preparation.requiredExecutorAgentId !== null || Object.keys(preparation.activation ?? {}).sort().join('\0') !== activationKeys.sort().join('\0')
     || preparation.activation.kind !== 'reactivate' || preparation.activation.executorAgentId !== expected.childThreadId
-    || preparation.activation.agentPathDigest !== createHash('sha256').update(expected.agentPath).digest('hex')) mismatch('restored-child-activation', 'Generation-one preparation does not prove exact child reactivation.');
-  const childExecs = child.filter((event) => event?.type === 'exec');
-  if (child.length !== 2 || childExecs.length !== 1 || childExecs[0].command !== `${expected.launcherCommand} invoke-prepared rescue`
-    || childExecs[0].workdir !== expected.originWorkspace || childExecs[0].threadId !== expected.childThreadId
-    || child.filter((event) => event?.type === 'result').length !== 1 || child.find((event) => event?.type === 'result')?.output !== expected.publicOutput) {
-    mismatch('restored-child-invocation', 'The restored child did not perform one fixed launcher invocation and return the fake response.');
-  }
+    || preparation.activation.agentPathDigest !== createHash('sha256').update(expected.agentPath).digest('hex') || preparation.executorAgentId !== expected.childThreadId
+    || [preparationCreated, preparationExpires, preparationConsumed].some((value) => value === undefined) || preparationExpires - preparationCreated !== 30n * 60n * 1_000_000_000n
+    || preparationConsumed < preparationCreated || preparationConsumed >= preparationExpires) mismatch('restored-child-activation', 'Generation-one preparation is not a full exact linked v3 reactivate record.');
+  await assertRestoredPreparationWithProduction(preparation, expected);
+
+  const childCalls = child.filter((event) => event?.payload?.type === 'custom_tool_call'); const childOutputs = child.filter((event) => event?.payload?.type === 'custom_tool_call_output');
+  if (child.length !== 2 || childCalls.length !== 1 || childOutputs.length !== 1 || childCalls[0].thread_id !== expected.childThreadId || childOutputs[0].thread_id !== expected.childThreadId) mismatch('restored-child-invocation', 'The restored child capture contains an extra or missing host event.');
+  const childHost = parseCapturedHostCall(childCalls[0].payload.input); const childResult = parseCapturedHostResult(childOutputs[0].payload.output);
+  const childCallTime = eventTimestamp(childCalls[0]); const childOutputTime = eventTimestamp(childOutputs[0]);
+  const currentTimes = [roleCall.event, outputFor(roleCall), prepareCall.event, outputFor(prepareCall), writeCall.event, outputFor(writeCall), followupCall, currentFunctionOutputs[0], childCalls[0], childOutputs[0]].map(eventTimestamp);
+  if (currentTimes.some((value) => value === undefined) || currentTimes.some((value, index) => index > 0 && value <= currentTimes[index - 1])
+    || childHost.kind !== 'exec_command' || Object.keys(Object.fromEntries(childHost.envelope)).sort().join('\0') !== ['cmd', 'workdir'].join('\0')
+    || childHost.envelope.get('cmd') !== `${expected.launcherCommand} invoke-prepared rescue` || childHost.envelope.get('workdir') !== expected.originWorkspace
+    || childResult.output !== expected.publicOutput || childResult.exit_code !== 0 || Object.hasOwn(childResult, 'session_id')
+    || !(preparationCreated > eventTimestamp(writeCall.event) && preparationCreated < eventTimestamp(outputFor(writeCall))
+      && preparationConsumed >= childCallTime && preparationConsumed < childOutputTime)) mismatch('restored-child-invocation', 'Restored Role, prepare, follow-up, and child execution chronology is invalid.');
+  assertParentPreparationTaskExclusivity(parent, writeCall.event, preparationEnvelope.task, parsedCurrent, currentCustomOutputs.map((event) => ({ event })));
+  if ([child, transcript, peer].some((surface) => stringLeafContains(surface, preparationEnvelope.task))) mismatch('restored-child-private-task', 'The private preparation task escaped its authorized write or private record.');
+  if (JSON.stringify({ parent, child, transcript, peer, executor, preparation }).toLowerCase().includes('collision')) mismatch('restored-child-collision', 'Restored-child evidence contains collision handling.');
   if (peer.length !== 2 || peer[0]?.method !== 'session/create' || peer[0]?.params?.workspace?.workspacePath !== expected.executionWorkspace
     || peer[1]?.method !== 'session/send' || peer[1]?.params?.response !== expected.publicOutput) mismatch('restored-child-peer', 'Fake ZCode evidence does not execute in the immutable target worktree.');
   if (expected.originWorkspace !== expected.executionWorkspace) await validateCanonicalGitLineage(expected.originWorkspace, expected.executionWorkspace);
-  return { route: expected.route, parentSessionId: expected.parentSessionId, childThreadId: expected.childThreadId, agentPath: expected.agentPath,
+  return { route, parentSessionId: expected.parentSessionId, childThreadId: expected.childThreadId, agentPath: expected.agentPath,
     originalParentTurnId: expected.originalParentTurnId, resumedParentTurnId: expected.resumedParentTurnId,
     originWorkspace: expected.originWorkspace, executionWorkspace: expected.executionWorkspace,
     followupCount: 1, spawnCount: 0, childInvocationCount: 1, restoredInitiallyUnloaded: true, collisionCount: 0 };
+}
+
+async function assertRestoredPreparationWithProduction(record, expected) {
+  const dataRoot = await mkdtemp(join(tmpdir(), 'zcode-restored-preparation-'));
+  try {
+    const store = createRescuePreparationStore({ dataRoot });
+    const identity = { sessionId: expected.parentSessionId, turnId: expected.resumedParentTurnId,
+      workspace: expected.executionWorkspace, permissionMode: expected.permissionMode };
+    await store.save({ ...identity, envelope: record.envelope, activation: record.activation,
+      recordedPrompt: 'proactive restored qualification', now: record.createdAt });
+    const consumed = await store.consume({ ...identity, executorAgentId: expected.childThreadId,
+      activationProof: { kind: 'reactivate', agentPathDigest: record.activation.agentPathDigest }, now: record.consumedAt });
+    if (!isDeepStrictEqual(consumed, record)) mismatch('restored-child-activation', 'Production preparation storage did not reproduce the exact consumed reactivate record.');
+  } catch (error) {
+    if (error instanceof CodexRescueEvidenceMismatchError) throw error;
+    mismatch('restored-child-activation', 'Production preparation storage rejected the restored reactivate record.');
+  } finally { await rm(dataRoot, { recursive: true, force: true }); }
 }
 
 function validateLiveRawContinuationCapture(input, core) {

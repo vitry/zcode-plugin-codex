@@ -598,20 +598,41 @@ test('captured restored-child qualification reactivates the unloaded original pa
   const parentSessionId = 'restored-parent'; const childThreadId = 'restored-child'; const agentPath = '/root/zcode_rescue_task';
   const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs"'; const publicOutput = 'fake restored e2e response';
   for (const route of ['named', 'generic']) {
-    const expected = { route, parentSessionId, childThreadId, agentPath, originalParentTurnId: 'old-turn', resumedParentTurnId: 'new-turn',
+    const expected = { parentSessionId, childThreadId, agentPath, originalParentTurnId: 'old-turn', resumedParentTurnId: 'new-turn',
       originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput };
     const agentRole = route === 'named' ? 'zcode-rescue' : null; const agentType = route === 'named' ? 'zcode-rescue' : 'default';
     const assignment = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', launcherCommand);
     const thread = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath, cwd: originWorkspace, agentRole });
     const routeDirective = { version: 1, action: 'followup', target: agentPath };
+    const preparationEnvelope = { version: 1, source: 'proactive', task: `private restored ${route} e2e task`, options: { execution: 'foreground', resume: 'resume' } };
+    const spawnArgs = { fork_turns: 'none', task_name: 'zcode_rescue_task', message: assignment, ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) };
+    const preparationRecord = { version: 3, key: createHash('sha256').update(JSON.stringify([parentSessionId, 'new-turn', executionWorkspace, 'rescue'])).digest('hex'),
+      sessionId: parentSessionId, turnId: 'new-turn', workspace: executionWorkspace, permissionMode: 'acceptEdits', source: 'proactive', envelope: preparationEnvelope,
+      generation: 1, requiredExecutorAgentId: null, activation: { kind: 'reactivate', executorAgentId: childThreadId, agentPathDigest: createHash('sha256').update(agentPath).digest('hex') },
+      createdAt: '2026-08-10T01:00:00.550Z', expiresAt: '2026-08-10T01:30:00.550Z', consumedAt: '2026-08-10T01:00:00.950Z', executorAgentId: childThreadId };
     const evidence = await qualifyCodexRescueRestoredChildEvidence({ expected,
-      parentRolloutJson: JSON.stringify([{ type: 'session_meta', payload: { id: parentSessionId } },
-        { type: 'response_item', turn_id: 'new-turn', payload: { type: 'function_call', name: 'followup_task', arguments: JSON.stringify({ target: agentPath, message: assignment }) } }]),
+      parentRolloutJson: JSON.stringify([
+        { type: 'session_meta', payload: { id: parentSessionId } },
+        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.100Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: `spawn-${route}`, arguments: JSON.stringify(spawnArgs) } },
+        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.200Z', payload: { type: 'function_call_output', call_id: `spawn-${route}`, output: JSON.stringify({ agent_id: childThreadId }) } },
+        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.300Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: `spawn-${route}`, agent_thread_id: childThreadId, agent_path: agentPath, parent_turn_id: 'old-turn' } },
+        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:10:00.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childThreadId, agent_path: agentPath, parent_turn_id: 'old-turn' } },
+        { ...installedToolCall(`role-${route}`, installedExecInput(`${launcherCommand} role-status rescue`, { workdir: executionWorkspace })), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.100Z' },
+        { ...installedToolOutput(`role-${route}`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.200Z' },
+        { ...installedToolCall(`prepare-${route}`, installedExecInput(`${launcherCommand} prepare rescue`, { workdir: executionWorkspace, tty: true })), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.300Z' },
+        { ...installedToolOutput(`prepare-${route}`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 91 }), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.400Z' },
+        { ...installedToolCall(`prepare-write-${route}`, installedPollInput(91, `${JSON.stringify(preparationEnvelope)}\n`)), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.500Z' },
+        { ...installedToolOutput(`prepare-write-${route}`, { output: installedPreparedAck(routeDirective), exit_code: 0 }), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.600Z' },
+        { type: 'response_item', turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.700Z', payload: { type: 'function_call', name: 'followup_task', call_id: `followup-${route}`, arguments: JSON.stringify({ target: agentPath, message: assignment }) } },
+        { type: 'response_item', turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.800Z', payload: { type: 'function_call_output', call_id: `followup-${route}`, output: JSON.stringify({ accepted: true, target: agentPath }) } },
+      ]),
       appServerTranscriptJson: JSON.stringify(installedRestoredAppServerTranscript(thread, childThreadId)),
-      preparedOutput: installedPreparedAck(routeDirective),
-      executorRecordBytes: JSON.stringify({ agentId: childThreadId, agentType, parentSessionId, parentTurnId: 'old-turn', active: false, originWorkspace, workspace: executionWorkspace }),
-      preparationRecordBytes: JSON.stringify({ version: 3, generation: 1, requiredExecutorAgentId: null, activation: { kind: 'reactivate', executorAgentId: childThreadId, agentPathDigest: createHash('sha256').update(agentPath).digest('hex') } }),
-      childRolloutJson: JSON.stringify([{ type: 'exec', threadId: childThreadId, command: `${launcherCommand} invoke-prepared rescue`, workdir: originWorkspace }, { type: 'result', output: publicOutput }]),
+      executorRecordBytes: `${JSON.stringify({ kind: 'subagent-executor', agentId: childThreadId, agentType, parentSessionId, parentGenerationId: '9'.repeat(64), parentTurnId: 'old-turn', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', originWorkspace, workspace: executionWorkspace, active: false, createdAt: '2026-08-10T00:00:00.300Z' })}\n`,
+      preparationRecordBytes: `${JSON.stringify(preparationRecord)}\n`,
+      childRolloutJson: JSON.stringify([
+        { ...installedToolCall(`invoke-${route}`, installedExecInput(`${launcherCommand} invoke-prepared rescue`, { workdir: originWorkspace })), turn_id: 'child-turn-resumed', thread_id: childThreadId, timestamp: '2026-08-10T01:00:00.900Z' },
+        { ...installedToolOutput(`invoke-${route}`, { output: publicOutput, exit_code: 0 }), turn_id: 'child-turn-resumed', thread_id: childThreadId, timestamp: '2026-08-10T01:00:01.000Z' },
+      ]),
       fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } }, { method: 'session/send', params: { response: publicOutput } }]),
     });
     assert.equal(evidence.route, route); assert.equal(evidence.childThreadId, childThreadId); assert.equal(evidence.followupCount, 1); assert.equal(evidence.spawnCount, 0); assert.equal(evidence.collisionCount, 0);
@@ -2941,7 +2962,7 @@ function installedYieldSegmentFacts(events, expectedCommand, statusCommand, expe
 function installedToolCall(callId, input) { return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input } }; }
 function installedToolOutput(callId, result) { return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: installedHostOutput(result) } }; }
 function installedExecInput(cmd, fields = {}) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace', ...fields })}); text(JSON.stringify(r))\n`; }
-function installedPollInput(sessionId) { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 30000 })}); text(JSON.stringify(r))\n`; }
+function installedPollInput(sessionId, chars = '') { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars, ...(chars === '' ? { yield_time_ms: 30000 } : {}) })}); text(JSON.stringify(r))\n`; }
 function installedPreparationInput(sessionId, chars) { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars })}); text(JSON.stringify(r))\n`; }
 function installedHostOutput(result) { return [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }]; }
 function parseInstalledToolInput(source) {
