@@ -179,10 +179,8 @@ function remoteRequestError(method) {
 function supportsExactParentList(result) {
   const userAgent = result.userAgent;
   if (!validBoundedString(userAgent, MAX_USER_AGENT_BYTES)) return false;
-  const product = userAgent.split(/\s/, 1)[0];
-  const slash = product.lastIndexOf('/');
-  if (slash <= 0) return false;
-  const version = product.slice(slash + 1);
+  let version = null;
+  for (const candidate of userAgent.matchAll(/\/([^\s/]+)(?=\s+\()/g)) version = candidate[1];
   if (!validBoundedString(version, MAX_VERSION_BYTES)) return false;
   const match = /^(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(version);
   if (!match) return false;

@@ -99,6 +99,8 @@ test('exact-parent discovery accepts supported originators and rejects silent-ig
   for (const [name, userAgent] of [
     ['alternate originator 0.149', 'codex_originator_via_env_var/0.149.0 (fake)'],
     ['slash originator 0.149', 'team/originator/0.149.0 (fake)'],
+    ['space originator 0.149', 'Codex Something Else/0.149.0 (fake)'],
+    ['space and slash originator 0.149', 'Codex Team/Else Product/0.149.0 (fake)'],
     ['newer prerelease', 'originator/0.149.0-alpha.8 (fake)'],
     ['minimum 0.141', 'zcode-plugin-codex/0.141.0 (fake)'],
     ['minimum build metadata', 'originator/0.141.0+build.8 (fake)'],
@@ -117,6 +119,9 @@ test('exact-parent discovery accepts supported originators and rejects silent-ig
     ['0.117 silent ignore', 'zcode-plugin-codex/0.117.0 (fake)'],
     ['leading-zero core', 'originator/0.0141.0 (fake)'],
     ['leading-zero prerelease', 'originator/0.149.0-08 (fake)'],
+    ['earlier originator semver cannot mask old host', 'Codex/9.9.9 (originator) Else/0.140.0 (fake)'],
+    ['earlier originator semver cannot mask malformed host', 'Codex/9.9.9 (originator) Else/not-semver (fake)'],
+    ['missing platform delimiter', 'originator/0.149.0 fake'],
     ['unparseable', 'fake-codex'],
     ['oversized', `originator/0.149.0 ${'x'.repeat(4096)}`],
   ]) {
