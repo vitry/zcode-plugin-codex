@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { planRescueActivation, validateRescueRouteDirective } from '../scripts/lib/rescue-route-planner.mjs';
+import { rescueBindingKey } from '../scripts/lib/rescue-binding.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
 
 const digest = (value) => createHash('sha256').update(value).digest('hex');
@@ -23,6 +24,41 @@ function child(cwd, overrides = {}) {
 
 function executor(workspace, overrides = {}) {
   return { active: false, agentId: 'child-1', agentType: 'zcode-rescue', childTurnId: 'child-turn', createdAt: '2026-08-20T00:00:00.000Z', kind: 'subagent-executor', originWorkspace: workspace, parentGenerationId: 'a'.repeat(64), parentPermissionMode: 'workspace-write', parentSessionId: 'parent-1', parentTurnId: 'turn-old', workspace, ...overrides };
+}
+
+function adoptionBinding(input, host, overrides = {}) {
+  const authority = {
+    kind: 'codex-legacy-adoption',
+    authorityId: 'c'.repeat(64),
+    childAgentId: host.id,
+    childAgentType: 'zcode-rescue',
+    authorizingParentTurnId: 'turn-adopted',
+    authorizingParentGenerationId: 'd'.repeat(64),
+    authorizingPermissionMode: input.caller.permissionMode,
+    originWorkspace: input.caller.originWorkspace,
+    executionWorkspace: input.caller.workspace,
+    agentPathDigest: digest(host.agentPath),
+    ...overrides.childAuthority,
+  };
+  const binding = {
+    version: 2,
+    key: rescueBindingKey({ parentSessionId: input.caller.sessionId, executorAgentId: host.id, workspace: input.caller.workspace }),
+    operationId: 'e'.repeat(64),
+    state: 'active',
+    parentSessionId: input.caller.sessionId,
+    childAuthority: authority,
+    workspace: input.caller.workspace,
+    permissionMode: input.caller.permissionMode,
+    anchorJobId: 'f'.repeat(64),
+    currentJobId: '1'.repeat(64),
+    createdAt: '2026-08-20T00:00:00.000Z',
+    updatedAt: '2026-08-20T00:00:00.000Z',
+    closedAt: null,
+    closeReason: null,
+    ...overrides,
+  };
+  binding.childAuthority = authority;
+  return binding;
 }
 
 function adapters(children, executors, bindings = new Map()) {
@@ -193,28 +229,71 @@ test('resume rejects multiple unbound legacy hosts as ambiguous', async () => {
 
 test('previously adopted exact binding produces legacy-bound activation', async () => {
   const input = await context(); input.envelope.options.resume = 'resume';
-  const legacy = child(input.caller.workspace, { id: 'legacy-base' }); const bindingKey = 'b'.repeat(64);
+  const legacy = child(input.caller.workspace, { id: 'legacy-base' }); const binding = adoptionBinding(input, legacy);
   const planned = await planRescueActivation({
     ...input,
     ...adapters([legacy], new Map(), new Map([[legacy.id, {
       kind: 'bound',
-      binding: { key: bindingKey, childAuthority: { kind: 'codex-legacy-adoption', childAgentId: legacy.id } },
+      binding,
     }]])),
   });
   assert.deepEqual(planned.activation, {
-    kind: 'legacy-bound', childThreadId: legacy.id, agentPathDigest: digest(legacy.agentPath), bindingKey,
+    kind: 'legacy-bound', childThreadId: legacy.id, agentPathDigest: digest(legacy.agentPath), bindingKey: binding.key,
   });
 });
 
 test('legacy host rejects a contradictory Hook-backed binding', async () => {
   const input = await context(); const legacy = child(input.caller.workspace, { id: 'legacy-base' });
+  const binding = adoptionBinding(input, legacy, { childAuthority: {
+    kind: 'subagent-start', childAgentId: legacy.id, childAgentType: 'zcode-rescue',
+    parentTurnId: 'old-turn', parentPermissionMode: input.caller.permissionMode,
+  } });
   await assert.rejects(planRescueActivation({
     ...input,
     ...adapters([legacy], new Map(), new Map([[legacy.id, {
       kind: 'bound',
-      binding: { key: 'b'.repeat(64), childAuthority: { kind: 'subagent-start', childAgentId: legacy.id } },
+      binding,
     }]])),
   }), { code: 'RESCUE_BINDING_INVALID' });
+});
+
+test('legacy-bound planning requires the exact complete adoption binding authority', async (t) => {
+  const input = await context(); input.envelope.options.resume = 'resume';
+  const legacy = child(input.caller.workspace, { id: 'legacy-base' });
+  const exact = adoptionBinding(input, legacy);
+  const mutations = [
+    ['wrong parent', () => ({ ...exact, parentSessionId: 'other-parent' })],
+    ['wrong binding key', () => ({ ...exact, key: '8'.repeat(64) })],
+    ['wrong path digest', () => ({ ...exact, childAuthority: { ...exact.childAuthority, agentPathDigest: '9'.repeat(64) } })],
+    ['wrong top-level workspace', () => ({ ...exact, workspace: '/private/other' })],
+    ['wrong execution workspace', () => ({ ...exact, childAuthority: { ...exact.childAuthority, executionWorkspace: '/private/other' } })],
+    ['wrong origin workspace', () => ({ ...exact, childAuthority: { ...exact.childAuthority, originWorkspace: '/private/other' } })],
+    ['closed binding', () => ({ ...exact, state: 'closed' })],
+    ['noncanonical timestamp', () => ({ ...exact, updatedAt: '2026-08-20' })],
+    ['normalized invalid calendar timestamp', () => ({ ...exact, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-02-30T00:00:00.000Z' })],
+    ['top-level unknown field', () => ({ ...exact, unknown: true })],
+    ['top-level missing field', () => { const value = { ...exact }; delete value.operationId; return value; }],
+    ['authority unknown field', () => ({ ...exact, childAuthority: { ...exact.childAuthority, unknown: true } })],
+    ['authority missing field', () => { const authority = { ...exact.childAuthority }; delete authority.authorityId; return { ...exact, childAuthority: authority }; }],
+    ['wrong authority version', () => ({ ...exact, childAuthority: { ...exact.childAuthority, kind: 'codex-legacy-continuation' } })],
+  ];
+  for (const [name, mutate] of mutations) await t.test(name, async () => {
+    await assert.rejects(planRescueActivation({
+      ...input,
+      ...adapters([legacy], new Map(), new Map([[legacy.id, { kind: 'bound', binding: mutate() }]])),
+    }), { code: 'RESCUE_BINDING_INVALID' });
+  });
+});
+
+test('fresh planning rejects multiple exact adoption bindings as ambiguous', async () => {
+  const input = await context();
+  const base = child(input.caller.workspace, { id: 'legacy-base' });
+  const ordinal = child(input.caller.workspace, { id: 'legacy-ordinal', agentPath: '/root/zcode_rescue_task_2' });
+  const bindings = new Map([
+    [base.id, { kind: 'bound', binding: adoptionBinding(input, base) }],
+    [ordinal.id, { kind: 'bound', binding: adoptionBinding(input, ordinal) }],
+  ]);
+  await assert.rejects(planRescueActivation({ ...input, ...adapters([base, ordinal], new Map(), bindings) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
 });
 
 test('wrong parent, permission, or immutable workspace rejects without public metadata', async (t) => {
