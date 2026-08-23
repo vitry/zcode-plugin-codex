@@ -4,6 +4,7 @@ All notable changes follow Semantic Versioning.
 
 ## Unreleased
 
+- Fixed restored empty-preview Codex children disappearing from Rescue collision planning: preparation now uses the exact parent relationship query, treats host-only rows as occupancy without granting follow-up authority, and fails closed when that API is unsupported instead of retrying or guessing a colliding spawn.
 - Added persisted stopped Rescue child recovery before replacement spawn: the plugin restores the original Codex thread and history by joining sanitized app-server identity with private executor provenance, rejoins already active children, and never treats age or a name/path collision as authority.
 - Restored compatibility with the legacy PR #39 Rescue route: after origin-to-worktree binding, a child launched or resumed from the conversation root can resolve the immutable execution target. This qualification does not broaden authority beyond that bound target.
 - Added compatible Rescue worktree late binding: lifecycle proof retains the origin workspace while the first trusted prepare automatically and immutably binds one execution workspace from the same canonical Git common-dir, without manual handoff. Role preview and children cannot claim; unrelated repositories fail closed; Root Stop, a new prompt, and SessionEnd revoke or replace authority before target cleanup.
