@@ -27,8 +27,9 @@ const fakeCodex = join(root, 'tests/fixtures/fake-codex-app-server.mjs');
 const pr39Fixture = join(root, 'tests/fixtures/pr39-origin-route-compatibility.mjs');
 const pr39ClockPreload = join(root, 'tests/fixtures/pr39-frozen-clock-preload.mjs');
 const legacyPreparedRoute = Object.freeze({ type: 'prepared', command: 'rescue', route: { version: 1, action: 'spawn', taskName: 'zcode_rescue_task' } });
+const baseAgentPathDigest = createHash('sha256').update('/root/zcode_rescue_task').digest('hex');
 const legacyPreparationDependencies = Object.freeze({
-  planRescueActivation: async () => ({ activation: undefined, directive: legacyPreparedRoute.route }),
+  planRescueActivation: async () => ({ activation: { kind: 'spawn', taskName: 'zcode_rescue_task', agentPathDigest: baseAgentPathDigest }, directive: legacyPreparedRoute.route }),
 });
 
 async function cleanupFixture(directory) {
@@ -98,7 +99,7 @@ async function fixture(t) {
     CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
     FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [], nextCursor: null, backwardsCursor: null }),
   };
-  const context = { directory, workspace, dataRoot, callerA, callerB, env, preserveEvidence: false };
+  const context = { directory, workspace, dataRoot, callerA, callerB, env, preserveEvidence: false, stoppedChildren: new Set(), codexChildren: new Map() };
   t.after(async () => { if (!context.preserveEvidence) await cleanupFixture(directory); else t.diagnostic(`preserved background cleanup evidence at ${directory}`); });
   return context;
 }
@@ -109,34 +110,44 @@ async function startRescueChild(ctx, parentSessionId, childId, turnId = `${child
     input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: agentType },
   });
   assert.equal(result.code, 0, result.stderr || result.stdout);
+  const rawChild = JSON.stringify(persistedCodexChild({
+    id: childId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', cwd: await realpath(ctx.workspace),
+    agentRole: agentType === 'zcode-rescue' ? 'zcode-rescue' : null,
+  }));
+  ctx.codexChildren.set(childId, rawChild); ctx.stoppedChildren.delete(childId); ctx.env.FAKE_CODEX_THREAD_JSON = rawChild;
 }
 
-function persistedCodexChild({ id, parentThreadId, agentPath, cwd }) {
+function persistedCodexChild({ id, parentThreadId, agentPath, cwd, agentRole = 'zcode-rescue' }) {
   return {
     id, sessionId: parentThreadId, parentThreadId, ephemeral: false, preview: '', projectId: null,
     historyMode: 'legacy', modelProvider: 'openai', createdAt: 1, updatedAt: 2, recencyAt: 2,
     status: { type: 'notLoaded' }, path: null, cwd,
     source: { subAgent: { thread_spawn: {
       parent_thread_id: parentThreadId, depth: 1, agent_path: agentPath,
-      agent_nickname: null, agent_role: 'zcode-rescue',
+      agent_nickname: null, agent_role: agentRole,
     } } },
     canAcceptDirectInput: null, threadSource: null, agentNickname: null,
-    agentRole: 'zcode-rescue', gitInfo: null, name: null, turns: [],
+    agentRole, gitInfo: null, name: null, turns: [],
   };
 }
 
-async function prepareRescue(ctx, parentSessionId, envelope) {
+async function prepareRescue(ctx, parentSessionId, envelope, childId) {
+  const stopped = childId !== undefined && ctx.stoppedChildren.has(childId);
+  const dependencies = stopped ? { planRescueActivation: async () => ({
+    activation: { kind: 'reactivate', executorAgentId: childId, agentPathDigest: baseAgentPathDigest },
+    directive: { version: 1, action: 'followup', target: '/root/zcode_rescue_task' },
+  }) } : legacyPreparationDependencies;
   return runDirectInvocation(['prepare', 'rescue'], {
     cwd: ctx.workspace,
     env: { ...ctx.env, CODEX_THREAD_ID: parentSessionId },
     input: Readable.from([`${JSON.stringify(envelope)}\n`]),
-    dependencies: legacyPreparationDependencies,
+    dependencies,
   });
 }
 
 async function invokePreparedRescue(ctx, parentSessionId, childId, task, options = { execution: 'foreground', resume: 'fresh' }, env = ctx.env) {
-  await prepareRescue(ctx, parentSessionId, { version: 1, source: 'explicit', task, options });
-  return runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, CODEX_THREAD_ID: childId } });
+  await prepareRescue(ctx, parentSessionId, { version: 1, source: 'explicit', task, options }, childId);
+  return runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, FAKE_CODEX_THREAD_JSON: ctx.codexChildren.get(childId), CODEX_THREAD_ID: childId } });
 }
 
 async function materializePr39Scenario(t, name) {
@@ -384,6 +395,7 @@ test('origin hook cwd executes prepared Rescue only in its bound linked worktree
     input: { session_id: 'linked-parent', turn_id: 'linked-child-turn', cwd: ctx.workspace, hook_event_name: 'SubagentStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: 'linked-child', agent_type: 'zcode-rescue' },
   });
   assert.equal(start.code, 0, start.stderr || start.stdout);
+  ctx.env.FAKE_CODEX_THREAD_JSON = JSON.stringify(persistedCodexChild({ id: 'linked-child', parentThreadId: 'linked-parent', agentPath: '/root/zcode_rescue_task', cwd: await realpath(ctx.workspace) }));
   const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'linked-child', FAKE_ZCODE_RECORD: record } });
   assert.equal(invoked.code, 0, invoked.stderr || invoked.stdout);
   const created = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).find((frame) => frame.method === 'session/create');
@@ -436,7 +448,7 @@ test('origin cwd choice fresh and resume consume and execute only in the linked 
     assert.equal(first.code, 0, first.stderr || first.stdout);
     await stopRescueChild(ctx, parentId, childId, childTurnId);
     await identity.beginCallerTurn({ sessionId: parentId, turnId: `route-choice-${choice}-later`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: `$zcode:rescue ${choice} later`, sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
-    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${choice} later`, options: { execution: 'foreground' } });
+    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${choice} later`, options: { execution: 'foreground' } }, childId);
     const pending = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: canonicalTarget, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(pending.code, 3, pending.stderr || pending.stdout); assert.match(pending.stdout, /needs-choice/);
     assert.equal((await store.listJobs(ctx.workspace)).length, 0);
@@ -468,7 +480,7 @@ test('origin cwd stopped continuation preserves the routed target for named and 
     assert.equal(first.code, 0, first.stderr || first.stdout);
     await stopRescueChild(ctx, parentId, childId, childTurnId, agentType);
     await identity.beginCallerTurn({ sessionId: parentId, turnId: `${routeName}-continuation-turn`, workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume continue', sessionStartedAt: '2026-08-22T09:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
-    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${routeName} continue`, options: { execution: 'foreground', resume: 'resume' } });
+    await prepareRescue({ ...ctx, workspace: canonicalTarget }, parentId, { version: 1, source: 'explicit', task: `${routeName} continue`, options: { execution: 'foreground', resume: 'resume' } }, childId);
 
     const continued = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
     assert.equal(continued.code, 0, continued.stderr || continued.stdout);
@@ -844,7 +856,7 @@ test('aged stopped executor cannot resume an eligible latest job when its exact 
   await writeFile(executorPath, `${JSON.stringify({ ...executor, createdAt: agedAt })}\n`); await writeFile(routePath, `${JSON.stringify({ ...route, createdAt: agedAt })}\n`);
   for (const name of await readdir(storage.directory)) if (name.startsWith('rescue-binding-')) await rm(join(storage.directory, name));
   await identity.beginCallerTurn({ sessionId: 'unbound-parent', turnId: 'later-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'Continue the exact same stopped Rescue child.' });
-  await prepareRescue(ctx, 'unbound-parent', { version: 1, source: 'proactive', task: 'continue', options: { execution: 'foreground', resume: 'resume' } });
+  await prepareRescue(ctx, 'unbound-parent', { version: 1, source: 'proactive', task: 'continue', options: { execution: 'foreground', resume: 'resume' } }, 'unbound-child');
   const before = await store.listJobs(ctx.workspace);
   const rejected = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'unbound-child', FAKE_ZCODE_RECORD: peerRecord } });
   assert.notEqual(rejected.code, 0); assert.match(rejected.stdout, /(?:EXECUTOR_IDENTITY_NOT_FOUND|RESCUE_BINDING_(?:NOT_FOUND|INVALID))/);
@@ -967,6 +979,7 @@ async function storeCandidate(ctx, sessionId) { return (await createStateStore({
 async function stopRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
   const result = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], { cwd: ctx.workspace, env: ctx.env, ordinaryInput: true, input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: agentType, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } });
   assert.equal(result.code, 0, result.stderr || result.stdout);
+  ctx.stoppedChildren.add(childId);
 }
 
 function invoke(ctx, rawArgv, authorization, extraEnv = {}, ordinaryStdio = false) {
@@ -1156,8 +1169,8 @@ test('a stopped Rescue child resumes its exact bound peer session on a later par
   assert.equal(second.code, 0, second.stderr || second.stdout); await stopRescueChild(ctx, 'shared-parent', 'child-b', 'child-b-start');
 
   await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'turn-a-followup', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'continue first' });
-  await prepareRescue(ctx, 'shared-parent', { version: 1, source: 'proactive', task: 'continue first', options: { execution: 'foreground', resume: 'resume' } });
-  const resumed = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'child-a', FAKE_ZCODE_RECORD: record } });
+  await prepareRescue(ctx, 'shared-parent', { version: 1, source: 'proactive', task: 'continue first', options: { execution: 'foreground', resume: 'resume' } }, 'child-a');
+  const resumed = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, FAKE_CODEX_THREAD_JSON: ctx.codexChildren.get('child-a'), CODEX_THREAD_ID: 'child-a', FAKE_ZCODE_RECORD: record } });
   assert.equal(resumed.code, 0, resumed.stderr || resumed.stdout); assert.doesNotMatch(resumed.stdout, /needs-choice/);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   const created = requests.filter((frame) => frame.method === 'session/create').map((frame) => frame.result?.session?.sessionId ?? frame.params?.sessionId).filter(Boolean);
@@ -1240,12 +1253,17 @@ test('same-parent sibling cannot consume a pending Rescue choice without trusted
   });
   await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'seed', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait seed' });
   assert.equal((await agentHook('SubagentStart', 'rescue-child', 'child-seed')).code, 0);
+  const rescueRaw = JSON.stringify(persistedCodexChild({ id: 'rescue-child', parentThreadId: 'shared-parent', agentPath: '/root/zcode_rescue_task', cwd: await realpath(ctx.workspace) }));
+  ctx.codexChildren.set('rescue-child', rescueRaw); ctx.env.FAKE_CODEX_THREAD_JSON = rescueRaw;
   assert.equal((await invokePreparedRescue(ctx, 'shared-parent', 'rescue-child', 'seed')).code, 0);
   assert.equal((await agentHook('SubagentStop', 'rescue-child', 'child-seed')).code, 0);
+  ctx.stoppedChildren.add('rescue-child');
   await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'origin', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --wait protected' });
   assert.equal((await invokePreparedRescue(ctx, 'shared-parent', 'rescue-child', 'protected', { execution: 'foreground' })).code, 3);
   await identity.beginCallerTurn({ sessionId: 'shared-parent', turnId: 'later-answer', workspace: ctx.workspace, permissionMode: 'bypassPermissions', prompt: 'resume' });
   assert.equal((await agentHook('SubagentStart', 'sibling-child', 'sibling-answer')).code, 0);
+  const siblingRaw = JSON.stringify(persistedCodexChild({ id: 'sibling-child', parentThreadId: 'shared-parent', agentPath: '/root/zcode_rescue_task_2', cwd: await realpath(ctx.workspace) }));
+  ctx.codexChildren.set('sibling-child', siblingRaw); ctx.env.FAKE_CODEX_THREAD_JSON = siblingRaw;
   const sibling = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'sibling-child' } });
   assert.notEqual(sibling.code, 0);
   assert.match(sibling.stdout, /(?:PENDING_INVOCATION_NOT_FOUND|EXECUTOR_STATE_MISMATCH)/);

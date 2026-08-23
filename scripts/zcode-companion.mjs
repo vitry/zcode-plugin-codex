@@ -5,7 +5,7 @@ import { closeSync as closeFdSync, realpathSync } from 'node:fs';
 import { Socket } from 'node:net';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { join, resolve, sep } from 'node:path';
+import { join, posix, resolve, sep, win32 } from 'node:path';
 
 import { parseArgs, resolveModel } from './lib/args.mjs';
 import { readCodexThread, readCodexThreadSpawnChild } from './lib/codex-app-server.mjs';
@@ -21,7 +21,7 @@ import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
 import { createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
-import { planRescueActivation } from './lib/rescue-route-planner.mjs';
+import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
@@ -148,9 +148,9 @@ export async function runDirectInvocation(argv, runtime = {}) {
       const caller = await identity.resolveActiveTurn({ sessionId: ambientThreadId, workspace: cwd, workspaceBinding: 'claim' });
       await transport.writeReady();
       const envelope = await readRescuePreparationFrame(input, runtime.signal);
-      const planned = await (runtime.dependencies?.planRescueActivation ?? planRescueActivation)({
+      const planned = validatePlannedRescueActivation(await (runtime.dependencies?.planRescueActivation ?? planRescueActivation)({
         dataRoot, caller, envelope, appServerOptions: codexAppServerOptions(env, caller.originWorkspace ?? caller.workspace),
-      });
+      }));
       await createRescuePreparationStore({ dataRoot }).save({ ...caller, recordedPrompt: caller.prompt, envelope, activation: planned.activation, signal: runtime.signal });
       return { type: 'prepared', command: 'rescue', route: planned.directive };
     } finally { transport.close(); }
@@ -164,12 +164,9 @@ export async function runDirectInvocation(argv, runtime = {}) {
     try { prepared = await preparations.consume({ ...caller, executorAgentId: executor.agentId }); }
     catch (error) {
       if (!(error instanceof PluginError) || error.code !== 'RESCUE_PREPARATION_MISMATCH') throw error;
-      let host;
-      try {
-        host = await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
-          ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace),
-        );
-      } catch { throw error; }
+      const host = validatePreparedHostChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
+        ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace),
+      ), executor);
       const activationProof = preparedActivationProof(host, executor);
       prepared = await preparations.consume({ ...caller, executorAgentId: executor.agentId, activationProof });
     }
@@ -243,6 +240,72 @@ async function resolvePreparedExecutionContext(dataRoot, ambientWorkspace, agent
     return resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId, { continuation: true, durableProvenance: true });
   }
 }
+
+/** @param {unknown} value */
+function validatePlannedRescueActivation(value) {
+  if (!exactPlainObject(value, ['activation', 'directive'])) throw rescueRouteInvalid();
+  const plan = /** @type {Record<string,any>} */ (value);
+  const directive = validateRescueRouteDirective(plan.directive);
+  const activation = plan.activation;
+  if (directive.action === 'spawn') {
+    const digest = createHash('sha256').update(`/root/${directive.taskName}`).digest('hex');
+    if (!exactPlainObject(activation, ['agentPathDigest', 'kind', 'taskName']) || activation.kind !== 'spawn'
+      || activation.taskName !== directive.taskName || activation.agentPathDigest !== digest) throw rescueRouteInvalid();
+    return { activation: { kind: 'spawn', taskName: activation.taskName, agentPathDigest: activation.agentPathDigest }, directive };
+  }
+  const digest = createHash('sha256').update(directive.target).digest('hex');
+  if (!exactPlainObject(activation, ['agentPathDigest', 'executorAgentId', 'kind']) || activation.kind !== 'reactivate'
+    || !safeCompanionIdentifier(activation.executorAgentId) || activation.agentPathDigest !== digest) throw rescueRouteInvalid();
+  return { activation: { kind: 'reactivate', executorAgentId: activation.executorAgentId, agentPathDigest: activation.agentPathDigest }, directive };
+}
+
+/** @param {unknown} value @param {any} executor */
+function validatePreparedHostChild(value, executor) {
+  if (!exactPlainObject(value, ['agentPath', 'agentRole', 'createdAt', 'cwd', 'id', 'parentThreadId', 'status', 'updatedAt'])) throw childMetadataInvalid();
+  const host = /** @type {Record<string,any>} */ (value);
+  const expectedRole = executor.agentType === 'zcode-rescue' ? 'zcode-rescue' : executor.agentType === 'default' ? null : undefined;
+  if (!safeCompanionIdentifier(host.id) || !safeCompanionIdentifier(host.parentThreadId)
+    || host.id !== executor.agentId || host.parentThreadId !== executor.parentSessionId
+    || !validCompanionRole(host.agentRole) || host.agentRole !== expectedRole
+    || !canonicalCompanionAgentPath(host.agentPath) || !canonicalCompanionCwd(host.cwd) || host.cwd !== executor.originWorkspace
+    || !Number.isSafeInteger(host.createdAt) || host.createdAt < 0
+    || !Number.isSafeInteger(host.updatedAt) || host.updatedAt < 0) throw childMetadataInvalid();
+  const status = cloneCompanionChildStatus(host.status);
+  return { id: host.id, parentThreadId: host.parentThreadId, agentPath: host.agentPath, agentRole: host.agentRole,
+    cwd: host.cwd, status, createdAt: host.createdAt, updatedAt: host.updatedAt };
+}
+
+/** @param {unknown} value */
+function cloneCompanionChildStatus(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw childMetadataInvalid();
+  const status = /** @type {Record<string,any>} */ (value);
+  if (['notLoaded', 'idle', 'systemError'].includes(status.type) && Object.keys(status).length === 1) return { type: status.type };
+  if (status.type === 'active' && Object.keys(status).length === 2 && Array.isArray(status.activeFlags)
+    && new Set(status.activeFlags).size === status.activeFlags.length
+    && status.activeFlags.every((/** @type {unknown} */ flag) => ['waitingOnApproval', 'waitingOnUserInput'].includes(/** @type {any} */ (flag)))) {
+    return { type: 'active', activeFlags: [...status.activeFlags] };
+  }
+  throw childMetadataInvalid();
+}
+
+/** @param {unknown} value @param {string[]} keys */
+function exactPlainObject(value, keys) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype
+    && Object.keys(value).sort().join('\0') === [...keys].sort().join('\0');
+}
+/** @param {unknown} value @param {number} [maxBytes] */
+function safeCompanionIdentifier(value, maxBytes = 512) {
+  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= maxBytes
+    && ![...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code <= 31 || code === 127; });
+}
+/** @param {unknown} value */
+function validCompanionRole(value) { return value === null || safeCompanionIdentifier(value, 256); }
+/** @param {unknown} value */
+function canonicalCompanionAgentPath(value) { return typeof value === 'string' && safeCompanionIdentifier(value, 1024) && posix.normalize(value) === value && /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u.test(value); }
+/** @param {unknown} value */
+function canonicalCompanionCwd(value) { return typeof value === 'string' && safeCompanionIdentifier(value, 4096) && (posix.isAbsolute(value) && posix.normalize(value) === value || win32.isAbsolute(value) && win32.normalize(value) === value); }
+function rescueRouteInvalid() { return new PluginError('RESCUE_ROUTE_INVALID', 'The Rescue activation route is invalid.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' }); }
+function childMetadataInvalid() { return new PluginError('CODEX_CHILD_METADATA_INVALID', 'Codex returned invalid persisted child metadata.', { category: 'protocol', remedy: 'Restart or upgrade Codex, then retry the Rescue request.' }); }
 
 /** @param {any} host @param {any} executor */
 function preparedActivationProof(host, executor) {
