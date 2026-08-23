@@ -267,13 +267,15 @@ test('append revalidates admitted identity after waiting for the cross-process l
   let settledWhileHeld;
   const probe = await open(sink.logFile, constants.O_RDONLY);
   const prototype = Object.getPrototypeOf(probe);
+  const logIdentity = await probe.stat({ bigint: true });
   await probe.close();
   const originalStat = prototype.stat;
-  let statCalls = 0; let markAdmitted;
+  let logStatCalls = 0; let markAdmitted;
   const admitted = new Promise((resolve) => { markAdmitted = resolve; });
   prototype.stat = async function markAdmission(...args) {
-    const info = await originalStat.call(this, ...args); statCalls += 1;
-    if (statCalls === 4) markAdmitted();
+    const info = await originalStat.call(this, ...args);
+    if (BigInt(info.dev) === logIdentity.dev && BigInt(info.ino) === logIdentity.ino) logStatCalls += 1;
+    if (logStatCalls === 3) markAdmitted();
     return info;
   };
   try {
@@ -434,14 +436,16 @@ test('direct block append revalidates identity after waiting for the cross-proce
   const lockPath = join(locksRoot, JOB_ID);
   const probe = await open(sink.logFile, constants.O_RDONLY);
   const prototype = Object.getPrototypeOf(probe);
+  const logIdentity = await probe.stat({ bigint: true });
   await probe.close();
   const originalStat = prototype.stat;
-  let statCalls = 0;
+  let logStatCalls = 0;
   let markAdmitted;
   const admitted = new Promise((resolve) => { markAdmitted = resolve; });
   prototype.stat = async function markAdmission(...args) {
-    const info = await originalStat.call(this, ...args); statCalls += 1;
-    if (statCalls === 4) markAdmitted();
+    const info = await originalStat.call(this, ...args);
+    if (BigInt(info.dev) === logIdentity.dev && BigInt(info.ino) === logIdentity.ino) logStatCalls += 1;
+    if (logStatCalls === 3) markAdmitted();
     return info;
   };
   const displaced = `${sink.logFile}.block-admitted`;

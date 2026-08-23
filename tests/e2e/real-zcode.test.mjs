@@ -441,7 +441,7 @@ async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, origi
         env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: nextFrame });
       assert.equal(result.code, 0, result.stderr || result.stdout); assert.match(result.stdout, /"type":"prepared"/u);
     },
-    invokePrepared: ({ childId, zcodePath }) => runSpawn(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: executionWorkspace,
+    invokePrepared: ({ childId, zcodePath }) => runSpawn(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: originWorkspace,
       env: { ...launcherEnv, CODEX_THREAD_ID: childId, ZCODE_PATH: zcodePath } }),
     cleanup: async () => {
       if (cleaned) return; cleaned = true;

@@ -9,6 +9,7 @@ import { atomicWritePrivateFile, replaceFileAtomically } from '../scripts/lib/fs
 
 const fsModule = new URL('../scripts/lib/fs.mjs', import.meta.url).href;
 const reviewModule = new URL('../scripts/lib/review.mjs', import.meta.url).href;
+const workspaceModule = new URL('../scripts/lib/workspace.mjs', import.meta.url).href;
 
 /** @param {'all-handles-dev'|'all-handles-ino'|'handle-after'|'reopened-path'} mode */
 function boundedReadIdentityProbe(mode) {
@@ -227,16 +228,27 @@ test('artifact identity checks do not mix handle and path stat implementations',
     import { tmpdir } from 'node:os';
     import { join } from 'node:path';
     import { readResultArtifact, writeResultArtifact } from ${JSON.stringify(reviewModule)};
+    import { resolveWorkspaceStorage } from ${JSON.stringify(workspaceModule)};
     const directory = await mkdtemp(join(tmpdir(), 'zcode-stat-'));
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory });
+    await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'a'.repeat(64), contents: 'bootstrap' });
+    const lockHandle = await open(join(storage.directory, '.artifacts.lock', 'advisory.lock'), 'r');
+    const lockIdentity = await lockHandle.stat({ bigint: true });
+    await lockHandle.close();
     const probe = await open(join(directory, 'probe'), 'a+');
     const prototype = Object.getPrototypeOf(probe);
     await probe.close();
     const originalStat = prototype.stat;
+    let lockStatCalls = 0; let artifactStatCalls = 0;
     prototype.stat = async function patchedStat(...args) {
       const stats = await originalStat.call(this, ...args);
+      const identity = typeof stats.dev === 'bigint' && typeof stats.ino === 'bigint' ? stats : await originalStat.call(this, { bigint: true });
+      if (identity.dev === lockIdentity.dev && identity.ino === lockIdentity.ino) {
+        lockStatCalls += 1; return stats;
+      }
+      artifactStatCalls += 1;
       return new Proxy(stats, { get(target, property) {
-        if (property === 'dev') return target.dev + 1;
-        if (property === 'ino') return target.ino + 1;
+        if (property === 'dev' || property === 'ino') return typeof target[property] === 'bigint' ? target[property] + 1n : target[property] + 1;
         return Reflect.get(target, property);
       } });
     };
@@ -245,6 +257,7 @@ test('artifact identity checks do not mix handle and path stat implementations',
       if (artifact !== 'results/' + 'b'.repeat(64) + '.md') throw new Error('artifact path did not persist');
       const contents = await readResultArtifact({ dataRoot: directory, workspace: directory, artifact });
       if (contents !== 'done') throw new Error('artifact contents did not read');
+      if (lockStatCalls === 0 || artifactStatCalls !== 5) throw new Error('artifact identity probe did not isolate the required handles');
     } finally {
       prototype.stat = originalStat;
       await rm(directory, { recursive: true, force: true });
@@ -260,27 +273,35 @@ test('artifact writes retain handle-bound identity checks', async () => {
     import { tmpdir } from 'node:os';
     import { join } from 'node:path';
     import { writeResultArtifact } from ${JSON.stringify(reviewModule)};
+    import { resolveWorkspaceStorage } from ${JSON.stringify(workspaceModule)};
     const directory = await mkdtemp(join(tmpdir(), 'zcode-write-identity-'));
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory });
+    await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'a'.repeat(64), contents: 'bootstrap' });
+    const lockHandle = await open(join(storage.directory, '.artifacts.lock', 'advisory.lock'), 'r');
+    const lockIdentity = await lockHandle.stat({ bigint: true });
+    await lockHandle.close();
     const probe = await open(join(directory, 'probe'), 'a+');
     const prototype = Object.getPrototypeOf(probe);
     await probe.close();
     const originalStat = prototype.stat;
-    let statCalls = 0;
+    let artifactStatCalls = 0;
     prototype.stat = async function patchedStat(...args) {
       const stats = await originalStat.call(this, ...args);
-      statCalls += 1;
-      if (statCalls !== 2) return stats;
+      const identity = typeof stats.dev === 'bigint' && typeof stats.ino === 'bigint' ? stats : await originalStat.call(this, { bigint: true });
+      if (identity.dev === lockIdentity.dev && identity.ino === lockIdentity.ino) return stats;
+      artifactStatCalls += 1;
+      if (artifactStatCalls !== 2) return stats;
       return new Proxy(stats, { get(target, property) {
-        if (property === 'dev') return target.dev + 1;
-        if (property === 'ino') return target.ino + 1;
+        if (property === 'dev' || property === 'ino') return typeof target[property] === 'bigint' ? target[property] + 1n : target[property] + 1;
         return Reflect.get(target, property);
       } });
     };
     try {
-      await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'c'.repeat(64), contents: 'done' });
-      throw new Error('artifact write unexpectedly accepted a destination identity mismatch');
-    } catch (error) {
-      if (error?.code !== 'ARTIFACT_WRITE_FAILED') throw error;
+      let observed;
+      try { await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'c'.repeat(64), contents: 'done' }); }
+      catch (error) { observed = error; }
+      if (observed?.code !== 'ARTIFACT_WRITE_FAILED' || observed?.cause?.code !== 'RESULT_ARTIFACT_INVALID') throw observed ?? new Error('artifact write unexpectedly accepted a destination identity mismatch');
+      if (artifactStatCalls !== 2) throw new Error('artifact write identity probe did not observe both artifact handles');
     } finally {
       prototype.stat = originalStat;
       await rm(directory, { recursive: true, force: true });
@@ -296,28 +317,35 @@ test('artifact reads retain handle-bound identity checks', async () => {
     import { tmpdir } from 'node:os';
     import { join } from 'node:path';
     import { readResultArtifact, writeResultArtifact } from ${JSON.stringify(reviewModule)};
+    import { resolveWorkspaceStorage } from ${JSON.stringify(workspaceModule)};
     const directory = await mkdtemp(join(tmpdir(), 'zcode-read-identity-'));
+    const storage = await resolveWorkspaceStorage({ dataRoot: directory, workspace: directory });
     const probe = await open(join(directory, 'probe'), 'a+');
     const prototype = Object.getPrototypeOf(probe);
     await probe.close();
     const artifact = await writeResultArtifact({ dataRoot: directory, workspace: directory, jobId: 'd'.repeat(64), contents: 'done' });
+    const lockHandle = await open(join(storage.directory, '.artifacts.lock', 'advisory.lock'), 'r');
+    const lockIdentity = await lockHandle.stat({ bigint: true });
+    await lockHandle.close();
     const originalStat = prototype.stat;
-    let statCalls = 0;
+    let artifactStatCalls = 0;
     prototype.stat = async function patchedStat(...args) {
       const stats = await originalStat.call(this, ...args);
-      statCalls += 1;
-      if (statCalls !== 2) return stats;
+      const identity = typeof stats.dev === 'bigint' && typeof stats.ino === 'bigint' ? stats : await originalStat.call(this, { bigint: true });
+      if (identity.dev === lockIdentity.dev && identity.ino === lockIdentity.ino) return stats;
+      artifactStatCalls += 1;
+      if (artifactStatCalls !== 2) return stats;
       return new Proxy(stats, { get(target, property) {
-        if (property === 'dev') return target.dev + 1;
-        if (property === 'ino') return target.ino + 1;
+        if (property === 'dev' || property === 'ino') return typeof target[property] === 'bigint' ? target[property] + 1n : target[property] + 1;
         return Reflect.get(target, property);
       } });
     };
     try {
-      await readResultArtifact({ dataRoot: directory, workspace: directory, artifact });
-      throw new Error('artifact read unexpectedly accepted a path identity mismatch');
-    } catch (error) {
-      if (error?.code !== 'RESULT_READ_FAILED') throw error;
+      let observed;
+      try { await readResultArtifact({ dataRoot: directory, workspace: directory, artifact }); }
+      catch (error) { observed = error; }
+      if (observed?.code !== 'RESULT_READ_FAILED' || observed?.cause?.code !== 'RESULT_ARTIFACT_INVALID') throw observed ?? new Error('artifact read unexpectedly accepted a path identity mismatch');
+      if (artifactStatCalls !== 3) throw new Error('artifact read identity probe did not observe all three artifact snapshots');
     } finally {
       prototype.stat = originalStat;
       await rm(directory, { recursive: true, force: true });

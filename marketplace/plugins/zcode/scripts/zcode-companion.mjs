@@ -31,7 +31,7 @@ import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
 import { executeTransfer, resolveTransferSource, TRANSFER_WIRE_LIMITS } from './lib/transfer.mjs';
 import { reconcileBrokerOwnership } from './zcode-broker.mjs';
-import { resolveForwardingExecutor, resolveRecordedSessionStart } from '../hooks/lib/hook-state.mjs';
+import { resolveRecordedSessionStart, resolveRoutedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 
 const backgroundBindings = new WeakMap();
 const rescueChoiceRoutes = new WeakMap();
@@ -50,7 +50,7 @@ const SAFE_BOUND_STATUS_ERRORS = new Set([
   'BOUND_RESCUE_STATUS_NOT_FOUND', 'BOUND_RESCUE_STATUS_UNAVAILABLE',
   'EXECUTOR_IDENTITY_AMBIGUOUS', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_IDENTITY_INVALID',
   'EXECUTOR_IDENTITY_NOT_FOUND', 'EXECUTOR_PARENT_TURN_MISMATCH', 'EXECUTOR_ROLE_UNAPPROVED',
-  'EXECUTOR_STATE_MISMATCH',
+  'EXECUTOR_ROUTE_INVALID', 'EXECUTOR_ROUTE_NOT_FOUND', 'EXECUTOR_STATE_MISMATCH',
 ]);
 
 /** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,executor?:any,rescueRoute?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
@@ -152,8 +152,8 @@ export async function runDirectInvocation(argv, runtime = {}) {
     } finally { transport.close(); }
   }
   if (preparedInvocation) {
-    const executor = await resolvePreparedExecutor(dataRoot, cwd, ambientThreadId);
-    const caller = await identity.resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: cwd, workspaceBinding: 'execution' });
+    const { executor, executionWorkspace } = await resolvePreparedExecutionContext(dataRoot, cwd, ambientThreadId);
+    const caller = await identity.resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: executionWorkspace, workspaceBinding: 'execution' });
     if (executor.active) assertExecutorMatchesCaller(executor, caller);
     const prepared = await createRescuePreparationStore({ dataRoot }).consume({ ...caller, executorAgentId: executor.agentId });
     if (prepared.requiredExecutorAgentId !== null && executor.active) throw new PluginError('EXECUTOR_STATE_MISMATCH', 'A Rescue continuation requires the original child to be stopped.', { category: 'authorization', remedy: 'Wait for the original Rescue child to stop, then prepare the continuation again.' });
@@ -170,11 +170,9 @@ export async function runDirectInvocation(argv, runtime = {}) {
     return output;
   }
   if (statusInvocation) {
-    let canonicalWorkspace;
     try {
-      canonicalWorkspace = (await resolveWorkspaceStorage({ dataRoot, workspace: cwd })).workspacePath;
-      const executor = await resolveForwardingExecutor(dataRoot, canonicalWorkspace, ambientThreadId);
-      const caller = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: canonicalWorkspace, workspaceBinding: 'execution' });
+      const { executor, executionWorkspace } = await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId);
+      const caller = await createIdentityStore({ dataRoot }).resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: executionWorkspace, workspaceBinding: 'execution' });
       assertExecutorMatchesCaller(executor, caller);
       return await readBoundRescueStatus({ store: createStateStore({ dataRoot }), workspace: caller.workspace, executor });
     } catch (error) {
@@ -186,14 +184,20 @@ export async function runDirectInvocation(argv, runtime = {}) {
     if (choice !== undefined) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
     throw new PluginError('PREPARED_INVOCATION_REQUIRED', 'Installed Rescue requires a prepared invocation.', { category: 'authorization', remedy: 'Return to the parent turn, run prepare rescue, and start one new Rescue child.' });
   }
-  let sessionId = ambientThreadId; let executorAgentId; let executor;
-  if (command === 'rescue') { executor = entry === 'invoke-choice' ? await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true, durableProvenance: true }) : await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId); sessionId = executor.parentSessionId; executorAgentId = executor.agentId; }
-  const caller = await identity.resolveActiveTurn({ sessionId, workspace: cwd, ...(command === 'rescue' ? { workspaceBinding: 'execution' } : {}) }); const invocations = createInvocationStore({ dataRoot });
+  let sessionId = ambientThreadId; let executorAgentId; let executor; let executionWorkspace = cwd;
+  if (command === 'rescue') {
+    const resolved = await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId, entry === 'invoke-choice' ? { continuation: true, durableProvenance: true } : {});
+    executor = resolved.executor; executionWorkspace = resolved.executionWorkspace; sessionId = executor.parentSessionId; executorAgentId = executor.agentId;
+  }
+  const caller = await identity.resolveActiveTurn({ sessionId, workspace: executionWorkspace, ...(command === 'rescue' ? { workspaceBinding: 'execution' } : {}) }); const invocations = createInvocationStore({ dataRoot });
   if (command === 'rescue' && entry === 'invoke') assertExecutorMatchesCaller(executor, caller);
   /** @type {any} */ let invocation; let executionCaller = caller;
   if (entry === 'invoke-choice') {
     invocation = await invocations.consumePending({ sessionId, workspace: command === 'rescue' ? caller.workspace : cwd, command, choice, ...(executorAgentId === undefined ? {} : { executorAgentId }) }); executionCaller = invocation.caller;
-    if (command === 'rescue' && invocation.route?.routeKind !== 'bound') executor = await resolveForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true });
+    if (command === 'rescue' && invocation.route?.routeKind !== 'bound') {
+      const refreshed = await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true });
+      assertSameRoutedExecutionContext({ executor, executionWorkspace }, refreshed); executor = refreshed.executor;
+    }
   }
   else {
     if (choice !== undefined) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
@@ -211,12 +215,12 @@ export async function runDirectInvocation(argv, runtime = {}) {
   return output;
 }
 
-/** @param {string} dataRoot @param {string} workspace @param {string} agentId */
-async function resolvePreparedExecutor(dataRoot, workspace, agentId) {
-  try { return await resolveForwardingExecutor(dataRoot, workspace, agentId); }
+/** @param {string} dataRoot @param {string} ambientWorkspace @param {string} agentId */
+async function resolvePreparedExecutionContext(dataRoot, ambientWorkspace, agentId) {
+  try { return await resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId); }
   catch (error) {
-    if (!(error instanceof PluginError) || !['EXECUTOR_IDENTITY_NOT_FOUND', 'EXECUTOR_IDENTITY_EXPIRED'].includes(error.code)) throw error;
-    return resolveForwardingExecutor(dataRoot, workspace, agentId, { continuation: true, durableProvenance: true });
+    if (!(error instanceof PluginError) || !['EXECUTOR_IDENTITY_NOT_FOUND', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_STATE_MISMATCH'].includes(error.code)) throw error;
+    return resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId, { continuation: true, durableProvenance: true });
   }
 }
 
@@ -231,6 +235,18 @@ async function saveRescuePendingChoice({ dataRoot, caller, cwd, source, executor
 function assertExecutorMatchesCaller(executor, caller) {
   if (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode
     || executor.parentGenerationId !== null && executor.parentGenerationId !== undefined && executor.parentGenerationId !== caller.generationId) throw new PluginError('EXECUTOR_PARENT_TURN_MISMATCH', 'The Rescue child is not bound to the active parent turn.', { category: 'authorization', remedy: 'Retry from the original parent thread with one newly started Rescue child.' });
+}
+
+/** @param {{executor:any,executionWorkspace:string}} expected @param {{executor:any,executionWorkspace:string}} actual */
+function assertSameRoutedExecutionContext(expected, actual) {
+  if (expected.executionWorkspace !== actual.executionWorkspace || expected.executor.agentId !== actual.executor.agentId
+    || expected.executor.agentType !== actual.executor.agentType || expected.executor.parentSessionId !== actual.executor.parentSessionId
+    || expected.executor.parentGenerationId !== actual.executor.parentGenerationId || expected.executor.parentTurnId !== actual.executor.parentTurnId
+    || expected.executor.parentPermissionMode !== actual.executor.parentPermissionMode || expected.executor.childTurnId !== actual.executor.childTurnId
+    || expected.executor.originWorkspace !== actual.executor.originWorkspace || expected.executor.workspace !== actual.executor.workspace
+    || expected.executor.active !== actual.executor.active || expected.executor.createdAt !== actual.executor.createdAt) {
+    throw new PluginError('RESCUE_CHOICE_ROUTE_INVALID', 'The private Rescue choice route changed during execution.', { category: 'authorization', remedy: 'Repeat the Rescue command.' });
+  }
 }
 
 /** @param {any} dependencies */

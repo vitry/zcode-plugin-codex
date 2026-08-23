@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -121,6 +121,7 @@ test('qualifies raw v3 origin-to-execution workspace authority and immutable gen
     { phase: 'authority-revoked', workspace: expectedWorkspace, generationId, at: '2026-08-10T01:02:00.000Z' },
     { phase: 'target-cleanup', workspace: expectedWorkspace, generationId, at: '2026-08-10T01:02:00.100Z' },
   ]);
+  attachWorkspaceArtifactLocations(input, expectedWorkspace, expectedWorkspace, generationId);
 
   const evidence = await qualifyCodexRescuePreparedContinuationEvidence(input);
   assert.equal(evidence.originWorkspace, expectedWorkspace);
@@ -146,6 +147,59 @@ test('qualifies distinct canonical linked worktree execution while hooks remain 
   assert.equal(evidence.executionWorkspace, executionWorkspace);
   assert.notEqual(evidence.originWorkspace, evidence.executionWorkspace);
   assert.equal(evidence.workspaceBindingChecked, true);
+
+  const childAtTarget = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace);
+  const childRows = JSON.parse(childAtTarget.childRolloutJson);
+  for (const row of childRows.filter((event) => event?.payload?.type === 'custom_tool_call')) {
+    const host = parseFixtureHostInput(row.payload.input);
+    if (host.cmd === expectedCommand) host.workdir = executionWorkspace;
+    row.payload.input = fixtureExecInput(host);
+  }
+  childAtTarget.childRolloutJson = JSON.stringify(childRows);
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(childAtTarget),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-child-exec-envelope-mismatch');
+
+  const misplacedRoute = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace);
+  const locations = JSON.parse(misplacedRoute.artifactLocationsJson);
+  const routeLocation = locations.find((artifact) => artifact.role === 'executor-route');
+  routeLocation.path = routeLocation.path.replace(
+    createHash('sha256').update(originWorkspace).digest('hex'),
+    createHash('sha256').update(executionWorkspace).digest('hex'),
+  );
+  misplacedRoute.artifactLocationsJson = JSON.stringify(locations);
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(misplacedRoute),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'continuation-artifact-location');
+
+  const readOnlyDataRoot = join(temporary, 'readonly-data-root'); await mkdir(readOnlyDataRoot, { mode: 0o700 });
+  const beforeEntries = await readdir(readOnlyDataRoot); const beforeStat = await stat(readOnlyDataRoot);
+  const missingStorage = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace); missingStorage.installedDataRoot = readOnlyDataRoot;
+  await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(missingStorage), CodexRescueEvidenceMismatchError);
+  const afterEntries = await readdir(readOnlyDataRoot); const afterStat = await stat(readOnlyDataRoot);
+  assert.deepEqual(afterEntries, beforeEntries);
+  assert.deepEqual({ mode: afterStat.mode, mtimeMs: afterStat.mtimeMs, ctimeMs: afterStat.ctimeMs },
+    { mode: beforeStat.mode, mtimeMs: beforeStat.mtimeMs, ctimeMs: beforeStat.ctimeMs });
+
+  const windowsDataRoot = join(temporary, 'windows-data-root');
+  const originKey = createHash('sha256').update(originWorkspace).digest('hex');
+  const executionKey = createHash('sha256').update(executionWorkspace).digest('hex');
+  const windowsDirectories = [windowsDataRoot, join(windowsDataRoot, 'workspaces'),
+    join(windowsDataRoot, 'workspaces', originKey), join(windowsDataRoot, 'workspaces', executionKey),
+    join(windowsDataRoot, 'workspaces', executionKey, 'jobs')];
+  await mkdir(windowsDirectories.at(-1), { recursive: true });
+  await mkdir(windowsDirectories[2], { recursive: true });
+  await Promise.all(windowsDirectories.map((path) => chmod(path, 0o755)));
+  const installedInput = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace); installedInput.installedDataRoot = windowsDataRoot;
+  for (const bytes of JSON.parse(installedInput.jobRecordBytesJson)) {
+    const job = JSON.parse(bytes); await writeFile(join(windowsDirectories.at(-1), `${job.id}.json`), bytes);
+  }
+  const snapshotStorage = async () => Promise.all(windowsDirectories.map(async (path) => {
+    const metadata = await stat(path); return { path, entries: (await readdir(path)).sort(), mode: metadata.mode, mtimeMs: metadata.mtimeMs, ctimeMs: metadata.ctimeMs };
+  }));
+  const windowsBefore = await snapshotStorage(); const platformBefore = process.platform;
+  if (process.platform === 'win32') await qualifyCodexRescuePreparedContinuationEvidence(installedInput);
+  else await assert.rejects(qualifyCodexRescuePreparedContinuationEvidence(installedInput), CodexRescueEvidenceMismatchError);
+  assert.equal(process.platform, platformBefore);
+  assert.deepEqual(await snapshotStorage(), windowsBefore);
 
   const swapped = workspaceBoundContinuationFixture(originWorkspace, executionWorkspace);
   const swappedActive = JSON.parse(swapped.activeTurnRecordBytes);
@@ -2133,6 +2187,13 @@ function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) 
   input.expected.workspace = executionWorkspace;
   input.expected.originWorkspace = originWorkspace;
   input.expected.executionWorkspace = executionWorkspace;
+  const child = JSON.parse(input.childRolloutJson);
+  for (const row of child.filter((event) => event?.payload?.type === 'custom_tool_call')) {
+    const host = parseFixtureHostInput(row.payload.input);
+    if (host.cmd === expectedCommand) host.workdir = originWorkspace;
+    row.payload.input = fixtureExecInput(host);
+  }
+  input.childRolloutJson = JSON.stringify(child);
   const hooks = JSON.parse(input.hookLifecycleJson);
   for (const hook of hooks) hook.cwd = originWorkspace;
   input.hookLifecycleJson = JSON.stringify(hooks);
@@ -2188,7 +2249,29 @@ function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) 
     ['authority-revoked', originWorkspace, generationId, '2026-08-10T01:02:00.000Z'],
     ['target-cleanup', executionWorkspace, generationId, '2026-08-10T01:02:00.100Z'],
   ].map(([phase, workspace, generation, at]) => ({ phase, workspace, ...(generation === null ? {} : { generationId: generation }), at })));
+  attachWorkspaceArtifactLocations(input, originWorkspace, executionWorkspace, generationId);
   return input;
+}
+
+function attachWorkspaceArtifactLocations(input, originWorkspace, executionWorkspace, generationId) {
+  const originKey = createHash('sha256').update(originWorkspace).digest('hex');
+  const executionKey = createHash('sha256').update(executionWorkspace).digest('hex');
+  const routeKey = createHash('sha256').update(JSON.stringify(['executor-route', parentId, 'child-turn'])).digest('hex');
+  const forwardKey = createHash('sha256').update(JSON.stringify(['forward', parentId, 'child-turn'])).digest('hex');
+  const executorKey = createHash('sha256').update(JSON.stringify(['executor', childId])).digest('hex');
+  const preparationBytes = JSON.parse(input.preparationRecordBytesJson);
+  const preparationKey = JSON.parse(preparationBytes[0]).key;
+  const authority = JSON.parse(input.bindingAuthorityBytes); const partitionBytes = [input.bindingPreReservationBytes, input.bindingPartitionBytes];
+  const forwardBytes = `${JSON.stringify({ kind: 'forwarding', sessionId: parentId, generationId, turnId: 'child-turn', agentId: childId,
+    active: false, targetWorkspace: executionWorkspace, updatedAt: '2026-08-10T00:00:05.000Z' })}\n`;
+  input.artifactLocationsJson = JSON.stringify([
+    { role: 'executor-route', path: `workspaces/${originKey}/hook-state/route-${routeKey}.json`, bytes: input.executorRouteRecordBytes },
+    { role: 'forwarding', path: `workspaces/${originKey}/hook-state/forward-${forwardKey}.json`, bytes: forwardBytes },
+    { role: 'executor', path: `workspaces/${executionKey}/hook-state/executor-${executorKey}.json`, bytes: input.executorRecordBytes },
+    { role: 'binding-authority', path: `workspaces/${executionKey}/rescue-binding-authority-${authority.key}.json`, bytes: input.bindingAuthorityBytes },
+    ...partitionBytes.map((bytes) => ({ role: 'binding-partition', path: `workspaces/${executionKey}/rescue-binding-session-${authority.key}.json`, bytes })),
+    ...preparationBytes.map((bytes) => ({ role: 'preparation', path: `workspaces/${executionKey}/invocations/prepared/${preparationKey}.json`, bytes })),
+  ]);
 }
 
 function replaceCapturedWorkspace(value, sourceWorkspace, targetWorkspace) {

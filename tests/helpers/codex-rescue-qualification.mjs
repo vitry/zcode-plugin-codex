@@ -1,14 +1,14 @@
 // @ts-nocheck
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
+import { isDeepStrictEqual } from 'node:util';
 import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
 import { parseRescueBindingAuthority, parseRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
 import { createRescuePreparationStore, readRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
-import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { expectedGenericRescueMessage, expectedNamedRescueMessage } from './rescue-skill-contract.mjs';
 
 const MAX_EXEC_FRAMES = 2_048;
@@ -191,6 +191,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || preBinding.operationId !== binding.operationId || preBinding.anchorJobId !== binding.anchorJobId) mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
   if (preBinding.state !== 'active' || preBinding.currentJobId !== preBinding.anchorJobId
     || binding.currentJobId === preBinding.currentJobId) mismatch('continuation-current-job-stale', 'Raw current job binding does not prove the exact pre-reservation CAS transition.');
+  if (workspaceAuthority.checked) await validateContinuationArtifactLocations(input, { ...workspaceAuthority, route: workspaceAuthority.route });
   const jobs = await parseRawJobsWithProduction(jobBytes, expected, input.installedDataRoot);
   if (jobs.length !== 2 || new Set(jobs.map((job) => job?.id)).size !== jobs.length) mismatch('continuation-job-identity', 'Raw job evidence contains extra or duplicate identities.');
   const anchor = jobs.find((job) => job?.id === binding.anchorJobId); const current = jobs.find((job) => job?.id === binding.currentJobId);
@@ -241,6 +242,10 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
     || childCommands.some((command) => typeof command !== 'string' || !command.endsWith('/skills/rescue/launcher.mjs" invoke-prepared rescue'))
     || new Set(childCommands).size !== 1
     || calls.some((call) => outputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)) mismatch('continuation-child-invocations', 'Raw child rollout does not prove two exact linked invoke-prepared turns.');
+  for (const call of calls) {
+    assertExecEnvelope(parseCapturedHostCall(call.payload.input).envelope, childCommands[0], workspaceAuthority.originWorkspace,
+      'continuation-child-exec-envelope-mismatch');
+  }
   const childTurns = calls.map((call) => boundedString(call.turn_id));
   if (childTurns.some((turnId) => !turnId) || new Set(childTurns).size !== 2
     || calls.some((call) => outputs.find((output) => output.payload.call_id === call.payload.call_id)?.turn_id !== call.turn_id)) mismatch('continuation-child-turns', 'Raw child rollout does not prove one exact invocation in each of two turns.');
@@ -293,7 +298,7 @@ function validateLiveRawContinuationCapture(input, core) {
       if (consumedChildWriteIds.has(call.payload.call_id)) mismatch('continuation-raw-child-events', 'A child poll belongs to more than one invoke segment.'); consumedChildWriteIds.add(call.payload.call_id);
     }
     const ids = new Set(calls.map((event) => event.payload.call_id)); const outputs = rawChild.filter((event) => event?.turn_id === invoke.turn_id && event?.payload?.type === 'custom_tool_call_output' && ids.has(event.payload.call_id));
-    validateChildExecution(rawChild, calls, outputs, parseCapturedHostCall(invoke.payload.input).envelope.get('cmd'), core.expected.workspace, { codePrefix: 'continuation-raw-child', expectedExitCode: 0 });
+    validateChildExecution(rawChild, calls, outputs, parseCapturedHostCall(invoke.payload.input).envelope.get('cmd'), core.expected.originWorkspace ?? core.expected.workspace, { codePrefix: 'continuation-raw-child', expectedExitCode: 0 });
   }
   const allChildWriteIds = rawChild.filter((event) => event?.payload?.type === 'custom_tool_call' && parseCapturedHostCall(event.payload.input).kind === 'write_stdin').map((event) => event.payload.call_id);
   if (allChildWriteIds.length !== consumedChildWriteIds.size || allChildWriteIds.some((id) => !consumedChildWriteIds.has(id))) mismatch('continuation-raw-child-events', 'A raw child poll is not owned by exactly one invoke segment.');
@@ -1202,19 +1207,32 @@ function assertGlobalCallOwnership(...rollouts) {
 async function parseRawJobsWithProduction(jobBytes, expected, installedDataRoot) {
   if (!Array.isArray(jobBytes) || jobBytes.length !== 2) mismatch('continuation-job-identity', 'Exactly two raw persisted job files are required.');
   if (jobBytes.some((bytes) => typeof bytes !== 'string' || !bytes.endsWith('\n'))) mismatch('continuation-job-record', 'Raw persisted job file bytes are invalid.');
-  const routed = jobBytes.map((bytes) => { let value; try { value = JSON.parse(bytes); } catch { mismatch('continuation-job-record', 'Raw persisted job bytes are malformed.'); } if (!/^[a-f0-9]{64}$/u.test(value?.id)) mismatch('continuation-job-record', 'Raw persisted job identity is invalid.'); return { bytes, id: value.id }; });
+  const routed = jobBytes.map((bytes) => { let value; try { value = JSON.parse(bytes); } catch { mismatch('continuation-job-record', 'Raw persisted job bytes are malformed.'); } if (!/^[a-f0-9]{64}$/u.test(value?.id)) mismatch('continuation-job-record', 'Raw persisted job identity is invalid.'); return { bytes, id: value.id, value }; });
   const suppliedRoot = typeof installedDataRoot === 'string' && installedDataRoot.length > 0 ? installedDataRoot : undefined;
-  const dataRoot = suppliedRoot ?? await mkdtemp(join(tmpdir(), 'zcode-qualification-state-'));
+  if (suppliedRoot !== undefined) {
+    const installedStorage = await resolveReadonlyQualificationStorage(suppliedRoot, expected.workspace).catch(() => mismatch('continuation-job-record', 'Observed installed job storage is unsafe or absent.'));
+    const installedJobs = join(installedStorage.directory, 'jobs');
+    for (const { bytes, id, value } of routed) {
+      if (await readFile(join(installedJobs, `${id}.json`), 'utf8').catch(() => null) !== bytes) mismatch('continuation-job-record', 'Observed installed job bytes do not match their persisted source files.');
+      if (Object.hasOwn(value, 'logFile') && value.logFile !== join(installedJobs, `${id}.log`)) mismatch('continuation-job-record', 'Observed installed job log path does not match its persisted workspace partition.');
+    }
+  }
+  const dataRoot = await mkdtemp(join(tmpdir(), 'zcode-qualification-state-'));
   try {
-    const storage = await resolveWorkspaceStorage({ dataRoot, workspace: expected.workspace }); await mkdir(storage.directory, { recursive: true }); const jobsDirectory = join(storage.directory, 'jobs'); await mkdir(jobsDirectory, { recursive: true });
-    if (suppliedRoot === undefined) await Promise.all(routed.map(({ bytes, id }) => writeFile(join(jobsDirectory, `${id}.json`), bytes)));
-    else for (const { bytes, id } of routed) if (await readFile(join(jobsDirectory, `${id}.json`), 'utf8').catch(() => null) !== bytes) mismatch('continuation-job-record', 'Observed installed job bytes do not match their persisted source files.');
+    const workspacePath = await realpath(resolve(expected.workspace));
+    const workspaceKey = createHash('sha256').update(workspacePath).digest('hex');
+    const jobsDirectory = join(dataRoot, 'workspaces', workspaceKey, 'jobs'); await mkdir(jobsDirectory, { recursive: true });
+    await Promise.all(routed.map(({ bytes, id, value }) => {
+      if (suppliedRoot === undefined || !Object.hasOwn(value, 'logFile')) return writeFile(join(jobsDirectory, `${id}.json`), bytes);
+      const portable = { ...value }; delete portable.logFile;
+      return writeFile(join(jobsDirectory, `${id}.json`), `${JSON.stringify(portable)}\n`);
+    }));
     const store = createStateStore({ dataRoot });
     const jobs = []; for (const { id } of routed) { try { jobs.push(await store.readJob(expected.workspace, id)); } catch { mismatch('continuation-job-record', 'Production StateStore rejected raw persisted job bytes.'); } }
     for (const job of jobs) if (job.ownerSessionId !== expected.parentSessionId || job.workspace !== expected.workspace || job.command !== 'rescue'
       || job.readOnly !== false || job.permissionSnapshot?.permissionMode !== expected.permissionMode) mismatch('continuation-job-record', 'Production job authority does not match the continuation.');
     return jobs;
-  } finally { if (suppliedRoot === undefined) await rm(dataRoot, { recursive: true, force: true }); }
+  } finally { await rm(dataRoot, { recursive: true, force: true }); }
 }
 
 function validateContinuationActiveTurn(rawBytes, expected) {
@@ -1318,7 +1336,83 @@ async function validateContinuationWorkspaceBinding(input, expected, active) {
     mismatch('continuation-authority-order', 'Raw workspace authority lifecycle targets the wrong generation or workspace.');
   }
   if (originWorkspace !== executionWorkspace) await validateCanonicalGitLineage(originWorkspace, executionWorkspace);
-  return { originWorkspace, executionWorkspace, generationId: active.generationId, checked: true };
+  return { originWorkspace, executionWorkspace, generationId: active.generationId, route, checked: true };
+}
+
+async function validateContinuationArtifactLocations(input, evidence) {
+  if (typeof input.artifactLocationsJson !== 'string' || Buffer.byteLength(input.artifactLocationsJson) > MAX_ROLLOUT_BYTES) {
+    mismatch('continuation-artifact-location', 'Workspace-bound artifact locations are absent or oversized.');
+  }
+  let artifacts; try { artifacts = JSON.parse(input.artifactLocationsJson); } catch { mismatch('continuation-artifact-location', 'Workspace-bound artifact locations are malformed.'); }
+  if (!Array.isArray(artifacts) || artifacts.length !== 8 || artifacts.some((artifact) => !artifact || typeof artifact !== 'object' || Array.isArray(artifact)
+    || Object.keys(artifact).sort().join('\0') !== ['bytes', 'path', 'role'].join('\0') || !boundedString(artifact.role)
+    || !boundedString(artifact.path) || Buffer.byteLength(artifact.path) > 4096 || artifact.path.includes('\\')
+    || typeof artifact.bytes !== 'string' || Buffer.byteLength(artifact.bytes) > MAX_ROLLOUT_BYTES)) {
+    mismatch('continuation-artifact-location', 'Workspace-bound artifact location evidence has an invalid shape.');
+  }
+  let originKey = createHash('sha256').update(evidence.originWorkspace).digest('hex');
+  let executionKey = createHash('sha256').update(evidence.executionWorkspace).digest('hex');
+  if (boundedString(input.installedDataRoot)) {
+    let originStorage; let executionStorage;
+    try { [originStorage, executionStorage] = await Promise.all([
+      resolveReadonlyQualificationStorage(input.installedDataRoot, evidence.originWorkspace),
+      resolveReadonlyQualificationStorage(input.installedDataRoot, evidence.executionWorkspace),
+    ]); } catch { mismatch('continuation-artifact-location', 'Workspace-bound artifact storage could not be resolved canonically.'); }
+    if (originStorage.workspacePath !== evidence.originWorkspace || executionStorage.workspacePath !== evidence.executionWorkspace) {
+      mismatch('continuation-artifact-location', 'Workspace-bound artifact storage resolved to another workspace.');
+    }
+    originKey = originStorage.workspaceKey; executionKey = executionStorage.workspaceKey;
+  }
+  let executor; let authority; let prePartition; let partition;
+  try {
+    executor = JSON.parse(input.executorRecordBytes); authority = JSON.parse(input.bindingAuthorityBytes);
+    prePartition = JSON.parse(input.bindingPreReservationBytes); partition = JSON.parse(input.bindingPartitionBytes);
+  } catch { mismatch('continuation-artifact-location', 'Authority location bytes are malformed.'); }
+  const prefix = (workspaceKey, suffix) => `workspaces/${workspaceKey}/${suffix}`;
+  const routeKey = createHash('sha256').update(JSON.stringify(['executor-route', evidence.route.parentSessionId, evidence.route.childTurnId])).digest('hex');
+  const forwardKey = createHash('sha256').update(JSON.stringify(['forward', evidence.route.parentSessionId, evidence.route.childTurnId])).digest('hex');
+  const executorKey = createHash('sha256').update(JSON.stringify(['executor', executor.agentId])).digest('hex');
+  let preparationBytes; try { preparationBytes = JSON.parse(input.preparationRecordBytesJson); } catch { mismatch('continuation-artifact-location', 'Preparation location bytes are malformed.'); }
+  const preparations = preparationBytes.map((bytes) => { try { return { bytes, value: JSON.parse(bytes) }; } catch { mismatch('continuation-artifact-location', 'Preparation location bytes are malformed.'); } });
+  const expected = [
+    { role: 'executor-route', path: prefix(originKey, `hook-state/route-${routeKey}.json`), bytes: input.executorRouteRecordBytes },
+    { role: 'executor', path: prefix(executionKey, `hook-state/executor-${executorKey}.json`), bytes: input.executorRecordBytes },
+    { role: 'binding-authority', path: prefix(executionKey, `rescue-binding-authority-${authority.key}.json`), bytes: input.bindingAuthorityBytes },
+    { role: 'binding-partition', path: prefix(executionKey, `rescue-binding-session-${prePartition.key}.json`), bytes: input.bindingPreReservationBytes },
+    { role: 'binding-partition', path: prefix(executionKey, `rescue-binding-session-${partition.key}.json`), bytes: input.bindingPartitionBytes },
+    ...preparations.map(({ bytes, value }) => ({ role: 'preparation', path: prefix(executionKey, `invocations/prepared/${value.key}.json`), bytes })),
+  ];
+  const forwardPath = prefix(originKey, `hook-state/forward-${forwardKey}.json`);
+  const forwards = artifacts.filter((artifact) => artifact.role === 'forwarding' && artifact.path === forwardPath);
+  if (forwards.length !== 1) mismatch('continuation-artifact-location', 'Forwarding evidence is absent, duplicated, or stored outside the origin partition.');
+  let forward; try { forward = JSON.parse(forwards[0].bytes); } catch { mismatch('continuation-artifact-location', 'Forwarding evidence bytes are malformed.'); }
+  const forwardKeys = ['active', 'agentId', 'generationId', 'kind', 'sessionId', 'targetWorkspace', 'turnId', 'updatedAt'];
+  if (Object.keys(forward ?? {}).sort().join('\0') !== forwardKeys.sort().join('\0') || forward.kind !== 'forwarding' || forward.active !== false
+    || forward.agentId !== evidence.route.agentId || forward.generationId !== evidence.route.parentGenerationId
+    || forward.sessionId !== evidence.route.parentSessionId || forward.turnId !== evidence.route.childTurnId
+    || forward.targetWorkspace !== evidence.executionWorkspace || !Number.isFinite(Date.parse(forward.updatedAt))) {
+    mismatch('continuation-artifact-location', 'Forwarding evidence does not match the exact stopped route.');
+  }
+  const remaining = artifacts.filter((artifact) => artifact !== forwards[0]);
+  for (const artifact of expected) {
+    const matches = remaining.filter((candidate) => candidate.role === artifact.role && candidate.path === artifact.path && candidate.bytes === artifact.bytes);
+    if (matches.length !== 1) mismatch('continuation-artifact-location', 'An authority artifact is missing, duplicated, substituted, or stored in another workspace partition.');
+    remaining.splice(remaining.indexOf(matches[0]), 1);
+  }
+  if (remaining.length !== 0) mismatch('continuation-artifact-location', 'Workspace-bound artifact evidence contains an unaccounted duplicate or substitute.');
+}
+
+async function resolveReadonlyQualificationStorage(dataRoot, workspace) {
+  const workspacePath = await realpath(resolve(workspace)); const dataRootPath = await realpath(resolve(dataRoot));
+  const workspaceKey = createHash('sha256').update(workspacePath).digest('hex');
+  const workspacesDirectory = join(dataRootPath, 'workspaces'); const directory = join(workspacesDirectory, workspaceKey);
+  for (const path of [dataRootPath, workspacesDirectory, directory]) {
+    const stats = await lstat(path);
+    if (!stats.isDirectory() || stats.isSymbolicLink() || (process.platform !== 'win32' && (stats.mode & 0o077) !== 0) || await realpath(path) !== path) {
+      throw new Error('unsafe qualification storage');
+    }
+  }
+  return { dataRootPath, directory, workspaceKey, workspacePath };
 }
 
 async function validateCanonicalGitLineage(originWorkspace, executionWorkspace) {
@@ -1399,11 +1493,11 @@ async function assertPreparationGenerationsWithProduction(records, expected) {
     const identity = { sessionId: first.sessionId, turnId: first.turnId, workspace: expected.workspace, permissionMode: first.permissionMode };
     await store.save({ ...identity, envelope: first.envelope, recordedPrompt: '$zcode:rescue fixture', now: first.createdAt });
     const consumedFirst = await store.consume({ ...identity, executorAgentId: first.executorAgentId, now: first.consumedAt });
-    if (JSON.stringify(consumedFirst) !== JSON.stringify(first)) mismatch('continuation-preparation-records', 'Production preparation store did not reproduce consumed generation 1.');
+    if (!isDeepStrictEqual(consumedFirst, first)) mismatch('continuation-preparation-records', 'Production preparation store did not reproduce consumed generation 1.');
     await store.save({ ...identity, envelope: second.envelope, recordedPrompt: 'proactive fixture', now: second.createdAt });
     await assertRejectCode(store.consume({ ...identity, executorAgentId: 'sibling-executor', now: second.consumedAt }), 'RESCUE_PREPARATION_MISMATCH');
     const consumedSecond = await store.consume({ ...identity, executorAgentId: second.executorAgentId, now: second.consumedAt });
-    if (JSON.stringify(consumedSecond) !== JSON.stringify(second)) mismatch('continuation-preparation-records', 'Production preparation store did not reproduce the fresh expired-tombstone successor.');
+    if (!isDeepStrictEqual(consumedSecond, second)) mismatch('continuation-preparation-records', 'Production preparation store did not reproduce the fresh expired-tombstone successor.');
     await assertRejectCode(store.consume({ ...identity, executorAgentId: second.executorAgentId, now: second.consumedAt }), 'RESCUE_PREPARATION_CONSUMED');
   } finally { await rm(dataRoot, { recursive: true, force: true }); }
 }
