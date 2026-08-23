@@ -382,10 +382,10 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   if (host?.id !== expected.childThreadId || host?.parentThreadId !== expected.parentSessionId || host?.agentPath !== expected.agentPath
     || host?.cwd !== expected.originWorkspace || host?.status?.type !== 'notLoaded' || reread?.status?.type !== 'active') mismatch('restored-child-host', 'Host discovery did not preserve the exact unloaded child identity and its lazy activation.');
   const appServerTimes = transcript.map((frame) => eventTimestamp({ timestamp: frame.observedAt }));
-  if (appServerTimes.some((value) => value === undefined) || appServerTimes.some((value, index) => index > 0 && value <= appServerTimes[index - 1])
-    || !(eventTimestamp(prepareCall.event) < appServerTimes[0] && appServerTimes[1] < eventTimestamp(outputFor(prepareCall))
-      && eventTimestamp(currentFunctionOutputs[0]) < eventTimestamp(child[0]) && eventTimestamp(child[0]) < appServerTimes[2]
-      && appServerTimes[3] < eventTimestamp(child[1]))) {
+  const canonicalMillisecondObservation = (value) => { try { return typeof value === 'string' && new Date(value).toISOString() === value; } catch { return false; } };
+  if (transcript.some((frame) => !canonicalMillisecondObservation(frame.observedAt)) || appServerTimes.some((value) => value === undefined)
+    || appServerTimes.some((value, index) => index > 0 && value <= appServerTimes[index - 1])
+    || !(eventTimestamp(prepareCall.event) < appServerTimes[0] && appServerTimes[1] < eventTimestamp(outputFor(prepareCall)))) {
     mismatch('restored-child-app-server', 'App-server discovery and lazy read are not causally ordered around preparation and accepted follow-up.');
   }
   if ([input.executorRecordBytes, input.preparationRecordBytes].some((bytes) => typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TEXT_BYTES)) mismatch('restored-child-private', 'Private restored-child records are absent or oversized.');
@@ -434,7 +434,10 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
     || childHost.envelope.get('cmd') !== `${expected.launcherCommand} invoke-prepared rescue` || childHost.envelope.get('workdir') !== expected.originWorkspace
     || childResult.output !== expected.publicOutput || childResult.exit_code !== 0 || Object.hasOwn(childResult, 'session_id')
     || !(preparationCreated > eventTimestamp(writeCall.event) && preparationCreated < eventTimestamp(outputFor(writeCall))
-      && preparationConsumed >= childCallTime && preparationConsumed < childOutputTime)) mismatch('restored-child-invocation', 'Restored Role, prepare, follow-up, and child execution chronology is invalid.');
+      && eventTimestamp(currentFunctionOutputs[0]) < childCallTime && childCallTime < appServerTimes[2]
+      // Both the app-server capture and preparation store use Date#toISOString.
+      // Equal millisecond stamps can still preserve response-before-consume program order.
+      && appServerTimes[3] <= preparationConsumed && preparationConsumed < childOutputTime)) mismatch('restored-child-invocation', 'Restored Role, prepare, follow-up, host read proof, consumption, and child execution chronology is invalid.');
   assertParentPreparationTaskExclusivity(parent, writeCall.event, preparationEnvelope.task, parsedCurrent, currentCustomOutputs.map((event) => ({ event })));
   if ([child, transcript, hooks, peer].some((surface) => stringLeafContains(surface, preparationEnvelope.task))) mismatch('restored-child-private-task', 'The private preparation task escaped its authorized write or private record.');
   if (peer.length !== 2 || peer[0]?.method !== 'session/create' || peer[0]?.params?.workspace?.workspacePath !== expected.executionWorkspace

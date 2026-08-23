@@ -65,6 +65,15 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
     status: { type: 'active', activeFlags: ['waitingOnApproval'] }, turns: [{ id: 'resumed-turn' }] });
   mutableHostState.appServerTranscriptJson = JSON.stringify(mutableFrames);
   assert.equal((await qualifyCodexRescueRestoredChildEvidence(mutableHostState)).route, 'named');
+  // Both observations are persisted with Date#toISOString millisecond precision,
+  // so equality can represent a response followed by consumption in one millisecond.
+  const sameMillisecondConsume = structuredClone(input); const sameMillisecondRecord = JSON.parse(sameMillisecondConsume.preparationRecordBytes);
+  sameMillisecondRecord.consumedAt = '2026-08-10T01:00:00.920Z'; sameMillisecondConsume.preparationRecordBytes = `${JSON.stringify(sameMillisecondRecord)}\n`;
+  assert.equal((await qualifyCodexRescueRestoredChildEvidence(sameMillisecondConsume)).route, 'named');
+  const consumeBeforeReadProof = structuredClone(input); const prematureRecord = JSON.parse(consumeBeforeReadProof.preparationRecordBytes);
+  prematureRecord.consumedAt = '2026-08-10T01:00:00.919Z'; consumeBeforeReadProof.preparationRecordBytes = `${JSON.stringify(prematureRecord)}\n`;
+  await assert.rejects(qualifyCodexRescueRestoredChildEvidence(consumeBeforeReadProof),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-invocation');
   const executorBeforeStarted = structuredClone(input); const earlierExecutor = JSON.parse(executorBeforeStarted.executorRecordBytes);
   earlierExecutor.createdAt = '2026-08-10T00:00:00.250Z'; executorBeforeStarted.executorRecordBytes = `${JSON.stringify(earlierExecutor)}\n`;
   assert.equal((await qualifyCodexRescueRestoredChildEvidence(executorBeforeStarted)).route, 'named');
@@ -84,22 +93,23 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
     await assert.rejects(qualifyCodexRescueRestoredChildEvidence(changed),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-history');
   }
-  for (const [code, mutate] of [
+  for (const [code, mutate, explicitField] of [
     ['restored-child-current-events', (value) => JSON.parse(value.parentRolloutJson).concat({ type: 'response_item', turn_id: 'turn-resumed', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-current', arguments: '{}' } })],
     ['restored-child-host', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[1].result.data[0].source.subAgent.thread_spawn.agent_path = '/root/sibling'; return rows; }],
     ['restored-child-host', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[3].result.thread.cwd = `${originWorkspace}-drift`; return rows; }],
     ['restored-child-app-server', (value) => JSON.parse(value.appServerTranscriptJson).slice(2)],
     ['restored-child-app-server', (value) => JSON.parse(value.appServerTranscriptJson).filter((frame) => frame.method !== 'thread/read')],
-    ['restored-child-app-server', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[2].observedAt = '2026-08-10T01:00:00.750Z'; return rows; }],
-    ['restored-child-app-server', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[2].observedAt = '2026-08-10T01:00:00.890Z'; return rows; }],
-    ['restored-child-app-server', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[3].observedAt = '2026-08-10T01:00:01.010Z'; return rows; }],
+    ['restored-child-app-server', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[3].observedAt = '2026-08-10T01:00:00.920000001Z'; return rows; }],
+    ['restored-child-invocation', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[2].observedAt = '2026-08-10T01:00:00.750Z'; return rows; }, 'appServerTranscriptJson'],
+    ['restored-child-invocation', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[2].observedAt = '2026-08-10T01:00:00.890Z'; return rows; }, 'appServerTranscriptJson'],
+    ['restored-child-invocation', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[3].observedAt = '2026-08-10T01:00:01.010Z'; return rows; }, 'appServerTranscriptJson'],
     ['restored-child-directive', (value) => { const rows = JSON.parse(value.parentRolloutJson); rows.find((event) => event?.payload?.call_id === 'prepare-write-restored' && event.payload.type === 'custom_tool_call_output').payload.output = capturedResult({ output: preparedAck({ version: 1, action: 'followup', target: '/root/sibling' }), exit_code: 0 }); return rows; }],
     ['restored-child-current-events', (value) => JSON.parse(value.parentRolloutJson).filter((event) => !(event?.payload?.call_id === 'prepare-write-restored' && event.payload.type === 'custom_tool_call_output'))],
     ['restored-child-activation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.activation.executorAgentId = 'sibling'; return record; }],
   ]) {
-    const changed = structuredClone(input); const field = code === 'restored-child-current-events' ? 'parentRolloutJson'
+    const changed = structuredClone(input); const field = explicitField ?? (code === 'restored-child-current-events' ? 'parentRolloutJson'
       : ['restored-child-host', 'restored-child-app-server'].includes(code) ? 'appServerTranscriptJson'
-        : code === 'restored-child-directive' ? 'parentRolloutJson' : 'preparationRecordBytes';
+        : code === 'restored-child-directive' ? 'parentRolloutJson' : 'preparationRecordBytes');
     const mutated = mutate(changed); changed[field] = `${JSON.stringify(mutated)}${field === 'preparationRecordBytes' ? '\n' : ''}`;
     await assert.rejects(qualifyCodexRescueRestoredChildEvidence(changed), (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
   }
