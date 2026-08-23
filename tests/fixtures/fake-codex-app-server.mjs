@@ -48,6 +48,7 @@ let inputQueue = Promise.resolve();
 let configReadIndex = 0;
 let hooksListIndex = 0;
 let batchWriteIndex = 0;
+let threadListIndex = 0;
 const configStatePath = process.env.FAKE_CODEX_CONFIG_STATE
   ?? (process.env.FAKE_CODEX_RECORD ? `${process.env.FAKE_CODEX_RECORD}.config.json` : null);
 let currentConfig = JSON.parse(configStatePath && existsSync(configStatePath)
@@ -67,6 +68,7 @@ async function handleLine(line) {
   if (process.env.FAKE_CODEX_OVERSIZE === request.method) { process.stdout.write(`${'x'.repeat(Number(process.env.FAKE_CODEX_OVERSIZE_BYTES ?? 4096))}\n`); return; }
   if (process.env.FAKE_CODEX_ERROR === request.method) { write({ id: request.id, error: { code: -32001, message: 'thread unavailable', data: { secret: 'do-not-copy' } } }); return; }
   if (process.env.FAKE_CODEX_AMBIGUOUS === request.method) { write({ id: request.id, result: {}, error: { code: -32001, message: 'ambiguous' } }); return; }
+  if (process.env.FAKE_CODEX_DISCONNECT === request.method) { clearInterval(keepAlive); process.exit(1); }
   if (request.method === 'initialize') {
     write({ id: request.id, result: { userAgent: 'fake-codex' } });
     return;
@@ -80,6 +82,15 @@ async function handleLine(line) {
       thread = { id: request.params.threadId, ephemeral: false, turns: Array.from({ length: count }, (_, index) => ({ startedAt: 1_725_000_000 + index, items: [{ type: index % 2 ? 'agentMessage' : 'userMessage', ...(index % 2 ? { text: 'x'.repeat(bytes) } : { content: [{ type: 'text', text: 'x'.repeat(bytes) }] }) }] })) };
     } else try { thread = JSON.parse(process.env.FAKE_CODEX_THREAD_JSON ?? '{}'); } catch { thread = null; }
     write({ id: request.id, result: { thread } });
+    return;
+  }
+  if (request.method === 'thread/list') {
+    const pages = JSON.parse(process.env.FAKE_CODEX_THREAD_LIST_RESULTS_JSON
+      ?? '{"data":[],"nextCursor":null,"backwardsCursor":null}');
+    const result = Array.isArray(pages)
+      ? pages[Math.min(threadListIndex++, pages.length - 1)]
+      : pages;
+    write({ id: request.id, result });
     return;
   }
   if (request.method === 'config/read') {
