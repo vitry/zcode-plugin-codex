@@ -112,10 +112,12 @@ export async function createMarketplaceContentManifest(snapshotRoot) {
       const absolutePath = join(absoluteDirectory, name);
       const relativePath = join(relativeDirectory, name);
       const entry = await lstat(absolutePath);
+      const manifestPath = relativePath.split(sep).join('/');
       if (entry.isSymbolicLink()) throw new Error('Marketplace content manifest accepts only real directories and bounded regular files.');
-      if (entry.isDirectory()) await walk(absolutePath, relativePath);
-      else if (relativePath.split(sep).join('/') !== MARKETPLACE_PROVENANCE_PATH) await addFile(absolutePath, relativePath, entry);
-      else if (!entry.isFile()) throw new Error('Marketplace provenance must be a regular file.');
+      if (manifestPath === MARKETPLACE_PROVENANCE_PATH) {
+        if (!entry.isFile()) throw new Error('Marketplace provenance must be a regular file.');
+      } else if (entry.isDirectory()) await walk(absolutePath, relativePath);
+      else await addFile(absolutePath, relativePath, entry);
     }
   };
   await walk(root, '');

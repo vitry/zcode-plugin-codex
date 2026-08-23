@@ -112,6 +112,14 @@ test('content manifest rejects symlink roots and hidden symlink payloads', async
   await assert.rejects(createMarketplaceContentManifest(alias), /real snapshot root/i);
 });
 
+test('content manifest rejects a non-file at its reserved provenance path', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'zcode-marketplace-manifest-provenance-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(join(directory, '.agents', 'plugins', 'provenance.json'), { recursive: true });
+
+  await assert.rejects(createMarketplaceContentManifest(directory), /provenance must be a regular file/i);
+});
+
 test('content manifest path order is locale-independent', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-marketplace-manifest-order-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
