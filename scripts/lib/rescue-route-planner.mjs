@@ -124,7 +124,7 @@ function validateChildren(children, parentId) {
     if (!plain(value) || !sameKeys(value, HOST_CHILD_KEYS) || !boundedIdentifier(value.id) || value.parentThreadId !== parentId
       || !boundedIdentifier(value.parentThreadId) || !validAgentPath(value.agentPath) || !validRole(value.agentRole)
       || !canonicalCwd(value.cwd) || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
-      || !Number.isSafeInteger(value.updatedAt) || value.updatedAt < value.createdAt) {
+      || !Number.isSafeInteger(value.updatedAt) || value.updatedAt < 0) {
       throw plannerError('CODEX_CHILD_METADATA_INVALID');
     }
     const status = cloneChildStatus(value.status);

@@ -138,7 +138,10 @@ test('host discovery boundary rejects malformed exact SpawnChild records before 
     ['relative cwd', (value) => ({ ...value, cwd: 'relative/workspace' })],
     ['noncanonical cwd', (value) => ({ ...value, cwd: `${input.caller.workspace}/../elsewhere` })],
     ['control-bearing cwd', (value) => ({ ...value, cwd: `${input.caller.workspace}\nsecret` })],
-    ['timestamps out of order', (value) => ({ ...value, createdAt: 201, updatedAt: 200 })],
+    ['negative created timestamp', (value) => ({ ...value, createdAt: -1 })],
+    ['negative updated timestamp', (value) => ({ ...value, updatedAt: -1 })],
+    ['non-integer timestamp', (value) => ({ ...value, createdAt: 1.5 })],
+    ['unsafe timestamp', (value) => ({ ...value, updatedAt: Number.MAX_SAFE_INTEGER + 1 })],
   ];
   for (const [name, mutate] of mutations) await t.test(name, async () => {
     const malformed = mutate(valid);
@@ -146,6 +149,15 @@ test('host discovery boundary rejects malformed exact SpawnChild records before 
     await assert.rejects(planRescueActivation({ ...input, ...adapters([malformed], proved) }), { code: 'CODEX_CHILD_METADATA_INVALID' });
     await assert.rejects(planRescueActivation({ ...input, ...adapters([malformed], new Map()) }), { code: 'CODEX_CHILD_METADATA_INVALID' });
   });
+});
+
+test('independent nonnegative host timestamps allow updatedAt before createdAt and selection uses createdAt', async () => {
+  const input = await context();
+  const newest = child(input.caller.workspace, { id: 'child-z', agentPath: '/root/ordinary_newest', createdAt: 300, updatedAt: 1 });
+  const older = child(input.caller.workspace, { id: 'child-a', agentPath: '/root/ordinary_older', createdAt: 200, updatedAt: 500 });
+  const values = new Map([newest, older].map((host) => [host.id, { executor: executor(input.caller.workspace, { agentId: host.id }), executionWorkspace: input.caller.workspace }]));
+  const planned = await planRescueActivation({ ...input, ...adapters([older, newest], values) });
+  assert.equal(planned.directive.target, newest.agentPath);
 });
 
 test('stopped executor proof boundary rejects partial, extra, or structurally invalid provenance', async (t) => {
