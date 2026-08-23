@@ -195,6 +195,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
       const path = join(storage.directory, `${key}.json`);
       return withPreparationLock(storage, async () => {
         const record = await readPreparedRecord(storage, path, key, true);
+        const kind = recordKind(record);
         if (record.sessionId !== input.sessionId || record.turnId !== input.turnId
           || record.workspace !== storage.workspacePath || record.permissionMode !== input.permissionMode) {
           throw preparationError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation identity does not match.');
@@ -205,13 +206,13 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           );
           throw preparationError('RESCUE_PREPARATION_CONSUMED', 'The Rescue preparation has already been consumed.');
         }
-        if (recordKind(record) === 'current' && record.requiredExecutorAgentId !== null
+        if (kind !== 'legacy' && record.requiredExecutorAgentId !== null
           && record.requiredExecutorAgentId !== input.executorAgentId) {
           throw preparationError(
             'RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation executor does not match.',
           );
         }
-        if (recordKind(record) === 'current' && record.activation !== null
+        if (kind === 'current' && record.activation !== null
           && !activationProofMatches(record.activation, input.activationProof, input.executorAgentId)) {
           throw preparationError(
             'RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.',
@@ -418,7 +419,10 @@ function validRecord(record, key, workspace) {
     && Date.parse(record.consumedAt) >= Date.parse(record.createdAt)
     && Date.parse(record.consumedAt) < Date.parse(record.expiresAt)
     && (kind === 'legacy' || record.requiredExecutorAgentId === null
-      || record.executorAgentId === record.requiredExecutorAgentId);
+      || record.executorAgentId === record.requiredExecutorAgentId)
+    && (kind !== 'current' || record.activation === null
+      || record.activation.kind !== 'reactivate'
+      || record.executorAgentId === record.activation.executorAgentId);
 }
 
 /** @param {any} record @returns {'legacy'|'v2'|'current'|null} */

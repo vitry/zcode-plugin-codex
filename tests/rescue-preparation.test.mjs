@@ -547,6 +547,23 @@ test('v2 records reject generation and required executor cross-field mismatches'
   });
 });
 
+test('v2 generation two rejects a sibling executor without mutating the preparation', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const base = { sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial' };
+  await store.save({ ...base, envelope: validEnvelope });
+  const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
+  const record = JSON.parse(await readFile(path, 'utf8'));
+  record.generation = 2;
+  record.requiredExecutorAgentId = 'rescue-owner';
+  await writeFile(path, `${JSON.stringify(record, null, 2)}\n`);
+  const before = await readFile(path);
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'sibling-child' }), {
+    code: 'RESCUE_PREPARATION_MISMATCH',
+  });
+  assert.deepEqual(await readFile(path), before);
+});
+
 test('v3 records reject generation and activation cross-field mismatches', async (t) => {
   /** @type {Array<[string, (record:any)=>void]>} */
   const variants = [
@@ -571,6 +588,25 @@ test('v3 records reject generation and activation cross-field mismatches', async
     });
     assert.deepEqual(await readFile(path), before);
   });
+});
+
+test('consumed v3 reactivation rejects an executor that differs from its activation', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const now = new Date('2026-08-17T00:00:00.000Z');
+  const base = { sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial', now };
+  await store.save({ ...base, envelope: validEnvelope, activation: reactivateActivation });
+  await store.consume({ ...base, executorAgentId: 'rescue-child', activationProof: reactivateActivationProof });
+  const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
+  const record = JSON.parse(await readFile(path, 'utf8'));
+  record.executorAgentId = 'sibling-child';
+  await writeFile(path, `${JSON.stringify(record, null, 2)}\n`);
+  const before = await readFile(path);
+  await assert.rejects(store.save({
+    ...base, now: new Date(now.getTime() + 1),
+    envelope: { version: 1, source: 'proactive', task: 'continue', options: { resume: 'resume' } },
+  }), { code: 'RESCUE_PREPARATION_RECORD_INVALID' });
+  assert.deepEqual(await readFile(path), before);
 });
 
 test('strict v2 records remain consumable and consumed replacement upgrades to v3 generation two', async (t) => {
