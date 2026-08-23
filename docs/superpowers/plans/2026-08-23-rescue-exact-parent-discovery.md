@@ -63,8 +63,9 @@ request('thread/list', {
 });
 ```
 
-Validate the initialize response as a known supporting Codex line (0.141 or
-newer) before listing. Codex 0.117 silently ignores the unknown parent filter,
+Validate the initialize response as a known supporting Codex line (semver
+0.141.0 or newer) before listing, independently of the originator prefix.
+Codex 0.117 silently ignores the unknown parent filter,
 so its empty global response must fail closed rather than authorize a base-name
 spawn. Unknown or unparseable versions also fail closed.
 

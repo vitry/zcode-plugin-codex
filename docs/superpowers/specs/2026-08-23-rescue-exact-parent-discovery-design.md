@@ -81,7 +81,8 @@ interface. Internally it changes only its app-server request contract:
 1. initialize with the same bounded client identity and
    `{ "experimentalApi": true }` capability;
 2. validate the initialized `userAgent` as a Codex version whose protocol is
-   known to implement `thread/list.parentThreadId` (Codex 0.141 or newer);
+   known to implement `thread/list.parentThreadId` (semver 0.141.0 or newer),
+   without assuming a fixed originator prefix;
 3. send `thread/list` with:
    - `parentThreadId` equal to the validated requested parent;
    - `sourceKinds: ["subAgentThreadSpawn"]`;
@@ -107,7 +108,9 @@ their JSON decoder accepts `experimentalApi` but silently ignores the unknown
 `parentThreadId` request field, turning the request into an incomplete global
 list. An empty response therefore cannot serve as a feature probe. Unknown or
 unparseable Codex versions fail closed; the plugin does not claim completeness
-from a response whose relationship-query semantics are unproven.
+from a response whose relationship-query semantics are unproven. The parser
+handles a slash-bearing Codex originator and semver prerelease/build suffixes,
+while preserving normal semver ordering at the 0.141.0 support boundary.
 
 ## Authorization and Planning
 
