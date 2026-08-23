@@ -131,7 +131,12 @@ export function assertExactChildContinuationContract(source, { assertionPrefix =
   assert.doesNotMatch(activeBlock, /followup_task\s*\(/i);
   assert.match(activeBlock, /(?:zero|no|must not|never)[^\n]*(?:preflight|prepare|spawn|invoke)/i);
   assert.match(block, /Stopped exact same-operation child[\s\S]+companion[\s\S]+prepared route[\s\S]+exact persisted child/i);
-  assert.match(block, /Fresh or independent operation[\s\S]+`fresh`[\s\S]+new Rescue child/i);
+  const freshBlock = source.slice(fresh, end);
+  assert.match(freshBlock, /Fresh or independent operation[\s\S]+`fresh`[\s\S]+new independent ZCode operation/i);
+  assert.match(freshBlock, /(?:reactivate|follow up)[\s\S]+(?:managed base|base)[\s\S]+newest compatible[\s\S]+spawn/i);
+  assert.match(freshBlock, /(?:does not|never)[\s\S]+resume[\s\S]+prior[\s\S]+ZCode (?:binding|session)/i);
+  assert.match(freshBlock, /collision[\s\S]+(?:never|not)[\s\S]+authority/i);
+  assert.doesNotMatch(freshBlock, /(?:always|must|through)[^\n]{0,120}(?:new|spawn)[^\n]{0,60}(?:Rescue )?child/i);
   assert.match(block, /Root[^\n]+owns[^\n]+semantic choice/i);
   assert.match(source, /followup_task\(\{\s*target:\s*prepared\.route\.target,\s*message:\s*routeSpecificPreparedAssignment,?\s*\}\)/s);
   assert.match(source, /Preparation authorizes exactly one child-producing activation[^\n]+never both/i);

@@ -182,6 +182,33 @@ test('release docs explain persisted Rescue child recovery without making age or
   assert.match(changelog, /app-server identity.{0,180}private executor provenance/is);
 });
 
+test('release docs distinguish a fresh ZCode operation from allocating a fresh Codex child', () => {
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+
+  assert.match(english, /`--fresh`.{0,220}new independent ZCode operation.{0,180}(?:reactivate|follow up).{0,180}stopped Rescue child/is);
+  assert.match(english, /managed base.{0,140}newest compatible.{0,160}spawn.{0,100}none/is);
+  assert.match(english, /reusing.{0,100}Codex child.{0,180}(?:does not|never).{0,80}resume.{0,100}prior ZCode (?:binding|session)/is);
+  assert.match(english, /collision.{0,100}(?:never|not).{0,80}authority/is);
+  assert.doesNotMatch(english, /`--fresh` always[^.]{0,120}(?:new|spawn)[^.]{0,60}(?:Rescue )?child/i);
+
+  assert.match(chinese, /`--fresh`.{0,220}新的独立 ZCode 操作.{0,180}(?:恢复|follow up).{0,180}已停止(?:的)? Rescue child/is);
+  assert.match(chinese, /受管 base.{0,140}最新兼容.{0,160}(?:都没有|不存在).{0,100}spawn/is);
+  assert.match(chinese, /复用.{0,100}Codex child.{0,180}不会.{0,80}resume.{0,100}先前的 ZCode (?:binding|session)/is);
+  assert.match(chinese, /碰撞.{0,100}(?:绝不|不是).{0,80}(?:权威|授权)/is);
+  assert.doesNotMatch(chinese, /`--fresh` 始终[^。]{0,120}(?:新建|spawn)[^。]{0,60}child/i);
+});
+
+test('reactivation spec records the bounded Codex global-list foreign-row compatibility rule', () => {
+  const design = read('docs/superpowers/specs/2026-08-23-rescue-persisted-child-reactivation-design.md');
+
+  assert.match(design, /Codex 0\.117.{0,180}global `thread\/list`/is);
+  assert.match(design, /stable nested spawn parent.{0,160}provably foreign/is);
+  assert.match(design, /top-level parent.{0,140}(?:null|same value).{0,120}ignore/is);
+  assert.match(design, /(?:safe foreign|foreign (?:row(?:'s)? )?safe) thread ID.{0,140}duplicate detection/is);
+  assert.match(design, /(?:current-parent|current parent).{0,120}contradictory.{0,120}unsafe.{0,120}(?:reject|fail closed)/is);
+});
+
 test('release docs bind Rescue to its owned instance launcher without crossing namespaces', () => {
   const english = read('README.md');
   const chinese = read('README.zh-CN.md');

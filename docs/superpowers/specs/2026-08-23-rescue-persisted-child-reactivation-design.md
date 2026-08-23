@@ -189,8 +189,9 @@ The client:
 3. calls `thread/list` with
    `sourceKinds: ["subAgentThreadSpawn"]`, bounded `limit`, newest-first
    ordering, and the current pagination cursor;
-4. locally filters exact `thread.parentThreadId` and the matching parent field
-   inside `source.subAgent.thread_spawn`;
+4. locally filters the stable nested spawn parent inside
+   `source.subAgent.thread_spawn`, reconciling the top-level
+   `thread.parentThreadId` compatibility field as described below;
 5. follows `nextCursor` until completion or a strict page/item budget;
 6. terminates and reaps the app-server on success or every failure.
 
@@ -199,12 +200,24 @@ parameter is experimental in the current Codex protocol and would require the
 `experimentalApi` capability. Stable source filtering plus local exact-parent
 filtering provides the needed behavior without that dependency.
 
+Codex 0.117 exposes a global `thread/list` compatibility shape in which the
+stable nested spawn parent can safely prove that a row is foreign while the
+top-level parent is `null`. A row is provably foreign and may be ignored before
+full child validation only when its bounded stable nested spawn parent differs
+from the requested parent and its top-level parent is either `null` or the same
+value as that nested parent. Even then, a bounded safe foreign thread ID
+participates in duplicate detection across the whole response. A current-parent
+row, a contradictory top-level parent, or any missing, non-string, control-
+bearing, oversized, or otherwise unsafe parent evidence is rejected and fails
+closed rather than being classified as foreign.
+
 The client must reject:
 
 - malformed JSON-RPC frames or ambiguous result/error envelopes;
 - duplicate, cyclic, control-bearing, oversized, or unsafe pagination cursors;
 - a response exceeding line, total-output, depth, node, page, or item limits;
-- thread records with missing or contradictory parent/source identity;
+- current-parent or unproven thread records with missing, contradictory, or
+  unsafe parent/source identity;
 - invalid, relative, noncanonical, control-bearing, or oversized agent paths;
 - duplicate thread IDs with unequal metadata;
 - duplicate agent paths assigned to unequal child thread IDs;
@@ -261,7 +274,11 @@ Selection is operation-aware:
 Choosing any validated stopped executor for a fresh operation is safe because
 the child is a session-scoped Rescue forwarder, not the owner of one permanent
 ZCode operation. The new preparation remains the sole business operation and
-the existing StateStore still owns fresh replacement semantics.
+the existing StateStore still owns fresh replacement semantics. Therefore a
+fresh operation means a new independent ZCode operation and peer session, not a
+guarantee of a newly allocated Codex child; reactivation never resumes the
+prior ZCode binding or session. A collision remains occupancy input only and is
+never authority for selecting the executor or operation mode.
 
 ### Spawn allocation
 
