@@ -36,20 +36,14 @@ The dedicated `zcode-rescue` child, or the fixed generic compatibility forwarder
 - If an ordinary subagent reports that exact sentence, the top-level agent must include it in its user-facing final response verbatim and must not describe the ordinary subagent's work as ZCode output.
 - The dedicated `zcode-rescue` child and the fixed generic compatibility forwarder are exempt from the ordinary-subagent rule and must follow their fixed forwarder instructions.
 
-Before classification, preflight, preparation, naming, or route selection, inspect only Root's retained child lifecycle and semantic intent. Root does not read or decide whether private binding state is valid; the companion validates that state after the exact child runs. Root owns the semantic choice between continuation and an independent operation, and the child never infers it from identity or a latest-session fallback. Apply these states in order:
+Before classification, preflight, preparation, or route selection, inspect only Root's retained child lifecycle and semantic intent. Root does not read or decide whether private binding state is valid; the companion plans and validates that state. Root owns the semantic choice between continuation and an independent operation, and the child never infers it from identity or a latest-session fallback. Apply these states in order:
 
 - **Active exact child.** Root owns the semantic choice. If the current operation has an active `rescueChildId`, this is the highest priority rule: only rejoin, wait for, or poll that exact child's existing live handle. Never call `followup_task` for an active child. It must not preflight, prepare, spawn, or invoke again; there is no additional preflight, prepare, spawn, or invoke. Ordinary user steering is continuation of the same operation while that authoritative child remains active.
-- **Stopped exact same-operation child.** If Root retains a stopped `rescueChildId` and selects continuation of that same operation rather than `--fresh` or an independent operation, the same still-active parent turn may run `role-status rescue` and `prepare rescue` to create exactly one proactive `resume` generation, then follow up the same stopped child; do not name or spawn a child. A proactive clear continuation materializes `resume` as `resume`. An explicit bound continuation candidate without a `--fresh` or `--resume` flag must omit `resume`; the exact child may return `needs-choice`, after which Root uses the existing same-child choice protocol. Explicit `--resume` is authoritative. After the task-free prepared acknowledgement, send the route-specific exact prepared assignment below to the same `rescueChildId`; that child reuses `invoke-prepared rescue` for the exact newly prepared assignment. Codex 0.147 therefore emits no second `SubagentStart`, and this stopped continuation has zero spawn calls. The companion, not Root or the forwarder, validates the private binding. A missing, closed, corrupt, invalid, or mismatched binding, session, workspace, executor, or durable provenance must fail closed without choosing a latest session, falling back to another child, or spawning.
+- **Stopped exact same-operation child.** Root expresses continuation through the preparation envelope. The companion discovers host children, joins them to private stopped-executor provenance, and returns a prepared route to the exact persisted child. Root does not require a retained live handle, inspect `list_agents`, derive a target, or choose a presentation name. A proactive clear continuation materializes `resume` as `resume`. An explicit bound continuation candidate without a `--fresh` or `--resume` flag must omit `resume`; the exact child may return `needs-choice`, after which Root uses the existing same-child choice protocol. Explicit `--resume` is authoritative. The prescribed follow-up reactivates the original stopped child and history without a second `SubagentStart` and with zero spawn calls. A missing, closed, corrupt, invalid, or mismatched binding, session, workspace, executor, host child, or durable provenance must fail closed without choosing a latest session, falling back to another child, or spawning.
   A permission change cannot resume the old operation; an explicitly fresh operation captures the current permission snapshot instead.
 - **Fresh or independent operation.** An explicit `--fresh`, a proactive clear independent request, or an operation with no exact continuation materializes `fresh` and proceeds through preparation and one new Rescue child. It never follows the stopped child from another operation.
 
-For the stopped exact same-operation state, the child-facing continuation remains constant and contains no private value:
-
-```text
-followup_task({ target: rescueChildId, message: expectedPreparedContinuationMessage })
-```
-
-Here `expectedPreparedContinuationMessage` is the exact original assignment for that child's route: the named assignment literal for a named child, or the complete fixed generic message with the same immutable Rescue launcher command for a generic child. Retain the selected route and exact original assignment with `rescueChildId`; never substitute the named message for a generic child. This follows up the same `rescueChildId` with zero spawn calls.
+The child-facing prepared assignment remains constant and contains no private value. Every selected child reuses `invoke-prepared rescue`. The named assignment literal is used for a named Role child; the complete fixed generic message with the same immutable Rescue launcher command is used for a generic compatibility child. The companion prescribes the target or task name but never exposes the objective or private binding.
 
 ## Entry classification and choice precedence
 
@@ -87,37 +81,43 @@ The payload is the exact envelope with keys `version`, `source`, `task`, and `op
 
 Task, source, and options are allowed only in the parent `write_stdin` payload. Never put them in argv, the environment, a spawn message, output, relay, status, task name, or agent metadata. The prepared state is private and task-free at every child-facing boundary.
 
-Accept preparation only when the same handle exits with zero exit status and its sole accepted terminal object is exactly `{ type: 'prepared', command: 'rescue' }`, with no task or option fields. A signal, failed prepare, nonzero exit, extra field, malformed output, or any other result must stop the operation and must not follow up or spawn. Preparation authorizes exactly one next action: the already-selected stopped-child `followup_task`, or one named/generic spawn for a new child, never both.
+Accept preparation only when the same handle exits with zero exit status and its sole accepted terminal object is an exact prepared object whose keys are `type`, `command`, and `route`, where `type` is `prepared`, `command` is `rescue`, and `route` is one of the two forms below. A signal, failed prepare, nonzero exit, extra field, malformed output, or any other result must stop the operation and must not follow up or spawn.
 
-Only when the selected next action is a new-child spawn, after preparation succeeds and before that spawn, choose `rescueTaskName` exactly once as display metadata. A stopped-child followup never chooses or changes a task name.
+Strictly parse the terminal prepared route object before any collaboration action. It is exactly `{ version: 1, action: 'followup', target: '<absolute agent path>' }` or `{ version: 1, action: 'spawn', taskName: '<bounded Rescue task name>' }`. Reject malformed objects, every extra key, a missing or wrong action, an unsafe or non-absolute path, and an invalid task name. A `followup` route uses the exact `target`; a `spawn` route uses the exact `taskName`. Root must perform exactly one host action and no second action after success or rejection, except for the explicitly bounded pre-child schema negotiation below. It must not derive an ordinal, choose or substitute a name or target, spawn before the directive, follow up another target, retry after rejection, or use collision as fallback. Collision handling belongs only to the plugin planner; collision fallback is never authorized. Preparation authorizes exactly one child-producing activation, follow-up or spawn, never both.
 
-Use the task-independent base `zcode_rescue_task` and the exact written form `zcode_rescue_task[_<ordinal>]`; the complete name must be no more than 64 UTF-8 bytes. The name is never derived from the business objective or task text and must contain no prompt fragment, option, path, personal name, identifier, hash, credential, capability, or authorization material. Start with the unsuffixed name; if it collides with an occupied sibling task name, use the smallest available ordinal from 2 through 9999, written without leading zeros. Determine that collision before the one spawn; collision handling never authorizes a second spawn.
+For a follow-up route, use trusted retained original spawn provenance for that exact target to select `routeSpecificPreparedAssignment`: a named Role child requires the exact named assignment literal, while a qualified generic/default child requires its complete fixed generic message rendered with the same immutable `rescueLauncherCommand`. Missing, ambiguous, or mismatched exact target-to-original-route or assignment provenance must fail closed; do not guess the named assignment, spawn, or fall back. Then send that exact historical task-free assignment and do nothing else:
 
-Both `task_name` and `agent_path` are presentation metadata, and convention matching is neither sufficient nor necessary Rescue identity evidence. Never classify, authorize, route, reject, downgrade, or recover Rescue based on any name or path. Trusted routing facts remain the named Role where available, exact returned child ID, parent-child linkage, fixed forwarder contract, and hook-bound executor state.
+```text
+followup_task({ target: prepared.route.target, message: routeSpecificPreparedAssignment })
+```
 
-For a selected new-child spawn, when the active `spawn_agent` tool schema exposes `agent_type`, prefer this exact named spawn with a fresh context:
+The named assignment is exactly `Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.`. The generic assignment is the complete fixed generic message below after its one immutable launcher substitution. The target is the plugin-prescribed agent path, not a child ID guessed or selected by Root. A host rejection is terminal for this preparation and must not fall back to a spawn.
+
+When `prepared.route.action` is exactly `spawn` and the active `spawn_agent` tool schema exposes `agent_type`, prefer this exact named spawn with a fresh context:
 
 ```text
 spawn_agent({
-  task_name: rescueTaskName,
+  task_name: prepared.route.taskName,
   fork_turns: 'none',
   agent_type: 'zcode-rescue',
   message: 'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.',
 })
 ```
 
-Only after the preflight returned `ready`, classify routing exactly as follows:
+Only after the preflight returned `ready`, classify schema negotiation exactly as follows. One prepared `spawn` directive authorizes one child-producing activation:
 
 | Observed condition | Required action |
 |---|---|
 | The active tool schema omits `agent_type` | Use the generic route. |
-| The named tool request is rejected for an unknown/unrecognized/unsupported/reserved field/key/parameter `agent_type`, and the rejection proves there is no agent ID, start event, or activity | Use the generic route; this was a pre-child schema rejection. |
+| The named tool request is rejected for an unknown/unrecognized/unsupported/reserved field/key/parameter `agent_type`, and the rejection proves there is no agent ID, start event, or activity | This was a pre-child schema rejection and schema negotiation may continue with the one generic child-producing call. |
 | The schema recognizes `agent_type`, but reports an unknown/unavailable/invalid Role value `zcode-rescue`, a missing Role, Role/config mismatch, drift, shadowing, or outdated state | Fail closed with `$zcode:setup`; do not use generic fallback. |
-| A timeout, ambiguous result, runtime failure, or any returned agent ID, start event, or activity | It may have created a child. Never generic fallback and never issue a second spawn. If an ID exists, wait or rejoin that same child; otherwise stop with the original failure. |
+| A Role-value rejection, collision, timeout, ambiguous result, runtime failure, or any returned agent ID, start event, or activity | Terminal for this preparation. It may have created a child. Never generic fallback, never issue a second spawn, and never issue another child-producing call. If an ID exists, wait or rejoin that same child; otherwise stop with the original failure. |
+
+Collision, runtime failure, and ambiguity are terminal; none authorizes schema negotiation or generic fallback.
 
 Do not infer field incompatibility merely from the words `unknown`, `invalid`, or `unsupported`: the error must identify the `agent_type` field/key/parameter rather than its `zcode-rescue` value. Only a proven pre-child schema rejection guarantees that no child ran the companion and therefore no queued job or authorization artifact exists.
 
-For the generic route, substitute only the already-bound immutable `rescueLauncherCommand` for `<rescue-launcher-command>` in this fixed message, then call `spawn_agent` with `task_name: rescueTaskName`, `fork_turns: 'none'`, no `agent_type`, and exactly that message:
+For the generic route, substitute only the already-bound immutable `rescueLauncherCommand` for `<rescue-launcher-command>` in this fixed message, then call `spawn_agent` with `task_name: prepared.route.taskName`, `fork_turns: 'none'`, no `agent_type`, and exactly that message:
 
 ```text
 Act only as the installed ZCode Rescue forwarder. You are task-blind and capability-free. In the current workspace run exactly:
