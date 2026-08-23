@@ -1030,11 +1030,15 @@ test('symlinked marketplace hook renders its lexical launcher and the real launc
   assert.ok((await readdir(join(installedData, 'identity-lifecycle', 'active-turns'))).length === 1);
 
   const ttyRecord = join(context.directory, 'symlink-installed-prepare-tty.txt'); await writeFile(ttyRecord, '');
+  const appServerRecord = join(context.directory, 'symlink-installed-prepare-app-server.jsonl'); await writeFile(appServerRecord, '');
   const child = spawn(process.execPath, [installedLauncher, 'prepare', 'rescue'], {
     cwd: linked,
     env: {
       ...process.env, CODEX_HOME: codexHome, CODEX_THREAD_ID: sessionId,
+      CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+      FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [], nextCursor: null, backwardsCursor: null }),
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord,
+      FAKE_CODEX_RECORD: appServerRecord,
     },
     stdio: ['pipe', 'pipe', 'pipe'], shell: false,
   });
@@ -1044,8 +1048,10 @@ test('symlinked marketplace hook renders its lexical launcher and the real launc
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
   await waitFor(async () => stdout.includes('preparation-input-ready'), 'symlinked installed launcher did not reach preparation readiness');
   child.stdin?.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'symlink installed task', options: {} })}\n`);
-  assert.deepEqual(await exit, { code: 0, signal: null }); assert.equal(stderr, '');
+  assert.deepEqual(await exit, { code: 0, signal: null }, stderr || stdout); assert.equal(stderr, '');
   assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n{"type":"prepared","command":"rescue","route":{"version":1,"action":"spawn","taskName":"zcode_rescue_task"}}\n');
+  const appServerRequests = (await readFile(appServerRecord, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.ok(appServerRequests.some((request) => request.method === 'thread/list'), 'prepare must use the injected fake Codex app-server');
   assert.equal((await createRescuePreparationStore({ dataRoot: installedData }).consume({
     sessionId, turnId: 'symlink-installed-turn', workspace: linked, permissionMode: 'acceptEdits', executorAgentId: 'symlink-installed-child',
     activationProof: { kind: 'spawn', taskName: 'zcode_rescue_task', agentPathDigest: createHash('sha256').update('/root/zcode_rescue_task').digest('hex') },
