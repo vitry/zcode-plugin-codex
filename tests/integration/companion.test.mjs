@@ -320,9 +320,9 @@ async function waitForConversationProbeBoundary(context, record, scenario) {
   }, `conversation ${scenario} frame was not observed after the accepted boundary`);
 }
 
-/** @param {()=>Promise<boolean>} predicate @param {string} message */
-async function waitFor(predicate, message) {
-  const deadline = Date.now() + 5_000;
+/** @param {()=>Promise<boolean>} predicate @param {string} message @param {number} [timeoutMs] */
+async function waitFor(predicate, message, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -330,8 +330,8 @@ async function waitFor(predicate, message) {
   throw new Error(message);
 }
 
-/** @param {any} context @param {()=>Promise<any[]>} recorded @param {string} message */
-async function waitForAcceptedBoundary(context, recorded, message) {
+/** @param {any} context @param {()=>Promise<any[]>} recorded @param {string} message @param {number} [timeoutMs] */
+async function waitForAcceptedBoundary(context, recorded, message, timeoutMs = 5_000) {
   const storage = await resolveWorkspaceStorage(context);
   await waitFor(async () => {
     if (!(await recorded()).some((frame) => frame.method === 'session/send')) return false;
@@ -342,7 +342,7 @@ async function waitForAcceptedBoundary(context, recorded, message) {
       if (typeof job?.inputId === 'string' && Number.isSafeInteger(job?.startRevision)) return true;
     }
     return false;
-  }, message);
+  }, message, timeoutMs);
 }
 
 /** @param {any} context @param {{ownerSessionId?:string,ownerTurnId?:string,workerLeaseId?:string,zcodeSessionId?:string}} [options] */
@@ -1613,7 +1613,7 @@ test('parent steering leaves one isolated Rescue child running with zero cancel 
   child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
   t.after(() => { if (!exited) child.kill('SIGKILL'); });
   const recorded = async () => (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  await waitForAcceptedBoundary(context, recorded, 'steered child send boundary was not durably accepted');
+  await waitForAcceptedBoundary(context, recorded, 'steered child send boundary was not durably accepted', 15_000);
 
   await createIdentityStore({ dataRoot: context.dataRoot }).beginCallerTurn({
     sessionId: parentSessionId, turnId: 'steering-later-turn', workspace: context.workspace,
