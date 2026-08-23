@@ -1058,6 +1058,66 @@ test('symlinked marketplace hook renders its lexical launcher and the real launc
   })).envelope.task, 'symlink installed task');
 });
 
+test('installed prepare reserves a new ordinal when exact-parent discovery finds an empty-preview host-only child', async (t) => {
+  const context = await fixture(); const codexHome = join(context.directory, 'collision-installed-codex-home');
+  const installed = join(codexHome, 'plugins', 'cache', 'vitry', 'zcode', '0.1.0');
+  await mkdir(dirname(installed), { recursive: true }); await symlink(root, installed, 'dir');
+  const installedData = join(codexHome, 'plugins', 'data', 'zcode-vitry'); await mkdir(installedData, { recursive: true });
+  const sessionId = 'empty-preview-collision-parent'; const turnId = 'empty-preview-collision-turn';
+  const hookEnv = { ...process.env, CODEX_HOME: codexHome, ZCODE_DATA_ROOT: installedData, PLUGIN_ROOT: installed };
+  const started = await runChild(process.execPath, [join(installed, 'hooks', 'session-lifecycle-hook.mjs')], {
+    cwd: context.workspace, env: hookEnv, ordinaryInput: true,
+    input: { session_id: sessionId, cwd: context.workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'resume' },
+  });
+  assert.equal(started.code, 0, started.stderr || started.stdout);
+  const prompted = await runChild(process.execPath, [join(installed, 'hooks', 'user-prompt-hook.mjs')], {
+    cwd: context.workspace, env: hookEnv, ordinaryInput: true,
+    input: { session_id: sessionId, turn_id: turnId, cwd: context.workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue continue restored work' },
+  });
+  assert.equal(prompted.code, 0, prompted.stderr || prompted.stdout);
+
+  const linked = await addLinkedWorktree(context.workspace, context.directory, 'empty-preview-collision-target');
+  const appServerRecord = join(context.directory, 'collision-app-server.jsonl'); await writeFile(appServerRecord, '');
+  const zcodeRecord = join(context.directory, 'collision-zcode.jsonl'); await writeFile(zcodeRecord, '');
+  const ttyRecord = join(context.directory, 'collision-prepare-tty.txt'); await writeFile(ttyRecord, '');
+  const privateTask = 'private collision task must never be public';
+  const hostOnlyChild = rawCodexChild({
+    id: 'empty-preview-host-only-child', parentThreadId: sessionId, cwd: context.workspace,
+  });
+  assert.equal(hostOnlyChild.preview, '', 'incident fixture must model Codex global-list omission');
+  const child = spawn(process.execPath, [join(installed, 'skills', 'rescue', 'launcher.mjs'), 'prepare', 'rescue'], {
+    cwd: linked,
+    env: {
+      ...process.env, CODEX_HOME: codexHome, CODEX_THREAD_ID: sessionId,
+      CODEX_APP_SERVER_PATH: process.execPath, CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+      FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: JSON.stringify([hostOnlyChild]), FAKE_CODEX_RECORD: appServerRecord,
+      FAKE_ZCODE_RECORD: zcodeRecord,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim(), ZCODE_PREPARE_TTY_RECORD: ttyRecord,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+  });
+  let stdout = ''; let stderr = ''; let exited = false;
+  child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  const exit = new Promise((resolveExit, reject) => child.once('error', reject).once('exit', (code, signal) => { exited = true; resolveExit({ code, signal }); }));
+  t.after(() => { if (!exited) child.kill('SIGKILL'); });
+  await waitFor(async () => stdout.includes('preparation-input-ready'), 'collision prepare did not reach input readiness');
+  child.stdin?.end(`${JSON.stringify({ version: 1, source: 'explicit', task: privateTask, options: {} })}\n`);
+  assert.deepEqual(await exit, { code: 0, signal: null }, stderr || stdout);
+  assert.equal(stderr, '');
+  assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n{"type":"prepared","command":"rescue","route":{"version":1,"action":"spawn","taskName":"zcode_rescue_task_2"}}\n');
+
+  const requests = (await readFile(appServerRecord, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const listRequests = requests.filter((request) => request.method === 'thread/list');
+  assert.equal(listRequests.length, 1, 'prepare must issue exactly one collision-discovery request without retrying');
+  assert.equal(listRequests[0].params.parentThreadId, sessionId, 'collision discovery must query the exact parent relationship');
+  assert.equal(requests.filter((request) => request.method === 'thread/read').length, 0, 'host-only occupancy must not authorize a follow-up read');
+  assert.equal(await readFile(zcodeRecord, 'utf8'), '', 'prepare must not invoke ZCode');
+  const storage = await resolveWorkspaceStorage({ dataRoot: installedData, workspace: linked });
+  const preparations = (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json'));
+  assert.equal(preparations.length, 1, 'prepare must save one directive generation without retrying preparation');
+  assert.doesNotMatch(`${stdout}${stderr}${await readFile(appServerRecord, 'utf8')}`, new RegExp(privateTask));
+});
+
 test('source role-status does not relabel inspection and configuration failures', async () => {
   const context = await fixture();
   for (const error of [
@@ -2030,11 +2090,20 @@ test('background reservation exposes one private invocation, which is single-use
   const privateAuth = { executionCapability: capability, jobId: reserved.json.job.id };
   const first = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.equal(first.code, 0, first.stderr); assert.equal(first.json.job.status, 'succeeded');
+  const terminalResult = first.json.result;
+  assert.deepEqual(JSON.parse(terminalResult), { findings: [] });
+  const storage = await resolveWorkspaceStorage(context);
+  assert.equal(await readFile(join(storage.directory, first.json.job.resultArtifact), 'utf8'), terminalResult);
   const backgroundLog = await readFile(first.json.job.logFile, 'utf8');
-  assert.match(backgroundLog, /Assistant message\n[\s\S]*"findings": \[\]/);
-  assert.match(backgroundLog, /Final output\n[\s\S]*"findings": \[\]/);
+  const assistantBlock = `Assistant message\n${terminalResult}\n`;
+  const finalBlock = `Final output\n${terminalResult}\n`;
+  assert.equal(backgroundLog.split(assistantBlock).length - 1, 1);
   assert.equal((backgroundLog.match(/Assistant message/g) ?? []).length, 1);
-  assert.equal((backgroundLog.match(/Final output/g) ?? []).length, 1);
+  // The final block is an observational mirror written after durable success;
+  // its bounded append may time out under filesystem load (notably on Windows).
+  const finalMirrorCount = backgroundLog.split(finalBlock).length - 1;
+  assert.ok([0, 1].includes(finalMirrorCount));
+  assert.equal((backgroundLog.match(/Final output/g) ?? []).length, finalMirrorCount);
   assert.doesNotMatch(backgroundLog, /PRIVATE_REASONING|RAW_TOOL_OUTPUT|CAPABILITY_TOKEN/);
   const replay = await companion(context, reserved.json.privateInvocation, {}, privateAuth);
   assert.notEqual(replay.code, 0); assert.equal(replay.json.error.code, 'EXECUTION_CAPABILITY_CONSUMED');

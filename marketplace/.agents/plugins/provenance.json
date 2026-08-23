@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "7bd129ea0e0ff9195ab049682cac9ab3bb5350c5",
-  "sourceSha": "7bd129ea0e0ff9195ab049682cac9ab3bb5350c5",
+  "sourceRef": "85180fc834b29223f41cc42a62dde1be433b0572",
+  "sourceSha": "85180fc834b29223f41cc42a62dde1be433b0572",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "f3df38f76e5fafd0b6c26680f191f2619c131c7d901afdedd59fbbda30352432",
+    "sha256": "facc2a0bc0c53243adb52dca626069975acc3c16c198f5ebcaca477d8a3acbf2",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -23,8 +23,8 @@
       },
       {
         "path": "plugins/zcode/CHANGELOG.md",
-        "size": 10546,
-        "sha256": "0dede864753ff83195887e01ddd808ebbf53992e1084eaf83536e20ae454108a"
+        "size": 10865,
+        "sha256": "8d323a9ce5a1d3dc9cda735ccaf5bf9571c2a543c4457f3dfc327201447c81df"
       },
       {
         "path": "plugins/zcode/LICENSE",
@@ -38,13 +38,13 @@
       },
       {
         "path": "plugins/zcode/README.md",
-        "size": 26612,
-        "sha256": "49698a732576d34f9b8570d2d2866d78352258efa6b8087a468bfa899ba23c7f"
+        "size": 27003,
+        "sha256": "0c7eba4867d72a59c9a7bb60d1aa8a86d8e253cca39871eb0393441e8d6c2398"
       },
       {
         "path": "plugins/zcode/README.zh-CN.md",
-        "size": 25104,
-        "sha256": "355c19a5880aa69668a79048f25301ceee0b97e0d73e72e440ff392b80b09a4f"
+        "size": 25471,
+        "sha256": "6acf04a7534c3584343df1379c3afc0f4e6cc234ec5f749417c8ad99ee2395b6"
       },
       {
         "path": "plugins/zcode/SECURITY.md",
@@ -523,8 +523,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/codex-app-server.mjs",
-        "size": 25709,
-        "sha256": "04856f9e39c22fdd0f005387decec62d93e7cca62d47efe5ba0c871e74860b20"
+        "size": 26260,
+        "sha256": "27e9d804d611d946cb2b4651f4322f6b51fbcd1463602d6f35187dfb807b8cf2"
       },
       {
         "path": "plugins/zcode/scripts/lib/codex-config.mjs",

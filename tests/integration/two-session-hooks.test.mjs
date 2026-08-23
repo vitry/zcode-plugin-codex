@@ -173,9 +173,7 @@ test('real prompt hooks keep direct ambient-thread invocation exact in one works
   Object.assign(ctx.env, {
     CODEX_APP_SERVER_PATH: process.execPath,
     CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
-    FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({
-      data: [unrelatedLegacySpawnChild(ctx.workspace)], nextCursor: null, backwardsCursor: null,
-    }),
+    FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: JSON.stringify([unrelatedLegacySpawnChild(ctx.workspace)]),
   });
   for (const session of [
     { id: 'session-a', child: 'child-a', turn: 'turn-a', task: 'repair alpha', prompt: '$zcode:rescue --fresh --wait repair alpha' },

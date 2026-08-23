@@ -732,7 +732,7 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
       ...process.env, ZCODE_DATA_ROOT: dataRoot,
       CODEX_APP_SERVER_PATH: process.execPath,
       CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
-      FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [unrelatedLegacyChild], nextCursor: null, backwardsCursor: null }),
+      FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: JSON.stringify([unrelatedLegacyChild]),
     };
     const hook = async (script, input) => runChild(process.execPath, [join(installedHooks, script)], { cwd: workspace, env: hookEnv, ordinaryInput: true, input });
     assert.equal((await hook('session-lifecycle-hook.mjs', { session_id: parentSessionId, cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' })).code, 0);
