@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn as nodeSpawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -179,15 +180,21 @@ test('app-server operations honor pre-abort and promptly reap hung list/read chi
   ];
   for (const [name, method, operation] of operations) await t.test(name, async () => {
     const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', `${name} interrupted.`, { category: 'interruption', remedy: 'Retry.' });
-    const { options, record } = await appOptions({ FAKE_CODEX_HANG: method }, { timeoutMs: 15_000, signal: controller.signal });
+    const observed = /** @type {{child:import('node:child_process').ChildProcess|null}} */ ({ child: null });
+    const spawn = (/** @type {string} */ command, /** @type {string[]} */ args, /** @type {any} */ spawnOptions) => {
+      observed.child = nodeSpawn(command, args, spawnOptions); return observed.child;
+    };
+    const { options, record } = await appOptions({ FAKE_CODEX_HANG: method }, { timeoutMs: 15_000, signal: controller.signal, spawn });
     const promise = operation(options); const observedDeadline = Date.now() + 2_000;
     while (!(await recordedCalls(record)).some((call) => call.method === method) && Date.now() < observedDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal((await recordedCalls(record)).some((call) => call.method === method), true);
     const startedAt = Date.now(); controller.abort(interruption);
     await assert.rejects(promise, (error) => error === interruption);
     assert.ok(Date.now() - startedAt < 1_000, `${name} cancellation was not prompt`);
+    assert.ok(observed.child, `${name} app-server child was not observed`);
+    assert.equal(observed.child.exitCode !== null || observed.child.signalCode !== null, true, `${name} app-server child was not reaped`);
     const calls = await recordedCalls(record);
-    assert.equal(calls.some((call) => call.lifecycle === 'SIGTERM'), true);
+    if (process.platform !== 'win32') assert.equal(calls.some((call) => call.lifecycle === 'SIGTERM'), true);
   });
 });
 
