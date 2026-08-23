@@ -115,6 +115,20 @@ test('shared SpawnChild sanitizer accepts raw and sanitized snapshots with defen
   assert.throws(() => sanitizeCodexThreadSpawnChild(second, 'wrong-parent', 'child-1'), { code: 'CODEX_CHILD_METADATA_INVALID' });
 });
 
+test('app-server list and read require raw thread-spawn provenance rather than sanitized snapshots', async (t) => {
+  const snapshot = sanitizeCodexThreadSpawnChild(childThread());
+  await t.test('list', async () => {
+    const { options } = await appOptions({
+      FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [snapshot], nextCursor: null, backwardsCursor: null }),
+    });
+    await assert.rejects(listCodexThreadSpawnChildren('parent-1', options), { code: 'CODEX_CHILD_METADATA_INVALID' });
+  });
+  await t.test('read', async () => {
+    const { options } = await appOptions({ FAKE_CODEX_THREAD_JSON: JSON.stringify(snapshot) });
+    await assert.rejects(readCodexThreadSpawnChild('child-1', 'parent-1', options), { code: 'CODEX_CHILD_METADATA_INVALID' });
+  });
+});
+
 test('app-server operations honor pre-abort and promptly reap hung list/read children', async (t) => {
   await t.test('pre-aborted does not spawn', async () => {
     const controller = new AbortController();

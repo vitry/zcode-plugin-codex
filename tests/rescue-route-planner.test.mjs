@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { planRescueActivation, validateRescueRouteDirective } from '../scripts/lib/rescue-route-planner.mjs';
+import { PluginError } from '../scripts/lib/errors.mjs';
 
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -118,10 +119,22 @@ test('duplicate IDs, duplicate paths, and multiple exact resume bindings fail as
 
 test('incomplete discovery fails closed and redacts adapter payloads', async () => {
   const input = await context();
-  for (const listChildren of [async () => null, async () => { throw Object.assign(new Error('secret app-server payload'), { code: 'CODEX_THREAD_LIST_LIMIT' }); }]) {
+  for (const listChildren of [
+    async () => null,
+    async () => { throw Object.assign(new Error('secret app-server payload'), { code: 'CODEX_THREAD_LIST_LIMIT' }); },
+    async () => { throw { code: 'JOB_INTERRUPTED', category: 'interruption', message: 'secret lookalike interruption', details: { token: 'private-token' }, cause: new Error('private-cause') }; },
+  ]) {
     let caught; try { await planRescueActivation({ ...input, listChildren }); } catch (error) { caught = error; }
-    assert.equal(caught?.code, 'CODEX_CHILD_DISCOVERY_FAILED'); assert.doesNotMatch(JSON.stringify(caught), /secret app-server payload|private task/);
+    assert.equal(caught?.code, 'CODEX_CHILD_DISCOVERY_FAILED');
+    const chain = `${caught?.stack}\n${JSON.stringify(caught)}\n${String(caught?.cause ?? '')}`;
+    assert.doesNotMatch(chain, /secret app-server payload|private task|secret lookalike interruption|private-token|private-cause/);
   }
+});
+
+test('trusted discovery interruption preserves the exact PluginError', async () => {
+  const input = await context();
+  const interruption = new PluginError('JOB_INTERRUPTED', 'Trusted interruption.', { category: 'interruption', remedy: 'Retry.' });
+  await assert.rejects(planRescueActivation({ ...input, listChildren: async () => { throw interruption; } }), (error) => error === interruption);
 });
 
 test('host discovery boundary rejects malformed exact SpawnChild records before followup or occupied allocation', async (t) => {

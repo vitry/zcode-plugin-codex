@@ -54,7 +54,7 @@ export async function listCodexThreadSpawnChildren(parentThreadId, options = {})
       itemCount += result.data.length;
       if (itemCount > maxItems) throw listLimit();
       for (const thread of result.data) {
-        const child = sanitizeCodexThreadSpawnChild(thread);
+        const child = validateRawThreadSpawnChild(thread);
         if (ids.has(child.id)) throw metadataInvalid();
         ids.add(child.id);
         if (child.parentThreadId !== parentThreadId) continue;
@@ -77,7 +77,7 @@ export async function readCodexThreadSpawnChild(threadId, parentThreadId, option
     notify({ method: 'initialized', params: {} });
     const result = await request('thread/read', { threadId, includeTurns: false });
     if (!Object.hasOwn(result, 'thread')) throw malformed('Codex thread/read response omitted its thread.');
-    return sanitizeCodexThreadSpawnChild(result.thread, parentThreadId, threadId);
+    return validateRawThreadSpawnChild(result.thread, parentThreadId, threadId);
   });
 }
 
@@ -175,6 +175,11 @@ function remoteRequestError(method) {
 /** Sanitize one raw or already-sanitized Codex thread-spawn child snapshot. @param {unknown} thread @param {string} [expectedParentId] @param {string} [expectedChildId] @returns {SpawnChild} */
 export function sanitizeCodexThreadSpawnChild(thread, expectedParentId, expectedChildId) {
   if (isSanitizedSpawnChild(thread)) return validateSanitizedSpawnChild(thread, expectedParentId, expectedChildId);
+  return validateRawThreadSpawnChild(thread, expectedParentId, expectedChildId);
+}
+
+/** @param {unknown} thread @param {string} [expectedParentId] @param {string} [expectedChildId] @returns {SpawnChild} */
+function validateRawThreadSpawnChild(thread, expectedParentId, expectedChildId) {
   if (!plainObject(thread) || !safePlainValue(thread)) throw metadataInvalid();
   const source = thread.source; const subAgent = plainObject(source) ? source.subAgent : null; const spawn = plainObject(subAgent) ? subAgent.thread_spawn : null;
   if (!plainObject(source) || Object.keys(source).length !== 1 || !plainObject(subAgent) || Object.keys(subAgent).length !== 1 || !plainObject(spawn)

@@ -42,7 +42,7 @@ export async function planRescueActivation(input) {
   let children;
   try { children = await listChildren(input.caller.sessionId); }
   catch (error) {
-    if (/** @type {any} */ (error)?.code === 'JOB_INTERRUPTED') throw error;
+    if (error instanceof PluginError && error.code === 'JOB_INTERRUPTED' && error.category === 'interruption') throw error;
     if (/** @type {any} */ (error)?.code === 'CODEX_CHILD_METADATA_INVALID') throw plannerError('CODEX_CHILD_METADATA_INVALID');
     throw plannerError('CODEX_CHILD_DISCOVERY_FAILED');
   }
