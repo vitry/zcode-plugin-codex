@@ -396,19 +396,28 @@ never converts a requested resume into fresh.
 
 ### Legacy compatibility
 
+> **Amended 2026-08-24:**
+> `2026-08-24-rescue-legacy-child-adoption-design.md` adds a distinct one-shot
+> host-backed compatibility authority for exact named `zcode-rescue` children
+> whose older plugin left no Hook executor evidence. It does not reconstruct or
+> weaken Hook provenance.
+
 No persisted legacy preparation is rewritten in place. A new parent prompt
 creates a new version-three generation-one preparation.
 
-An old child is compatible when current app-server metadata proves its exact
-parent/path/thread relationship and current plugin hook state proves its exact
-Rescue executor and route provenance. Existing stopped-age expiry is bypassed
-only inside this freshly published reactivation activation. Missing or corrupt
-hook evidence cannot be reconstructed from host metadata and therefore cannot
-reactivate the old child.
+An old child uses ordinary reactivation when current app-server metadata proves
+its exact parent/path/thread relationship and current plugin hook state proves
+its exact Rescue executor and route provenance. Existing stopped-age expiry is
+bypassed only inside this freshly published reactivation activation. Missing or
+corrupt current-plugin Hook evidence cannot be downgraded to host authority.
+True absence from an older plugin may instead use the separate exact named
+legacy-adoption contract from the 2026-08-24 amendment.
 
 If an incompatible old child occupies the base path, spawn allocation skips it
-and creates a bounded ordinal Rescue child. The plugin never sends the launcher
-assignment to a child it cannot authenticate as Rescue.
+and creates a bounded ordinal Rescue child. An exact named legacy-adoption child
+is compatible under the amendment; generic/null, unrelated, ambiguous, or
+damaged-provenance children remain incompatible. The plugin never sends the
+launcher assignment to a child it cannot authenticate as Rescue.
 
 ## Root-Facing Route Directive
 
