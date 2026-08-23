@@ -256,6 +256,19 @@ export async function resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace
   if (!executorMatchesRoute(executor, route)) throw executorError('EXECUTOR_ROUTE_INVALID', 'The private executor route does not match its executor.');
   return { executor, executionWorkspace: executor.workspace };
 }
+export async function resolveRoutedStoppedForwardingExecutor(dataRoot, originWorkspace, agentId, options = {}) {
+  if (options === null || typeof options !== 'object' || Array.isArray(options) || Object.getPrototypeOf(options) !== Object.prototype
+    || Object.keys(options).some((option) => !['continuation', 'durableProvenance', 'now'].includes(option))
+    || options.continuation !== undefined && typeof options.continuation !== 'boolean'
+    || options.durableProvenance !== undefined && typeof options.durableProvenance !== 'boolean') {
+    throw executorError('EXECUTOR_ROUTE_INVALID', 'The stopped executor lookup options are invalid.');
+  }
+  return resolveRoutedForwardingExecutor(dataRoot, originWorkspace, agentId, {
+    ...options,
+    continuation: true,
+    durableProvenance: true,
+  });
+}
 async function probeForwardingExecutor(dataRoot, workspace, agentId, options, routed) {
   let store;
   try { store = routed ? await readOnlyPaths(dataRoot, workspace) : await paths(dataRoot, workspace); }

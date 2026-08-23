@@ -2,8 +2,8 @@
 // @ts-check
 import process from 'node:process';
 import { createHash } from 'node:crypto';
-import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -11,12 +11,18 @@ import { runProcess } from './lib/process.mjs';
 import { npmLaunch } from './lib/tool-launch.mjs';
 
 const moduleRoot = fileURLToPath(new URL('..', import.meta.url));
+const MAX_MARKETPLACE_CONTENT_FILES = 4096;
+const MAX_MARKETPLACE_CONTENT_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_MARKETPLACE_CONTENT_BYTES = 512 * 1024 * 1024;
+const MAX_MARKETPLACE_CONTENT_PATH_BYTES = 4096;
+const MARKETPLACE_PROVENANCE_PATH = '.agents/plugins/provenance.json';
 
 export const REQUIRED_RESCUE_PAYLOAD = Object.freeze([
   'agents/zcode-rescue.toml.template',
   'skills/rescue/SKILL.md',
   'skills/rescue/launcher.mjs',
   'scripts/zcode-companion.mjs',
+  'scripts/lib/codex-app-server.mjs',
   'scripts/lib/invocation.mjs',
   'scripts/lib/job-control.mjs',
   'scripts/lib/job-log.mjs',
@@ -24,6 +30,7 @@ export const REQUIRED_RESCUE_PAYLOAD = Object.freeze([
   'scripts/lib/public-text.mjs',
   'scripts/lib/rescue-binding.mjs',
   'scripts/lib/rescue-preparation.mjs',
+  'scripts/lib/rescue-route-planner.mjs',
   'scripts/lib/state.mjs',
   'scripts/lib/conversation-progress.mjs',
   'scripts/lib/managed-agent-role.mjs',
@@ -71,6 +78,55 @@ export function validateResolvedSource(input) {
   if (!input || typeof input !== 'object' || typeof input.sourceRef !== 'string' || !input.sourceRef
     || !/^[a-f0-9]{40}$/.test(input.sourceSha) || input.headSha !== input.sourceSha || input.refSha !== input.sourceSha) throw new Error('Invalid resolved marketplace source ref or SHA.');
   return { sourceRef: input.sourceRef, sourceSha: input.sourceSha };
+}
+
+/**
+ * Hash every published marketplace byte except provenance.json itself, whose
+ * content embeds this manifest. The result is independent of Git history and
+ * can therefore be verified in a depth-one checkout.
+ * @param {string} snapshotRoot
+ */
+export async function createMarketplaceContentManifest(snapshotRoot) {
+  const rootMetadata = await lstat(snapshotRoot);
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) throw new Error('Marketplace content manifest accepts only a real snapshot root.');
+  const root = await realpath(snapshotRoot);
+  /** @type {{path:string,size:number,sha256:string}[]} */
+  const files = [];
+  let totalBytes = 0;
+  /** @param {string} absolutePath @param {string} relativePath @param {import('node:fs').Stats} metadata */
+  const addFile = async (absolutePath, relativePath, metadata) => {
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_MARKETPLACE_CONTENT_FILE_BYTES) throw new Error('Marketplace content manifest accepts only bounded regular files.');
+    const manifestPath = relativePath.split(sep).join('/');
+    if (!manifestPath || isAbsolute(manifestPath) || Buffer.byteLength(manifestPath) > MAX_MARKETPLACE_CONTENT_PATH_BYTES) throw new Error('Marketplace content manifest contains an unsafe path.');
+    totalBytes += metadata.size;
+    if (files.length >= MAX_MARKETPLACE_CONTENT_FILES || totalBytes > MAX_MARKETPLACE_CONTENT_BYTES) throw new Error('Marketplace content manifest exceeds its bounded payload.');
+    const bytes = await readFile(absolutePath);
+    files.push({ path: manifestPath, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
+  };
+  /** @param {string} absoluteDirectory @param {string} relativeDirectory */
+  const walk = async (absoluteDirectory, relativeDirectory) => {
+    const metadata = await lstat(absoluteDirectory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error('Marketplace content manifest accepts only real directories.');
+    for (const name of (await readdir(absoluteDirectory)).sort()) {
+      if (hasControl(name) || name === '.' || name === '..') throw new Error('Marketplace content manifest contains an unsafe path.');
+      const absolutePath = join(absoluteDirectory, name);
+      const relativePath = join(relativeDirectory, name);
+      const entry = await lstat(absolutePath);
+      const manifestPath = relativePath.split(sep).join('/');
+      if (entry.isSymbolicLink()) throw new Error('Marketplace content manifest accepts only real directories and bounded regular files.');
+      if (manifestPath === MARKETPLACE_PROVENANCE_PATH) {
+        if (!entry.isFile()) throw new Error('Marketplace provenance must be a regular file.');
+      } else if (entry.isDirectory()) await walk(absolutePath, relativePath);
+      else await addFile(absolutePath, relativePath, entry);
+    }
+  };
+  await walk(root, '');
+  files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  return {
+    algorithm: 'sha256',
+    sha256: createHash('sha256').update(JSON.stringify(files)).digest('hex'),
+    files,
+  };
 }
 
 /** @param {{root?:string,output:string,sourceRef:string,sourceSha:string,releaseTag?:string,npmExecPath?:string,env?:NodeJS.ProcessEnv}} input */
@@ -123,9 +179,10 @@ export async function buildMarketplaceSnapshot(input) {
     await verifyLockedRuntimePayload(installedPluginRoot, locked.json);
     await mkdir(join(publication.staging, '.agents', 'plugins'), { recursive: true });
     await cp(join(sourceWorktree, 'marketplace', '.agents', 'plugins', 'marketplace.json'), join(publication.staging, '.agents', 'plugins', 'marketplace.json'));
-    await writeFile(join(publication.staging, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o644 });
     await mkdir(join(publication.staging, 'plugins'), { recursive: true });
     await cp(installedPluginRoot, join(publication.staging, 'plugins', pluginJson.name), { recursive: true });
+    const provenance = { ...identity, content: await createMarketplaceContentManifest(publication.staging) };
+    await writeFile(join(publication.staging, '.agents', 'plugins', 'provenance.json'), `${JSON.stringify(provenance, null, 2)}\n`, { mode: 0o644 });
     await removeIsolatedWorktree(root, sourceWorktree, input.env);
     worktreeAttempted = false;
     await rm(temporary, { recursive: true, force: true });

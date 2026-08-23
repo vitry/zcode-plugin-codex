@@ -4,6 +4,8 @@ import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { createMarketplaceContentManifest } from '../scripts/build-marketplace-snapshot.mjs';
+
 const root = new URL('../', import.meta.url);
 const rootPath = fileURLToPath(root);
 const semverPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
@@ -266,8 +268,7 @@ test('conversation compatibility progress has no dependency capable of reading d
   assert.doesNotMatch(readFileSync(new URL('scripts/lib/session-progress.mjs', root), 'utf8'), /v4\/conversation\/frame/, 'session fallback must not synthesize conversation frames');
 });
 
-test('marketplace mirrors every critical prepared Rescue source byte for byte', () => {
-  for (const relativePath of [
+const criticalRescueMirrorPaths = Object.freeze([
     'skills/rescue/launcher.mjs',
     'scripts/lib/rescue-launcher-command.mjs',
     'scripts/lib/plugin-data.mjs',
@@ -285,6 +286,7 @@ test('marketplace mirrors every critical prepared Rescue source byte for byte', 
     'hooks/subagent-hook.mjs',
     'hooks/user-prompt-hook.mjs',
     'scripts/lib/conversation-progress.mjs',
+    'scripts/lib/codex-app-server.mjs',
     'scripts/lib/invocation.mjs',
     'scripts/lib/job-control.mjs',
     'scripts/lib/job-log.mjs',
@@ -292,6 +294,7 @@ test('marketplace mirrors every critical prepared Rescue source byte for byte', 
     'scripts/lib/public-text.mjs',
     'scripts/lib/progress.mjs',
     'scripts/lib/rescue-preparation.mjs',
+    'scripts/lib/rescue-route-planner.mjs',
     'scripts/lib/rescue-binding.mjs',
     'scripts/lib/render.mjs',
     'scripts/lib/review.mjs',
@@ -300,9 +303,19 @@ test('marketplace mirrors every critical prepared Rescue source byte for byte', 
     'scripts/zcode-companion.mjs',
     'skills/rescue/SKILL.md',
     'docs/adr/0013-bind-rescue-child-to-zcode-session.md',
-  ]) {
+]);
+
+test('marketplace mirrors every critical prepared Rescue source byte for byte', () => {
+  for (const relativePath of criticalRescueMirrorPaths) {
     const source = readFileSync(new URL(relativePath, root));
     const marketplace = readFileSync(new URL(`marketplace/plugins/zcode/${relativePath}`, root));
     assert.deepEqual(marketplace, source, `${relativePath} marketplace runtime must be byte-identical to source`);
   }
+});
+
+test('marketplace provenance binds its source identity to the complete checked-in output without Git history', async () => {
+  const provenance = readJson('marketplace/.agents/plugins/provenance.json');
+  assert.match(provenance.sourceSha, /^[a-f0-9]{40}$/);
+  assert.equal(provenance.sourceRef, provenance.sourceSha);
+  assert.deepEqual(provenance.content, await createMarketplaceContentManifest(resolve(rootPath, 'marketplace')));
 });

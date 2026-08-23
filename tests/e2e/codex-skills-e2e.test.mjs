@@ -28,6 +28,7 @@ import {
   qualifyCodexRescueChoiceEvidence,
   qualifyCodexRescueEvidence,
   qualifyCodexRescuePreparedContinuationEvidence,
+  qualifyCodexRescueRestoredChildEvidence,
 } from '../helpers/codex-rescue-qualification.mjs';
 import {
   assertRescueRouteContract,
@@ -587,6 +588,62 @@ test('synthetic captured qualification fixtures cover named and generic Codex 0.
   }
 });
 
+test('captured restored-child qualification reactivates the unloaded original path without collision or spawn', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-e2e-restored-child-')); t.after(() => rm(temporary, { recursive: true, force: true }));
+  const originDirectory = join(temporary, 'origin'); const targetDirectory = join(temporary, 'target');
+  await mkdir(originDirectory); await git(['init', '-q'], originDirectory); await writeFile(join(originDirectory, 'fixture.txt'), 'base\n');
+  await git(['add', 'fixture.txt'], originDirectory); await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
+  await git(['worktree', 'add', '-qb', 'e2e-restored-target', targetDirectory], originDirectory);
+  const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(targetDirectory);
+  const parentSessionId = 'restored-parent'; const childThreadId = 'restored-child'; const agentPath = '/root/zcode_rescue_task';
+  const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs"'; const publicOutput = 'fake restored e2e response: agent path collision diagnosed';
+  for (const route of ['named', 'generic']) {
+    const expected = { parentSessionId, childThreadId, agentPath, originalParentTurnId: 'old-turn', resumedParentTurnId: 'new-turn',
+      originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput };
+    const agentRole = route === 'named' ? 'zcode-rescue' : null; const agentType = route === 'named' ? 'zcode-rescue' : 'default';
+    const assignment = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', launcherCommand);
+    const thread = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath, cwd: originWorkspace, agentRole });
+    const routeDirective = { version: 1, action: 'followup', target: agentPath };
+    const childTurnId = `restored-${route}-child-turn-7`;
+    const preparationEnvelope = { version: 1, source: 'proactive', task: `diagnose the agent path collision in restored ${route} e2e`, options: { execution: 'foreground', resume: 'resume' } };
+    const spawnArgs = { fork_turns: 'none', task_name: 'zcode_rescue_task', message: assignment, ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) };
+    const preparationRecord = { version: 3, key: createHash('sha256').update(JSON.stringify([parentSessionId, 'new-turn', executionWorkspace, 'rescue'])).digest('hex'),
+      sessionId: parentSessionId, turnId: 'new-turn', workspace: executionWorkspace, permissionMode: 'acceptEdits', source: 'proactive', envelope: preparationEnvelope,
+      generation: 1, requiredExecutorAgentId: null, activation: { kind: 'reactivate', executorAgentId: childThreadId, agentPathDigest: createHash('sha256').update(agentPath).digest('hex') },
+      createdAt: '2026-08-10T01:00:00.550Z', expiresAt: '2026-08-10T01:30:00.550Z', consumedAt: '2026-08-10T01:00:00.950Z', executorAgentId: childThreadId };
+    const evidence = await qualifyCodexRescueRestoredChildEvidence({ expected,
+      parentRolloutJson: JSON.stringify([
+        { type: 'session_meta', payload: { id: parentSessionId } },
+        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.100Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: `spawn-${route}`, arguments: JSON.stringify(spawnArgs) } },
+        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.200Z', payload: { type: 'function_call_output', call_id: `spawn-${route}`, output: JSON.stringify({ agent_id: childThreadId }) } },
+        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:00:00.300Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: `spawn-${route}`, agent_thread_id: childThreadId, agent_path: agentPath, parent_turn_id: 'old-turn' } },
+        { type: 'response_item', turn_id: 'old-turn', timestamp: '2026-08-10T00:10:00.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childThreadId, agent_path: agentPath, parent_turn_id: 'old-turn' } },
+        { ...installedToolCall(`role-${route}`, installedExecInput(`${launcherCommand} role-status rescue`, { workdir: executionWorkspace })), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.100Z' },
+        { ...installedToolOutput(`role-${route}`, { output: `${JSON.stringify({ type: 'role-status', role: 'zcode-rescue', status: 'ready' })}\n`, exit_code: 0 }), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.200Z' },
+        { ...installedToolCall(`prepare-${route}`, installedExecInput(`${launcherCommand} prepare rescue`, { workdir: executionWorkspace, tty: true })), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.300Z' },
+        { ...installedToolOutput(`prepare-${route}`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 91 }), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.400Z' },
+        { ...installedToolCall(`prepare-write-${route}`, installedPollInput(91, `${JSON.stringify(preparationEnvelope)}\n`)), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.500Z' },
+        { ...installedToolOutput(`prepare-write-${route}`, { output: installedPreparedAck(routeDirective), exit_code: 0 }), turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.600Z' },
+        { type: 'response_item', turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.700Z', payload: { type: 'function_call', name: 'followup_task', call_id: `followup-${route}`, arguments: JSON.stringify({ target: agentPath, message: assignment }) } },
+        { type: 'response_item', turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.800Z', payload: { type: 'function_call_output', call_id: `followup-${route}`, output: JSON.stringify({ accepted: true, target: agentPath }) } },
+      ]),
+      appServerTranscriptJson: JSON.stringify(installedRestoredAppServerTranscript(thread, childThreadId)),
+      hookLifecycleJson: JSON.stringify([
+        { hook_event_name: 'SubagentStart', session_id: parentSessionId, turn_id: childTurnId, parent_turn_id: 'old-turn', cwd: originWorkspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: agentType },
+        { hook_event_name: 'SubagentStop', session_id: parentSessionId, turn_id: childTurnId, parent_turn_id: 'old-turn', cwd: originWorkspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: agentType },
+      ]),
+      executorRecordBytes: `${JSON.stringify({ kind: 'subagent-executor', agentId: childThreadId, agentType, parentSessionId, parentGenerationId: '9'.repeat(64), parentTurnId: 'old-turn', parentPermissionMode: 'acceptEdits', childTurnId, originWorkspace, workspace: executionWorkspace, active: false, createdAt: '2026-08-10T00:00:00.350Z' })}\n`,
+      preparationRecordBytes: `${JSON.stringify(preparationRecord)}\n`,
+      childRolloutJson: JSON.stringify([
+        { ...installedToolCall(`invoke-${route}`, installedExecInput(`${launcherCommand} invoke-prepared rescue`, { workdir: originWorkspace })), turn_id: 'child-turn-resumed', thread_id: childThreadId, timestamp: '2026-08-10T01:00:00.900Z' },
+        { ...installedToolOutput(`invoke-${route}`, { output: publicOutput, exit_code: 0 }), turn_id: 'child-turn-resumed', thread_id: childThreadId, timestamp: '2026-08-10T01:00:01.000Z' },
+      ]),
+      fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } }, { method: 'session/send', params: { response: publicOutput } }]),
+    });
+    assert.equal(evidence.route, route); assert.equal(evidence.childThreadId, childThreadId); assert.equal(evidence.followupCount, 1); assert.equal(evidence.spawnCount, 0); assert.equal(evidence.collisionCount, 0);
+  }
+});
+
 test('synthetic captured qualification fixtures keep proactive clear fresh and resume routes one-shot', async () => {
   for (const resume of ['fresh', 'resume']) {
     const routes = await installedCapturedRescueRoutes({ source: 'proactive', options: { execution: 'foreground', resume } });
@@ -664,13 +721,25 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
     const workspaceDirectory = join(temporary, 'workspace'); const dataRoot = join(temporary, 'data'); await Promise.all([mkdir(workspaceDirectory), mkdir(dataRoot)]); const workspace = await realpath(workspaceDirectory);
     const parentSessionId = '019fe6df-faa2-7851-8edb-55f1be7d5489';
     const installedRoot = join(root, 'marketplace', 'plugins', 'zcode');
-    const installedHooks = join(installedRoot, 'hooks'); const hookEnv = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+    const unrelatedLegacyChild = {
+      id: 'legacy-child', parentThreadId: null, agentRole: 'default', cwd: workspace,
+      createdAt: 1, updatedAt: 2, status: { type: 'notLoaded' },
+      source: { subAgent: { thread_spawn: {
+        parent_thread_id: 'legacy-parent', depth: 1, agent_path: null, agent_nickname: 'Legacy', agent_role: 'default',
+      } } },
+    };
+    const installedHooks = join(installedRoot, 'hooks'); const hookEnv = {
+      ...process.env, ZCODE_DATA_ROOT: dataRoot,
+      CODEX_APP_SERVER_PATH: process.execPath,
+      CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+      FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [unrelatedLegacyChild], nextCursor: null, backwardsCursor: null }),
+    };
     const hook = async (script, input) => runChild(process.execPath, [join(installedHooks, script)], { cwd: workspace, env: hookEnv, ordinaryInput: true, input });
     assert.equal((await hook('session-lifecycle-hook.mjs', { session_id: parentSessionId, cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' })).code, 0);
     assert.equal((await hook('user-prompt-hook.mjs', { session_id: parentSessionId, turn_id: 'turn-original', cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue --fresh repair' })).code, 0);
     const prepared = await runRawChild(process.execPath, [join(installedRoot, 'skills', 'rescue', 'launcher.mjs'), 'prepare', 'rescue'], {
       cwd: workspace,
-      env: { ...process.env, ZCODE_DATA_ROOT: dataRoot, CODEX_THREAD_ID: parentSessionId,
+      env: { ...hookEnv, CODEX_THREAD_ID: parentSessionId,
         NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() },
       input: `${JSON.stringify({ version: 1, source: 'explicit', task: 'repair', options: { execution: 'foreground', resume: 'fresh' } })}\n`,
     });
@@ -1671,7 +1740,7 @@ async function captureInstalledPreparedContinuationEvidence(input) {
   const peerProjection = [creates[0], sends[0], resumes[0], sends[1]];
   return {
     route: input.route, execution: input.execution,
-    expected: { parentSessionId: input.parentSessionId, childThreadId, workspace: input.workspace, permissionMode, originalParentTurnId, continuationParentTurnId },
+    expected: { parentSessionId: input.parentSessionId, childThreadId, agentPath: start.payload.agent_path, workspace: input.workspace, permissionMode, originalParentTurnId, continuationParentTurnId },
     parentRolloutJson: JSON.stringify(parentProjection), childRolloutJson: JSON.stringify(childProjection),
     rawParentRolloutJson: JSON.stringify(parent), rawChildRolloutJson: JSON.stringify(child),
     execFramesJson: JSON.stringify(input.execFrames), hookLifecycleJson: JSON.stringify(lifecycle),
@@ -2186,22 +2255,22 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     { ...installedToolCall('prepare-1', installedExecInput('node "/installed/zcode/skills/rescue/launcher.mjs" prepare rescue', { tty: true, workdir: workspace, env: { PATH: '/usr/bin' } })), timestamp: '2026-08-10T00:00:00.250Z' },
     { ...installedToolOutput('prepare-1', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 71 }), timestamp: '2026-08-10T00:00:00.400Z' },
     { ...installedToolCall('prepare-write-1', installedPreparationInput(71, `${JSON.stringify(installedContinuationEnvelope('explicit', 'fresh'))}\n`)), timestamp: '2026-08-10T00:00:00.500Z' },
-    { ...installedToolOutput('prepare-write-1', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
-    { type: 'response_item', timestamp: '2026-08-10T00:00:01.000Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ task_name: 'zcode_rescue_continue', message, fork_turns: 'none', ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) }) } },
-    { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_continue', parent_turn_id: 'turn-original' } },
+    { ...installedToolOutput('prepare-write-1', { output: installedPreparedAck({ version: 1, action: 'spawn', taskName: 'zcode_rescue_task' }), exit_code: 0 }), timestamp: '2026-08-10T00:00:00.750Z' },
+    { type: 'response_item', timestamp: '2026-08-10T00:00:01.000Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-1', arguments: JSON.stringify({ task_name: 'zcode_rescue_task', message, fork_turns: 'none', ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) }) } },
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:02.000Z', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn-1', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_task', parent_turn_id: 'turn-original' } },
     { type: 'response_item', timestamp: '2026-08-10T00:00:02.250Z', payload: { type: 'function_call_output', call_id: 'spawn-1', output: JSON.stringify({ agent_id: childThreadId }) } },
-    { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_continue', parent_turn_id: 'turn-original' } },
+    { type: 'event_msg', timestamp: '2026-08-10T00:00:05.000Z', payload: { type: 'sub_agent_activity', kind: 'stopped', agent_thread_id: childThreadId, agent_path: '/root/zcode_rescue_task', parent_turn_id: 'turn-original' } },
     { ...installedToolCall('prepare-2', installedExecInput('node "/installed/zcode/skills/rescue/launcher.mjs" prepare rescue', { tty: true, workdir: workspace })), timestamp: '2026-08-10T01:01:00.000Z' },
     { ...installedToolOutput('prepare-2', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 72 }), timestamp: '2026-08-10T01:01:00.250Z' },
     { ...installedToolCall('prepare-write-2', installedPreparationInput(72, `${JSON.stringify(installedContinuationEnvelope('proactive', 'resume'))}\n`)), timestamp: '2026-08-10T01:01:00.500Z' },
-    { ...installedToolOutput('prepare-write-2', { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }), timestamp: '2026-08-10T01:01:01.000Z' },
+    { ...installedToolOutput('prepare-write-2', { output: installedPreparedAck({ version: 1, action: 'followup', target: '/root/zcode_rescue_task' }), exit_code: 0 }), timestamp: '2026-08-10T01:01:01.000Z' },
     { type: 'response_item', timestamp: '2026-08-10T01:01:02.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childThreadId, message }) } },
     { type: 'response_item', timestamp: '2026-08-10T01:01:03.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: childThreadId }) } },
   ];
   for (const event of parent.slice(1)) event.turn_id = 'turn-original';
   const command = 'node "/installed/zcode/skills/rescue/launcher.mjs" invoke-prepared rescue';
   const child = [
-    { type: 'session_meta', payload: { id: childThreadId, session_id: parentSessionId, parent_thread_id: parentSessionId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentSessionId, agent_path: '/root/zcode_rescue_continue', agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
+    { type: 'session_meta', payload: { id: childThreadId, session_id: parentSessionId, parent_thread_id: parentSessionId, thread_source: 'subagent', source: { subagent: { thread_spawn: { parent_thread_id: parentSessionId, agent_path: '/root/zcode_rescue_task', agent_role: route === 'named' ? 'zcode-rescue' : null } } } } },
     installedToolCall('invoke-1', installedExecInput(command, { workdir: workspace })), installedToolOutput('invoke-1', { output: 'initial done\n', exit_code: 0 }),
     { type: 'event_msg', payload: { type: 'agent_message', message: 'initial done' } },
     installedToolCall('invoke-2', installedExecInput(command, { workdir: workspace })), installedToolOutput('invoke-2', { output: 'continued\n', exit_code: 0 }),
@@ -2210,7 +2279,7 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
   child[1].timestamp = '2026-08-10T00:00:03.000Z'; child[2].timestamp = '2026-08-10T00:00:04.000Z'; child[4].timestamp = '2026-08-10T01:01:04.000Z'; child[5].timestamp = '2026-08-10T01:01:05.000Z';
   child[1].turn_id = child[2].turn_id = 'invoke-original'; child[4].turn_id = child[5].turn_id = 'invoke-continuation';
   return {
-    route, execution: 'foreground', expected: { parentSessionId, childThreadId, agentPath: '/root/zcode_rescue_continue', workspace,
+    route, execution: 'foreground', expected: { parentSessionId, childThreadId, agentPath: '/root/zcode_rescue_task', workspace,
       permissionMode: 'acceptEdits', originalParentTurnId: 'turn-original', continuationParentTurnId: 'turn-original' },
     parentRolloutJson: JSON.stringify(parent), childRolloutJson: JSON.stringify(child),
     execFramesJson: JSON.stringify([
@@ -2314,7 +2383,8 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
 }
 `);
   const invokeNodeOptions = `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(brokerProcessObserver).href}`.trim();
-  const invokeEnv = { ...launcherEnv, CODEX_THREAD_ID: childThreadId, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: peerRecord, FAKE_ZCODE_GATE_RESULT: 'observer result',
+  const persistedChild = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', cwd: originWorkspace });
+  const invokeEnv = { ...launcherEnv, CODEX_THREAD_ID: childThreadId, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: peerRecord, FAKE_ZCODE_GATE_RESULT: 'observer result', FAKE_CODEX_THREAD_JSON: JSON.stringify(persistedChild),
     NODE_OPTIONS: invokeNodeOptions, INSTALLED_BROKER_PROCESS_RECORD: brokerProcessRecord, INSTALLED_ZCODE_MAIN: fakeZCode };
   const firstInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: originWorkspace, env: invokeEnv });
   assert.equal(firstInvoke.code, 0, firstInvoke.stderr || firstInvoke.stdout);
@@ -2329,7 +2399,7 @@ if (record && process.argv[1]?.replaceAll('\\\\', '/').endsWith('/scripts/zcode-
   await runHook('subagent-hook.mjs', hookInput('SubagentStop', { ...childBase, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null }));
   const proactiveFrame = `${JSON.stringify({ version: 1, source: 'proactive', task: 'continue fixture', options: { execution: 'foreground', resume: 'resume' } })}\n`;
   const proactivePrepared = await runRawChild(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
-    env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: proactiveFrame });
+    env: { ...launcherEnv, FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [persistedChild], nextCursor: null, backwardsCursor: null }), NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: proactiveFrame });
   assert.equal(proactivePrepared.code, 0, proactivePrepared.stderr || proactivePrepared.stdout);
   const secondInvoke = await runRawChild(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: originWorkspace, env: invokeEnv });
   assert.equal(secondInvoke.code, 0, secondInvoke.stderr || secondInvoke.stdout);
@@ -2584,8 +2654,29 @@ function installedContinuationPreparationRecord(sessionId, workspace, executorAg
   const createdAt = generation === 1 ? '2026-08-10T00:00:00.600Z' : '2026-08-10T01:01:00.600Z';
   const expiresAt = generation === 1 ? '2026-08-10T00:30:00.600Z' : '2026-08-10T01:31:00.600Z';
   const consumedAt = generation === 1 ? '2026-08-10T00:00:03.000Z' : '2026-08-10T01:01:04.000Z';
-  return { version: 2, key, sessionId, turnId, workspace, permissionMode: 'acceptEdits', source, envelope: installedContinuationEnvelope(source, resume),
-    generation, requiredExecutorAgentId, createdAt, expiresAt, consumedAt, executorAgentId };
+  const activation = generation === 1 ? { kind: 'spawn', taskName: 'zcode_rescue_task', agentPathDigest: createHash('sha256').update('/root/zcode_rescue_task').digest('hex') } : null;
+  return { version: 3, key, sessionId, turnId, workspace, permissionMode: 'acceptEdits', source, envelope: installedContinuationEnvelope(source, resume),
+    generation, requiredExecutorAgentId, activation, createdAt, expiresAt, consumedAt, executorAgentId };
+}
+
+function installedPreparedAck(route) { return `${JSON.stringify({ type: 'prepared', command: 'rescue', route })}\n`; }
+
+function installedCodexThreadSpawnChild({ id, parentThreadId, agentPath, cwd, agentRole = 'zcode-rescue' }) {
+  return { id, sessionId: parentThreadId, parentThreadId, ephemeral: false, preview: '', projectId: null, historyMode: 'legacy',
+    modelProvider: 'openai', createdAt: 1, updatedAt: 2, recencyAt: 2, status: { type: 'notLoaded' }, path: null, cwd,
+    source: { subAgent: { thread_spawn: { parent_thread_id: parentThreadId, depth: 1, agent_path: agentPath, agent_nickname: null, agent_role: agentRole } } },
+    canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole, gitInfo: null, name: null, turns: [] };
+}
+
+function installedRestoredAppServerTranscript(thread, childThreadId) {
+  const activated = structuredClone(thread);
+  activated.updatedAt = 3; activated.recencyAt = 3; activated.status = { type: 'active', activeFlags: [] };
+  return [
+    { direction: 'request', observedAt: '2026-08-10T01:00:00.310Z', id: 1, method: 'thread/list', params: { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
+    { direction: 'response', observedAt: '2026-08-10T01:00:00.320Z', id: 1, result: { data: [thread], nextCursor: null, backwardsCursor: null } },
+    { direction: 'request', observedAt: '2026-08-10T01:00:00.910Z', id: 2, method: 'thread/read', params: { threadId: childThreadId, includeTurns: false } },
+    { direction: 'response', observedAt: '2026-08-10T01:00:00.920Z', id: 2, result: { thread: activated } },
+  ];
 }
 
 function installedActiveTurnRecord(sessionId, turnId, workspace) {
@@ -2659,7 +2750,7 @@ function installedCapturedRescueRoute(name, renderedPolicy, spawnMessage, instal
     installedToolCall(`${name}-prepare`, installedExecInput(preparationCommand, { tty: true })),
     installedToolOutput(`${name}-prepare`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: name === 'named' ? 171 : 181 }),
     installedToolCall(`${name}-prepare-write`, installedPreparationInput(name === 'named' ? 171 : 181, `${preparationPayload}\n`)),
-    installedToolOutput(`${name}-prepare-write`, { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }),
+    installedToolOutput(`${name}-prepare-write`, { output: installedPreparedAck({ version: 1, action: 'spawn', taskName }), exit_code: 0 }),
     { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: `${name}-spawn`, arguments: JSON.stringify(spawnArgs) } },
     { type: 'event_msg', payload: { type: 'sub_agent_activity', event_id: `${name}-spawn`, agent_thread_id: childThreadId, agent_path: agentPath, kind: 'started' } },
     installedCapturedParentRelay(agentPath, 'started', name === 'named' ? 'a' : 'c', name === 'named' ? 'a' : 'c'),
@@ -2771,7 +2862,7 @@ function installedCapturedChoiceRoute(route, choice) {
     installedToolCall(`${route.name}-choice-prepare`, installedExecInput(route.preparationCommand, { tty: true })),
     installedToolOutput(`${route.name}-choice-prepare`, { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: route.name === 'named' ? 191 : 192 }),
     installedToolCall(`${route.name}-choice-prepare-write`, installedPreparationInput(route.name === 'named' ? 191 : 192, `${route.preparationPayload}\n`)),
-    installedToolOutput(`${route.name}-choice-prepare-write`, { output: `${JSON.stringify({ type: 'prepared', command: 'rescue' })}\n`, exit_code: 0 }),
+    installedToolOutput(`${route.name}-choice-prepare-write`, { output: installedPreparedAck({ version: 1, action: 'spawn', taskName: JSON.parse(spawn.payload.arguments).task_name }), exit_code: 0 }),
     spawn, start,
     installedCapturedParentRelay(agentPath, 'started', route.name === 'named' ? 'e' : '1', route.name === 'named' ? 'e' : '1'),
     ...installedCapturedWait(`${route.name}-initial-wait`, false),
@@ -2890,7 +2981,7 @@ function installedYieldSegmentFacts(events, expectedCommand, statusCommand, expe
 function installedToolCall(callId, input) { return { type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: callId, input } }; }
 function installedToolOutput(callId, result) { return { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: callId, output: installedHostOutput(result) } }; }
 function installedExecInput(cmd, fields = {}) { return `const r = await tools.exec_command(${JSON.stringify({ cmd, workdir: '/installed/workspace', ...fields })}); text(JSON.stringify(r))\n`; }
-function installedPollInput(sessionId) { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars: '', yield_time_ms: 30000 })}); text(JSON.stringify(r))\n`; }
+function installedPollInput(sessionId, chars = '') { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars, ...(chars === '' ? { yield_time_ms: 30000 } : {}) })}); text(JSON.stringify(r))\n`; }
 function installedPreparationInput(sessionId, chars) { return `const r = await tools.write_stdin(${JSON.stringify({ session_id: sessionId, chars })}); text(JSON.stringify(r))\n`; }
 function installedHostOutput(result) { return [{ type: 'input_text', text: 'Script completed\n' }, { type: 'input_text', text: JSON.stringify(result) }]; }
 function parseInstalledToolInput(source) {

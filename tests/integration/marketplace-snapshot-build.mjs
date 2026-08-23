@@ -1,13 +1,13 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { buildMarketplaceSnapshot } from '../../scripts/build-marketplace-snapshot.mjs';
+import { buildMarketplaceSnapshot, createMarketplaceContentManifest } from '../../scripts/build-marketplace-snapshot.mjs';
 import { runProcess } from '../../scripts/lib/process.mjs';
 import { npmLaunch } from '../../scripts/lib/tool-launch.mjs';
 
@@ -108,6 +108,28 @@ async function assertExactLockedRuntime(snapshot, sourceRoot) {
   assert.deepEqual(provenance.dependencyLock, {
     file: 'npm-shrinkwrap.json', sha256: createHash('sha256').update(lockBytes).digest('hex'),
   });
+  assert.deepEqual(provenance.content, await createMarketplaceContentManifest(snapshot));
+  assert.deepEqual(
+    provenance.content.files.map(({ path }) => path),
+    await publishedRegularFileLayout(snapshot),
+    'manifest must enumerate the complete published layout except its own provenance file',
+  );
+}
+
+async function publishedRegularFileLayout(root) {
+  const paths = [];
+  async function visit(directory, prefix = '') {
+    for (const name of await readdir(directory)) {
+      const path = prefix ? `${prefix}/${name}` : name;
+      if (path === '.agents/plugins/provenance.json') continue;
+      const metadata = await lstat(join(directory, name));
+      if (metadata.isDirectory()) await visit(join(directory, name), path);
+      else if (metadata.isFile()) paths.push(path);
+      else assert.fail(`published layout contains unsupported entry: ${path}`);
+    }
+  }
+  await visit(root);
+  return paths.sort();
 }
 
 async function git(args, cwd) {

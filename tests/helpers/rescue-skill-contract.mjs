@@ -1,17 +1,17 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 
-export const expectedNamedRescueInstruction = 'For a selected new-child spawn, when the active `spawn_agent` tool schema exposes `agent_type`, prefer this exact named spawn with a fresh context:';
+export const expectedNamedRescueInstruction = 'When `prepared.route.action` is exactly `spawn` and the active `spawn_agent` tool schema exposes `agent_type`, prefer this exact named spawn with a fresh context:';
 export const expectedNamedRescueMessage = 'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.';
 export const expectedNamedRescueSpawn = [
   'spawn_agent({',
-  '  task_name: rescueTaskName,',
+  '  task_name: prepared.route.taskName,',
   "  fork_turns: 'none',",
   "  agent_type: 'zcode-rescue',",
   `  message: '${expectedNamedRescueMessage}',`,
   '})',
 ].join('\n');
-export const expectedGenericRescueInstruction = "For the generic route, substitute only the already-bound immutable `rescueLauncherCommand` for `<rescue-launcher-command>` in this fixed message, then call `spawn_agent` with `task_name: rescueTaskName`, `fork_turns: 'none'`, no `agent_type`, and exactly that message:";
+export const expectedGenericRescueInstruction = "For the generic route, substitute only the already-bound immutable `rescueLauncherCommand` for `<rescue-launcher-command>` in this fixed message, then call `spawn_agent` with `task_name: prepared.route.taskName`, `fork_turns: 'none'`, no `agent_type`, and exactly that message:";
 export const expectedGenericRescueMessage = [
   'Act only as the installed ZCode Rescue forwarder. You are task-blind and capability-free. In the current workspace run exactly:',
   '<rescue-launcher-command> invoke-prepared rescue',
@@ -84,14 +84,14 @@ function routeBlock(source, start, end, label) {
 export function assertRescueRouteContract(source, { assertionPrefix = '' } = {}) {
   const preflightStart = source.indexOf('role-status rescue');
   const preflightEnd = source.indexOf('then stop without spawning.', preflightStart);
-  const namingStart = source.indexOf('Only when the selected next action is a new-child spawn', preflightEnd);
-  const namedRouteStart = source.indexOf('\nFor a selected new-child spawn, when the active `spawn_agent` tool schema exposes `agent_type`', namingStart) + 1;
+  const namingStart = source.indexOf('Strictly parse the terminal prepared route object', preflightEnd);
+  const namedRouteStart = source.indexOf('\nWhen `prepared.route.action` is exactly `spawn` and the active `spawn_agent` tool schema exposes `agent_type`', namingStart) + 1;
   const namedRouteEnd = source.indexOf(namedBoundary, namedRouteStart);
 
   assert.ok(preflightStart >= 0, `${assertionPrefix}Rescue preflight marker must exist`);
   assert.ok(preflightEnd > preflightStart, `${assertionPrefix}Rescue successful-preflight boundary must follow the preflight`);
-  assert.ok(namingStart > preflightEnd, `${assertionPrefix}Rescue naming section must follow the successful preflight`);
-  assert.ok(namedRouteStart > namingStart, `${assertionPrefix}Rescue named-route marker must follow the naming section`);
+  assert.ok(namingStart > preflightEnd, `${assertionPrefix}Rescue directive section must follow the successful preflight`);
+  assert.ok(namedRouteStart > namingStart, `${assertionPrefix}Rescue named-route marker must follow the directive section`);
 
   const named = routeBlock(source, namedRouteStart, namedRouteEnd, `${assertionPrefix}named`);
   const genericRouteStartMarker = source.indexOf('\nFor the generic route,', namedRouteEnd);
@@ -101,9 +101,9 @@ export function assertRescueRouteContract(source, { assertionPrefix = '' } = {})
   const generic = routeBlock(source, genericRouteStart, genericRouteEnd, `${assertionPrefix}generic`);
 
   assert.equal(named.instruction, expectedNamedRescueInstruction.slice(0, -1), `${assertionPrefix}named route must preserve its exact instruction`);
-  assert.equal(named.body.text.match(/task_name:\s*rescueTaskName/g)?.length, 1, `${assertionPrefix}named spawn must use rescueTaskName exactly once`);
+  assert.equal(named.body.text.match(/task_name:\s*prepared\.route\.taskName/g)?.length, 1, `${assertionPrefix}named spawn must use the exact prepared taskName once`);
   assert.equal(named.body.text, expectedNamedRescueSpawn, `${assertionPrefix}named spawn must preserve the exact dynamic Rescue object`);
-  assert.equal(generic.instruction.match(/task_name:\s*rescueTaskName/g)?.length, 1, `${assertionPrefix}generic route must use rescueTaskName exactly once`);
+  assert.equal(generic.instruction.match(/task_name:\s*prepared\.route\.taskName/g)?.length, 1, `${assertionPrefix}generic route must use the exact prepared taskName once`);
   assert.equal(generic.instruction, expectedGenericRescueInstruction.slice(0, -1), `${assertionPrefix}generic call sentence must preserve the exact dynamic Rescue arguments`);
   assert.equal(generic.body.text, expectedGenericRescueMessage, `${assertionPrefix}generic child message must remain fixed`);
   assert.doesNotMatch(source, /task_name:\s*['"]zcode_rescue['"]/);
@@ -130,16 +130,18 @@ export function assertExactChildContinuationContract(source, { assertionPrefix =
   assert.match(activeBlock, /Never call `followup_task`/i);
   assert.doesNotMatch(activeBlock, /followup_task\s*\(/i);
   assert.match(activeBlock, /(?:zero|no|must not|never)[^\n]*(?:preflight|prepare|spawn|invoke)/i);
-  assert.match(block, /Stopped exact same-operation child[\s\S]+role-status rescue[\s\S]+prepare rescue[\s\S]+followup_task[\s\S]+same[^\n]+`rescueChildId`[\s\S]+zero[^\n]+spawn/i);
-  assert.match(block, /proactive clear continuation[\s\S]+`resume`[\s\S]+explicit bound[^\n]+without[^\n]+flag[\s\S]+omit[^\n]+`resume`[\s\S]+`needs-choice`/i);
-  assert.match(block, /Fresh or independent operation[\s\S]+`fresh`[\s\S]+new Rescue child/i);
+  assert.match(block, /Stopped exact same-operation child[\s\S]+companion[\s\S]+prepared route[\s\S]+exact persisted child/i);
+  const freshBlock = source.slice(fresh, end);
+  assert.match(freshBlock, /Fresh or independent operation[\s\S]+`fresh`[\s\S]+new independent ZCode operation/i);
+  assert.match(freshBlock, /(?:reactivate|follow up)[\s\S]+(?:managed base|base)[\s\S]+newest compatible[\s\S]+spawn/i);
+  assert.match(freshBlock, /(?:does not|never)[\s\S]+resume[\s\S]+prior[\s\S]+ZCode (?:binding|session)/i);
+  assert.match(freshBlock, /collision[\s\S]+(?:never|not)[\s\S]+authority/i);
+  assert.doesNotMatch(freshBlock, /(?:always|must|through)[^\n]{0,120}(?:new|spawn)[^\n]{0,60}(?:Rescue )?child/i);
   assert.match(block, /Root[^\n]+owns[^\n]+semantic choice/i);
-  assert.match(block, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*expectedPreparedContinuationMessage,?\s*\}\)/s);
-  assert.doesNotMatch(block, /followup_task\([\s\S]{0,240}(?:task|jobId|sessionId|workspace|permission|binding)/i);
-  assert.match(block, /named assignment literal[\s\S]+complete fixed generic message[\s\S]+same immutable Rescue launcher command/i);
-  assert.match(source, /Preparation authorizes exactly one next action:[^\n]+stopped-child `followup_task`[^\n]+new child, never both/i);
-  assert.match(source, /Only when the selected next action is a new-child spawn[^\n]+choose `rescueTaskName`/i);
-  assert.match(source, /A stopped-child followup never chooses or changes a task name/i);
+  assert.match(source, /followup_task\(\{\s*target:\s*prepared\.route\.target,\s*message:\s*routeSpecificPreparedAssignment,?\s*\}\)/s);
+  assert.match(source, /Preparation authorizes exactly one child-producing activation[^\n]+never both/i);
+  assert.match(source, /must not[^\n]+collision[^\n]+fallback/i);
+  assert.doesNotMatch(source, /Root chooses[^\n]+rescueTaskName/i);
   assert.doesNotMatch(source, /Preparation authorizes exactly one (?:named or generic )?spawn\./i);
   assert.doesNotMatch(source, /explicit continuation[^.\n]*proceeds through prepare and spawn\./i);
   assert.doesNotMatch(source, /preparation (?:succeeds|success)[^\n]{0,180}(?:always|must)[^\n]{0,80}spawn/i);

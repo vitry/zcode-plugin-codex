@@ -151,6 +151,64 @@ test('release docs explain automatic Rescue routing and private prepared rollout
   assert.match(chinese, /重新运行 `?\$zcode:setup`?.{0,180}(?:digest|Role 升级)|(?:digest|Role 升级).{0,180}重新运行 `?\$zcode:setup`?/is);
 });
 
+test('release docs explain persisted Rescue child recovery without making age or collisions authoritative', () => {
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+  const security = read('SECURITY.md');
+  const changelog = read('CHANGELOG.md');
+
+  assert.match(english, /persisted stopped Rescue child.{0,220}(?:recover|restore).{0,120}before.{0,80}spawn/is);
+  assert.match(english, /original Codex thread.{0,120}history.{0,120}(?:restored|resume)/is);
+  assert.match(english, /Codex app-server identity.{0,180}private executor provenance/is);
+  assert.match(english, /active Rescue child.{0,120}rejoin/is);
+  assert.match(english, /neither.{0,100}30-minute age.{0,100}(?:name|path) collision.{0,120}(?:authority|authorizes)/is);
+  assert.match(english, /(?:plugin|Companion).{0,100}during preparation.{0,180}discover.{0,120}persisted Codex children/is);
+  assert.match(english, /Root.{0,120}(?:receives|executes).{0,100}task-free directive/is);
+  assert.doesNotMatch(english, /Root discovers the parent's persisted Codex children/i);
+
+  assert.match(chinese, /持久化且已停止的 Rescue child.{0,220}(?:恢复|还原).{0,120}(?:先于.{0,80}spawn|spawn.{0,80}之前)/is);
+  assert.match(chinese, /原 Codex thread.{0,120}历史.{0,120}(?:恢复|续接)/is);
+  assert.match(chinese, /Codex app-server identity.{0,180}私有 executor provenance/is);
+  assert.match(chinese, /活动的 Rescue child.{0,120}重新加入/is);
+  assert.match(chinese, /30 分钟 age.{0,100}(?:名称|路径)碰撞.{0,120}(?:都不|均不).{0,80}(?:授权|权威)/is);
+  assert.match(chinese, /(?:插件|Companion).{0,100}preparation 期间.{0,180}发现.{0,120}持久化 Codex children/is);
+  assert.match(chinese, /Root.{0,120}(?:接收|执行).{0,100}不含 task 的 directive/is);
+  assert.doesNotMatch(chinese, /Root 会发现该 parent 的持久化 Codex children/i);
+
+  assert.match(security, /app-server identity.{0,220}private executor provenance/is);
+  assert.match(security, /persisted stopped child.{0,180}original thread.{0,120}history/is);
+  assert.match(security, /(?:30-minute age|collision).{0,180}(?:must not|never).{0,100}(?:authority|authorize)/is);
+  assert.match(changelog, /persisted stopped Rescue child.{0,220}original Codex thread.{0,120}history/is);
+  assert.match(changelog, /app-server identity.{0,180}private executor provenance/is);
+});
+
+test('release docs distinguish a fresh ZCode operation from allocating a fresh Codex child', () => {
+  const english = read('README.md');
+  const chinese = read('README.zh-CN.md');
+
+  assert.match(english, /`--fresh`.{0,220}new independent ZCode operation.{0,180}(?:reactivate|follow up).{0,180}stopped Rescue child/is);
+  assert.match(english, /managed base.{0,140}newest compatible.{0,160}spawn.{0,100}none/is);
+  assert.match(english, /reusing.{0,100}Codex child.{0,180}(?:does not|never).{0,80}resume.{0,100}prior ZCode (?:binding|session)/is);
+  assert.match(english, /collision.{0,100}(?:never|not).{0,80}authority/is);
+  assert.doesNotMatch(english, /`--fresh` always[^.]{0,120}(?:new|spawn)[^.]{0,60}(?:Rescue )?child/i);
+
+  assert.match(chinese, /`--fresh`.{0,220}新的独立 ZCode 操作.{0,180}(?:恢复|follow up).{0,180}已停止(?:的)? Rescue child/is);
+  assert.match(chinese, /受管 base.{0,140}最新兼容.{0,160}(?:都没有|不存在).{0,100}spawn/is);
+  assert.match(chinese, /复用.{0,100}Codex child.{0,180}不会.{0,80}resume.{0,100}先前的 ZCode (?:binding|session)/is);
+  assert.match(chinese, /碰撞.{0,100}(?:绝不|不是).{0,80}(?:权威|授权)/is);
+  assert.doesNotMatch(chinese, /`--fresh` 始终[^。]{0,120}(?:新建|spawn)[^。]{0,60}child/i);
+});
+
+test('reactivation spec records the bounded Codex global-list foreign-row compatibility rule', () => {
+  const design = read('docs/superpowers/specs/2026-08-23-rescue-persisted-child-reactivation-design.md');
+
+  assert.match(design, /Codex 0\.117.{0,180}global `thread\/list`/is);
+  assert.match(design, /stable nested spawn parent.{0,160}provably foreign/is);
+  assert.match(design, /top-level parent.{0,140}(?:null|same value).{0,120}ignore/is);
+  assert.match(design, /(?:safe foreign|foreign (?:row(?:'s)? )?safe) thread ID.{0,140}duplicate detection/is);
+  assert.match(design, /(?:current-parent|current parent).{0,120}contradictory.{0,120}unsafe.{0,120}(?:reject|fail closed)/is);
+});
+
 test('release docs bind Rescue to its owned instance launcher without crossing namespaces', () => {
   const english = read('README.md');
   const chinese = read('README.zh-CN.md');

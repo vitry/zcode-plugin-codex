@@ -4,6 +4,7 @@ All notable changes follow Semantic Versioning.
 
 ## Unreleased
 
+- Added persisted stopped Rescue child recovery before replacement spawn: the plugin restores the original Codex thread and history by joining sanitized app-server identity with private executor provenance, rejoins already active children, and never treats age or a name/path collision as authority.
 - Restored compatibility with the legacy PR #39 Rescue route: after origin-to-worktree binding, a child launched or resumed from the conversation root can resolve the immutable execution target. This qualification does not broaden authority beyond that bound target.
 - Added compatible Rescue worktree late binding: lifecycle proof retains the origin workspace while the first trusted prepare automatically and immutably binds one execution workspace from the same canonical Git common-dir, without manual handoff. Role preview and children cannot claim; unrelated repositories fail closed; Root Stop, a new prompt, and SessionEnd revoke or replace authority before target cleanup.
 - Accepted ZCode CLI 0.16.3's captured initial empty-session revision and pre-turn settings snapshots while retaining exact empty-state, event-sequence, identity, workspace, and activity checks. Real qualification now proves two visible responses through each turn's exact persisted user-root parent chain when the CLI remaps request input IDs.

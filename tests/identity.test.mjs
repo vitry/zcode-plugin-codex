@@ -133,6 +133,19 @@ function deferred() {
   return { promise, resolve: resolvePromise };
 }
 
+/** @param {Promise<unknown>} signal @param {string} message */
+async function waitForTestSignal(signal, message) {
+  /** @type {NodeJS.Timeout|undefined} */ let timer;
+  try {
+    await Promise.race([
+      signal,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), 10_000); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** @param {string} dataRoot @param {string} method @param {unknown[]} args */
 function runIdentityChild(dataRoot, method, args) {
   const source = `
@@ -459,14 +472,8 @@ test('protected caller publication is fenced from concurrent replacement and cle
           if (point === 'after-protected-caller-write') { reached.resolve(); await release.promise; }
         },
       }).createCallerContext(input);
-      const didReach = await Promise.race([
-        reached.promise.then(() => true),
-        new Promise((resolvePromise) => setTimeout(() => resolvePromise(false), 100)),
-      ]);
-      if (!didReach) {
-        release.resolve(); await creating;
-        assert.fail('protected caller publication must expose the session-lock test seam');
-      }
+      await waitForTestSignal(reached.promise, 'protected caller publication must expose the session-lock test seam')
+        .catch(async (error) => { release.resolve(); await creating; throw error; });
       const mutation = operation === 'replacement'
         ? identity.beginCallerTurn({ ...input, ...proof, turnId: 'turn-b' })
         : identity.cleanupSession(workspaceA, input.sessionId);

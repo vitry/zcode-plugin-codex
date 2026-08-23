@@ -19,7 +19,7 @@ export const RESCUE_PREPARATION_VERSION = 1;
 export const RESCUE_TASK_MAX_BYTES = 64 * 1024;
 export const RESCUE_ENVELOPE_MAX_BYTES = RESCUE_TASK_MAX_BYTES + 4096;
 
-const RESCUE_PREPARATION_RECORD_VERSION = 2;
+const RESCUE_PREPARATION_RECORD_VERSION = 3;
 const SOURCES = new Set(['explicit', 'proactive']);
 const EXECUTIONS = new Set(['foreground', 'background']);
 const RESUMES = new Set(['fresh', 'resume']);
@@ -37,6 +37,14 @@ const V2_RECORD_KEYS = Object.freeze([
   'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'generation', 'key',
   'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source', 'turnId', 'version', 'workspace',
 ]);
+const V3_RECORD_KEYS = Object.freeze([
+  'activation', 'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt',
+  'generation', 'key', 'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source',
+  'turnId', 'version', 'workspace',
+]);
+const SPAWN_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'kind', 'taskName']);
+const REACTIVATE_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'executorAgentId', 'kind']);
+const REACTIVATE_PROOF_KEYS = Object.freeze(['agentPathDigest', 'kind']);
 
 /** @param {NodeJS.ReadableStream} stream */
 export async function readRescuePreparation(stream) {
@@ -124,6 +132,8 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           );
           let generation = 1;
           let requiredExecutorAgentId = null;
+          let activation = null;
+          let recordVersion = RESCUE_PREPARATION_RECORD_VERSION;
           if (occupied) {
             const current = await readPreparedRecord(storage, path, key, false);
             const kind = recordKind(current);
@@ -143,6 +153,8 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             if (!Number.isSafeInteger(generation)) throw invalidPreparation();
             requiredExecutorAgentId = current.executorAgentId;
           } else {
+            if (input.activation === undefined) recordVersion = 2;
+            else activation = validateActivation(input.activation);
             const marker = hasRecordedRescueMarker(input.recordedPrompt);
             if ((envelope.source === 'explicit') !== marker) throw preparationError(
               'RESCUE_PREPARATION_SOURCE_MISMATCH',
@@ -150,7 +162,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             );
           }
           const record = {
-            version: RESCUE_PREPARATION_RECORD_VERSION,
+            version: recordVersion,
             key,
             sessionId: input.sessionId,
             turnId: input.turnId,
@@ -158,6 +170,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             permissionMode: input.permissionMode,
             source: envelope.source,
             envelope,
+            ...(recordVersion === RESCUE_PREPARATION_RECORD_VERSION ? { activation } : {}),
             generation,
             requiredExecutorAgentId,
             createdAt: new Date(createdAt).toISOString(),
@@ -182,6 +195,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
       const path = join(storage.directory, `${key}.json`);
       return withPreparationLock(storage, async () => {
         const record = await readPreparedRecord(storage, path, key, true);
+        const kind = recordKind(record);
         if (record.sessionId !== input.sessionId || record.turnId !== input.turnId
           || record.workspace !== storage.workspacePath || record.permissionMode !== input.permissionMode) {
           throw preparationError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation identity does not match.');
@@ -192,10 +206,16 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           );
           throw preparationError('RESCUE_PREPARATION_CONSUMED', 'The Rescue preparation has already been consumed.');
         }
-        if (recordKind(record) === 'current' && record.requiredExecutorAgentId !== null
+        if (kind !== 'legacy' && record.requiredExecutorAgentId !== null
           && record.requiredExecutorAgentId !== input.executorAgentId) {
           throw preparationError(
             'RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation executor does not match.',
+          );
+        }
+        if (kind === 'current' && record.activation !== null
+          && !activationProofMatches(record.activation, input.activationProof, input.executorAgentId)) {
+          throw preparationError(
+            'RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.',
           );
         }
         const consumedAt = timestamp(input.now);
@@ -399,19 +419,35 @@ function validRecord(record, key, workspace) {
     && Date.parse(record.consumedAt) >= Date.parse(record.createdAt)
     && Date.parse(record.consumedAt) < Date.parse(record.expiresAt)
     && (kind === 'legacy' || record.requiredExecutorAgentId === null
-      || record.executorAgentId === record.requiredExecutorAgentId);
+      || record.executorAgentId === record.requiredExecutorAgentId)
+    && (kind !== 'current' || record.activation === null
+      || record.activation.kind !== 'reactivate'
+      || record.executorAgentId === record.activation.executorAgentId);
 }
 
-/** @param {any} record @returns {'legacy'|'current'|null} */
+/** @param {any} record @returns {'legacy'|'v2'|'current'|null} */
 function recordKind(record) {
   if (!plain(record)) return null;
   if (record.version === RESCUE_PREPARATION_VERSION && sameKeys(record, V1_RECORD_KEYS)) return 'legacy';
-  if (record.version !== RESCUE_PREPARATION_RECORD_VERSION || !sameKeys(record, V2_RECORD_KEYS)
-    || !Number.isSafeInteger(record.generation) || record.generation <= 0
-    || record.requiredExecutorAgentId !== null && !safeIdentifier(record.requiredExecutorAgentId)
-    || record.generation === 1 && record.requiredExecutorAgentId !== null
-    || record.generation > 1 && record.requiredExecutorAgentId === null) return null;
+  if (record.version === 2) {
+    if (!sameKeys(record, V2_RECORD_KEYS)
+      || !validGenerationBinding(record)) return null;
+    return 'v2';
+  }
+  if (record.version !== RESCUE_PREPARATION_RECORD_VERSION || !sameKeys(record, V3_RECORD_KEYS)
+    || !validGenerationBinding(record)
+    || record.generation === 1 && !validActivation(record.activation)
+    || record.generation > 1 && record.activation !== null) return null;
   return 'current';
+}
+
+/** @param {any} record */
+function validGenerationBinding(record) {
+  return Number.isSafeInteger(record.generation) && record.generation > 0
+    && (record.requiredExecutorAgentId === null || safeIdentifier(record.requiredExecutorAgentId))
+    && (record.generation === 1
+      ? record.requiredExecutorAgentId === null
+      : record.requiredExecutorAgentId !== null);
 }
 
 /** @param {any} input */
@@ -432,6 +468,41 @@ function validateConsumeInput(input) {
     throw invalidPreparation();
   }
   timestamp(input.now);
+}
+
+/** @param {unknown} value */
+function validateActivation(value) {
+  if (!validActivation(value)) throw invalidPreparation();
+  const activation = /** @type {any} */ (value);
+  return activation.kind === 'spawn'
+    ? { kind: activation.kind, taskName: activation.taskName, agentPathDigest: activation.agentPathDigest }
+    : {
+      kind: activation.kind,
+      executorAgentId: activation.executorAgentId,
+      agentPathDigest: activation.agentPathDigest,
+    };
+}
+
+/** @param {unknown} value */
+function validActivation(value) {
+  if (!plain(value) || !/^[a-f0-9]{64}$/u.test(value.agentPathDigest)) return false;
+  if (value.kind === 'spawn') {
+    return sameKeys(value, SPAWN_ACTIVATION_KEYS) && safeIdentifier(value.taskName);
+  }
+  if (value.kind === 'reactivate') {
+    return sameKeys(value, REACTIVATE_ACTIVATION_KEYS) && safeIdentifier(value.executorAgentId);
+  }
+  return false;
+}
+
+/** @param {any} activation @param {unknown} proof @param {string} executorAgentId */
+function activationProofMatches(activation, proof, executorAgentId) {
+  if (!plain(proof) || proof.kind !== activation.kind
+    || proof.agentPathDigest !== activation.agentPathDigest) return false;
+  if (activation.kind === 'spawn') {
+    return sameKeys(proof, SPAWN_ACTIVATION_KEYS) && proof.taskName === activation.taskName;
+  }
+  return sameKeys(proof, REACTIVATE_PROOF_KEYS) && executorAgentId === activation.executorAgentId;
 }
 
 /** @param {any} input */
@@ -576,7 +647,12 @@ function preparationKey(sessionId, turnId, workspace) {
 
 /** @param {any} record */
 function cloneRecord(record) {
-  return { ...record, envelope: validateRescuePreparation(record.envelope) };
+  return {
+    ...record,
+    envelope: validateRescuePreparation(record.envelope),
+    ...(record.activation === null || record.activation === undefined
+      ? {} : { activation: { ...record.activation } }),
+  };
 }
 
 /** @param {string} path */

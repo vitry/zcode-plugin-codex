@@ -33,18 +33,15 @@ function skill(name) {
 function assertRescueNamingContract(source) {
   const { naming } = assertRescueRouteContract(source);
   const namingText = naming.text;
-  assert.match(namingText, /`rescueTaskName`/);
-  assert.match(namingText, /`zcode_rescue_task\[_<ordinal>\]`/);
-  assert.match(namingText, /task-independent[^\n]+`zcode_rescue_task`/i);
-  assert.match(namingText, /occupied sibling[^\n]+smallest available ordinal[^\n]+2[^\n]+9999/i);
-  assert.match(namingText, /ordinal[^\n]+2[^\n]+9999[^\n]+without leading zeros/i);
-  assert.match(namingText, /complete name[^\n]+64 UTF-8 bytes/i);
-  assert.match(namingText, /never derived from[^\n]+objective[^\n]+task text/i);
-  assert.doesNotMatch(namingText, /semantic_slug|generic objective description|task-specific/i);
-  assert.match(namingText, /task_name[^\n]+agent_path[^\n]+presentation metadata[^\n]+neither sufficient nor necessary[^\n]+Rescue (?:identity|evidence)/i);
-  assert.match(namingText, /(?:do not|never)[^\n]+classify[^\n]+authorize[^\n]+route[^\n]+reject[^\n]+downgrade[^\n]+recover Rescue[^\n]+name or path/i);
-  assert.match(namingText, /trusted routing facts[^\n]+named Role[^\n]+exact returned child ID[^\n]+parent-child linkage[^\n]+fixed forwarder contract[^\n]+hook-bound executor state/i);
-  assert.match(namingText, /collision handling never authorizes a second spawn/i);
+  assert.match(namingText, /prepared[^\n]+route[^\n]+action[^\n]+followup[\s\S]+exact[^\n]+target/i);
+  assert.match(namingText, /prepared[^\n]+route[^\n]+action[^\n]+spawn[\s\S]+exact[^\n]+taskName/i);
+  assert.match(namingText, /malformed[^\n]+extra key[^\n]+wrong action[^\n]+unsafe[^\n]+path[^\n]+invalid task name/i);
+  assert.match(namingText, /exactly one child-producing activation/i);
+  assert.match(namingText, /must not[^\n]+collision[^\n]+fallback/i);
+  assert.match(namingText, /trusted[^\n]+original spawn provenance[\s\S]+exact target/i);
+  assert.match(namingText, /named[^\n]+named assignment[\s\S]+generic[^\n]+complete fixed generic message/i);
+  assert.match(namingText, /missing[^\n]+ambiguous[^\n]+mismatched[\s\S]+fail closed/i);
+  assert.doesNotMatch(namingText, /Root chooses[^\n]+rescueTaskName/i);
 }
 
 function assertRescueSpawnContracts(source) {
@@ -150,25 +147,26 @@ test('Rescue uses only its machine-bound launcher and treats root diagnostics as
   assert.doesNotMatch(block, /two directories above|<plugin-root>|canonical plugin root/i);
 });
 
-test('Rescue naming clauses cannot be relocated outside the preflight-to-route section', () => {
+test('Rescue directive clauses cannot be relocated outside the preflight-to-route section', () => {
   const source = skill('rescue');
-  const section = /Only when the selected next action is a new-child spawn[\s\S]+?(?=\nFor a selected new-child spawn, when the active `spawn_agent` tool schema exposes)/.exec(source)?.[0];
+  const section = /Strictly parse the terminal prepared route object[\s\S]+?(?=\nWhen `prepared\.route\.action` is exactly `spawn`)/.exec(source)?.[0];
   assert.ok(section);
   const misplaced = source.replace(section, '').concat(`\n${section}\n`);
   assert.throws(() => assertRescueNamingContract(misplaced));
 });
 
-test('Rescue collision safety cannot be relocated outside the naming section', () => {
+test('Rescue collision safety cannot be relocated outside the directive section', () => {
   const source = skill('rescue');
-  const sentence = 'collision handling never authorizes a second spawn.';
-  const misplaced = source.replace(sentence, '').concat(`\n${sentence}\n`);
+  const { naming } = assertRescueRouteContract(source);
+  const stripped = naming.text.replace(/collision/giu, 'occupied-path');
+  const misplaced = `${source.slice(0, naming.start)}${stripped}${source.slice(naming.end)}\nCollision fallback is forbidden.\n`;
   assert.throws(() => assertRescueNamingContract(misplaced));
 });
 
-test('Rescue route task names must remain in their own instructions', () => {
+test('Rescue prescribed task names must remain in their own instructions', () => {
   const source = skill('rescue');
-  const namedMisplaced = source.replace('  task_name: rescueTaskName,', '  task_name: wrongTaskName,').concat('\ntask_name: rescueTaskName\n');
-  const genericMisplaced = source.replace('with `task_name: rescueTaskName`,', 'with `task_name: wrongTaskName`,').concat('\ntask_name: rescueTaskName\n');
+  const namedMisplaced = source.replace('  task_name: prepared.route.taskName,', '  task_name: wrongTaskName,').concat('\ntask_name: prepared.route.taskName\n');
+  const genericMisplaced = source.replace('with `task_name: prepared.route.taskName`,', 'with `task_name: wrongTaskName`,').concat('\ntask_name: prepared.route.taskName\n');
   assert.throws(() => assertRescueSpawnContracts(namedMisplaced));
   assert.throws(() => assertRescueSpawnContracts(genericMisplaced));
 });
@@ -176,7 +174,7 @@ test('Rescue route task names must remain in their own instructions', () => {
 test('Rescue fixed messages cannot be repaired by duplicate prose elsewhere', () => {
   const source = skill('rescue');
   const named = 'Run the installed prepared ZCode Rescue forwarder now. Return its public stdout verbatim.';
-  const namedMutated = source.replace(named, 'Run an altered forwarder.').concat(`\n${named}\n`);
+  const namedMutated = source.replace(`message: '${named}'`, "message: 'Run an altered forwarder.'").concat(`\nmessage: '${named}'\n`);
   const genericLine = 'Preserve stderr and return public stdout verbatim.';
   const genericMutated = source.replace(genericLine, 'Preserve altered output.').concat(`\n${genericLine}\n`);
   assert.throws(() => assertRescueSpawnContracts(namedMutated));
@@ -234,13 +232,13 @@ test('active Rescue child rejoin is the first and exclusive Root action', () => 
 test('Root routes active, stopped same-operation, and fresh Rescue child states without session substitution', () => {
   const source = skill('rescue');
   const { block } = assertExactChildContinuationContract(source);
-  assert.match(block, /no second `SubagentStart`|does not emit a second `SubagentStart`/i);
+  assert.match(block, /without a second `SubagentStart`|no second `SubagentStart`|does not emit a second `SubagentStart`/i);
   assert.match(block, /reuse[^\n]+`invoke-prepared rescue`/i);
   assert.match(block, /invalid[^\n]+binding[\s\S]+fail closed/i);
   assert.match(block, /permission[^\n]+change[\s\S]+fresh/i);
-  assert.match(block, /same still-active parent turn[\s\S]+exactly one proactive `resume` generation[\s\S]+same stopped child/i);
-  assert.match(source, /expectedPreparedContinuationMessage[^\n]+exact original assignment[^\n]+named[^\n]+generic/i);
-  assert.match(source, /Preparation authorizes exactly one next action:[^\n]+followup_task[^\n]+spawn[^\n]+never both/i);
+  assert.match(block, /companion discovers host children[\s\S]+private stopped-executor provenance[\s\S]+exact persisted child/i);
+  assert.match(source, /named assignment is exactly `Run the installed prepared ZCode Rescue forwarder now/i);
+  assert.match(source, /Preparation authorizes exactly one child-producing activation[^\n]+follow-up[^\n]+spawn[^\n]+never both/i);
 });
 
 test('stale spawn-only prose cannot contradict stopped-child continuation', () => {
@@ -263,7 +261,7 @@ test('Root prepares exactly one private Rescue envelope before one selected foll
   assert.match(source, /restore raw mode/i);
   assert.match(source, /non-TTY[\s\S]+raw mode failure[\s\S]+stop[\s\S]+(?:must not|do not|never) spawn/i);
   assert.match(source, /tool output[\s\S]+(?:must not|never)[^\n]+payload/i);
-  assert.match(source, /\{\s*type:\s*['"]prepared['"],\s*command:\s*['"]rescue['"]\s*\}/);
+  assert.match(source, /keys are `type`, `command`, and `route`[\s\S]+`type` is `prepared`[\s\S]+`command` is `rescue`/i);
   assert.match(source, /zero exit/i);
   assert.match(source, /(?:signal|failed prepare)[\s\S]+stop[\s\S]+(?:must not|do not|never) spawn/i);
   assert.match(source, /exact envelope[\s\S]+`version`[\s\S]+`source`[\s\S]+`task`[\s\S]+`options`/i);
@@ -293,14 +291,14 @@ test('private task envelope is confined to the parent write_stdin rollout', () =
   }
 });
 
-test('Rescue chooses its presentation name after readiness and before spawning', () => {
+test('Rescue accepts only the plugin-prescribed task-free route after readiness', () => {
   const source = skill('rescue');
   const readiness = source.indexOf('For every other status that is not `ready`');
-  const naming = source.indexOf('choose `rescueTaskName` exactly once');
+  const naming = source.indexOf('Strictly parse the terminal prepared route object');
   const namedSpawn = source.indexOf('spawn_agent({');
   assert.ok(readiness >= 0, 'readiness preflight outcome must exist');
-  assert.ok(naming > readiness, 'presentation naming must follow successful readiness preflight');
-  assert.ok(namedSpawn > naming, 'presentation naming must precede route selection and spawn');
+  assert.ok(naming > readiness, 'route parsing must follow successful readiness preflight');
+  assert.ok(namedSpawn > naming, 'route parsing must precede the prescribed spawn');
 });
 
 test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task or authorization material', () => {
@@ -316,6 +314,9 @@ test('Rescue generic fallback is fixed, fresh, setup-gated, and contains no task
   assert.match(source, /unknown\/unavailable\/invalid (?:value|Role value) `zcode-rescue`/i);
   assert.match(source, /timeout[\s\S]+ambiguous[\s\S]+never generic fallback/i);
   assert.match(source, /may have created a child[\s\S]+same child/i);
+  assert.match(source, /one prepared `spawn` directive[^\n]+one child-producing activation/i);
+  assert.match(source, /pre-child schema rejection[^\n]+schema negotiation[\s\S]+one generic child-producing call/i);
+  assert.match(source, /collision[\s\S]+runtime[\s\S]+ambiguity[\s\S]+terminal/i);
   assert.doesNotMatch(source, /If spawning fails[^\n]+no queued job or authorization artifact/i);
   assert.doesNotMatch(source, /spawn[^\n]*(?:task text|job ID|capability|permission snapshot)/i);
 });
