@@ -56,7 +56,7 @@ Rescue 有两种等价入口：显式 `$zcode:rescue` 是请求中字面且适�
 
 Root 在 raw-capable TTY 上启动 `prepare rescue`。companion 先启用 raw mode，再输出精确且不含 task 的 readiness；readiness 是非终态。只有看到该行之后，Root 才通过私有 stdin 发送一行 JSON，并以 LF 结尾；不发送 EOF 或 U+0004。companion 消费这一帧、恢复 raw mode，并提交绑定精确 session、turn、workspace 和 executor 的 prepared state。非 TTY 或 raw mode 失败会在 task 交付前停止，且不会 spawn child。tool output 绝不包含或回显 payload；返回边界只有不含 task 的 readiness 和最终 prepared 确认。随后具名 Role 或 generic child 都只运行常量 `invoke-prepared rescue` forwarder，不接收 task、options、capability 或授权材料。若已经有活动的 `rescueChildId`，Root 会重新加入并等待这个精确的 Rescue child，不会重复 preflight、prepare、spawn 或 invoke。
 
-在执行任何替代 spawn 前，Root 会发现该 parent 的持久化 Codex children。持久化且已停止的 Rescue child 会被恢复，这发生在任何 spawn 之前：原 Codex thread 及其历史会被恢复，而不是创建一个外观相似的新 child。插件把已净化的 Codex app-server identity 与私有 executor provenance 结合，并要求只有一个精确匹配；证据有歧义或相互矛盾时会 fail closed。活动的 Rescue child 仍通过现有路径重新加入。30 分钟 age 与名称或路径碰撞都不构成授权或权威，也不能授权恢复或替代创建。
+插件的 Companion 在 preparation 期间、任何替代 spawn 之前，发现该 parent 的持久化 Codex children。持久化且已停止的 Rescue child 会被恢复，这发生在任何 spawn 之前：原 Codex thread 及其历史会被恢复，而不是创建一个外观相似的新 child。插件把已净化的 Codex app-server identity 与私有 executor provenance 结合，并要求只有一个精确匹配；证据有歧义或相互矛盾时会 fail closed。Root 只接收并执行由此产生且不含 task 的 directive，不负责发现或选择 child identity。活动的 Rescue child 仍通过现有路径重新加入。30 分钟 age 与名称或路径碰撞都不构成授权或权威，也不能授权恢复或替代创建。
 
 durable Rescue binding 现在把同一个已停止的 Rescue child 绑定到一个精确 ZCode session。私有 `anchorJobId` 标识被采用的操作，`currentJobId` 在每个续做 job 被持久预留并发布时前移，即使该 job 随后排队、失败或取消；两个标识都不会进入 child message。明确的主动续做会 prepare resume 并 follow up 同一个已停止的 Rescue child；它复用相同的 `invoke-prepared rescue` assignment，不会产生第二次 `SubagentStart`。显式 bound 请求若没有 `--resume` 或 `--fresh`，也 follow up 同一 child，并由其 bound `needs-choice` 结果触发一次用户选择。`--fresh` 始终准备独立操作和新的 child。
 

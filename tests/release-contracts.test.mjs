@@ -162,12 +162,18 @@ test('release docs explain persisted Rescue child recovery without making age or
   assert.match(english, /Codex app-server identity.{0,180}private executor provenance/is);
   assert.match(english, /active Rescue child.{0,120}rejoin/is);
   assert.match(english, /neither.{0,100}30-minute age.{0,100}(?:name|path) collision.{0,120}(?:authority|authorizes)/is);
+  assert.match(english, /(?:plugin|Companion).{0,100}during preparation.{0,180}discover.{0,120}persisted Codex children/is);
+  assert.match(english, /Root.{0,120}(?:receives|executes).{0,100}task-free directive/is);
+  assert.doesNotMatch(english, /Root discovers the parent's persisted Codex children/i);
 
   assert.match(chinese, /持久化且已停止的 Rescue child.{0,220}(?:恢复|还原).{0,120}(?:先于.{0,80}spawn|spawn.{0,80}之前)/is);
   assert.match(chinese, /原 Codex thread.{0,120}历史.{0,120}(?:恢复|续接)/is);
   assert.match(chinese, /Codex app-server identity.{0,180}私有 executor provenance/is);
   assert.match(chinese, /活动的 Rescue child.{0,120}重新加入/is);
   assert.match(chinese, /30 分钟 age.{0,100}(?:名称|路径)碰撞.{0,120}(?:都不|均不).{0,80}(?:授权|权威)/is);
+  assert.match(chinese, /(?:插件|Companion).{0,100}preparation 期间.{0,180}发现.{0,120}持久化 Codex children/is);
+  assert.match(chinese, /Root.{0,120}(?:接收|执行).{0,100}不含 task 的 directive/is);
+  assert.doesNotMatch(chinese, /Root 会发现该 parent 的持久化 Codex children/i);
 
   assert.match(security, /app-server identity.{0,220}private executor provenance/is);
   assert.match(security, /persisted stopped child.{0,180}original thread.{0,120}history/is);

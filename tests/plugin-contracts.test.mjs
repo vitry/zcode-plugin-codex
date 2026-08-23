@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -266,8 +267,7 @@ test('conversation compatibility progress has no dependency capable of reading d
   assert.doesNotMatch(readFileSync(new URL('scripts/lib/session-progress.mjs', root), 'utf8'), /v4\/conversation\/frame/, 'session fallback must not synthesize conversation frames');
 });
 
-test('marketplace mirrors every critical prepared Rescue source byte for byte', () => {
-  for (const relativePath of [
+const criticalRescueMirrorPaths = Object.freeze([
     'skills/rescue/launcher.mjs',
     'scripts/lib/rescue-launcher-command.mjs',
     'scripts/lib/plugin-data.mjs',
@@ -302,9 +302,26 @@ test('marketplace mirrors every critical prepared Rescue source byte for byte', 
     'scripts/zcode-companion.mjs',
     'skills/rescue/SKILL.md',
     'docs/adr/0013-bind-rescue-child-to-zcode-session.md',
-  ]) {
+]);
+
+test('marketplace mirrors every critical prepared Rescue source byte for byte', () => {
+  for (const relativePath of criticalRescueMirrorPaths) {
     const source = readFileSync(new URL(relativePath, root));
     const marketplace = readFileSync(new URL(`marketplace/plugins/zcode/${relativePath}`, root));
     assert.deepEqual(marketplace, source, `${relativePath} marketplace runtime must be byte-identical to source`);
   }
+});
+
+test('marketplace provenance identifies the exact source commit for the checked-in Rescue mirror', () => {
+  const provenance = readJson('marketplace/.agents/plugins/provenance.json');
+  assert.match(provenance.sourceSha, /^[a-f0-9]{40}$/);
+  assert.equal(provenance.sourceRef, provenance.sourceSha);
+  assert.doesNotThrow(() => execFileSync('git', ['merge-base', '--is-ancestor', provenance.sourceSha, 'HEAD'], { cwd: rootPath }));
+  for (const relativePath of criticalRescueMirrorPaths) {
+    const committedSource = execFileSync('git', ['show', `${provenance.sourceSha}:${relativePath}`], { cwd: rootPath, maxBuffer: 8 * 1024 * 1024 });
+    const marketplace = readFileSync(new URL(`marketplace/plugins/zcode/${relativePath}`, root));
+    assert.deepEqual(marketplace, committedSource, `${relativePath} mirror must come from the provenance source commit`);
+  }
+  const committedCatalog = execFileSync('git', ['show', `${provenance.sourceSha}:marketplace/.agents/plugins/marketplace.json`], { cwd: rootPath });
+  assert.deepEqual(readFileSync(new URL('marketplace/.agents/plugins/marketplace.json', root)), committedCatalog);
 });
