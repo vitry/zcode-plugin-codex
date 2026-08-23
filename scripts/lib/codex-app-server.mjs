@@ -17,6 +17,7 @@ const MAX_AGENT_PATH_BYTES = 1024;
 const MAX_CWD_BYTES = 4096;
 const MAX_ROLE_BYTES = 256;
 const MAX_USER_AGENT_BYTES = 4096;
+const MAX_VERSION_BYTES = 256;
 const SHUTDOWN_GRACE_MS = 1_000;
 const MAX_VALUE_DEPTH = 128;
 const MAX_VALUE_NODES = 100_000;
@@ -178,14 +179,20 @@ function remoteRequestError(method) {
 function supportsExactParentList(result) {
   const userAgent = result.userAgent;
   if (!validBoundedString(userAgent, MAX_USER_AGENT_BYTES)) return false;
-  const slash = userAgent.indexOf('/');
+  const product = userAgent.split(/\s/, 1)[0];
+  const slash = product.lastIndexOf('/');
   if (slash <= 0) return false;
-  const version = userAgent.slice(slash + 1).split(/\s/, 1)[0];
-  const match = /^(\d{1,4})\.(\d{1,4})\.(\d{1,4})$/.exec(version);
+  const version = product.slice(slash + 1);
+  if (!validBoundedString(version, MAX_VERSION_BYTES)) return false;
+  const match = /^(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(version);
   if (!match) return false;
+  if (match[4]?.split('.').some((identifier) => /^\d+$/.test(identifier) && identifier.length > 1 && identifier.startsWith('0'))) return false;
   const major = Number(match[1]); const minor = Number(match[2]); const patch = Number(match[3]);
-  return Number.isSafeInteger(major) && Number.isSafeInteger(minor) && Number.isSafeInteger(patch)
-    && (major > 0 || minor >= 141);
+  if (![major, minor, patch].every(Number.isSafeInteger)) return false;
+  if (major !== 0) return major > 0;
+  if (minor !== 141) return minor > 141;
+  if (patch !== 0) return patch > 0;
+  return match[4] === undefined;
 }
 
 /** Sanitize one raw or already-sanitized Codex thread-spawn child snapshot. @param {unknown} thread @param {string} [expectedParentId] @param {string} [expectedChildId] @returns {SpawnChild} */
