@@ -63,6 +63,11 @@ request('thread/list', {
 });
 ```
 
+Validate the initialize response as a known supporting Codex line (0.141 or
+newer) before listing. Codex 0.117 silently ignores the unknown parent filter,
+so its empty global response must fail closed rather than authorize a base-name
+spawn. Unknown or unparseable versions also fail closed.
+
 Do not change `thread/read` initialization. Remove the global foreign-row skip
 from the list path: every row returned by an exact-parent query must pass the
 existing full raw child validation for that parent.
@@ -70,9 +75,10 @@ existing full raw child validation for that parent.
 - [ ] **Step 4: Add fail-closed exact-parent cases**
 
 Cover missing/foreign/contradictory parent rows, unsupported capability or
-request errors, duplicate IDs/paths across pages, cursor bounds, cancellation,
-and reaping. Update old global-compatibility assertions so they no longer claim
-that unrelated global rows are part of this interface.
+request errors, a Codex 0.117 server that silently ignores the parent field,
+an unparseable initialize version, duplicate IDs/paths across pages, cursor
+bounds, cancellation, and reaping. Update old global-compatibility assertions
+so they no longer claim that unrelated global rows are part of this interface.
 
 - [ ] **Step 5: Run Task 1 verification**
 
@@ -190,4 +196,3 @@ Use `gh pr checks --watch 41`. For each failure, read the exact job log, add a
 red regression at the correct seam, fix only the confirmed root cause, rerun
 local verification, and push. Finish only when the PR head matches local HEAD,
 the merge state is clean, and every required matrix job succeeds.
-

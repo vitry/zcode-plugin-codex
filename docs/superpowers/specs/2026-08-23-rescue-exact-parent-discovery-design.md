@@ -80,16 +80,18 @@ interface. Internally it changes only its app-server request contract:
 
 1. initialize with the same bounded client identity and
    `{ "experimentalApi": true }` capability;
-2. send `thread/list` with:
+2. validate the initialized `userAgent` as a Codex version whose protocol is
+   known to implement `thread/list.parentThreadId` (Codex 0.141 or newer);
+3. send `thread/list` with:
    - `parentThreadId` equal to the validated requested parent;
    - `sourceKinds: ["subAgentThreadSpawn"]`;
    - the existing page size, cursor, created-at descending sort, and limits;
-3. validate every returned row with both top-level and nested parent fields
+4. validate every returned row with both top-level and nested parent fields
    equal to the requested parent;
-4. reject rather than ignore any foreign, missing, contradictory, unsafe, or
+5. reject rather than ignore any foreign, missing, contradictory, unsafe, or
    duplicate row because the server has promised an exact direct-child set;
-5. require pagination to terminate within the existing bounds;
-6. terminate and reap app-server on every outcome.
+6. require pagination to terminate within the existing bounds;
+7. terminate and reap app-server on every outcome.
 
 The request does not need `ancestorThreadId`: Rescue activation is owned only by
 the current parent's direct children. It does not need `useStateDbOnly`; the
@@ -99,6 +101,13 @@ repair behavior remains available.
 If initialize or `thread/list.parentThreadId` is unavailable, the operation
 returns the existing controlled discovery failure. It must not fall back to the
 incomplete global query or prescribe a spawn.
+
+This explicit support check is required for older Codex versions such as 0.117:
+their JSON decoder accepts `experimentalApi` but silently ignores the unknown
+`parentThreadId` request field, turning the request into an incomplete global
+list. An empty response therefore cannot serve as a feature probe. Unknown or
+unparseable Codex versions fail closed; the plugin does not claim completeness
+from a response whose relationship-query semantics are unproven.
 
 ## Authorization and Planning
 
@@ -137,4 +146,3 @@ The Companion integration regression must replay the incident outcome:
 Existing restored-child follow-up, linked-worktree fake ZCode response,
 cancellation, pagination, malformed metadata, marketplace, and qualification
 tests remain mandatory.
-
