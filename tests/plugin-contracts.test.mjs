@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+
+import { createMarketplaceContentManifest } from '../scripts/build-marketplace-snapshot.mjs';
 
 const root = new URL('../', import.meta.url);
 const rootPath = fileURLToPath(root);
@@ -312,16 +313,9 @@ test('marketplace mirrors every critical prepared Rescue source byte for byte', 
   }
 });
 
-test('marketplace provenance identifies the exact source commit for the checked-in Rescue mirror', () => {
+test('marketplace provenance binds its source identity to the complete checked-in output without Git history', async () => {
   const provenance = readJson('marketplace/.agents/plugins/provenance.json');
   assert.match(provenance.sourceSha, /^[a-f0-9]{40}$/);
   assert.equal(provenance.sourceRef, provenance.sourceSha);
-  assert.doesNotThrow(() => execFileSync('git', ['merge-base', '--is-ancestor', provenance.sourceSha, 'HEAD'], { cwd: rootPath }));
-  for (const relativePath of criticalRescueMirrorPaths) {
-    const committedSource = execFileSync('git', ['show', `${provenance.sourceSha}:${relativePath}`], { cwd: rootPath, maxBuffer: 8 * 1024 * 1024 });
-    const marketplace = readFileSync(new URL(`marketplace/plugins/zcode/${relativePath}`, root));
-    assert.deepEqual(marketplace, committedSource, `${relativePath} mirror must come from the provenance source commit`);
-  }
-  const committedCatalog = execFileSync('git', ['show', `${provenance.sourceSha}:marketplace/.agents/plugins/marketplace.json`], { cwd: rootPath });
-  assert.deepEqual(readFileSync(new URL('marketplace/.agents/plugins/marketplace.json', root)), committedCatalog);
+  assert.deepEqual(provenance.content, await createMarketplaceContentManifest(resolve(rootPath, 'marketplace')));
 });
