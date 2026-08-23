@@ -721,7 +721,19 @@ test('synthetic continuation capture incorporates raw installed-hook Start/Stop 
     const workspaceDirectory = join(temporary, 'workspace'); const dataRoot = join(temporary, 'data'); await Promise.all([mkdir(workspaceDirectory), mkdir(dataRoot)]); const workspace = await realpath(workspaceDirectory);
     const parentSessionId = '019fe6df-faa2-7851-8edb-55f1be7d5489';
     const installedRoot = join(root, 'marketplace', 'plugins', 'zcode');
-    const installedHooks = join(installedRoot, 'hooks'); const hookEnv = { ...process.env, ZCODE_DATA_ROOT: dataRoot };
+    const unrelatedLegacyChild = {
+      id: 'legacy-child', parentThreadId: 'legacy-parent', agentRole: 'default', cwd: workspace,
+      createdAt: 1, updatedAt: 2, status: { type: 'notLoaded' },
+      source: { subAgent: { thread_spawn: {
+        parent_thread_id: 'legacy-parent', depth: 1, agent_path: null, agent_nickname: 'Legacy', agent_role: 'default',
+      } } },
+    };
+    const installedHooks = join(installedRoot, 'hooks'); const hookEnv = {
+      ...process.env, ZCODE_DATA_ROOT: dataRoot,
+      CODEX_APP_SERVER_PATH: process.execPath,
+      CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+      FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [unrelatedLegacyChild], nextCursor: null, backwardsCursor: null }),
+    };
     const hook = async (script, input) => runChild(process.execPath, [join(installedHooks, script)], { cwd: workspace, env: hookEnv, ordinaryInput: true, input });
     assert.equal((await hook('session-lifecycle-hook.mjs', { session_id: parentSessionId, cwd: workspace, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', source: 'startup' })).code, 0);
     assert.equal((await hook('user-prompt-hook.mjs', { session_id: parentSessionId, turn_id: 'turn-original', cwd: workspace, hook_event_name: 'UserPromptSubmit', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', prompt: '$zcode:rescue --fresh repair' })).code, 0);
