@@ -54,6 +54,14 @@ export async function listCodexThreadSpawnChildren(parentThreadId, options = {})
       itemCount += result.data.length;
       if (itemCount > maxItems) throw listLimit();
       for (const thread of result.data) {
+        if (isDefinitelyForeignThreadSpawnChild(thread, parentThreadId)) {
+          const foreignId = thread.id;
+          if (validBoundedString(foreignId, CODEX_THREAD_ID_MAX_BYTES)) {
+            if (ids.has(foreignId)) throw metadataInvalid();
+            ids.add(foreignId);
+          }
+          continue;
+        }
         const child = validateRawThreadSpawnChild(thread);
         if (ids.has(child.id)) throw metadataInvalid();
         ids.add(child.id);
@@ -68,6 +76,21 @@ export async function listCodexThreadSpawnChildren(parentThreadId, options = {})
     }
     throw listLimit();
   });
+}
+
+/**
+ * The app-server list is global. Ignore a legacy or future-schema row before full
+ * validation only when both independent parent fields safely agree it is foreign.
+ * @param {unknown} thread @param {string} expectedParentId
+ */
+function isDefinitelyForeignThreadSpawnChild(thread, expectedParentId) {
+  if (!plainObject(thread)) return false;
+  const source = thread.source; const subAgent = plainObject(source) ? source.subAgent : null;
+  const spawn = plainObject(subAgent) ? subAgent.thread_spawn : null;
+  const parentThreadId = thread.parentThreadId; const nestedParentId = plainObject(spawn) ? spawn.parent_thread_id : null;
+  return validBoundedString(parentThreadId, CODEX_THREAD_ID_MAX_BYTES)
+    && validBoundedString(nestedParentId, CODEX_THREAD_ID_MAX_BYTES)
+    && parentThreadId === nestedParentId && parentThreadId !== expectedParentId;
 }
 
 /** @param {string} threadId @param {string} parentThreadId @param {AppServerOptions} [options] */
