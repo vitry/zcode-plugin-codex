@@ -60,6 +60,11 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
   assert.deepEqual(evidence, { route: 'named', parentSessionId: parentId, childThreadId: childId, agentPath: restoredPath,
     originalParentTurnId: 'turn-original', resumedParentTurnId: 'turn-resumed', originWorkspace, executionWorkspace,
     followupCount: 1, spawnCount: 0, childInvocationCount: 1, restoredInitiallyUnloaded: true, collisionCount: 0 });
+  const mutableHostState = structuredClone(input); const mutableFrames = JSON.parse(mutableHostState.appServerTranscriptJson);
+  Object.assign(mutableFrames[3].result.thread, { updatedAt: 99, recencyAt: 99, preview: 'resumed child', path: '/persisted/child.jsonl',
+    status: { type: 'active', activeFlags: ['waitingOnApproval'] }, turns: [{ id: 'resumed-turn' }] });
+  mutableHostState.appServerTranscriptJson = JSON.stringify(mutableFrames);
+  assert.equal((await qualifyCodexRescueRestoredChildEvidence(mutableHostState)).route, 'named');
   const executorBeforeStarted = structuredClone(input); const earlierExecutor = JSON.parse(executorBeforeStarted.executorRecordBytes);
   earlierExecutor.createdAt = '2026-08-10T00:00:00.250Z'; executorBeforeStarted.executorRecordBytes = `${JSON.stringify(earlierExecutor)}\n`;
   assert.equal((await qualifyCodexRescueRestoredChildEvidence(executorBeforeStarted)).route, 'named');
@@ -82,8 +87,10 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
   for (const [code, mutate] of [
     ['restored-child-current-events', (value) => JSON.parse(value.parentRolloutJson).concat({ type: 'response_item', turn_id: 'turn-resumed', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-current', arguments: '{}' } })],
     ['restored-child-host', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[1].result.data[0].source.subAgent.thread_spawn.agent_path = '/root/sibling'; return rows; }],
+    ['restored-child-host', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[3].result.thread.cwd = `${originWorkspace}-drift`; return rows; }],
     ['restored-child-app-server', (value) => JSON.parse(value.appServerTranscriptJson).slice(2)],
     ['restored-child-app-server', (value) => JSON.parse(value.appServerTranscriptJson).filter((frame) => frame.method !== 'thread/read')],
+    ['restored-child-app-server', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[2].observedAt = '2026-08-10T01:00:00.750Z'; return rows; }],
     ['restored-child-directive', (value) => { const rows = JSON.parse(value.parentRolloutJson); rows.find((event) => event?.payload?.call_id === 'prepare-write-restored' && event.payload.type === 'custom_tool_call_output').payload.output = capturedResult({ output: preparedAck({ version: 1, action: 'followup', target: '/root/sibling' }), exit_code: 0 }); return rows; }],
     ['restored-child-current-events', (value) => JSON.parse(value.parentRolloutJson).filter((event) => !(event?.payload?.call_id === 'prepare-write-restored' && event.payload.type === 'custom_tool_call_output'))],
     ['restored-child-activation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.activation.executorAgentId = 'sibling'; return record; }],
@@ -97,6 +104,21 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
   const fabricatedHostArray = structuredClone(input); fabricatedHostArray.hostChildrenJson = JSON.stringify([{ id: childId, agentPath: restoredPath }]);
   await assert.rejects(qualifyCodexRescueRestoredChildEvidence(fabricatedHostArray),
     (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-contract');
+
+  for (const mutate of [
+    (raw) => { raw.id = 'sibling-child'; },
+    (raw) => { raw.parentThreadId = 'sibling-parent'; raw.source.subAgent.thread_spawn.parent_thread_id = 'sibling-parent'; },
+    (raw) => { raw.source.subAgent.thread_spawn.agent_path = '/root/sibling'; },
+    (raw) => { raw.agentRole = 'default'; raw.source.subAgent.thread_spawn.agent_role = 'default'; },
+    (raw) => { raw.cwd = `${originWorkspace}-sibling`; },
+    (raw) => { raw.createdAt = 99; },
+    (raw) => { raw.source.subAgent.thread_spawn.depth = 2; },
+  ]) {
+    const changed = structuredClone(input); const frames = JSON.parse(changed.appServerTranscriptJson); mutate(frames[3].result.thread);
+    changed.appServerTranscriptJson = JSON.stringify(frames);
+    await assert.rejects(qualifyCodexRescueRestoredChildEvidence(changed),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'restored-child-host');
+  }
 
   for (const kind of ['started', 'stopped']) {
     const changed = structuredClone(input); const rows = JSON.parse(changed.parentRolloutJson);
@@ -2371,11 +2393,13 @@ function restoredRawCodexChild({ originWorkspace, restoredPath, agentRole }) {
     canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole, gitInfo: null, name: null, turns: [] };
 }
 function restoredAppServerTranscript(thread) {
+  const activated = structuredClone(thread);
+  activated.updatedAt = 3; activated.recencyAt = 3; activated.status = { type: 'active', activeFlags: [] };
   return [
-    { direction: 'request', id: 1, method: 'thread/list', params: { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
-    { direction: 'response', id: 1, result: { data: [thread], nextCursor: null, backwardsCursor: null } },
-    { direction: 'request', id: 2, method: 'thread/read', params: { threadId: childId, includeTurns: false } },
-    { direction: 'response', id: 2, result: { thread } },
+    { direction: 'request', observedAt: '2026-08-10T01:00:00.310Z', id: 1, method: 'thread/list', params: { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
+    { direction: 'response', observedAt: '2026-08-10T01:00:00.320Z', id: 1, result: { data: [thread], nextCursor: null, backwardsCursor: null } },
+    { direction: 'request', observedAt: '2026-08-10T01:00:00.810Z', id: 2, method: 'thread/read', params: { threadId: childId, includeTurns: false } },
+    { direction: 'response', observedAt: '2026-08-10T01:00:00.820Z', id: 2, result: { thread: activated } },
   ];
 }
 

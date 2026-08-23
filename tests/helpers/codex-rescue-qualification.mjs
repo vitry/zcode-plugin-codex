@@ -358,17 +358,35 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   if (transcript.length !== 4) mismatch('restored-child-app-server', 'Installed app-server capture must contain one list and one read request/response pair.');
   const [listRequest, listResponse, readRequest, readResponse] = transcript;
   const listParams = { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' };
-  if (!isDeepStrictEqual(listRequest, { direction: 'request', id: 1, method: 'thread/list', params: listParams })
+  const frameKeys = transcript.map((frame) => Object.keys(frame ?? {}).sort().join('\0'));
+  if (frameKeys[0] !== ['direction', 'id', 'method', 'observedAt', 'params'].sort().join('\0')
+    || frameKeys[1] !== ['direction', 'id', 'observedAt', 'result'].sort().join('\0')
+    || frameKeys[2] !== ['direction', 'id', 'method', 'observedAt', 'params'].sort().join('\0')
+    || frameKeys[3] !== ['direction', 'id', 'observedAt', 'result'].sort().join('\0')
+    || !isDeepStrictEqual({ direction: listRequest.direction, id: listRequest.id, method: listRequest.method, params: listRequest.params }, { direction: 'request', id: 1, method: 'thread/list', params: listParams })
     || listResponse?.direction !== 'response' || listResponse?.id !== 1 || !Array.isArray(listResponse?.result?.data) || listResponse.result.data.length !== 1
     || listResponse.result.nextCursor !== null || listResponse.result.backwardsCursor !== null
-    || !isDeepStrictEqual(readRequest, { direction: 'request', id: 2, method: 'thread/read', params: { threadId: expected.childThreadId, includeTurns: false } })
+    || !isDeepStrictEqual({ direction: readRequest.direction, id: readRequest.id, method: readRequest.method, params: readRequest.params }, { direction: 'request', id: 2, method: 'thread/read', params: { threadId: expected.childThreadId, includeTurns: false } })
     || readResponse?.direction !== 'response' || readResponse?.id !== 2 || !readResponse?.result?.thread) mismatch('restored-child-app-server', 'Installed app-server capture is missing or changed its exact list/read protocol.');
   let host; let reread;
   try { host = sanitizeCodexThreadSpawnChild(listResponse.result.data[0], expected.parentSessionId); reread = sanitizeCodexThreadSpawnChild(readResponse.result.thread, expected.parentSessionId, expected.childThreadId); }
   catch { mismatch('restored-child-host', 'Raw installed app-server child metadata is invalid.'); }
-  if (!isDeepStrictEqual(host, reread)) mismatch('restored-child-host', 'List and read captures do not identify the same original child.');
+  const immutableIdentity = (child, raw) => ({ id: child.id, parentThreadId: child.parentThreadId, agentPath: child.agentPath,
+    agentRole: child.agentRole, cwd: child.cwd, createdAt: child.createdAt, source: {
+      parentThreadId: raw.source.subAgent.thread_spawn.parent_thread_id, depth: raw.source.subAgent.thread_spawn.depth,
+      agentPath: raw.source.subAgent.thread_spawn.agent_path, agentRole: raw.source.subAgent.thread_spawn.agent_role,
+    } });
+  if (!isDeepStrictEqual(immutableIdentity(host, listResponse.result.data[0]), immutableIdentity(reread, readResponse.result.thread))) {
+    mismatch('restored-child-host', 'List and read captures changed immutable child identity or spawn provenance.');
+  }
   if (host?.id !== expected.childThreadId || host?.parentThreadId !== expected.parentSessionId || host?.agentPath !== expected.agentPath
-    || host?.cwd !== expected.originWorkspace || host?.status?.type !== 'notLoaded') mismatch('restored-child-host', 'Host discovery did not preserve the exact unloaded child identity.');
+    || host?.cwd !== expected.originWorkspace || host?.status?.type !== 'notLoaded' || reread?.status?.type !== 'active') mismatch('restored-child-host', 'Host discovery did not preserve the exact unloaded child identity and its lazy activation.');
+  const appServerTimes = transcript.map((frame) => eventTimestamp({ timestamp: frame.observedAt }));
+  if (appServerTimes.some((value) => value === undefined) || appServerTimes.some((value, index) => index > 0 && value <= appServerTimes[index - 1])
+    || !(eventTimestamp(prepareCall.event) < appServerTimes[0] && appServerTimes[1] < eventTimestamp(outputFor(prepareCall))
+      && eventTimestamp(currentFunctionOutputs[0]) < appServerTimes[2] && appServerTimes[3] < eventTimestamp(child[0]))) {
+    mismatch('restored-child-app-server', 'App-server discovery and lazy read are not causally ordered around preparation and accepted follow-up.');
+  }
   if ([input.executorRecordBytes, input.preparationRecordBytes].some((bytes) => typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TEXT_BYTES)) mismatch('restored-child-private', 'Private restored-child records are absent or oversized.');
   if (!input.executorRecordBytes.endsWith('\n') || !input.preparationRecordBytes.endsWith('\n')) mismatch('restored-child-private', 'Private restored-child records are not exact file bytes.');
   let executor; let preparation; try { executor = JSON.parse(input.executorRecordBytes); preparation = JSON.parse(input.preparationRecordBytes); } catch { mismatch('restored-child-private', 'Private restored-child records are malformed.'); }

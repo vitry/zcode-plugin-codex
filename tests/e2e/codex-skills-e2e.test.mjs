@@ -2669,11 +2669,13 @@ function installedCodexThreadSpawnChild({ id, parentThreadId, agentPath, cwd, ag
 }
 
 function installedRestoredAppServerTranscript(thread, childThreadId) {
+  const activated = structuredClone(thread);
+  activated.updatedAt = 3; activated.recencyAt = 3; activated.status = { type: 'active', activeFlags: [] };
   return [
-    { direction: 'request', id: 1, method: 'thread/list', params: { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
-    { direction: 'response', id: 1, result: { data: [thread], nextCursor: null, backwardsCursor: null } },
-    { direction: 'request', id: 2, method: 'thread/read', params: { threadId: childThreadId, includeTurns: false } },
-    { direction: 'response', id: 2, result: { thread } },
+    { direction: 'request', observedAt: '2026-08-10T01:00:00.310Z', id: 1, method: 'thread/list', params: { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
+    { direction: 'response', observedAt: '2026-08-10T01:00:00.320Z', id: 1, result: { data: [thread], nextCursor: null, backwardsCursor: null } },
+    { direction: 'request', observedAt: '2026-08-10T01:00:00.810Z', id: 2, method: 'thread/read', params: { threadId: childThreadId, includeTurns: false } },
+    { direction: 'response', observedAt: '2026-08-10T01:00:00.820Z', id: 2, result: { thread: activated } },
   ];
 }
 
