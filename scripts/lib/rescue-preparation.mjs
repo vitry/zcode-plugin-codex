@@ -133,6 +133,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           let generation = 1;
           let requiredExecutorAgentId = null;
           let activation = null;
+          let recordVersion = RESCUE_PREPARATION_RECORD_VERSION;
           if (occupied) {
             const current = await readPreparedRecord(storage, path, key, false);
             const kind = recordKind(current);
@@ -152,7 +153,8 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             if (!Number.isSafeInteger(generation)) throw invalidPreparation();
             requiredExecutorAgentId = current.executorAgentId;
           } else {
-            activation = validateActivation(input.activation);
+            if (input.activation === undefined) recordVersion = 2;
+            else activation = validateActivation(input.activation);
             const marker = hasRecordedRescueMarker(input.recordedPrompt);
             if ((envelope.source === 'explicit') !== marker) throw preparationError(
               'RESCUE_PREPARATION_SOURCE_MISMATCH',
@@ -160,7 +162,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             );
           }
           const record = {
-            version: RESCUE_PREPARATION_RECORD_VERSION,
+            version: recordVersion,
             key,
             sessionId: input.sessionId,
             turnId: input.turnId,
@@ -168,7 +170,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             permissionMode: input.permissionMode,
             source: envelope.source,
             envelope,
-            activation,
+            ...(recordVersion === RESCUE_PREPARATION_RECORD_VERSION ? { activation } : {}),
             generation,
             requiredExecutorAgentId,
             createdAt: new Date(createdAt).toISOString(),

@@ -180,29 +180,35 @@ async function storeFixture() {
   const workspaceA = join(root, 'workspace-a');
   const workspaceB = join(root, 'workspace-b');
   await Promise.all([mkdir(workspaceA), mkdir(workspaceB)]);
-  const rawStore = createRescuePreparationStore({ dataRoot });
   return {
     root,
     dataRoot,
     workspaceA,
     workspaceB,
-    rawStore,
-    store: withDefaultActivation(rawStore),
+    store: createRescuePreparationStore({ dataRoot }),
   };
 }
 
-/** @param {ReturnType<typeof createRescuePreparationStore>} store */
-function withDefaultActivation(store) {
-  return {
-    ...store,
-    /** @param {any} inputValue */
-    save: (inputValue) => store.save(Object.hasOwn(inputValue, 'activation')
-      ? inputValue : { ...inputValue, activation: spawnActivation }),
-    /** @param {any} inputValue */
-    consume: (inputValue) => store.consume(Object.hasOwn(inputValue, 'activationProof')
-      ? inputValue : { ...inputValue, activationProof: spawnActivationProof }),
-  };
-}
+test('omitted generation-one activation writes strict v2 and consumes without proof', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const base = { sessionId: 'parent', turnId: 'turn-legacy', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue legacy caller' };
+  await store.save({ ...base, envelope: validEnvelope });
+  const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-legacy');
+  const persisted = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(persisted.version, 2);
+  assert.equal(persisted.generation, 1);
+  assert.equal(persisted.requiredExecutorAgentId, null);
+  assert.equal(persisted.activation, undefined);
+  assert.deepEqual(Object.keys(persisted).sort(), [
+    'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'generation',
+    'key', 'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source', 'turnId',
+    'version', 'workspace',
+  ].sort());
+  const consumed = await store.consume({ ...base, executorAgentId: 'legacy-child' });
+  assert.equal(consumed.version, 2);
+  assert.equal(consumed.executorAgentId, 'legacy-child');
+});
 
 test('generation-one spawn and reactivate activations round trip with exact proofs', async (t) => {
   /** @type {Array<[string, any, string, any]>} */
@@ -211,7 +217,7 @@ test('generation-one spawn and reactivate activations round trip with exact proo
     ['reactivate', reactivateActivation, 'rescue-child', reactivateActivationProof],
   ];
   for (const [name, activation, executorAgentId, activationProof] of variants) await t.test(name, async () => {
-    const { dataRoot, rawStore: store, workspaceA } = await storeFixture();
+    const { dataRoot, store, workspaceA } = await storeFixture();
     const base = {
       sessionId: 'parent', turnId: `turn-${name}`, workspace: workspaceA,
       permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue activate',
@@ -239,7 +245,7 @@ test('generation-one activation proof is exact and failed proofs do not consume'
     ['unknown proof key', { ...spawnActivationProof, extra: true }],
   ];
   for (const [name, activationProof] of cases) await t.test(name, async () => {
-    const { rawStore: store, workspaceA } = await storeFixture();
+    const { store, workspaceA } = await storeFixture();
     const base = { sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
       permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue activate' };
     await store.save({ ...base, envelope: validEnvelope, activation: spawnActivation });
@@ -252,7 +258,7 @@ test('generation-one activation proof is exact and failed proofs do not consume'
 });
 
 test('reactivation proof binds the exact executor and remains one-shot and expiring', async () => {
-  const { rawStore: store, workspaceA } = await storeFixture();
+  const { store, workspaceA } = await storeFixture();
   const now = new Date('2026-08-17T00:00:00.000Z');
   const base = { sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
     permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue activate' };
@@ -274,11 +280,11 @@ test('reactivation proof binds the exact executor and remains one-shot and expir
 });
 
 test('activation codecs reject unknown keys, invalid digests, and illegal cross-field shapes', async () => {
-  const { rawStore: store, workspaceA } = await storeFixture();
+  const { store, workspaceA } = await storeFixture();
   const base = { sessionId: 'parent', workspace: workspaceA, permissionMode: 'workspace-write',
     recordedPrompt: '$zcode:rescue activate', envelope: validEnvelope };
   const invalid = [
-    undefined,
+    null,
     { ...spawnActivation, unknown: true },
     { ...spawnActivation, agentPathDigest: 'A'.repeat(64) },
     { ...spawnActivation, executorAgentId: 'forbidden' },
@@ -301,10 +307,10 @@ test('preparation store validates and invokes only its private save-lock seam', 
     dataRoot, testOnlyBeforeSaveLockOpen: /** @type {any} */ (true),
   }), { code: 'RESCUE_PREPARATION_INVALID' });
   let calls = 0;
-  const store = withDefaultActivation(createRescuePreparationStore({
+  const store = createRescuePreparationStore({
     dataRoot,
     testOnlyBeforeSaveLockOpen: async () => { calls += 1; },
-  }));
+  });
   await store.save({
     sessionId: 'parent', turnId: 'turn-a', workspace,
     permissionMode: 'default', recordedPrompt: 'proactive',
@@ -313,10 +319,10 @@ test('preparation store validates and invokes only its private save-lock seam', 
   assert.equal(calls, 1);
 
   const sentinel = 'PRIVATE_SAVE_LOCK_SEAM_SENTINEL';
-  const throwing = withDefaultActivation(createRescuePreparationStore({
+  const throwing = createRescuePreparationStore({
     dataRoot,
     testOnlyBeforeSaveLockOpen: async () => { throw new Error(sentinel); },
-  }));
+  });
   await assert.rejects(throwing.save({
     sessionId: 'parent', turnId: 'turn-b', workspace,
     permissionMode: 'default', recordedPrompt: 'proactive',
@@ -370,11 +376,11 @@ test('prepared store binds an exact turn and atomically retains a consumed execu
   const record = JSON.parse(await readFile(path, 'utf8'));
   assert.equal(record.consumedAt, now.toISOString());
   assert.equal(record.executorAgentId, 'rescue-child');
-  assert.equal(record.version, 3);
+  assert.equal(record.version, 2);
   assert.equal(record.generation, 1);
   assert.equal(record.requiredExecutorAgentId, null);
   assert.deepEqual(Object.keys(record).sort(), [
-    'activation', 'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'key',
+    'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'key',
     'generation', 'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source',
     'turnId', 'version', 'workspace',
   ].sort());
@@ -472,7 +478,7 @@ test('strict consumed legacy v1 preparation upgrades once to generation 2', asyn
 });
 
 test('strict unconsumed legacy v1 preparation remains create-only and consumable once', async () => {
-  const { dataRoot, rawStore, store, workspaceA } = await storeFixture();
+  const { dataRoot, store, workspaceA } = await storeFixture();
   const base = {
     sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
     permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial',
@@ -491,7 +497,7 @@ test('strict unconsumed legacy v1 preparation remains create-only and consumable
     envelope: { version: 1, source: 'proactive', task: 'continue', options: { resume: 'resume' } },
   }), { code: 'RESCUE_PREPARATION_EXISTS' });
   assert.deepEqual(await readFile(path), before);
-  const consumed = await rawStore.consume({ ...base, executorAgentId: 'rescue-child' });
+  const consumed = await store.consume({ ...base, executorAgentId: 'rescue-child' });
   assert.equal(consumed.version, 1);
   assert.equal(consumed.generation, undefined);
   await assert.rejects(store.consume({ ...base, executorAgentId: 'rescue-child' }), {
@@ -525,7 +531,7 @@ test('v2 records reject generation and required executor cross-field mismatches'
       sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
       permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial',
     };
-    await store.save({ ...base, envelope: validEnvelope });
+    await store.save({ ...base, envelope: validEnvelope, activation: spawnActivation });
     const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
     const record = JSON.parse(await readFile(path, 'utf8'));
     record.version = 2;
@@ -554,7 +560,7 @@ test('v3 records reject generation and activation cross-field mismatches', async
     const { dataRoot, store, workspaceA } = await storeFixture();
     const base = { sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
       permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial' };
-    await store.save({ ...base, envelope: validEnvelope });
+    await store.save({ ...base, envelope: validEnvelope, activation: spawnActivation });
     const path = await preparedPath(dataRoot, workspaceA, 'parent', 'turn-a');
     const record = JSON.parse(await readFile(path, 'utf8'));
     mutate(record);
@@ -569,7 +575,7 @@ test('v3 records reject generation and activation cross-field mismatches', async
 
 test('strict v2 records remain consumable and consumed replacement upgrades to v3 generation two', async (t) => {
   await t.test('unconsumed v2', async () => {
-    const { dataRoot, rawStore, store, workspaceA } = await storeFixture();
+    const { dataRoot, store, workspaceA } = await storeFixture();
     const base = { sessionId: 'parent', turnId: 'turn-a', workspace: workspaceA,
       permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial' };
     await store.save({ ...base, envelope: validEnvelope });
@@ -578,7 +584,7 @@ test('strict v2 records remain consumable and consumed replacement upgrades to v
     v2.version = 2;
     delete v2.activation;
     await writeFile(path, `${JSON.stringify(v2, null, 2)}\n`);
-    const consumed = await rawStore.consume({ ...base, executorAgentId: 'rescue-child' });
+    const consumed = await store.consume({ ...base, executorAgentId: 'rescue-child' });
     assert.equal(consumed.version, 2);
     assert.equal(consumed.generation, 1);
   });
@@ -683,10 +689,10 @@ test('replacement takes a fresh TTL from lock-linearized time after prior expiry
   let signalLockOpen = () => {};
   /** @type {Promise<void>} */
   const lockOpen = new Promise((resolve) => { signalLockOpen = resolve; });
-  const contendedStore = withDefaultActivation(createRescuePreparationStore({
+  const contendedStore = createRescuePreparationStore({
     dataRoot,
     testOnlyBeforeSaveLockOpen: async () => { signalLockOpen(); },
-  }));
+  });
   const originalNow = Date.now;
   let clock = expiresAt - 1;
   Date.now = () => clock;
