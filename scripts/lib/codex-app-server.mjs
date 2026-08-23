@@ -55,9 +55,11 @@ export async function listCodexThreadSpawnChildren(parentThreadId, options = {})
       if (itemCount > maxItems) throw listLimit();
       for (const thread of result.data) {
         const child = validateThreadSpawnChild(thread);
+        if (ids.has(child.id)) throw metadataInvalid();
+        ids.add(child.id);
         if (child.parentThreadId !== parentThreadId) continue;
-        if (ids.has(child.id) || paths.has(child.agentPath)) throw metadataInvalid();
-        ids.add(child.id); paths.add(child.agentPath); children.push(child);
+        if (paths.has(child.agentPath)) throw metadataInvalid();
+        paths.add(child.agentPath); children.push(child);
       }
       if (result.nextCursor === null) return children;
       if (!validBoundedString(result.nextCursor, MAX_CURSOR_BYTES)) throw listInvalid();
@@ -234,7 +236,7 @@ function inputError(rawReadDiagnostics = false) { return new PluginError('CODEX_
   category: 'validation', remedy: rawReadDiagnostics
     ? 'Provide a bounded thread ID and positive protocol limits.' : 'Provide bounded identifiers and positive protocol limits.',
 }); }
-function metadataInvalid() { return new PluginError('CODEX_THREAD_METADATA_INVALID', 'Codex returned invalid persisted child metadata.', { category: 'protocol', remedy: 'Upgrade or restart Codex and retry.' }); }
+function metadataInvalid() { return new PluginError('CODEX_CHILD_METADATA_INVALID', 'Codex returned invalid persisted child metadata.', { category: 'protocol', remedy: 'Upgrade or restart Codex and retry.' }); }
 function listInvalid() { return new PluginError('CODEX_THREAD_LIST_INVALID', 'Codex returned an invalid persisted thread page.', { category: 'protocol', remedy: 'Upgrade or restart Codex and retry.' }); }
 function listLimit() { return new PluginError('CODEX_THREAD_LIST_LIMIT_EXCEEDED', 'Codex persisted thread pagination exceeded its safety limit.', { category: 'protocol', remedy: 'Narrow the persisted thread set and retry.' }); }
 /** @param {string} message */

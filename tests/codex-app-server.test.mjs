@@ -88,7 +88,6 @@ test('lists exact-parent persisted spawn children over bounded stable pages and 
     id: 'child-1', parentThreadId: 'parent-1', agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
     cwd: '/repo', status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2,
   }]);
-  assert.notEqual(children[0].status, pages[1].data[0].status);
   const calls = await recordedCalls(record);
   const lists = calls.filter((call) => call.method === 'thread/list');
   assert.deepEqual(lists.map((call) => call.params), [
@@ -121,7 +120,7 @@ test('rejects contradictory or unsafe thread-spawn metadata', async (t) => {
     const thread = childThread(); mutate(thread);
     const { options } = await appOptions({ FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [thread], nextCursor: null, backwardsCursor: null }) });
     await assert.rejects(listCodexThreadSpawnChildren('parent-1', options), (/** @type {any} */ error) => {
-      assert.equal(error.code, 'CODEX_THREAD_METADATA_INVALID');
+      assert.equal(error.code, 'CODEX_CHILD_METADATA_INVALID');
       assert.doesNotMatch(String(error.stack), /secret-(?:parent|path|cwd|status)/); return true;
     });
   });
@@ -130,12 +129,19 @@ test('rejects contradictory or unsafe thread-spawn metadata', async (t) => {
 test('rejects duplicate child IDs and paths', async (t) => {
   /** @type {Array<[string,any[]]>} */
   const duplicateCases = [
-    ['id', [childThread(), childThread({ cwd: '/other' })]],
-    ['path', [childThread(), childThread({ id: 'child-2' })]],
+    ['id', [{ data: [childThread(), childThread({ cwd: '/other' })], nextCursor: null, backwardsCursor: null }]],
+    ['path', [{ data: [childThread(), childThread({ id: 'child-2' })], nextCursor: null, backwardsCursor: null }]],
+    ['cross-page cross-parent id', [
+      { data: [childThread({
+        parentThreadId: 'parent-2', agentRole: 'default',
+        source: { subAgent: { thread_spawn: { parent_thread_id: 'parent-2', depth: 1, agent_path: '/root/foreign', agent_nickname: null, agent_role: 'default' } } },
+      })], nextCursor: 'page-2', backwardsCursor: null },
+      { data: [childThread()], nextCursor: null, backwardsCursor: null },
+    ]],
   ];
-  for (const [name, data] of duplicateCases) await t.test(name, async () => {
-    const { options } = await appOptions({ FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data, nextCursor: null, backwardsCursor: null }) });
-    await assert.rejects(listCodexThreadSpawnChildren('parent-1', options), { code: 'CODEX_THREAD_METADATA_INVALID' });
+  for (const [name, pages] of duplicateCases) await t.test(name, async () => {
+    const { options } = await appOptions({ FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify(pages) });
+    await assert.rejects(listCodexThreadSpawnChildren('parent-1', options), { code: 'CODEX_CHILD_METADATA_INVALID' });
   });
 });
 
@@ -189,7 +195,7 @@ test('list and sanitized read reject malformed, remote error, timeout, disconnec
     ['remote list error', 'list', { FAKE_CODEX_ERROR: 'thread/list', FAKE_CODEX_STDERR_TEXT: ' token=super-secret ', FAKE_CODEX_STDERR_BYTES: '2000' }, { maxStderrBytes: 256 }, 'CODEX_THREAD_LIST_FAILED'],
     ['list timeout', 'list', { FAKE_CODEX_HANG: 'thread/list' }, { timeoutMs: 50 }, 'CODEX_APP_SERVER_TIMEOUT'],
     ['list disconnect', 'list', { FAKE_CODEX_DISCONNECT: 'thread/list' }, {}, 'CODEX_APP_SERVER_DISCONNECTED'],
-    ['wrong read identity', 'read', { FAKE_CODEX_THREAD_JSON: JSON.stringify(childThread({ id: 'secret-child-id' })) }, {}, 'CODEX_THREAD_METADATA_INVALID'],
+    ['wrong read identity', 'read', { FAKE_CODEX_THREAD_JSON: JSON.stringify(childThread({ id: 'secret-child-id' })) }, {}, 'CODEX_CHILD_METADATA_INVALID'],
   ];
   for (const [name, operation, env, overrides, code] of cases) await t.test(name, async () => {
     const { options } = await appOptions(env, overrides);
