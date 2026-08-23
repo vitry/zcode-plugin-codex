@@ -604,6 +604,7 @@ test('captured restored-child qualification reactivates the unloaded original pa
     const assignment = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', launcherCommand);
     const thread = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath, cwd: originWorkspace, agentRole });
     const routeDirective = { version: 1, action: 'followup', target: agentPath };
+    const childTurnId = `restored-${route}-child-turn-7`;
     const preparationEnvelope = { version: 1, source: 'proactive', task: `private restored ${route} e2e task`, options: { execution: 'foreground', resume: 'resume' } };
     const spawnArgs = { fork_turns: 'none', task_name: 'zcode_rescue_task', message: assignment, ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) };
     const preparationRecord = { version: 3, key: createHash('sha256').update(JSON.stringify([parentSessionId, 'new-turn', executionWorkspace, 'rescue'])).digest('hex'),
@@ -627,7 +628,11 @@ test('captured restored-child qualification reactivates the unloaded original pa
         { type: 'response_item', turn_id: 'new-turn', timestamp: '2026-08-10T01:00:00.800Z', payload: { type: 'function_call_output', call_id: `followup-${route}`, output: JSON.stringify({ accepted: true, target: agentPath }) } },
       ]),
       appServerTranscriptJson: JSON.stringify(installedRestoredAppServerTranscript(thread, childThreadId)),
-      executorRecordBytes: `${JSON.stringify({ kind: 'subagent-executor', agentId: childThreadId, agentType, parentSessionId, parentGenerationId: '9'.repeat(64), parentTurnId: 'old-turn', parentPermissionMode: 'acceptEdits', childTurnId: 'child-turn', originWorkspace, workspace: executionWorkspace, active: false, createdAt: '2026-08-10T00:00:00.300Z' })}\n`,
+      hookLifecycleJson: JSON.stringify([
+        { hook_event_name: 'SubagentStart', session_id: parentSessionId, turn_id: childTurnId, parent_turn_id: 'old-turn', cwd: originWorkspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: agentType },
+        { hook_event_name: 'SubagentStop', session_id: parentSessionId, turn_id: childTurnId, parent_turn_id: 'old-turn', cwd: originWorkspace, permission_mode: 'acceptEdits', agent_id: childThreadId, agent_type: agentType },
+      ]),
+      executorRecordBytes: `${JSON.stringify({ kind: 'subagent-executor', agentId: childThreadId, agentType, parentSessionId, parentGenerationId: '9'.repeat(64), parentTurnId: 'old-turn', parentPermissionMode: 'acceptEdits', childTurnId, originWorkspace, workspace: executionWorkspace, active: false, createdAt: '2026-08-10T00:00:00.350Z' })}\n`,
       preparationRecordBytes: `${JSON.stringify(preparationRecord)}\n`,
       childRolloutJson: JSON.stringify([
         { ...installedToolCall(`invoke-${route}`, installedExecInput(`${launcherCommand} invoke-prepared rescue`, { workdir: originWorkspace })), turn_id: 'child-turn-resumed', thread_id: childThreadId, timestamp: '2026-08-10T01:00:00.900Z' },
