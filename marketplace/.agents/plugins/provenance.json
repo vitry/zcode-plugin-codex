@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "8820248dc523fbc9a67abee5a6e6ac84715b5c43",
-  "sourceSha": "8820248dc523fbc9a67abee5a6e6ac84715b5c43",
+  "sourceRef": "1d7c228e0e849ba2df956bb7af9c638ef14039f5",
+  "sourceSha": "1d7c228e0e849ba2df956bb7af9c638ef14039f5",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "e2055aac5a4099142df645844fb1c37fd2ca659c58d2b085cf7e6816164dc474",
+    "sha256": "3efe600b51a61043816fd04558631b54f570403f815d48cb17e35e23548cca27",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -518,8 +518,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/codex-app-server.mjs",
-        "size": 25684,
-        "sha256": "5dec5526eaf3f9091effccd624f51a5690ad568923352221778f1ee0c75b4947"
+        "size": 25709,
+        "sha256": "04856f9e39c22fdd0f005387decec62d93e7cca62d47efe5ba0c871e74860b20"
       },
       {
         "path": "plugins/zcode/scripts/lib/codex-config.mjs",

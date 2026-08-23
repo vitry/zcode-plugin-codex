@@ -88,9 +88,8 @@ function isDefinitelyForeignThreadSpawnChild(thread, expectedParentId) {
   const source = thread.source; const subAgent = plainObject(source) ? source.subAgent : null;
   const spawn = plainObject(subAgent) ? subAgent.thread_spawn : null;
   const parentThreadId = thread.parentThreadId; const nestedParentId = plainObject(spawn) ? spawn.parent_thread_id : null;
-  return validBoundedString(parentThreadId, CODEX_THREAD_ID_MAX_BYTES)
-    && validBoundedString(nestedParentId, CODEX_THREAD_ID_MAX_BYTES)
-    && parentThreadId === nestedParentId && parentThreadId !== expectedParentId;
+  return validBoundedString(nestedParentId, CODEX_THREAD_ID_MAX_BYTES) && nestedParentId !== expectedParentId
+    && (parentThreadId === null || validBoundedString(parentThreadId, CODEX_THREAD_ID_MAX_BYTES) && parentThreadId === nestedParentId);
 }
 
 /** @param {string} threadId @param {string} parentThreadId @param {AppServerOptions} [options] */
