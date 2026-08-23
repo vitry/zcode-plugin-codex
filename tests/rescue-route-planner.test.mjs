@@ -21,7 +21,7 @@ function child(cwd, overrides = {}) {
 }
 
 function executor(workspace, overrides = {}) {
-  return { active: false, agentId: 'child-1', agentType: 'zcode-rescue', childTurnId: 'child-turn', createdAt: '2026-08-20T00:00:00.000Z', kind: 'executor', originWorkspace: workspace, parentGenerationId: 'generation-old', parentPermissionMode: 'workspace-write', parentSessionId: 'parent-1', parentTurnId: 'turn-old', workspace, ...overrides };
+  return { active: false, agentId: 'child-1', agentType: 'zcode-rescue', childTurnId: 'child-turn', createdAt: '2026-08-20T00:00:00.000Z', kind: 'subagent-executor', originWorkspace: workspace, parentGenerationId: 'a'.repeat(64), parentPermissionMode: 'workspace-write', parentSessionId: 'parent-1', parentTurnId: 'turn-old', workspace, ...overrides };
 }
 
 function adapters(children, executors, bindings = new Map()) {
@@ -65,8 +65,8 @@ test('resume selects only the exact eligible durable binding', async () => {
 });
 
 test('fresh prefers the managed base path and otherwise the deterministic newest compatible child', async () => {
-  const input = await context(); const base = child(input.caller.workspace, { createdAt: 1 }); const newest = child(input.caller.workspace, { id: 'child-z', agentPath: '/root/ordinary_newest', createdAt: 300 });
-  const tiedLower = child(input.caller.workspace, { id: 'child-a', agentPath: '/root/ordinary_tied', createdAt: 300 });
+  const input = await context(); const base = child(input.caller.workspace, { createdAt: 1 }); const newest = child(input.caller.workspace, { id: 'child-z', agentPath: '/root/ordinary_newest', createdAt: 300, updatedAt: 300 });
+  const tiedLower = child(input.caller.workspace, { id: 'child-a', agentPath: '/root/ordinary_tied', createdAt: 300, updatedAt: 300 });
   const values = new Map([base, newest, tiedLower].map((host) => [host.id, { executor: executor(input.caller.workspace, { agentId: host.id }), executionWorkspace: input.caller.workspace }]));
   assert.equal((await planRescueActivation({ ...input, ...adapters([newest, base, tiedLower], values) })).directive.target, base.agentPath);
   values.delete(base.id);
@@ -124,13 +124,60 @@ test('incomplete discovery fails closed and redacts adapter payloads', async () 
   }
 });
 
+test('host discovery boundary rejects malformed exact SpawnChild records before followup or occupied allocation', async (t) => {
+  const input = await context(); const valid = child(input.caller.workspace);
+  const mutations = [
+    ['extra key', (value) => ({ ...value, secret: true })],
+    ['missing status', (value) => { const copy = { ...value }; delete copy.status; return copy; }],
+    ['invalid status type', (value) => ({ ...value, status: { type: 'unknown' } })],
+    ['status extra key', (value) => ({ ...value, status: { type: 'idle', extra: true } })],
+    ['duplicate active flags', (value) => ({ ...value, status: { type: 'active', activeFlags: ['waitingOnApproval', 'waitingOnApproval'] } })],
+    ['oversized ID', (value) => ({ ...value, id: 'i'.repeat(513) })],
+    ['noncanonical agent path', (value) => ({ ...value, agentPath: '/root/../private' })],
+    ['oversized Role', (value) => ({ ...value, agentRole: 'r'.repeat(257) })],
+    ['relative cwd', (value) => ({ ...value, cwd: 'relative/workspace' })],
+    ['noncanonical cwd', (value) => ({ ...value, cwd: `${input.caller.workspace}/../elsewhere` })],
+    ['control-bearing cwd', (value) => ({ ...value, cwd: `${input.caller.workspace}\nsecret` })],
+    ['timestamps out of order', (value) => ({ ...value, createdAt: 201, updatedAt: 200 })],
+  ];
+  for (const [name, mutate] of mutations) await t.test(name, async () => {
+    const malformed = mutate(valid);
+    const proved = new Map([[valid.id, { executor: executor(input.caller.workspace), executionWorkspace: input.caller.workspace }]]);
+    await assert.rejects(planRescueActivation({ ...input, ...adapters([malformed], proved) }), { code: 'CODEX_CHILD_METADATA_INVALID' });
+    await assert.rejects(planRescueActivation({ ...input, ...adapters([malformed], new Map()) }), { code: 'CODEX_CHILD_METADATA_INVALID' });
+  });
+});
+
+test('stopped executor proof boundary rejects partial, extra, or structurally invalid provenance', async (t) => {
+  const input = await context(); const host = child(input.caller.workspace); const valid = executor(input.caller.workspace);
+  const mutations = [
+    ['extra result key', (proof) => ({ ...proof, extra: true })],
+    ['missing executor field', (proof) => { const partial = { ...proof.executor }; delete partial.childTurnId; return { ...proof, executor: partial }; }],
+    ['extra executor field', (proof) => ({ ...proof, executor: { ...proof.executor, secret: true } })],
+    ['bad kind', (proof) => ({ ...proof, executor: { ...proof.executor, kind: 'executor' } })],
+    ['active executor', (proof) => ({ ...proof, executor: { ...proof.executor, active: true } })],
+    ['oversized child ID', (proof) => ({ ...proof, executor: { ...proof.executor, agentId: 'i'.repeat(513) } })],
+    ['bad timestamp', (proof) => ({ ...proof, executor: { ...proof.executor, createdAt: '2026-08-20' } })],
+    ['bad child turn', (proof) => ({ ...proof, executor: { ...proof.executor, childTurnId: 'bad\nturn' } })],
+    ['bad parent turn', (proof) => ({ ...proof, executor: { ...proof.executor, parentTurnId: '' } })],
+    ['bad generation', (proof) => ({ ...proof, executor: { ...proof.executor, parentGenerationId: 'generation-old' } })],
+    ['control-bearing workspace', (proof) => ({ ...proof, executor: { ...proof.executor, workspace: `${input.caller.workspace}\nsecret` } })],
+  ];
+  for (const [name, mutate] of mutations) await t.test(name, async () => {
+    const proof = mutate({ executor: valid, executionWorkspace: input.caller.workspace });
+    await assert.rejects(planRescueActivation({
+      ...input, ...adapters([host], new Map([[host.id, proof]])),
+    }), { code: 'EXECUTOR_IDENTITY_INVALID' });
+  });
+});
+
 test('route directives accept only exact bounded task-free keys', () => {
   const followup = { version: 1, action: 'followup', target: '/root/zcode_rescue_task' };
   const spawn = { version: 1, action: 'spawn', taskName: 'zcode_rescue_task_2' };
   assert.deepEqual(validateRescueRouteDirective(followup), followup);
   assert.deepEqual(validateRescueRouteDirective(spawn), spawn);
   for (const invalid of [
-    { ...followup, childId: 'secret' }, { ...followup, target: '/root' }, { ...followup, target: '/root/bad/path' },
+    { ...followup, childId: 'secret' }, { ...followup, target: '/root' }, { ...followup, target: '/root/../bad' },
     { ...spawn, target: '/root/zcode_rescue_task_2' }, { ...spawn, taskName: 'zcode_rescue_task_1' },
     { version: 2, action: 'spawn', taskName: 'zcode_rescue_task' }, null,
   ]) assert.throws(() => validateRescueRouteDirective(invalid), { code: 'RESCUE_ROUTE_INVALID' });

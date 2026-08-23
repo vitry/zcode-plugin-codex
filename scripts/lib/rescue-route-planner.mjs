@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
+import { posix, win32 } from 'node:path';
 
 import { resolveRoutedStoppedForwardingExecutor } from '../../hooks/lib/hook-state.mjs';
 import { listCodexThreadSpawnChildren } from './codex-app-server.mjs';
@@ -13,7 +14,10 @@ const MAX_CHILDREN = 1024;
 const MAX_ORDINAL = 9999;
 const MAX_DIRECTIVE_BYTES = 2048;
 const TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,15}){0,2}(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u;
-const AGENT_PATH_PATTERN = /^\/root\/[A-Za-z0-9_-]+$/u;
+const AGENT_PATH_PATTERN = /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u;
+const HOST_CHILD_KEYS = Object.freeze(['agentPath', 'agentRole', 'createdAt', 'cwd', 'id', 'parentThreadId', 'status', 'updatedAt']);
+const STOPPED_PROOF_KEYS = Object.freeze(['executionWorkspace', 'executor']);
+const EXECUTOR_KEYS = Object.freeze(['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
 const EXECUTOR_ERROR_CODES = new Set([
   'EXECUTOR_IDENTITY_AMBIGUOUS', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_IDENTITY_INVALID',
   'EXECUTOR_ROLE_UNAPPROVED', 'EXECUTOR_ROUTE_INVALID', 'EXECUTOR_STATE_MISMATCH',
@@ -117,13 +121,15 @@ function validatePlannerInput(input) {
 function validateChildren(children, parentId) {
   const ids = new Set(); const paths = new Set(); const result = [];
   for (const value of children) {
-    if (!plain(value) || !safeId(value.id) || value.parentThreadId !== parentId || !validAgentPath(value.agentPath)
-      || !(value.agentRole === null || safeId(value.agentRole)) || typeof value.cwd !== 'string' || value.cwd.length === 0
-      || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0 || !Number.isSafeInteger(value.updatedAt) || value.updatedAt < 0) {
+    if (!plain(value) || !sameKeys(value, HOST_CHILD_KEYS) || !boundedIdentifier(value.id) || value.parentThreadId !== parentId
+      || !boundedIdentifier(value.parentThreadId) || !validAgentPath(value.agentPath) || !validRole(value.agentRole)
+      || !canonicalCwd(value.cwd) || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
+      || !Number.isSafeInteger(value.updatedAt) || value.updatedAt < value.createdAt) {
       throw plannerError('CODEX_CHILD_METADATA_INVALID');
     }
+    const status = cloneChildStatus(value.status);
     if (ids.has(value.id) || paths.has(value.agentPath)) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
-    ids.add(value.id); paths.add(value.agentPath); result.push({ ...value });
+    ids.add(value.id); paths.add(value.agentPath); result.push({ ...value, status });
   }
   return result;
 }
@@ -131,9 +137,10 @@ function validateChildren(children, parentId) {
 /** @param {any} resolved @param {any} host @param {any} caller @param {string} originWorkspace @param {string} executionWorkspace */
 function validateCandidate(resolved, host, caller, originWorkspace, executionWorkspace) {
   const found = resolved?.executor;
-  if (!plain(resolved) || !plain(found) || resolved.executionWorkspace !== executionWorkspace || found.workspace !== executionWorkspace
+  if (!plain(resolved) || !sameKeys(resolved, STOPPED_PROOF_KEYS) || !validStoppedExecutor(found)) throw plannerError('EXECUTOR_IDENTITY_INVALID');
+  if (resolved.executionWorkspace !== executionWorkspace || found.workspace !== executionWorkspace
     || found.originWorkspace !== originWorkspace || host.cwd !== originWorkspace || found.agentId !== host.id
-    || found.parentSessionId !== caller.sessionId || found.parentPermissionMode !== caller.permissionMode || found.active !== false) {
+    || found.parentSessionId !== caller.sessionId || found.parentPermissionMode !== caller.permissionMode) {
     throw plannerError(resolved?.executionWorkspace !== executionWorkspace || found?.workspace !== executionWorkspace
       || found?.originWorkspace !== originWorkspace || host.cwd !== originWorkspace ? 'EXECUTOR_ROUTE_INVALID' : 'EXECUTOR_IDENTITY_INVALID');
   }
@@ -173,17 +180,55 @@ function compareNewest(left, right) { return right.host.createdAt - left.host.cr
 function pathDigest(value) { return createHash('sha256').update(value).digest('hex'); }
 /** @param {unknown} value */
 function plain(value) { return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype; }
-/** @param {Record<string,unknown>} value @param {string[]} keys */
+/** @param {Record<string,unknown>} value @param {readonly string[]} keys */
 function sameKeys(value, keys) { return Object.keys(value).sort().join('\0') === [...keys].sort().join('\0'); }
 /** @param {unknown} value */
-function safeId(value) {
-  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 4096
+function safeId(value, maxBytes = 4096) {
+  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= maxBytes
     && [...value].every((character) => character.charCodeAt(0) > 31 && character.charCodeAt(0) !== 127);
 }
+/** @param {unknown} value */
+function boundedIdentifier(value) { return safeId(value, 512); }
 /** @param {unknown} value */
 function validAgentPath(value) { return typeof value === 'string' && Buffer.byteLength(value) <= 1024 && AGENT_PATH_PATTERN.test(value); }
 /** @param {unknown} value */
 function validTaskName(value) { return typeof value === 'string' && Buffer.byteLength(value) <= 64 && TASK_NAME_PATTERN.test(value); }
+/** @param {unknown} value */
+function validRole(value) { return value === null || safeId(value, 256); }
+/** @param {unknown} value */
+function canonicalCwd(value) {
+  return typeof value === 'string' && safeId(value, 4096)
+    && (posix.isAbsolute(value) && posix.normalize(value) === value || win32.isAbsolute(value) && win32.normalize(value) === value);
+}
+/** @param {unknown} value */
+function boundedWorkspace(value) {
+  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 4096
+    && ![...value].some((character) => ['\0', '\n', '\r'].includes(character));
+}
+/** @param {unknown} value */
+function canonicalTimestamp(value) { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) && Number.isFinite(Date.parse(value)); }
+/** @param {unknown} value */
+function cloneChildStatus(value) {
+  if (!plain(value)) throw plannerError('CODEX_CHILD_METADATA_INVALID');
+  const status = /** @type {Record<string,any>} */ (value);
+  if (['notLoaded', 'idle', 'systemError'].includes(status.type) && sameKeys(status, ['type'])) return { type: status.type };
+  if (status.type === 'active' && sameKeys(status, ['activeFlags', 'type']) && Array.isArray(status.activeFlags)
+    && new Set(status.activeFlags).size === status.activeFlags.length
+    && status.activeFlags.every((/** @type {unknown} */ flag) => ['waitingOnApproval', 'waitingOnUserInput'].includes(/** @type {any} */ (flag)))) {
+    return { type: 'active', activeFlags: [...status.activeFlags] };
+  }
+  throw plannerError('CODEX_CHILD_METADATA_INVALID');
+}
+/** @param {unknown} value */
+function validStoppedExecutor(value) {
+  if (!plain(value)) return false;
+  const executor = /** @type {Record<string,any>} */ (value);
+  return sameKeys(executor, EXECUTOR_KEYS) && executor.kind === 'subagent-executor' && executor.active === false
+    && [executor.agentId, executor.agentType, executor.parentSessionId, executor.parentTurnId, executor.childTurnId].every(boundedIdentifier)
+    && (executor.parentGenerationId === null || typeof executor.parentGenerationId === 'string' && /^[a-f0-9]{64}$/u.test(executor.parentGenerationId))
+    && PERMISSION_MODES.includes(executor.parentPermissionMode) && boundedWorkspace(executor.originWorkspace) && boundedWorkspace(executor.workspace)
+    && canonicalTimestamp(executor.createdAt);
+}
 
 /** @param {any} error */
 function sanitizeExecutorError(error) { return plannerError(EXECUTOR_ERROR_CODES.has(error?.code) ? error.code : 'EXECUTOR_ROUTE_INVALID'); }

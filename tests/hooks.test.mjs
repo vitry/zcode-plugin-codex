@@ -414,6 +414,10 @@ test('stopped routed executor wrapper fails closed on active, Role, route, and t
     await writeFile(fixture.executorPath, JSON.stringify({ ...record, agentType: 'explorer' }), { mode: 0o600 });
   }, 'EXECUTOR_ROLE_UNAPPROVED');
   await expectUnchangedFailure('route', (fixture) => writeFile(fixture.routePath, '{', { mode: 0o600 }), 'EXECUTOR_ROUTE_INVALID');
+  await expectUnchangedFailure('ambiguous-route', async (fixture) => {
+    const route = await readFile(fixture.routePath);
+    await writeFile(join(fixture.originDirectory, 'route-duplicate.json'), route, { mode: 0o600 });
+  }, 'EXECUTOR_IDENTITY_AMBIGUOUS');
   await expectUnchangedFailure('target', async (fixture) => {
     const route = JSON.parse(await readFile(fixture.routePath, 'utf8'));
     await writeFile(fixture.routePath, JSON.stringify({ ...route, targetWorkspace: fixture.origin }), { mode: 0o600 });
