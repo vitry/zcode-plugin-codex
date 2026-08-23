@@ -114,12 +114,22 @@ For a named Rescue host:
 - corrupt, ambiguous, active, mismatched, or otherwise invalid executor
   evidence: fail closed rather than downgrade to adoption.
 
-Adoption is permitted only for true `EXECUTOR_IDENTITY_NOT_FOUND`. It cannot
-turn damaged current-plugin provenance into host-only authority.
+Adoption is permitted only when ordinary plus durable routed executor
+resolution ends in exact `EXECUTOR_IDENTITY_NOT_FOUND`. Expired, state-mismatched,
+ambiguous, invalid, route-invalid, or Role-invalid results are terminal. Any
+surviving Hook route, executor, or `subagent-start` binding that contradicts the
+host also remains terminal.
+
+Complete historical absence cannot distinguish “an old plugin never wrote the
+record” from “all current-plugin Hook files were deleted.” The design does not
+claim that distinction. For an otherwise exact named child, authoritative Codex
+parent + Role + managed path + cwd, joined to the current one-shot parent-turn
+preparation, is deliberately the replacement trust boundary. Partial or
+contradictory plugin evidence cannot use that replacement boundary.
 
 ## Planning and Selection
 
-The activation union gains an exact `legacy-adopt` variant:
+The activation union gains exact first-adoption and later-continuation variants:
 
 ```json
 {
@@ -129,24 +139,48 @@ The activation union gains an exact `legacy-adopt` variant:
 }
 ```
 
-The root-facing directive remains unchanged and task-free:
-
 ```json
-{"version":1,"action":"followup","target":"/root/zcode_rescue_task"}
+{
+  "kind": "legacy-bound",
+  "childThreadId": "01a0273d-…",
+  "agentPathDigest": "<sha256>",
+  "bindingKey": "<sha256>"
+}
 ```
 
-The planner binds `childThreadId` to the exact returned row and the digest to
-its exact managed path. It never exposes either value beyond the private
-preparation record.
+The root-facing directive remains task-free but advances to version two so Root
+does not need retained historical spawn provenance to choose the fixed child
+assignment:
+
+```json
+{"version":2,"action":"followup","target":"/root/zcode_rescue_task","assignment":"zcode-rescue"}
+```
+
+The exact `assignment` vocabulary is `zcode-rescue` or `default`. It contains no
+task or authority data. The planner derives it from the same joined host/executor
+proof used for selection. Root must use it to choose the existing fixed named or
+generic launcher assignment and must not infer assignment from conversation
+history. This v2 shape applies only to follow-up. Spawn keeps the existing exact
+v1 `{version:1, action:"spawn", taskName}` directive and its bounded named-to-
+generic schema negotiation; it carries no assignment because the actual Role is
+not known until that negotiation finishes. The amended Skill accepts exactly v2
+follow-up or existing v1 spawn and rejects every other version/action pairing.
+
+The planner binds `childThreadId` to the exact returned row and the digest to its
+exact managed path. It exposes neither value; only the path and fixed assignment
+class cross the private preparation boundary.
 
 Selection rules are deterministic:
 
-- `fresh`: consider both exact executor-backed and named legacy-adoption
-  candidates; prefer the managed base path, otherwise the newest compatible
-  child using the existing order;
+- `fresh`: prefer the stronger exact executor-backed set; inside that set prefer
+  the managed base path, otherwise the newest compatible child. Only when the
+  proven set is empty may the planner select a named legacy-adoption candidate,
+  again using base path then newest order;
 - `resume`: first select the unique exact bound executor-backed or previously
-  adopted child; if none is bound, select the deterministic named legacy child
-  rather than spawning a replacement. The restored child may then return the
+  adopted child; if none is bound and exactly one named unbound legacy candidate
+  exists, select it rather than spawning a replacement. Multiple unbound legacy
+  children are ambiguous because no ZCode binding identifies the requested
+  operation and therefore fail closed. The restored child may then return the
   existing exact `RESUME_CANDIDATE_NOT_FOUND` if no parent-owned ZCode operation
   can be resumed;
 - a valid bound `/root/zcode_rescue_task_2` therefore wins resume selection over
@@ -154,13 +188,19 @@ Selection rules are deterministic:
 - no compatible child: allocate the first collision-free managed spawn name as
   before.
 
+Selecting an unbound host-only candidate emits generation-one `legacy-adopt`.
+Selecting a child through its exact existing adoption binding emits
+`legacy-bound` with that binding key, regardless of whether the new preparation
+is generation one in a new parent turn or a later generation in the same turn. Executor-backed
+selection keeps the existing Hook activation contract.
+
 Ambiguous exact bindings remain terminal. A host-only adoption candidate is not
 itself a ZCode-session binding.
 
 ## Preparation Contract
 
-Preparation version three keeps its record schema and adds `legacy-adopt` as a
-strict activation alternative. Its exact proof binds:
+Preparation version three keeps its outer record schema and adds `legacy-adopt`
+and `legacy-bound` as strict activation alternatives. Their exact proofs bind:
 
 - current parent session and turn;
 - canonical execution workspace and current permission;
@@ -169,13 +209,17 @@ strict activation alternative. Its exact proof binds:
 - creation and expiry timestamps;
 - one atomic consumer.
 
-`legacy-adopt` is valid only on generation one. Later generations remain bound
-to the child identity established by the consumed generation. A generation
-greater than one may use the host-backed consumer only when its exact
-`requiredExecutorAgentId` equals the ambient child and the durable binding for
-that child explicitly records `codex-legacy-adoption`; it never recreates a
-generation-one activation. A failed proof does not consume or rewrite the
-record. Replay returns the existing consumed error.
+`legacy-adopt` is valid only on generation one and has no `bindingKey`.
+`legacy-bound` is valid on any generation, carries the exact existing binding
+key, and is emitted only after the planner proves that binding records
+`codex-legacy-adoption` for the same parent, child, path, and execution
+workspace. Its exact `requiredExecutorAgentId` is the same child. The
+preparation store chooses and validates generation under its existing lock;
+the planner never predicts generation. A new parent turn may therefore create
+generation-one `legacy-bound`, while a same-turn continuation may create
+generation two or later. Each authorizes one current invocation and neither
+recreates nor replaces the original adoption. A failed proof does not consume
+or rewrite the record. Replay returns the existing consumed error.
 
 The preparation TTL remains the existing safety bound. It is not child
 lifetime, executor lifetime, or a limit on future operation continuation.
@@ -187,25 +231,43 @@ can inspect the preparation. It follows this bounded order:
 
 1. Read the ambient `CODEX_THREAD_ID`; this is the proposed child ID.
 2. Try the existing routed Hook executor resolution.
-3. If and only if it returns an allowed absence/state result, perform a bounded
-   app-server `thread/read` by exact child ID without a caller-supplied parent.
+3. If and only if ordinary plus durable resolution ends in exact
+   `EXECUTOR_IDENTITY_NOT_FOUND`, perform a bounded app-server `thread/read` by
+   exact child ID without a caller-supplied parent. Every expired, state,
+   ambiguity, invalid, route, or Role error is terminal.
    Raw validation still requires equal top-level and nested parent, Role, and
    path metadata.
 4. Require exact named Role `zcode-rescue`, managed path, non-empty parent ID,
-   and canonical host cwd equal to the current active turn's origin workspace.
+   and canonical host cwd.
 5. Resolve that parent's active turn through the existing identity ledger with
    the ambient canonical cwd and `workspaceBinding: execution`. This returns
    the current parent turn, generation, permission, origin, and exact linked
    execution workspace. No scan or prompt inference is allowed.
-6. Read and atomically consume the preparation in that execution workspace.
-   Require `legacy-adopt`, ambient child ID, path digest, parent, current turn,
-   generation, permission, origin, and execution workspace to agree.
-7. Rejection happens before job reservation or any ZCode RPC. Successful
+6. Require host cwd equal the resolved canonical origin, and require ambient cwd
+   equal either that origin or the exact execution workspace. An unrelated
+   linked worktree is ineligible.
+7. Read and atomically consume the preparation in that execution workspace.
+   Require generation-one `legacy-adopt` or binding-backed `legacy-bound`, plus
+   ambient child ID, path digest, parent, current turn, generation, permission,
+   origin, and execution workspace to agree. The bound variant additionally
+   requires its exact active adoption binding key at any generation.
+8. Rejection happens before job reservation or any ZCode RPC. Successful
    consumption creates an explicit in-memory legacy-adoption authority.
 
 The consumer makes a fresh app-server proof; planner-time metadata alone is not
 sufficient. It does not assume that Codex emits another `SubagentStart` when a
 persisted child is lazily loaded.
+
+If Codex does emit a new exact `SubagentStart` between planning and invocation,
+ordinary Hook resolution wins for either `legacy-adopt` or `legacy-bound`. The
+child still consumes that selected host-backed preparation only after its
+executor ID, named Role, parent, path digest, origin, execution workspace,
+current turn, generation, permission, and (for `legacy-bound`) binding key all
+match. Downstream authority is then `subagent-start`; a first adoption persists
+Hook authority, while an already-bound child keeps its immutable existing
+adoption binding and uses the new Hook proof only for the current reservation.
+A mismatched new executor is terminal. This is convergence to stronger current
+evidence, not reconstruction.
 
 The app-server client therefore adds one bounded child-identity read that does
 not require the parent as input but still validates that the returned
@@ -218,7 +280,11 @@ Downstream Rescue reservation accepts a closed union:
 
 - `subagent-start`: the existing exact Hook executor and route provenance;
 - `codex-legacy-adoption`: the newly consumed preparation plus current Codex
-  child and parent-turn proofs.
+  child and parent-turn proofs that establish the durable binding;
+- `codex-legacy-continuation`: a newly consumed binding-backed preparation,
+  current Codex child and parent-turn proofs, plus the exact existing adoption
+  binding key. This variant authorizes a request but is never persisted as the
+  binding's child authority.
 
 The legacy variant contains only facts actually proved now:
 
@@ -235,6 +301,23 @@ It is computed only after the exact preparation has been consumed. It uniquely
 names this private authority without adding another stored capability or
 placing randomness in the root-facing route.
 
+The transient continuation variant has this exact schema:
+
+```json
+{"kind":"codex-legacy-continuation","preparationAuthorityId":"<sha256>","bindingKey":"<sha256>","childAgentId":"…","childAgentType":"zcode-rescue","authorizingParentTurnId":"…","authorizingParentGenerationId":"<sha256>","authorizingPermissionMode":"…","originWorkspace":"…","executionWorkspace":"…","agentPathDigest":"<sha256>"}
+```
+
+`preparationAuthorityId` is SHA-256 over the exact JSON tuple
+`["rescue-legacy-bound-authority-v1", key, childThreadId, generation,
+createdAt, bindingKey]` from the consumed `legacy-bound` record. The distinct
+domain and bound key prevent first-adoption/continuation type confusion.
+StateStore accepts it only when `bindingKey` resolves to the one active binding
+whose durable authority is `codex-legacy-adoption` and whose parent, child,
+Role, path digest, origin, and execution workspace match. The current turn,
+generation, permission, preparation consumer, and one-shot state must match the
+new preparation. Wrong binding kind, key, path, workspace, or permission fails
+before job publication. The transient object is discarded after reservation.
+
 It has no historical child turn, historical spawn parent turn, historical
 permission, Hook route, or `subagent-executor` kind. The implementation must not
 write Hook executor/route artifacts or synthesize their fields.
@@ -245,25 +328,59 @@ boundary.
 
 ## Durable Rescue Binding
 
-The binding codec evolves to distinguish authority provenance while preserving
-existing version-one records:
+The binding key hash domain remains `rescue-binding-v1` and continues to use
+parent session, exact child ID, and canonical execution workspace. Record
+version two has these exact top-level fields:
 
-- existing records parse as `subagent-start` authority;
+```text
+version, key, operationId, state, parentSessionId, childAuthority, workspace,
+permissionMode, anchorJobId, currentJobId, createdAt, updatedAt, closedAt,
+closeReason
+```
+
+Its exact `childAuthority` union is:
+
+```json
+{"kind":"subagent-start","childAgentId":"…","childAgentType":"zcode-rescue|default","parentTurnId":"…","parentPermissionMode":"…"}
+```
+
+or:
+
+```json
+{"kind":"codex-legacy-adoption","authorityId":"<sha256>","childAgentId":"…","childAgentType":"zcode-rescue","authorizingParentTurnId":"…","authorizingParentGenerationId":"<sha256>","authorizingPermissionMode":"…","originWorkspace":"…","executionWorkspace":"…","agentPathDigest":"<sha256>"}
+```
+
+The codec preserves existing version-one records:
+
+- active and closed version-one records parse without byte rewriting and expose
+  their historical executor fields through a `subagent-start` authority view;
 - new writes use the current codec and persist either `subagent-start` or
   `codex-legacy-adoption` explicitly;
-- the binding key remains based on parent session, exact child ID, and canonical
-  execution workspace so the two authority kinds cannot create parallel slots;
+- mixed version-one/version-two partitions remain strictly sorted, bounded, and
+  unique by the unchanged key so the authority kinds cannot create parallel
+  slots;
 - a legacy-adoption binding carries its private preparation authority identity
   and path digest, not invented Hook fields;
 - parser, partition, byte, count, CAS, close, and publication guarantees remain
   exact and bounded.
 
-A fresh adopted child atomically publishes its first job and durable binding
+A first adopted child atomically publishes its first job and durable binding
 through the existing StateStore reservation transaction. A later preparation
 for that child uses the persisted adoption binding for exact resume selection,
-then creates a new one-shot `legacy-adopt` authority for the current parent
-turn. Permission replacement remains allowed only by the existing explicit
-fresh semantics; resume requires the binding's exact current permission.
+then consumes a new one-shot `legacy-bound` authority for the current parent
+turn. This applies to both later `fresh` replacement and `resume`; it never
+re-adopts the child. Permission replacement remains allowed only by the existing
+explicit fresh semantics; resume requires the binding's exact current permission.
+
+The durable `childAuthority` records the authority that established the current
+operation and remains immutable across later continuations and fresh operation
+replacement for the same child. The transient continuation repeats the stable
+child ID/type, path digest, origin, and execution workspace and supplies current
+turn/generation/permission proof; its permission must equal the binding
+permission except where the existing explicit fresh replacement semantics
+atomically replace that top-level permission. A legal close preserves the
+record version and authority bytes. A legal fresh replacement of a version-one
+Hook slot may write version two; no read or unrelated transition does.
 
 Version-one Hook-backed bindings remain byte-readable and are rewritten only by
 an existing legal state transition. No bulk migration or history scan occurs.
@@ -281,8 +398,9 @@ an existing legal state transition. No bulk migration or history scan occurs.
   must prepare a new turn. This matches existing one-shot activation safety.
 - New prompt, Root Stop, and SessionEnd continue cleaning the preparation; no
   new locator or cleanup namespace exists.
-- Ordinary child corruption cannot affect Rescue planning because no executor
-  lookup occurs for occupancy-only rows.
+- Ordinary child executor bytes or state cannot affect Rescue planning because
+  no executor lookup occurs for occupancy-only rows. Malformed, foreign, or
+  duplicate host metadata still fails before classification.
 
 Public errors remain fixed and task-free. No private child ID, parent ID,
 workspace, preparation content, permission, binding, or path digest appears in
@@ -297,6 +415,8 @@ the root-facing directive or diagnostic.
      base child;
    - no Hook executor record exists;
    - preparation returns exact `followup` to the base path, never `_2`;
+   - the directive contains exact assignment `zcode-rescue`, so Root needs no
+     retained spawn provenance;
    - child-side app-server read returns the same exact identity;
    - origin identity resolution reaches the linked execution worktree;
    - exactly that ambient child consumes once and starts a fresh fake ZCode
@@ -317,10 +437,15 @@ the root-facing directive or diagnostic.
 - generic/null child without exact default executor provenance;
 - non-managed path or non-direct path;
 - executor corruption versus true absence;
+- each non-NOT_FOUND resolver error and every surviving contradictory Hook or
+  binding artifact;
 - active host-only child;
 - planner/consumer child, parent, Role, path, cwd, or digest drift;
 - current turn, generation, permission, origin, or execution-worktree drift;
 - sibling ambient ID, replay, expiry, and concurrent consume;
+- no-event and newly-emitted exact `SubagentStart` convergence;
+- fresh mixed proven/legacy precedence and multi-unbound-legacy resume ambiguity;
+- origin cwd, exact execution cwd, and unrelated linked-worktree invocation;
 - binding v1 compatibility and every new authority discriminator mutation;
 - no mutation, job reservation, ZCode create/resume/send, or public leak on
   every rejection.
