@@ -91,6 +91,8 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
     ['restored-child-app-server', (value) => JSON.parse(value.appServerTranscriptJson).slice(2)],
     ['restored-child-app-server', (value) => JSON.parse(value.appServerTranscriptJson).filter((frame) => frame.method !== 'thread/read')],
     ['restored-child-app-server', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[2].observedAt = '2026-08-10T01:00:00.750Z'; return rows; }],
+    ['restored-child-app-server', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[2].observedAt = '2026-08-10T01:00:00.890Z'; return rows; }],
+    ['restored-child-app-server', (value) => { const rows = JSON.parse(value.appServerTranscriptJson); rows[3].observedAt = '2026-08-10T01:00:01.010Z'; return rows; }],
     ['restored-child-directive', (value) => { const rows = JSON.parse(value.parentRolloutJson); rows.find((event) => event?.payload?.call_id === 'prepare-write-restored' && event.payload.type === 'custom_tool_call_output').payload.output = capturedResult({ output: preparedAck({ version: 1, action: 'followup', target: '/root/sibling' }), exit_code: 0 }); return rows; }],
     ['restored-child-current-events', (value) => JSON.parse(value.parentRolloutJson).filter((event) => !(event?.payload?.call_id === 'prepare-write-restored' && event.payload.type === 'custom_tool_call_output'))],
     ['restored-child-activation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.activation.executorAgentId = 'sibling'; return record; }],
@@ -2398,8 +2400,8 @@ function restoredAppServerTranscript(thread) {
   return [
     { direction: 'request', observedAt: '2026-08-10T01:00:00.310Z', id: 1, method: 'thread/list', params: { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
     { direction: 'response', observedAt: '2026-08-10T01:00:00.320Z', id: 1, result: { data: [thread], nextCursor: null, backwardsCursor: null } },
-    { direction: 'request', observedAt: '2026-08-10T01:00:00.810Z', id: 2, method: 'thread/read', params: { threadId: childId, includeTurns: false } },
-    { direction: 'response', observedAt: '2026-08-10T01:00:00.820Z', id: 2, result: { thread: activated } },
+    { direction: 'request', observedAt: '2026-08-10T01:00:00.910Z', id: 2, method: 'thread/read', params: { threadId: childId, includeTurns: false } },
+    { direction: 'response', observedAt: '2026-08-10T01:00:00.920Z', id: 2, result: { thread: activated } },
   ];
 }
 

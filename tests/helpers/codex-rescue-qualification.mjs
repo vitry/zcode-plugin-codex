@@ -384,7 +384,8 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   const appServerTimes = transcript.map((frame) => eventTimestamp({ timestamp: frame.observedAt }));
   if (appServerTimes.some((value) => value === undefined) || appServerTimes.some((value, index) => index > 0 && value <= appServerTimes[index - 1])
     || !(eventTimestamp(prepareCall.event) < appServerTimes[0] && appServerTimes[1] < eventTimestamp(outputFor(prepareCall))
-      && eventTimestamp(currentFunctionOutputs[0]) < appServerTimes[2] && appServerTimes[3] < eventTimestamp(child[0]))) {
+      && eventTimestamp(currentFunctionOutputs[0]) < eventTimestamp(child[0]) && eventTimestamp(child[0]) < appServerTimes[2]
+      && appServerTimes[3] < eventTimestamp(child[1]))) {
     mismatch('restored-child-app-server', 'App-server discovery and lazy read are not causally ordered around preparation and accepted follow-up.');
   }
   if ([input.executorRecordBytes, input.preparationRecordBytes].some((bytes) => typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TEXT_BYTES)) mismatch('restored-child-private', 'Private restored-child records are absent or oversized.');

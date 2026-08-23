@@ -2674,8 +2674,8 @@ function installedRestoredAppServerTranscript(thread, childThreadId) {
   return [
     { direction: 'request', observedAt: '2026-08-10T01:00:00.310Z', id: 1, method: 'thread/list', params: { sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
     { direction: 'response', observedAt: '2026-08-10T01:00:00.320Z', id: 1, result: { data: [thread], nextCursor: null, backwardsCursor: null } },
-    { direction: 'request', observedAt: '2026-08-10T01:00:00.810Z', id: 2, method: 'thread/read', params: { threadId: childThreadId, includeTurns: false } },
-    { direction: 'response', observedAt: '2026-08-10T01:00:00.820Z', id: 2, result: { thread: activated } },
+    { direction: 'request', observedAt: '2026-08-10T01:00:00.910Z', id: 2, method: 'thread/read', params: { threadId: childThreadId, includeTurns: false } },
+    { direction: 'response', observedAt: '2026-08-10T01:00:00.920Z', id: 2, result: { thread: activated } },
   ];
 }
 
