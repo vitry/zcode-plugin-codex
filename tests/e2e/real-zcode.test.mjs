@@ -61,8 +61,10 @@ test('real qualification preflight proves the installed origin-to-worktree autho
   assert.equal(observed.active.executionWorkspace, await realpath(executionDirectory));
   assert.equal(observed.roleMutated, false);
   await observed.startChild('real-preflight-child');
+  assert.deepEqual(observed.prepared.route, { version: 1, action: 'spawn', taskName: 'zcode_rescue_task' });
   const first = await observed.invokePrepared({ childId: 'real-preflight-child', zcodePath: fakeZCode }); assert.equal(first.code, 0, first.stderr || first.stdout);
-  await observed.stopChild('real-preflight-child'); await observed.prepareProactive({ task: 'continue preflight' });
+  await observed.stopChild('real-preflight-child'); const recovered = await observed.prepareProactive({ task: 'continue preflight' });
+  assert.deepEqual(recovered.route, { version: 1, action: 'followup', target: '/root/zcode_rescue_task' });
   const second = await observed.invokePrepared({ childId: 'real-preflight-child', zcodePath: fakeZCode }); assert.equal(second.code, 0, second.stderr || second.stdout);
   const jobs = await readBoundJobs(join(temporary, 'plugin-data'), await realpath(executionDirectory));
   assert.equal(jobs.length, 2); assert.equal(new Set(jobs.map((job) => job.zcodeSessionId)).size, 1);
@@ -426,20 +428,23 @@ async function establishInstalledWorkspaceBoundTurn({ temporary, dataRoot, origi
   const prepared = await runSpawn(process.execPath, [join(installed, 'skills', 'rescue', 'launcher.mjs'), 'prepare', 'rescue'], { cwd: executionWorkspace, env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: frame });
   assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout);
   assert.match(prepared.stdout, /"type":"prepared"/u);
+  const preparedObject = JSON.parse(prepared.stdout.trim().split('\n').at(-1));
   const active = JSON.parse(await readFile(activePath, 'utf8'));
-  let cleaned = false;
+  let cleaned = false; let persistedChild;
   const launcher = join(installed, 'skills', 'rescue', 'launcher.mjs');
   const childInput = (event, childId) => ({ session_id: sessionId, turn_id: 'real-zcode-child-turn', cwd: originWorkspace, hook_event_name: event, transcript_path: null,
     model: 'gpt', permission_mode: 'default', agent_id: childId, agent_type: 'zcode-rescue', ...(event === 'SubagentStop' ? { agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } : {}) });
   return {
-    active, activePath, roleMutated,
-    startChild: async (childId) => { const result = await hook('subagent-hook.mjs', childInput('SubagentStart', childId)); assert.equal(result.code, 0, result.stderr || result.stdout); },
-    stopChild: async (childId) => { const result = await hook('subagent-hook.mjs', childInput('SubagentStop', childId)); assert.equal(result.code, 0, result.stderr || result.stdout); },
+    active, activePath, roleMutated, prepared: preparedObject,
+    startChild: async (childId) => { const result = await hook('subagent-hook.mjs', childInput('SubagentStart', childId)); assert.equal(result.code, 0, result.stderr || result.stdout);
+      persistedChild = realPreflightCodexChild({ id: childId, parentThreadId: sessionId, agentPath: `/root/${preparedObject.route.taskName}`, cwd: originWorkspace }); launcherEnv.FAKE_CODEX_THREAD_JSON = JSON.stringify(persistedChild); },
+    stopChild: async (childId) => { const result = await hook('subagent-hook.mjs', childInput('SubagentStop', childId)); assert.equal(result.code, 0, result.stderr || result.stdout);
+      launcherEnv.FAKE_CODEX_THREAD_LIST_RESULTS_JSON = JSON.stringify({ data: [persistedChild], nextCursor: null, backwardsCursor: null }); },
     prepareProactive: async ({ task, model: nextModel }) => {
       const nextFrame = `${JSON.stringify({ version: 1, source: 'proactive', task, options: { execution: 'foreground', resume: 'resume', ...(nextModel ? { model: nextModel } : {}) } })}\n`;
       const result = await runSpawn(process.execPath, [launcher, 'prepare', 'rescue'], { cwd: executionWorkspace,
         env: { ...launcherEnv, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${prepareTtyShim}`.trim() }, input: nextFrame });
-      assert.equal(result.code, 0, result.stderr || result.stdout); assert.match(result.stdout, /"type":"prepared"/u);
+      assert.equal(result.code, 0, result.stderr || result.stdout); assert.match(result.stdout, /"type":"prepared"/u); return JSON.parse(result.stdout.trim().split('\n').at(-1));
     },
     invokePrepared: ({ childId, zcodePath }) => runSpawn(process.execPath, [launcher, 'invoke-prepared', 'rescue'], { cwd: originWorkspace,
       env: { ...launcherEnv, CODEX_THREAD_ID: childId, ZCODE_PATH: zcodePath } }),
@@ -473,6 +478,13 @@ async function readBoundJobs(dataRoot, workspace, expectedModel) {
     values.push(value);
   }
   return values.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+}
+
+function realPreflightCodexChild({ id, parentThreadId, agentPath, cwd }) {
+  return { id, sessionId: parentThreadId, parentThreadId, ephemeral: false, preview: '', projectId: null, historyMode: 'legacy',
+    modelProvider: 'openai', createdAt: 1, updatedAt: 2, recencyAt: 2, status: { type: 'notLoaded' }, path: null, cwd,
+    source: { subAgent: { thread_spawn: { parent_thread_id: parentThreadId, depth: 1, agent_path: agentPath, agent_nickname: null, agent_role: 'zcode-rescue' } } },
+    canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole: 'zcode-rescue', gitInfo: null, name: null, turns: [] };
 }
 
 async function qualificationEvidenceFixture(t) {
