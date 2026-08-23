@@ -17,6 +17,7 @@ import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparation.mjs';
+import { planRescueActivation } from '../../scripts/lib/rescue-route-planner.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
 import { writeResultArtifact } from '../../scripts/lib/review.mjs';
@@ -41,6 +42,10 @@ const lockHolder = join(root, 'tests', 'fixtures', 'lock-holder.mjs');
 const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
 const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
 const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
+const legacyPreparedRoute = Object.freeze({ type: 'prepared', command: 'rescue', route: { version: 1, action: 'spawn', taskName: 'zcode_rescue_task' } });
+const legacyPreparationDependencies = Object.freeze({
+  planRescueActivation: async () => ({ activation: undefined, directive: legacyPreparedRoute.route }),
+});
 /** @typedef {(pid:number,signal?:number|string)=>boolean} KillFn */
 
 async function fixture() {
@@ -53,7 +58,12 @@ async function fixture() {
   await writeFile(join(workspace, 'tracked.txt'), 'changed\n');
   const identity = createIdentityStore({ dataRoot });
   const caller = await identity.createCallerContext({ sessionId: 'codex-session', turnId: 'turn-1', workspace, permissionMode: 'workspace-write' });
-  const env = { ...process.env, ZCODE_DATA_ROOT: dataRoot, ZCODE_PATH: fake };
+  const env = {
+    ...process.env, ZCODE_DATA_ROOT: dataRoot, ZCODE_PATH: fake,
+    CODEX_APP_SERVER_PATH: process.execPath,
+    CODEX_APP_SERVER_ARGS_JSON: JSON.stringify([fakeCodex]),
+    FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [], nextCursor: null, backwardsCursor: null }),
+  };
   return { caller, dataRoot, directory, env, identity, workspace };
 }
 
@@ -348,7 +358,7 @@ async function prepareDirectRescueChild(context, input) {
     agent_type: 'zcode-rescue',
   }, active);
   const preparation = new PassThrough(); preparation.end(`${JSON.stringify({ version: 1, source: 'explicit', task: input.prompt.replace(/^\$zcode:rescue(?:\s+--(?:fresh|resume|wait|background))*\s*/u, ''), options: { execution: 'foreground', resume: 'fresh' } })}\n`);
-  assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: input.parentSessionId }, input: preparation }), { type: 'prepared', command: 'rescue' });
+  assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: input.parentSessionId }, input: preparation, dependencies: legacyPreparationDependencies }), legacyPreparedRoute);
   return { callerContext, parent };
 }
 
@@ -360,8 +370,177 @@ async function prepareRescueInCurrentTurn(context, input) {
     cwd: context.workspace,
     env: { ...context.env, CODEX_THREAD_ID: input.parentSessionId },
     input: preparation,
+    dependencies: legacyPreparationDependencies,
   });
 }
+
+test('reactivates the exact persisted stopped Rescue child into a fresh linked-worktree ZCode response', async () => {
+  const context = await fixture();
+  const origin = await realpath(context.workspace);
+  const target = await realpath(await addLinkedWorktree(context.workspace, context.directory, 'persisted-child-target'));
+  const record = join(context.directory, 'persisted-child-reactivation.jsonl');
+  await writeFile(record, '');
+  const parentSessionId = 'persisted-parent';
+  const childId = 'persisted-child';
+  const agentPath = '/root/zcode_rescue_task';
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  await identity.beginCallerTurn({
+    sessionId: parentSessionId, turnId: 'old-parent-turn', workspace: origin,
+    permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait old task',
+    sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'startup', lifecycleResult: true,
+  });
+  const routedParent = await identity.resolveActiveTurn({ sessionId: parentSessionId, workspace: target, workspaceBinding: 'claim' });
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: 'persisted-child-turn', cwd: origin,
+    hook_event_name: 'SubagentStart', agent_id: childId, agent_type: 'zcode-rescue',
+  }, routedParent);
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: 'persisted-child-turn', cwd: origin,
+    hook_event_name: 'SubagentStop', agent_id: childId, agent_type: 'zcode-rescue',
+  });
+  await identity.beginCallerTurn({
+    sessionId: parentSessionId, turnId: 'resumed-parent-turn', workspace: target,
+    permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait recovered task',
+  });
+  const host = {
+    id: childId, parentThreadId: parentSessionId, agentPath, agentRole: 'zcode-rescue',
+    cwd: origin, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2,
+  };
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: target, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
+    input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'recovered task', options: { execution: 'foreground', resume: 'fresh' } })}\n`]),
+    dependencies: {
+      planRescueActivation: (/** @type {any} */ input) => planRescueActivation({ ...input, listChildren: async () => [host] }),
+    },
+  });
+  assert.deepEqual(prepared, {
+    type: 'prepared', command: 'rescue',
+    route: { version: 1, action: 'followup', target: agentPath },
+  });
+
+  /** @param {string} ambientChildId @param {()=>Promise<any>} readHost @param {string} code */
+  const assertRejectedBeforePipeline = async (ambientChildId, readHost, code) => {
+    const callsBefore = await readFile(record, 'utf8');
+    const jobsBefore = await createStateStore({ dataRoot: context.dataRoot }).listJobs(target);
+    await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
+      cwd: origin,
+      env: { ...context.env, CODEX_THREAD_ID: ambientChildId, FAKE_ZCODE_RECORD: record },
+      dependencies: { readCodexThreadSpawnChild: readHost },
+    }), { code });
+    assert.equal(await readFile(record, 'utf8'), callsBefore);
+    assert.deepEqual(await createStateStore({ dataRoot: context.dataRoot }).listJobs(target), jobsBefore);
+  };
+  await assertRejectedBeforePipeline('persisted-sibling', async () => host, 'EXECUTOR_IDENTITY_NOT_FOUND');
+  /** @type {Array<[Record<string,unknown>,string]>} */
+  const hostMutations = [
+    [{ agentPath: '/root/zcode_rescue_task_2' }, 'RESCUE_PREPARATION_MISMATCH'],
+    [{ parentThreadId: 'other-parent' }, 'EXECUTOR_IDENTITY_INVALID'],
+    [{ agentRole: null }, 'EXECUTOR_IDENTITY_INVALID'],
+    [{ cwd: target }, 'EXECUTOR_IDENTITY_INVALID'],
+  ];
+  for (const [mutation, code] of hostMutations) await assertRejectedBeforePipeline(childId, async () => ({ ...host, ...mutation }), code);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: target });
+  const [preparationName] = (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json'));
+  const preparationPath = join(storage.directory, 'invocations', 'prepared', preparationName);
+  const preparationBytes = await readFile(preparationPath);
+  const preparationRecord = JSON.parse(preparationBytes.toString('utf8'));
+  await writeFile(preparationPath, `${JSON.stringify({ ...preparationRecord, permissionMode: 'read-only' }, null, 2)}\n`);
+  await assertRejectedBeforePipeline(childId, async () => host, 'RESCUE_PREPARATION_MISMATCH');
+  await writeFile(preparationPath, preparationBytes);
+  const expiredCreatedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+  const expiredAt = new Date(Date.parse(expiredCreatedAt) + 30 * 60_000).toISOString();
+  await writeFile(preparationPath, `${JSON.stringify({ ...preparationRecord, createdAt: expiredCreatedAt, expiresAt: expiredAt }, null, 2)}\n`);
+  await assertRejectedBeforePipeline(childId, async () => host, 'RESCUE_PREPARATION_EXPIRED');
+  await writeFile(preparationPath, preparationBytes);
+
+  const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: origin,
+    env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+    dependencies: { readCodexThreadSpawnChild: async () => host },
+  });
+  assert.equal(output.job.status, 'succeeded');
+  assert.equal(output.result, 'done');
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 1);
+  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
+  assert.equal(calls.find((frame) => frame.method === 'session/create').params.workspace.workspacePath, target);
+  assert.equal((await createStateStore({ dataRoot: context.dataRoot }).listJobs(target)).length, 1);
+  await assertRejectedBeforePipeline(childId, async () => host, 'RESCUE_PREPARATION_CONSUMED');
+});
+
+test('spawn-route preparation binds the newly active child path before ZCode execution', async () => {
+  const context = await fixture();
+  const parentSessionId = 'spawn-route-parent'; const childId = 'spawn-route-child';
+  const agentPath = '/root/zcode_rescue_task'; const taskName = 'zcode_rescue_task';
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  await identity.beginCallerTurn({
+    sessionId: parentSessionId, turnId: 'spawn-route-parent-turn', workspace: context.workspace,
+    permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait spawn route task',
+  });
+  const preparation = PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'spawn route task', options: { execution: 'foreground', resume: 'fresh' } })}\n`]);
+  const route = { version: 1, action: 'spawn', taskName };
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId }, input: preparation,
+    dependencies: { planRescueActivation: async () => ({
+      directive: route,
+      activation: { kind: 'spawn', taskName, agentPathDigest: createHash('sha256').update(agentPath).digest('hex') },
+    }) },
+  });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue', route });
+  const caller = await identity.resolveActiveTurn({ sessionId: parentSessionId, workspace: context.workspace });
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: 'spawn-route-child-turn', cwd: context.workspace,
+    hook_event_name: 'SubagentStart', agent_id: childId, agent_type: 'zcode-rescue',
+  }, caller);
+  const host = {
+    id: childId, parentThreadId: parentSessionId, agentPath, agentRole: 'zcode-rescue',
+    cwd: await realpath(context.workspace), status: { type: 'active', activeFlags: [] }, createdAt: 3, updatedAt: 4,
+  };
+  const output = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId },
+    dependencies: { readCodexThreadSpawnChild: async () => host },
+  });
+  assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'done');
+});
+
+test('cross-parent resume reactivates only the exact persisted child binding and ZCode session', async () => {
+  const context = await fixture(); const record = join(context.directory, 'persisted-resume.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'persisted-resume-parent'; const childId = 'persisted-resume-child';
+  const childTurnId = 'persisted-resume-child-turn'; const agentPath = '/root/zcode_rescue_task';
+  await prepareDirectRescueChild(context, {
+    parentSessionId, parentTurnId: 'old-resume-parent-turn', childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait establish persisted resume',
+  });
+  const childEnv = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  const first = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: childEnv });
+  assert.equal(first.job.status, 'succeeded');
+  await markForwarding(context.dataRoot, {
+    session_id: parentSessionId, turn_id: childTurnId, cwd: context.workspace,
+    hook_event_name: 'SubagentStop', agent_id: childId, agent_type: 'zcode-rescue',
+  });
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  await identity.beginCallerTurn({
+    sessionId: parentSessionId, turnId: 'resumed-parent-turn', workspace: context.workspace,
+    permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume --wait continue persisted resume',
+  });
+  const host = {
+    id: childId, parentThreadId: parentSessionId, agentPath, agentRole: 'zcode-rescue',
+    cwd: await realpath(context.workspace), status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 5,
+  };
+  const input = PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'continue persisted resume', options: { execution: 'foreground', resume: 'resume' } })}\n`]);
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId }, input,
+    dependencies: { planRescueActivation: (/** @type {any} */ plannerInput) => planRescueActivation({ ...plannerInput, listChildren: async () => [host] }) },
+  });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue', route: { version: 1, action: 'followup', target: agentPath } });
+  const second = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: childEnv, dependencies: { readCodexThreadSpawnChild: async () => host },
+  });
+  assert.equal(second.job.status, 'succeeded'); assert.equal(second.job.zcodeSessionId, first.job.zcodeSessionId);
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 1);
+  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 2);
+});
 
 /** @param {any} context @param {{name:string}} input */
 async function preparedSameTurnBoundContinuation(context, input) {
@@ -381,7 +560,7 @@ async function preparedSameTurnBoundContinuation(context, input) {
   assert.deepEqual(await prepareRescueInCurrentTurn(context, {
     parentSessionId, source: 'proactive', task: 'exercise exact reservation guards',
     options: { execution: 'foreground', resume: 'resume' },
-  }), { type: 'prepared', command: 'rescue' });
+  }), legacyPreparedRoute);
   await writeFile(record, '');
   return {
     record, parentSessionId, parentTurnId, childId, env, first,
@@ -555,8 +734,9 @@ test('linked worktree Role preview stays read-only and private prepare binds aft
       assert.equal(bound.workspace, await realpath(linked));
       assert.equal(bound.executionWorkspace, await realpath(linked));
     } },
+    dependencies: legacyPreparationDependencies,
   });
-  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue' });
+  assert.deepEqual(prepared, legacyPreparedRoute);
   assert.equal(readyCount, 1);
   assert.deepEqual(rawModes, [true, false]);
 
@@ -607,8 +787,8 @@ test('installed Role and prepare use legacy exact-workspace state only when life
   assert.deepEqual(JSON.parse(legacyRole.stdout), { type: 'role-status', role: 'zcode-rescue', status: 'install-required', remedy: '$zcode:setup' });
   const legacyInput = new PassThrough(); legacyInput.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'legacy exact task', options: {} })}\n`);
   assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], {
-    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: legacySession }, input: legacyInput,
-  }), { type: 'prepared', command: 'rescue' });
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: legacySession }, input: legacyInput, dependencies: legacyPreparationDependencies,
+  }), legacyPreparedRoute);
 
   const corruptSession = 'installed-corrupt-lifecycle-parent';
   await recordSession(context.dataRoot, { session_id: corruptSession, cwd: context.workspace, source: 'startup' });
@@ -772,9 +952,10 @@ test('symlinked marketplace hook renders its lexical launcher and the real launc
   await waitFor(async () => stdout.includes('preparation-input-ready'), 'symlinked installed launcher did not reach preparation readiness');
   child.stdin?.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'symlink installed task', options: {} })}\n`);
   assert.deepEqual(await exit, { code: 0, signal: null }); assert.equal(stderr, '');
-  assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n{"type":"prepared","command":"rescue"}\n');
+  assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n{"type":"prepared","command":"rescue","route":{"version":1,"action":"spawn","taskName":"zcode_rescue_task"}}\n');
   assert.equal((await createRescuePreparationStore({ dataRoot: installedData }).consume({
     sessionId, turnId: 'symlink-installed-turn', workspace: linked, permissionMode: 'acceptEdits', executorAgentId: 'symlink-installed-child',
+    activationProof: { kind: 'spawn', taskName: 'zcode_rescue_task', agentPathDigest: createHash('sha256').update('/root/zcode_rescue_task').digest('hex') },
   })).envelope.task, 'symlink installed task');
 });
 
@@ -1169,7 +1350,7 @@ test('instance-bound launcher preserves prepare stdin/stdout and exits without s
   t.after(() => { if (!exited) child.kill('SIGKILL'); }); await waitFor(async () => stdout.includes('preparation-input-ready'), 'private preparation readiness was not emitted');
   child.stdin?.write(`${JSON.stringify({ version: 1, source: 'proactive', task: 'frame objective', options: {} })}\n`);
   assert.deepEqual(await Promise.race([exit, new Promise((_, reject) => setTimeout(() => reject(new Error('prepare waited for EOF after one LF frame')), 1_000))]), { code: 0, signal: null });
-  assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n{"type":"prepared","command":"rescue"}\n'); assert.equal(stderr, ''); assert.equal(await readFile(ttyRecord, 'utf8'), 'true\nfalse\n');
+  assert.equal(stdout, '{"type":"preparation-input-ready","command":"rescue"}\n{"type":"prepared","command":"rescue","route":{"version":1,"action":"spawn","taskName":"zcode_rescue_task"}}\n'); assert.equal(stderr, ''); assert.equal(await readFile(ttyRecord, 'utf8'), 'true\nfalse\n');
 });
 
 test('prepare Rescue exits on SIGTERM after readiness and frame delivery while the save lock is held', { skip: windowsRealSignalSkip }, async (t) => {
@@ -1334,7 +1515,7 @@ test('bound Rescue choice canonicalizes the persisted caller workspace before re
   const identity = createIdentityStore({ dataRoot: context.dataRoot });
   await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'aliased-choice-next', workspace: context.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue continue exact session' });
   const preparation = new PassThrough(); preparation.end(`${JSON.stringify({ version: 1, source: 'explicit', task: 'continue exact session', options: { execution: 'foreground' } })}\n`);
-  await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId }, input: preparation });
+  await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId }, input: preparation, dependencies: legacyPreparationDependencies });
   // Launcher-allowed entries are direct commands: run() still supplies fd3 and captures fd4, proving this route does not use the protected public-command transport.
   const undecided = await run(process.execPath, [rescueLauncher, 'invoke-prepared', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId } });
   assert.equal(undecided.code, 3); assert.equal(JSON.parse(undecided.stdout).type, 'needs-choice'); assert.equal(undecided.internal, '');
@@ -1410,7 +1591,7 @@ test('same-parent-turn stopped Rescue child resumes its exact session in the nex
     parentSessionId, source: 'proactive', task: 'continue in the same parent turn',
     options: { execution: 'foreground', resume: 'resume' },
   });
-  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue' });
+  assert.deepEqual(prepared, legacyPreparedRoute);
   const second = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env });
   assert.equal(second.job.status, 'succeeded');
   assert.equal(second.job.zcodeSessionId, first.job.zcodeSessionId);
@@ -1455,7 +1636,7 @@ test('same-parent-turn continuation rejects its still-active Rescue child before
   assert.deepEqual(await prepareRescueInCurrentTurn(context, {
     parentSessionId, source: 'proactive', task: 'must wait for SubagentStop',
     options: { execution: 'foreground', resume: 'resume' },
-  }), { type: 'prepared', command: 'rescue' });
+  }), legacyPreparedRoute);
   const callsBefore = await readFile(record, 'utf8'); const jobsBefore = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
 
   await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env }), { code: 'EXECUTOR_STATE_MISMATCH' });
@@ -1473,7 +1654,7 @@ test('same-parent-turn continuation rejects its still-active Rescue child before
   assert.deepEqual(await prepareRescueInCurrentTurn(context, {
     parentSessionId, source: 'proactive', task: 'retry after the exact child stops',
     options: { execution: 'foreground', resume: 'resume' },
-  }), { type: 'prepared', command: 'rescue' });
+  }), legacyPreparedRoute);
   const retried = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env });
   assert.equal(retried.job.status, 'succeeded'); assert.equal(retried.job.zcodeSessionId, first.job.zcodeSessionId);
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
@@ -1567,7 +1748,7 @@ test('same-parent-turn stopped Rescue child rejects a missing durable binding be
   assert.deepEqual(await prepareRescueInCurrentTurn(context, {
     parentSessionId, source: 'proactive', task: 'reject missing durable binding',
     options: { execution: 'foreground', resume: 'resume' },
-  }), { type: 'prepared', command: 'rescue' });
+  }), legacyPreparedRoute);
   const storage = await resolveWorkspaceStorage(context);
   const bindingNames = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-') && name.endsWith('.json'));
   assert.equal(bindingNames.length, 1);
@@ -1595,7 +1776,7 @@ test('same-parent-turn continuation rejects a sibling child before reservation o
   assert.deepEqual(await prepareRescueInCurrentTurn(context, {
     parentSessionId, source: 'proactive', task: 'reject the sibling continuation',
     options: { execution: 'foreground', resume: 'resume' },
-  }), { type: 'prepared', command: 'rescue' });
+  }), legacyPreparedRoute);
   const active = await createIdentityStore({ dataRoot: context.dataRoot }).resolveActiveTurn({ sessionId: parentSessionId, workspace: context.workspace });
   await markForwarding(context.dataRoot, {
     session_id: parentSessionId, turn_id: 'same-turn-sibling-child-turn', cwd: context.workspace, hook_event_name: 'SubagentStart',
