@@ -178,7 +178,10 @@ function remoteRequestError(method) {
 function supportsExactParentList(result) {
   const userAgent = result.userAgent;
   if (!validBoundedString(userAgent, MAX_USER_AGENT_BYTES)) return false;
-  const match = /^zcode-plugin-codex\/(\d{1,4})\.(\d{1,4})\.(\d{1,4})(?:[ -][^\r\n]*)?$/.exec(userAgent);
+  const slash = userAgent.indexOf('/');
+  if (slash <= 0) return false;
+  const version = userAgent.slice(slash + 1).split(/\s/, 1)[0];
+  const match = /^(\d{1,4})\.(\d{1,4})\.(\d{1,4})$/.exec(version);
   if (!match) return false;
   const major = Number(match[1]); const minor = Number(match[2]); const patch = Number(match[3]);
   return Number.isSafeInteger(major) && Number.isSafeInteger(minor) && Number.isSafeInteger(patch)

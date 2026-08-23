@@ -94,16 +94,26 @@ test('empty-preview exact-parent discovery uses relationship semantics', async (
   assert.equal(calls.find((call) => call.method === 'thread/list').params.parentThreadId, 'parent-1');
 });
 
-test('exact-parent discovery supports 0.149 and rejects silent-ignore app-server versions', async (t) => {
+test('exact-parent discovery accepts supported originators and rejects silent-ignore app-server versions', async (t) => {
   const graph = JSON.stringify([childThread()]);
-  await t.test('0.149 supported', async () => {
-    const { options } = await appOptions({
-      FAKE_CODEX_USER_AGENT: 'zcode-plugin-codex/0.149.0 (fake)',
-      FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: graph,
+  for (const [name, userAgent] of [
+    ['alternate originator 0.149', 'codex_originator_via_env_var/0.149.0 (fake)'],
+    ['minimum 0.141', 'zcode-plugin-codex/0.141.0 (fake)'],
+  ]) {
+    await t.test(name, async () => {
+      const { options } = await appOptions({
+        FAKE_CODEX_USER_AGENT: userAgent,
+        FAKE_CODEX_THREAD_SPAWN_GRAPH_JSON: graph,
+      });
+      assert.equal((await listCodexThreadSpawnChildren('parent-1', options)).length, 1);
     });
-    assert.equal((await listCodexThreadSpawnChildren('parent-1', options)).length, 1);
-  });
-  for (const [name, userAgent] of [['0.117 silent ignore', 'zcode-plugin-codex/0.117.0 (fake)'], ['unparseable', 'fake-codex']]) {
+  }
+  for (const [name, userAgent] of [
+    ['0.140 boundary', 'zcode-plugin-codex/0.140.0 (fake)'],
+    ['0.117 silent ignore', 'zcode-plugin-codex/0.117.0 (fake)'],
+    ['unparseable', 'fake-codex'],
+    ['oversized', `originator/0.149.0 ${'x'.repeat(4096)}`],
+  ]) {
     await t.test(name, async () => {
       const { options, record } = await appOptions({
         FAKE_CODEX_USER_AGENT: userAgent,
