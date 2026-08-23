@@ -1129,7 +1129,7 @@ test('cleanup terminalizes a legal orphan pending lifecycle and fences old sessi
   assert.equal((await identity.consumeCallerContext(newer, { workspace: workspaceA, now: '2026-08-21T12:02:00.000Z' })).turnId, 'new-session-turn');
 });
 
-test('orphan replacement holds the session lock until publication before cleanup terminalizes it', async () => {
+test('orphan replacement active publication excludes cleanup under the same session lock', async () => {
   const { dataRoot, workspaceA } = await fixture();
   const initial = {
     sessionId: 'session-orphan-race', turnId: 'turn-initial', workspace: workspaceA, permissionMode: 'default',
@@ -1140,7 +1140,7 @@ test('orphan replacement holds the session lock until publication before cleanup
   const replacement = createIdentityStore({
     dataRoot,
     publicationSeam: async (point) => {
-      if (point === 'before-pending') { events.push('replacement-locked'); entered.resolve(); await release.promise; }
+      if (point === 'before-active-publish') { events.push('replacement-locked'); entered.resolve(); await release.promise; }
       if (point === 'after-active-publish') events.push('replacement-active');
     },
   }).beginCallerTurn({ ...initial, turnId: 'turn-replacement', prompt: 'replacement', now: '2026-08-21T12:01:00.000Z' });
