@@ -17,7 +17,7 @@ import { brokerEndpointFor, ensureZCodeBroker, prioritizeBrokerOwnership, probeB
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { USER_PROMPT_ADDITIONAL_CONTEXT_LIMIT } from '../scripts/lib/rescue-launcher-command.mjs';
-import { cleanupSession, isForwarding, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
+import { cleanupSession, isForwarding, markForwarding, recordSession, resolveForwardingExecutor, resolveForwardingRoute, resolveRoutedForwardingExecutor, resolveRoutedStoppedForwardingExecutor } from '../hooks/lib/hook-state.mjs';
 import { runStopReviewGate } from '../hooks/stop-review-gate-hook.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -378,6 +378,47 @@ test('routed executor preserves active and stopped invocation modes', async (t) 
   await assert.rejects(resolveRoutedForwardingExecutor(data, origin, start.agent_id), { code: 'EXECUTOR_STATE_MISMATCH' });
   const routed = await resolveRoutedForwardingExecutor(data, origin, start.agent_id, { continuation: true, durableProvenance: true });
   assert.equal(routed.executor.active, false); assert.equal(routed.executionWorkspace, await realpath(target));
+});
+
+test('stopped routed executor resolution is durable, read-only, and cannot be weakened by caller options', async (t) => {
+  const fixture = await routedExecutorFixture(t, 'stopped-routed-wrapper');
+  await markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' });
+  const stoppedAt = JSON.parse(await readFile(fixture.executorPath, 'utf8')).createdAt;
+  const before = await privateTreeSnapshot(fixture.data);
+  const resolved = await resolveRoutedStoppedForwardingExecutor(
+    fixture.data,
+    fixture.origin,
+    fixture.start.agent_id,
+    { now: new Date(Date.parse(stoppedAt) + 31 * 60_000), continuation: false, durableProvenance: false },
+  );
+  assert.equal(resolved.executor.active, false);
+  assert.equal(resolved.executionWorkspace, await realpath(fixture.target));
+  assert.deepEqual(await privateTreeSnapshot(fixture.data), before);
+});
+
+test('stopped routed executor wrapper fails closed on active, Role, route, and target drift without rewriting state', async (t) => {
+  const expectUnchangedFailure = async (label, mutate, code) => {
+    const fixture = await routedExecutorFixture(t, `stopped-wrapper-${label}`);
+    await markForwarding(fixture.data, { ...fixture.start, hook_event_name: 'SubagentStop' });
+    await mutate(fixture);
+    const before = await privateTreeSnapshot(fixture.data);
+    await assert.rejects(resolveRoutedStoppedForwardingExecutor(fixture.data, fixture.origin, fixture.start.agent_id), { code });
+    assert.deepEqual(await privateTreeSnapshot(fixture.data), before, `${label} rejection must be read-only`);
+  };
+  await expectUnchangedFailure('active', async (fixture) => {
+    const record = JSON.parse(await readFile(fixture.executorPath, 'utf8'));
+    await writeFile(fixture.executorPath, JSON.stringify({ ...record, active: true }), { mode: 0o600 });
+  }, 'EXECUTOR_STATE_MISMATCH');
+  await expectUnchangedFailure('role', async (fixture) => {
+    const record = JSON.parse(await readFile(fixture.executorPath, 'utf8'));
+    await writeFile(fixture.executorPath, JSON.stringify({ ...record, agentType: 'explorer' }), { mode: 0o600 });
+  }, 'EXECUTOR_ROLE_UNAPPROVED');
+  await expectUnchangedFailure('route', (fixture) => writeFile(fixture.routePath, '{', { mode: 0o600 }), 'EXECUTOR_ROUTE_INVALID');
+  await expectUnchangedFailure('target', async (fixture) => {
+    const route = JSON.parse(await readFile(fixture.routePath, 'utf8'));
+    await writeFile(fixture.routePath, JSON.stringify({ ...route, targetWorkspace: fixture.origin }), { mode: 0o600 });
+  }, 'EXECUTOR_ROUTE_INVALID');
+  await assert.rejects(resolveRoutedStoppedForwardingExecutor('data', 'origin', 'child', { unexpected: true }), { code: 'EXECUTOR_ROUTE_INVALID' });
 });
 
 test('direct executor resolver preserves workspace and lock infrastructure errors', async (t) => {
