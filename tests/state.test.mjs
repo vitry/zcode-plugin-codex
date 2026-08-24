@@ -91,6 +91,49 @@ test('StateStore genuine first-adoption authority mismatches fail before publish
   });
 });
 
+test('StateStore first adoption atomically adopts one exact candidate with a one-shot genuine brand', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const candidate = await store.reserveJob(rescueReservation(workspace, 'candidate-turn'));
+  await store.transitionJob(workspace, candidate.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'candidate-session' });
+  await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
+  const authority = await brandedStateAuthority(base.dataRoot, workspace, 'legacy-adopt');
+  const before = await store.listJobs(workspace);
+  for (const invalid of [structuredClone(authority), { ...authority }, await brandedStateAuthority(base.dataRoot, workspace, 'legacy-bound', 'turn-a', '9'.repeat(64))]) {
+    await assert.rejects(store.adoptRescueCandidate({ workspace, reservation: rescueReservation(workspace), authority: invalid,
+      candidateJobId: candidate.id }), { code: 'RESCUE_BINDING_INVALID' });
+    assert.deepEqual(await store.listJobs(workspace), before);
+  }
+  /** @type {Array<[any,string,any]>} */
+  const mismatches = [
+    [{ ...rescueReservation(workspace, 'session-turn'), ownerSessionId: 'other-parent' }, 'session-turn', {}],
+    [rescueReservation(workspace, 'wrong-turn'), 'authority-turn', {}],
+    [{ ...rescueReservation(workspace, 'permission-turn'), permissionSnapshot: { permissionMode: 'read-only' } }, 'permission-turn', {}],
+  ];
+  for (const [reservation, authorityTurn, options] of mismatches) {
+    const mismatched = await brandedStateAuthority(base.dataRoot, workspace, 'legacy-adopt', authorityTurn, undefined, options);
+    await assert.rejects(store.adoptRescueCandidate({ workspace, reservation, authority: mismatched,
+      candidateJobId: candidate.id }), { code: 'RESCUE_BINDING_INVALID' });
+    assert.deepEqual(await store.listJobs(workspace), before);
+  }
+  const foreign = await realpath((await fixture()).workspace);
+  await assert.rejects(store.adoptRescueCandidate({ workspace: foreign, reservation: rescueReservation(foreign),
+    authority: await brandedStateAuthority(base.dataRoot, workspace, 'legacy-adopt', 'workspace-turn'), candidateJobId: candidate.id }),
+  { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual(await store.listJobs(workspace), before);
+  const wrongCandidate = await store.reserveJob({ ...rescueReservation(workspace, 'other-turn'), ownerSessionId: 'other-parent' });
+  await store.transitionJob(workspace, wrongCandidate.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'other-session' });
+  await store.finishJob(workspace, wrongCandidate.id, ['running'], 'succeeded');
+  await assert.rejects(store.adoptRescueCandidate({ workspace, reservation: rescueReservation(workspace), authority,
+    candidateJobId: wrongCandidate.id }), { code: 'RESCUE_BINDING_INVALID' });
+  const adopted = await store.adoptRescueCandidate({ workspace, reservation: rescueReservation(workspace), authority,
+    candidateJobId: candidate.id });
+  assert.equal(adopted.anchorJob.id, candidate.id); assert.equal(adopted.binding.childAuthority.kind, 'codex-legacy-adoption');
+  const count = (await store.listJobs(workspace)).length;
+  await assert.rejects(store.adoptRescueCandidate({ workspace, reservation: rescueReservation(workspace), authority,
+    candidateJobId: candidate.id }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal((await store.listJobs(workspace)).length, count);
+});
+
 test('StateStore transient continuation matrix rejects child, key, turn, permission, path, workspace, and kind before publication', async () => {
   const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
   const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),

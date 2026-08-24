@@ -387,13 +387,15 @@ an existing legal state transition. No bulk migration or history scan occurs.
 
 ### Pending choice continuation amendment
 
-A `legacy-bound` preparation may intentionally omit both `fresh` and `resume`.
-After the child consumes that preparation and observes the exact durable
-adoption binding, it saves a private version-three pending choice. This record
-atomically inherits the already-consumed preparation authority's exact child,
-path digest, binding key, parent session/turn/generation, permission, origin,
-and execution workspace, together with the exact presented binding snapshot.
-It never stores or synthesizes a Hook executor or route artifact.
+A `legacy-adopt` or `legacy-bound` preparation may intentionally omit both
+`fresh` and `resume`. After the child consumes that preparation, it saves one
+of two closed private version-three pending variants. First adoption carries
+the exact legacy candidate route plus the consumed adoption authority; bound
+continuation carries the exact durable binding snapshot plus its consumed
+continuation authority. Both atomically inherit the exact child, path digest,
+parent session/turn/generation, permission, origin, and execution workspace;
+only the bound variant carries a binding key. Neither stores or synthesizes a
+Hook executor or route artifact.
 
 The later fixed `invoke-choice rescue resume|fresh` first prefers an exact
 current Hook executor. Only final exact `EXECUTOR_IDENTITY_NOT_FOUND` may use
@@ -408,9 +410,12 @@ Hook may authorize the current reservation while the pending record still
 supplies the exact one-shot choice and binding snapshot.
 
 Version-one and version-two pending records retain their existing compatibility
-rules. Only a genuine consumed `legacy-bound` preparation authority can create
-the version-three variant, and expiry or mismatch cannot publish a job, reserve
-a ZCode operation, or consume unrelated preparation state.
+rules. Only a genuine consumed `legacy-adopt` or `legacy-bound` preparation
+authority can create its matching version-three variant. The first-adoption
+variant may resume its exact parent-owned candidate or choose fresh; either
+choice uses the same child and atomically creates the durable version-two
+adoption binding. Expiry or mismatch cannot publish a job, reserve a ZCode
+operation, or consume unrelated preparation state.
 
 ## Failure and Lifecycle Semantics
 

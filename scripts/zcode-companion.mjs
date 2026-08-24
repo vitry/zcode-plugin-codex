@@ -257,7 +257,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
         turnId: caller.turnId, permissionMode: caller.permissionMode, parentGenerationId: caller.generationId,
         originWorkspace: caller.originWorkspace, executionWorkspace: caller.workspace, ...(legacyChoiceFallback ? { requireLegacyAuthority: true } : {}),
       } : {}) }); executionCaller = invocation.caller; authority = invocation.authority;
-    if (command === 'rescue' && invocation.route?.routeKind !== 'bound') {
+    if (command === 'rescue' && invocation.route?.routeKind !== 'bound' && !authority) {
       const refreshed = await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true });
       assertSameRoutedExecutionContext({ executor, executionWorkspace }, refreshed); executor = refreshed.executor;
     }

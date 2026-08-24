@@ -20,6 +20,10 @@ const LEGACY_CONTINUATION_KEYS = Object.freeze([
   'agentPathDigest', 'authorizingParentGenerationId', 'authorizingParentTurnId', 'authorizingPermissionMode',
   'bindingKey', 'childAgentId', 'childAgentType', 'executionWorkspace', 'kind', 'originWorkspace', 'preparationAuthorityId',
 ]);
+const LEGACY_ADOPTION_KEYS = Object.freeze([
+  'agentPathDigest', 'authorityId', 'authorizingParentGenerationId', 'authorizingParentTurnId', 'authorizingPermissionMode',
+  'childAgentId', 'childAgentType', 'executionWorkspace', 'kind', 'originWorkspace',
+]);
 
 /** Read a private pending-derived legacy authority without consuming it. @param {unknown} value */
 export function readPendingLegacyChildAuthorityContext(value) {
@@ -69,10 +73,13 @@ export function createInvocationStore({ dataRoot }) {
         let trusted;
         try { trusted = readConsumedLegacyChildAuthorityContext(input.legacyAuthority); } catch { throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation authority is invalid.'); }
         legacyAuthority = trusted.authority;
-        if (trusted.parentSessionId !== input.sessionId || legacyAuthority.kind !== 'codex-legacy-continuation'
-          || !validLegacyContinuationAuthority(legacyAuthority) || legacyAuthority.childAgentId !== input.executorAgentId
+        const adoption = legacyAuthority.kind === 'codex-legacy-adoption';
+        if (trusted.parentSessionId !== input.sessionId
+          || !(adoption ? validLegacyAdoptionAuthority(legacyAuthority) : validLegacyContinuationAuthority(legacyAuthority))
+          || legacyAuthority.childAgentId !== input.executorAgentId
           || legacyAuthority.authorizingParentTurnId !== input.turnId || legacyAuthority.authorizingPermissionMode !== input.permissionMode
-          || legacyAuthority.executionWorkspace !== storage.workspacePath || input.routeKind !== 'bound') {
+          || legacyAuthority.executionWorkspace !== storage.workspacePath
+          || adoption && input.routeKind !== 'legacy' || !adoption && input.routeKind !== 'bound') {
           throw invocationError('PENDING_INVOCATION_INVALID', 'The pending invocation authority is invalid.');
         }
       }
@@ -110,7 +117,8 @@ export function createInvocationStore({ dataRoot }) {
           ...(record.command === 'rescue' ? { source: legacyExecutorBound ? 'explicit' : record.source } : {}),
           caller: { sessionId: record.sessionId, turnId: record.originatingTurnId, workspace: record.workspace, permissionMode: record.permissionMode },
           ...(record.command === 'rescue' && validPending(record) ? { route: { routeKind: record.routeKind, candidateJobId: record.candidateJobId, ...(record.routeKind === 'bound' ? { expectedOperationId: record.expectedOperationId, expectedCurrentJobId: record.expectedCurrentJobId } : {}) } } : {}),
-          ...(authorityPending ? { authority, route: { routeKind: record.routeKind, candidateJobId: record.candidateJobId, expectedOperationId: record.expectedOperationId, expectedCurrentJobId: record.expectedCurrentJobId } } : {}),
+          ...(authorityPending ? { authority, route: { routeKind: record.routeKind, candidateJobId: record.candidateJobId,
+            ...(record.routeKind === 'bound' ? { expectedOperationId: record.expectedOperationId, expectedCurrentJobId: record.expectedCurrentJobId } : {}) } } : {}),
         };
       });
     },
@@ -161,11 +169,15 @@ function validPending(value) { return plain(value) && (value.version === PENDING
 function exactPendingKeys(value) { const keys = ['command', 'createdAt', 'expiresAt', 'key', 'originatingTurnId', 'permissionMode', 'sessionId', 'spec', 'version', 'workspace', ...(value.command === 'rescue' ? ['candidateJobId', 'executorAgentId', 'routeKind', 'source', ...(value.routeKind === 'bound' ? ['expectedCurrentJobId', 'expectedOperationId'] : [])] : [])]; return Object.keys(value).sort().join('\0') === keys.sort().join('\0'); }
 /** @param {any} value */
 function validLegacyAuthorityPending(value) { return plain(value) && value.version === LEGACY_AUTHORITY_PENDING_VERSION
-  && Object.keys(value).sort().join('\0') === ['candidateJobId', 'command', 'createdAt', 'executorAgentId', 'expectedCurrentJobId', 'expectedOperationId', 'expiresAt', 'key', 'legacyAuthority', 'legacyAuthorityDigest', 'originatingTurnId', 'permissionMode', 'routeKind', 'sessionId', 'source', 'spec', 'version', 'workspace'].sort().join('\0')
-  && value.command === 'rescue' && value.routeKind === 'bound' && nonempty(value.executorAgentId) && RESCUE_SOURCES.has(value.source)
-  && digest(value.key) && digest(value.candidateJobId) && digest(value.expectedOperationId) && digest(value.expectedCurrentJobId)
+  && Object.keys(value).sort().join('\0') === ['candidateJobId', 'command', 'createdAt', 'executorAgentId', 'expiresAt', 'key', 'legacyAuthority', 'legacyAuthorityDigest', 'originatingTurnId', 'permissionMode', 'routeKind', 'sessionId', 'source', 'spec', 'version', 'workspace',
+    ...(value.routeKind === 'bound' ? ['expectedCurrentJobId', 'expectedOperationId'] : [])].sort().join('\0')
+  && value.command === 'rescue' && ['legacy', 'bound'].includes(value.routeKind) && nonempty(value.executorAgentId) && RESCUE_SOURCES.has(value.source)
+  && digest(value.key) && digest(value.candidateJobId)
+  && (value.routeKind === 'bound' ? digest(value.expectedOperationId) && digest(value.expectedCurrentJobId)
+    : value.expectedOperationId === undefined && value.expectedCurrentJobId === undefined)
   && nonempty(value.sessionId) && nonempty(value.originatingTurnId) && nonempty(value.workspace) && PERMISSION_MODES.includes(value.permissionMode)
-  && validLegacyContinuationAuthority(value.legacyAuthority) && value.legacyAuthority.childAgentId === value.executorAgentId
+  && (value.routeKind === 'legacy' ? validLegacyAdoptionAuthority(value.legacyAuthority) : validLegacyContinuationAuthority(value.legacyAuthority))
+  && value.legacyAuthority.childAgentId === value.executorAgentId
   && value.legacyAuthority.authorizingParentTurnId === value.originatingTurnId
   && value.legacyAuthority.authorizingPermissionMode === value.permissionMode && value.legacyAuthority.executionWorkspace === value.workspace
   && value.legacyAuthorityDigest === digestLegacyPendingAuthority(value)
@@ -175,6 +187,12 @@ function validLegacyAuthorityPending(value) { return plain(value) && value.versi
 function validLegacyContinuationAuthority(value) { return plain(value) && Object.keys(value).sort().join('\0') === [...LEGACY_CONTINUATION_KEYS].sort().join('\0')
   && value.kind === 'codex-legacy-continuation' && digest(value.preparationAuthorityId) && digest(value.bindingKey)
   && nonempty(value.childAgentId) && value.childAgentType === 'zcode-rescue' && nonempty(value.authorizingParentTurnId)
+  && digest(value.authorizingParentGenerationId) && PERMISSION_MODES.includes(value.authorizingPermissionMode)
+  && nonempty(value.originWorkspace) && nonempty(value.executionWorkspace) && digest(value.agentPathDigest); }
+/** @param {any} value */
+function validLegacyAdoptionAuthority(value) { return plain(value) && Object.keys(value).sort().join('\0') === [...LEGACY_ADOPTION_KEYS].sort().join('\0')
+  && value.kind === 'codex-legacy-adoption' && digest(value.authorityId) && nonempty(value.childAgentId)
+  && value.childAgentType === 'zcode-rescue' && nonempty(value.authorizingParentTurnId)
   && digest(value.authorizingParentGenerationId) && PERMISSION_MODES.includes(value.authorizingPermissionMode)
   && nonempty(value.originWorkspace) && nonempty(value.executionWorkspace) && digest(value.agentPathDigest); }
 /** @param {any} value */

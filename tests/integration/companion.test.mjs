@@ -547,6 +547,48 @@ test('adopts an exact persisted host-only Rescue child into its linked-worktree 
   assert.notEqual(JSON.parse(await readFile(join(storage.directory, 'invocations', 'prepared', preparationName), 'utf8')).consumedAt, null);
 });
 
+for (const scenario of ['explicit-resume', 'choice-resume', 'choice-fresh']) test(`first host-only adoption ${scenario} adopts the exact existing candidate`, async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace); const store = createStateStore({ dataRoot: context.dataRoot });
+  const record = join(context.directory, `legacy-first-candidate-${scenario}.jsonl`); await writeFile(record, '');
+  const parentSessionId = `legacy-first-${scenario}-parent`; const childId = `legacy-first-${scenario}-child`; const zcodeSessionId = `legacy-session-${scenario}`;
+  const candidate = await store.reserveJob({ workspace, ownerSessionId: parentSessionId, ownerTurnId: 'candidate-turn', command: 'rescue', readOnly: false,
+    permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await store.transitionJob(workspace, candidate.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId });
+  await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
+  const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-a', workspace, permissionMode: 'workspace-write',
+    prompt: '$zcode:rescue recover candidate', sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  const host = { id: childId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
+    cwd: workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
+  await runDirectInvocation(['prepare', 'rescue'], { cwd: workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
+    input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'recover candidate',
+      options: { execution: 'foreground', ...(scenario === 'explicit-resume' ? { resume: 'resume' } : {}) } })}\n`]),
+    dependencies: { planRescueActivation: (/** @type {any} */ input) => planRescueActivation({ ...input, listChildren: async () => [host] }) } });
+  const childRuntime = { cwd: workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+    dependencies: { readCodexThreadSpawnChildIdentity: async () => host } };
+  let output = await runDirectInvocation(['invoke-prepared', 'rescue'], childRuntime);
+  if (scenario !== 'explicit-resume') {
+    assert.deepEqual(output, { type: 'needs-choice', choices: ['--resume', '--fresh'] });
+    const choice = scenario === 'choice-resume' ? 'resume' : 'fresh';
+    output = await runDirectInvocation(['invoke-choice', 'rescue', choice], childRuntime);
+    await assert.rejects(runDirectInvocation(['invoke-choice', 'rescue', choice], childRuntime), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+  }
+  assert.equal(output.job.status, 'succeeded');
+  if (scenario === 'choice-fresh') assert.notEqual(output.job.zcodeSessionId, zcodeSessionId);
+  else assert.equal(output.job.zcodeSessionId, zcodeSessionId);
+  const binding = await store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId, permissionMode: 'workspace-write' });
+  assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.version, 2);
+  assert.equal(binding.binding.anchorJobId, scenario === 'choice-fresh' ? output.job.id : candidate.id);
+  assert.equal(binding.binding.childAuthority.kind, 'codex-legacy-adoption');
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/create').length, scenario === 'choice-fresh' ? 1 : 0);
+  assert.equal(calls.filter((frame) => frame.method === 'session/resume').length, scenario === 'choice-fresh' ? 0 : 1);
+  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  assert.deepEqual((await readdir(join(storage.directory, 'hook-state')).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
+    .filter((name) => name.startsWith('executor-') || name.startsWith('route-')), []);
+});
+
 test('legacy adoption continues in same-turn generation two and later-parent generation one', async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const record = join(context.directory, 'legacy-generations.jsonl'); await writeFile(record, '');
