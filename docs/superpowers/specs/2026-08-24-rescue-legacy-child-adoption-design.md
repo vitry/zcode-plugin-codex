@@ -414,7 +414,9 @@ rules. Only a genuine consumed `legacy-adopt` or `legacy-bound` preparation
 authority can create its matching version-three variant. The first-adoption
 variant may resume its exact parent-owned candidate or choose fresh; either
 choice uses the same child and atomically creates the durable version-two
-adoption binding. Expiry or mismatch cannot publish a job, reserve a ZCode
+adoption binding with the matching `codex-legacy-adoption` authority. A bound
+variant can only continue the exact existing binding, and its durable adoption
+authority remains byte-for-byte unchanged. Expiry or mismatch cannot publish a job, reserve a ZCode
 operation, or consume unrelated preparation state.
 
 ## Failure and Lifecycle Semantics

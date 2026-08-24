@@ -18,6 +18,7 @@ import {
   parseCodexRolloutJsonl,
   qualifyCodexRescueBackgroundEvidence,
   qualifyCodexRescueChoiceEvidence,
+  qualifyCodexRescueLegacyAdoptionEvidence,
   qualifyCodexRescuePreparedContinuationEvidence,
   qualifyCodexRescueRestoredChildEvidence,
   qualifyCodexRescueEvidence,
@@ -45,6 +46,34 @@ const expectedSemanticProgress = Object.freeze({
 const backgroundJobId = 'b'.repeat(64);
 const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
 const executionCapability = 'qualification-capability-sentinel-private';
+
+test('qualifies host-only legacy adoption without reconstructing Hook provenance', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-legacy-adoption-qualification-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const originDirectory = join(temporary, 'origin'); const targetDirectory = join(temporary, 'target');
+  await mkdir(originDirectory); await runGit(['init', '-q'], originDirectory); await writeFile(join(originDirectory, 'fixture.txt'), 'base\n');
+  await runGit(['add', 'fixture.txt'], originDirectory); await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
+  await runGit(['worktree', 'add', '-qb', 'legacy-adoption-target', targetDirectory], originDirectory);
+  const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(targetDirectory);
+  const input = legacyAdoptionQualificationFixture({ originWorkspace, executionWorkspace });
+
+  assert.deepEqual(await qualifyCodexRescueLegacyAdoptionEvidence(input), {
+    route: 'named-legacy-adoption', parentSessionId: parentId, childThreadId: childId,
+    agentPath: '/root/zcode_rescue_task', originWorkspace, executionWorkspace,
+    followupCount: 1, spawnCount: 0, hookFabricationCount: 0, ordinaryExecutorResolutionCount: 0,
+    firstAdoptionModes: ['choice-fresh', 'choice-resume', 'fresh', 'resume'], boundContinuationChecked: true,
+  });
+
+  for (const [code, mutate, field] of [
+    ['legacy-adoption-hooks', (rows) => rows.push({ hook_event_name: 'SubagentStart' }), 'hookLifecycleJson'],
+    ['legacy-adoption-ordinary-isolation', (value) => { value.executorResolutionCalls.push('ordinary-default'); return value; }, 'ordinaryIsolationJson'],
+    ['legacy-adoption-directive', (rows) => { rows[1].payload.output = capturedResult({ output: preparedAck({ version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'default' }), exit_code: 0 }); return rows; }, 'parentRolloutJson'],
+  ]) {
+    const changed = structuredClone(input); const value = JSON.parse(changed[field]); mutate(value); changed[field] = JSON.stringify(value);
+    await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(changed),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
+  }
+});
 
 test('qualifies a resumed parent reactivating one initially unloaded original child in its linked worktree', async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'zcode-restored-child-'));
@@ -2303,7 +2332,7 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     { ...structuredExecResult(expectedPreparationCommand, 'prepare-2', { tty: true }), timestamp: '2026-08-10T01:01:00.000Z' },
     { ...capturedResultEvent('prepare-2', { output: PREPARATION_READY, session_id: 72 }), timestamp: '2026-08-10T01:01:00.250Z' },
     { ...structuredPoll(72, 'prepare-write-2', `${JSON.stringify(preparationEnvelope('proactive', 'resume', execution))}\n`), timestamp: '2026-08-10T01:01:00.500Z' },
-    { ...capturedResultEvent('prepare-write-2', { output: preparedAck({ version: 1, action: 'followup', target: agentPath }), exit_code: 0 }), timestamp: '2026-08-10T01:01:01.000Z' },
+    { ...capturedResultEvent('prepare-write-2', { output: preparedAck({ version: 2, action: 'followup', target: agentPath, assignment: route === 'named' ? 'zcode-rescue' : 'default' }), exit_code: 0 }), timestamp: '2026-08-10T01:01:01.000Z' },
     { type: 'response_item', timestamp: '2026-08-10T01:01:02.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childId, message }) } },
     { type: 'response_item', timestamp: '2026-08-10T01:01:03.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: childId }) } },
   ];
@@ -2354,7 +2383,7 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
   const agentRole = route === 'named' ? 'zcode-rescue' : null; const agentType = route === 'named' ? 'zcode-rescue' : 'default';
   const assignment = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', launcherCommand);
   const thread = restoredRawCodexChild({ originWorkspace, restoredPath, agentRole });
-  const preparedRoute = { version: 1, action: 'followup', target: restoredPath };
+  const preparedRoute = { version: 2, action: 'followup', target: restoredPath, assignment: agentType };
   const generationId = '9'.repeat(64); const childTurnId = 'qualification-child-turn-7'; const privateTask = 'diagnose the agent path collision without any fallback';
   const preparationEnvelope = { version: 1, source: 'proactive', task: privateTask, options: { execution: 'foreground', resume: 'resume' } };
   const preparationCreatedAt = '2026-08-10T01:00:00.550Z'; const preparationConsumedAt = '2026-08-10T01:00:00.950Z';
@@ -2396,6 +2425,73 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
     ]),
     fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } }, { method: 'session/send', params: { response: 'fake restored response: agent path collision diagnosed' } }]),
   };
+}
+
+function legacyAdoptionQualificationFixture({ originWorkspace, executionWorkspace }) {
+  const restoredPath = '/root/zcode_rescue_task'; const boundPath = '/root/zcode_rescue_task_2';
+  const parentTurnId = 'legacy-adoption-turn'; const generationId = '9'.repeat(64); const permissionMode = 'acceptEdits';
+  const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs"'; const publicOutput = 'legacy adoption completed';
+  const privateTask = 'recover the private legacy adoption objective'; const createdAt = '2026-08-24T00:00:00.000Z';
+  const preparationKey = createHash('sha256').update(JSON.stringify([parentId, parentTurnId, executionWorkspace, 'rescue'])).digest('hex');
+  const pathDigest = createHash('sha256').update(restoredPath).digest('hex');
+  const authorityId = createHash('sha256').update(JSON.stringify([
+    'rescue-legacy-adoption-authority-v1', preparationKey, childId, 1, createdAt,
+  ])).digest('hex');
+  const authority = { kind: 'codex-legacy-adoption', authorityId, childAgentId: childId, childAgentType: 'zcode-rescue',
+    authorizingParentTurnId: parentTurnId, authorizingParentGenerationId: generationId, authorizingPermissionMode: permissionMode,
+    originWorkspace, executionWorkspace, agentPathDigest: pathDigest };
+  const binding = createRescueBinding({ parentSessionId: parentId, childAuthority: authority, workspace: executionWorkspace,
+    permissionMode, anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: 'b'.repeat(64), now: '2026-08-24T00:00:01.000Z' });
+  const base = legacyQualificationRawChild({ id: childId, path: restoredPath, role: 'zcode-rescue', cwd: originWorkspace, createdAt: 1 });
+  const ordinaryDefault = legacyQualificationRawChild({ id: 'ordinary-default', path: '/root/t1_spec_review', role: 'default', cwd: originWorkspace, createdAt: 2 });
+  const ordinaryExplorer = legacyQualificationRawChild({ id: 'ordinary-explorer', path: '/root/explore', role: 'explorer', cwd: originWorkspace, createdAt: 3 });
+  const bound = legacyQualificationRawChild({ id: 'bound-rescue-child', path: boundPath, role: 'zcode-rescue', cwd: originWorkspace, createdAt: 4 });
+  const prepareCall = { ...structuredExecResult(`${launcherCommand} prepare rescue`, 'legacy-prepare', { workdir: executionWorkspace }), turn_id: parentTurnId };
+  const directive = { version: 2, action: 'followup', target: restoredPath, assignment: 'zcode-rescue' };
+  const firstAdoptions = ['choice-fresh', 'choice-resume', 'fresh', 'resume'].map((mode) => ({ mode, childThreadId: childId,
+    authorityKind: 'codex-legacy-adoption', bindingOutcome: 'created', ...(mode === 'resume'
+      ? { boundContinuation: { authorityKind: 'codex-legacy-adoption', authorityBefore: authority, authorityAfter: authority } } : {}) }));
+  return {
+    expected: { parentSessionId: parentId, childThreadId: childId, agentPath: restoredPath, parentTurnId, generationId,
+      originWorkspace, executionWorkspace, permissionMode, publicOutput },
+    parentRolloutJson: JSON.stringify([
+      prepareCall,
+      { ...capturedResultEvent('legacy-prepare', { output: preparedAck(directive), exit_code: 0 }), turn_id: parentTurnId },
+      { type: 'response_item', turn_id: parentTurnId, payload: { type: 'function_call', name: 'followup_task', call_id: 'legacy-followup',
+        arguments: JSON.stringify({ target: restoredPath, message: expectedNamedRescueMessage }) } },
+      { type: 'response_item', turn_id: parentTurnId, payload: { type: 'function_call_output', call_id: 'legacy-followup',
+        output: JSON.stringify({ accepted: true, target: restoredPath }) } },
+    ]),
+    appServerTranscriptJson: JSON.stringify([
+      { direction: 'request', id: 1, method: 'thread/list', params: { parentThreadId: parentId, sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
+      { direction: 'response', id: 1, result: { data: [base, ordinaryDefault, ordinaryExplorer, bound], nextCursor: null, backwardsCursor: null } },
+      { direction: 'request', id: 2, method: 'thread/read', params: { threadId: childId, includeTurns: false } },
+      { direction: 'response', id: 2, result: { thread: base } },
+    ]),
+    preparationRecordBytes: `${JSON.stringify({ version: 3, key: preparationKey, sessionId: parentId, turnId: parentTurnId,
+      workspace: executionWorkspace, permissionMode, source: 'explicit', envelope: { version: 1, source: 'explicit', task: privateTask,
+        options: { execution: 'foreground', resume: 'fresh' } }, generation: 1, requiredExecutorAgentId: null,
+      activation: { kind: 'legacy-adopt', childThreadId: childId, agentPathDigest: pathDigest }, createdAt,
+      expiresAt: '2026-08-24T00:30:00.000Z', consumedAt: '2026-08-24T00:00:00.500Z', executorAgentId: childId })}\n`,
+    bindingPartitionBytes: `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: executionWorkspace, records: [binding] }))}\n`,
+    hookLifecycleJson: '[]',
+    ordinaryIsolationJson: JSON.stringify({ ordinaryChildIds: ['ordinary-default', 'ordinary-explorer'], executorResolutionCalls: [], boundOrdinal: 2,
+      resumeDirective: { version: 2, action: 'followup', target: boundPath, assignment: 'zcode-rescue' } }),
+    firstAdoptionsJson: JSON.stringify(firstAdoptions),
+    childRolloutJson: JSON.stringify([
+      { ...structuredExecResult(`${launcherCommand} invoke-prepared rescue`, 'legacy-invoke', { workdir: originWorkspace }), turn_id: 'legacy-child-turn', thread_id: childId },
+      { ...capturedResultEvent('legacy-invoke', { output: publicOutput, exit_code: 0 }), turn_id: 'legacy-child-turn', thread_id: childId },
+    ]),
+    fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } },
+      { method: 'session/send', params: { response: publicOutput } }]),
+  };
+}
+
+function legacyQualificationRawChild({ id, path, role, cwd, createdAt }) {
+  return { id, sessionId: parentId, parentThreadId: parentId, ephemeral: false, preview: '', projectId: null, historyMode: 'legacy',
+    modelProvider: 'openai', createdAt, updatedAt: createdAt + 1, recencyAt: createdAt + 1, status: { type: 'notLoaded' }, path: null, cwd,
+    source: { subAgent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_path: path, agent_nickname: null, agent_role: role } } },
+    canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole: role, gitInfo: null, name: null, turns: [] };
 }
 
 function restoredRawCodexChild({ originWorkspace, restoredPath, agentRole }) {

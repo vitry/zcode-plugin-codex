@@ -270,6 +270,124 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   };
 }
 
+/** Qualify bounded captured evidence for one host-only named legacy adoption. */
+export async function qualifyCodexRescueLegacyAdoptionEvidence(input) {
+  const inputKeys = ['appServerTranscriptJson', 'bindingPartitionBytes', 'childRolloutJson', 'expected', 'fakePeerJson',
+    'firstAdoptionsJson', 'hookLifecycleJson', 'ordinaryIsolationJson', 'parentRolloutJson', 'preparationRecordBytes'];
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || Object.keys(input).sort().join('\0') !== inputKeys.sort().join('\0')) mismatch('legacy-adoption-contract', 'Legacy-adoption evidence has an invalid shape.');
+  const expected = input.expected; const expectedKeys = ['agentPath', 'childThreadId', 'executionWorkspace', 'generationId', 'originWorkspace',
+    'parentSessionId', 'parentTurnId', 'permissionMode', 'publicOutput'];
+  if (!expected || Object.keys(expected).sort().join('\0') !== expectedKeys.sort().join('\0')
+    || !boundedString(expected.parentSessionId) || !boundedString(expected.childThreadId) || !boundedString(expected.parentTurnId)
+    || !boundedString(expected.originWorkspace) || !boundedString(expected.executionWorkspace) || !boundedString(expected.permissionMode)
+    || !boundedString(expected.publicOutput) || !/^\/root\/[A-Za-z0-9_-]+$/u.test(expected.agentPath)
+    || !/^[a-f0-9]{64}$/u.test(expected.generationId)) mismatch('legacy-adoption-identity', 'Legacy-adoption expected identity is invalid.');
+  const parseArray = (text, code) => { if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_ROLLOUT_BYTES) mismatch(code, 'Captured evidence is absent or oversized.');
+    let value; try { value = JSON.parse(text); } catch { mismatch(code, 'Captured evidence is malformed.'); }
+    return boundedArray(value, MAX_EVENTS_PER_ROLLOUT, code); };
+  const parent = parseArray(input.parentRolloutJson, 'legacy-adoption-parent'); const child = parseArray(input.childRolloutJson, 'legacy-adoption-child');
+  const transcript = parseArray(input.appServerTranscriptJson, 'legacy-adoption-app-server'); const hooks = parseArray(input.hookLifecycleJson, 'legacy-adoption-hooks');
+  const peer = parseArray(input.fakePeerJson, 'legacy-adoption-peer'); const firstAdoptions = parseArray(input.firstAdoptionsJson, 'legacy-adoption-first-modes');
+  if (hooks.length !== 0) mismatch('legacy-adoption-hooks', 'Legacy adoption must not reconstruct historical Hook lifecycle records.');
+
+  const parentCalls = parent.filter((event) => ['custom_tool_call', 'function_call'].includes(event?.payload?.type));
+  const parentOutputs = parent.filter((event) => ['custom_tool_call_output', 'function_call_output'].includes(event?.payload?.type));
+  const spawns = namedCalls(parent, 'spawn_agent'); const followups = namedCalls(parent, 'followup_task');
+  if (parent.length !== 4 || parentCalls.length !== 2 || parentOutputs.length !== 2 || spawns.length !== 0 || followups.length !== 1
+    || parentCalls.some((call) => parentOutputs.filter((output) => output.payload.call_id === call.payload.call_id).length !== 1)
+    || parentOutputs.some((output) => parentCalls.filter((call) => call.payload.call_id === output.payload.call_id).length !== 1)) {
+    mismatch('legacy-adoption-parent', 'Legacy adoption must contain exactly one preparation and one follow-up with no spawn or extra call.');
+  }
+  const prepareCall = parentCalls.find((event) => event.payload.type === 'custom_tool_call');
+  const prepareOutput = parentOutputs.find((event) => event.payload.type === 'custom_tool_call_output');
+  const host = parseCapturedHostCall(prepareCall?.payload?.input); const result = parseCapturedHostResult(prepareOutput?.payload?.output);
+  if (host.kind !== 'exec_command' || !host.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" prepare rescue')
+    || host.envelope.get('workdir') !== expected.executionWorkspace || result.exit_code !== 0) mismatch('legacy-adoption-directive', 'Legacy adoption preparation call is invalid.');
+  let prepared; try { prepared = JSON.parse(result.output.trim()); } catch { mismatch('legacy-adoption-directive', 'Legacy adoption directive is malformed.'); }
+  const expectedDirective = { type: 'prepared', command: 'rescue', route: { version: 2, action: 'followup', target: expected.agentPath, assignment: 'zcode-rescue' } };
+  if (!isDeepStrictEqual(prepared, expectedDirective)) mismatch('legacy-adoption-directive', 'Legacy adoption must emit the exact version-two named follow-up assignment.');
+  const followup = parseObject(followups[0].payload.arguments, 'legacy-adoption-followup');
+  let followupResult; try { followupResult = JSON.parse(parentOutputs.find((event) => event.payload.type === 'function_call_output').payload.output); }
+  catch { mismatch('legacy-adoption-followup', 'Legacy adoption follow-up output is malformed.'); }
+  if (!isDeepStrictEqual(followup, { target: expected.agentPath, message: expectedNamedRescueMessage })
+    || !isDeepStrictEqual(followupResult, { accepted: true, target: expected.agentPath })) mismatch('legacy-adoption-followup', 'Legacy adoption did not follow up the named child exactly.');
+
+  if (transcript.length !== 4) mismatch('legacy-adoption-app-server', 'Legacy adoption requires one exact-parent list and one exact child read.');
+  const [listRequest, listResponse, readRequest, readResponse] = transcript;
+  const listParams = { parentThreadId: expected.parentSessionId, sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' };
+  if (!isDeepStrictEqual({ direction: listRequest?.direction, id: listRequest?.id, method: listRequest?.method, params: listRequest?.params },
+    { direction: 'request', id: 1, method: 'thread/list', params: listParams })
+    || listResponse?.direction !== 'response' || listResponse?.id !== 1 || !Array.isArray(listResponse?.result?.data)
+    || !isDeepStrictEqual({ direction: readRequest?.direction, id: readRequest?.id, method: readRequest?.method, params: readRequest?.params },
+      { direction: 'request', id: 2, method: 'thread/read', params: { threadId: expected.childThreadId, includeTurns: false } })
+    || readResponse?.direction !== 'response' || readResponse?.id !== 2 || !readResponse?.result?.thread) mismatch('legacy-adoption-app-server', 'Legacy adoption app-server protocol is not exact.');
+  let children; let reread;
+  try { children = listResponse.result.data.map((row) => sanitizeCodexThreadSpawnChild(row, expected.parentSessionId));
+    reread = sanitizeCodexThreadSpawnChild(readResponse.result.thread, expected.parentSessionId, expected.childThreadId); }
+  catch { mismatch('legacy-adoption-host', 'Legacy adoption app-server metadata is invalid.'); }
+  const base = children.find((candidate) => candidate.id === expected.childThreadId);
+  if (!base || base.agentPath !== expected.agentPath || base.agentRole !== 'zcode-rescue' || base.cwd !== expected.originWorkspace
+    || base.status.type !== 'notLoaded' || !isDeepStrictEqual(base, reread)) mismatch('legacy-adoption-host', 'Legacy adoption did not preserve the exact unloaded named base child.');
+
+  let ordinary; try { ordinary = JSON.parse(input.ordinaryIsolationJson); } catch { mismatch('legacy-adoption-ordinary-isolation', 'Ordinary-child evidence is malformed.'); }
+  const ordinaryChildren = children.filter((candidate) => ['default', 'explorer'].includes(candidate.agentRole));
+  if (!ordinary || Object.keys(ordinary).sort().join('\0') !== ['boundOrdinal', 'executorResolutionCalls', 'ordinaryChildIds', 'resumeDirective'].sort().join('\0')
+    || !isDeepStrictEqual(ordinary.ordinaryChildIds, ordinaryChildren.map((candidate) => candidate.id)) || !isDeepStrictEqual(ordinary.executorResolutionCalls, [])
+    || ordinary.boundOrdinal !== 2 || !isDeepStrictEqual(ordinary.resumeDirective,
+      { version: 2, action: 'followup', target: '/root/zcode_rescue_task_2', assignment: 'zcode-rescue' })) {
+    mismatch('legacy-adoption-ordinary-isolation', 'Ordinary default/explorer children must remain occupancy-only while the bound Rescue ordinal resumes.');
+  }
+
+  if (typeof input.preparationRecordBytes !== 'string' || !input.preparationRecordBytes.endsWith('\n') || Buffer.byteLength(input.preparationRecordBytes) > MAX_TEXT_BYTES) mismatch('legacy-adoption-preparation', 'Legacy preparation bytes are invalid.');
+  let preparation; try { preparation = JSON.parse(input.preparationRecordBytes); } catch { mismatch('legacy-adoption-preparation', 'Legacy preparation bytes are malformed.'); }
+  const pathDigest = createHash('sha256').update(expected.agentPath).digest('hex');
+  const expectedPreparationKey = createHash('sha256').update(JSON.stringify([expected.parentSessionId, expected.parentTurnId, expected.executionWorkspace, 'rescue'])).digest('hex');
+  const created = Date.parse(preparation?.createdAt); const expires = Date.parse(preparation?.expiresAt); const consumed = Date.parse(preparation?.consumedAt);
+  if (preparation?.version !== 3 || preparation.key !== expectedPreparationKey || preparation.sessionId !== expected.parentSessionId
+    || preparation.turnId !== expected.parentTurnId || preparation.workspace !== expected.executionWorkspace || preparation.permissionMode !== expected.permissionMode
+    || preparation.generation !== 1 || preparation.requiredExecutorAgentId !== null || preparation.executorAgentId !== expected.childThreadId
+    || !isDeepStrictEqual(preparation.activation, { kind: 'legacy-adopt', childThreadId: expected.childThreadId, agentPathDigest: pathDigest })
+    || !Number.isFinite(created) || expires - created !== 30 * 60_000 || !Number.isFinite(consumed) || consumed < created || consumed >= expires) {
+    mismatch('legacy-adoption-preparation', 'Legacy adoption preparation is not one exact consumed 30-minute capability generation.');
+  }
+  let partition; try { partition = parseRescueBindingPartition(input.bindingPartitionBytes,
+    { parentSessionId: expected.parentSessionId, workspace: expected.executionWorkspace }); }
+  catch { mismatch('legacy-adoption-binding', 'Legacy adoption binding partition is invalid.'); }
+  if (partition.records.length !== 1) mismatch('legacy-adoption-binding', 'Legacy adoption requires one exact durable binding.');
+  const binding = partition.records[0]; const authority = rescueBindingAuthorityView(binding);
+  const expectedAuthorityId = createHash('sha256').update(JSON.stringify(['rescue-legacy-adoption-authority-v1', preparation.key,
+    preparation.executorAgentId, preparation.generation, preparation.createdAt])).digest('hex');
+  if (binding.version !== 2 || binding.state !== 'active' || binding.permissionMode !== expected.permissionMode
+    || !isDeepStrictEqual(authority, { kind: 'codex-legacy-adoption', authorityId: expectedAuthorityId, childAgentId: expected.childThreadId,
+      childAgentType: 'zcode-rescue', authorizingParentTurnId: expected.parentTurnId, authorizingParentGenerationId: expected.generationId,
+      authorizingPermissionMode: expected.permissionMode, originWorkspace: expected.originWorkspace, executionWorkspace: expected.executionWorkspace,
+      agentPathDigest: pathDigest })) mismatch('legacy-adoption-binding', 'Legacy adoption binding does not preserve its explicit authority.');
+
+  const modes = ['choice-fresh', 'choice-resume', 'fresh', 'resume'];
+  if (firstAdoptions.length !== modes.length || firstAdoptions.some((record) => !modes.includes(record?.mode)
+    || record.childThreadId !== expected.childThreadId || record.authorityKind !== 'codex-legacy-adoption' || record.bindingOutcome !== 'created')
+    || new Set(firstAdoptions.map((record) => record.mode)).size !== modes.length) mismatch('legacy-adoption-first-modes', 'First adoption resume/fresh/choice evidence is incomplete.');
+  const bound = firstAdoptions.find((record) => record.mode === 'resume')?.boundContinuation;
+  if (!bound || bound.authorityKind !== 'codex-legacy-adoption' || !isDeepStrictEqual(bound.authorityBefore, authority)
+    || !isDeepStrictEqual(bound.authorityAfter, authority)) mismatch('legacy-adoption-bound-continuation', 'Bound continuation must retain the durable adoption authority unchanged.');
+
+  const childCalls = child.filter((event) => event?.payload?.type === 'custom_tool_call'); const childOutputs = child.filter((event) => event?.payload?.type === 'custom_tool_call_output');
+  if (child.length !== 2 || childCalls.length !== 1 || childOutputs.length !== 1 || childCalls[0].thread_id !== expected.childThreadId
+    || childOutputs[0].thread_id !== expected.childThreadId || childOutputs[0].payload.call_id !== childCalls[0].payload.call_id) mismatch('legacy-adoption-child', 'Legacy adoption child capture contains an extra or mismatched call.');
+  const childHost = parseCapturedHostCall(childCalls[0].payload.input); const childResult = parseCapturedHostResult(childOutputs[0].payload.output);
+  if (childHost.kind !== 'exec_command' || !childHost.envelope.get('cmd')?.endsWith('/skills/rescue/launcher.mjs" invoke-prepared rescue')
+    || childHost.envelope.get('workdir') !== expected.originWorkspace || childResult.output !== expected.publicOutput || childResult.exit_code !== 0) mismatch('legacy-adoption-child', 'Legacy adoption child did not produce the exact terminal response.');
+  if (peer.length !== 2 || peer[0]?.method !== 'session/create' || peer[0]?.params?.workspace?.workspacePath !== expected.executionWorkspace
+    || peer[1]?.method !== 'session/send' || peer[1]?.params?.response !== expected.publicOutput) mismatch('legacy-adoption-peer', 'Legacy adoption fake peer did not execute in the linked worktree.');
+  if (stringLeafContains([parent, child, transcript, peer, ordinary], preparation.envelope?.task)) mismatch('legacy-adoption-private-task', 'Legacy adoption task escaped private preparation state.');
+  if (expected.originWorkspace !== expected.executionWorkspace) await validateCanonicalGitLineage(expected.originWorkspace, expected.executionWorkspace);
+  return { route: 'named-legacy-adoption', parentSessionId: expected.parentSessionId, childThreadId: expected.childThreadId,
+    agentPath: expected.agentPath, originWorkspace: expected.originWorkspace, executionWorkspace: expected.executionWorkspace,
+    followupCount: 1, spawnCount: 0, hookFabricationCount: 0, ordinaryExecutorResolutionCount: 0,
+    firstAdoptionModes: modes, boundContinuationChecked: true };
+}
+
 /** Qualify a resumed parent that lazily reloads one exact persisted Rescue child. */
 export async function qualifyCodexRescueRestoredChildEvidence(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) mismatch('restored-child-contract', 'Restored-child evidence is absent.');
