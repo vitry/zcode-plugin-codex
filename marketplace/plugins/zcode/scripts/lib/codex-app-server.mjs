@@ -84,6 +84,19 @@ export async function readCodexThreadSpawnChild(threadId, parentThreadId, option
   });
 }
 
+/** Read the ambient child by its own Codex thread ID without weakening expected-parent reads.
+ * @param {string} threadId @param {AppServerOptions} [options]
+ */
+export async function readCodexThreadSpawnChildIdentity(threadId, options = {}) {
+  validateInput(threadId, options);
+  return withAppServer(options, async (request, notify) => {
+    notify({ method: 'initialized', params: {} });
+    const result = await request('thread/read', { threadId, includeTurns: false });
+    if (!Object.hasOwn(result, 'thread')) throw malformed('Codex thread/read response omitted its thread.');
+    return validateRawThreadSpawnChild(result.thread, undefined, threadId);
+  });
+}
+
 /** @template T @param {AppServerOptions} options @param {(request:(method:string,params:Record<string,unknown>)=>Promise<Record<string,any>>,notify:(value:unknown)=>void,initializeResult:Record<string,any>)=>Promise<T>} work @param {boolean} [rawReadDiagnostics] @param {Record<string,unknown>} [initializeParams] @returns {Promise<T>} */
 async function withAppServer(options, work, rawReadDiagnostics = false, initializeParams = INITIALIZE_PARAMS) {
   if (options.signal?.aborted) throw interruptionError(options.signal.reason);
