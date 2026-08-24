@@ -13,9 +13,12 @@ import {
   RESCUE_PREPARATION_VERSION,
   RESCUE_TASK_MAX_BYTES,
   createRescuePreparationStore,
+  createConsumedLegacyChildAuthority,
+  consumeConsumedLegacyChildAuthority,
   deriveConsumedLegacyActivationAuthorityId,
   hasRecordedRescueMarker,
   readRescuePreparation,
+  readConsumedLegacyChildAuthority,
   validateRescuePreparation,
 } from '../scripts/lib/rescue-preparation.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
@@ -327,6 +330,25 @@ test('legacy-adopt generation one consumes once with exact child proof and deriv
     consumed.generation, consumed.createdAt,
   ])).digest('hex');
   assert.equal(deriveConsumedLegacyActivationAuthorityId(consumed), expected);
+  const authority = createConsumedLegacyChildAuthority(consumed, {
+    authorizingParentGenerationId: '9'.repeat(64), originWorkspace: workspaceA, executionWorkspace: consumed.workspace,
+  });
+  assert.deepEqual(readConsumedLegacyChildAuthority(authority), {
+    kind: 'codex-legacy-adoption', authorityId: expected, childAgentId: 'legacy-child', childAgentType: 'zcode-rescue',
+    authorizingParentTurnId: 'legacy-adopt', authorizingParentGenerationId: '9'.repeat(64),
+    authorizingPermissionMode: 'workspace-write', originWorkspace: workspaceA, executionWorkspace: consumed.workspace,
+    agentPathDigest: legacyAdoptActivation.agentPathDigest,
+  });
+  assert.equal(createConsumedLegacyChildAuthority(consumed, {
+    authorizingParentGenerationId: '9'.repeat(64), originWorkspace: workspaceA, executionWorkspace: consumed.workspace,
+  }), authority);
+  assert.equal(consumeConsumedLegacyChildAuthority(authority), authority);
+  assert.throws(() => consumeConsumedLegacyChildAuthority(authority), { code: 'RESCUE_PREPARATION_INVALID' });
+  assert.throws(() => readConsumedLegacyChildAuthority(structuredClone(authority)), { code: 'RESCUE_PREPARATION_INVALID' });
+  assert.throws(() => readConsumedLegacyChildAuthority({ ...authority, authorityId: '8'.repeat(64) }), { code: 'RESCUE_PREPARATION_INVALID' });
+  assert.throws(() => createConsumedLegacyChildAuthority(structuredClone(consumed), {
+    authorizingParentGenerationId: '9'.repeat(64), originWorkspace: workspaceA, executionWorkspace: consumed.workspace,
+  }), { code: 'RESCUE_PREPARATION_INVALID' });
   assert.throws(() => deriveConsumedLegacyActivationAuthorityId(structuredClone(consumed)),
     { code: 'RESCUE_PREPARATION_INVALID' });
   await assert.rejects(store.consume({
@@ -353,6 +375,18 @@ test('legacy authority derivation never observes untrusted receipt properties', 
     },
   );
   assert.equal(reads, 0);
+});
+
+test('legacy child authority factory rejects genuine consumed receipts of the wrong activation kind', async () => {
+  const { store, workspaceA } = await storeFixture();
+  const activation = { kind: 'spawn', taskName: 'zcode_rescue_task', agentPathDigest: 'a'.repeat(64) };
+  const base = { sessionId: 'parent', turnId: 'spawn-brand', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue spawn', envelope: validEnvelope };
+  await store.save({ ...base, activation });
+  const receipt = await store.consume({ ...base, executorAgentId: 'spawned-child', activationProof: activation });
+  assert.throws(() => createConsumedLegacyChildAuthority(receipt, {
+    authorizingParentGenerationId: '9'.repeat(64), originWorkspace: workspaceA, executionWorkspace: receipt.workspace,
+  }), { code: 'RESCUE_PREPARATION_INVALID' });
 });
 
 test('legacy activation proof codecs reject type confusion, mutations, expiry, and unknown keys', async (t) => {

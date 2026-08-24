@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants, lstatSync, unlinkSync } from 'node:fs';
 import { lstat, open, opendir, realpath } from 'node:fs/promises';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, normalize, relative } from 'node:path';
 
 import { PluginError } from './errors.mjs';
 import {
@@ -48,6 +48,10 @@ const REACTIVATE_PROOF_KEYS = Object.freeze(['agentPathDigest', 'kind']);
 const LEGACY_ADOPT_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'childThreadId', 'kind']);
 const LEGACY_BOUND_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'bindingKey', 'childThreadId', 'kind']);
 const consumedLegacyActivationAuthorities = new WeakMap();
+const brandedLegacyChildAuthorities = new WeakMap();
+const issuedLegacyChildAuthorities = new WeakMap();
+const consumedLegacyChildAuthorities = new WeakSet();
+const LEGACY_AUTHORITY_FACTORY_KEYS = Object.freeze(['authorizingParentGenerationId', 'executionWorkspace', 'originWorkspace']);
 
 /** @param {NodeJS.ReadableStream} stream */
 export async function readRescuePreparation(stream) {
@@ -112,6 +116,61 @@ export function deriveConsumedLegacyActivationAuthorityId(value) {
   catch { throw invalidPreparation(); }
   if (domain === undefined) throw invalidPreparation();
   return createHash('sha256').update(JSON.stringify(domain)).digest('hex');
+}
+
+/** Create an unforgeable in-process authority from one genuine consumed legacy receipt. @param {unknown} receipt @param {unknown} input */
+export function createConsumedLegacyChildAuthority(receipt, input) {
+  let domain;
+  try { domain = consumedLegacyActivationAuthorities.get(/** @type {object} */ (receipt)); }
+  catch { throw invalidPreparation(); }
+  if (domain === undefined || !plain(input) || !sameKeys(input, LEGACY_AUTHORITY_FACTORY_KEYS)
+    || !digest(input.authorizingParentGenerationId) || !canonicalWorkspace(input.originWorkspace)
+    || !canonicalWorkspace(input.executionWorkspace)) throw invalidPreparation();
+  const consumed = /** @type {any} */ (receipt); const activation = consumed.activation;
+  if (!plain(activation) || !['legacy-adopt', 'legacy-bound'].includes(activation.kind)
+    || consumed.workspace !== input.executionWorkspace || !safeIdentifier(consumed.executorAgentId)
+    || !safeIdentifier(consumed.turnId) || !PERMISSION_MODES.includes(consumed.permissionMode)) throw invalidPreparation();
+  const issued = issuedLegacyChildAuthorities.get(/** @type {object} */ (receipt));
+  if (issued !== undefined) {
+    if (issued.authorizingParentGenerationId !== input.authorizingParentGenerationId
+      || issued.originWorkspace !== input.originWorkspace || issued.executionWorkspace !== input.executionWorkspace) throw invalidPreparation();
+    return issued;
+  }
+  const authorityId = createHash('sha256').update(JSON.stringify(domain)).digest('hex');
+  const stable = {
+    ...(activation.kind === 'legacy-adopt'
+      ? { kind: 'codex-legacy-adoption', authorityId }
+      : { kind: 'codex-legacy-continuation', preparationAuthorityId: authorityId, bindingKey: activation.bindingKey }),
+    childAgentId: consumed.executorAgentId,
+    childAgentType: 'zcode-rescue',
+    authorizingParentTurnId: consumed.turnId,
+    authorizingParentGenerationId: input.authorizingParentGenerationId,
+    authorizingPermissionMode: consumed.permissionMode,
+    originWorkspace: input.originWorkspace,
+    executionWorkspace: input.executionWorkspace,
+    agentPathDigest: activation.agentPathDigest,
+  };
+  const authority = Object.freeze(stable);
+  brandedLegacyChildAuthorities.set(authority, authority);
+  issuedLegacyChildAuthorities.set(/** @type {object} */ (receipt), authority);
+  return authority;
+}
+
+/** Read one authority only if it retains the exact factory-issued object identity. @param {unknown} value */
+export function readConsumedLegacyChildAuthority(value) {
+  let authority;
+  try { authority = brandedLegacyChildAuthorities.get(/** @type {object} */ (value)); }
+  catch { throw invalidPreparation(); }
+  if (authority === undefined) throw invalidPreparation();
+  return authority;
+}
+
+/** Consume one issued authority exactly once before any StateStore publication. @param {unknown} value */
+export function consumeConsumedLegacyChildAuthority(value) {
+  const authority = readConsumedLegacyChildAuthority(value);
+  if (consumedLegacyChildAuthorities.has(authority)) throw invalidPreparation();
+  consumedLegacyChildAuthorities.add(authority);
+  return authority;
 }
 
 /** @param {{dataRoot:string,testOnlyBeforeSaveLockOpen?:()=>Promise<void>}} options */
@@ -756,6 +815,15 @@ function safeIdentifier(value) {
       const code = /** @type {number} */ (character.codePointAt(0));
       return code <= 31 || code === 127;
     });
+}
+
+/** @param {unknown} value */
+function digest(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value); }
+
+/** @param {unknown} value */
+function canonicalWorkspace(value) {
+  return typeof value === 'string' && isAbsolute(value) && normalize(value) === value
+    && Buffer.byteLength(value) <= 4096 && !/[\0\r\n]/u.test(value);
 }
 
 /** @param {unknown} value */

@@ -19,6 +19,7 @@ import {
   rescueBindingKey,
 } from '../scripts/lib/rescue-binding.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
+import { createConsumedLegacyChildAuthority, createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 const codecWorkspace = resolve(tmpdir(), 'zcode-canonical-codec-workspace');
@@ -198,18 +199,16 @@ function reservation(workspace, turn = 'turn-a') {
   return { workspace, ownerSessionId: 'parent-session', ownerTurnId: turn, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
 }
 
-function adoptionAuthority(workspace, patch = {}) {
-  return { kind: 'codex-legacy-adoption', authorityId: '1'.repeat(64), childAgentId: 'legacy-child',
-    childAgentType: 'zcode-rescue', authorizingParentTurnId: 'turn-a',
-    authorizingParentGenerationId: '2'.repeat(64), authorizingPermissionMode: 'workspace-write',
-    originWorkspace: workspace, executionWorkspace: workspace, agentPathDigest: '3'.repeat(64), ...patch };
-}
-
-function continuationAuthority(workspace, bindingKey, turn = 'turn-b', patch = {}) {
-  return { kind: 'codex-legacy-continuation', preparationAuthorityId: '4'.repeat(64), bindingKey,
-    childAgentId: 'legacy-child', childAgentType: 'zcode-rescue', authorizingParentTurnId: turn,
-    authorizingParentGenerationId: '5'.repeat(64), authorizingPermissionMode: 'workspace-write',
-    originWorkspace: workspace, executionWorkspace: workspace, agentPathDigest: '3'.repeat(64), ...patch };
+async function brandedAuthority(dataRoot, workspace, kind, turn = 'turn-a', bindingKey) {
+  const preparation = createRescuePreparationStore({ dataRoot });
+  const activation = { kind, childThreadId: 'legacy-child', agentPathDigest: '3'.repeat(64),
+    ...(kind === 'legacy-bound' ? { bindingKey } : {}) };
+  const base = { sessionId: 'parent-session', turnId: turn, workspace, permissionMode: 'workspace-write',
+    recordedPrompt: '$zcode:rescue branded', envelope: { version: 1, source: 'explicit', task: 'branded', options: {} } };
+  await preparation.save({ ...base, activation });
+  const consumed = await preparation.consume({ ...base, executorAgentId: 'legacy-child', activationProof: activation });
+  return createConsumedLegacyChildAuthority(consumed, { authorizingParentGenerationId: '5'.repeat(64),
+    originWorkspace: workspace, executionWorkspace: workspace });
 }
 
 async function makeEligible(store, workspace, job, sessionId) {
@@ -220,6 +219,22 @@ async function bindingFiles(directory) {
   return (await readdir(directory, { withFileTypes: true }))
     .filter((entry) => entry.isFile() && /^rescue-binding-session-[a-f0-9]{64}\.json$/u.test(entry.name))
     .map((entry) => join(directory, entry.name));
+}
+
+async function privateTreeBytes(root) {
+  const entries = [];
+  async function visit(directory, prefix = '') {
+    let children;
+    try { children = await readdir(directory, { withFileTypes: true }); }
+    catch (error) { if (error?.code === 'ENOENT') return; throw error; }
+    for (const child of children.sort((left, right) => left.name.localeCompare(right.name))) {
+      const relativePath = prefix === '' ? child.name : `${prefix}/${child.name}`;
+      if (child.isDirectory()) { entries.push([relativePath, 'directory']); await visit(join(directory, child.name), relativePath); }
+      else if (child.isFile()) entries.push([relativePath, (await readFile(join(directory, child.name))).toString('base64')]);
+      else entries.push([relativePath, 'other']);
+    }
+  }
+  await visit(root); return entries;
 }
 
 function throwingAt(expected) {
@@ -249,7 +264,7 @@ test('StateStore atomically reserves and resolves an exact fresh Rescue generati
 });
 
 test('StateStore atomically publishes first legacy adoption and persists only its durable authority', async () => {
-  const { workspace, store } = await fixture(); const authority = adoptionAuthority(workspace);
+  const { dataRoot, workspace, store } = await fixture(); const authority = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority });
   assert.equal(first.binding.version, 2);
   assert.deepEqual(first.binding.childAuthority, authority);
@@ -260,10 +275,10 @@ test('StateStore atomically publishes first legacy adoption and persists only it
 });
 
 test('legacy continuation requires the exact durable adoption and never persists its transient proof', async () => {
-  const { workspace, store } = await fixture(); const durable = adoptionAuthority(workspace);
+  const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
   await makeEligible(store, workspace, first.job, 'legacy-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
-  const transient = continuationAuthority(workspace, first.binding.key);
+  const transient = await brandedAuthority(dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key);
   const continued = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
     authority: transient, operationId: first.binding.operationId });
   assert.deepEqual(continued.binding.childAuthority, durable);
@@ -271,9 +286,14 @@ test('legacy continuation requires the exact durable adoption and never persists
 });
 
 test('a newly emitted exact Hook proof continues without replacing durable adoption authority', async () => {
-  const { workspace, store } = await fixture(); const durable = adoptionAuthority(workspace);
+  const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
   await makeEligible(store, workspace, first.job, 'legacy-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const before = await privateTreeBytes(dataRoot);
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: executor(workspace, { agentId: durable.childAgentId, parentTurnId: 'old-turn' }),
+    operationId: first.binding.operationId }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual(await privateTreeBytes(dataRoot), before);
   const emitted = executor(workspace, { agentId: durable.childAgentId, parentTurnId: 'turn-b' });
   const continued = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
     executor: emitted, operationId: first.binding.operationId });
@@ -287,33 +307,61 @@ test('legacy authority mutations fail before StateStore job publication', async 
     ['wrong path', { agentPathDigest: 'bad' }], ['wrong Role', { childAgentType: 'default' }],
   ];
   for (const [name, patch] of mutations) await t.test(name, async () => {
-    const { workspace, store } = await fixture();
+    const { dataRoot, workspace, store } = await fixture(); const valid = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
     await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace),
-      authority: adoptionAuthority(workspace, patch) }), { code: 'RESCUE_BINDING_INVALID' });
+      authority: { ...valid, ...patch } }), { code: 'RESCUE_BINDING_INVALID' });
     assert.equal((await store.listJobs(workspace)).length, 0);
   });
 });
 
+test('rejected raw, cloned, turn-mutated, and digest-mutated authorities leave an unbound private tree byte-identical', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const valid = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
+  const before = await privateTreeBytes(dataRoot);
+  for (const authority of [
+    structuredClone(valid), { ...valid, authorityId: '8'.repeat(64) },
+    { ...valid, authorizingParentTurnId: 'turn-a' }, { ...valid, authorizingParentGenerationId: '7'.repeat(64) },
+  ]) await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority }),
+    { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual(await privateTreeBytes(dataRoot), before);
+});
+
+test('rejected branded stale CAS and cloned binding authority leave an existing private tree byte-identical', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
+  await store.finishJob(workspace, first.job.id, ['queued'], 'failed');
+  await store.closeRescueBindingsForSession({ workspace, parentSessionId: 'parent-session', reason: 'session-ended' });
+  const transient = await brandedAuthority(dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key);
+  const before = await privateTreeBytes(dataRoot);
+  await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), authority: transient,
+    expectedOperationId: '9'.repeat(64), expectedAnchorJobId: first.binding.anchorJobId,
+    expectedCurrentJobId: first.binding.currentJobId }), { code: 'RESCUE_BINDING_STALE' });
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    authority: { ...transient, bindingKey: '8'.repeat(64) }, operationId: first.binding.operationId }),
+  { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual(await privateTreeBytes(dataRoot), before);
+});
+
 test('legacy continuation rejects wrong binding and durable authority kind before publication', async () => {
-  const { workspace, store } = await fixture(); const durable = adoptionAuthority(workspace);
+  const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
   await makeEligible(store, workspace, first.job, 'legacy-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
   const before = (await store.listJobs(workspace)).length;
+  const validTransient = await brandedAuthority(dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key);
   for (const patch of [{ bindingKey: '9'.repeat(64) }, { agentPathDigest: '8'.repeat(64) }, { originWorkspace: foreignCodecWorkspace }]) {
     await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
-      authority: continuationAuthority(workspace, first.binding.key, 'turn-b', patch), operationId: first.binding.operationId }),
+      authority: { ...validTransient, ...patch }, operationId: first.binding.operationId }),
     { code: /RESCUE_BINDING_(?:INVALID|STALE)/u });
   }
   assert.equal((await store.listJobs(workspace)).length, before);
 });
 
 test('legacy continuation cannot reinterpret a Hook-backed durable slot as adoption', async () => {
-  const { workspace, store } = await fixture(); const hook = executor(workspace);
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
   await makeEligible(store, workspace, first.job, 'hook-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
   const before = (await store.listJobs(workspace)).length;
   await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
-    authority: continuationAuthority(workspace, first.binding.key, 'turn-b', { childAgentId: hook.agentId }),
+    authority: { ...(await brandedAuthority(dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key)), childAgentId: hook.agentId },
     operationId: first.binding.operationId }), { code: 'RESCUE_BINDING_INVALID' });
   assert.equal((await store.listJobs(workspace)).length, before);
 });
