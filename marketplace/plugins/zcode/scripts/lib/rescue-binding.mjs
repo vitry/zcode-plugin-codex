@@ -7,17 +7,26 @@ import { PluginError } from './errors.mjs';
 import { samePathHandleFileSnapshot } from './fs.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
 
-export const RESCUE_BINDING_VERSION = 1;
+export const RESCUE_BINDING_VERSION = 2;
 export const RESCUE_BINDING_MAX_BYTES = 16 * 1024;
 export const RESCUE_BINDING_MAX_RECORDS = 1024;
 export const RESCUE_BINDING_PARTITION_MAX_BYTES = 16 * 1024 * 1024;
 export const RESCUE_BINDING_PARTITION_VERSION = 1;
 export const RESCUE_BINDING_AUTHORITY_MAX_BYTES = 16 * 1024;
 
-const KEYS = [
+const V1_KEYS = [
   'anchorJobId', 'closeReason', 'closedAt', 'createdAt', 'currentJobId',
   'executorAgentId', 'executorAgentType', 'executorParentPermissionMode', 'executorParentTurnId', 'key', 'operationId', 'parentSessionId', 'permissionMode',
   'state', 'updatedAt', 'version', 'workspace',
+];
+const V2_KEYS = [
+  'anchorJobId', 'childAuthority', 'closeReason', 'closedAt', 'createdAt', 'currentJobId',
+  'key', 'operationId', 'parentSessionId', 'permissionMode', 'state', 'updatedAt', 'version', 'workspace',
+];
+const HOOK_AUTHORITY_KEYS = ['childAgentId', 'childAgentType', 'kind', 'parentPermissionMode', 'parentTurnId'];
+const ADOPTION_AUTHORITY_KEYS = [
+  'agentPathDigest', 'authorityId', 'authorizingParentGenerationId', 'authorizingParentTurnId',
+  'authorizingPermissionMode', 'childAgentId', 'childAgentType', 'executionWorkspace', 'kind', 'originWorkspace',
 ];
 const CLOSE_REASONS = new Set(['fresh', 'session-ended', 'invalidated']);
 const EXECUTOR_AGENT_TYPES = new Set(['zcode-rescue', 'default']);
@@ -26,7 +35,7 @@ const EXECUTOR_AGENT_TYPES = new Set(['zcode-rescue', 'default']);
 export function rescueBindingKey(input) {
   validateIdentity(input);
   return createHash('sha256').update(JSON.stringify([
-    `rescue-binding-v${RESCUE_BINDING_VERSION}`,
+    'rescue-binding-v1',
     input.parentSessionId,
     input.executorAgentId,
     input.workspace,
@@ -41,21 +50,21 @@ export function rescueBindingPartitionKey(input) {
 
 /** @param {any} input */
 export function createRescueBinding(input) {
-  validateIdentity(input);
-  if (!PERMISSION_MODES.includes(input.permissionMode) || !EXECUTOR_AGENT_TYPES.has(input.executorAgentType)
-    || !safeIdentifier(input.executorParentTurnId, 4096) || !PERMISSION_MODES.includes(input.executorParentPermissionMode)
-    || !digest(input.anchorJobId) || !digest(input.currentJobId) || !digest(input.operationId)) throw invalidBinding();
+  const childAuthority = input?.childAuthority === undefined ? validateChildAuthority({
+    kind: 'subagent-start', childAgentId: input?.executorAgentId, childAgentType: input?.executorAgentType,
+    parentTurnId: input?.executorParentTurnId, parentPermissionMode: input?.executorParentPermissionMode,
+  }, input?.workspace) : validateChildAuthority(input.childAuthority, input?.workspace);
+  const identity = { parentSessionId: input?.parentSessionId, executorAgentId: childAuthority.childAgentId, workspace: input?.workspace };
+  validateIdentity(identity);
+  if (!PERMISSION_MODES.includes(input.permissionMode) || !digest(input.anchorJobId) || !digest(input.currentJobId) || !digest(input.operationId)) throw invalidBinding();
   const now = timestamp(input.now);
   return {
     version: RESCUE_BINDING_VERSION,
-    key: rescueBindingKey(input),
+    key: rescueBindingKey(identity),
     operationId: input.operationId,
     state: 'active',
     parentSessionId: input.parentSessionId,
-    executorAgentId: input.executorAgentId,
-    executorAgentType: input.executorAgentType,
-    executorParentTurnId: input.executorParentTurnId,
-    executorParentPermissionMode: input.executorParentPermissionMode,
+    childAuthority,
     workspace: input.workspace,
     permissionMode: input.permissionMode,
     anchorJobId: input.anchorJobId,
@@ -84,8 +93,9 @@ export function createRescueBindingPartition(input) {
   const records = []; const keys = new Set(); const executors = new Set();
   for (const candidate of input.records) {
     const record = validateRescueBinding(candidate);
-    if (record.parentSessionId !== input.parentSessionId || record.workspace !== input.workspace || keys.has(record.key) || executors.has(record.executorAgentId)) throw invalidBinding();
-    keys.add(record.key); executors.add(record.executorAgentId); records.push(record);
+    const childAgentId = rescueBindingAuthorityView(record).childAgentId;
+    if (record.parentSessionId !== input.parentSessionId || record.workspace !== input.workspace || keys.has(record.key) || executors.has(childAgentId)) throw invalidBinding();
+    keys.add(record.key); executors.add(childAgentId); records.push(record);
   }
   records.sort((left, right) => left.key.localeCompare(right.key));
   const partition = { version: RESCUE_BINDING_PARTITION_VERSION, key: rescueBindingPartitionKey(input), parentSessionId: input.parentSessionId, workspace: input.workspace, records };
@@ -142,17 +152,19 @@ export function parseRescueBinding(bytes, expected) {
   let record;
   try { record = JSON.parse(text); } catch { throw invalidBinding(); }
   const valid = validateRescueBinding(record);
-  const identity = expected ?? valid;
+  const authority = rescueBindingAuthorityView(valid);
+  const identity = /** @type {any} */ (expected ?? { parentSessionId: valid.parentSessionId, executorAgentId: authority.childAgentId,
+    workspace: valid.workspace, permissionMode: valid.permissionMode });
   validateIdentity(identity);
-  if (valid.key !== rescueBindingKey(identity)
+  if (valid.key !== rescueBindingKey({ parentSessionId: identity.parentSessionId, executorAgentId: identity.executorAgentId, workspace: identity.workspace })
     || valid.parentSessionId !== identity.parentSessionId
-    || valid.executorAgentId !== identity.executorAgentId
-    || identity.executorAgentType !== undefined && valid.executorAgentType !== identity.executorAgentType
-    || identity.executorParentTurnId !== undefined && valid.executorParentTurnId !== identity.executorParentTurnId
-    || identity.executorParentPermissionMode !== undefined && valid.executorParentPermissionMode !== identity.executorParentPermissionMode
+    || authority.childAgentId !== identity.executorAgentId
+    || identity.executorAgentType !== undefined && authority.childAgentType !== identity.executorAgentType
+    || identity.executorParentTurnId !== undefined && (authority.kind !== 'subagent-start' || authority.parentTurnId !== identity.executorParentTurnId)
+    || identity.executorParentPermissionMode !== undefined && (authority.kind !== 'subagent-start' || authority.parentPermissionMode !== identity.executorParentPermissionMode)
     || valid.workspace !== identity.workspace
     || identity.permissionMode !== undefined && valid.permissionMode !== identity.permissionMode) throw invalidBinding();
-  return { ...valid };
+  return structuredClone(valid);
 }
 
 /** Read one exact binding without following symlinks or accepting replacement races. @param {string} root @param {string} path @param {any} [expected] */
@@ -199,20 +211,55 @@ async function readExactPrivateFile(root, path, maximumBytes) {
 
 /** @param {any} record */
 export function validateRescueBinding(record) {
-  if (!plain(record) || Object.keys(record).sort().join('\0') !== [...KEYS].sort().join('\0')
-    || record.version !== RESCUE_BINDING_VERSION || !digest(record.key) || !digest(record.operationId)
-    || !EXECUTOR_AGENT_TYPES.has(record.executorAgentType)
-    || !safeIdentifier(record.executorParentTurnId, 4096) || !PERMISSION_MODES.includes(record.executorParentPermissionMode)
+  const keys = record?.version === 1 ? V1_KEYS : record?.version === 2 ? V2_KEYS : null;
+  if (!plain(record) || keys === null || Object.keys(record).sort().join('\0') !== [...keys].sort().join('\0')
+    || !digest(record.key) || !digest(record.operationId)
     || !PERMISSION_MODES.includes(record.permissionMode)
     || !['active', 'closed'].includes(record.state) || !digest(record.anchorJobId) || !digest(record.currentJobId)
     || !canonicalTimestamp(record.createdAt) || !canonicalTimestamp(record.updatedAt)
     || Date.parse(record.updatedAt) < Date.parse(record.createdAt)) throw invalidBinding();
-  validateIdentity(record);
-  if (record.key !== rescueBindingKey(record)) throw invalidBinding();
+  const authority = record.version === 1 ? validateChildAuthority({ kind: 'subagent-start', childAgentId: record.executorAgentId,
+    childAgentType: record.executorAgentType, parentTurnId: record.executorParentTurnId,
+    parentPermissionMode: record.executorParentPermissionMode }, record.workspace) : validateChildAuthority(record.childAuthority, record.workspace);
+  const identity = { parentSessionId: record.parentSessionId, executorAgentId: authority.childAgentId, workspace: record.workspace };
+  validateIdentity(identity);
+  if (record.key !== rescueBindingKey(identity)) throw invalidBinding();
   if (record.state === 'active' ? record.closedAt !== null || record.closeReason !== null
     : !canonicalTimestamp(record.closedAt) || !CLOSE_REASONS.has(record.closeReason)
       || Date.parse(record.closedAt) !== Date.parse(record.updatedAt)) throw invalidBinding();
-  return { ...record };
+  return structuredClone(record);
+}
+
+/** Return the exact durable child authority for either persisted record version. @param {any} record */
+export function rescueBindingAuthorityView(record) {
+  const valid = validateRescueBinding(record);
+  return valid.version === 1
+    ? { kind: 'subagent-start', childAgentId: valid.executorAgentId, childAgentType: valid.executorAgentType,
+      parentTurnId: valid.executorParentTurnId, parentPermissionMode: valid.executorParentPermissionMode }
+    : structuredClone(valid.childAuthority);
+}
+
+/** Validate one exact durable child-authority union member. @param {any} authority @param {string} workspace */
+export function validateRescueBindingChildAuthority(authority, workspace) {
+  return validateChildAuthority(authority, workspace);
+}
+
+/** @param {any} authority @param {unknown} workspace */
+function validateChildAuthority(authority, workspace) {
+  if (!plain(authority)) throw invalidBinding();
+  if (authority.kind === 'subagent-start') {
+    if (Object.keys(authority).sort().join('\0') !== [...HOOK_AUTHORITY_KEYS].sort().join('\0')
+      || !safeIdentifier(authority.childAgentId, 512) || !EXECUTOR_AGENT_TYPES.has(authority.childAgentType)
+      || !safeIdentifier(authority.parentTurnId, 4096) || !PERMISSION_MODES.includes(authority.parentPermissionMode)) throw invalidBinding();
+  } else if (authority.kind === 'codex-legacy-adoption') {
+    if (Object.keys(authority).sort().join('\0') !== [...ADOPTION_AUTHORITY_KEYS].sort().join('\0')
+      || !digest(authority.authorityId) || !safeIdentifier(authority.childAgentId, 512)
+      || authority.childAgentType !== 'zcode-rescue' || !safeIdentifier(authority.authorizingParentTurnId, 4096)
+      || !digest(authority.authorizingParentGenerationId) || !PERMISSION_MODES.includes(authority.authorizingPermissionMode)
+      || !canonicalWorkspace(authority.originWorkspace) || !canonicalWorkspace(authority.executionWorkspace)
+      || authority.executionWorkspace !== workspace || !digest(authority.agentPathDigest)) throw invalidBinding();
+  } else throw invalidBinding();
+  return structuredClone(authority);
 }
 
 /** @param {any} input */
@@ -222,6 +269,12 @@ function validateIdentity(input) {
     || typeof input.workspace !== 'string' || !isAbsolute(input.workspace) || normalize(input.workspace) !== input.workspace
     || Buffer.byteLength(input.workspace) > 4096 || /[\0\r\n]/u.test(input.workspace)
     || input.permissionMode !== undefined && !PERMISSION_MODES.includes(input.permissionMode)) throw invalidBinding();
+}
+
+/** @param {unknown} value */
+function canonicalWorkspace(value) {
+  return typeof value === 'string' && isAbsolute(value) && normalize(value) === value
+    && Buffer.byteLength(value) <= 4096 && !/[\0\r\n]/u.test(value);
 }
 
 /** @param {any} input */

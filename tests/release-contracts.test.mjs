@@ -151,35 +151,48 @@ test('release docs explain automatic Rescue routing and private prepared rollout
   assert.match(chinese, /重新运行 `?\$zcode:setup`?.{0,180}(?:digest|Role 升级)|(?:digest|Role 升级).{0,180}重新运行 `?\$zcode:setup`?/is);
 });
 
-test('release docs explain persisted Rescue child recovery without making age or collisions authoritative', () => {
+test('release docs distinguish Hook recovery from one-shot named legacy adoption', () => {
   const english = read('README.md');
   const chinese = read('README.zh-CN.md');
   const security = read('SECURITY.md');
   const changelog = read('CHANGELOG.md');
 
-  assert.match(english, /persisted stopped Rescue child.{0,220}(?:recover|restore).{0,120}before.{0,80}spawn/is);
-  assert.match(english, /original Codex thread.{0,120}history.{0,120}(?:restored|resume)/is);
-  assert.match(english, /Codex app-server identity.{0,180}private executor provenance/is);
+  assert.match(english, /executor-backed stopped child.{0,160}Hook-proven recovery/is);
+  assert.match(english, /older plugin.{0,220}named `zcode-rescue` child.{0,180}adopted once/is);
+  assert.match(english, /current parent turn.{0,220}execution worktree.{0,180}permission snapshot.{0,180}one-shot preparation/is);
+  assert.match(english, /never fabricate.{0,140}(?:`SubagentStart`|executor|route)/is);
+  assert.match(english, /`default` and `explorer` children.{0,160}occupancy-only/is);
+  assert.match(english, /30-minute.{0,180}(?:capability window|TTL).{0,180}not a lifetime/is);
   assert.match(english, /active Rescue child.{0,120}rejoin/is);
   assert.match(english, /neither.{0,100}30-minute age.{0,100}(?:name|path) collision.{0,120}(?:authority|authorizes)/is);
   assert.match(english, /(?:plugin|Companion).{0,100}during preparation.{0,180}discover.{0,120}persisted Codex children/is);
-  assert.match(english, /Root.{0,120}(?:receives|executes).{0,100}task-free directive/is);
+  assert.match(english, /follow-up.{0,100}strict version two.{0,140}fixed assignment/is);
+  assert.match(english, /spawn.{0,100}strict version one.{0,140}(?:without (?:an )?|no )assignment/is);
+  assert.match(english, /named.{0,100}generic.{0,140}schema negotiation/is);
+  assert.doesNotMatch(english, /Root receives and executes only the task-free version-two directive/i);
   assert.doesNotMatch(english, /Root discovers the parent's persisted Codex children/i);
 
-  assert.match(chinese, /持久化且已停止的 Rescue child.{0,220}(?:恢复|还原).{0,120}(?:先于.{0,80}spawn|spawn.{0,80}之前)/is);
-  assert.match(chinese, /原 Codex thread.{0,120}历史.{0,120}(?:恢复|续接)/is);
-  assert.match(chinese, /Codex app-server identity.{0,180}私有 executor provenance/is);
+  assert.match(chinese, /具有 executor 证据的已停止 child.{0,180}Hook-proven 恢复/is);
+  assert.match(chinese, /旧版插件.{0,220}具名 `zcode-rescue`.{0,180}一次性 adoption/is);
+  assert.match(chinese, /当前 parent turn.{0,220}execution worktree.{0,180}permission 快照.{0,180}一次性 preparation/is);
+  assert.match(chinese, /绝不会伪造.{0,140}(?:`SubagentStart`|executor|route)/is);
+  assert.match(chinese, /`default` 与 `explorer` children.{0,160}只占用路径/is);
+  assert.match(chinese, /TTL.{0,180}一次性 capability 窗口.{0,180}不是.{0,120}生命期/is);
   assert.match(chinese, /活动的 Rescue child.{0,120}重新加入/is);
   assert.match(chinese, /30 分钟 age.{0,100}(?:名称|路径)碰撞.{0,120}(?:都不|均不).{0,80}(?:授权|权威)/is);
   assert.match(chinese, /(?:插件|Companion).{0,100}preparation 期间.{0,180}发现.{0,120}持久化 Codex children/is);
-  assert.match(chinese, /Root.{0,120}(?:接收|执行).{0,100}不含 task 的 directive/is);
+  assert.match(chinese, /follow-up.{0,100}strict version two.{0,140}固定 assignment/is);
+  assert.match(chinese, /spawn.{0,100}strict version one.{0,140}(?:不含|没有) assignment/is);
+  assert.match(chinese, /named.{0,100}generic.{0,140}schema negotiation/is);
+  assert.doesNotMatch(chinese, /Root 只接收并执行.{0,100}不含 task 的 version-two directive/is);
   assert.doesNotMatch(chinese, /Root 会发现该 parent 的持久化 Codex children/i);
 
-  assert.match(security, /app-server identity.{0,220}private executor provenance/is);
-  assert.match(security, /persisted stopped child.{0,180}original thread.{0,120}history/is);
+  assert.match(security, /`childAuthority` union.{0,220}`subagent-start`.{0,120}`codex-legacy-adoption`/is);
+  assert.match(security, /transient in-process brands.{0,180}(?:clones|replay).{0,180}cannot publish state/is);
+  assert.match(security, /zero job reservation.{0,180}Hook fabrication/is);
   assert.match(security, /(?:30-minute age|collision).{0,180}(?:must not|never).{0,100}(?:authority|authorize)/is);
-  assert.match(changelog, /persisted stopped Rescue child.{0,220}original Codex thread.{0,120}history/is);
-  assert.match(changelog, /app-server identity.{0,180}private executor provenance/is);
+  assert.match(changelog, /legacy plugin sessions.{0,220}no surviving Hook executor.{0,220}adopted once/is);
+  assert.match(changelog, /`default` or `explorer`.{0,220}`EXECUTOR_ROLE_UNAPPROVED`.{0,220}occupancy-only/is);
 });
 
 test('release docs distinguish a fresh ZCode operation from allocating a fresh Codex child', () => {

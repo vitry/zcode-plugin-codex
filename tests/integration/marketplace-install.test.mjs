@@ -34,8 +34,8 @@ function assertInstalledRescueRoutingContract(source) {
   const sections = assertRescueRouteContract(source, { assertionPrefix: 'installed ' });
   const { naming } = sections;
   assert.match(naming.text, /Strictly parse the terminal prepared route object[^\n]+action: 'followup'[^\n]+action: 'spawn'/i);
-  assert.match(naming.text, /A `followup` route uses the exact `target`; a `spawn` route uses the exact `taskName`/i);
-  assert.match(naming.text, /Root must perform exactly one host action[^\n]+must not derive an ordinal, choose or substitute a name or target/i);
+  assert.match(naming.text, /A `followup` route uses the exact `target` and `assignment`; a `spawn` route uses the exact `taskName`/i);
+  assert.match(naming.text, /Root must perform exactly one host action[^\n]+must not derive an ordinal, choose or substitute a name, target, or assignment/i);
   assert.match(naming.text, /Collision handling belongs only to the plugin planner; collision fallback is never authorized/i);
   assert.doesNotMatch(naming.text, /choose `rescueTaskName`/i);
   return sections;

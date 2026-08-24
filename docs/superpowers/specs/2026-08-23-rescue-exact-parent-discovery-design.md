@@ -114,14 +114,21 @@ while preserving normal semver ordering at the 0.141.0 support boundary.
 
 ## Authorization and Planning
 
+> **Amended 2026-08-24:**
+> `2026-08-24-rescue-legacy-child-adoption-design.md` supersedes the host-only
+> named Rescue behavior below. Exact named `zcode-rescue` children may now
+> receive one-shot legacy adoption; generic/null and unrelated children retain
+> the fail-closed occupancy-only behavior.
+
 The route planner remains unchanged in authority:
 
 - every validated returned path enters the occupied set;
 - a stopped child becomes a follow-up candidate only after exact Hook executor
   resolution and the existing Role, parent, permission, origin, target, and
   workspace checks;
-- a host-only `/root/zcode_rescue_task` therefore forces
-  `zcode_rescue_task_2`, but never authorizes follow-up;
+- under the original PR #42 contract, a host-only `/root/zcode_rescue_task`
+  forced `zcode_rescue_task_2`; the 2026-08-24 amendment replaces that behavior
+  only for an exact named legacy Rescue adoption;
 - an exact stopped Rescue executor still receives the one-shot reactivation
   authority and exact follow-up route.
 
@@ -139,7 +146,9 @@ assert the new request field:
 - a foreign row in an exact-parent response must fail closed rather than be
   silently skipped.
 
-The Companion integration regression must replay the incident outcome:
+The historical PR #42 Companion integration regression recorded this
+intermediate collision-avoidance outcome and is superseded by the 2026-08-24
+legacy-adoption regression:
 
 - exact-parent discovery returns a host-only child at the base Rescue path;
 - no stopped executor provenance exists for that child;

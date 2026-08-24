@@ -13,6 +13,7 @@ import {
   listCodexThreadSpawnChildren,
   readCodexThread,
   readCodexThreadSpawnChild,
+  readCodexThreadSpawnChildIdentity,
   sanitizeCodexThreadSpawnChild,
 } from '../scripts/lib/codex-app-server.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
@@ -20,6 +21,7 @@ import { PluginError } from '../scripts/lib/errors.mjs';
 const fake = fileURLToPath(new URL('./fixtures/fake-codex-app-server.mjs', import.meta.url));
 const validThread = { id: 'thread-1', ephemeral: false, turns: [] };
 
+/** @param {Record<string,any>} [overrides] @returns {any} */
 function childThread(overrides = {}) {
   return {
     id: 'child-1', sessionId: 'parent-1', forkedFromId: null, parentThreadId: 'parent-1',
@@ -174,6 +176,66 @@ test('lists exact-parent persisted spawn children over bounded stable pages and 
   assert.equal(allCalls.filter((call) => call.method === 'initialize').at(-1).params.capabilities, null);
 });
 
+test('reads an ambient spawn child identity without caller-supplied parent and returns a defensive copy', async () => {
+  const raw = childThread({ status: { type: 'active', activeFlags: ['waitingOnApproval'] } });
+  const { options, record } = await appOptions({ FAKE_CODEX_THREAD_JSON: JSON.stringify(raw) });
+  const identity = await readCodexThreadSpawnChildIdentity('child-1', options);
+  assert.deepEqual(identity, {
+    id: 'child-1', parentThreadId: 'parent-1', agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
+    cwd: '/repo', status: { type: 'active', activeFlags: ['waitingOnApproval'] }, createdAt: 1, updatedAt: 2,
+  });
+  raw.status.activeFlags.push('waitingOnUserInput');
+  assert.deepEqual(identity.status, { type: 'active', activeFlags: ['waitingOnApproval'] });
+  assert.deepEqual((await recordedCalls(record)).find((call) => call.method === 'thread/read').params,
+    { threadId: 'child-1', includeTurns: false });
+});
+
+test('ambient spawn child identity rejects every identity and metadata drift', async (t) => {
+  /** @type {Array<[string, (thread:any)=>void]>} */
+  const cases = [
+    ['wrong child', (thread) => { thread.id = 'private-wrong-child'; }],
+    ['missing top parent', (thread) => { delete thread.parentThreadId; }],
+    ['contradictory parent', (thread) => { thread.parentThreadId = 'other-parent'; }],
+    ['missing nested parent', (thread) => { delete thread.source.subAgent.thread_spawn.parent_thread_id; }],
+    ['top role drift', (thread) => { thread.agentRole = 'default'; }],
+    ['nested role drift', (thread) => { thread.source.subAgent.thread_spawn.agent_role = 'default'; }],
+    ['path drift', (thread) => { thread.source.subAgent.thread_spawn.agent_path = '../private'; }],
+    ['malformed status', (thread) => { thread.status = { type: 'active', activeFlags: ['unknown'] }; }],
+  ];
+  for (const [name, mutate] of cases) await t.test(name, async () => {
+    const thread = childThread(); mutate(thread);
+    const { options } = await appOptions({ FAKE_CODEX_THREAD_JSON: JSON.stringify(thread) });
+    await assert.rejects(readCodexThreadSpawnChildIdentity('child-1', options), (/** @type {any} */ error) => {
+      assert.equal(error.code, 'CODEX_CHILD_METADATA_INVALID');
+      assert.doesNotMatch(String(error.stack), /private-wrong-child/);
+      return true;
+    });
+  });
+});
+
+test('ambient spawn child identity preserves bounded timeout abort overflow and reaping', async (t) => {
+  await t.test('pre-abort', async () => {
+    const controller = new AbortController(); controller.abort('private-reason'); let spawned = false;
+    await assert.rejects(readCodexThreadSpawnChildIdentity('child-1', {
+      signal: controller.signal, spawn: () => { spawned = true; throw new Error('must not spawn'); },
+    }), { code: 'JOB_INTERRUPTED' });
+    assert.equal(spawned, false);
+  });
+  /** @type {Array<[string, Record<string,string>, Record<string,number>, string]>} */
+  const cases = [
+    ['timeout', { FAKE_CODEX_HANG: 'thread/read' }, { timeoutMs: 100 }, 'CODEX_APP_SERVER_TIMEOUT'],
+    ['overflow', { FAKE_CODEX_NOTIFICATION: '1', FAKE_CODEX_OTHER_ID: '1' }, { maxOutputBytes: 100 }, 'CODEX_APP_SERVER_OUTPUT_TOO_LARGE'],
+  ];
+  for (const [name, env, bounds, code] of cases) await t.test(name, async () => {
+    const { options, record } = await appOptions({ FAKE_CODEX_THREAD_JSON: JSON.stringify(childThread()), ...env }, bounds);
+    await assert.rejects(readCodexThreadSpawnChildIdentity('child-1', options), { code });
+    if (process.platform !== 'win32') {
+      for (let index = 0; index < 50 && !(await readFile(record, 'utf8')).includes('lifecycle'); index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.match(await readFile(record, 'utf8'), /"lifecycle":"SIGTERM"/);
+    }
+  });
+});
+
 test('exact-parent list rejects every foreign or incomplete row', async (t) => {
   const legacy = childThread({
     id: 'legacy-child', parentThreadId: null, agentRole: 'worker',
@@ -246,6 +308,7 @@ test('app-server operations honor pre-abort and promptly reap hung list/read chi
     ['initialize', 'initialize', (options) => readCodexThreadSpawnChild('child-1', 'parent-1', options)],
     ['list', 'thread/list', (options) => listCodexThreadSpawnChildren('parent-1', options)],
     ['read', 'thread/read', (options) => readCodexThreadSpawnChild('child-1', 'parent-1', options)],
+    ['ambient identity', 'thread/read', (options) => readCodexThreadSpawnChildIdentity('child-1', options)],
   ];
   for (const [name, method, operation] of operations) await t.test(name, async () => {
     const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', `${name} interrupted.`, { category: 'interruption', remedy: 'Retry.' });
