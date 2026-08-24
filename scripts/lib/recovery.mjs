@@ -182,22 +182,19 @@ async function reconcileOrphan(input, job) {
 
 /** @param {any} job */
 function hasBoundary(job) { return typeof job.inputId === 'string' && Number.isSafeInteger(job.startRevision) && Array.isArray(job.beforeMessageIds); }
-/** Restore a durable migration tombstone before any orphaned queued attempt becomes terminal. @param {any} input @param {any} job */
-async function rollbackQueuedMigration(input, job) {
-  if (job.rescueMigrationRollback !== undefined) {
-    await input.store.rollbackSessionEndedRescueContinuation({ workspace: input.workspace, jobId: job.id, ...job.rescueMigrationRollback });
-    return;
-  }
+/** Resolve exact rollback evidence for atomic queued terminalization. @param {any} input @param {any} job */
+async function queuedMigrationRollback(input, job) {
+  if (job.rescueMigrationRollback !== undefined) return job.rescueMigrationRollback;
   const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
   const root = resolve(storage.directory, 'job-specs'); const path = resolve(root, `${job.id}.json`);
   if (!path.startsWith(`${root}${sep}`)) throw recoveryError('Queued migration specification path is invalid.');
   let record;
   try { record = await readBoundedJsonFile(storage.directory, path, 512 * 1024, { requirePrivatePermissions: true }); }
-  catch (error) { if (/** @type {any} */ (error)?.code === 'ENOENT') return; throw error; }
+  catch (error) { if (/** @type {any} */ (error)?.code === 'ENOENT') return undefined; throw error; }
   const spec = record?.spec; const migrationKeys = ['migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId',
     'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt', 'migrationPriorVersion'];
   const present = migrationKeys.filter((key) => spec?.[key] !== undefined);
-  if (present.length === 0) return;
+  if (present.length === 0) return undefined;
   const digest = spec && typeof spec === 'object' && !Array.isArray(spec)
     ? createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex') : null;
   const priorVersion = Number(spec?.migrationPriorVersion);
@@ -206,17 +203,20 @@ async function rollbackQueuedMigration(input, job) {
     || spec.migrationParentSessionId !== job.ownerSessionId || ![1, 2, 3].includes(priorVersion)) {
     throw recoveryError('Queued migration specification is invalid.');
   }
-  await input.store.rollbackSessionEndedRescueContinuation({ workspace: input.workspace, jobId: job.id,
+  return {
     parentSessionId: spec.migrationParentSessionId, childAgentId: spec.migrationChildAgentId,
     operationId: spec.migrationOperationId, priorCurrentJobId: spec.migrationPriorCurrentJobId,
-    priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt, priorVersion });
+    priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt, priorVersion };
 }
 /** @param {any} input @param {any} job @param {unknown} error */
 async function failJob(input, job, error) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
-  if (current.status === 'queued') await rollbackQueuedMigration(input, current);
-  try { return await input.store.finishJob(input.workspace, job.id, [current.status], 'failed', { error: { message: recoveryMessage(error) }, exitCode: 1 }); }
+  const patch = { error: { message: recoveryMessage(error) }, exitCode: 1 };
+  const rollback = current.status === 'queued' ? await queuedMigrationRollback(input, current) : undefined;
+  try { return rollback
+    ? await input.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'failed', patch)
+    : await input.store.finishJob(input.workspace, job.id, [current.status], 'failed', patch); }
   catch (transitionError) { return conflictWinner(input, job, transitionError); }
 }
 /** @param {any} input @param {any} job */
@@ -231,9 +231,11 @@ async function cancelJob(input, job) {
 /** @param {any} input @param {any} job */
 async function cancelQueuedJob(input, job) {
   const current = await input.store.readJob(input.workspace, job.id);
-  if (current.status === 'queued') await rollbackQueuedMigration(input, current);
   if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
-  try { return await input.store.finishJob(input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
+  const rollback = await queuedMigrationRollback(input, current);
+  try { return rollback
+    ? await input.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'cancelled', { exitCode: null })
+    : await input.store.finishJob(input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
   catch (error) { return cancelledConflictWinner(input, job, error); }
 }
 

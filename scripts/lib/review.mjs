@@ -170,13 +170,14 @@ export async function executeJob(input) {
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
     let current = await input.store.readJob(workspace, job.id).catch(() => running);
+    let resumeFailureSettlementRejected = false;
     if (input.resumeSessionId && current?.status === 'queued' && input.onResumeFailure) {
       try {
         await input.onResumeFailure(primaryError);
         current = await input.store.readJob(workspace, job.id).catch(() => current);
-      } catch (rollbackError) { primaryError = rollbackError; }
+      } catch (rollbackError) { primaryError = rollbackError; resumeFailureSettlementRejected = true; }
     }
-    if (error instanceof SuccessfulResultFinalizationError) {
+    if (!resumeFailureSettlementRejected && error instanceof SuccessfulResultFinalizationError) {
       if (current?.status === 'succeeded' && current.resultArtifact === error.resultArtifact) {
         try { output = { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: error.resultArtifact }) }; primaryError = undefined; }
         catch (artifactError) { primaryError = artifactError; }
@@ -184,7 +185,7 @@ export async function executeJob(input) {
       else if (current && ['failed', 'cancelled', 'succeeded'].includes(current.status) && current.resultArtifact !== error.resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: error.resultArtifact }).catch(() => {});
       /* Otherwise recovery owns the durable running job and retained result artifact. */
     }
-    else if (isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
+    else if (!resumeFailureSettlementRejected && isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
       if (current.status === 'queued' && sessionId) {
         let stopped = false;
         try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
@@ -193,7 +194,7 @@ export async function executeJob(input) {
         const cancellation = createJobController({ store: input.store, dataRoot, stopSession: (id) => client.stopSession(id) });
         await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => {});
       }
-    } else if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
+    } else if (!resumeFailureSettlementRejected && current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
       let canFail = true;
       if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven) {
         try { await client.stopSession(sessionId); }

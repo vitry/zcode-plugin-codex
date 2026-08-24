@@ -728,7 +728,9 @@ test('legacy session-ended migration rolls back its tombstone when exact remote 
   assert.equal(proof.kind, 'bound'); assert.deepEqual(proof.binding, closed.binding);
 });
 
-for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash']) test(`background session-ended migration restores its closed tombstone when ${failurePoint} fails`, async () => {
+for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution']) test(failurePoint === 'corrupt legacy worker execution'
+  ? 'background execution rejects corrupt markerless legacy rollback metadata without terminalizing its queued job'
+  : `background session-ended migration restores its closed tombstone when ${failurePoint} fails`, async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const record = join(context.directory, `background-migration-${failurePoint.replace(' ', '-')}.jsonl`); await writeFile(record, '');
   const parentSessionId = `background-migration-${failurePoint.replace(' ', '-')}-parent`;
@@ -772,28 +774,67 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
       ? { createExecutionCapability: async () => { throw failure; } }
       : failurePoint === 'worker launch'
         ? { startBackgroundWorker: async () => { throw failure; } }
-        : { startBackgroundWorker: async (/** @type {any} */ { jobId }) => { await store.claimJobWorker(workspace, jobId,
-          { childPid: 999_999_999, workerLeaseId: '9'.repeat(64) }); } };
+      : { startBackgroundWorker: async (/** @type {any} */ { jobId }) => {
+        if (['worker crash', 'legacy recovery'].includes(failurePoint)) await store.claimJobWorker(workspace, jobId,
+          { childPid: 999_999_999, workerLeaseId: '9'.repeat(64) });
+      } };
   const attempt = runDirectInvocation(['invoke-prepared', 'rescue'], {
     cwd: workspace, env: childEnv,
     dependencies: { readCodexThreadSpawnChild: async () => host, ...failureDependency },
   });
-  if (failurePoint === 'worker crash') {
+  if (['worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution'].includes(failurePoint)) {
     const queued = await attempt; assert.equal(queued.type, 'background');
     assert.doesNotMatch(JSON.stringify(queued), /rescueMigrationRollback|priorCurrentJobId|priorClosedAt/u);
-    const status = await runCompanion(['status', '--all'], { cwd: workspace, env: childEnv,
-      caller: { sessionId: parentSessionId, turnId: 'turn-b', permissionMode: 'workspace-write' } });
-    assert.doesNotMatch(JSON.stringify(status), /rescueMigrationRollback|migrationPrior|priorCurrentJobId|priorClosedAt/u);
+    if (failurePoint === 'worker crash') {
+      const status = await runCompanion(['status', '--all'], { cwd: workspace, env: childEnv,
+        caller: { sessionId: parentSessionId, turnId: 'turn-b', permissionMode: 'workspace-write' } });
+      assert.doesNotMatch(JSON.stringify(status), /rescueMigrationRollback|migrationPrior|priorCurrentJobId|priorClosedAt/u);
+    }
     const specPath = join(storage.directory, 'job-specs', `${(await store.listJobs(workspace))[1].id}.json`);
     const specRecord = JSON.parse(await readFile(specPath, 'utf8'));
-    assert.deepEqual(Object.keys(specRecord.spec).filter((key) => key.startsWith('migration')), []);
-    await scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace, createClient: async () => { throw failure; } });
+    const queuedJobPath = join(storage.directory, 'jobs', `${queued.job.id}.json`);
+    const queuedJob = JSON.parse(await readFile(queuedJobPath, 'utf8'));
+    if (failurePoint === 'worker crash') {
+      assert.deepEqual(Object.keys(specRecord.spec).filter((key) => key.startsWith('migration')), []);
+      await scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace, createClient: async () => { throw failure; } });
+    } else {
+      const rollback = queuedJob.rescueMigrationRollback; assert.ok(rollback);
+      Object.assign(specRecord.spec, {
+        migrationParentSessionId: rollback.parentSessionId, migrationChildAgentId: rollback.childAgentId,
+        migrationOperationId: rollback.operationId, migrationPriorCurrentJobId: failurePoint === 'corrupt legacy worker execution' ? 'f'.repeat(64) : rollback.priorCurrentJobId,
+        migrationPriorUpdatedAt: rollback.priorUpdatedAt, migrationPriorClosedAt: rollback.priorClosedAt,
+        migrationPriorVersion: String(rollback.priorVersion),
+      });
+      specRecord.digest = createHash('sha256').update(JSON.stringify(specRecord.spec, Object.keys(specRecord.spec).sort())).digest('hex');
+      await atomicWriteJson(specPath, specRecord); delete queuedJob.rescueMigrationRollback; await atomicWriteJson(queuedJobPath, queuedJob);
+      if (failurePoint === 'legacy recovery') {
+        await scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace, createClient: async () => { throw failure; } });
+      } else {
+        const capability = await identity.createExecutionCapability({ jobId: queued.job.id, ownerSessionId: parentSessionId,
+          workspace, operation: 'run-reserved-job', specDigest: specRecord.digest, permissionSnapshot: queuedJob.permissionSnapshot });
+        await releaseManagedZCodeOwner({ dataRoot: context.dataRoot, workspace, ownerId: ownerIdForSession(parentSessionId), requestTimeoutMs: 500 });
+        /** @type {any} */ let executionError;
+        await assert.rejects(runCompanion(['run-reserved-job', queued.job.id], {
+          cwd: workspace, env: { ...childEnv, FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
+          authorization: { executionCapability: capability, jobId: queued.job.id },
+        }), (error) => { executionError = error; return failurePoint !== 'corrupt legacy worker execution'
+          || /** @type {any} */ (error)?.code === 'RESCUE_BINDING_INVALID'; });
+        const executionJob = await store.readJob(workspace, queued.job.id);
+        assert.equal(executionJob.status, failurePoint === 'corrupt legacy worker execution' ? 'queued' : 'failed',
+          `legacy execution left ${executionError?.code ?? 'error'}: ${executionError?.message ?? executionError}`);
+        if (failurePoint === 'corrupt legacy worker execution') {
+          const activeAfterRejection = await store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId });
+          assert.equal(activeAfterRejection.kind, 'bound'); assert.equal(activeAfterRejection.binding.currentJobId, queued.job.id);
+          return;
+        }
+      }
+    }
   } else await assert.rejects(attempt, (error) => error === failure);
   assert.deepEqual(await readFile(partitionPath), closedTombstoneBytes);
   await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId }), { code: 'RESCUE_BINDING_CLOSED' });
   const failedJobs = await store.listJobs(workspace); assert.equal(failedJobs.length, 2); assert.equal(failedJobs[1].status, 'failed');
   const callsAfterFailure = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  assert.equal(callsAfterFailure.filter((frame) => frame.method === 'session/resume').length, 0);
+  assert.equal(callsAfterFailure.filter((frame) => frame.method === 'session/resume').length, failurePoint === 'legacy worker execution' ? 1 : 0);
 
   if (['worker launch', 'worker crash'].includes(failurePoint)) {
     await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-c', workspace, permissionMode: 'workspace-write',

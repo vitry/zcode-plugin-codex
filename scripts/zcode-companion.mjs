@@ -802,15 +802,13 @@ async function executeReserved(context) {
     const executionClient = client; client = undefined;
     return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); }, onResumeSucceeded: () => { resumeSucceeded = true; }, ...(migrationRollback ? { onResumeFailure: async (error) => {
       if (resumeSucceeded) return;
-      await store.rollbackSessionEndedRescueContinuation({ workspace: cwd, jobId: job.id, ...migrationRollback });
-      await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
+      await store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
     } } : {}) });
   } catch (error) {
     await client?.close().catch(() => {});
     const current = await store.readJob(cwd, job.id).catch(() => null);
     if (migrationRollback && !resumeSucceeded && current?.status === 'queued') {
-      await store.rollbackSessionEndedRescueContinuation({ workspace: cwd, jobId: job.id, ...migrationRollback });
-      await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
+      await store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
     } else if (isInterruption(error) && current?.status === 'queued') {
       if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});
       else await createJobController({ store, dataRoot }).cancel(cwd, job.id, job.ownerSessionId).catch(() => {});
