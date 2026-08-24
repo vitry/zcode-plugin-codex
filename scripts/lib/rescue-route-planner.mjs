@@ -5,7 +5,7 @@ import { resolveRoutedStoppedForwardingExecutor } from '../../hooks/lib/hook-sta
 import { listCodexThreadSpawnChildren, sanitizeCodexThreadSpawnChild } from './codex-app-server.mjs';
 import { PluginError } from './errors.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
-import { rescueBindingKey } from './rescue-binding.mjs';
+import { rescueBindingAuthorityView, rescueBindingKey, validateRescueBinding } from './rescue-binding.mjs';
 import { createStateStore } from './state.mjs';
 
 const BASE_TASK_NAME = 'zcode_rescue_task';
@@ -17,8 +17,6 @@ const TASK_NAME_PATTERN = /^zcode_rescue_[a-z][a-z0-9]{0,15}(?:_[a-z][a-z0-9]{0,
 const AGENT_PATH_PATTERN = /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u;
 const STOPPED_PROOF_KEYS = Object.freeze(['executionWorkspace', 'executor']);
 const EXECUTOR_KEYS = Object.freeze(['active', 'agentId', 'agentType', 'childTurnId', 'createdAt', 'kind', 'originWorkspace', 'parentGenerationId', 'parentPermissionMode', 'parentSessionId', 'parentTurnId', 'workspace']);
-const BINDING_V2_KEYS = Object.freeze(['anchorJobId', 'childAuthority', 'closeReason', 'closedAt', 'createdAt', 'currentJobId', 'key', 'operationId', 'parentSessionId', 'permissionMode', 'state', 'updatedAt', 'version', 'workspace']);
-const LEGACY_AUTHORITY_KEYS = Object.freeze(['agentPathDigest', 'authorityId', 'authorizingParentGenerationId', 'authorizingParentTurnId', 'authorizingPermissionMode', 'childAgentId', 'childAgentType', 'executionWorkspace', 'kind', 'originWorkspace']);
 const EXECUTOR_ERROR_CODES = new Set([
   'EXECUTOR_IDENTITY_AMBIGUOUS', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_IDENTITY_INVALID',
   'EXECUTOR_ROLE_UNAPPROVED', 'EXECUTOR_ROUTE_INVALID', 'EXECUTOR_STATE_MISMATCH',
@@ -184,7 +182,9 @@ async function resolveExactBinding(resolveBinding, input) {
  * @param {any} binding @param {{caller:any,executionWorkspace:string,host:any,originWorkspace:string}} expected
  */
 function validateLegacyBinding(binding, expected) {
-  const authority = binding?.childAuthority;
+  let valid; let authority;
+  try { valid = validateRescueBinding(binding); authority = rescueBindingAuthorityView(valid); }
+  catch { throw plannerError('RESCUE_BINDING_INVALID'); }
   let expectedKey;
   try {
     expectedKey = rescueBindingKey({
@@ -193,23 +193,17 @@ function validateLegacyBinding(binding, expected) {
       workspace: expected.executionWorkspace,
     });
   } catch { throw plannerError('RESCUE_BINDING_INVALID'); }
-  if (!plain(binding) || !sameKeys(binding, BINDING_V2_KEYS) || binding.version !== 2
-    || binding.key !== expectedKey || !digest(binding.operationId) || binding.state !== 'active'
-    || binding.parentSessionId !== expected.caller.sessionId || binding.workspace !== expected.executionWorkspace
-    || !PERMISSION_MODES.includes(binding.permissionMode) || !digest(binding.anchorJobId) || !digest(binding.currentJobId)
-    || !canonicalTimestamp(binding.createdAt) || !canonicalTimestamp(binding.updatedAt)
-    || Date.parse(binding.updatedAt) < Date.parse(binding.createdAt) || binding.closedAt !== null || binding.closeReason !== null
-    || !plain(authority) || !sameKeys(authority, LEGACY_AUTHORITY_KEYS)
-    || authority.kind !== 'codex-legacy-adoption' || !digest(authority.authorityId)
+  if (valid.version !== 2 || valid.key !== expectedKey || valid.state !== 'active'
+    || valid.parentSessionId !== expected.caller.sessionId || valid.workspace !== expected.executionWorkspace
+    || valid.permissionMode !== expected.caller.permissionMode
+    || authority.kind !== 'codex-legacy-adoption'
     || authority.childAgentId !== expected.host.id || authority.childAgentType !== 'zcode-rescue'
-    || !boundedIdentifier(authority.authorizingParentTurnId) || !digest(authority.authorizingParentGenerationId)
-    || !PERMISSION_MODES.includes(authority.authorizingPermissionMode)
     || authority.originWorkspace !== expected.originWorkspace || authority.originWorkspace !== expected.host.cwd
     || authority.executionWorkspace !== expected.executionWorkspace
     || authority.agentPathDigest !== pathDigest(expected.host.agentPath)) {
     throw plannerError('RESCUE_BINDING_INVALID');
   }
-  return binding;
+  return valid;
 }
 
 /** @param {any} resolved @param {any} host @param {any} caller @param {string} originWorkspace @param {string} executionWorkspace */
@@ -275,8 +269,6 @@ function validAgentPath(value) { return typeof value === 'string' && Buffer.byte
 function validTaskName(value) { return typeof value === 'string' && Buffer.byteLength(value) <= 64 && TASK_NAME_PATTERN.test(value); }
 /** @param {unknown} value */
 function directManagedPath(value) { return typeof value === 'string' && value.startsWith('/root/') && validTaskName(value.slice('/root/'.length)); }
-/** @param {unknown} value */
-function digest(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value); }
 /** @param {unknown} value */
 function boundedWorkspace(value) {
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 4096

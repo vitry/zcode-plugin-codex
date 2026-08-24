@@ -20,11 +20,13 @@ import {
   createRescueBinding,
   readRescueBindingAuthorityFile,
   readRescueBindingPartitionFile,
+  rescueBindingAuthorityView,
   rescueBindingKey,
   rescueBindingPartitionKey,
   RESCUE_BINDING_MAX_RECORDS,
   RESCUE_BINDING_PARTITION_MAX_BYTES,
   validateRescueBinding,
+  validateRescueBindingChildAuthority,
 } from './rescue-binding.mjs';
 import {
   MAX_PROGRESS_PROBE_COUNT,
@@ -128,7 +130,7 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string}} input */
+    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string}} input */
     async reserveFreshRescueJob(input) {
       validateRescueReservationInput(input);
       validateOptionalBindingExpectation(input);
@@ -137,16 +139,14 @@ export function createStateStore(options) {
         const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
         const job = makeReservedJob(storage, jobs, input.reservation);
-        const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
+        const context = reservationBindingContext(input, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
+        const exactIdentity = context.identity;
         const { record: previous, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity, { allowAuthorityOnlyRepair: true });
         if (input.expectedOperationId !== undefined
           && (previous?.state !== 'active' || previous.operationId !== input.expectedOperationId
             || previous.anchorJobId !== input.expectedAnchorJobId || previous.currentJobId !== input.expectedCurrentJobId)) throw staleRescueBinding();
-        if (previous && (previous.executorAgentType !== exactIdentity.executorAgentType
-          || previous.executorParentTurnId !== exactIdentity.executorParentTurnId
-          || previous.executorParentPermissionMode !== exactIdentity.executorParentPermissionMode)) throw invalidRescueBinding();
-        const binding = createRescueBinding({ ...exactIdentity,
-          ...(previous ? { executorAgentType: previous.executorAgentType, executorParentTurnId: previous.executorParentTurnId, executorParentPermissionMode: previous.executorParentPermissionMode } : {}),
+        const childAuthority = authorityForReservation(context, previous, input.reservation, storage.workspacePath, true);
+        const binding = createRescueBinding({ ...exactIdentity, childAuthority,
           anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex') });
         const afterSnapshot = bindingSnapshotWith(beforeSnapshot, binding);
         if (!beforeSnapshot.records.has(binding.key)) ensureProspectiveBindingCapacity(storage, binding.parentSessionId, afterSnapshot, bindingPartitionMaxBytes);
@@ -156,7 +156,7 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,reservation:JobReservation,executor:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string}} input */
+    /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,operationId:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string}} input */
     async reserveBoundRescueContinuation(input) {
       validateRescueReservationInput(input);
       if (!isDigest(input.operationId)) throw staleRescueBinding();
@@ -165,10 +165,15 @@ export function createStateStore(options) {
       return withFileLock(storage.lockPath, async () => {
         const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
-        const resolved = await resolveBindingForResumeLocked(storage, executorBindingIdentity(input.executor, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode));
+        const context = reservationBindingContext(input, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
+        const resolved = await resolveBindingForResumeLocked(storage, {
+          parentSessionId: context.identity.parentSessionId, executorAgentId: context.identity.executorAgentId,
+          workspace: context.identity.workspace, permissionMode: context.identity.permissionMode,
+        });
         if (resolved.kind !== 'bound' || resolved.operationId !== input.operationId
           || input.expectedCurrentJobId !== undefined && resolved.binding.currentJobId !== input.expectedCurrentJobId
           || input.expectedAnchorJobId !== undefined && resolved.binding.anchorJobId !== input.expectedAnchorJobId) throw staleRescueBinding();
+        authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, false);
         const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
         const job = makeReservedJob(storage, jobs, input.reservation);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
@@ -189,12 +194,15 @@ export function createStateStore(options) {
         const lockIdentity = await captureStateLockIdentity(storage);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
         const job = makeReservedJob(storage, jobs, input.reservation);
-        const exactIdentity = executorBindingIdentity(input.executor, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
+        const context = reservationBindingContext(input, storage.workspacePath, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
+        if (context.kind !== 'hook') throw invalidRescueBinding();
+        const exactIdentity = context.identity;
         const { record: existing, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity);
         if (existing !== null) throw invalidRescueBinding();
         const anchorJob = jobs.find((job) => job.id === input.candidateJobId);
         validateAnchorJob(anchorJob, input.executor.parentSessionId, storage.workspacePath);
-        const base = createRescueBinding({ ...exactIdentity, anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex') });
+        const base = createRescueBinding({ ...exactIdentity, childAuthority: context.childAuthority,
+          anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex') });
         const baseSnapshot = bindingSnapshotWith(beforeSnapshot, base);
         ensureProspectiveBindingCapacity(storage, base.parentSessionId, baseSnapshot, bindingPartitionMaxBytes);
         await publicationCheckpoint(publicationHook, 'adopt:base-binding');
@@ -588,10 +596,11 @@ async function resolveBindingForResumeLocked(storage, expected) {
 async function readBindingLocked(storage, expected) {
   const snapshot = await readBindingPartitionSnapshot(storage, expected.parentSessionId, true);
   const record = snapshot.records.get(rescueBindingKey(expected)) ?? null;
+  const authority = record === null ? null : rescueBindingAuthorityView(record);
   if (record && (expected.permissionMode !== undefined && record.permissionMode !== expected.permissionMode
-    || expected.executorAgentType !== undefined && record.executorAgentType !== expected.executorAgentType
-    || expected.executorParentTurnId !== undefined && record.executorParentTurnId !== expected.executorParentTurnId
-    || expected.executorParentPermissionMode !== undefined && record.executorParentPermissionMode !== expected.executorParentPermissionMode)) throw invalidRescueBinding();
+    || expected.executorAgentType !== undefined && authority.childAgentType !== expected.executorAgentType
+    || expected.executorParentTurnId !== undefined && (authority.kind !== 'subagent-start' || authority.parentTurnId !== expected.executorParentTurnId)
+    || expected.executorParentPermissionMode !== undefined && (authority.kind !== 'subagent-start' || authority.parentPermissionMode !== expected.executorParentPermissionMode))) throw invalidRescueBinding();
   return record;
 }
 
@@ -655,17 +664,96 @@ async function prepareBindingSlot(storage, identity, lockIdentity, options = {})
   if (snapshot.records.size >= RESCUE_BINDING_MAX_RECORDS) throw rescueBindingCapacity();
   return { record: null, snapshot };
 }
+
+const LEGACY_CONTINUATION_KEYS = Object.freeze([
+  'agentPathDigest', 'authorizingParentGenerationId', 'authorizingParentTurnId', 'authorizingPermissionMode',
+  'bindingKey', 'childAgentId', 'childAgentType', 'executionWorkspace', 'kind', 'originWorkspace', 'preparationAuthorityId',
+]);
+
+/** @param {any} input @param {string} workspace @param {string} permissionMode */
+function reservationBindingContext(input, workspace, permissionMode) {
+  const hasExecutor = input?.executor !== undefined; const hasAuthority = input?.authority !== undefined;
+  if (hasExecutor === hasAuthority) throw invalidRescueBinding();
+  if (hasExecutor) {
+    if (!isPlainJsonObject(input.executor)) throw invalidRescueBinding();
+    validateExecutorBindingInput(input.executor);
+    const childAuthority = validateRescueBindingChildAuthority({
+      kind: 'subagent-start', childAgentId: input.executor.agentId, childAgentType: input.executor.agentType,
+      parentTurnId: input.executor.parentTurnId, parentPermissionMode: input.executor.parentPermissionMode,
+    }, workspace);
+    return { kind: 'hook', childAuthority, identity: {
+      parentSessionId: input.executor.parentSessionId, executorAgentId: childAuthority.childAgentId,
+      executorAgentType: childAuthority.childAgentType, executorParentTurnId: childAuthority.parentTurnId,
+      executorParentPermissionMode: childAuthority.parentPermissionMode, workspace, permissionMode,
+    } };
+  }
+  if (!isPlainJsonObject(input.authority)) throw invalidRescueBinding();
+  if (input.authority.kind === 'codex-legacy-adoption') {
+    const childAuthority = validateRescueBindingChildAuthority(input.authority, workspace);
+    return { kind: 'adoption', childAuthority, identity: {
+      parentSessionId: input.reservation.ownerSessionId, executorAgentId: childAuthority.childAgentId, workspace, permissionMode,
+    } };
+  }
+  const authority = input.authority;
+  if (authority.kind !== 'codex-legacy-continuation'
+    || Object.keys(authority).sort().join('\0') !== [...LEGACY_CONTINUATION_KEYS].sort().join('\0')
+    || !isDigest(authority.preparationAuthorityId) || !isDigest(authority.bindingKey)
+    || !isNonEmptyString(authority.childAgentId) || authority.childAgentType !== 'zcode-rescue'
+    || !isNonEmptyString(authority.authorizingParentTurnId) || !isDigest(authority.authorizingParentGenerationId)
+    || !PERMISSION_MODES.includes(authority.authorizingPermissionMode)
+    || !isNonEmptyString(authority.originWorkspace) || authority.executionWorkspace !== workspace
+    || !isDigest(authority.agentPathDigest)) throw invalidRescueBinding();
+  return { kind: 'continuation', authority: structuredClone(authority), identity: {
+    parentSessionId: input.reservation.ownerSessionId, executorAgentId: authority.childAgentId, workspace, permissionMode,
+  } };
+}
+
+/** @param {any} context @param {any} previous @param {any} reservation @param {string} workspace @param {boolean} allowPermissionReplacement */
+function authorityForReservation(context, previous, reservation, workspace, allowPermissionReplacement) {
+  if (context.kind === 'hook') {
+    if (previous === null) return context.childAuthority;
+    const durable = rescueBindingAuthorityView(previous);
+    if (durable.kind === 'codex-legacy-adoption') {
+      if (durable.childAgentId !== context.childAuthority.childAgentId
+        || durable.childAgentType !== context.childAuthority.childAgentType
+        || context.childAuthority.parentPermissionMode !== reservation.permissionSnapshot.permissionMode) throw invalidRescueBinding();
+      return durable;
+    }
+    if (JSON.stringify(durable) !== JSON.stringify(context.childAuthority)) throw invalidRescueBinding();
+    return durable;
+  }
+  if (context.kind === 'adoption') {
+    if (previous !== null || context.childAuthority.authorizingParentTurnId !== reservation.ownerTurnId
+      || context.childAuthority.authorizingPermissionMode !== reservation.permissionSnapshot.permissionMode
+      || context.childAuthority.executionWorkspace !== workspace) throw invalidRescueBinding();
+    return context.childAuthority;
+  }
+  if (previous === null || previous.state !== 'active' || previous.key !== context.authority.bindingKey
+    || context.authority.authorizingParentTurnId !== reservation.ownerTurnId
+    || context.authority.authorizingPermissionMode !== reservation.permissionSnapshot.permissionMode
+    || !allowPermissionReplacement && previous.permissionMode !== context.authority.authorizingPermissionMode) throw invalidRescueBinding();
+  const durable = rescueBindingAuthorityView(previous);
+  if (durable.kind !== 'codex-legacy-adoption' || durable.childAgentId !== context.authority.childAgentId
+    || durable.childAgentType !== context.authority.childAgentType || durable.originWorkspace !== context.authority.originWorkspace
+    || durable.executionWorkspace !== context.authority.executionWorkspace || durable.agentPathDigest !== context.authority.agentPathDigest) throw invalidRescueBinding();
+  return durable;
+}
 /** @param {import('node:fs').BigIntStats} left @param {import('node:fs').BigIntStats} right */
 function sameDirectoryIdentity(left, right) { return left.isDirectory() && right.isDirectory() && left.dev === right.dev && left.ino === right.ino; }
 
 /** @param {any} input */
 function validateRescueReservationInput(input) {
-  if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isPlainJsonObject(input.reservation) || !isPlainJsonObject(input.executor)) throw invalidRescueBinding();
-  validateReservation(input.reservation); validateExecutorBindingInput(input.executor);
+  if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isPlainJsonObject(input.reservation)) throw invalidRescueBinding();
+  validateReservation(input.reservation);
+  const hasExecutor = input.executor !== undefined; const hasAuthority = input.authority !== undefined;
+  if (hasExecutor === hasAuthority) throw invalidRescueBinding();
+  if (hasExecutor) validateExecutorBindingInput(input.executor);
+  else if (!isPlainJsonObject(input.authority)) throw invalidRescueBinding();
   if (input.reservation.command !== 'rescue' || input.reservation.readOnly !== false
-    || !['zcode-rescue', 'default'].includes(input.executor.agentType)
-    || input.workspace !== input.reservation.workspace || input.workspace !== input.executor.workspace
-    || input.reservation.ownerSessionId !== input.executor.parentSessionId) throw invalidRescueBinding();
+    || input.workspace !== input.reservation.workspace
+    || hasExecutor && (!['zcode-rescue', 'default'].includes(input.executor.agentType)
+      || input.workspace !== input.executor.workspace || input.reservation.ownerSessionId !== input.executor.parentSessionId)) throw invalidRescueBinding();
+  reservationBindingContext(input, input.workspace, /** @type {any} */ (input.reservation.permissionSnapshot).permissionMode);
 }
 
 /** Optional exact snapshot used only by a previously presented bound choice. @param {any} input */
