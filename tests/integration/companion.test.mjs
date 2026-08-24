@@ -663,8 +663,9 @@ test('first legacy adoption resumes on a new parent-turn generation one without 
     env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
     dependencies: { readCodexThreadSpawnChildIdentity: async () => activatedLegacyHost(host) } });
   await prepare('first', 'fresh'); const first = await invoke(); assert.equal(first.job.status, 'succeeded');
-  const operationId = (await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({ workspace,
-    parentSessionId, executorAgentId: childId, permissionMode: 'workspace-write' })).binding.operationId;
+  const initialBinding = await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({ workspace,
+    parentSessionId, executorAgentId: childId, permissionMode: 'workspace-write' });
+  assert.equal(initialBinding.kind, 'bound'); const operationId = initialBinding.binding.operationId;
   await createStateStore({ dataRoot: context.dataRoot }).closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'session-ended' });
   await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-b', workspace,
     permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume --wait second',

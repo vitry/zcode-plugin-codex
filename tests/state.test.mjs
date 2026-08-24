@@ -66,6 +66,7 @@ async function brandedStateAuthority(dataRoot, workspace, kind, turn = 'turn-a',
     originWorkspace: options.originWorkspace ?? workspace, executionWorkspace: workspace });
 }
 
+/** @param {any} binding */
 function legacyMigrationProof(binding) {
   return {
     parentSessionId: binding.parentSessionId,

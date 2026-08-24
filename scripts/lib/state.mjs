@@ -70,6 +70,10 @@ const TRANSITIONS = new Map([
   ['cancelling', new Set(['cancelled', 'running', 'succeeded', 'failed'])],
 ]);
 
+/** @typedef {{parentSessionId:string,childAgentId:string,childAgentType:string,operationId:string,originWorkspace:string,executionWorkspace:string,agentPathDigest:string}} RescueMigrationProof */
+/** @typedef {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,executorParentTurnId?:string,executorParentPermissionMode?:string,permissionMode?:string,migrationProof?:RescueMigrationProof}} RescueBindingResumeInput */
+/** @typedef {{kind:'missing'}|{kind:'bound',operationId:string,anchorJob:any,currentJob:any,binding:any}} RescueBindingResumeResult */
+
 /** @param {{ dataRoot: string, testOnlyPublicationHook?:(seam:string)=>void|Promise<void>, testOnlyBindingPartitionMaxBytes?:number }} options Test-only fields are deterministic seams; production callers must omit them. */
 export function createStateStore(options) {
   const validOptions = options !== null && typeof options === 'object' && !Array.isArray(options)
@@ -101,7 +105,7 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,executorParentTurnId?:string,executorParentPermissionMode?:string,permissionMode?:string}} input */
+    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,executorParentTurnId?:string,executorParentPermissionMode?:string,permissionMode?:string}} input @returns {Promise<{kind:'missing'}|{kind:'bound',binding:any}>} */
     async resolveRescueBinding(input) {
       validateBindingIdentityInput(input);
       const storage = await jobStorage(dataRoot, input.workspace);
@@ -113,7 +117,7 @@ export function createStateStore(options) {
       });
     },
 
-    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,executorParentTurnId?:string,executorParentPermissionMode?:string,permissionMode?:string}} input */
+    /** @param {RescueBindingResumeInput} input @returns {Promise<RescueBindingResumeResult>} */
     async resolveRescueBindingForResume(input) {
       validateBindingIdentityInput(input);
       if (input.migrationProof !== undefined) validateBindingMigrationProof(input.migrationProof);
@@ -201,7 +205,7 @@ export function createStateStore(options) {
         const resolved = await resolveBindingForResumeLocked(storage, {
           parentSessionId: context.identity.parentSessionId, executorAgentId: context.identity.executorAgentId,
           workspace: context.identity.workspace, permissionMode: context.identity.permissionMode,
-        });
+        }, undefined);
         if (resolved.kind !== 'bound' || resolved.operationId !== input.operationId
           || input.expectedCurrentJobId !== undefined && resolved.binding.currentJobId !== input.expectedCurrentJobId
           || input.expectedAnchorJobId !== undefined && resolved.binding.anchorJobId !== input.expectedAnchorJobId) throw staleRescueBinding();
@@ -626,7 +630,7 @@ async function assertStateLockIdentity(storage, expected) {
 /** @param {import('node:fs').BigIntStats} left @param {import('node:fs').BigIntStats} right */
 function sameFileIdentity(left, right) { return left.isFile() && right.isFile() && left.dev === right.dev && left.ino === right.ino; }
 
-/** @param {any} storage @param {any} expected */
+/** @param {any} storage @param {any} expected @param {RescueMigrationProof|undefined} migrationProof @returns {Promise<RescueBindingResumeResult>} */
 async function resolveBindingForResumeLocked(storage, expected, migrationProof) {
   const snapshot = await readBindingPartitionSnapshot(storage, expected.parentSessionId, true);
   const binding = snapshot.records.get(rescueBindingKey(expected)) ?? null;
@@ -650,7 +654,7 @@ async function resolveBindingForResumeLocked(storage, expected, migrationProof) 
   return await resolveActiveBindingLocked(storage, binding);
 }
 
-/** @param {any} storage @param {any} binding */
+/** @param {any} storage @param {any} binding @returns {Promise<Extract<RescueBindingResumeResult, {kind:'bound'}>>} */
 async function resolveActiveBindingLocked(storage, binding) {
   const anchorJob = await readExactBindingJob(storage, binding.anchorJobId);
   const currentJob = binding.currentJobId === binding.anchorJobId ? anchorJob
@@ -660,7 +664,7 @@ async function resolveActiveBindingLocked(storage, binding) {
   return { kind: 'bound', operationId: binding.operationId, anchorJob: structuredClone(anchorJob), currentJob: structuredClone(currentJob), binding: { ...binding } };
 }
 
-/** @param {any} binding @param {any} expected @param {any} proof */
+/** @param {any} binding @param {any} expected @param {RescueMigrationProof|undefined} proof */
 function migrateSessionEndedBinding(binding, expected, proof) {
   if (!isPlainJsonObject(proof) || proof.parentSessionId !== expected.parentSessionId
     || proof.childAgentId !== expected.executorAgentId || proof.operationId !== binding.operationId) throw invalidRescueBinding();
@@ -917,7 +921,7 @@ function validateBindingMigrationLookup(input) {
     || !isNonEmptyString(input.parentSessionId) || !isNonEmptyString(input.executorAgentId) || !['zcode-rescue', 'default'].includes(input.childAgentType)
     || !isDigest(input.agentPathDigest) || typeof input.workspace !== 'string' || typeof input.originWorkspace !== 'string'
     || typeof input.executionWorkspace !== 'string') throw invalidRescueBinding();
-  try { rescueBindingKey(input); } catch { throw invalidRescueBinding(); }
+  try { rescueBindingKey({ parentSessionId: input.parentSessionId, executorAgentId: input.executorAgentId, workspace: input.workspace }); } catch { throw invalidRescueBinding(); }
 }
 
 /** @param {any} input @param {string} workspace */
