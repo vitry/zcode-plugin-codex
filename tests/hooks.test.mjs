@@ -139,12 +139,15 @@ async function routedExecutorFixture(t, label) {
 async function acceptedWritableJob({ data, cwd, ownerSessionId, remoteSessionId, peerEnv = {} }) {
   const store = createStateStore({ dataRoot: data });
   let value = await store.reserveJob({ workspace: cwd, ownerSessionId, ownerTurnId: `turn-${ownerSessionId}`, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
-  value = await store.claimJobWorker(cwd, value.id, { childPid: 999_999, workerLeaseId: 'd'.repeat(64) });
+  const worker = { childPid: 999_999, workerLeaseId: 'd'.repeat(64) };
+  value = await store.claimJobWorkerForExecution(cwd, value.id, worker);
   const client = await createManagedZCodeClient({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, ownerId: ownerIdForSession(ownerSessionId), env: { ...process.env, ...peerEnv } });
   await client.createSession({ workspace: cwd, sessionId: remoteSessionId });
   const sent = await client.send(remoteSessionId, 'recover this accepted turn');
   await client.close();
-  value = await store.transitionJob(cwd, value.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: remoteSessionId });
+  value = await store.transitionJob(cwd, value.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), zcodeSessionId: remoteSessionId, ...worker,
+  });
   value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: sent.inputId, startRevision: sent.stateRevision, beforeMessageIds: ['message-user-history', 'message-assistant-history'] });
   return { store, job: value };
 }
@@ -1061,8 +1064,9 @@ test('SessionEnd settles its writable job before generic owner release and prese
 test('SessionEnd never starts a broker when exact existing settlement is unavailable', async () => {
   const { cwd, data, env } = await workspace(); const record = join(data, 'no-spawn.jsonl'); const store = createStateStore({ dataRoot: data });
   let value = await store.reserveJob({ workspace: cwd, ownerSessionId: 'absent-owner', ownerTurnId: 'absent-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
-  value = await store.claimJobWorker(cwd, value.id, { childPid: 999_999, workerLeaseId: 'a'.repeat(64) });
-  value = await store.transitionJob(cwd, value.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'absent-remote' });
+  const worker = { childPid: 999_999, workerLeaseId: 'a'.repeat(64) };
+  value = await store.claimJobWorkerForExecution(cwd, value.id, worker);
+  value = await store.transitionJob(cwd, value.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'absent-remote', ...worker });
   value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: 'accepted-input', startRevision: 1, beforeMessageIds: [] });
   const identity = createIdentityStore({ dataRoot: data }); await identity.createCallerContext({ sessionId: 'absent-owner', turnId: 'turn', workspace: cwd, permissionMode: 'default' });
   const ended = await runHook('session-end-hook.mjs', { session_id: 'absent-owner', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, { ...env, ZCODE_PATH: fakeZCode, FAKE_ZCODE_RECORD: record });
@@ -1072,7 +1076,7 @@ test('SessionEnd never starts a broker when exact existing settlement is unavail
 
 test('SessionEnd archives a job when a reachable broker has no existing protocol and never lazily spawns ZCode', async () => {
   const { cwd, data, env } = await workspace(); const record = join(data, 'historical-release.jsonl'); await writeFile(record, ''); const store = createStateStore({ dataRoot: data }); const ownerSessionId = 'historical-job-owner'; const ownerId = ownerIdForSession(ownerSessionId);
-  let value = await store.reserveJob({ workspace: cwd, ownerSessionId, ownerTurnId: 'historical-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }); value = await store.claimJobWorker(cwd, value.id, { childPid: 999_999, workerLeaseId: 'b'.repeat(64) }); value = await store.transitionJob(cwd, value.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'historical-job-remote' }); value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: 'accepted-input', startRevision: 7, beforeMessageIds: [] });
+  let value = await store.reserveJob({ workspace: cwd, ownerSessionId, ownerTurnId: 'historical-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }); const worker = { childPid: 999_999, workerLeaseId: 'b'.repeat(64) }; value = await store.claimJobWorkerForExecution(cwd, value.id, worker); value = await store.transitionJob(cwd, value.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'historical-job-remote', ...worker }); value = await store.transitionJob(cwd, value.id, ['running'], 'running', { inputId: 'accepted-input', startRevision: 7, beforeMessageIds: [] });
   await reconcileBrokerOwnership({ dataRoot: data, workspace: cwd, ownerId, ownedSessionIds: [value.zcodeSessionId] }); await ensureZCodeBroker({ dataRoot: data, workspace: cwd, launch: { command: process.execPath, args: [fakeZCode], target: fakeZCode }, env: { ...process.env, FAKE_ZCODE_RECORD: record } });
   const ended = await runHook('session-end-hook.mjs', { session_id: ownerSessionId, cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env); assert.equal(ended.code, 0, ended.stderr); const archived = await store.readJob(cwd, value.id); assert.equal(archived.status, 'failed'); assert.equal(archived.error.message, 'The reachable ZCode broker reported no existing ZCode Protocol; the orphan was archived.'); assert.equal(await readFile(record, 'utf8'), '');
 });

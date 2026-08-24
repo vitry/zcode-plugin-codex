@@ -92,9 +92,17 @@ async function orphanJob(fixture, options = {}) {
   const ownerSessionId = options.ownerSessionId ?? 'owner';
   const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId, ownerTurnId: options.turnId ?? 'orphan', command: options.command ?? 'rescue', ...(options.command === 'transfer' ? { codexThreadId: ownerSessionId } : {}), readOnly: options.readOnly ?? false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   const workerLeaseId = options.workerLeaseId ?? 'd'.repeat(64);
-  if (options.claim !== false) await store.claimJobWorker(fixture.workspace, job.id, { childPid: 999999, workerLeaseId });
+  const worker = { childPid: 999999, workerLeaseId };
+  if (options.claim !== false) {
+    if (job.command === 'rescue' && job.readOnly === false) await store.claimJobWorkerForExecution(fixture.workspace, job.id, worker);
+    else await store.claimJobWorker(fixture.workspace, job.id, worker);
+  }
   if (options.status === 'queued') return { job: await store.readJob(fixture.workspace, job.id), store, workerLeaseId };
-  let running = await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { startedAt: options.startedAt ?? new Date().toISOString(), ...(options.sessionId === false ? {} : { zcodeSessionId: options.sessionId ?? 'orphan-session' }) });
+  let running = await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', {
+    startedAt: options.startedAt ?? new Date().toISOString(),
+    ...(job.command === 'rescue' && job.readOnly === false ? worker : {}),
+    ...(options.sessionId === false ? {} : { zcodeSessionId: options.sessionId ?? 'orphan-session' }),
+  });
   if (options.boundary !== false) running = await store.transitionJob(fixture.workspace, job.id, ['running'], 'running', { inputId: 'accepted-input', startRevision: 7, beforeMessageIds: ['historical'] });
   if (options.status === 'cancelling') running = await store.transitionJob(fixture.workspace, job.id, ['running'], 'cancelling');
   return { job: running, store, workerLeaseId };
@@ -518,7 +526,7 @@ test('queued recovery keeps live claims, fails orphan claims, and ages legacy re
 
 test('legacy running jobs with a live recorded process are not reconciled during upgrade', async () => {
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
-  const reserved = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'legacy-live', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const reserved = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'legacy-live', command: 'review', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(fixture.workspace, reserved.id, ['queued'], 'running', { childPid: process.pid, startedAt: new Date().toISOString(), zcodeSessionId: 'legacy-session' });
   await store.transitionJob(fixture.workspace, reserved.id, ['running'], 'running', { inputId: 'legacy-input', startRevision: 1, beforeMessageIds: [] });
   let clients = 0; const { reconcileOwnedJobs } = await import('../scripts/lib/recovery.mjs');
@@ -765,7 +773,7 @@ test('real fd4 writer is bounded for no-reader, slow-reader, and early-close pip
 
 test('a persisted cancelling job is taken over under the cancellation lock', async () => {
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
-  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'review', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' }); await store.transitionJob(fixture.workspace, job.id, ['running'], 'cancelling');
   let stops = 0; const controller = createJobController({ store, dataRoot: fixture.dataRoot, stopSession: async (sessionId) => { assert.equal(sessionId, 'session-z'); stops += 1; } });
   assert.equal((await controller.cancel(fixture.workspace, job.id, 'owner')).status, 'cancelled'); assert.equal(stops, 1);
@@ -773,7 +781,7 @@ test('a persisted cancelling job is taken over under the cancellation lock', asy
 
 test('a second process takes over after a cancelling lock holder is SIGKILLed', async () => {
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
-  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'review', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' });
   const child = spawn(process.execPath, [cancellingHolder, fixture.dataRoot, fixture.workspace, job.id], { stdio: ['ignore', 'pipe', 'pipe'] });
   await new Promise((resolve, reject) => { child.stdout.once('data', resolve); child.once('error', reject); child.once('exit', (code) => reject(new Error(`holder exited early: ${code}`))); });
@@ -784,7 +792,7 @@ test('a second process takes over after a cancelling lock holder is SIGKILLed', 
 
 test('a cross-process follower joins the leader failure without stopping again', async () => {
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
-  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'review', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' });
   const leader = spawnCancelAttempt(['leader-failure-ipc', fixture.dataRoot, fixture.workspace, job.id]); await leader.message('stop-entered');
   const follower = spawnCancelAttempt(['follower-ipc', fixture.dataRoot, fixture.workspace, job.id]); await follower.message('follower-selected'); leader.child.send({ type: 'release' });
@@ -794,7 +802,7 @@ test('a cross-process follower joins the leader failure without stopping again',
 
 test('a cross-process follower joins the leader success without stopping again', async () => {
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
-  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'review', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' });
   const leader = spawnCancelAttempt(['leader-success-ipc', fixture.dataRoot, fixture.workspace, job.id]); await leader.message('stop-entered');
   const follower = spawnCancelAttempt(['follower-ipc', fixture.dataRoot, fixture.workspace, job.id]); await follower.message('follower-selected'); leader.child.send({ type: 'release' });
@@ -804,7 +812,7 @@ test('a cross-process follower joins the leader success without stopping again',
 test('a follower takes leadership after a pre-transition lock holder crash', async () => {
   for (const initialStatus of ['queued', 'running']) {
     const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
-    const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+    const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'review', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
     if (initialStatus === 'running') await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' });
     const holder = spawn(process.execPath, [cancelLockHolder, fixture.dataRoot, fixture.workspace, job.id], { stdio: ['ignore', 'pipe', 'pipe'] });
     await new Promise((resolve, reject) => { holder.stdout.once('data', resolve); holder.once('error', reject); });
@@ -817,7 +825,7 @@ test('a follower takes leadership after a pre-transition lock holder crash', asy
 
 test('historical cancel failure does not make a retry follower join a leader killed before publishing active', async () => {
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
-  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'review', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' });
   await assert.rejects(createJobController({ store, dataRoot: fixture.dataRoot, stopSession: async () => { throw new Error('historical refusal'); } }).cancel(fixture.workspace, job.id, 'owner'), { code: 'JOB_CANCEL_FAILED' });
   const holder = spawn(process.execPath, [cancelLockHolder, fixture.dataRoot, fixture.workspace, job.id, 'before-active'], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -830,7 +838,7 @@ test('historical cancel failure does not make a retry follower join a leader kil
 
 test('a follower takes over the same active attempt after publication but before transition', async () => {
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
-  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'review', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' }); const attemptId = 'b'.repeat(64);
   const holder = spawn(process.execPath, [cancelLockHolder, fixture.dataRoot, fixture.workspace, job.id, 'after-active', attemptId], { stdio: ['ignore', 'pipe', 'pipe'] });
   await new Promise((resolve, reject) => { holder.stdout.once('data', resolve); holder.once('error', reject); });
@@ -842,7 +850,7 @@ test('a follower takes over the same active attempt after publication but before
 
 test('a follower joins failed-pending-release without stopping and settles the attempt failed', async () => {
   const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
-  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const job = await store.reserveJob({ workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: 'turn', command: 'review', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(fixture.workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'session-z' }); const attemptId = 'c'.repeat(64);
   const holder = spawn(process.execPath, [cancelLockHolder, fixture.dataRoot, fixture.workspace, job.id, 'failed-pending', attemptId], { stdio: ['ignore', 'pipe', 'pipe'] });
   await new Promise((resolve, reject) => { holder.stdout.once('data', resolve); holder.once('error', reject); });

@@ -115,14 +115,19 @@ worker lease under the state lock, then publishes a private worker-bound
 execution claim. A revoke that commits before this claim prevents execution; a
 revoke after it does not retroactively withdraw that one already-authorized
 attempt, but the closed binding remains unavailable to every later follow-up.
-Queued-to-running accepts only the exact claimed worker and clears the claim;
-queued terminalization and orphan recovery also clear it while preserving a
-revocation that already won. Thus deleting a migration marker and its child
+Every modern writable Rescue reservation requires this claim before
+queued-to-running. The advancing caller must explicitly submit both its PID
+and lease (inherited persisted values are not arguments); both must match the
+job and claim exactly. The transition then clears the claim. Queued/running
+cancellation, queued terminalization, and orphan recovery also clear it while
+preserving the first committed `cancel`, `invalidated`, or `session-ended`
+tombstone instead of overwriting its close reason. Thus deleting a migration marker and its child
 binding cannot turn a bound attempt into an ordinary unbound job; missing or
 contradictory class or claim evidence fails closed. Historical records that
-predate the reservation class remain eligible only when their exact persisted
-child binding or rollback evidence proves the transition—absence alone is
-deliberately not guessed.
+predate the reservation class remain eligible only when both the canonical job
+omits the class and its exact owner binding has the legacy format, with any
+child binding or rollback evidence also validated—one missing field or absence
+alone is deliberately not guessed.
 
 Migration requires: closed + `session-ended`; exact canonical workspace and
 parent; exact persisted child ID/thread/path/Role; valid anchor/current jobs;

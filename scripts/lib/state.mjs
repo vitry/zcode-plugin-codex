@@ -366,7 +366,6 @@ export function createStateStore(options) {
         if (matches.length !== 1) return { kind: 'missing' };
         const record = matches[0];
         if (record.state === 'closed') {
-          if (record.closeReason !== 'cancel') throw closedRescueBinding();
           return { kind: 'closed', binding: structuredClone(record) };
         }
         const lockIdentity = await captureStateLockIdentity(storage);
@@ -647,8 +646,13 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     if (job.status === 'queued' && nextStatus === 'running' && job.rescueExecutionClaim !== undefined) {
       if (!validRescueExecutionClaim(job.rescueExecutionClaim, job)) throw invalidRescueBinding();
       executionClaim = job.rescueExecutionClaim;
-      if (updated.workerLeaseId !== executionClaim.workerLeaseId || updated.childPid !== job.childPid) throw invalidRescueBinding();
+      if (!Object.hasOwn(effectivePatch, 'childPid') || !Object.hasOwn(effectivePatch, 'workerLeaseId')
+        || effectivePatch.workerLeaseId !== executionClaim.workerLeaseId
+        || effectivePatch.workerLeaseId !== job.workerLeaseId
+        || effectivePatch.childPid !== job.childPid) throw invalidRescueBinding();
     }
+    if (job.status === 'queued' && nextStatus === 'running' && job.command === 'rescue' && job.readOnly === false
+      && job.rescueReservationKind !== undefined && executionClaim === undefined) throw invalidRescueBinding();
     const queuedClassification = job.status === 'queued' && (nextStatus === 'running' || TERMINAL_STATUSES.has(nextStatus))
       && executionClaim === undefined ? await classifyQueuedRescueTransitionLocked(storage, job, requestedRollback) : undefined;
     if (nextStatus === 'running' && (queuedClassification?.kind === 'ordinary-unadvanced'
@@ -683,7 +687,6 @@ async function closeCurrentRescueBindingForCancellationLocked(storage, job) {
   if (matches.length !== 1) throw invalidRescueBinding();
   const record = matches[0];
   if (record.state === 'closed') {
-    if (record.closeReason !== 'cancel') throw closedRescueBinding();
     return;
   }
   const lockIdentity = await captureStateLockIdentity(storage);
@@ -927,7 +930,7 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
   const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, true);
   const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
   if (matches.length === 0) {
-    if (reservationEvidence?.kind !== 'unbound') throw invalidRescueBinding();
+    if (!['legacy', 'unbound'].includes(reservationEvidence?.kind)) throw invalidRescueBinding();
     return { kind: 'ordinary-unbound' };
   }
   if (matches.length !== 1) throw invalidRescueBinding();

@@ -365,10 +365,21 @@ async function reserveOrphan(context, options = {}) {
   const ownerSessionId = options.ownerSessionId ?? 'departed-owner';
   const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId, ownerTurnId: options.ownerTurnId ?? 'departed-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   const workerLeaseId = options.workerLeaseId ?? 'd'.repeat(64);
-  await store.claimJobWorker(context.workspace, queued.id, { childPid: 999999, workerLeaseId });
-  let running = await store.transitionJob(context.workspace, queued.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: options.zcodeSessionId ?? 'orphan-session' });
+  let running = await startWritableRescueForTest(store, context.workspace, queued, {
+    childPid: 999999, workerLeaseId, startedAt: new Date().toISOString(),
+    zcodeSessionId: options.zcodeSessionId ?? 'orphan-session',
+  });
   running = await store.transitionJob(context.workspace, queued.id, ['running'], 'running', { inputId: 'accepted-input', startRevision: 7, beforeMessageIds: ['historical'] });
   return { job: running, store, workerLeaseId };
+}
+
+/** @param {any} store @param {string} workspace @param {any} job @param {Record<string,unknown>} [patch] */
+async function startWritableRescueForTest(store, workspace, job, patch = {}) {
+  const childPid = patch.childPid ?? 999_999_999; const workerLeaseId = patch.workerLeaseId ?? job.id;
+  const claimed = await store.claimJobWorkerForExecution(workspace, job.id, { childPid, workerLeaseId });
+  return store.transitionJob(workspace, job.id, ['queued'], 'running', {
+    ...patch, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+  });
 }
 
 /** @param {string} sessionId @param {string} [turnId] */
@@ -568,7 +579,7 @@ for (const scenario of ['explicit-resume', 'choice-resume', 'choice-fresh']) tes
   const parentSessionId = `legacy-first-${scenario}-parent`; const childId = `legacy-first-${scenario}-child`; const zcodeSessionId = `legacy-session-${scenario}`;
   const candidate = await store.reserveJob({ workspace, ownerSessionId: parentSessionId, ownerTurnId: 'candidate-turn', command: 'rescue', readOnly: false,
     permissionSnapshot: { permissionMode: 'workspace-write' } });
-  await store.transitionJob(workspace, candidate.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId });
+  await startWritableRescueForTest(store, workspace, candidate, { startedAt: new Date().toISOString(), zcodeSessionId });
   await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
   const identity = createIdentityStore({ dataRoot: context.dataRoot });
   await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-a', workspace, permissionMode: 'workspace-write',
@@ -735,7 +746,7 @@ test('reserved execution rejects an old unadvanced adoption before prompt or ZCo
   const reservation = (turn) => ({ workspace, ownerSessionId: parentSessionId, ownerTurnId: turn,
     command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
   const store = createStateStore({ dataRoot: context.dataRoot }); const candidate = await store.reserveJob(reservation('candidate'));
-  const runningCandidate = await store.transitionJob(workspace, candidate.id, ['queued'], 'running', {
+  const runningCandidate = await startWritableRescueForTest(store, workspace, candidate, {
     startedAt: new Date().toISOString(), zcodeSessionId: 'old-adoption-zcode-session',
   });
   const completedCandidate = await store.finishJob(workspace, runningCandidate.id, ['running'], 'succeeded');
@@ -790,7 +801,7 @@ test('reserved execution losing revoke race before its atomic claim has no promp
     agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
   const store = createStateStore({ dataRoot: context.dataRoot });
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation('first'), executor });
-  await store.transitionJob(workspace, first.job.id, ['queued'], 'running', {
+  await startWritableRescueForTest(store, workspace, first.job, {
     startedAt: new Date().toISOString(), zcodeSessionId: 'execution-claim-race-session',
   });
   await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
@@ -838,7 +849,7 @@ test('reserved execution winning its atomic claim remains authorized across a la
     agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
   const store = createStateStore({ dataRoot: context.dataRoot });
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation('first'), executor });
-  await store.transitionJob(workspace, first.job.id, ['queued'], 'running', {
+  await startWritableRescueForTest(store, workspace, first.job, {
     startedAt: new Date().toISOString(), zcodeSessionId: 'execution-claim-winner-session',
   });
   await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
@@ -872,6 +883,57 @@ test('reserved execution winning its atomic claim remains authorized across a la
   assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
   await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId }),
     { code: 'RESCUE_BINDING_CLOSED' });
+});
+
+test('background interruption after claim preserves the binding revoke and terminalizes without ZCode RPC', async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const parentSessionId = 'execution-claim-cancel-parent'; const childId = 'execution-claim-cancel-child';
+  /** @param {string} turn */
+  const reservation = (turn) => ({ workspace, ownerSessionId: parentSessionId, ownerTurnId: turn,
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const executor = { parentSessionId, parentTurnId: 'origin', agentId: childId, agentType: 'zcode-rescue',
+    agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation('first'), executor });
+  const firstClaim = await store.claimJobWorkerForExecution(workspace, first.job.id, {
+    childPid: 999_999_999, workerLeaseId: '7'.repeat(64),
+  });
+  await store.transitionJob(workspace, first.job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), zcodeSessionId: 'execution-claim-cancel-session',
+    childPid: firstClaim.childPid, workerLeaseId: firstClaim.workerLeaseId,
+  });
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation('second'),
+    executor, operationId: first.binding.operationId });
+  const spec = { command: 'rescue', task: 'cancel after claim', model: 'fake2/other', effort: 'xhigh',
+    resumeSessionId: 'execution-claim-cancel-session', candidateJobId: first.job.id };
+  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'job-specs', `${continuation.job.id}.json`), {
+    version: 1, jobId: continuation.job.id, ownerSessionId: parentSessionId, workspace, digest, spec,
+  });
+  const capability = await context.identity.createExecutionCapability({ jobId: continuation.job.id,
+    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', specDigest: digest,
+    permissionSnapshot: continuation.job.permissionSnapshot });
+  const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'cancel after claim');
+  const record = join(context.directory, 'execution-claim-cancel.jsonl'); await writeFile(record, '');
+  const observed = /** @type {{closed:any}} */ ({ closed: null });
+  await assert.rejects(runCompanion(['run-reserved-job', continuation.job.id], {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, signal: controller.signal,
+    authorization: { executionCapability: capability, jobId: continuation.job.id },
+    dependencies: { testOnlyAfterExecutionClaim: async () => {
+      observed.closed = await store.closeRescueBindingForChild({ workspace, parentSessionId, executorAgentId: childId,
+        operationId: continuation.binding.operationId, reason: 'invalidated' });
+      controller.abort(interruption);
+    } },
+  }), (error) => error === interruption);
+  const cancelled = await store.readJob(workspace, continuation.job.id);
+  assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.rescueExecutionClaim, undefined);
+  assert.ok(observed.closed);
+  const repeated = await store.closeRescueBindingForChild({ workspace, parentSessionId, executorAgentId: childId,
+    operationId: continuation.binding.operationId, reason: 'invalidated' });
+  assert.deepEqual(repeated.binding, observed.closed.binding);
+  assert.equal((await readFile(record, 'utf8')).trim(), '');
 });
 
 for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding']) test(['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
@@ -2100,11 +2162,14 @@ test('child-loss teardown rejects unsafe recorded pids before probing or signali
 });
 
 test('an already-aborted foreground invocation cancels its reservation before launcher discovery', async () => {
-  const context = await fixture(); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'before discovery'); controller.abort(interruption); let discoveries = 0;
-  await assert.rejects(runCompanion(['rescue', '--fresh', 'task'], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'turn-1', permissionMode: 'workspace-write' }, signal: controller.signal, dependencies: { discoverLaunch: async () => { discoveries += 1; throw new Error('must not discover'); } } }), (error) => error === interruption);
-  assert.equal(discoveries, 0);
+  const context = await fixture(); const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'before discovery'); controller.abort(interruption); let discoveries = 0; let claimed = false;
+  await assert.rejects(runCompanion(['rescue', '--fresh', 'task'], { cwd: context.workspace, env: context.env, caller: { sessionId: 'codex-session', turnId: 'turn-1', permissionMode: 'workspace-write' }, signal: controller.signal, dependencies: {
+    testOnlyAfterExecutionClaim: async () => { claimed = true; },
+    discoverLaunch: async () => { discoveries += 1; throw new Error('must not discover'); },
+  } }), (error) => error === interruption);
+  assert.equal(claimed, true); assert.equal(discoveries, 0);
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
-  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled');
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled'); assert.equal(jobs[0].rescueExecutionClaim, undefined);
 });
 
 test('real CLI runs foreground review/adversarial/rescue and persists private artifacts', async () => {
@@ -2801,7 +2866,7 @@ test('same-parent-turn bound continuation rejects a replaced operation and ancho
           reservation: { workspace: context.workspace, ownerSessionId: prepared.parentSessionId, ownerTurnId: prepared.parentTurnId, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
           executor: prepared.executor,
         });
-        await store.transitionJob(context.workspace, replacement.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'replacement-session' });
+        await startWritableRescueForTest(store, context.workspace, replacement.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'replacement-session' });
         await store.finishJob(context.workspace, replacement.job.id, ['running'], 'succeeded');
         jobsAfterMutation = (await store.listJobs(context.workspace)).length;
       },
@@ -3465,7 +3530,7 @@ test('real CLI cancellation waits for stop acknowledgement and reports stop fail
     const created = await client.createSession({ workspace: context.workspace }); await client.close();
     const store = createStateStore({ dataRoot: context.dataRoot });
     const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
-    await store.transitionJob(context.workspace, queued.id, ['queued'], 'running', { zcodeSessionId: created.session.sessionId });
+    await startWritableRescueForTest(store, context.workspace, queued, { zcodeSessionId: created.session.sessionId });
     const cancelled = await companion(context, ['cancel', queued.id]);
     if (stopFails) {
       assert.notEqual(cancelled.code, 0); assert.equal(cancelled.json.error.code, 'JOB_CANCEL_FAILED');
@@ -3667,7 +3732,7 @@ test('real CLI status wait stays alive until its timeout', async () => {
 test('real CLI status wait exits immediately without protocol output on SIGINT', { skip: windowsRealSignalSkip }, async (t) => {
   const context = await fixture(); const marker = join(context.directory, 'status-wait.txt');
   const store = createStateStore({ dataRoot: context.dataRoot });
-  const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const queued = await store.reserveJob({ workspace: context.workspace, ownerSessionId: 'codex-session', ownerTurnId: 'turn-1', command: 'review', readOnly: true, permissionSnapshot: { permissionMode: 'workspace-write' } });
   await store.transitionJob(context.workspace, queued.id, ['queued'], 'running', { childPid: process.pid, zcodeSessionId: 'status-wait-session' });
   const child = spawn(process.execPath, ['--require', statusWaitProbe, cli, 'status', queued.id, '--wait', '--timeout-ms', '10000'], {
     cwd: context.workspace,

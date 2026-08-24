@@ -235,7 +235,13 @@ async function brandedAuthority(dataRoot, workspace, kind, turn = 'turn-a', bind
 }
 
 async function makeEligible(store, workspace, job, sessionId) {
-  return store.transitionJob(workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: sessionId });
+  const claimed = await store.claimJobWorkerForExecution(workspace, job.id, {
+    childPid: 999_999_999, workerLeaseId: job.id,
+  });
+  return store.transitionJob(workspace, job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), zcodeSessionId: sessionId,
+    childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+  });
 }
 
 async function bindingFiles(directory) {
@@ -613,8 +619,12 @@ test('a migrated continuation removes its queued rollback marker when running co
   const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
     executor: hook, operationId: closed.binding.operationId, migrationProof: proof.migrationProof });
   assert.ok(continuation.job.rescueMigrationRollback);
+  const claimed = await store.claimJobWorkerForExecution(workspace, continuation.job.id, {
+    childPid: 999_999_999, workerLeaseId: '8'.repeat(64),
+  });
   const running = await store.transitionJob(workspace, continuation.job.id, ['queued'], 'running', {
     startedAt: new Date().toISOString(), zcodeSessionId: 'running-marker-session',
+    childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
   });
   assert.equal(running.rescueMigrationRollback, undefined);
   assert.equal((await store.readJob(workspace, continuation.job.id)).rescueMigrationRollback, undefined);
@@ -785,7 +795,12 @@ for (const transition of ['execution', 'failed', 'controller', 'recovery']) test
   const { dataRoot, workspace, store } = await fixture(); const job = await store.reserveJob(reservation(workspace)); let settled;
   if (transition === 'execution') {
     assert.equal(await store.resolveQueuedRescueMigrationRollback(workspace, job.id, undefined, 'execution'), undefined);
-    settled = await store.transitionJob(workspace, job.id, ['queued'], 'running');
+    const claimed = await store.claimJobWorkerForExecution(workspace, job.id, {
+      childPid: 999_999_999, workerLeaseId: '3'.repeat(64),
+    });
+    settled = await store.transitionJob(workspace, job.id, ['queued'], 'running', {
+      childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+    });
   } else if (transition === 'failed') settled = await store.finishJob(workspace, job.id, ['queued'], 'failed', { error: { message: 'ordinary failure' }, exitCode: 1 });
   else if (transition === 'controller') settled = await createJobController({ store, dataRoot }).cancel(workspace, job.id, job.ownerSessionId);
   else {
@@ -917,6 +932,77 @@ test('queued to running accepts only the exact worker lease that owns the execut
   assert.equal(queued.workerLeaseId, claimed.workerLeaseId);
 });
 
+for (const omitted of ['both worker fields', 'childPid', 'workerLeaseId']) test(`queued to running requires the caller to submit ${omitted} explicitly for an execution claim`, async () => {
+  const { workspace, store } = await fixture(); const hook = executor(workspace);
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  const claimed = await store.claimJobWorkerForExecution(workspace, fresh.job.id, {
+    childPid: 999_999_999, workerLeaseId: '1'.repeat(64),
+  });
+  const patch = { startedAt: new Date().toISOString() };
+  if (omitted === 'childPid') patch.workerLeaseId = claimed.workerLeaseId;
+  if (omitted === 'workerLeaseId') patch.childPid = claimed.childPid;
+  await assert.rejects(store.transitionJob(workspace, fresh.job.id, ['queued'], 'running', patch),
+    { code: 'RESCUE_BINDING_INVALID' });
+  const queued = await store.readJob(workspace, fresh.job.id);
+  assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueExecutionClaim, claimed.rescueExecutionClaim);
+});
+
+for (const reservationKind of ['unbound', 'bound']) test(`modern ${reservationKind} writable Rescue cannot enter running without an execution claim`, async () => {
+  const { workspace, store } = await fixture(); const hook = executor(workspace);
+  const job = reservationKind === 'unbound'
+    ? await store.reserveJob(reservation(workspace))
+    : (await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook })).job;
+  await assert.rejects(store.transitionJob(workspace, job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), childPid: 999_999_999, workerLeaseId: '2'.repeat(64),
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal((await store.readJob(workspace, job.id)).status, 'queued');
+});
+
+test('historical writable Rescue lacking reservation class retains direct queued to running compatibility', async () => {
+  const { dataRoot, workspace, store } = await fixture();
+  const job = await store.reserveJob(reservation(workspace));
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const path = join(storage.directory, 'jobs', `${job.id}.json`);
+  const historical = JSON.parse(await readFile(path, 'utf8')); delete historical.rescueReservationKind;
+  await writeFile(path, `${JSON.stringify(historical, null, 2)}\n`);
+  const ownerRoot = join(storage.directory, 'job-owners'); let ownerBindingPath;
+  for (const entry of await readdir(ownerRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{64}$/u.test(entry.name)) continue;
+    const candidate = join(ownerRoot, entry.name, `${job.id}.json`);
+    try { await readFile(candidate); ownerBindingPath = candidate; break; }
+    catch (error) { if (error?.code !== 'ENOENT') throw error; }
+  }
+  assert.ok(ownerBindingPath); await writeFile(ownerBindingPath, `${JSON.stringify({
+    jobId: job.id, ownerSessionId: job.ownerSessionId, version: 1,
+  }, null, 2)}\n`);
+  const running = await store.transitionJob(workspace, job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), childPid: 999_999_999, workerLeaseId: '3'.repeat(64),
+  });
+  assert.equal(running.status, 'running'); assert.equal(running.rescueExecutionClaim, undefined);
+});
+
+for (const closeReason of ['invalidated', 'session-ended']) for (const phase of ['queued', 'running']) test(`claim-first ${phase} cancellation preserves a ${closeReason} binding tombstone`, async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  const claimed = await store.claimJobWorkerForExecution(workspace, fresh.job.id, {
+    childPid: 999_999_999, workerLeaseId: '4'.repeat(64),
+  });
+  if (phase === 'running') await store.transitionJob(workspace, fresh.job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+    zcodeSessionId: 'claim-first-cancel-session',
+  });
+  const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: fresh.binding.operationId, reason: closeReason });
+  const cancelled = phase === 'queued'
+    ? await store.finishJob(workspace, fresh.job.id, ['queued'], 'cancelled', { exitCode: null })
+    : await createJobController({ store, dataRoot, stopSession: async () => {} })
+      .cancel(workspace, fresh.job.id, fresh.job.ownerSessionId);
+  assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.rescueExecutionClaim, undefined);
+  const repeated = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: fresh.binding.operationId, reason: closeReason });
+  assert.deepEqual(repeated.binding, closed.binding);
+});
+
 test('orphan recovery terminalizes a revoked execution claim without reopening its binding', async () => {
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
@@ -965,7 +1051,14 @@ for (const kind of ['active continuation', 'legacy adoption']) for (const action
   const legacy = JSON.parse(await readFile(jobPath, 'utf8')); delete legacy.rescueContinuationOrigin;
   await writeFile(jobPath, `${JSON.stringify(legacy, null, 2)}\n`);
   let settled;
-  if (action === 'running') settled = await store.transitionJob(workspace, queued.id, ['queued'], 'running');
+  if (action === 'running') {
+    const claimed = await store.claimJobWorkerForExecution(workspace, queued.id, {
+      childPid: 999_999_999, workerLeaseId: '6'.repeat(64),
+    });
+    settled = await store.transitionJob(workspace, queued.id, ['queued'], 'running', {
+      childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+    });
+  }
   else if (action === 'controller cancel') settled = await createJobController({ store, dataRoot }).cancel(workspace, queued.id, queued.ownerSessionId);
   else {
     await store.claimJobWorker(workspace, queued.id, { childPid: 999_999_999, workerLeaseId: '7'.repeat(64) });
@@ -1067,7 +1160,12 @@ test('legacy execution preflight adopts exact markerless rollback proof before t
   const resolved = await store.resolveQueuedRescueMigrationRollback(workspace, continuation.job.id, legacyRollback, 'execution');
   assert.deepEqual(resolved, continuation.migrationRollback);
   assert.deepEqual((await store.readJob(workspace, continuation.job.id)).rescueMigrationRollback, continuation.migrationRollback);
-  const running = await store.transitionJob(workspace, continuation.job.id, ['queued'], 'running');
+  const claimed = await store.claimJobWorkerForExecution(workspace, continuation.job.id, {
+    childPid: 999_999_999, workerLeaseId: '5'.repeat(64),
+  });
+  const running = await store.transitionJob(workspace, continuation.job.id, ['queued'], 'running', {
+    childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+  });
   assert.equal(running.status, 'running'); assert.equal(running.rescueMigrationRollback, undefined);
 });
 
