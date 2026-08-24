@@ -182,7 +182,7 @@ async function reconcileOrphan(input, job) {
 function hasBoundary(job) { return typeof job.inputId === 'string' && Number.isSafeInteger(job.startRevision) && Array.isArray(job.beforeMessageIds); }
 /** Resolve exact rollback evidence for atomic queued terminalization. @param {any} input @param {any} job */
 async function queuedMigrationRollback(input, job) {
-  return readQueuedRescueMigrationRollback({ dataRoot: input.dataRoot, workspace: input.workspace, job,
+  return readQueuedRescueMigrationRollback({ dataRoot: input.dataRoot, workspace: input.workspace, job, store: input.store,
     invalid: () => recoveryError('Queued migration specification is invalid.') });
 }
 /** @param {any} input @param {any} job @param {unknown} error */

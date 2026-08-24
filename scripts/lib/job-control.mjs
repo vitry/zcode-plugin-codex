@@ -156,7 +156,8 @@ async function performCancellation(input, attempts, election) {
   if (job.status === 'queued') {
     if (job.workerLeaseId) throw cancelError(job.id, 'The claimed worker is still starting; retry after it advances or recovery proves it orphaned.');
     const rollback = await readQueuedRescueMigrationRollback({ dataRoot: input.options.dataRoot ?? input.options.store.dataRoot,
-      workspace: input.workspace, job, invalid: () => cancelError(job.id, 'Queued migration specification is invalid.') });
+      workspace: input.workspace, job, store: input.options.store,
+      invalid: () => cancelError(job.id, 'Queued migration specification is invalid.') });
     let cancelled;
     try { cancelled = rollback
       ? await input.options.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'cancelled', { exitCode: null })

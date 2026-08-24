@@ -720,6 +720,76 @@ test('ordinary controller cancel adopts markerless legacy job-spec evidence and 
   assert.deepEqual(JSON.parse(await readFile(bindingPath, 'utf8')).records[0], closed.binding);
 });
 
+for (const specState of ['missing', 'migration fields stripped']) test(`ordinary controller cancel fails closed for a markerless migrated successor with ${specState} legacy spec`, async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, `legacy-${specState.replaceAll(' ', '-')}-session`);
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: first.binding.operationId, reason: 'session-ended' });
+  const proof = await store.readRescueBindingMigrationProof({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, childAgentType: hook.agentType, originWorkspace: workspace,
+    executionWorkspace: workspace, agentPath: hook.agentPath });
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const jobPath = join(storage.directory, 'jobs', `${continuation.job.id}.json`);
+  const markerless = JSON.parse(await readFile(jobPath, 'utf8')); delete markerless.rescueMigrationRollback;
+  await writeFile(jobPath, `${JSON.stringify(markerless, null, 2)}\n`);
+  if (specState === 'migration fields stripped') {
+    const spec = { command: 'rescue' }; const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
+    const specDirectory = join(storage.directory, 'job-specs'); await mkdir(specDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(join(specDirectory, `${continuation.job.id}.json`), `${JSON.stringify({ version: 1,
+      jobId: continuation.job.id, ownerSessionId: continuation.job.ownerSessionId, workspace, digest, spec }, null, 2)}\n`, { mode: 0o600 });
+  }
+  await assert.rejects(createJobController({ store, dataRoot }).cancel(workspace, continuation.job.id, hook.parentSessionId),
+    { code: 'JOB_CANCEL_FAILED' });
+  assert.equal((await store.readJob(workspace, continuation.job.id)).status, 'queued');
+  const [bindingPath] = await bindingFiles(storage.directory);
+  assert.deepEqual(JSON.parse(await readFile(bindingPath, 'utf8')).records[0], continuation.binding);
+});
+
+for (const bindingState of ['unbound', 'fresh-bound', 'active-bound']) test(`ordinary controller still cancels a genuinely ${bindingState} non-migration queued Rescue job`, async () => {
+  const { dataRoot, workspace, store } = await fixture();
+  const hook = executor(workspace); let job;
+  if (bindingState === 'unbound') job = await store.reserveJob(reservation(workspace));
+  else {
+    const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+    if (bindingState === 'fresh-bound') job = first.job;
+    else {
+      await makeEligible(store, workspace, first.job, 'ordinary-active-bound-session');
+      await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+      job = (await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+        executor: hook, operationId: first.binding.operationId })).job;
+    }
+  }
+  const cancelled = await createJobController({ store, dataRoot }).cancel(workspace, job.id, job.ownerSessionId);
+  assert.equal(cancelled.status, 'cancelled');
+});
+
+test('recovery fails closed for a markerless migrated successor with a missing legacy spec', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'missing-recovery-evidence-session');
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: first.binding.operationId, reason: 'session-ended' });
+  const proof = await store.readRescueBindingMigrationProof({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, childAgentType: hook.agentType, originWorkspace: workspace,
+    executionWorkspace: workspace, agentPath: hook.agentPath });
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const jobPath = join(storage.directory, 'jobs', `${continuation.job.id}.json`);
+  const markerless = JSON.parse(await readFile(jobPath, 'utf8')); delete markerless.rescueMigrationRollback;
+  await writeFile(jobPath, `${JSON.stringify(markerless, null, 2)}\n`);
+  await store.claimJobWorker(workspace, continuation.job.id, { childPid: 999_999_999, workerLeaseId: '9'.repeat(64) });
+  await scavengeWritableJobs({ store, dataRoot, workspace, createClient: async () => { throw new Error('orphaned worker'); } });
+  assert.equal((await store.readJob(workspace, continuation.job.id)).status, 'queued');
+  const [bindingPath] = await bindingFiles(storage.directory);
+  assert.deepEqual(JSON.parse(await readFile(bindingPath, 'utf8')).records[0], continuation.binding);
+});
+
 for (const [field, mutate] of [
   ['anchorJobId', (binding) => { binding.anchorJobId = 'f'.repeat(64); }],
   ['permissionMode', (binding) => { binding.permissionMode = 'read-only'; }],

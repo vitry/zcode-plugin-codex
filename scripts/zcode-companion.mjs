@@ -28,7 +28,7 @@ import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { serializeRescueProgressRelay } from './lib/rescue-progress-relay.mjs';
-import { legacyRescueMigrationRollbackFromSpec } from './lib/rescue-migration.mjs';
+import { legacyRescueMigrationRollbackFromSpec, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
 import { createStateStore, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
@@ -792,7 +792,7 @@ async function executeWithWorkerLease(context) {
 async function executeReserved(context) {
   const { cwd, env, dataRoot, store, job, spec } = context;
   let client; let resumeSucceeded = false;
-  const migrationRollback = migrationRollbackForExecution(spec, job);
+  const migrationRollback = await migrationRollbackForExecution(store, cwd, spec, job);
   try {
     context.signal?.throwIfAborted();
     const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
@@ -869,7 +869,7 @@ function publicJob(job, ownerSessionId, projection) {
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback;
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin;
   if (projection !== 'detail') delete visible.logFile;
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
@@ -884,7 +884,7 @@ function publicJob(job, ownerSessionId, projection) {
   return { ...visible, owned: true, owner: 'same-owner' };
 }
 /** @param {any} job */
-function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; return visible; }
+function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; return visible; }
 /** @param {any} job */
 function terminalResultJob(job) {
   const visible = {
@@ -924,12 +924,11 @@ function migrationRollbackFromSpec(spec, job) {
   return legacyRescueMigrationRollbackFromSpec(spec, job,
     () => new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }));
 }
-/** Prefer the state-validated queued marker; old specs remain readable only for in-flight upgrade compatibility. @param {Record<string,string>} spec @param {any} job */
-function migrationRollbackForExecution(spec, job) {
+/** Prefer the state-validated queued marker; old specs remain readable only for in-flight upgrade compatibility. @param {any} store @param {string} workspace @param {Record<string,string>} spec @param {any} job */
+async function migrationRollbackForExecution(store, workspace, spec, job) {
   const legacy = migrationRollbackFromSpec(spec, job);
-  if (job.rescueMigrationRollback === undefined) return legacy;
-  if (legacy !== undefined && !sameJson(job.rescueMigrationRollback, legacy)) throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' });
-  return job.rescueMigrationRollback;
+  return resolveQueuedRescueMigrationRollback({ store, workspace, job,
+    invalid: () => new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }) }, legacy);
 }
 /** @param {any} spec */
 function digestSpec(spec) { return createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex'); }

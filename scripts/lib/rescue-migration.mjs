@@ -19,19 +19,31 @@ export function legacyRescueMigrationRollbackFromSpec(spec, job, invalid) {
     priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt, priorVersion };
 }
 
-/** Prefer the durable marker and read legacy job-spec evidence only for pre-marker in-flight jobs. @param {{dataRoot:string,workspace:string,job:any,invalid:()=>Error}} input */
+/** Resolve rollback evidence through the StateStore's exact locked binding/job classification. @param {{store:any,workspace:string,job:any,invalid:()=>Error}} input @param {any} legacyRollback */
+export async function resolveQueuedRescueMigrationRollback(input, legacyRollback) {
+  try { return await input.store.resolveQueuedRescueMigrationRollback(input.workspace, input.job.id, legacyRollback); }
+  catch (error) {
+    if (/** @type {any} */ (error)?.code === 'RESCUE_BINDING_INVALID') throw input.invalid();
+    throw error;
+  }
+}
+
+/** Prefer the durable marker and read legacy job-spec evidence only for pre-marker in-flight jobs. @param {{dataRoot:string,workspace:string,job:any,store:any,invalid:()=>Error}} input */
 export async function readQueuedRescueMigrationRollback(input) {
-  if (input.job.rescueMigrationRollback !== undefined) return input.job.rescueMigrationRollback;
+  if (input.job.rescueMigrationRollback !== undefined) return resolveQueuedRescueMigrationRollback(input, undefined);
   const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
   const root = resolve(storage.directory, 'job-specs'); const path = resolve(root, `${input.job.id}.json`);
   if (!path.startsWith(`${root}${sep}`)) throw input.invalid();
   let record;
   try { record = await readBoundedJsonFile(storage.directory, path, 512 * 1024, { requirePrivatePermissions: true }); }
-  catch (error) { if (/** @type {any} */ (error)?.code === 'ENOENT') return undefined; throw error; }
+  catch (error) {
+    if (/** @type {any} */ (error)?.code === 'ENOENT') return resolveQueuedRescueMigrationRollback(input, undefined);
+    throw error;
+  }
   const spec = record?.spec;
   const digest = spec && typeof spec === 'object' && !Array.isArray(spec)
     ? createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex') : null;
   if (record?.version !== 1 || record.jobId !== input.job.id || record.ownerSessionId !== input.job.ownerSessionId
     || record.workspace !== input.job.workspace || record.digest !== digest) throw input.invalid();
-  return legacyRescueMigrationRollbackFromSpec(spec, input.job, input.invalid);
+  return resolveQueuedRescueMigrationRollback(input, legacyRescueMigrationRollbackFromSpec(spec, input.job, input.invalid));
 }
