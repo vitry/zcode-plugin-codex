@@ -291,6 +291,11 @@ export async function qualifyCodexRescueLegacyAdoptionEvidence(input) {
   const parent = parseArray(input.parentRolloutJson, 'legacy-adoption-parent'); const child = parseArray(input.childRolloutJson, 'legacy-adoption-child');
   const transcript = parseArray(input.appServerTranscriptJson, 'legacy-adoption-app-server'); const hooks = parseArray(input.hookLifecycleJson, 'legacy-adoption-hooks');
   const peer = parseArray(input.fakePeerJson, 'legacy-adoption-peer'); const firstLifecycles = parseArray(input.firstLifecyclesJson, 'legacy-adoption-first-modes');
+  const ordinary = parseLegacyCapturedObject(input.ordinaryIsolationJson, 'legacy-adoption-ordinary-isolation');
+  const bound = parseLegacyCapturedObject(input.boundContinuationJson, 'legacy-adoption-bound-continuation');
+  if (typeof input.preparationRecordBytes !== 'string' || !input.preparationRecordBytes.endsWith('\n') || Buffer.byteLength(input.preparationRecordBytes) > MAX_TEXT_BYTES) mismatch('legacy-adoption-preparation', 'Legacy preparation bytes are invalid.');
+  let preparation; try { preparation = JSON.parse(input.preparationRecordBytes); } catch { mismatch('legacy-adoption-preparation', 'Legacy preparation bytes are malformed.'); }
+  assertLegacyAdoptionPrivacy({ parent, child, transcript, peer, ordinary, firstLifecycles, bound }, preparation?.envelope?.task);
   if (hooks.length !== 0) mismatch('legacy-adoption-hooks', 'Legacy adoption must not reconstruct historical Hook lifecycle records.');
 
   const parentCalls = parent.filter((event) => ['custom_tool_call', 'function_call'].includes(event?.payload?.type));
@@ -337,7 +342,6 @@ export async function qualifyCodexRescueLegacyAdoptionEvidence(input) {
   if (!base || base.agentPath !== expected.agentPath || base.agentRole !== 'zcode-rescue' || base.cwd !== expected.originWorkspace
     || base.status.type !== 'notLoaded' || !isDeepStrictEqual(base, reread)) mismatch('legacy-adoption-host', 'Legacy adoption did not preserve the exact unloaded named base child.');
 
-  let ordinary; try { ordinary = JSON.parse(input.ordinaryIsolationJson); } catch { mismatch('legacy-adoption-ordinary-isolation', 'Ordinary-child evidence is malformed.'); }
   const ordinaryChildren = children.filter((candidate) => ['default', 'explorer'].includes(candidate.agentRole));
   const ordinaryKeys = ['bindingTranscript', 'boundBindingBytes', 'faultExecutorArtifacts', 'planResult', 'resolverTranscript', 'version'];
   const baseId = expected.childThreadId; const boundHost = children.find((candidate) => candidate.agentPath === '/root/zcode_rescue_task_2');
@@ -386,8 +390,6 @@ export async function qualifyCodexRescueLegacyAdoptionEvidence(input) {
     }
   }
 
-  if (typeof input.preparationRecordBytes !== 'string' || !input.preparationRecordBytes.endsWith('\n') || Buffer.byteLength(input.preparationRecordBytes) > MAX_TEXT_BYTES) mismatch('legacy-adoption-preparation', 'Legacy preparation bytes are invalid.');
-  let preparation; try { preparation = JSON.parse(input.preparationRecordBytes); } catch { mismatch('legacy-adoption-preparation', 'Legacy preparation bytes are malformed.'); }
   const pathDigest = createHash('sha256').update(expected.agentPath).digest('hex');
   const expectedPreparationKey = createHash('sha256').update(JSON.stringify([expected.parentSessionId, expected.parentTurnId, expected.executionWorkspace, 'rescue'])).digest('hex');
   const created = Date.parse(preparation?.createdAt); const expires = Date.parse(preparation?.expiresAt); const consumed = Date.parse(preparation?.consumedAt);
@@ -473,7 +475,6 @@ export async function qualifyCodexRescueLegacyAdoptionEvidence(input) {
       || lifecycleBinding.anchorJobId !== job.id || lifecycleBinding.currentJobId !== job.id) mismatch('legacy-adoption-first-modes', 'First adoption job or session evidence is invalid.');
     parsedLifecycles.set(lifecycle.mode, { binding: lifecycleBinding, preparation: lifecyclePreparation });
   }
-  let bound; try { bound = JSON.parse(input.boundContinuationJson); } catch { mismatch('legacy-adoption-bound-continuation', 'Bound continuation evidence is malformed.'); }
   const boundKeys = ['bindingAfterBytes', 'bindingBeforeBytes', 'jobRecordBytes', 'peerCalls', 'preparationRecordBytes', 'routeTranscript', 'version'];
   let boundBefore; let boundAfter; let boundPreparation; let boundJob;
   try {
@@ -524,6 +525,39 @@ export async function qualifyCodexRescueLegacyAdoptionEvidence(input) {
     agentPath: expected.agentPath, originWorkspace: expected.originWorkspace, executionWorkspace: expected.executionWorkspace,
     followupCount: 1, spawnCount: 0, hookFabricationCount: 0, ordinaryExecutorResolutionCount: 0,
     firstAdoptionModes: modes, boundContinuationChecked: true };
+}
+
+function parseLegacyCapturedObject(text, code) {
+  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > MAX_ROLLOUT_BYTES) mismatch(code, 'Captured evidence is absent or oversized.');
+  let value; try { value = JSON.parse(text); } catch { mismatch(code, 'Captured evidence is malformed.'); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) mismatch(code, 'Captured evidence is not an object.');
+  const pending = [{ value, depth: 0 }]; let count = 0;
+  while (pending.length > 0) {
+    const current = pending.pop(); count += 1;
+    if (count > MAX_EVENTS_PER_ROLLOUT || current.depth > MAX_LEGACY_JSON_DEPTH) mismatch(code, 'Captured evidence exceeds its structural bound.');
+    if (current.value && typeof current.value === 'object') {
+      for (const child of Object.values(current.value)) if (child && typeof child === 'object') pending.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+  return value;
+}
+
+function assertLegacyAdoptionPrivacy({ parent, child, transcript, peer, ordinary, firstLifecycles, bound }, task) {
+  if (typeof task !== 'string' || Buffer.byteLength(task, 'utf8') > MAX_RESCUE_TASK_BYTES) mismatch('legacy-adoption-preparation', 'Legacy preparation task is invalid.');
+  const privateFirst = firstLifecycles.map((lifecycle) => lifecycle && typeof lifecycle === 'object' ? {
+    ...lifecycle, preparationRecordBytes: '', initialEnvelopeBytes: '', pendingRecordBytes: '',
+    consumedPending: lifecycle.consumedPending && typeof lifecycle.consumedPending === 'object'
+      ? { ...lifecycle.consumedPending, argv: [] } : lifecycle.consumedPending,
+  } : lifecycle);
+  const publicBound = bound && typeof bound === 'object' ? { ...bound, preparationRecordBytes: '' } : bound;
+  for (const surface of [parent, child, transcript, peer, ordinary, privateFirst, publicBound]) {
+    try { if (boundedStringLeavesContainTask(surface, task)) mismatch('legacy-adoption-private-task', 'Legacy adoption task escaped private store bytes.'); }
+    catch (error) {
+      if (error instanceof CodexRescueEvidenceMismatchError && error.code === 'legacy-adoption-private-task') throw error;
+      if (error instanceof CodexRescueEvidenceMismatchError) mismatch('legacy-adoption-private-task', 'Legacy adoption privacy decoding exceeded its bound.');
+      throw error;
+    }
+  }
 }
 
 async function assertLegacyBoundPreparationWithProduction(record, expected, activation) {

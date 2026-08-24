@@ -166,7 +166,10 @@ test('release docs distinguish Hook recovery from one-shot named legacy adoption
   assert.match(english, /active Rescue child.{0,120}rejoin/is);
   assert.match(english, /neither.{0,100}30-minute age.{0,100}(?:name|path) collision.{0,120}(?:authority|authorizes)/is);
   assert.match(english, /(?:plugin|Companion).{0,100}during preparation.{0,180}discover.{0,120}persisted Codex children/is);
-  assert.match(english, /Root receives and executes only the task-free version-two directive/i);
+  assert.match(english, /follow-up.{0,100}strict version two.{0,140}fixed assignment/is);
+  assert.match(english, /spawn.{0,100}strict version one.{0,140}(?:without (?:an )?|no )assignment/is);
+  assert.match(english, /named.{0,100}generic.{0,140}schema negotiation/is);
+  assert.doesNotMatch(english, /Root receives and executes only the task-free version-two directive/i);
   assert.doesNotMatch(english, /Root discovers the parent's persisted Codex children/i);
 
   assert.match(chinese, /具有 executor 证据的已停止 child.{0,180}Hook-proven 恢复/is);
@@ -178,7 +181,10 @@ test('release docs distinguish Hook recovery from one-shot named legacy adoption
   assert.match(chinese, /活动的 Rescue child.{0,120}重新加入/is);
   assert.match(chinese, /30 分钟 age.{0,100}(?:名称|路径)碰撞.{0,120}(?:都不|均不).{0,80}(?:授权|权威)/is);
   assert.match(chinese, /(?:插件|Companion).{0,100}preparation 期间.{0,180}发现.{0,120}持久化 Codex children/is);
-  assert.match(chinese, /Root 只接收并执行.{0,100}不含 task 的 version-two directive/is);
+  assert.match(chinese, /follow-up.{0,100}strict version two.{0,140}固定 assignment/is);
+  assert.match(chinese, /spawn.{0,100}strict version one.{0,140}(?:不含|没有) assignment/is);
+  assert.match(chinese, /named.{0,100}generic.{0,140}schema negotiation/is);
+  assert.doesNotMatch(chinese, /Root 只接收并执行.{0,100}不含 task 的 version-two directive/is);
   assert.doesNotMatch(chinese, /Root 会发现该 parent 的持久化 Codex children/i);
 
   assert.match(security, /`childAuthority` union.{0,220}`subagent-start`.{0,120}`codex-legacy-adoption`/is);

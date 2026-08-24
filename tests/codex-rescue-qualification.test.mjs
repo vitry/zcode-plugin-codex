@@ -59,6 +59,7 @@ test('qualifies host-only legacy adoption without reconstructing Hook provenance
   await runGit(['worktree', 'add', '-qb', 'legacy-adoption-target', targetDirectory], originDirectory);
   const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(targetDirectory);
   const input = await legacyAdoptionQualificationFixture({ originWorkspace, executionWorkspace });
+  const privateTask = 'recover the private legacy adoption objective'; const encodedPrivateTask = nestedUnicodeJson(privateTask, 3);
 
   assert.deepEqual(await qualifyCodexRescueLegacyAdoptionEvidence(input), {
     route: 'named-legacy-adoption', parentSessionId: parentId, childThreadId: childId,
@@ -67,6 +68,7 @@ test('qualifies host-only legacy adoption without reconstructing Hook provenance
     firstAdoptionModes: ['choice-fresh', 'choice-resume', 'fresh', 'resume'], boundContinuationChecked: true,
   });
 
+  let mutationIndex = 0;
   for (const [code, mutate, field] of [
     ['legacy-adoption-hooks', (rows) => rows.push({ hook_event_name: 'SubagentStart' }), 'hookLifecycleJson'],
     ['legacy-adoption-ordinary-isolation', (value) => { value.resolverTranscript.push({ request: { childId: 'ordinary-default', cwd: originWorkspace }, response: { code: 'EXECUTOR_ROLE_UNAPPROVED', ok: false } }); }, 'ordinaryIsolationJson'],
@@ -74,6 +76,7 @@ test('qualifies host-only legacy adoption without reconstructing Hook provenance
     ['legacy-adoption-parent', (rows) => { rows.find((row) => row?.payload?.call_id === 'legacy-followup').turn_id = 'sibling-turn'; }, 'parentRolloutJson'],
     ['legacy-adoption-ordinary-isolation', (value) => { value.extra = true; }, 'ordinaryIsolationJson'],
     ['legacy-adoption-private-task', (value) => { value.faultExecutorArtifacts[0].bytes = 'recover the private legacy adoption objective\n'; }, 'ordinaryIsolationJson'],
+    ['legacy-adoption-private-task', (value) => { value.faultExecutorArtifacts[0].bytes = `${encodedPrivateTask}\n`; }, 'ordinaryIsolationJson'],
     ['legacy-adoption-first-modes', (value) => { value[0].authority.authorityId = '0'.repeat(64); }, 'firstLifecyclesJson'],
     ['legacy-adoption-first-modes', (value) => { value[0].extra = true; }, 'firstLifecyclesJson'],
     ['legacy-adoption-first-modes', (value) => { const envelope = JSON.parse(value[0].initialEnvelopeBytes); envelope.options.resume = 'fresh'; value[0].initialEnvelopeBytes = `${JSON.stringify(envelope)}\n`; }, 'firstLifecyclesJson'],
@@ -83,6 +86,7 @@ test('qualifies host-only legacy adoption without reconstructing Hook provenance
     ['legacy-adoption-first-modes', (value) => { value[1].replayCode = 'PENDING_INVOCATION_EXPIRED'; }, 'firstLifecyclesJson'],
     ['legacy-adoption-first-modes', (value) => { value[1].candidateTranscript.request.ownerTurnId = 'sibling-turn'; }, 'firstLifecyclesJson'],
     ['legacy-adoption-private-task', (value) => { value[0].routeTranscript.response.task = 'recover the private legacy adoption objective'; }, 'firstLifecyclesJson'],
+    ['legacy-adoption-private-task', (value) => { value[0].candidateTranscript.response.sessionId = encodedPrivateTask; }, 'firstLifecyclesJson'],
     ['legacy-adoption-bound-continuation', (value) => { value.extra = true; }, 'boundContinuationJson'],
     ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.requiredExecutorAgentId = null; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
     ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.requiredExecutorAgentId = 'sibling-child'; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
@@ -91,9 +95,24 @@ test('qualifies host-only legacy adoption without reconstructing Hook provenance
     ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.envelope.source = 'explicit'; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
     ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.activation.bindingKey = '0'.repeat(64); value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
     ['legacy-adoption-private-task', (value) => { value.peerCalls[1].response = 'recover the private legacy adoption objective'; }, 'boundContinuationJson'],
+    ['legacy-adoption-private-task', (value) => { value.peerCalls[1].response = encodedPrivateTask; }, 'boundContinuationJson'],
+    ['legacy-adoption-private-task', (value) => { value[0].method = encodedPrivateTask; }, 'fakePeerJson'],
+    ['legacy-adoption-private-task', (rows) => { rows.find((row) => row?.payload?.call_id === 'legacy-followup' && row.payload.type === 'function_call_output').payload.output = encodedPrivateTask; }, 'parentRolloutJson'],
   ]) {
     const changed = structuredClone(input); const value = JSON.parse(changed[field]); mutate(value); changed[field] = JSON.stringify(value);
     await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(changed),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, `mutation ${mutationIndex} ${field}`);
+    mutationIndex += 1;
+  }
+
+  for (const [field, code] of [['ordinaryIsolationJson', 'legacy-adoption-ordinary-isolation'], ['boundContinuationJson', 'legacy-adoption-bound-continuation']]) {
+    const oversized = structuredClone(input); oversized[field] += ' '.repeat(17 * 1024 * 1024);
+    await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(oversized),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
+    const deep = structuredClone(input); const value = JSON.parse(deep[field]); let cursor = value;
+    for (let depth = 0; depth < 16; depth += 1) cursor = cursor.deep = {};
+    deep[field] = JSON.stringify(value);
+    await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(deep),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
   }
 });
@@ -2632,6 +2651,13 @@ function legacyQualificationRawChild({ id, path, role, cwd, createdAt }) {
     modelProvider: 'openai', createdAt, updatedAt: createdAt + 1, recencyAt: createdAt + 1, status: { type: 'notLoaded' }, path: null, cwd,
     source: { subAgent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_path: path, agent_nickname: null, agent_role: role } } },
     canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole: role, gitInfo: null, name: null, turns: [] };
+}
+
+function nestedUnicodeJson(value, depth) {
+  const unicode = [...value].map((character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  let encoded = `"${unicode}"`;
+  for (let index = 1; index < depth; index += 1) encoded = JSON.stringify(encoded);
+  return encoded;
 }
 
 function restoredRawCodexChild({ originWorkspace, restoredPath, agentRole }) {
