@@ -1001,11 +1001,17 @@ test('SessionEnd preserves exact Rescue bindings while retaining their durable j
   const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: 'bound-parent', parentTurnId: 'turn-a', parentPermissionMode: 'workspace-write', workspace: cwd };
   const reserved = await store.reserveFreshRescueJob({ workspace: cwd, reservation: { workspace: cwd, ownerSessionId: 'bound-parent', ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }, executor });
   await store.finishJob(cwd, reserved.job.id, ['queued'], 'failed');
+  const siblingExecutor = { ...executor, agentId: 'sibling-child', parentTurnId: 'turn-b' };
+  const sibling = await store.reserveFreshRescueJob({ workspace: cwd, reservation: { workspace: cwd, ownerSessionId: 'bound-parent', ownerTurnId: 'turn-b', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }, executor: siblingExecutor });
+  await store.finishJob(cwd, sibling.job.id, ['queued'], 'failed');
   const ended = await runHook('session-end-hook.mjs', { session_id: 'bound-parent', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
   assert.equal(ended.code, 0, ended.stderr || ended.stdout);
   const binding = await store.resolveRescueBinding({ workspace: cwd, parentSessionId: 'bound-parent', executorAgentId: 'bound-child', executorAgentType: 'zcode-rescue', permissionMode: 'workspace-write' });
   assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.state, 'active');
+  const siblingBinding = await store.resolveRescueBinding({ workspace: cwd, parentSessionId: 'bound-parent', executorAgentId: 'sibling-child', executorAgentType: 'zcode-rescue', permissionMode: 'workspace-write' });
+  assert.equal(siblingBinding.kind, 'bound'); assert.equal(siblingBinding.binding.state, 'active');
   assert.equal((await store.readJob(cwd, reserved.job.id)).id, reserved.job.id);
+  assert.equal((await store.readJob(cwd, sibling.job.id)).id, sibling.job.id);
 });
 
 test('SessionEnd releases only its broker owner sessions and lets the idle broker exit', async () => {

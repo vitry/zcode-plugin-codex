@@ -32,9 +32,9 @@ The lifecycle has four distinct states:
    rejoined.
 3. **Completed but resumable**: the previous job is terminal, while its
    operation binding remains active for a later follow-up.
-4. **Revoked**: explicit `cancel`, explicit `fresh` replacement, explicit
-   invalidation, or invalid/corrupt/ambiguous state permanently prevents
-   continuation.
+4. **Revoked**: explicit `cancel`, an explicit operation replacement for the
+   same child, explicit invalidation, or invalid/corrupt/ambiguous state
+   permanently prevents continuation for that operation.
 
 `SessionEnd`, plugin replacement, process restart, and Root resume are runtime
 events, not revocation events. They must preserve resumability. An active
@@ -78,10 +78,24 @@ must not reopen bindings closed for `fresh`, `cancel`, or `invalidated`.
 
 ## Fresh and cancellation
 
-`fresh` creates an independent operation and ZCode session. The previous
-operation is marked closed/superseded so one child/workspace cannot have two
-unqualified writable current operations. `cancel` remains permanent. Neither
-action deletes the workspace or the historical job/result artifacts.
+`fresh` creates an independent operation and ZCode session. If it selects a
+different child, the previous child binding remains resumable and can still be
+followed up later. If Root explicitly replaces the operation on the *same*
+child, only that child's previous binding is closed/superseded; fresh never
+closes sibling child bindings. `cancel` remains permanent. Neither action
+deletes the workspace or the historical job/result artifacts.
+
+Bindings are child-scoped by
+`(parentSessionId, childAgentId, canonicalWorkspace) -> currentJob ->
+zcodeSessionId`. Rejoin must resolve that exact tuple from the persisted child
+graph and binding records. It must not select a session by workspace, latest
+job, or timestamp, and ambiguous child/path/Role/binding state must fail
+closed.
+
+The existing one-active-writable-job-per-workspace rule is a separate,
+conservative plugin safety policy. It is not a Codex child lifecycle rule and
+must not be implemented by closing completed or sibling bindings. Whether to
+make that write exclusion configurable is a separate future decision.
 
 ## Testing requirements
 
@@ -98,6 +112,8 @@ The regression suite must prove:
   safety;
 - multiple child bindings remain isolated and one child lifecycle does not
   close siblings;
+- a fresh operation on a different child preserves the first child's binding,
+  while an explicit same-child replacement affects only that child;
 - existing launcher secrecy and private-envelope contracts remain unchanged.
 
 ## Non-goals

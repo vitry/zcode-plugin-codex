@@ -852,6 +852,17 @@ test('fresh replacement changes the operation generation and rejects the old CAS
   await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-c'), executor: trusted, operationId: first.binding.operationId }), { code: 'RESCUE_BINDING_STALE' });
 });
 
+test('fresh on a different child preserves the first child binding', async () => {
+  const { workspace, store } = await fixture(); const firstExecutor = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: firstExecutor });
+  await makeEligible(store, workspace, first.job, 'zcode-session-a'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const secondExecutor = executor(workspace, { agentId: 'second-child', parentTurnId: 'second-turn' });
+  const second = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'second-turn'), executor: secondExecutor });
+  assert.notEqual(second.binding.operationId, first.binding.operationId);
+  assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, firstExecutor))).binding.operationId, first.binding.operationId);
+  assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, secondExecutor))).binding.operationId, second.binding.operationId);
+});
+
 test('fresh may replace a valid permission-mismatched slot but not corrupt provenance', async () => {
   const { workspace, store } = await fixture(); const trusted = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
