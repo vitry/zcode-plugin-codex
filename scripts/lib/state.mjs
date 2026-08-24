@@ -270,7 +270,8 @@ export function createStateStore(options) {
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         const job = await readJobRecord(jobPath(storage.jobsDirectory, jobId), jobId, storage.workspacePath);
-        return resolveQueuedRescueMigrationRollbackLocked(storage, job, legacyRollback);
+        const classification = await classifyQueuedRescueTransitionLocked(storage, job, legacyRollback);
+        return classification.kind === 'migration' ? classification.rollback : undefined;
       });
     },
 
@@ -611,9 +612,13 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
       )).toISOString(),
       workspace: job.workspace,
     };
-    const migrationRollback = job.status === 'queued' && TERMINAL_STATUSES.has(nextStatus)
-      ? await resolveQueuedRescueMigrationRollbackLocked(storage, job, requestedRollback)
-      : job.rescueMigrationRollback ?? requestedRollback;
+    const queuedClassification = job.status === 'queued' && (nextStatus === 'running' || TERMINAL_STATUSES.has(nextStatus))
+      ? await classifyQueuedRescueTransitionLocked(storage, job, requestedRollback)
+      : undefined;
+    if (nextStatus === 'running' && (queuedClassification?.kind === 'ordinary-unadvanced'
+      || queuedClassification?.kind === 'migration' && queuedClassification.bindingState !== 'active')) throw invalidRescueBinding();
+    const migrationRollback = queuedClassification?.kind === 'migration'
+      ? queuedClassification.rollback : job.rescueMigrationRollback ?? requestedRollback;
     if (migrationRollback && nextStatus !== 'queued') delete updated.rescueMigrationRollback;
     if (nextStatus !== 'queued') delete updated.rescueContinuationOrigin;
     if (effectivePatch.lastCancelError === null) delete updated.lastCancelError;
@@ -814,12 +819,80 @@ function restoreMigratedTombstone(record, input) {
 
 /** @param {any} storage @param {any} job @param {any} rollback */
 async function restoreQueuedMigrationLocked(storage, job, rollback) {
+  const migration = await inspectQueuedMigrationLocked(storage, job, rollback);
+  if (migration.state === 'active') {
+    if (job.rescueMigrationRollback === undefined || job.rescueMigrationRollback.priorBinding === undefined) {
+      const marked = { ...job, rescueMigrationRollback: migration.rollback };
+      validateJobRecord(marked, job.id, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, job.id));
+      await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), marked);
+    }
+    const lockIdentity = await captureStateLockIdentity(storage);
+    await writeBindingPartitionGuarded(storage, migration.rollback.parentSessionId, migration.snapshot,
+      bindingSnapshotWith(migration.snapshot, migration.restored), lockIdentity);
+  }
+  return migration.restored;
+}
+
+/** Classify one queued Rescue transition from exact persisted proof while the StateStore lock is held. @param {any} storage @param {any} job @param {any} legacyRollback */
+async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback) {
+  if (job.status !== 'queued') throw invalidRescueBinding();
+  if (job.rescueMigrationRollback !== undefined) {
+    if (!validPersistedMigrationRollback(job.rescueMigrationRollback, job)
+      || legacyRollback !== undefined && !sameMigrationRollback(job.rescueMigrationRollback, legacyRollback)) throw invalidRescueBinding();
+    const migration = await inspectQueuedMigrationLocked(storage, job, job.rescueMigrationRollback);
+    return { kind: 'migration', rollback: migration.rollback, bindingState: migration.state };
+  }
+  if (job.rescueContinuationOrigin !== undefined) {
+    if (legacyRollback !== undefined || !validRescueContinuationOrigin(job.rescueContinuationOrigin, job)) throw invalidRescueBinding();
+    const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, false);
+    const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
+    if (matches.length > 1) throw invalidRescueBinding();
+    const current = matches[0]; const origin = job.rescueContinuationOrigin;
+    if (origin.kind === 'active-continuation' && current === undefined) {
+      const prior = snapshot.records.get(origin.priorBinding.key);
+      if (prior === undefined || !sameExactBinding(prior, origin.priorBinding)) throw invalidRescueBinding();
+      return { kind: 'ordinary-unadvanced' };
+    }
+    if (current === undefined) throw invalidRescueBinding();
+    const expected = origin.kind === 'legacy-adoption' ? origin.binding
+      : validateRescueBinding({ ...origin.priorBinding, currentJobId: job.id, updatedAt: current.updatedAt });
+    if (current.state !== 'active' || !sameExactBinding(current, expected)) throw invalidRescueBinding();
+    return { kind: 'ordinary-current' };
+  }
+  if (legacyRollback !== undefined) {
+    if (!validPersistedMigrationRollback(legacyRollback, job)) throw invalidRescueBinding();
+    const migration = await inspectQueuedMigrationLocked(storage, job, legacyRollback);
+    if (migration.state !== 'active') throw invalidRescueBinding();
+    const marked = { ...job, rescueMigrationRollback: migration.rollback };
+    validateJobRecord(marked, job.id, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, job.id));
+    await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), marked);
+    return { kind: 'migration', rollback: migration.rollback, bindingState: migration.state };
+  }
+  if (job.command !== 'rescue' || job.readOnly !== false) return { kind: 'ordinary-unbound' };
+  const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, true);
+  const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
+  if (matches.length === 0) return { kind: 'ordinary-unbound' };
+  if (matches.length !== 1) throw invalidRescueBinding();
+  const binding = matches[0];
+  if (binding.state !== 'active' || binding.parentSessionId !== job.ownerSessionId
+    || binding.permissionMode !== job.permissionSnapshot.permissionMode) throw invalidRescueBinding();
+  if (binding.anchorJobId === job.id) return { kind: 'ordinary-current' };
+  if (binding.version < 3) {
+    const anchorJob = await readExactBindingJob(storage, binding.anchorJobId);
+    validateAnchorJob(anchorJob, binding.parentSessionId, storage.workspacePath);
+    validateCurrentJob(job, binding.parentSessionId, storage.workspacePath);
+    return { kind: 'ordinary-current' };
+  }
+  throw invalidRescueBinding();
+}
+
+/** Validate the exact active migrated successor or exact already-restored tombstone without changing either. @param {any} storage @param {any} job @param {any} rollback */
+async function inspectQueuedMigrationLocked(storage, job, rollback) {
   if (!validPersistedMigrationRollback(rollback, job)) throw invalidRescueBinding();
   const snapshot = await readBindingPartitionSnapshot(storage, rollback.parentSessionId, false);
   const key = rescueBindingKey({ parentSessionId: rollback.parentSessionId, executorAgentId: rollback.childAgentId, workspace: storage.workspacePath });
   const record = snapshot.records.get(key) ?? null;
   if (record === null || record.operationId !== rollback.operationId) throw staleRescueBinding();
-  let restored;
   if (record.state === 'active' && record.currentJobId === job.id) {
     const activeMatches = [...snapshot.records.values()].filter((candidate) => candidate.state === 'active' && candidate.currentJobId === job.id);
     if (activeMatches.length !== 1 || activeMatches[0].key !== record.key || record.version !== 3
@@ -827,62 +900,21 @@ async function restoreQueuedMigrationLocked(storage, job, rollback) {
     const anchorJob = await readExactBindingJob(storage, record.anchorJobId); validateAnchorJob(anchorJob, record.parentSessionId, storage.workspacePath);
     const priorJob = await readExactBindingJob(storage, rollback.priorCurrentJobId); validateCurrentJob(priorJob, record.parentSessionId, storage.workspacePath);
     if (priorJob.id === job.id || Date.parse(priorJob.updatedAt) > Date.parse(rollback.priorUpdatedAt)) throw invalidRescueBinding();
-    if (rollback.priorBinding !== undefined) {
-      const authority = rescueBindingAuthorityView(record);
-      const expectedActive = migratedActiveBinding(rollback.priorBinding,
-        authority.kind === 'subagent-start' ? { agentPath: authority.agentPath } : undefined,
-        job.id, record.updatedAt);
-      if (!sameExactBinding(record, expectedActive)) throw invalidRescueBinding();
-      restored = structuredClone(rollback.priorBinding);
-    } else {
-      restored = restoreMigratedTombstone(record, rollback);
-      const adopted = { ...rollback, priorBinding: structuredClone(restored) };
-      const marked = { ...job, rescueMigrationRollback: adopted };
-      validateJobRecord(marked, job.id, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, job.id));
-      await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), marked);
-    }
-    const lockIdentity = await captureStateLockIdentity(storage);
-    await writeBindingPartitionGuarded(storage, rollback.parentSessionId, snapshot, bindingSnapshotWith(snapshot, restored), lockIdentity);
-  } else if (record.state === 'closed' && record.closeReason === 'session-ended'
+    const restored = rollback.priorBinding === undefined ? restoreMigratedTombstone(record, rollback) : structuredClone(rollback.priorBinding);
+    const authority = rescueBindingAuthorityView(record);
+    const expectedActive = migratedActiveBinding(restored,
+      authority.kind === 'subagent-start' ? { agentPath: authority.agentPath } : undefined,
+      job.id, record.updatedAt);
+    if (!sameExactBinding(record, expectedActive)) throw invalidRescueBinding();
+    return { state: 'active', snapshot, restored, rollback: { ...rollback, priorBinding: structuredClone(restored) } };
+  }
+  if (record.state === 'closed' && record.closeReason === 'session-ended'
     && record.version === rollback.priorVersion && record.currentJobId === rollback.priorCurrentJobId
     && record.updatedAt === rollback.priorUpdatedAt && record.closedAt === rollback.priorClosedAt
-    && rollback.priorBinding !== undefined && sameExactBinding(record, rollback.priorBinding)) restored = record;
-  else throw staleRescueBinding();
-  return restored;
-}
-
-/** Resolve exact migration or ordinary-continuation evidence while the StateStore lock is held. @param {any} storage @param {any} job @param {any} legacyRollback */
-async function resolveQueuedRescueMigrationRollbackLocked(storage, job, legacyRollback) {
-  if (job.status !== 'queued') throw invalidRescueBinding();
-  if (job.rescueMigrationRollback !== undefined) {
-    if (!validPersistedMigrationRollback(job.rescueMigrationRollback, job)
-      || legacyRollback !== undefined && !sameMigrationRollback(job.rescueMigrationRollback, legacyRollback)) throw invalidRescueBinding();
-    return structuredClone(job.rescueMigrationRollback);
+    && rollback.priorBinding !== undefined && sameExactBinding(record, rollback.priorBinding)) {
+    return { state: 'restored', snapshot, restored: structuredClone(record), rollback: structuredClone(rollback) };
   }
-  if (job.rescueContinuationOrigin !== undefined) {
-    if (legacyRollback !== undefined || !validRescueContinuationOrigin(job.rescueContinuationOrigin, job)) throw invalidRescueBinding();
-    const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, false);
-    const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
-    if (matches.length !== 1) throw invalidRescueBinding();
-    const current = matches[0]; const origin = job.rescueContinuationOrigin;
-    const expected = origin.kind === 'legacy-adoption' ? origin.binding
-      : validateRescueBinding({ ...origin.priorBinding, currentJobId: job.id, updatedAt: current.updatedAt });
-    if (current.state !== 'active' || !sameExactBinding(current, expected)) throw invalidRescueBinding();
-    return undefined;
-  }
-  if (legacyRollback !== undefined) {
-    if (!validPersistedMigrationRollback(legacyRollback, job)) throw invalidRescueBinding();
-    return structuredClone(legacyRollback);
-  }
-  if (job.command !== 'rescue' || job.readOnly !== false) return undefined;
-  const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, true);
-  const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
-  if (matches.length === 0) return undefined;
-  if (matches.length !== 1) throw invalidRescueBinding();
-  const binding = matches[0];
-  if (binding.state !== 'active' || binding.parentSessionId !== job.ownerSessionId) throw invalidRescueBinding();
-  if (binding.anchorJobId === job.id) return undefined;
-  throw invalidRescueBinding();
+  throw staleRescueBinding();
 }
 
 /** Verify an idempotent terminal retry against the exact already-restored tombstone. @param {any} storage @param {any} job @param {any} rollback */

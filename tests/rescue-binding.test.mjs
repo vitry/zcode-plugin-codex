@@ -620,6 +620,108 @@ test('a migrated continuation removes its queued rollback marker when running co
   assert.equal((await store.readJob(workspace, continuation.job.id)).rescueMigrationRollback, undefined);
 });
 
+for (const seam of ['continuation:marker', 'continuation:current-advance']) test(`controller cancellation settles a continuation published through ${seam} without changing its prior binding`, async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'pre-advance-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [bindingPath] = await bindingFiles(storage.directory);
+  const priorBytes = await readFile(bindingPath);
+  const faulted = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt(seam) });
+  await assert.rejects(faulted.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId }), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
+  const continuation = (await store.listJobs(workspace)).find((job) => job.id !== first.job.id);
+  assert.ok(continuation?.rescueContinuationOrigin); assert.deepEqual(await readFile(bindingPath), priorBytes);
+  const cancelled = await createJobController({ store, dataRoot }).cancel(workspace, continuation.id, hook.parentSessionId);
+  assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.rescueContinuationOrigin, undefined);
+  assert.deepEqual(await readFile(bindingPath), priorBytes);
+});
+
+test('queued to running revalidates missing continuation proof under the final StateStore lock', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'missing-running-proof-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const jobPath = join(storage.directory, 'jobs', `${continuation.job.id}.json`);
+  const markerless = JSON.parse(await readFile(jobPath, 'utf8')); delete markerless.rescueContinuationOrigin;
+  await writeFile(jobPath, `${JSON.stringify(markerless, null, 2)}\n`);
+  await assert.rejects(store.transitionJob(workspace, continuation.job.id, ['queued'], 'running'), { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal((await store.readJob(workspace, continuation.job.id)).status, 'queued');
+});
+
+test('queued to running rejects a binding closed after preflight and retains its exact continuation proof', async () => {
+  const { workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'running-race-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId });
+  const proof = continuation.job.rescueContinuationOrigin;
+  assert.equal(await store.resolveQueuedRescueMigrationRollback(workspace, continuation.job.id, undefined), undefined);
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId, executorAgentId: hook.agentId,
+    operationId: continuation.binding.operationId, reason: 'invalidated' });
+  await assert.rejects(store.transitionJob(workspace, continuation.job.id, ['queued'], 'running'), { code: 'RESCUE_BINDING_INVALID' });
+  const queued = await store.readJob(workspace, continuation.job.id);
+  assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueContinuationOrigin, proof);
+});
+
+test('queued migrated continuation revalidates its marker after preflight and retains it when the binding is revoked', async () => {
+  const { workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'migration-running-race-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId, executorAgentId: hook.agentId,
+    operationId: first.binding.operationId, reason: 'session-ended' });
+  const proof = await store.readRescueBindingMigrationProof({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, childAgentType: hook.agentType, originWorkspace: workspace,
+    executionWorkspace: workspace, agentPath: hook.agentPath });
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
+  assert.deepEqual(await store.resolveQueuedRescueMigrationRollback(workspace, continuation.job.id, undefined), continuation.migrationRollback);
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId, executorAgentId: hook.agentId,
+    operationId: continuation.binding.operationId, reason: 'invalidated' });
+  await assert.rejects(store.transitionJob(workspace, continuation.job.id, ['queued'], 'running'), { code: /RESCUE_BINDING_(?:INVALID|STALE)/u });
+  const queued = await store.readJob(workspace, continuation.job.id);
+  assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueMigrationRollback, continuation.migrationRollback);
+});
+
+for (const kind of ['active continuation', 'legacy adoption']) for (const action of ['running', 'controller cancel', 'recovery']) test(`pre-origin v2 ${kind} supports ${action} without weakening ambiguous v3 handling`, async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace); let queued;
+  if (kind === 'active continuation') {
+    const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+    await makeEligible(store, workspace, first.job, 'pre-origin-v2-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+    const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [bindingPath] = await bindingFiles(storage.directory);
+    const partition = JSON.parse(await readFile(bindingPath, 'utf8')); const v2 = { ...partition.records[0], version: 2 };
+    delete v2.superseded; delete v2.childAuthority.agentPath;
+    await writeFile(bindingPath, `${JSON.stringify(createRescueBindingPartition({ parentSessionId: hook.parentSessionId,
+      workspace, records: [v2] }), null, 2)}\n`);
+    const legacyHook = structuredClone(hook); delete legacyHook.agentPath;
+    queued = (await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+      executor: legacyHook, operationId: first.binding.operationId })).job;
+  } else {
+    const candidate = await store.reserveJob(reservation(workspace, 'candidate'));
+    await makeEligible(store, workspace, candidate, 'pre-origin-adoption-session'); await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
+    queued = (await store.adoptRescueCandidate({ workspace, reservation: reservation(workspace, 'turn-b'),
+      authority: await brandedAuthority(dataRoot, workspace, 'legacy-adopt', 'turn-b'), candidateJobId: candidate.id })).job;
+    const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [bindingPath] = await bindingFiles(storage.directory);
+    const partition = JSON.parse(await readFile(bindingPath, 'utf8')); const v2 = { ...partition.records[0], version: 2 };
+    delete v2.superseded; await writeFile(bindingPath, `${JSON.stringify(createRescueBindingPartition({ parentSessionId: hook.parentSessionId,
+      workspace, records: [v2] }), null, 2)}\n`);
+  }
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const jobPath = join(storage.directory, 'jobs', `${queued.id}.json`);
+  const legacy = JSON.parse(await readFile(jobPath, 'utf8')); delete legacy.rescueContinuationOrigin;
+  await writeFile(jobPath, `${JSON.stringify(legacy, null, 2)}\n`);
+  let settled;
+  if (action === 'running') settled = await store.transitionJob(workspace, queued.id, ['queued'], 'running');
+  else if (action === 'controller cancel') settled = await createJobController({ store, dataRoot }).cancel(workspace, queued.id, queued.ownerSessionId);
+  else {
+    await store.claimJobWorker(workspace, queued.id, { childPid: 999_999_999, workerLeaseId: '7'.repeat(64) });
+    await scavengeWritableJobs({ store, dataRoot, workspace, createClient: async () => { throw new Error('queued worker must not create a client'); } });
+    settled = await store.readJob(workspace, queued.id);
+  }
+  assert.equal(settled.status, action === 'running' ? 'running' : action === 'controller cancel' ? 'cancelled' : 'failed');
+  assert.equal(settled.rescueContinuationOrigin, undefined);
+});
+
 test('migration rollback and failed terminalization retain the queued marker across the injected write seam and retry idempotently', async () => {
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
@@ -690,6 +792,29 @@ test('markerless legacy rollback metadata is adopted only for its unique queued 
   assert.deepEqual(JSON.parse(await readFile(bindingPath, 'utf8')).records[0], priorBinding);
   const failed = await store.finishSessionEndedRescueContinuation(workspace, continuation.job.id, legacyRollback, 'failed', patch);
   assert.equal(failed.status, 'failed'); assert.equal(failed.rescueMigrationRollback, undefined);
+});
+
+test('legacy execution preflight adopts exact markerless rollback proof before the locked running commit', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'legacy-running-adoption-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId, executorAgentId: hook.agentId,
+    operationId: first.binding.operationId, reason: 'session-ended' });
+  const proof = await store.readRescueBindingMigrationProof({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, childAgentType: hook.agentType, originWorkspace: workspace,
+    executionWorkspace: workspace, agentPath: hook.agentPath });
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const jobPath = join(storage.directory, 'jobs', `${continuation.job.id}.json`);
+  const markerless = JSON.parse(await readFile(jobPath, 'utf8')); delete markerless.rescueMigrationRollback;
+  await writeFile(jobPath, `${JSON.stringify(markerless, null, 2)}\n`);
+  const legacyRollback = structuredClone(continuation.migrationRollback); delete legacyRollback.priorBinding;
+  const resolved = await store.resolveQueuedRescueMigrationRollback(workspace, continuation.job.id, legacyRollback);
+  assert.deepEqual(resolved, continuation.migrationRollback);
+  assert.deepEqual((await store.readJob(workspace, continuation.job.id)).rescueMigrationRollback, continuation.migrationRollback);
+  const running = await store.transitionJob(workspace, continuation.job.id, ['queued'], 'running');
+  assert.equal(running.status, 'running'); assert.equal(running.rescueMigrationRollback, undefined);
 });
 
 test('ordinary controller cancel adopts markerless legacy job-spec evidence and restores the exact tombstone', async () => {

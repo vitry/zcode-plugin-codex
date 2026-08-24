@@ -817,9 +817,8 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
         await assert.rejects(runCompanion(['run-reserved-job', queued.job.id], {
           cwd: workspace, env: { ...childEnv, FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
           authorization: { executionCapability: capability, jobId: queued.job.id },
-        }), (error) => { executionError = error; return failurePoint === 'missing legacy worker evidence'
-          ? /** @type {any} */ (error)?.code === 'JOB_SPEC_INVALID'
-          : failurePoint !== 'corrupt legacy worker execution' || /** @type {any} */ (error)?.code === 'RESCUE_BINDING_INVALID'; });
+        }), (error) => { executionError = error; return ['corrupt legacy worker execution', 'missing legacy worker evidence'].includes(failurePoint)
+          ? /** @type {any} */ (error)?.code === 'JOB_SPEC_INVALID' : true; });
         const executionJob = await store.readJob(workspace, queued.job.id);
         assert.equal(executionJob.status, ['corrupt legacy worker execution', 'missing legacy worker evidence'].includes(failurePoint) ? 'queued' : 'failed',
           `legacy execution left ${executionError?.code ?? 'error'}: ${executionError?.message ?? executionError}`);
