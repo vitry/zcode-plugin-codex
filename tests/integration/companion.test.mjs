@@ -781,11 +781,12 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
   if (failurePoint === 'worker crash') {
     const queued = await attempt; assert.equal(queued.type, 'background');
     assert.doesNotMatch(JSON.stringify(queued), /rescueMigrationRollback|priorCurrentJobId|priorClosedAt/u);
+    const status = await runCompanion(['status', '--all'], { cwd: workspace, env: childEnv,
+      caller: { sessionId: parentSessionId, turnId: 'turn-b', permissionMode: 'workspace-write' } });
+    assert.doesNotMatch(JSON.stringify(status), /rescueMigrationRollback|migrationPrior|priorCurrentJobId|priorClosedAt/u);
     const specPath = join(storage.directory, 'job-specs', `${(await store.listJobs(workspace))[1].id}.json`);
     const specRecord = JSON.parse(await readFile(specPath, 'utf8'));
-    for (const key of Object.keys(specRecord.spec)) if (key.startsWith('migration')) delete specRecord.spec[key];
-    specRecord.digest = createHash('sha256').update(JSON.stringify(specRecord.spec, Object.keys(specRecord.spec).sort())).digest('hex');
-    await atomicWriteJson(specPath, specRecord);
+    assert.deepEqual(Object.keys(specRecord.spec).filter((key) => key.startsWith('migration')), []);
     await scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace, createClient: async () => { throw failure; } });
   } else await assert.rejects(attempt, (error) => error === failure);
   assert.deepEqual(await readFile(partitionPath), closedTombstoneBytes);

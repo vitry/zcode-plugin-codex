@@ -641,7 +641,7 @@ async function startPublic(context) {
   const permissionSnapshot = Object.freeze({ permissionMode: caller.permissionMode });
   const transferSource = parsed.command === 'transfer' ? resolveTransferSource(parsed.options, caller) : undefined;
   const reservation = { workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) };
-  let job; let migrationRollback;
+  let job;
   if (parsed.command === 'rescue' && childAuthorized) {
     let reserved;
     const childProof = context.executor ? { executor: context.executor } : { authority: context.authority };
@@ -654,7 +654,6 @@ async function startPublic(context) {
       permissionMode: caller.permissionMode, ...(previewMigrationProof ? { migrationProof: previewMigrationProof } : {}) });
       const migrationProof = previewMigrationProof;
       reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
-      migrationRollback = reserved.migrationRollback;
       candidate = reserved.anchorJob;
     } else {
       reserved = await reservePublicRescueJob(context, () => store.adoptRescueCandidate({ workspace: cwd, reservation, ...childProof, candidateJobId: candidate.id })); candidate = reserved.anchorJob;
@@ -667,13 +666,7 @@ async function startPublic(context) {
       createClient: (launch) => (context.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: job.workspace, launch, ownerId: ownerIdForSession(caller.sessionId), env: context.env, ...managedWireOptionsForJob(job) }),
     });
   }
-  const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' ') || context.originalPrompt, task: parsed.positionals.join(' ') || context.originalPrompt, model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined,
-    ...(migrationRollback ? {
-      migrationParentSessionId: migrationRollback.parentSessionId, migrationChildAgentId: migrationRollback.childAgentId,
-      migrationOperationId: migrationRollback.operationId, migrationPriorCurrentJobId: migrationRollback.priorCurrentJobId,
-      migrationPriorUpdatedAt: migrationRollback.priorUpdatedAt, migrationPriorClosedAt: migrationRollback.priorClosedAt,
-      migrationPriorVersion: String(migrationRollback.priorVersion),
-    } : {}) });
+  const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' ') || context.originalPrompt, task: parsed.positionals.join(' ') || context.originalPrompt, model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined });
   if (parsed.options.execution === 'background') {
     const specDigest = digestSpec(spec);
     const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', specDigest };
@@ -693,7 +686,6 @@ async function startPublic(context) {
       return output;
     } catch (error) {
       if (capability) await identity.revokeExecutionCapability(capability, binding).catch(() => {});
-      if (migrationRollback) await store.rollbackSessionEndedRescueContinuation({ workspace: cwd, jobId: job.id, ...migrationRollback });
       await failQueuedJob(store, cwd, job.id, error);
       throw error;
     }
@@ -799,7 +791,7 @@ async function executeWithWorkerLease(context) {
 async function executeReserved(context) {
   const { cwd, env, dataRoot, store, job, spec } = context;
   let client; let resumeSucceeded = false;
-  const migrationRollback = migrationRollbackFromSpec(spec, job);
+  const migrationRollback = migrationRollbackForExecution(spec, job);
   try {
     context.signal?.throwIfAborted();
     const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
@@ -941,6 +933,13 @@ function migrationRollbackFromSpec(spec, job) {
   return { parentSessionId: spec.migrationParentSessionId, childAgentId: spec.migrationChildAgentId,
     operationId: spec.migrationOperationId, priorCurrentJobId: spec.migrationPriorCurrentJobId,
     priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt, priorVersion };
+}
+/** Prefer the state-validated queued marker; old specs remain readable only for in-flight upgrade compatibility. @param {Record<string,string>} spec @param {any} job */
+function migrationRollbackForExecution(spec, job) {
+  const legacy = migrationRollbackFromSpec(spec, job);
+  if (job.rescueMigrationRollback === undefined) return legacy;
+  if (legacy !== undefined && !sameJson(job.rescueMigrationRollback, legacy)) throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' });
+  return job.rescueMigrationRollback;
 }
 /** @param {any} spec */
 function digestSpec(spec) { return createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex'); }

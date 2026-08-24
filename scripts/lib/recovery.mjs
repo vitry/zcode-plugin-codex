@@ -184,6 +184,10 @@ async function reconcileOrphan(input, job) {
 function hasBoundary(job) { return typeof job.inputId === 'string' && Number.isSafeInteger(job.startRevision) && Array.isArray(job.beforeMessageIds); }
 /** Restore a durable migration tombstone before any orphaned queued attempt becomes terminal. @param {any} input @param {any} job */
 async function rollbackQueuedMigration(input, job) {
+  if (job.rescueMigrationRollback !== undefined) {
+    await input.store.rollbackSessionEndedRescueContinuation({ workspace: input.workspace, jobId: job.id, ...job.rescueMigrationRollback });
+    return;
+  }
   const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
   const root = resolve(storage.directory, 'job-specs'); const path = resolve(root, `${job.id}.json`);
   if (!path.startsWith(`${root}${sep}`)) throw recoveryError('Queued migration specification path is invalid.');
