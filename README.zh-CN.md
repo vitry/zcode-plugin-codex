@@ -60,7 +60,7 @@ Root 在 raw-capable TTY 上启动 `prepare rescue`。companion 先启用 raw mo
 
 durable Rescue binding 现在把同一个已停止的 Rescue child 绑定到一个精确 ZCode session。私有 `anchorJobId` 标识被采用的操作，`currentJobId` 在每个续做 job 被持久预留并发布时前移，即使该 job 随后排队、失败或取消；两个标识都不会进入 child message。明确的主动续做会 prepare resume 并 follow up 同一个已停止的 Rescue child；它复用相同的 `invoke-prepared rescue` assignment，不会产生第二次 `SubagentStart`。显式 bound 请求若没有 `--resume` 或 `--fresh`，也 follow up 同一 child，并由其 bound `needs-choice` 结果触发一次用户选择。`--fresh` 始终准备新的独立 ZCode 操作，但不要求分配新的 Codex child：planner 可以恢复并 follow up 合格的已停止 Rescue child，优先选择受管 base，其次选择确定性的最新兼容 executor；两者都不存在时才 prescribe spawn。复用 Codex child 不会 resume 其先前的 ZCode binding 或 session；新操作会以当前 permission 快照创建 peer session。名称或路径碰撞绝不是该选择的权威。
 
-普通前台 Rescue 的完成等待不设插件定义的墙钟截止时间。活动父 turn 的授权由生命周期而非时间绑定，因此明确续做可以 follow up 精确 child，并复用精确绑定的 ZCode session。caller credential 和每一代 preparation 仍以 30 分钟为界。Root `Stop`、替换性的 `UserPromptSubmit`、`$zcode:cancel`、`SIGINT` 和 `SIGTERM` 是终止或撤销边界；`SessionEnd` 不是 binding 撤销边界。
+普通前台 Rescue 的完成等待不设插件定义的墙钟截止时间。活动父 turn 的授权由生命周期而非时间绑定，因此明确续做可以 follow up 精确 child，并复用精确绑定的 ZCode session。caller credential 和每一代 preparation 仍以 30 分钟为界；该 TTL 只是一次性 capability 窗口，不是 Codex child、Rescue binding 或 ZCode operation 的生命期。Root `Stop`、替换性的 `UserPromptSubmit`、`$zcode:cancel`、`SIGINT` 和 `SIGTERM` 是终止或撤销边界；`SessionEnd` 不是 binding 撤销边界。
 
 legacy jobs-only 状态只会采用唯一且精确合格的续做候选；有歧义或旧 pending 状态会被拒绝而不是猜测。权限变化不能 resume 旧 binding，而 `--fresh` 会捕获当前 permission 快照。只有精确的旧 `session-ended` tombstone 可以迁移；`cancel`、`fresh`、`invalidated` 以及 cancelled current job 永久不可恢复。现代 Hook binding 持久化精确 agent path，并可从 Codex child graph 恢复 unloaded 或 resident child。无效 binding、错误 workspace/path/Role 或 provenance 不一致都会 fail closed，不会 fallback 到 latest session。
 

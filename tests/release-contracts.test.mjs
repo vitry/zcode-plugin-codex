@@ -288,14 +288,16 @@ test('release docs define automatic immutable Rescue worktree late binding', () 
   assert.match(english, /same canonical Git common[- ]dir/i);
   assert.match(english, /immutable.{0,100}(?:turn|target)/i);
   assert.match(english, /child.{0,100}(?:cannot|must not).{0,80}claim/i);
-  assert.match(english, /Stop.{0,200}new prompt.{0,200}SessionEnd.{0,200}(?:revoke|replace)/is);
+  assert.match(english, /Stop.{0,200}new prompt.{0,200}(?:revoke|replace)/is);
+  assert.match(english, /SessionEnd.{0,200}runtime ownership loss.{0,240}preserv(?:e|ing).{0,120}resumable bindings/is);
   assert.match(chinese, /origin workspace.{0,200}execution workspace/is);
   assert.match(chinese, /第一次可信的 `?prepare rescue`?.{0,200}自动绑定/is);
   assert.match(chinese, /不需要手动 handoff/i);
   assert.match(chinese, /相同的 canonical Git common[- ]dir/i);
   assert.match(chinese, /同一 turn.{0,100}不可变/is);
   assert.match(chinese, /child.{0,100}不能.{0,80}claim/i);
-  assert.match(chinese, /Stop.{0,200}新 prompt.{0,200}SessionEnd.{0,200}(?:撤销|替换)/is);
+  assert.match(chinese, /Stop.{0,200}新 prompt.{0,200}(?:撤销|替换)/is);
+  assert.match(chinese, /SessionEnd.{0,200}runtime ownership.{0,240}保留.{0,120}可恢复 binding/is);
   for (const source of [security, changelog, authorityAdr, bindingAdr]) {
     assert.match(source, /origin workspace.{0,220}execution workspace/is);
     assert.match(source, /same canonical Git common[- ]dir/i);
@@ -606,12 +608,12 @@ test('release guidance documents exact stopped-child binding, lifecycle, upgrade
     assert.match(source, /no second `?SubagentStart`?|不会.*第二次 `?SubagentStart`?/i);
     assert.match(source, /legacy[\s\S]+(?:adopt|采用|接纳)/i);
     assert.match(source, /permission[\s\S]+fresh|权限[\s\S]+fresh/i);
-    assert.match(source, /SessionEnd[\s\S]+(?:close|关闭)/i);
+    assert.match(source, /SessionEnd[\s\S]+(?:preserv|保留)[\s\S]+(?:resumable|可恢复)[\s\S]+binding/i);
     assert.match(source, /invalid[\s\S]+binding[\s\S]+fail closed|无效[\s\S]+binding[\s\S]+fail closed/i);
     assert.match(source, /upgrade-required|升级.*required|需要升级/i);
   }
   const security = read('SECURITY.md'); const changelog = read('CHANGELOG.md'); const adr = read('docs/adr/0013-bind-rescue-child-to-zcode-session.md');
-  assert.match(security, /durable Rescue binding[\s\S]+same stopped child[\s\S]+exact ZCode session/i);
+  assert.match(security, /durable Rescue binding[\s\S]+same child[\s\S]+exact ZCode session/i);
   assert.match(security, /private[\s\S]+anchorJobId[\s\S]+currentJobId/i);
   assert.match(changelog, /exact stopped-child Rescue continuation/i);
   assert.match(changelog, /no second `?SubagentStart`?/i);
