@@ -859,12 +859,16 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
     const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
     if (matches.length > 1) throw invalidRescueBinding();
     const current = matches[0]; const origin = job.rescueContinuationOrigin;
-    if (origin.priorBinding !== undefined && current === undefined) {
-      const prior = snapshot.records.get(origin.priorBinding.key);
-      if (prior === undefined || !sameExactBinding(prior, origin.priorBinding)) throw invalidRescueBinding();
+    if (current === undefined) {
+      const priorBinding = origin.priorBinding ?? legacyAdoptionBaseBinding(origin, job);
+      if (priorBinding === null) throw invalidRescueBinding();
+      const prior = snapshot.records.get(priorBinding.key);
+      if (prior === undefined || !sameExactBinding(prior, priorBinding)) throw invalidRescueBinding();
+      const anchorJob = await readExactBindingJob(storage, priorBinding.anchorJobId);
+      validateAnchorJob(anchorJob, priorBinding.parentSessionId, storage.workspacePath);
+      validateCurrentJob(job, priorBinding.parentSessionId, storage.workspacePath);
       return { kind: 'ordinary-unadvanced' };
     }
-    if (current === undefined) throw invalidRescueBinding();
     const expected = origin.kind === 'legacy-adoption' ? origin.binding
       : validateRescueBinding({ ...origin.priorBinding, currentJobId: job.id, updatedAt: current.updatedAt });
     if (current.state !== 'active' || !sameExactBinding(current, expected)) throw invalidRescueBinding();
@@ -900,6 +904,20 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
     return { kind: 'ordinary-current' };
   }
   throw invalidRescueBinding();
+}
+
+/** Reconstruct only the exact base emitted by the historical adoption publisher. @param {any} origin @param {any} job */
+function legacyAdoptionBaseBinding(origin, job) {
+  if (origin.kind !== 'legacy-adoption' || origin.priorBinding !== undefined) return null;
+  try {
+    const successor = validateRescueBinding(origin.binding);
+    if (successor.state !== 'active' || successor.currentJobId !== job.id
+      || successor.anchorJobId === job.id || Date.parse(successor.createdAt) < Date.parse(job.createdAt)
+      || Date.parse(successor.updatedAt) < Date.parse(successor.createdAt)
+      || successor.version === 3 && successor.superseded.length !== 0) return null;
+    return validateRescueBinding({ ...successor,
+      currentJobId: successor.anchorJobId, updatedAt: successor.createdAt });
+  } catch { return null; }
 }
 
 /** Validate the exact active migrated successor or exact already-restored tombstone without changing either. @param {any} storage @param {any} job @param {any} rollback */
