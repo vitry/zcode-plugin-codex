@@ -772,7 +772,7 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const jobId = parsed.positionals[0]; const job = await store.readJob(cwd, jobId);
   if (authorization.jobId !== jobId) throw authorizationInputError();
   const record = await readJobSpec(dataRoot, cwd, jobId);
-  let spec; let loadSpecAfterClaim; let capabilityBinding; let executionAuthorization; let legacySpecDigest;
+  let spec; let loadSpecAfterClaim; let capabilityBinding; let executionAuthorization; let legacySpecDigest; let legacyReservationProof;
   if (record?.version === 2) {
     const sealed = verifySealedJobSpec(record, job, authorization.executionCapability);
     spec = { command: job.command };
@@ -785,6 +785,7 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
     if (record.digest !== specDigest || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace) throw jobSpecTampered();
     capabilityBinding = { specDigest };
     legacySpecDigest = specDigest;
+    legacyReservationProof = legacyClasslessProof(spec);
   } else throw jobSpecTampered();
   const capabilityExpected = { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', ...capabilityBinding };
   const capabilityReservationId = createHash('sha256').update('zcode-execution-reservation-v1\0')
@@ -794,7 +795,7 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   if (!sameJson(inspected.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
   return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, loadSpecAfterClaim,
-    executionAuthorization, legacySpecDigest, executionCapability: authorization.executionCapability,
+    executionAuthorization, legacySpecDigest, legacyReservationProof, executionCapability: authorization.executionCapability,
     capabilityExpected, capabilityReservationId,
     caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
@@ -817,7 +818,7 @@ async function executeWithWorkerLease(context) {
   const executionInspection = await context.store.inspectJobWorkerExecution(context.cwd, context.job.id, migrationRollback,
     context.executionAuthorization ?? (context.legacySpecDigest === undefined ? undefined : markerlessMigration
       ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
-      : { legacyProof: legacyClasslessProof(context.spec) }));
+      : { legacyProof: context.legacyReservationProof }));
   if (context.executionCapability !== undefined) await context.identity.reserveExecutionCapability(
     context.executionCapability, context.capabilityExpected, context.capabilityReservationId);
   await context.dependencies?.testOnlyBeforeExecutionClaim?.();
@@ -828,10 +829,11 @@ async function executeWithWorkerLease(context) {
     try {
       const executionAuthorization = context.executionAuthorization ?? (context.legacySpecDigest === undefined ? undefined : markerlessMigration
         ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
-        : { legacyProof: legacyClasslessProof(context.spec) });
+        : { legacyProof: context.legacyReservationProof });
       job = await context.store.claimJobWorkerForExecution(context.cwd, context.job.id,
         { childPid: process.pid, workerLeaseId }, migrationRollback,
         executionAuthorization, executionInspection);
+      await context.dependencies?.testOnlyAfterStateClaimBeforeCapabilityCommit?.();
       if (context.executionCapability !== undefined) {
         await context.identity.commitExecutionCapability(context.executionCapability, context.capabilityExpected, context.capabilityReservationId);
         capabilityCommitted = true;
@@ -839,7 +841,7 @@ async function executeWithWorkerLease(context) {
       await context.dependencies?.testOnlyAfterExecutionClaim?.();
       if (context.loadSpecAfterClaim) spec = await context.loadSpecAfterClaim();
     } catch (error) {
-      await context.store.finishJob(context.cwd, context.job.id, ['queued'], 'failed', {
+      await context.store.finishJobAfterExecutionClaimFailure(context.cwd, context.job.id, workerLeaseId, {
         error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution authorization failed' }, exitCode: 1,
       }).catch(() => {});
       if (!capabilityCommitted && context.executionCapability !== undefined) {
@@ -1059,8 +1061,11 @@ async function migrationRollbackForExecution(store, workspace, spec, job, legacy
 }
 /** Historical v1 continuations must retain one exact v1/v2 child binding; they cannot degrade to unbound. @param {Record<string,string>} spec */
 function legacyClasslessProof(spec) {
-  return spec.resumeSessionId !== undefined || spec.candidateJobId !== undefined
-    ? 'classless-owner-v1-bound' : 'classless-owner-v1';
+  const hasResume = spec.resumeSessionId !== undefined; const hasCandidate = spec.candidateJobId !== undefined;
+  if (hasResume !== hasCandidate) throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', {
+    category: 'validation', remedy: 'Reserve a new background job.',
+  });
+  return hasResume ? 'classless-owner-v1-bound' : 'classless-owner-v1';
 }
 /** @param {any} spec */
 function digestSpec(spec) { return createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex'); }

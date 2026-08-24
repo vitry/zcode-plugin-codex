@@ -542,6 +542,16 @@ export function createStateStore(options) {
       return transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, true);
     },
 
+    /** Terminalize a failed execution attempt only while the job is unclaimed or carries this attempt's exact lease.
+     * A competing winner's claim makes this compensation a no-op. @param {string} workspace @param {string} jobId
+     * @param {string} workerLeaseId @param {Record<string,unknown>} [patch] */
+    async finishJobAfterExecutionClaimFailure(workspace, jobId, workerLeaseId, patch = {}) {
+      validateTransitionInput(workspace, jobId, ['queued'], 'failed', patch);
+      if (!isDigest(workerLeaseId) || Object.hasOwn(patch, 'finishedAt')) throw invalidRescueBinding();
+      return transitionStoredJob(dataRoot, workspace, jobId, ['queued'], 'failed', patch, true,
+        { failedExecutionLeaseId: workerLeaseId });
+    },
+
     /**
      * @param {string} workspace
      * @param {string} jobId
@@ -639,7 +649,7 @@ export function createStateStore(options) {
   };
 }
 
-/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>}} [options] */
+/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>,failedExecutionLeaseId?:string}} [options] */
 async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, assignFinishedAt, options = {}) {
   const storage = await jobStorage(dataRoot, workspace);
   return withFileLock(storage.lockPath, async () => {
@@ -651,6 +661,8 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     }
     const path = jobPath(storage.jobsDirectory, jobId);
     const job = await readJobRecord(path, jobId, storage.workspacePath);
+    if (options.failedExecutionLeaseId !== undefined
+      && (job.status !== 'queued' || job.workerLeaseId !== undefined && job.workerLeaseId !== options.failedExecutionLeaseId)) return job;
     const requestedRollback = options.migrationRollback;
     if (requestedRollback !== undefined) {
       if (job.rescueMigrationRollback !== undefined && !sameMigrationRollback(job.rescueMigrationRollback, requestedRollback)) throw invalidRescueBinding();

@@ -145,6 +145,13 @@ modern `sealed-v2` capability or modern reservation without that
 historical proof cannot be downgraded by replacing its file. Queued
 cancel/recovery classifies a v2 record from durable job/binding state without
 decrypting its task payload.
+For an exact v1 spec, `resumeSessionId` and `candidateJobId` are one paired
+identity: both absent means historical unbound execution, both present requires
+the exact historical bound proof, and either field alone fails before identity
+capability proof, reservation, or consumption with no persistent mutation.
+When same-capability retries race, failed-claim compensation may terminalize
+only an unclaimed queued job or the exact worker lease owned by that attempt; a
+foreign winning lease is an atomic no-op and continues execution.
 Every modern writable Rescue reservation requires this claim before
 queued-to-running. The advancing caller must explicitly submit both its PID
 and lease (inherited persisted values are not arguments); both must match the

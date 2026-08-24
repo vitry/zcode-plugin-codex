@@ -878,6 +878,66 @@ test('reserved execution rejects an old unadvanced adoption before prompt or ZCo
   assert.equal(requests.some((request) => ['session/resume', 'session/setModel', 'session/setThoughtLevel'].includes(request.method)), false);
 });
 
+for (const loneField of ['resumeSessionId', 'candidateJobId']) test(`historical v1 execution rejects lone ${loneField} before capability proof with zero persistent mutation`, async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const job = await store.reserveJob({ workspace, ownerSessionId: `partial-${loneField}-owner`, ownerTurnId: 'turn',
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  await downgradeCompanionReservationToOwnerV1({ dataRoot: context.dataRoot, workspace }, job.id);
+  const spec = { command: 'rescue', task: 'must remain private', [loneField]: loneField === 'resumeSessionId' ? 'partial-session' : 'a'.repeat(64) };
+  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  const jobPath = join(storage.directory, 'jobs', `${job.id}.json`); const jobBefore = await readFile(jobPath);
+  const specPath = join(storage.directory, 'job-specs', `${job.id}.json`); await mkdir(dirname(specPath), { recursive: true, mode: 0o700 });
+  await atomicWriteJson(specPath, { version: 1, jobId: job.id, ownerSessionId: job.ownerSessionId, workspace, digest, spec });
+  const specBefore = await readFile(specPath); const nonexistentCapability = randomBytes(32).toString('base64url');
+  await assert.rejects(runCompanion(['run-reserved-job', job.id], {
+    cwd: workspace, env: context.env,
+    authorization: { executionCapability: nonexistentCapability, jobId: job.id },
+  }), { code: 'JOB_SPEC_INVALID' });
+  assert.deepEqual(await readFile(jobPath), jobBefore); assert.deepEqual(await readFile(specPath), specBefore);
+  const capabilityPath = join(storage.directory, 'identity', 'capabilities',
+    `${createHash('sha256').update(nonexistentCapability).digest('hex')}.json`);
+  await assert.rejects(stat(capabilityPath), { code: 'ENOENT' });
+});
+
+test('concurrent same-capability loser cannot terminalize the winner claimed queued job', async () => {
+  const context = await fixture(); const record = join(context.directory, 'same-capability-race.jsonl'); await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', 'single winning execution'], {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller('same-capability-owner'),
+  });
+  /** @type {()=>void} */ let releaseWinnerClaim = () => {}; /** @type {()=>void} */ let releaseLoserClaim = () => {};
+  /** @type {()=>void} */ let releaseWinnerCommit = () => {}; /** @type {()=>void} */ let winnerReady = () => {};
+  /** @type {()=>void} */ let loserReady = () => {}; /** @type {()=>void} */ let winnerClaimed = () => {};
+  const allowWinnerClaim = new Promise((resolve) => { releaseWinnerClaim = () => resolve(undefined); });
+  const allowLoserClaim = new Promise((resolve) => { releaseLoserClaim = () => resolve(undefined); });
+  const allowWinnerCommit = new Promise((resolve) => { releaseWinnerCommit = () => resolve(undefined); });
+  const winnerAtClaim = new Promise((resolve) => { winnerReady = () => resolve(undefined); });
+  const loserAtClaim = new Promise((resolve) => { loserReady = () => resolve(undefined); });
+  const winnerHasClaim = new Promise((resolve) => { winnerClaimed = () => resolve(undefined); });
+  const invocation = { cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id } };
+  const winner = runCompanion(reserved.privateInvocation, { ...invocation, dependencies: {
+    testOnlyBeforeExecutionClaim: async () => { winnerReady(); await allowWinnerClaim; },
+    testOnlyAfterStateClaimBeforeCapabilityCommit: async () => { winnerClaimed(); await allowWinnerCommit; },
+  } });
+  const loser = runCompanion(reserved.privateInvocation, { ...invocation, dependencies: {
+    testOnlyBeforeExecutionClaim: async () => { loserReady(); await allowLoserClaim; },
+  } });
+  await Promise.all([winnerAtClaim, loserAtClaim]); releaseWinnerClaim();
+  try {
+    await Promise.race([winnerHasClaim, new Promise((_, reject) => setTimeout(() => reject(new Error('winner did not pause after StateStore claim')), 2_000))]);
+    releaseLoserClaim();
+    await assert.rejects(loser, { code: 'WORKER_LEASE_CONFLICT' });
+    const claimed = await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, reserved.job.id);
+    assert.equal(claimed.status, 'queued'); assert.ok(claimed.workerLeaseId); assert.ok(claimed.rescueExecutionClaim);
+  } finally { releaseLoserClaim(); releaseWinnerCommit(); }
+  const result = await winner; assert.equal(result.job.status, 'succeeded');
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(requests.filter((request) => request.method === 'session/create').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
+});
+
 test('reserved execution losing revoke race before its atomic claim has no prompt or ZCode side effects', async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const parentSessionId = 'execution-claim-race-parent'; const childId = 'execution-claim-race-child';

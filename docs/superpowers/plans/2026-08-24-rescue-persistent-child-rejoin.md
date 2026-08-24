@@ -159,6 +159,9 @@ tests.
   consumption; revalidate one exact inspection digest at claim, release on
   rejection, and commit `consumedAt` only after the durable claim. Use one exact
   six-field v1 parser for execution, controller cancellation, and recovery.
+- [x] Reject one-sided v1 resume/candidate identity before capability proof and
+  make failed-claim terminal compensation an exact worker-lease CAS, so a
+  same-capability retry loser cannot terminate the winning queued claim.
 - [x] Linearize claim-first/revoke-first behavior. Require an exact explicit PID
   and lease for claimed queued-to-running; clear claims on running/terminal
   commit while preserving the first revocation.
