@@ -47,7 +47,7 @@ const REACTIVATE_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'executorAg
 const REACTIVATE_PROOF_KEYS = Object.freeze(['agentPathDigest', 'kind']);
 const LEGACY_ADOPT_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'childThreadId', 'kind']);
 const LEGACY_BOUND_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'bindingKey', 'childThreadId', 'kind']);
-const consumedLegacyActivationReceipts = new WeakMap();
+const consumedLegacyActivationAuthorities = new WeakMap();
 
 /** @param {NodeJS.ReadableStream} stream */
 export async function readRescuePreparation(stream) {
@@ -107,13 +107,10 @@ export function hasRecordedRescueMarker(prompt) {
 
 /** Derive authority only from the exact validated receipt returned by consume(). @param {unknown} value */
 export function deriveConsumedLegacyActivationAuthorityId(value) {
-  if (!plain(value) || consumedLegacyActivationReceipts.get(value) !== JSON.stringify(value)
-    || !validRecord(value, value.key, value.workspace) || value.consumedAt === null
-    || !plain(value.activation) || !['legacy-adopt', 'legacy-bound'].includes(value.activation.kind)
-    || value.executorAgentId !== value.activation.childThreadId) throw invalidPreparation();
-  const domain = value.activation.kind === 'legacy-adopt'
-    ? ['rescue-legacy-adoption-authority-v1', value.key, value.executorAgentId, value.generation, value.createdAt]
-    : ['rescue-legacy-bound-authority-v1', value.key, value.executorAgentId, value.generation, value.createdAt, value.activation.bindingKey];
+  let domain;
+  try { domain = consumedLegacyActivationAuthorities.get(/** @type {object} */ (value)); }
+  catch { throw invalidPreparation(); }
+  if (domain === undefined) throw invalidPreparation();
   return createHash('sha256').update(JSON.stringify(domain)).digest('hex');
 }
 
@@ -170,8 +167,12 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             if (input.activation !== undefined) {
               activation = validateActivation(input.activation);
               const legacyActivation = /** @type {any} */ (activation);
-              if (activation.kind !== 'legacy-bound'
-                || legacyActivation.childThreadId !== requiredExecutorAgentId) throw invalidPreparation();
+              if (activation.kind === 'legacy-bound') {
+                if (legacyActivation.childThreadId !== requiredExecutorAgentId) throw invalidPreparation();
+              } else {
+                if (activation.kind === 'legacy-adopt') throw invalidPreparation();
+                activation = null;
+              }
             }
           } else {
             if (input.activation === undefined) recordVersion = 2;
@@ -256,9 +257,13 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           executorAgentId: input.executorAgentId,
         };
         await atomicWriteJson(path, consumed, { privateRoot: storage.privateRoot });
-        const receipt = cloneRecord(consumed);
+        let receipt = cloneRecord(consumed);
         if (kind === 'current' && ['legacy-adopt', 'legacy-bound'].includes(record.activation?.kind)) {
-          consumedLegacyActivationReceipts.set(receipt, JSON.stringify(receipt));
+          const domain = record.activation.kind === 'legacy-adopt'
+            ? ['rescue-legacy-adoption-authority-v1', consumed.key, consumed.executorAgentId, consumed.generation, consumed.createdAt]
+            : ['rescue-legacy-bound-authority-v1', consumed.key, consumed.executorAgentId, consumed.generation, consumed.createdAt, record.activation.bindingKey];
+          receipt = freezeLegacyReceipt(receipt);
+          consumedLegacyActivationAuthorities.set(receipt, Object.freeze(domain));
         }
         return receipt;
       });
@@ -721,6 +726,14 @@ function cloneRecord(record) {
     ...(record.activation === null || record.activation === undefined
       ? {} : { activation: { ...record.activation } }),
   };
+}
+
+/** @param {any} receipt */
+function freezeLegacyReceipt(receipt) {
+  Object.freeze(receipt.envelope.options);
+  Object.freeze(receipt.envelope);
+  Object.freeze(receipt.activation);
+  return Object.freeze(receipt);
 }
 
 /** @param {string} path */

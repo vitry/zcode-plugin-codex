@@ -334,6 +334,27 @@ test('legacy-adopt generation one consumes once with exact child proof and deriv
   }), { code: 'RESCUE_PREPARATION_CONSUMED' });
 });
 
+test('legacy authority derivation never observes untrusted receipt properties', async () => {
+  let reads = 0;
+  const getter = Object.defineProperty({}, 'childThreadId', { enumerable: true, get() { reads += 1; return 'legacy-child'; } });
+  const throwing = Object.defineProperty({}, 'key', { enumerable: true, get() { throw new Error('PRIVATE_GETTER'); } });
+  const values = [
+    getter,
+    throwing,
+    { key: 1n },
+    { toJSON() { throw new Error('PRIVATE_TO_JSON'); } },
+  ];
+  for (const value of values) assert.throws(
+    () => deriveConsumedLegacyActivationAuthorityId(value),
+    (/** @type {any} */ error) => {
+      assert.equal(error.code, 'RESCUE_PREPARATION_INVALID');
+      assert.doesNotMatch(String(error.stack), /PRIVATE_GETTER|PRIVATE_TO_JSON/u);
+      return true;
+    },
+  );
+  assert.equal(reads, 0);
+});
+
 test('legacy activation proof codecs reject type confusion, mutations, expiry, and unknown keys', async (t) => {
   /** @type {Array<[string, any]>} */
   const mutations = [
@@ -396,9 +417,8 @@ test('legacy-bound works at new-turn generation one and same-turn generation two
       consumed.generation, consumed.createdAt, legacyBoundActivation.bindingKey,
     ])).digest('hex');
     assert.equal(deriveConsumedLegacyActivationAuthorityId(consumed), expected);
-    consumed.activation.bindingKey = 'e'.repeat(64);
-    assert.throws(() => deriveConsumedLegacyActivationAuthorityId(consumed),
-      { code: 'RESCUE_PREPARATION_INVALID' });
+    assert.throws(() => { consumed.activation.bindingKey = 'e'.repeat(64); }, TypeError);
+    assert.equal(deriveConsumedLegacyActivationAuthorityId(consumed), expected);
   });
 
   await t.test('same-turn generation two', async () => {
@@ -558,6 +578,31 @@ test('consumed preparation advances through proactive resume generations bound t
   }
   await assert.rejects(store.consume({ ...base, executorAgentId: 'rescue-child' }), {
     code: 'RESCUE_PREPARATION_CONSUMED',
+  });
+});
+
+test('same-turn Hook continuations accept planner activation but persist only the locked executor', async (t) => {
+  /** @type {Array<[string, any, string, any]>} */
+  const variants = [
+    ['reactivate', reactivateActivation, 'rescue-child', reactivateActivationProof],
+    ['spawn', spawnActivation, 'spawned-child', spawnActivationProof],
+  ];
+  for (const [name, activation, executorAgentId, activationProof] of variants) await t.test(name, async () => {
+    const { store, workspaceA } = await storeFixture();
+    const base = { sessionId: 'parent', turnId: `hook-${name}`, workspace: workspaceA,
+      permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue initial' };
+    await store.save({ ...base, envelope: validEnvelope, activation });
+    await store.consume({ ...base, executorAgentId, activationProof });
+    await store.save({
+      ...base, recordedPrompt: 'continue', activation,
+      envelope: { ...validEnvelope, source: 'proactive', options: { execution: 'foreground', resume: 'resume' } },
+    });
+    await assert.rejects(store.consume({ ...base, executorAgentId: 'sibling' }),
+      { code: 'RESCUE_PREPARATION_MISMATCH' });
+    const consumed = await store.consume({ ...base, executorAgentId });
+    assert.equal(consumed.generation, 2);
+    assert.equal(consumed.requiredExecutorAgentId, executorAgentId);
+    assert.equal(consumed.activation, null);
   });
 });
 

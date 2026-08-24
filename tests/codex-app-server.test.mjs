@@ -308,6 +308,7 @@ test('app-server operations honor pre-abort and promptly reap hung list/read chi
     ['initialize', 'initialize', (options) => readCodexThreadSpawnChild('child-1', 'parent-1', options)],
     ['list', 'thread/list', (options) => listCodexThreadSpawnChildren('parent-1', options)],
     ['read', 'thread/read', (options) => readCodexThreadSpawnChild('child-1', 'parent-1', options)],
+    ['ambient identity', 'thread/read', (options) => readCodexThreadSpawnChildIdentity('child-1', options)],
   ];
   for (const [name, method, operation] of operations) await t.test(name, async () => {
     const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', `${name} interrupted.`, { category: 'interruption', remedy: 'Retry.' });
