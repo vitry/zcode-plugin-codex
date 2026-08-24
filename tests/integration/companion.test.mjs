@@ -728,6 +728,58 @@ test('legacy session-ended migration rolls back its tombstone when exact remote 
   assert.equal(proof.kind, 'bound'); assert.deepEqual(proof.binding, closed.binding);
 });
 
+test('reserved execution rejects an old unadvanced adoption before prompt or ZCode mutation', async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const parentSessionId = 'old-adoption-execution-parent'; const childId = 'old-adoption-execution-child';
+  /** @param {string} turn */
+  const reservation = (turn) => ({ workspace, ownerSessionId: parentSessionId, ownerTurnId: turn,
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const store = createStateStore({ dataRoot: context.dataRoot }); const candidate = await store.reserveJob(reservation('candidate'));
+  const runningCandidate = await store.transitionJob(workspace, candidate.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), zcodeSessionId: 'old-adoption-zcode-session',
+  });
+  const completedCandidate = await store.finishJob(workspace, runningCandidate.id, ['running'], 'succeeded');
+  const executor = { parentSessionId, parentTurnId: 'adopt', agentId: childId, agentType: 'zcode-rescue',
+    agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const faulted = createStateStore({ dataRoot: context.dataRoot, testOnlyPublicationHook: async (seam) => {
+    if (seam === 'adopt:current-advance') throw new Error('old publisher crashed before current advance');
+  } });
+  await assert.rejects(faulted.adoptRescueCandidate({ workspace, reservation: reservation('adopt'), executor,
+    candidateJobId: candidate.id }), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
+  const adoption = (await store.listJobs(workspace)).find((job) => job.id !== candidate.id);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  const jobPath = join(storage.directory, 'jobs', `${adoption.id}.json`); const oldJob = JSON.parse(await readFile(jobPath, 'utf8'));
+  oldJob.rescueContinuationOrigin = { kind: 'legacy-adoption', binding: oldJob.rescueContinuationOrigin.binding };
+  delete oldJob.rescueReservationKind; await atomicWriteJson(jobPath, oldJob);
+  const ownerRoot = join(storage.directory, 'job-owners'); let ownerBindingPath;
+  for (const entry of await readdir(ownerRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{64}$/u.test(entry.name)) continue;
+    const path = join(ownerRoot, entry.name, `${adoption.id}.json`);
+    try { await readFile(path); ownerBindingPath = path; break; } catch (error) { if (/** @type {any} */ (error)?.code !== 'ENOENT') throw error; }
+  }
+  assert.ok(ownerBindingPath); await atomicWriteJson(ownerBindingPath, {
+    jobId: adoption.id, ownerSessionId: parentSessionId, version: 1,
+  });
+  const spec = { command: 'rescue', task: 'must never reach ZCode', model: 'fake2/other', effort: 'high',
+    resumeSessionId: completedCandidate.zcodeSessionId, candidateJobId: candidate.id };
+  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
+  await atomicWriteJson(join(storage.directory, 'job-specs', `${adoption.id}.json`), {
+    version: 1, jobId: adoption.id, ownerSessionId: parentSessionId, workspace, digest, spec,
+  });
+  const capability = await context.identity.createExecutionCapability({ jobId: adoption.id, ownerSessionId: parentSessionId,
+    workspace, operation: 'run-reserved-job', specDigest: digest, permissionSnapshot: oldJob.permissionSnapshot });
+  const record = join(context.directory, 'old-adoption-execution.jsonl'); await writeFile(record, '');
+  await assert.rejects(runCompanion(['run-reserved-job', adoption.id], {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: capability, jobId: adoption.id },
+  }), { code: 'RESCUE_BINDING_NOT_RUNNABLE' });
+  const failed = await store.readJob(workspace, adoption.id); assert.equal(failed.status, 'failed');
+  assert.equal(failed.promptArtifact, undefined); assert.equal(failed.logFile, undefined);
+  await assert.rejects(stat(join(storage.directory, 'prompts', `${adoption.id}.md`)), { code: 'ENOENT' });
+  const rawRequests = (await readFile(record, 'utf8')).trim(); const requests = rawRequests === '' ? [] : rawRequests.split('\n').map((line) => JSON.parse(line));
+  assert.equal(requests.some((request) => ['session/resume', 'session/setModel', 'session/setThoughtLevel'].includes(request.method)), false);
+});
+
 for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding']) test(['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
   ? `background execution rejects ${failurePoint === 'corrupt legacy worker execution' ? 'corrupt markerless legacy rollback metadata' : failurePoint === 'missing legacy worker evidence' ? 'missing markerless legacy rollback evidence' : 'missing markerless rollback evidence and binding'} without terminalizing its queued job`
   : `background session-ended migration restores its closed tombstone when ${failurePoint} fails`, async () => {

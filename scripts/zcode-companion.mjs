@@ -776,15 +776,24 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', specDigest: recomputed });
   if (!sameJson(consumed.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
-  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
+  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec,
+    caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
 
 /** @param {any} context */
 async function executeWithWorkerLease(context) {
+  let migrationRollback;
+  try { migrationRollback = await migrationRollbackForExecution(context.store, context.cwd, context.spec, context.job); }
+  catch (error) {
+    if (error instanceof PluginError && error.code === 'RESCUE_BINDING_NOT_RUNNABLE') {
+      await context.store.finishJob(context.cwd, context.job.id, ['queued'], 'failed', { error: { message: error.message }, exitCode: 1 });
+    }
+    throw error;
+  }
   const workerLeaseId = randomBytes(32).toString('hex');
   return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, async () => {
     const job = await context.store.claimJobWorker(context.cwd, context.job.id, { childPid: process.pid, workerLeaseId });
-    return executeReserved({ ...context, job, childPid: process.pid, workerLeaseId });
+    return executeReserved({ ...context, job, migrationRollback, childPid: process.pid, workerLeaseId });
   });
 }
 
@@ -792,7 +801,7 @@ async function executeWithWorkerLease(context) {
 async function executeReserved(context) {
   const { cwd, env, dataRoot, store, job, spec } = context;
   let client; let resumeSucceeded = false;
-  const migrationRollback = await migrationRollbackForExecution(store, cwd, spec, job);
+  const migrationRollback = context.migrationRollback;
   try {
     context.signal?.throwIfAborted();
     const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
@@ -927,7 +936,7 @@ function migrationRollbackFromSpec(spec, job) {
 /** Prefer the state-validated queued marker; old specs remain readable only for in-flight upgrade compatibility. @param {any} store @param {string} workspace @param {Record<string,string>} spec @param {any} job */
 async function migrationRollbackForExecution(store, workspace, spec, job) {
   const legacy = migrationRollbackFromSpec(spec, job);
-  return resolveQueuedRescueMigrationRollback({ store, workspace, job,
+  return resolveQueuedRescueMigrationRollback({ store, workspace, job, mode: 'execution',
     invalid: () => new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }) }, legacy);
 }
 /** @param {any} spec */

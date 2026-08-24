@@ -694,7 +694,8 @@ for (const terminalizer of ['execution', 'direct', 'controller', 'recovery', 'Se
   const { dataRoot, workspace, store, hook, candidate, adoption, bindingPath, baseBytes } = await legacyAdoptionPublicationFixture();
   let terminal;
   if (terminalizer === 'execution') {
-    assert.equal(await store.resolveQueuedRescueMigrationRollback(workspace, adoption.id, undefined), undefined);
+    await assert.rejects(store.resolveQueuedRescueMigrationRollback(workspace, adoption.id, undefined, 'execution'),
+      { code: 'RESCUE_BINDING_NOT_RUNNABLE' });
     await assert.rejects(store.transitionJob(workspace, adoption.id, ['queued'], 'running'), { code: 'RESCUE_BINDING_INVALID' });
     terminal = await store.finishJob(workspace, adoption.id, ['queued'], 'failed', { error: { message: 'execution cannot start unadvanced adoption' }, exitCode: 1 });
   } else if (terminalizer === 'direct') terminal = await store.finishJob(workspace, adoption.id, ['queued'], 'failed', { error: { message: 'direct settlement' }, exitCode: 1 });
@@ -732,6 +733,28 @@ for (const mutation of ['corrupt origin', 'ambiguous current']) test(`old-shape 
   assert.equal((await store.readJob(workspace, adoption.id)).status, 'queued');
 });
 
+for (const state of ['old-shape unadvanced', 'advanced']) test(`${state} legacy adoption rejects a contradictory job permission snapshot`, async () => {
+  let context;
+  if (state === 'old-shape unadvanced') context = await legacyAdoptionPublicationFixture();
+  else {
+    const value = await fixture(); const { dataRoot, workspace, store } = value;
+    const hook = executor(workspace, { parentTurnId: 'adopt' });
+    const candidate = await store.reserveJob(reservation(workspace, 'candidate'));
+    await makeEligible(store, workspace, candidate, 'permission-advanced-adoption-session');
+    await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
+    const result = await store.adoptRescueCandidate({ workspace, reservation: reservation(workspace, 'adopt'), executor: hook, candidateJobId: candidate.id });
+    const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+    context = { ...value, adoption: result.job, jobPath: join(storage.directory, 'jobs', `${result.job.id}.json`) };
+  }
+  const tampered = JSON.parse(await readFile(context.jobPath, 'utf8'));
+  tampered.permissionSnapshot = { permissionMode: 'bypassPermissions' };
+  await writeFile(context.jobPath, `${JSON.stringify(tampered, null, 2)}\n`);
+  await assert.rejects(context.store.finishJob(context.workspace, context.adoption.id, ['queued'], 'failed', {
+    error: { message: 'permission contradiction must retain guard' }, exitCode: 1,
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal((await context.store.readJob(context.workspace, context.adoption.id)).status, 'queued');
+});
+
 for (const transition of ['execution preflight', 'running', 'failed', 'controller', 'recovery']) test(`missing bound reservation proof and binding fail closed during ${transition}`, async () => {
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
@@ -761,7 +784,7 @@ for (const transition of ['execution preflight', 'running', 'failed', 'controlle
 for (const transition of ['execution', 'failed', 'controller', 'recovery']) test(`genuine ordinary unbound Rescue job remains settleable through ${transition}`, async () => {
   const { dataRoot, workspace, store } = await fixture(); const job = await store.reserveJob(reservation(workspace)); let settled;
   if (transition === 'execution') {
-    assert.equal(await store.resolveQueuedRescueMigrationRollback(workspace, job.id, undefined), undefined);
+    assert.equal(await store.resolveQueuedRescueMigrationRollback(workspace, job.id, undefined, 'execution'), undefined);
     settled = await store.transitionJob(workspace, job.id, ['queued'], 'running');
   } else if (transition === 'failed') settled = await store.finishJob(workspace, job.id, ['queued'], 'failed', { error: { message: 'ordinary failure' }, exitCode: 1 });
   else if (transition === 'controller') settled = await createJobController({ store, dataRoot }).cancel(workspace, job.id, job.ownerSessionId);
@@ -947,7 +970,7 @@ test('legacy execution preflight adopts exact markerless rollback proof before t
   const markerless = JSON.parse(await readFile(jobPath, 'utf8')); delete markerless.rescueMigrationRollback;
   await writeFile(jobPath, `${JSON.stringify(markerless, null, 2)}\n`);
   const legacyRollback = structuredClone(continuation.migrationRollback); delete legacyRollback.priorBinding;
-  const resolved = await store.resolveQueuedRescueMigrationRollback(workspace, continuation.job.id, legacyRollback);
+  const resolved = await store.resolveQueuedRescueMigrationRollback(workspace, continuation.job.id, legacyRollback, 'execution');
   assert.deepEqual(resolved, continuation.migrationRollback);
   assert.deepEqual((await store.readJob(workspace, continuation.job.id)).rescueMigrationRollback, continuation.migrationRollback);
   const running = await store.transitionJob(workspace, continuation.job.id, ['queued'], 'running');

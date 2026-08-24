@@ -263,15 +263,18 @@ export function createStateStore(options) {
     /**
      * Resolve durable or legacy rollback evidence against the exact queued job and its binding under one lock.
      * Absence is ordinary only with an exact private continuation proof, no current binding, or a fresh-anchor binding.
-     * @param {string} workspace @param {string} jobId @param {any} legacyRollback
+     * Execution preflight rejects terminal-only publication remnants explicitly; terminal callers omit the mode.
+     * @param {string} workspace @param {string} jobId @param {any} legacyRollback @param {'terminal'|'execution'} [mode]
      */
-    async resolveQueuedRescueMigrationRollback(workspace, jobId, legacyRollback) {
+    async resolveQueuedRescueMigrationRollback(workspace, jobId, legacyRollback, mode = 'terminal') {
       if (!isNonEmptyString(workspace) || !isDigest(jobId)
-        || legacyRollback !== undefined && !isPlainJsonObject(legacyRollback)) throw invalidRescueBinding();
+        || legacyRollback !== undefined && !isPlainJsonObject(legacyRollback)
+        || !['terminal', 'execution'].includes(mode)) throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         const job = await readJobRecord(jobPath(storage.jobsDirectory, jobId), jobId, storage.workspacePath);
         const classification = await classifyQueuedRescueTransitionLocked(storage, job, legacyRollback);
+        if (mode === 'execution' && classification.kind === 'ordinary-unadvanced') throw notRunnableRescueBinding();
         return classification.kind === 'migration' ? classification.rollback : undefined;
       });
     },
@@ -855,6 +858,8 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
   if (job.rescueContinuationOrigin !== undefined) {
     requireBoundReservation();
     if (legacyRollback !== undefined || !validRescueContinuationOrigin(job.rescueContinuationOrigin, job)) throw invalidRescueBinding();
+    const originBinding = job.rescueContinuationOrigin.binding ?? job.rescueContinuationOrigin.priorBinding;
+    if (originBinding.permissionMode !== job.permissionSnapshot.permissionMode) throw invalidRescueBinding();
     const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, false);
     const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
     if (matches.length > 1) throw invalidRescueBinding();
@@ -1398,6 +1403,7 @@ function validateCurrentJob(job, parentSessionId, workspace) {
     || job.status === 'cancelled') throw invalidRescueBinding();
 }
 function invalidRescueBinding() { return new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' }); }
+function notRunnableRescueBinding() { return new PluginError('RESCUE_BINDING_NOT_RUNNABLE', 'The queued Rescue reservation was never advanced to its runnable binding.', { category: 'state', remedy: 'Terminalize the interrupted reservation and retry from the persisted child operation.' }); }
 function closedRescueBinding() { return new PluginError('RESCUE_BINDING_CLOSED', 'The Rescue operation binding is closed.', { category: 'state', remedy: 'Start a fresh Rescue operation from the active parent turn.' }); }
 function staleRescueBinding() { return new PluginError('RESCUE_BINDING_STALE', 'The Rescue operation generation changed.', { category: 'state', remedy: 'Reload the exact Rescue binding before retrying.' }); }
 function rescueBindingCapacity() { return new PluginError('RESCUE_BINDING_CAPACITY', 'The Rescue binding capacity is exhausted.', { category: 'state', remedy: 'End or clean up old Rescue operations before retrying.' }); }

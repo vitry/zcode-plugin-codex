@@ -19,9 +19,9 @@ export function legacyRescueMigrationRollbackFromSpec(spec, job, invalid) {
     priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt, priorVersion };
 }
 
-/** Resolve rollback evidence through the StateStore's exact locked binding/job classification. @param {{store:any,workspace:string,job:any,invalid:()=>Error}} input @param {any} legacyRollback */
+/** Resolve rollback evidence through the StateStore's exact locked binding/job classification. @param {{store:any,workspace:string,job:any,invalid:()=>Error,mode?:'terminal'|'execution'}} input @param {any} legacyRollback */
 export async function resolveQueuedRescueMigrationRollback(input, legacyRollback) {
-  try { return await input.store.resolveQueuedRescueMigrationRollback(input.workspace, input.job.id, legacyRollback); }
+  try { return await input.store.resolveQueuedRescueMigrationRollback(input.workspace, input.job.id, legacyRollback, input.mode); }
   catch (error) {
     if (/** @type {any} */ (error)?.code === 'RESCUE_BINDING_INVALID') throw input.invalid();
     throw error;
