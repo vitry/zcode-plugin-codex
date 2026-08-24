@@ -121,13 +121,45 @@ and lease (inherited persisted values are not arguments); both must match the
 job and claim exactly. The transition then clears the claim. Queued/running
 cancellation, queued terminalization, and orphan recovery also clear it while
 preserving the first committed `cancel`, `invalidated`, or `session-ended`
-tombstone instead of overwriting its close reason. Thus deleting a migration marker and its child
-binding cannot turn a bound attempt into an ordinary unbound job; missing or
-contradictory class or claim evidence fails closed. Historical records that
-predate the reservation class remain eligible only when both the canonical job
-omits the class and its exact owner binding has the legacy format, with any
-child binding or rollback evidence also validated—one missing field or absence
-alone is deliberately not guessed.
+tombstone instead of overwriting its close reason. The claim, continuation
+origin, and migration rollback marker are removed only by the same locked
+commit that enters `running` or a terminal state. A crash before that commit
+leaves the evidence available for an idempotent retry.
+
+The production claim path and every direct queued transition use the same
+classification rules. Thus deleting a migration marker and its child binding
+cannot turn a bound attempt into an ordinary unbound job; missing,
+contradictory, or ambiguous reservation, origin, rollback, binding, permission,
+PID, lease, or claim evidence fails closed. No claim, artifact, job-spec rewrite,
+or remote RPC may occur before this classification succeeds.
+
+Historical writable records that predate reservation classes are compatible
+only when the canonical job omits the class and its exact owner binding has the
+legacy v1 format. A classless owner-v1 job may be ordinary unbound, or may be
+bound by complete and exact historical v1/v2 child evidence. Production
+execution upgrades that authority only by publishing a private v2 execution
+claim under the state lock. A classless owner-v1 job associated with any v3
+child binding fails closed, whether it appears as a continuation, adoption,
+migration, fresh/ordinary reservation, production claim, or direct transition.
+The existence or absence of one field is never enough to infer the class.
+
+An old adoption publication remnant whose binding was not advanced is
+terminal-only. It is recognized only when its private origin reconstructs one
+complete, exact prior binding and the anchor, current job, permission snapshot,
+child ID/path/Role authority, timestamps, operation, and supersession history
+all agree with the persisted partition. It may then be cancelled or failed
+while leaving the prior binding byte-identical; it may never run. Corrupt or
+multiple matches fail closed. Likewise, markerless legacy migration inspection
+is read-only until one unique complete v1/v2 tombstone and queued successor are
+proven. Missing job-spec data, absent migration fields, v3 ambiguity, or any
+contradiction fails before publishing a rollback marker or any other durable
+state.
+
+Reservation class, continuation origin, migration rollback, execution claim,
+permission snapshot, and capability data are child-private.
+Status, list, result, background reservation output, logs, errors, and rendered
+diagnostics must remove these fields and must not reveal enough data to replay
+them.
 
 Migration requires: closed + `session-ended`; exact canonical workspace and
 parent; exact persisted child ID/thread/path/Role; valid anchor/current jobs;
@@ -164,6 +196,16 @@ Tests must cover every mutation and no-mutation outcome for:
 - background preparation, capability delivery, launch, worker-crash, orphan,
   and queued-cancel rollback, plus age/capacity retention of session-ended
   tombstones;
+- private reservation/origin/rollback/claim publication order, crash retry,
+  public-output filtering, exact PID/lease matching, and claim-first versus
+  revoke-first linearization through foreground, background, controller,
+  recovery, and direct transition paths;
+- classless owner-v1 ordinary-unbound and exact v1/v2-bound compatibility, plus
+  fail-closed classless-v3 continuation, adoption, migration, fresh/ordinary,
+  production-claim, and direct-transition cases;
+- exact old adoption publication-remnant terminalization with a byte-identical
+  prior binding, rejection before execution side effects, and markerless
+  migration rejection with zero durable mutation;
 - cancel current job, invalidation, same-child fresh, sibling fresh, orphan
   settlement, failed/unacknowledged stop, and child-scoped close;
 - mismatched origin/execution workspace, parent, child ID/thread, exact path or

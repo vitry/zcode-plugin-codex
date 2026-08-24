@@ -1,131 +1,254 @@
 # Rescue Persistent Child Rejoin Hardening Plan (sol/medium revision)
 
-This is a corrective implementation plan after the initial implementation and
-independent sol/medium audit. The revised spec is the source of truth:
-docs/superpowers/specs/2026-08-24-rescue-persistent-child-rejoin-design.md.
-Do not reintroduce eager standalone migration.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> `superpowers:subagent-driven-development` (recommended) or
+> `superpowers:executing-plans` to execute the remaining unchecked steps.
+> Checkboxes record branch state and must be updated only with captured
+> evidence.
+
+**Goal:** Preserve native Codex resident/notLoaded/completed-but-resumable
+child semantics while keeping every rejoin, migration, execution, and
+revocation decision exact, private, crash-safe, and fail closed.
+
+**Architecture:** A child-scoped durable binding maps one exact persisted Codex
+child to one anchor ZCode session. Read-only discovery and lazy migration feed
+one locked reservation state machine; private reservation, origin/rollback,
+worker claim, and owner evidence authorize execution and recovery without
+guessing. SessionEnd releases runtime ownership but does not revoke a valid
+binding.
+
+**Tech Stack:** Node.js ESM, file-backed JSON state with process locks and
+atomic rename, Codex app-server child discovery, managed ZCode RPC, Node test
+runner, ESLint, and TypeScript checking.
+
+---
+
+The revised design is the source of truth:
+`docs/superpowers/specs/2026-08-24-rescue-persistent-child-rejoin-design.md`.
+Do not reintroduce eager standalone migration, workspace/latest-job guessing,
+or SessionEnd revocation.
+
+## Progress at source HEAD `246acbf`
+
+- [x] Lifecycle implementation and named regression coverage are complete in
+  source through `246acbf`.
+- [x] Twelve iterative sol/medium spec/semantic review rounds report no
+  unresolved high/medium findings at `246acbf`.
+- [x] Final focused lifecycle verification passed at `246acbf`:
+  `node --test --test-concurrency=1 tests/rescue-binding.test.mjs tests/integration/companion.test.mjs`
+  (`289` passed, `0` failed).
+- [ ] Regenerate marketplace artifacts from the final reviewed source commit;
+  the checked-in marketplace runtime predates the post-`a5df681` hardening.
+- [ ] Run the complete local verification and required qualification gates from
+  a clean worktree.
+- [ ] Complete independent final quality/security review of the whole branch.
+- [ ] Push, open the PR, and keep all required CI checks green.
 
 ## Acceptance gates
 
-The change is complete only when:
+The change is complete only when every item below is checked:
 
-1. Every binding, residency, job, revocation, migration, sibling, and
-   no-mutation requirement in the revised spec has a named test.
-2. Source and marketplace/plugins/zcode runtime/docs copies pass the
-   repository's byte-identity/snapshot contracts.
-3. Independent sol/medium specification review and quality/security review
-   both report no unresolved high/medium findings.
-4. npm run check:line-endings, npm run lint, npm run typecheck, all focused
-   suites, and npm test pass. Qualified/native tests must either pass with
-   captured exact evidence or be explicitly blocked by an external
-   prerequisite; skipped output is not acceptance evidence.
-5. Final diff, PR checks, and CI matrix are reviewed before claiming completion.
+- [x] Named tests cover binding/residency/job separation, SessionEnd resumability,
+  exact child mapping, sibling isolation, revocation, migration rollback,
+  reservation/origin/claim privacy, and no-mutation failures.
+- [x] Named tests cover claim/revoke linearization, exact PID/lease ownership,
+  direct/claim consistency, ordinary-unadvanced recovery, v1/v2 compatibility,
+  and classless owner-v1 plus v3 fail-closed behavior.
+- [ ] Source and `marketplace/plugins/zcode` runtime/docs copies satisfy the
+  repository byte-identity, provenance, package, and install snapshot contracts.
+- [x] Independent sol/medium specification review reports no unresolved
+  high/medium findings for source HEAD `246acbf`.
+- [ ] Independent quality/security review reports no unresolved high/medium
+  findings for the final source and generated marketplace diff.
+- [ ] `npm run check:line-endings`, `npm run lint`, `npm run typecheck`, focused
+  suites, and `npm test` pass at the final commit.
+- [ ] Native/qualified tests pass with captured exact evidence. An unavailable
+  external prerequisite is reported as blocked and is not counted as a pass;
+  skipped or unauthenticated output is not acceptance evidence.
+- [ ] The final diff, PR checks, and CI matrix are reviewed before completion is
+  claimed.
 
 ## Task 1 — Freeze the state model and version contract
 
-Owners: scripts/lib/rescue-binding.mjs, scripts/lib/state.mjs,
-tests/rescue-binding.test.mjs, tests/state.test.mjs.
+**Files:** `scripts/lib/rescue-binding.mjs`, `scripts/lib/state.mjs`,
+`tests/rescue-binding.test.mjs`, `tests/state.test.mjs`.
 
-- Define orthogonal binding, residency, and job semantics in code comments and
-  validation. Keep v1/v2 readable under their historical schemas; write v3
-  only for new/replaced records.
-- Persist exact modern subagent-start agent_path; preserve legacy adoption path
-  digest/provenance. Reject unknown versions, mixed malformed records, duplicate
-  supersession operations, and capacity overflow without mutation.
-- Record bounded same-child fresh supersession history. Fresh child B must not
-  modify child A; stale same-child writers must fail CAS.
-- Never age-GC `session-ended` tombstones. They are resumable state; only
-  explicitly revoked closed records are eligible for bounded-history GC.
-- Add tests for schema compatibility, path mismatch, supersession, sibling
-  byte equality, and all malformed/oversized/duplicate cases.
+- [x] Keep binding, Codex residency, and job state orthogonal. Preserve readable
+  v1/v2 historical schemas and write v3 only for new or replaced bindings.
+- [x] Persist exact modern child path authority and legacy adoption digest/
+  provenance. Reject malformed, unknown, duplicate, oversized, ambiguous, or
+  mismatched evidence without mutation.
+- [x] Record bounded same-child fresh supersession. Preserve sibling bindings
+  byte-for-byte and reject stale same-child writers under CAS.
+- [x] Retain `session-ended` tombstones through age/capacity collection; collect
+  only explicitly revoked history under the bounded policy.
 
-## Task 2 — Make close/cancel operations exact and child-scoped
+## Task 2 — Make close, cancel, and SessionEnd exact
 
-Owners: scripts/lib/state.mjs, scripts/zcode-companion.mjs,
-scripts/lib/job-control.mjs, relevant hooks/tests.
+**Files:** `scripts/lib/state.mjs`, `scripts/lib/job-control.mjs`,
+`scripts/lib/recovery.mjs`, `scripts/zcode-companion.mjs`,
+`hooks/session-end-hook.mjs`, and their tests.
 
-- Replace any session-wide binding close API with exact
-  (workspace,parentSessionId,childAgentId,operationId,reason) CAS closure.
-- Durable cancellation of the exact current bound job closes only that
-  operation with cancel. Linearize cancellation and binding closure so a
-  continuation cannot publish between them. A failed/unacknowledged remote
-  stop remains running/guarded and does not become cancel.
-- Preserve explicit invalidation and same-child fresh replacement as permanent
-  revocations; repeated/different closure reasons fail closed.
-- Test cancellation races, historical anchor cancellation, orphan settlement,
-  sibling isolation, same-child replacement, cross-process locking, and zero
-  mutation on rejection.
+- [x] Replace session-wide closure with exact child/operation CAS closure.
+- [x] Linearize durable cancellation with binding revocation. Preserve the first
+  committed `cancel`, `invalidated`, or `session-ended` tombstone and retain a
+  writable guard after an unacknowledged stop.
+- [x] Make SessionEnd settle active ownership and preparation state without
+  revoking valid completed/resumable bindings or siblings.
+- [x] Cover cancellation/recovery races, orphan settlement, child-scoped close,
+  same-child replacement, sibling fresh, and zero-mutation rejection.
 
-## Task 3 — Implement exact resident/notLoaded rejoin
+## Task 3 — Implement exact resident/notLoaded child rejoin
 
-Owners: scripts/lib/rescue-route-planner.mjs, scripts/zcode-companion.mjs,
-hook discovery/state readers, route/planner and companion tests.
+**Files:** `scripts/lib/codex-app-server.mjs`,
+`scripts/lib/rescue-route-planner.mjs`, `scripts/zcode-companion.mjs`, and
+route/planner/companion tests.
 
-- Use exact-parent persisted child graph evidence: same thread ID and
-  thread_spawn parent, approved Role/type, exact agent_path, canonical
-  origin/execution workspaces, and unambiguous identity.
-- Permit resident exact children and notLoaded children. Rejoin follows the
-  same child thread and never spawns or emits a new SubagentStart.
-- Keep legacy host-only adoption as a separate compatibility route. Do not
-  downgrade modern bindings to legacy.
-- Preserve precise existing error families for active contradictions,
-  mismatches, stale CAS, missing binding, and ambiguity.
-- Test resident, unloaded, missing, contradictory, duplicate, pagination,
-  unsupported parent-filter, path/Role drift, and zero-side-effect failures.
+- [x] Discover children only through the exact persisted parent graph and
+  validate child thread ID, `thread_spawn` parent, Role/type, exact path,
+  canonical origin/execution workspace, permission, and uniqueness.
+- [x] Follow resident or notLoaded exact children on the original thread. Never
+  spawn a replacement child or emit `SubagentStart` during rejoin.
+- [x] Reconstruct route-less modern v3 authority only from the exact binding and
+  child graph. Keep legacy adoption isolated as a compatibility route.
+- [x] Fail closed for missing, contradictory, duplicate, paginated/incomplete,
+  unsupported, transiently unavailable, or stale evidence.
 
-## Task 4 — Make migration lazy, atomic, and remote-safe
+## Task 4 — Make migration, reservation, and execution crash-safe
 
-Owners: scripts/lib/state.mjs, reservation/review flow, companion and
-state/integration tests.
+**Files:** `scripts/lib/state.mjs`, `scripts/lib/rescue-migration.mjs`,
+`scripts/lib/job-control.mjs`, `scripts/lib/recovery.mjs`,
+`scripts/lib/render.mjs`, `scripts/zcode-companion.mjs`, and state/integration
+tests.
 
-- Migration proof lookup is read-only. It returns a closed session-ended
-  tombstone plus a digest of the complete validated binding and complete
-  operation/anchor/current/path proof; it never activates the binding.
-- Only continuation reservation consumes that proof. Under one state lock,
-  re-read and compare every exact field and supersession record, validate local
-  anchor/current structure and non-empty anchor zcodeSessionId, then
-  atomically publish the queued continuation and active successor binding.
-- Ensure two consumers of one proof produce one winner and one stale loser.
-  Do not allow proof A to resolve a newer same-child operation B.
-- Before sending work, call remote session/resume for exactly the anchor ZCode
-  session. On rejection, mismatch, broker failure, or timeout, fail the new
-  attempt and preserve/rollback the closed tombstone with exact CAS; never
-  fall back to session/create, another session, or another child.
-- Persist enough private rollback metadata on the queued job before publishing
-  the active successor binding, under the reservation state lock, to reconstruct
-  the exact historical v1/v2/v3 tombstone. Do not rely on later job-spec
-  publication and do not expose the marker publicly. Apply the same rollback
-  before terminalization on preparation, capability-delivery, launch,
-  worker-crash/orphan, and ordinary queued-cancellation paths.
-- Test legacy and modern migration, missing/wrong remote sessions, rollback,
-  competing reservations, complete-proof mutation, v1/v2-to-v3 upgrade,
-  worker-crash recovery, operation/anchor/current mismatch, and no mutation.
+- [x] Keep migration lookup read-only. Consume a complete tombstone digest only
+  during locked continuation reservation and permit at most one CAS winner.
+- [x] Publish the private rollback marker on the queued successor before binding
+  advance. Restore the exact v1/v2/v3 tombstone on every queued terminal path;
+  clear rollback/origin/claim only in the locked running or terminal commit.
+- [x] Resume exactly the anchor ZCode session and never fall back to create,
+  latest session, another child, or another workspace. Roll back on rejection,
+  mismatch, broker failure, launch failure, worker loss, cancel, or recovery.
+- [x] Publish private bound/unbound reservation evidence in the canonical job and
+  owner record. Validate job, owner, child binding, permission, origin/rollback,
+  PID, lease, and revocation under one lock before publishing an execution claim
+  or performing artifacts/session/model/thought side effects.
+- [x] Linearize claim-first/revoke-first behavior. Require an exact explicit PID
+  and lease for claimed queued-to-running; clear claims on running/terminal
+  commit while preserving the first revocation.
+- [x] Apply one classification matrix to production claim and direct transition:
+  classless owner-v1 ordinary or exact v1/v2-bound jobs remain compatible;
+  classless owner-v1 plus v3 continuation/adoption/migration/fresh/ordinary
+  state fails closed.
+- [x] Recognize ordinary-unadvanced adoption remnants only from one complete
+  exact prior binding, permit safe terminalization with prior bytes unchanged,
+  and forbid execution. Reject markerless migration before any durable write
+  when job-spec evidence is absent, incomplete, contradictory, v3, or ambiguous.
+- [x] Strip reservation class, origin, rollback, claim, permission, and
+  capability evidence from child/public output.
 
-## Task 5 — Preserve SessionEnd semantics and documentation
+## Task 5 — Align source documentation and release contracts
 
-Owners: SessionEnd hook, source and marketplace docs/copies, changelog,
-snapshot/provenance tests.
+**Files:** `README.md`, `README.zh-CN.md`, `SECURITY.md`, `CHANGELOG.md`,
+`docs/adr/0013-bind-rescue-child-to-zcode-session.md`, this design/plan, and
+release-contract tests.
 
-- SessionEnd settles jobs, cleans runtime/preparation/broker ownership, and
-  preserves durable jobs/bindings. It must not revoke siblings or valid
-  completed operations.
-- Update source and marketplace README/Chinese README, SECURITY, ADR, and
-  CHANGELOG. Explain the three orthogonal state dimensions, exact mapping,
-  same-child versus sibling fresh, cancel, and writable exclusion.
-- Update marketplace mirrored runtime files and verify source/marketplace byte
-  identity rather than hand-editing only source files.
+- [x] Document SessionEnd resumability, exact child mapping, same-child versus
+  sibling fresh, permanent cancel/invalidation, migration rollback, writable
+  exclusion, and fail-closed compatibility.
+- [x] Update source release-contract tests for the lifecycle contract.
+- [ ] After this final docs commit, run the whole-branch quality/security review;
+  route any concrete finding back through a named regression test and re-review.
 
-## Task 6 — Native qualification and verification
+## Task 6 — Regenerate and verify the marketplace snapshot
 
-Owners: qualification/e2e helpers and final verification.
+**Files:** generated `marketplace/plugins/zcode/**` and
+`marketplace/.agents/plugins/{marketplace,provenance}.json` only.
 
-- Add captured/native evidence for same Root session, same child thread ID,
-  notLoaded lazy reload, one follow-up, zero spawn, exact session/resume, and
-  no private-envelope leakage.
-- Cover installed marketplace and package snapshot flows. Run
-  npm run test:qualified when prerequisites exist; record exact external
-  blockers otherwise.
-- Run line endings, lint, typecheck, focused lifecycle/state/planner/companion
-  suites, marketplace/snapshot tests, and full npm test.
-- Perform sol/medium spec review, then sol/medium security/quality review,
-  fix all findings, inspect final diff, open PR, and verify CI.
+- [ ] From a clean reviewed source commit, build outside the repository:
+
+```bash
+git status --short
+SOURCE_SHA="$(git rev-parse HEAD)"
+SNAPSHOT_PARENT="$(mktemp -d)"
+node scripts/build-marketplace-snapshot.mjs \
+  --output "$SNAPSHOT_PARENT/marketplace-snapshot" \
+  --source-ref "$SOURCE_SHA" \
+  --source-sha "$SOURCE_SHA"
+```
+
+  Expected: the source tree is clean before generation and the generated
+  provenance names the exact `SOURCE_SHA`.
+
+- [ ] Synchronize only generated output and commit it separately:
+
+```bash
+rsync -a --delete "$SNAPSHOT_PARENT/marketplace-snapshot/plugins/zcode/" marketplace/plugins/zcode/
+cmp -s "$SNAPSHOT_PARENT/marketplace-snapshot/.agents/plugins/marketplace.json" marketplace/.agents/plugins/marketplace.json || cp "$SNAPSHOT_PARENT/marketplace-snapshot/.agents/plugins/marketplace.json" marketplace/.agents/plugins/marketplace.json
+cmp -s "$SNAPSHOT_PARENT/marketplace-snapshot/.agents/plugins/provenance.json" marketplace/.agents/plugins/provenance.json || cp "$SNAPSHOT_PARENT/marketplace-snapshot/.agents/plugins/provenance.json" marketplace/.agents/plugins/provenance.json
+git add marketplace/plugins/zcode marketplace/.agents/plugins/marketplace.json marketplace/.agents/plugins/provenance.json
+git commit -m 'build: refresh Rescue marketplace snapshot'
+```
+
+- [ ] Verify parity and installability:
+
+```bash
+node --test tests/marketplace-snapshot.test.mjs tests/plugin-contracts.test.mjs tests/release-contracts.test.mjs
+node --test tests/integration/marketplace-snapshot-build.mjs
+MARKETPLACE_SNAPSHOT="$SNAPSHOT_PARENT/marketplace-snapshot" \
+MARKETPLACE_SOURCE_REF="$SOURCE_SHA" \
+MARKETPLACE_SOURCE_SHA="$SOURCE_SHA" \
+node --test tests/integration/marketplace-install.test.mjs
+```
+
+  Expected: all tests pass and generated runtime/docs are byte-identical to the
+  reviewed source payload.
+
+## Task 7 — Full verification, qualification, PR, and CI
+
+- [ ] Run local static and full non-qualified gates from the final clean commit:
+
+```bash
+npm run check:line-endings
+npm run lint
+npm run typecheck
+npm test
+git diff --check
+git status --short
+```
+
+  Expected: every command exits `0`; `git status --short` is empty.
+
+- [ ] Run required native qualification with authenticated prerequisites:
+
+```bash
+npm run test:qualification-required
+```
+
+  Expected: same parent session and child thread, notLoaded reload, one
+  follow-up, zero spawn, exact anchor `session/resume`, installed marketplace
+  execution, and no private evidence leakage. If an external prerequisite is
+  unavailable, record the exact blocker and leave this checkbox unchecked.
+
+- [ ] Re-run independent sol/medium spec and quality/security reviews on the
+  final source plus marketplace diff. Resolve every high/medium finding and
+  repeat verification before proceeding.
+- [ ] Push `fix/rescue-persistent-child-rejoin`, open a PR against `main`, and
+  include the incident, lifecycle model, migration/claim compatibility matrix,
+  test evidence, qualification evidence or explicit blocker, and review record.
+- [ ] Monitor every required GitHub Actions job. Diagnose failures, add a named
+  failing regression test for behavior defects, fix, regenerate marketplace if
+  source payload changed, re-review, push, and repeat until all checks are green.
+- [ ] Confirm the PR is mergeable and leave it unmerged unless separately
+  authorized.
+
+## Completion evidence
+
+- Final design and executable plan commits.
+- Focused and full test commands with pass counts and exact commit SHA.
+- Generated marketplace provenance and source/snapshot byte-identity evidence.
+- Authenticated native same-child rejoin evidence, or an explicit unresolved
+  external qualification blocker that prevents completion.
+- Final spec and quality/security reviews with no unresolved high/medium
+  findings.
+- PR URL, mergeable state, and all required CI checks green.
