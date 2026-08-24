@@ -1,7 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, readFile, readdir, realpath, rename, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 
@@ -270,7 +270,7 @@ test('StateStore atomically publishes first legacy adoption and persists only it
   assert.deepEqual(first.binding.childAuthority, authority);
   assert.equal((await store.listJobs(workspace)).length, 1);
   await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority }),
-    { code: /WRITABLE_JOB_EXISTS|RESCUE_BINDING_INVALID/u });
+    { code: 'RESCUE_BINDING_INVALID' });
   assert.equal((await store.listJobs(workspace)).length, 1);
 });
 
@@ -338,6 +338,37 @@ test('rejected branded stale CAS and cloned binding authority leave an existing 
   await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
     authority: { ...transient, bindingKey: '8'.repeat(64) }, operationId: first.binding.operationId }),
   { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual(await privateTreeBytes(dataRoot), before);
+});
+
+test('writable conflict cannot repair a missing owner index before rejecting genuine branded authority', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
+  await makeEligible(store, workspace, first.job, 'active-session');
+  const transient = await brandedAuthority(dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  await unlink(join(storage.directory, 'job-owners', 'index.json'));
+  const before = await privateTreeBytes(dataRoot);
+  await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), authority: transient }),
+    { code: 'WRITABLE_JOB_EXISTS' });
+  assert.deepEqual(await privateTreeBytes(dataRoot), before);
+  const continuation = await brandedAuthority(dataRoot, workspace, 'legacy-bound', 'turn-c', first.binding.key);
+  const beforeContinuation = await privateTreeBytes(dataRoot);
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-c'),
+    authority: continuation, operationId: first.binding.operationId }), { code: 'WRITABLE_JOB_EXISTS' });
+  assert.deepEqual(await privateTreeBytes(dataRoot), beforeContinuation);
+});
+
+test('prospective capacity rejection cannot publish an authority marker or collect a closed tombstone', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace, { agentId: 'closed-hook' });
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await store.finishJob(workspace, first.job.id, ['queued'], 'failed');
+  await store.closeRescueBindingsForSession({ workspace, parentSessionId: hook.parentSessionId, reason: 'session-ended' });
+  const authority = await brandedAuthority(dataRoot, workspace, 'legacy-adopt', 'turn-b');
+  const before = await privateTreeBytes(dataRoot);
+  const bounded = createStateStore({ dataRoot, testOnlyBindingPartitionMaxBytes: 1 });
+  await assert.rejects(bounded.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), authority }),
+    { code: 'RESCUE_BINDING_CAPACITY' });
   assert.deepEqual(await privateTreeBytes(dataRoot), before);
 });
 

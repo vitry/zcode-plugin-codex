@@ -146,14 +146,20 @@ export function createStateStore(options) {
           && (readOnlyPrevious?.state !== 'active' || readOnlyPrevious.operationId !== input.expectedOperationId
             || readOnlyPrevious.anchorJobId !== input.expectedAnchorJobId || readOnlyPrevious.currentJobId !== input.expectedCurrentJobId)) throw staleRescueBinding();
         const childAuthority = authorityForReservation(context, readOnlyPrevious, input.reservation, storage.workspacePath, true);
-        const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
+        const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const job = makeReservedJob(storage, jobs, input.reservation);
-        const { record: previous, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity, { allowAuthorityOnlyRepair: true });
-        if (JSON.stringify(previous) !== JSON.stringify(readOnlyPrevious)) throw invalidRescueBinding();
         const binding = createRescueBinding({ ...exactIdentity, childAuthority,
           anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex') });
+        const closedGcCutoff = Date.now() - RESCUE_BINDING_CLOSED_GC_MS;
+        const plannedBeforeSnapshot = planBindingSlot(readOnlySnapshot, binding.key, closedGcCutoff);
+        const plannedAfterSnapshot = bindingSnapshotWith(plannedBeforeSnapshot, binding);
+        if (!plannedBeforeSnapshot.records.has(binding.key)) ensureProspectiveBindingCapacity(storage, binding.parentSessionId, plannedAfterSnapshot, bindingPartitionMaxBytes);
+        await ensureOwnerIndex(storage, jobs);
+        const { record: previous, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity,
+          { allowAuthorityOnlyRepair: true, closedGcCutoff });
+        if (JSON.stringify(previous) !== JSON.stringify(readOnlyPrevious)) throw invalidRescueBinding();
+        if (!sameBindingRecords(beforeSnapshot.records, plannedBeforeSnapshot.records)) throw invalidRescueBinding();
         const afterSnapshot = bindingSnapshotWith(beforeSnapshot, binding);
-        if (!beforeSnapshot.records.has(binding.key)) ensureProspectiveBindingCapacity(storage, binding.parentSessionId, afterSnapshot, bindingPartitionMaxBytes);
         await publishRescueReservation(storage, job, binding, { bindingFirst: true, beforeSnapshot, afterSnapshot, lockIdentity, publicationHook, route: 'fresh' });
         await publicationCheckpoint(publicationHook, 'fresh:final'); await assertPublicationGuard(storage, lockIdentity, afterSnapshot, binding.parentSessionId);
         return { job, binding };
@@ -177,9 +183,10 @@ export function createStateStore(options) {
           || input.expectedCurrentJobId !== undefined && resolved.binding.currentJobId !== input.expectedCurrentJobId
           || input.expectedAnchorJobId !== undefined && resolved.binding.anchorJobId !== input.expectedAnchorJobId) throw staleRescueBinding();
         authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, false);
-        const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath); await ensureOwnerIndex(storage, jobs);
+        const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
         const job = makeReservedJob(storage, jobs, input.reservation);
+        await ensureOwnerIndex(storage, jobs);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
         const binding = validateRescueBinding({ ...resolved.binding, currentJobId: job.id, updatedAt: now });
         const afterSnapshot = bindingSnapshotWith(beforeSnapshot, binding);
@@ -651,7 +658,20 @@ function sameBindingSnapshot(left, right) {
   return JSON.stringify([...left.records].sort()) === JSON.stringify([...right.records].sort());
 }
 
-/** Validate one session partition, GC old closed slots only for new-slot creation, and return this slot. @param {any} storage @param {any} identity @param {any} lockIdentity @param {{allowAuthorityOnlyRepair?:boolean}} [options] */
+/** Purely plan the retained partition for one new slot before any marker, GC, or repair write. @param {any} snapshot @param {string} key @param {number} closedGcCutoff */
+function planBindingSlot(snapshot, key, closedGcCutoff) {
+  if (snapshot.records.has(key)) return snapshot;
+  const retained = new Map([...snapshot.records].filter(([, record]) => record.state !== 'closed' || Date.parse(record.closedAt) >= closedGcCutoff));
+  if (retained.size >= RESCUE_BINDING_MAX_RECORDS) throw rescueBindingCapacity();
+  return { authority: snapshot.authority, exists: snapshot.exists, records: retained };
+}
+
+/** @param {Map<string,any>} left @param {Map<string,any>} right */
+function sameBindingRecords(left, right) {
+  return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+}
+
+/** Validate one session partition, GC old closed slots only for new-slot creation, and return this slot. @param {any} storage @param {any} identity @param {any} lockIdentity @param {{allowAuthorityOnlyRepair?:boolean,closedGcCutoff?:number}} [options] */
 async function prepareBindingSlot(storage, identity, lockIdentity, options = {}) {
   let snapshot = await readBindingPartitionSnapshot(storage, identity.parentSessionId, true, options.allowAuthorityOnlyRepair === true); const key = rescueBindingKey(identity);
   if (snapshot.authority === null) {
@@ -662,7 +682,7 @@ async function prepareBindingSlot(storage, identity, lockIdentity, options = {})
     snapshot = { authority, exists: false, records: new Map() };
   }
   if (snapshot.records.has(key)) return { record: snapshot.records.get(key), snapshot };
-  const cutoff = Date.now() - RESCUE_BINDING_CLOSED_GC_MS;
+  const cutoff = options.closedGcCutoff ?? Date.now() - RESCUE_BINDING_CLOSED_GC_MS;
   const retained = new Map([...snapshot.records].filter(([, record]) => record.state !== 'closed' || Date.parse(record.closedAt) >= cutoff));
   if (retained.size !== snapshot.records.size) { const after = { authority: snapshot.authority, exists: true, records: retained }; await writeBindingPartitionGuarded(storage, identity.parentSessionId, snapshot, after, lockIdentity); snapshot = after; }
   if (snapshot.records.size >= RESCUE_BINDING_MAX_RECORDS) throw rescueBindingCapacity();
