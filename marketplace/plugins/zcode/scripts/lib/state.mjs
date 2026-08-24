@@ -3,6 +3,7 @@ import { lstat, readdir, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { PluginError } from './errors.mjs';
+import { isCanonicalCodexAgentPath } from './codex-app-server.mjs';
 import {
   atomicWriteJson,
   ensurePrivateDirectoryWithin,
@@ -72,7 +73,7 @@ const TRANSITIONS = new Map([
 ]);
 
 /** @typedef {{parentSessionId:string,childAgentId:string,childAgentType:string,operationId:string,originWorkspace:string,executionWorkspace:string,agentPathDigest?:string,agentPath?:string}} RescueMigrationProof */
-/** @typedef {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,executorParentTurnId?:string,executorParentPermissionMode?:string,permissionMode?:string,migrationProof?:RescueMigrationProof}} RescueBindingResumeInput */
+/** @typedef {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,executorParentTurnId?:string,executorParentPermissionMode?:string,executorAgentPath?:string,permissionMode?:string,migrationProof?:RescueMigrationProof}} RescueBindingResumeInput */
 /** @typedef {{kind:'missing'}|{kind:'bound',operationId:string,anchorJob:any,currentJob:any,binding:any}} RescueBindingResumeResult */
 
 /** @param {{ dataRoot: string, testOnlyPublicationHook?:(seam:string)=>void|Promise<void>, testOnlyBindingPartitionMaxBytes?:number }} options Test-only fields are deterministic seams; production callers must omit them. */
@@ -137,7 +138,7 @@ export function createStateStore(options) {
         const authority = rescueBindingAuthorityView(binding);
         if (binding.state === 'active') return { kind: 'bound' };
         if (binding.closeReason !== 'session-ended') throw closedRescueBinding();
-        const migrationProof = migrationProofForBinding(binding);
+        const migrationProof = migrationProofForBinding(binding, input);
         if (migrationProof.childAgentId !== input.executorAgentId || migrationProof.childAgentType !== input.childAgentType
           || migrationProof.originWorkspace !== input.originWorkspace || migrationProof.executionWorkspace !== input.executionWorkspace
           || authority.kind === 'codex-legacy-adoption' && migrationProof.agentPathDigest !== input.agentPathDigest
@@ -210,27 +211,51 @@ export function createStateStore(options) {
         const resolved = await resolveBindingForResumeLocked(storage, {
           parentSessionId: context.identity.parentSessionId, executorAgentId: context.identity.executorAgentId,
           workspace: context.identity.workspace, permissionMode: context.identity.permissionMode,
+          ...(context.kind === 'hook' && context.childAuthority.agentPath !== undefined
+            ? { executorAgentPath: context.childAuthority.agentPath } : {}),
         }, input.migrationProof);
         if (resolved.kind !== 'bound' || resolved.operationId !== input.operationId
           || input.expectedCurrentJobId !== undefined && resolved.binding.currentJobId !== input.expectedCurrentJobId
           || input.expectedAnchorJobId !== undefined && resolved.binding.anchorJobId !== input.expectedAnchorJobId) throw staleRescueBinding();
-        authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, false);
+        authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, input.migrationProof !== undefined);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
         const job = makeReservedJob(storage, jobs, input.reservation);
         await ensureOwnerIndex(storage, jobs);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
-        const childAuthority = authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, false);
-        const binding = resolved.binding.state === 'closed'
-          ? createRescueBinding({ parentSessionId: resolved.binding.parentSessionId, workspace: resolved.binding.workspace,
-            permissionMode: resolved.binding.permissionMode, childAuthority, anchorJobId: resolved.binding.anchorJobId,
-            currentJobId: job.id, operationId: resolved.binding.operationId,
-            superseded: resolved.binding.version === 3 ? resolved.binding.superseded : [], now })
+        const migrating = resolved.binding.state === 'closed';
+        const binding = migrating
+          ? validateRescueBinding({ ...resolved.binding, state: 'active', currentJobId: job.id,
+            updatedAt: now, closedAt: null, closeReason: null })
           : validateRescueBinding({ ...resolved.binding, currentJobId: job.id, updatedAt: now });
         const afterSnapshot = bindingSnapshotWith(beforeSnapshot, binding);
         await publishRescueReservation(storage, job, binding, { bindingFirst: false, beforeSnapshot, afterSnapshot, lockIdentity, publicationHook, route: 'continuation' });
         await publicationCheckpoint(publicationHook, 'continuation:final'); await assertPublicationGuard(storage, lockIdentity, afterSnapshot, binding.parentSessionId);
-        return { job, binding, anchorJob: resolved.anchorJob };
+        return { job, binding, anchorJob: resolved.anchorJob, ...(migrating ? { migrationRollback: {
+          parentSessionId: resolved.binding.parentSessionId, childAgentId: context.identity.executorAgentId,
+          operationId: resolved.binding.operationId, priorCurrentJobId: resolved.binding.currentJobId,
+          priorUpdatedAt: resolved.binding.updatedAt, priorClosedAt: resolved.binding.closedAt,
+        } } : {}) };
+      });
+    },
+
+    /** @param {{workspace:string,jobId:string,parentSessionId:string,childAgentId:string,operationId:string,priorCurrentJobId:string,priorUpdatedAt:string,priorClosedAt:string}} input */
+    async rollbackSessionEndedRescueContinuation(input) {
+      validateMigrationRollbackInput(input);
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const job = await readExactBindingJob(storage, input.jobId);
+        if (job.ownerSessionId !== input.parentSessionId || job.command !== 'rescue' || job.status !== 'queued') throw invalidRescueBinding();
+        const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, false);
+        const key = rescueBindingKey({ parentSessionId: input.parentSessionId, executorAgentId: input.childAgentId, workspace: storage.workspacePath });
+        const record = snapshot.records.get(key) ?? null;
+        if (record === null || record.state !== 'active' || record.operationId !== input.operationId
+          || record.currentJobId !== input.jobId) throw staleRescueBinding();
+        const restored = validateRescueBinding({ ...record, state: 'closed', currentJobId: input.priorCurrentJobId,
+          updatedAt: input.priorUpdatedAt, closedAt: input.priorClosedAt, closeReason: 'session-ended' });
+        const lockIdentity = await captureStateLockIdentity(storage);
+        await writeBindingPartitionGuarded(storage, input.parentSessionId, snapshot, bindingSnapshotWith(snapshot, restored), lockIdentity);
+        return { kind: 'rolled-back', binding: restored };
       });
     },
 
@@ -288,7 +313,9 @@ export function createStateStore(options) {
       return withFileLock(storage.lockPath, async () => {
         const lockIdentity = await captureStateLockIdentity(storage);
         const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, true);
-        const key = rescueBindingKey(input); const record = snapshot.records.get(key) ?? null;
+        const key = rescueBindingKey({ parentSessionId: input.parentSessionId,
+          executorAgentId: input.executorAgentId, workspace: storage.workspacePath });
+        const record = snapshot.records.get(key) ?? null;
         if (record === null) return { kind: 'missing' };
         if (record.operationId !== input.operationId) throw staleRescueBinding();
         if (record.state === 'closed') {
@@ -561,9 +588,30 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     };
     if (effectivePatch.lastCancelError === null) delete updated.lastCancelError;
     validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
+    if (nextStatus === 'cancelled' && job.command === 'rescue') {
+      await closeCurrentRescueBindingForCancellationLocked(storage, job);
+    }
     await atomicWriteJson(path, updated);
     return updated;
   });
+}
+
+/** Close the exact current operation before publishing its cancelled job. A crash between
+ * these writes is fail-closed: the operation is revoked while the job remains retryably
+ * cancelling. @param {any} storage @param {any} job */
+async function closeCurrentRescueBindingForCancellationLocked(storage, job) {
+  const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, true);
+  const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
+  if (matches.length === 0) return;
+  if (matches.length !== 1) throw invalidRescueBinding();
+  const record = matches[0];
+  if (record.state === 'closed') {
+    if (record.closeReason !== 'cancel') throw closedRescueBinding();
+    return;
+  }
+  const lockIdentity = await captureStateLockIdentity(storage);
+  const binding = closeRescueBinding(record, { operationId: record.operationId, reason: 'cancel' });
+  await writeBindingPartitionGuarded(storage, record.parentSessionId, snapshot, bindingSnapshotWith(snapshot, binding), lockIdentity);
 }
 
 /** @param {string} dataRoot @param {string} workspace */
@@ -686,7 +734,8 @@ async function resolveBindingForResumeLocked(storage, expected, migrationProof) 
       || expected.executorAgentType !== undefined && authority.childAgentType !== expected.executorAgentType
       || expected.executorParentTurnId !== undefined && (authority.kind !== 'subagent-start' || authority.parentTurnId !== expected.executorParentTurnId)
       || expected.executorParentPermissionMode !== undefined && (authority.kind !== 'subagent-start' || authority.parentPermissionMode !== expected.executorParentPermissionMode)
-      || binding.version === 3 && expected.executorAgentPath !== undefined && (authority.kind !== 'subagent-start' || authority.agentPath !== expected.executorAgentPath)) throw invalidRescueBinding();
+      || binding.version === 3 && authority.kind === 'subagent-start'
+        && expected.executorAgentPath !== undefined && authority.agentPath !== expected.executorAgentPath) throw invalidRescueBinding();
   }
   if (binding === null) return { kind: 'missing' };
   if (migrationProof !== undefined) validateMigrationProofForBinding(binding, expected, migrationProof);
@@ -716,19 +765,20 @@ function validateMigrationProofForBinding(binding, expected, proof) {
   if (proof.childAgentType !== authority.childAgentType || proof.executionWorkspace !== binding.workspace
     || authority.kind === 'codex-legacy-adoption' && (proof.originWorkspace !== authority.originWorkspace
       || proof.executionWorkspace !== authority.executionWorkspace || proof.agentPathDigest !== authority.agentPathDigest)
-    || authority.kind === 'subagent-start' && proof.agentPath !== authority.agentPath) throw invalidRescueBinding();
+    || authority.kind === 'subagent-start' && (proof.agentPath !== (authority.agentPath ?? expected.executorAgentPath)
+      || binding.version < 3 && expected.executorAgentPath === undefined)) throw invalidRescueBinding();
 }
 
-/** @param {any} binding */
-function migrationProofForBinding(binding) {
+/** @param {any} binding @param {any} evidence */
+function migrationProofForBinding(binding, evidence) {
   const authority = rescueBindingAuthorityView(binding);
   return authority.kind === 'codex-legacy-adoption'
     ? { parentSessionId: binding.parentSessionId, childAgentId: authority.childAgentId, childAgentType: authority.childAgentType,
       operationId: binding.operationId, originWorkspace: authority.originWorkspace, executionWorkspace: authority.executionWorkspace,
       agentPathDigest: authority.agentPathDigest }
     : { parentSessionId: binding.parentSessionId, childAgentId: authority.childAgentId, childAgentType: authority.childAgentType,
-      operationId: binding.operationId, originWorkspace: binding.workspace, executionWorkspace: binding.workspace,
-      agentPath: authority.agentPath };
+      operationId: binding.operationId, originWorkspace: evidence.originWorkspace, executionWorkspace: binding.workspace,
+      agentPath: authority.agentPath ?? evidence.agentPath };
 }
 
 /** @param {any} storage @param {any} expected */
@@ -830,15 +880,18 @@ function reservationBindingContext(input, workspace, permissionMode, consumeAuth
   if (hasExecutor) {
     if (!isPlainJsonObject(input.executor)) throw invalidRescueBinding();
     validateExecutorBindingInput(input.executor);
-    const childAuthority = validateRescueBindingChildAuthority({
+    const rawChildAuthority = {
       kind: 'subagent-start', childAgentId: input.executor.agentId, childAgentType: input.executor.agentType,
       parentTurnId: input.executor.parentTurnId, parentPermissionMode: input.executor.parentPermissionMode,
-      agentPath: input.executor.agentPath,
-    }, workspace);
+      ...(input.executor.agentPath === undefined ? {} : { agentPath: input.executor.agentPath }),
+    };
+    const childAuthority = input.executor.agentPath === undefined ? rawChildAuthority
+      : validateRescueBindingChildAuthority(rawChildAuthority, workspace);
     return { kind: 'hook', childAuthority, identity: {
       parentSessionId: input.executor.parentSessionId, executorAgentId: childAuthority.childAgentId,
       executorAgentType: childAuthority.childAgentType, executorParentTurnId: childAuthority.parentTurnId,
       executorParentPermissionMode: childAuthority.parentPermissionMode, workspace, permissionMode,
+      ...(childAuthority.agentPath === undefined ? {} : { executorAgentPath: childAuthority.agentPath }),
     } };
   }
   if (!isPlainJsonObject(input.authority)) throw invalidRescueBinding();
@@ -910,7 +963,7 @@ function sameHookAuthority(left, right) {
   return left.kind === 'subagent-start' && right.kind === 'subagent-start'
     && left.childAgentId === right.childAgentId && left.childAgentType === right.childAgentType
     && left.parentTurnId === right.parentTurnId && left.parentPermissionMode === right.parentPermissionMode
-    && (left.agentPath === undefined || left.agentPath === right.agentPath);
+    && (left.agentPath === undefined || right.agentPath === undefined || left.agentPath === right.agentPath);
 }
 /** @param {import('node:fs').BigIntStats} left @param {import('node:fs').BigIntStats} right */
 function sameDirectoryIdentity(left, right) { return left.isDirectory() && right.isDirectory() && left.dev === right.dev && left.ino === right.ino; }
@@ -945,7 +998,8 @@ function validateOptionalBindingExpectation(input) {
 /** @param {any} input */
 function validateExecutorBindingInput(input) {
   if (!isPlainJsonObject(input) || !isNonEmptyString(input.parentSessionId) || !isNonEmptyString(input.parentTurnId) || !isNonEmptyString(input.agentId)
-    || !isNonEmptyString(input.agentType) || !isNonEmptyString(input.workspace) || !validAgentPath(input.agentPath)
+    || !isNonEmptyString(input.agentType) || !isNonEmptyString(input.workspace)
+    || input.agentPath !== undefined && !validAgentPath(input.agentPath)
     || !PERMISSION_MODES.includes(input.parentPermissionMode)) throw invalidRescueBinding();
   try { rescueBindingKey(executorBindingIdentity(input, input.workspace)); } catch { throw invalidRescueBinding(); }
 }
@@ -985,6 +1039,18 @@ function validateBindingMigrationLookup(input) {
   try { rescueBindingKey({ parentSessionId: input.parentSessionId, executorAgentId: input.executorAgentId, workspace: input.workspace }); } catch { throw invalidRescueBinding(); }
 }
 
+/** @param {any} input */
+function validateMigrationRollbackInput(input) {
+  const keys = ['childAgentId', 'jobId', 'operationId', 'parentSessionId', 'priorClosedAt', 'priorCurrentJobId', 'priorUpdatedAt', 'workspace'];
+  if (!isPlainJsonObject(input) || Object.keys(input).sort().join('\0') !== keys.sort().join('\0')
+    || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.parentSessionId)
+    || !isNonEmptyString(input.childAgentId) || !isDigest(input.jobId) || !isDigest(input.operationId)
+    || !isDigest(input.priorCurrentJobId) || !isIsoTimestamp(input.priorUpdatedAt)
+    || !isIsoTimestamp(input.priorClosedAt) || Date.parse(input.priorUpdatedAt) !== Date.parse(input.priorClosedAt)) {
+    throw invalidRescueBinding();
+  }
+}
+
 /** @param {any} input @param {string} workspace */
 function bindingIdentity(input, workspace) {
   return { parentSessionId: input.parentSessionId, executorAgentId: input.executorAgentId, workspace,
@@ -1004,8 +1070,7 @@ function executorBindingIdentity(executor, workspace, permissionMode = executor.
 
 /** @param {unknown} value */
 function validAgentPath(value) {
-  return typeof value === 'string' && Buffer.byteLength(value) <= 1024
-    && /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u.test(value);
+  return isCanonicalCodexAgentPath(value);
 }
 
 /** @param {any} job @param {string} parentSessionId @param {string} workspace */

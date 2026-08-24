@@ -38,7 +38,7 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
@@ -102,6 +102,7 @@ export async function executeJob(input) {
       input.signal?.throwIfAborted();
       sessionId = input.resumeSessionId;
       snapshot = await boundedStep(() => client.resumeSession(input.resumeSessionId), input.signal);
+      input.onResumeSucceeded?.();
     } else snapshot = await boundedStep(async () => {
       const created = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
       sessionId = created?.session?.sessionId;
@@ -168,7 +169,13 @@ export async function executeJob(input) {
     appliedFinalization = publication.appliedFinalization;
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
-    const current = await input.store.readJob(workspace, job.id).catch(() => running);
+    let current = await input.store.readJob(workspace, job.id).catch(() => running);
+    if (input.resumeSessionId && current?.status === 'queued' && input.onResumeFailure) {
+      try {
+        await input.onResumeFailure(primaryError);
+        current = await input.store.readJob(workspace, job.id).catch(() => current);
+      } catch (rollbackError) { primaryError = rollbackError; }
+    }
     if (error instanceof SuccessfulResultFinalizationError) {
       if (current?.status === 'succeeded' && current.resultArtifact === error.resultArtifact) {
         try { output = { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: error.resultArtifact }) }; primaryError = undefined; }

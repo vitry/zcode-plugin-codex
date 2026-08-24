@@ -195,7 +195,7 @@ function validatePersistedBinding(binding, expected) {
       workspace: expected.executionWorkspace,
     });
   } catch { throw plannerError('RESCUE_BINDING_INVALID'); }
-  if (![2, 3].includes(valid.version) || valid.key !== expectedKey
+  if (![1, 2, 3].includes(valid.version) || valid.key !== expectedKey
     || valid.state !== 'active' && !(expected.requirePermissionMatch && valid.state === 'closed' && valid.closeReason === 'session-ended')
     || valid.parentSessionId !== expected.caller.sessionId || valid.workspace !== expected.executionWorkspace
     || expected.requirePermissionMatch && valid.permissionMode !== expected.caller.permissionMode
@@ -203,7 +203,7 @@ function validatePersistedBinding(binding, expected) {
     || authority.kind === 'codex-legacy-adoption' && (authority.originWorkspace !== expected.originWorkspace
       || authority.originWorkspace !== expected.host.cwd || authority.executionWorkspace !== expected.executionWorkspace
       || authority.agentPathDigest !== pathDigest(expected.host.agentPath))
-    || authority.kind === 'subagent-start' && (valid.version !== 3 || authority.agentPath !== expected.host.agentPath)) {
+    || authority.kind === 'subagent-start' && valid.version === 3 && authority.agentPath !== expected.host.agentPath) {
     throw plannerError('RESCUE_BINDING_INVALID');
   }
   return valid;
@@ -233,6 +233,7 @@ function defaultBindingResolver(dataRoot) {
     workspace: executionWorkspace,
     parentSessionId: caller.sessionId,
     executorAgentId: executor?.agentId ?? host.id,
+    executorAgentPath: host.agentPath,
     ...(executor ? {
       executorAgentType: executor.agentType,
       executorParentTurnId: executor.parentTurnId,

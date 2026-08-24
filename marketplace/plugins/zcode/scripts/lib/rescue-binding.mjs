@@ -4,6 +4,7 @@ import { lstat, open, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, normalize, relative, sep } from 'node:path';
 
 import { PluginError } from './errors.mjs';
+import { isCanonicalCodexAgentPath } from './codex-app-server.mjs';
 import { samePathHandleFileSnapshot } from './fs.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
 
@@ -300,8 +301,7 @@ function validateSuperseded(value) {
 
 /** @param {unknown} value */
 function agentPath(value) {
-  return typeof value === 'string' && Buffer.byteLength(value) <= 1024
-    && /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u.test(value);
+  return isCanonicalCodexAgentPath(value);
 }
 
 /** @param {any} input */

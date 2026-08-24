@@ -197,12 +197,19 @@ export async function runDirectInvocation(argv, runtime = {}) {
       }
     }
     if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && executor) validateLegacyConvergedChild(host, executor, caller);
+    if (prepared.requiredExecutorAgentId !== null && executor?.active
+      && !['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind)) {
+      throw new PluginError('EXECUTOR_STATE_MISMATCH', 'A Rescue continuation requires the original child to be stopped.', { category: 'authorization', remedy: 'Wait for the original Rescue child to stop, then prepare the continuation again.' });
+    }
     if (executor) {
       host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
         ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
       ), executor.parentSessionId, executor.agentId);
+      validateExecutorHostIdentity(host, executor);
       const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
-      if (prepared.activation?.agentPathDigest !== agentPathDigest) throw rescueRouteInvalid();
+      if (prepared.activation && prepared.activation.kind !== 'spawn' && prepared.activation.agentPathDigest !== agentPathDigest) {
+        throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation does not match this child.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+      }
       executor = { ...executor, agentPath: host.agentPath };
     }
     const reactivatedFresh = prepared.generation === 1
@@ -222,8 +229,11 @@ export async function runDirectInvocation(argv, runtime = {}) {
       const lookup = executor ? bindingLookup(executor, caller.workspace) : legacyBindingLookup(host, caller);
       let migrationProof;
       if (prepared.envelope.options.resume === 'resume') {
-        const proof = await state.readRescueBindingMigrationProof({ ...lookup, childAgentType: executor?.agentType ?? host.agentRole,
-          originWorkspace: host.cwd, executionWorkspace: caller.workspace, agentPathDigest: prepared.activation.agentPathDigest,
+        const proof = await state.readRescueBindingMigrationProof({
+          workspace: caller.workspace, parentSessionId: caller.sessionId,
+          executorAgentId: executor?.agentId ?? host.id, childAgentType: executor?.agentType ?? host.agentRole,
+          originWorkspace: host.cwd, executionWorkspace: caller.workspace,
+          agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex'),
           ...(executor ? { agentPath: host.agentPath } : {}) });
         if (proof.kind === 'proof') migrationProof = proof.migrationProof;
       }
@@ -231,7 +241,9 @@ export async function runDirectInvocation(argv, runtime = {}) {
         ? await state.resolveRescueBindingForResume({ ...lookup, permissionMode: caller.permissionMode, ...(migrationProof ? { migrationProof } : {}) })
         : await state.resolveRescueBinding(lookup);
       if (resolved.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
-      rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId, expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId };
+      rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId,
+        expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId,
+        ...(migrationProof ? { migrationProof } : {}) };
       await afterPreparedBindingResolution(runtime.dependencies);
     }
     const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
@@ -357,15 +369,22 @@ function rescueRouteInvalid() { return new PluginError('RESCUE_ROUTE_INVALID', '
 
 /** @param {any} host @param {any} executor */
 function preparedActivationProof(host, executor) {
+  validateExecutorHostIdentity(host, executor);
+  const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
+  if (executor.active) {
+    if (!host.agentPath.startsWith('/root/')) throw new PluginError('EXECUTOR_IDENTITY_INVALID', 'The Rescue child host identity does not match its executor provenance.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+    return { kind: 'spawn', taskName: host.agentPath.slice('/root/'.length), agentPathDigest };
+  }
+  return { kind: 'reactivate', agentPathDigest };
+}
+
+/** @param {any} host @param {any} executor */
+function validateExecutorHostIdentity(host, executor) {
   const expectedRole = executor.agentType === 'zcode-rescue' ? 'zcode-rescue' : executor.agentType === 'default' ? null : undefined;
   if (!host || host.id !== executor.agentId || host.parentThreadId !== executor.parentSessionId
-    || host.agentRole !== expectedRole || host.cwd !== executor.originWorkspace
-    || typeof host.agentPath !== 'string' || !host.agentPath.startsWith('/root/')) {
+    || host.agentRole !== expectedRole || host.cwd !== executor.originWorkspace) {
     throw new PluginError('EXECUTOR_IDENTITY_INVALID', 'The Rescue child host identity does not match its executor provenance.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
   }
-  const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
-  if (executor.active) return { kind: 'spawn', taskName: host.agentPath.slice('/root/'.length), agentPathDigest };
-  return { kind: 'reactivate', agentPathDigest };
 }
 
 /** @param {any} dependencies @param {string} childId @param {NodeJS.ProcessEnv} env @param {string} cwd @param {AbortSignal|undefined} signal */
@@ -554,10 +573,12 @@ async function startPublic(context) {
             : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)),
           ...(parsed.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
         };
-        const migrationProof = parsed.options.resume === 'resume' && context.rescueRoute?.expectedOperationId && context.authority
-          ? { parentSessionId: caller.sessionId, childAgentId: context.authority.childAgentId, childAgentType: context.authority.childAgentType,
-            operationId: context.rescueRoute.expectedOperationId, originWorkspace: context.authority.originWorkspace,
-            executionWorkspace: context.authority.executionWorkspace, agentPathDigest: context.authority.agentPathDigest }
+        const migrationProof = parsed.options.resume === 'resume'
+          ? context.rescueRoute?.migrationProof ?? (context.rescueRoute?.expectedOperationId && context.authority
+            ? { parentSessionId: caller.sessionId, childAgentId: context.authority.childAgentId, childAgentType: context.authority.childAgentType,
+              operationId: context.rescueRoute.expectedOperationId, originWorkspace: context.authority.originWorkspace,
+              executionWorkspace: context.authority.executionWorkspace, agentPathDigest: context.authority.agentPathDigest }
+            : undefined)
           : undefined;
         const resolved = migrationProof ? await store.resolveRescueBindingForResume({ ...lookup, migrationProof }) : await store.resolveRescueBinding(lookup);
         binding = resolved.kind === 'bound' ? resolved.binding : null;
@@ -574,17 +595,19 @@ async function startPublic(context) {
   const permissionSnapshot = Object.freeze({ permissionMode: caller.permissionMode });
   const transferSource = parsed.command === 'transfer' ? resolveTransferSource(parsed.options, caller) : undefined;
   const reservation = { workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) };
-  let job;
+  let job; let migrationRollback;
   if (parsed.command === 'rescue' && childAuthorized) {
     let reserved;
     const childProof = context.executor ? { executor: context.executor } : { authority: context.authority };
     if (parsed.options.resume === 'fresh' || !binding && !candidate) reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, ...childProof, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
     else if (binding) {
       const proofOperationId = context.rescueRoute?.expectedOperationId ?? binding.operationId;
-      const previewMigrationProof = binding.state === 'closed' && context.authority
-        ? { parentSessionId: caller.sessionId, childAgentId: context.authority.childAgentId, childAgentType: context.authority.childAgentType,
-          operationId: proofOperationId, originWorkspace: context.authority.originWorkspace,
-          executionWorkspace: context.authority.executionWorkspace, agentPathDigest: context.authority.agentPathDigest }
+      const previewMigrationProof = binding.state === 'closed'
+        ? context.rescueRoute?.migrationProof ?? (context.authority
+          ? { parentSessionId: caller.sessionId, childAgentId: context.authority.childAgentId, childAgentType: context.authority.childAgentType,
+            operationId: proofOperationId, originWorkspace: context.authority.originWorkspace,
+            executionWorkspace: context.authority.executionWorkspace, agentPathDigest: context.authority.agentPathDigest }
+          : undefined)
         : undefined;
       const resolved = await store.resolveRescueBindingForResume({ ...(context.legacyActivation
         ? authorityBindingLookup(context.authority ?? { childAgentId: context.executor.agentId }, caller, cwd)
@@ -592,6 +615,7 @@ async function startPublic(context) {
       permissionMode: caller.permissionMode, ...(previewMigrationProof ? { migrationProof: previewMigrationProof } : {}) });
       const migrationProof = previewMigrationProof;
       reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
+      migrationRollback = reserved.migrationRollback;
       candidate = reserved.anchorJob;
     } else {
       reserved = await reservePublicRescueJob(context, () => store.adoptRescueCandidate({ workspace: cwd, reservation, ...childProof, candidateJobId: candidate.id })); candidate = reserved.anchorJob;
@@ -604,7 +628,12 @@ async function startPublic(context) {
       createClient: (launch) => (context.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: job.workspace, launch, ownerId: ownerIdForSession(caller.sessionId), env: context.env, ...managedWireOptionsForJob(job) }),
     });
   }
-  const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' ') || context.originalPrompt, task: parsed.positionals.join(' ') || context.originalPrompt, model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined });
+  const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' ') || context.originalPrompt, task: parsed.positionals.join(' ') || context.originalPrompt, model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined,
+    ...(migrationRollback ? {
+      migrationParentSessionId: migrationRollback.parentSessionId, migrationChildAgentId: migrationRollback.childAgentId,
+      migrationOperationId: migrationRollback.operationId, migrationPriorCurrentJobId: migrationRollback.priorCurrentJobId,
+      migrationPriorUpdatedAt: migrationRollback.priorUpdatedAt, migrationPriorClosedAt: migrationRollback.priorClosedAt,
+    } : {}) });
   if (parsed.options.execution === 'background') {
     const specDigest = digestSpec(spec);
     const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', specDigest };
@@ -728,7 +757,8 @@ async function executeWithWorkerLease(context) {
 /** @param {any} context */
 async function executeReserved(context) {
   const { cwd, env, dataRoot, store, job, spec } = context;
-  let client;
+  let client; let resumeSucceeded = false;
+  const migrationRollback = migrationRollbackFromSpec(spec, job);
   try {
     context.signal?.throwIfAborted();
     const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
@@ -737,11 +767,18 @@ async function executeReserved(context) {
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
     const executionClient = client; client = undefined;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); } });
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); }, onResumeSucceeded: () => { resumeSucceeded = true; }, ...(migrationRollback ? { onResumeFailure: async (error) => {
+      if (resumeSucceeded) return;
+      await store.rollbackSessionEndedRescueContinuation({ workspace: cwd, jobId: job.id, ...migrationRollback });
+      await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
+    } } : {}) });
   } catch (error) {
     await client?.close().catch(() => {});
     const current = await store.readJob(cwd, job.id).catch(() => null);
-    if (isInterruption(error) && current?.status === 'queued') {
+    if (migrationRollback && !resumeSucceeded && current?.status === 'queued') {
+      await store.rollbackSessionEndedRescueContinuation({ workspace: cwd, jobId: job.id, ...migrationRollback });
+      await store.finishJob(cwd, job.id, ['queued'], 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
+    } else if (isInterruption(error) && current?.status === 'queued') {
       if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});
       else await createJobController({ store, dataRoot }).cancel(cwd, job.id, job.ownerSessionId).catch(() => {});
     } else if (!isInterruption(error) && current?.status === 'queued') {
@@ -841,11 +878,24 @@ function copyOptionalFields(source, fields) {
 }
 /** @param {any} input */
 function normalizeSpec(input) {
-  const allowed = ['command', 'scope', 'base', 'focus', 'task', 'model', 'effort', 'resumeSessionId', 'candidateJobId'];
+  const allowed = ['command', 'scope', 'base', 'focus', 'task', 'model', 'effort', 'resumeSessionId', 'candidateJobId',
+    'migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId', 'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt'];
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !allowed.includes(key)) || typeof input.command !== 'string') throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' });
   /** @type {Record<string,string>} */ const output = {};
   for (const key of allowed) if (input[key] !== undefined) { if (typeof input[key] !== 'string') throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }); output[key] = input[key]; }
   return output;
+}
+/** @param {Record<string,string>} spec @param {any} job */
+function migrationRollbackFromSpec(spec, job) {
+  const keys = ['migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId', 'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt'];
+  const present = keys.filter((key) => spec[key] !== undefined);
+  if (present.length === 0) return undefined;
+  if (present.length !== keys.length || spec.migrationParentSessionId !== job.ownerSessionId || job.command !== 'rescue') {
+    throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' });
+  }
+  return { parentSessionId: spec.migrationParentSessionId, childAgentId: spec.migrationChildAgentId,
+    operationId: spec.migrationOperationId, priorCurrentJobId: spec.migrationPriorCurrentJobId,
+    priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt };
 }
 /** @param {any} spec */
 function digestSpec(spec) { return createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex'); }
