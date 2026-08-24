@@ -34,6 +34,8 @@ tests/rescue-binding.test.mjs, tests/state.test.mjs.
   supersession operations, and capacity overflow without mutation.
 - Record bounded same-child fresh supersession history. Fresh child B must not
   modify child A; stale same-child writers must fail CAS.
+- Never age-GC `session-ended` tombstones. They are resumable state; only
+  explicitly revoked closed records are eligible for bounded-history GC.
 - Add tests for schema compatibility, path mismatch, supersession, sibling
   byte equality, and all malformed/oversized/duplicate cases.
 
@@ -77,8 +79,8 @@ Owners: scripts/lib/state.mjs, reservation/review flow, companion and
 state/integration tests.
 
 - Migration proof lookup is read-only. It returns a closed session-ended
-  tombstone plus complete operation/anchor/current/path proof; it never
-  activates the binding.
+  tombstone plus a digest of the complete validated binding and complete
+  operation/anchor/current/path proof; it never activates the binding.
 - Only continuation reservation consumes that proof. Under one state lock,
   re-read and compare every exact field and supersession record, validate local
   anchor/current structure and non-empty anchor zcodeSessionId, then
@@ -89,8 +91,13 @@ state/integration tests.
   session. On rejection, mismatch, broker failure, or timeout, fail the new
   attempt and preserve/rollback the closed tombstone with exact CAS; never
   fall back to session/create, another session, or another child.
+- Persist enough private rollback metadata before launching a background
+  worker to reconstruct the exact historical v1/v2/v3 tombstone. Apply the
+  same rollback before terminalization on preparation, capability-delivery,
+  launch, worker-crash/orphan, and queued-cancellation paths.
 - Test legacy and modern migration, missing/wrong remote sessions, rollback,
-  competing reservations, operation/anchor/current mismatch, and no mutation.
+  competing reservations, complete-proof mutation, v1/v2-to-v3 upgrade,
+  worker-crash recovery, operation/anchor/current mismatch, and no mutation.
 
 ## Task 5 — Preserve SessionEnd semantics and documentation
 

@@ -196,7 +196,7 @@ function validatePersistedBinding(binding, expected) {
     });
   } catch { throw plannerError('RESCUE_BINDING_INVALID'); }
   if (![1, 2, 3].includes(valid.version) || valid.key !== expectedKey
-    || valid.state !== 'active' && !(expected.requirePermissionMatch && valid.state === 'closed' && valid.closeReason === 'session-ended')
+    || valid.state !== 'active' && !(valid.state === 'closed' && valid.closeReason === 'session-ended')
     || valid.parentSessionId !== expected.caller.sessionId || valid.workspace !== expected.executionWorkspace
     || expected.requirePermissionMatch && valid.permissionMode !== expected.caller.permissionMode
     || authority.childAgentId !== expected.host.id || authority.childAgentType !== 'zcode-rescue'

@@ -522,10 +522,39 @@ test('StateStore lazily migrates an exact session-ended v1 Hook binding using pe
     childAgentType: hook.agentType, originWorkspace: workspace, executionWorkspace: workspace, agentPath: hook.agentPath };
   const proof = await store.readRescueBindingMigrationProof(lookup);
   assert.equal(proof.kind, 'proof'); assert.equal(proof.migrationProof.agentPath, hook.agentPath);
-  const resumed = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
-    executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
-  assert.equal(resumed.binding.version, 1); assert.equal(resumed.binding.state, 'active');
+  const attempts = await Promise.allSettled(['turn-b', 'turn-c'].map((turnId) => store.reserveBoundRescueContinuation({
+    workspace, reservation: reservation(workspace, turnId), executor: hook,
+    operationId: first.binding.operationId, migrationProof: proof.migrationProof,
+    expectedCurrentJobId: first.job.id, expectedAnchorJobId: first.job.id,
+  })));
+  assert.equal(attempts.filter((attempt) => attempt.status === 'fulfilled').length, 1);
+  assert.equal(attempts.filter((attempt) => attempt.status === 'rejected' && attempt.reason?.code === 'RESCUE_BINDING_STALE').length, 1);
+  const resumed = attempts.find((attempt) => attempt.status === 'fulfilled').value;
+  assert.equal(resumed.binding.version, 3); assert.equal(resumed.binding.state, 'active');
+  assert.equal(resumed.binding.childAuthority.agentPath, hook.agentPath);
   assert.equal(resumed.anchorJob.zcodeSessionId, 'historical-hook-session');
+  await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace,
+    { ...hook, agentPath: '/root/different_rescue_child' }, { permissionMode: 'workspace-write' })),
+  { code: 'RESCUE_BINDING_INVALID' });
+  await store.rollbackSessionEndedRescueContinuation({ workspace, jobId: resumed.job.id, ...resumed.migrationRollback });
+  await store.finishJob(workspace, resumed.job.id, ['queued'], 'failed');
+  const rolledBack = JSON.parse(await readFile(path, 'utf8')).records[0];
+  assert.equal(rolledBack.version, 1); assert.equal(rolledBack.state, 'closed');
+  assert.deepEqual(rolledBack, closed.binding);
+  const legacyAuthority = rescueBindingAuthorityView(rolledBack);
+  const v2 = { version: 2, key: rolledBack.key, operationId: rolledBack.operationId, state: rolledBack.state,
+    parentSessionId: rolledBack.parentSessionId, childAuthority: { kind: legacyAuthority.kind,
+      childAgentId: legacyAuthority.childAgentId, childAgentType: legacyAuthority.childAgentType,
+      parentTurnId: legacyAuthority.parentTurnId, parentPermissionMode: legacyAuthority.parentPermissionMode },
+    workspace: rolledBack.workspace, permissionMode: rolledBack.permissionMode, anchorJobId: rolledBack.anchorJobId,
+    currentJobId: rolledBack.currentJobId, createdAt: rolledBack.createdAt, updatedAt: rolledBack.updatedAt,
+    closedAt: rolledBack.closedAt, closeReason: rolledBack.closeReason };
+  await writeFile(path, `${JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), records: [v2] }, null, 2)}\n`);
+  const v2Proof = await store.readRescueBindingMigrationProof(lookup); assert.equal(v2Proof.kind, 'proof');
+  const v2Resumed = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-d'),
+    executor: hook, operationId: first.binding.operationId, migrationProof: v2Proof.migrationProof,
+    expectedCurrentJobId: first.job.id, expectedAnchorJobId: first.job.id });
+  assert.equal(v2Resumed.binding.version, 3); assert.equal(v2Resumed.binding.childAuthority.agentPath, hook.agentPath);
 });
 
 test('Rescue reservation methods require one explicit workspace matching reservation and executor', async () => {
@@ -985,20 +1014,26 @@ test('binding capacity is isolated per parent session and active slots are never
   assert.equal((await store.reserveFreshRescueJob({ workspace, reservation: siblingReservation, executor: siblingExecutor })).binding.parentSessionId, 'sibling-session');
 });
 
-test('new-slot creation GCs only valid closed tombstones older than thirty days', async () => {
+test('new-slot creation GCs only revoked tombstones and retains session-ended migration candidates', async () => {
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
   await makeEligible(store, workspace, first.job, 'zcode-session-a'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
   await store.closeRescueBindingForChild({ workspace, parentSessionId: trusted.parentSessionId, executorAgentId: trusted.agentId, operationId: first.binding.operationId, reason: 'session-ended' });
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [closedPath] = await bindingFiles(storage.directory);
   const old = createRescueBinding({ ...identity, workspace: storage.workspacePath, anchorJobId: first.job.id, currentJobId: first.job.id, operationId: first.binding.operationId, now: '2020-01-01T00:00:00.000Z' });
-  const records = [closeRescueBinding(old, { operationId: old.operationId, reason: 'session-ended', now: '2020-01-02T00:00:00.000Z' })];
-  for (let index = 1; index < 1024; index += 1) {
+  const revoked = createRescueBinding({ ...identity, workspace: storage.workspacePath, executorAgentId: 'revoked-child', anchorJobId: first.job.id, currentJobId: first.job.id, operationId: 'e'.repeat(64), now: '2020-01-01T00:00:00.000Z' });
+  const records = [
+    closeRescueBinding(old, { operationId: old.operationId, reason: 'session-ended', now: '2020-01-02T00:00:00.000Z' }),
+    closeRescueBinding(revoked, { operationId: revoked.operationId, reason: 'invalidated', now: '2020-01-02T00:00:00.000Z' }),
+  ];
+  for (let index = 2; index < 1024; index += 1) {
     const item = createRescueBinding({ ...identity, workspace: storage.workspacePath, executorAgentId: `child-${index}`, anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: index.toString(16).padStart(64, '0'), now: '2020-01-01T00:00:00.000Z' });
     records.push(item);
   }
   await writeFile(closedPath, `${JSON.stringify(createRescueBindingPartition({ parentSessionId: identity.parentSessionId, workspace: storage.workspacePath, records }), null, 2)}\n`);
   const replacement = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), executor: executor(workspace, { agentId: 'replacement-child' }) });
   assert.equal(rescueBindingAuthorityView(replacement.binding).childAgentId, 'replacement-child');
-  assert.equal(JSON.parse(await readFile(closedPath, 'utf8')).records.some((record) => record.key === old.key), false);
+  const retained = JSON.parse(await readFile(closedPath, 'utf8')).records;
+  assert.equal(retained.some((record) => record.key === old.key), true);
+  assert.equal(retained.some((record) => record.key === revoked.key), false);
 });

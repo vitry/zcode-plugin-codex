@@ -88,7 +88,7 @@ export function createRescueBinding(input) {
 /** @param {any} record @param {Date|number|string} [now] */
 export function rescueBindingFreshSuperseded(record, now) {
   const valid = validateRescueBinding(record);
-  if (valid.state !== 'active') throw staleBinding();
+  if (valid.state !== 'active' && !(valid.state === 'closed' && valid.closeReason === 'session-ended')) throw staleBinding();
   const closedAt = timestamp(now);
   if (Date.parse(closedAt) < Date.parse(valid.updatedAt)) throw invalidBinding();
   const prior = valid.version === 3 ? valid.superseded : [];

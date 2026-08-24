@@ -84,19 +84,24 @@ is a compatibility-only path.
 
 Migration lookup is read-only and may return a validated closed tombstone. It
 does not publish an active binding. Only continuation reservation may consume
-the proof. Under one state lock, reservation re-reads and compares the exact
-binding, parent, child, path/Role, permission, operation, anchor/current IDs,
-and supersession state; then validates local ZCode ID presence and atomically
-publishes the continuation job plus active successor binding. Two consumers of
-one proof yield at most one publication; the loser fails stale with no
-mutation.
+the proof. The proof includes a digest of the complete validated tombstone, not
+only selected identity fields. Under one state lock, reservation re-reads and
+compares that digest and the exact binding, parent, child, path/Role,
+permission, operation, anchor/current IDs, and supersession state; then
+validates local ZCode ID presence and atomically publishes the continuation job
+plus a v3 active successor binding. Two consumers of one proof yield at most
+one publication; the loser fails stale with no mutation.
 
 Actual remote resumability is proven by `session/resume` for exactly the
 anchor's ZCode session before sending work. If it rejects, returns a mismatched
 session/workspace, or broker access is unavailable, the new attempt is failed
 without fallback to `session/create`, another session, or another child. The
 closed legacy tombstone remains closed (or an exact rollback restores the
-pre-reservation snapshot under CAS).
+pre-reservation snapshot, including its original v1/v2/v3 schema, under CAS).
+Rollback metadata is durable before background worker launch. Preparation,
+capability delivery, launch failure, worker death, orphan settlement, and
+queued cancellation must all restore an eligible migrated tombstone before
+terminalizing the queued attempt.
 
 Migration requires: closed + `session-ended`; exact canonical workspace and
 parent; exact persisted child ID/thread/path/Role; valid anchor/current jobs;
@@ -104,6 +109,11 @@ non-empty original ZCode ID; no cancel/invalidation/fresh supersession; and
 state-lock CAS. V1/V2 historical records remain readable under historical
 validation. New/replaced records use binding schema v3 with exact modern path
 authority and bounded same-child supersession records.
+
+`session-ended` tombstones are resumability state, not ordinary revoked
+history. Age- or capacity-based garbage collection must retain them. Only
+explicitly revoked tombstones may be collected under the existing bounded
+history policy.
 
 ## Revocation rules
 
@@ -123,7 +133,11 @@ Tests must cover every mutation and no-mutation outcome for:
 - resident and notLoaded modern child rejoin, same child ID/path/Role, zero
   spawn and exact `session/resume`;
 - legacy session-ended migration, repeated read-only proof lookup, competing
-  reservations, and remote-resume failure with closed-tombstone preservation;
+  reservations, complete-proof mutation, v1/v2-to-v3 upgrade, exact historical
+  rollback, and remote-resume failure with closed-tombstone preservation;
+- background preparation, capability delivery, launch, worker-crash, orphan,
+  and queued-cancel rollback, plus age/capacity retention of session-ended
+  tombstones;
 - cancel current job, invalidation, same-child fresh, sibling fresh, orphan
   settlement, failed/unacknowledged stop, and child-scoped close;
 - mismatched origin/execution workspace, parent, child ID/thread, exact path or
