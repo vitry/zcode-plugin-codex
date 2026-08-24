@@ -77,11 +77,11 @@ const TRANSITIONS = new Map([
 /** @typedef {{workspace:string,parentSessionId:string,executorAgentId:string,executorAgentType?:string,executorParentTurnId?:string,executorParentPermissionMode?:string,executorAgentPath?:string,permissionMode?:string,migrationProof?:RescueMigrationProof}} RescueBindingResumeInput */
 /** @typedef {{kind:'missing'}|{kind:'bound',operationId:string,anchorJob:any,currentJob:any,binding:any}} RescueBindingResumeResult */
 
-/** @param {{ dataRoot: string, testOnlyPublicationHook?:(seam:string)=>void|Promise<void>, testOnlyBindingPartitionMaxBytes?:number }} options Test-only fields are deterministic seams; production callers must omit them. */
+/** @param {{ dataRoot: string, testOnlyPublicationHook?:(seam:string)=>void|Promise<void>, testOnlyBindingPartitionMaxBytes?:number, testOnlyExecutionClaimWriteOptions?:{testOnlyAfterRename?:()=>void|Promise<void>} }} options Test-only fields are deterministic seams; production callers must omit them. */
 export function createStateStore(options) {
   const validOptions = options !== null && typeof options === 'object' && !Array.isArray(options)
     && [Object.prototype, null].includes(Object.getPrototypeOf(options))
-    && Object.keys(options).every((key) => ['dataRoot', 'testOnlyBindingPartitionMaxBytes', 'testOnlyPublicationHook'].includes(key));
+    && Object.keys(options).every((key) => ['dataRoot', 'testOnlyBindingPartitionMaxBytes', 'testOnlyExecutionClaimWriteOptions', 'testOnlyPublicationHook'].includes(key));
   const dataRoot = validOptions ? options.dataRoot : undefined;
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) {
     throw new PluginError('DATA_ROOT_REQUIRED', 'A plugin data root must be provided explicitly.', {
@@ -90,6 +90,12 @@ export function createStateStore(options) {
     });
   }
   if (options.testOnlyPublicationHook !== undefined && typeof options.testOnlyPublicationHook !== 'function') throw new TypeError('testOnlyPublicationHook must be a function');
+  if (options.testOnlyExecutionClaimWriteOptions !== undefined
+    && (typeof options.testOnlyExecutionClaimWriteOptions !== 'object' || options.testOnlyExecutionClaimWriteOptions === null
+      || Array.isArray(options.testOnlyExecutionClaimWriteOptions)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(options.testOnlyExecutionClaimWriteOptions))
+      || Object.keys(options.testOnlyExecutionClaimWriteOptions).some((key) => key !== 'testOnlyAfterRename')
+      || typeof options.testOnlyExecutionClaimWriteOptions.testOnlyAfterRename !== 'function')) throw new TypeError('testOnlyExecutionClaimWriteOptions must contain one post-rename callback');
   if (options.testOnlyBindingPartitionMaxBytes !== undefined && (!Number.isSafeInteger(options.testOnlyBindingPartitionMaxBytes)
     || options.testOnlyBindingPartitionMaxBytes < 1 || options.testOnlyBindingPartitionMaxBytes > RESCUE_BINDING_PARTITION_MAX_BYTES)) throw new TypeError('testOnlyBindingPartitionMaxBytes must be a positive bounded integer');
   const publicationHook = options.testOnlyPublicationHook ?? (async () => {});
@@ -475,7 +481,7 @@ export function createStateStore(options) {
         const claimed = { ...job, ...worker, ...(rescueExecutionClaim ? { rescueExecutionClaim } : {}),
           updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString() };
         validateJobRecord(claimed, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
-        await atomicWriteJson(path, claimed);
+        await atomicWriteJson(path, claimed, options.testOnlyExecutionClaimWriteOptions);
         return claimed;
       });
     },
@@ -661,8 +667,10 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     }
     const path = jobPath(storage.jobsDirectory, jobId);
     const job = await readJobRecord(path, jobId, storage.workspacePath);
-    if (options.failedExecutionLeaseId !== undefined
-      && (job.status !== 'queued' || job.workerLeaseId !== undefined && job.workerLeaseId !== options.failedExecutionLeaseId)) return job;
+    if (options.failedExecutionLeaseId !== undefined) {
+      const foreignClaim = job.workerLeaseId !== undefined && job.workerLeaseId !== options.failedExecutionLeaseId;
+      if (job.status !== 'queued' || foreignClaim) return { kind: foreignClaim ? 'foreign-claim' : 'settled', job };
+    }
     const requestedRollback = options.migrationRollback;
     if (requestedRollback !== undefined) {
       if (job.rescueMigrationRollback !== undefined && !sameMigrationRollback(job.rescueMigrationRollback, requestedRollback)) throw invalidRescueBinding();
@@ -739,7 +747,7 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
       await closeCurrentRescueBindingForCancellationLocked(storage, job);
     }
     await atomicWriteJson(path, updated);
-    return updated;
+    return options.failedExecutionLeaseId === undefined ? updated : { kind: 'settled', job: updated };
   });
 }
 

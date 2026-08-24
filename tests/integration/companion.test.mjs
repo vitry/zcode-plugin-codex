@@ -938,6 +938,109 @@ test('concurrent same-capability loser cannot terminalize the winner claimed que
   assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
 });
 
+test('same-capability loser keeps the winner reservation when failure reconciliation cannot read State', async () => {
+  const context = await fixture(); const record = join(context.directory, 'same-capability-read-failure.jsonl'); await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', 'winner survives reconciliation read failure'], {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller('same-capability-read-failure-owner'),
+  });
+  const baseStore = createStateStore({ dataRoot: context.dataRoot }); let reconciliationReads = 0; let ordinaryReads = 0;
+  const readFailure = new Error('injected reconciliation read failure');
+  const unreadableStore = { ...baseStore, finishJobAfterExecutionClaimFailure: async () => {
+    reconciliationReads += 1; throw readFailure;
+  }, readJob: async (/** @type {string} */ workspace, /** @type {string} */ jobId) => {
+    ordinaryReads += 1;
+    if (ordinaryReads === 1) return baseStore.readJob(workspace, jobId);
+    reconciliationReads += 1; throw readFailure;
+  } };
+  /** @type {()=>void} */ let releaseWinnerClaim = () => {}; /** @type {()=>void} */ let releaseLoserClaim = () => {};
+  /** @type {()=>void} */ let releaseWinnerCommit = () => {}; /** @type {()=>void} */ let winnerReady = () => {};
+  /** @type {()=>void} */ let loserReady = () => {}; /** @type {()=>void} */ let winnerClaimed = () => {};
+  const allowWinnerClaim = new Promise((resolve) => { releaseWinnerClaim = () => resolve(undefined); });
+  const allowLoserClaim = new Promise((resolve) => { releaseLoserClaim = () => resolve(undefined); });
+  const allowWinnerCommit = new Promise((resolve) => { releaseWinnerCommit = () => resolve(undefined); });
+  const winnerAtClaim = new Promise((resolve) => { winnerReady = () => resolve(undefined); });
+  const loserAtClaim = new Promise((resolve) => { loserReady = () => resolve(undefined); });
+  const winnerHasClaim = new Promise((resolve) => { winnerClaimed = () => resolve(undefined); });
+  const invocation = { cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id } };
+  const winner = runCompanion(reserved.privateInvocation, { ...invocation, dependencies: {
+    testOnlyBeforeExecutionClaim: async () => { winnerReady(); await allowWinnerClaim; },
+    testOnlyAfterStateClaimBeforeCapabilityCommit: async () => { winnerClaimed(); await allowWinnerCommit; },
+  } });
+  const loser = runCompanion(reserved.privateInvocation, { ...invocation, dependencies: {
+    createStateStore: () => unreadableStore,
+    testOnlyBeforeExecutionClaim: async () => { loserReady(); await allowLoserClaim; },
+  } });
+  await Promise.all([winnerAtClaim, loserAtClaim]); releaseWinnerClaim();
+  try {
+    await winnerHasClaim; releaseLoserClaim();
+    await assert.rejects(loser, { code: 'WORKER_LEASE_CONFLICT' }); assert.ok(reconciliationReads >= 1);
+    const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+    const capabilityPath = join(storage.directory, 'identity', 'capabilities',
+      `${createHash('sha256').update(reserved.executionCapability).digest('hex')}.json`);
+    const capability = JSON.parse(await readFile(capabilityPath, 'utf8'));
+    assert.equal(capability.consumedAt, null); assert.ok(capability.executionReservationId);
+  } finally { releaseLoserClaim(); releaseWinnerCommit(); }
+  const result = await winner; assert.equal(result.job.status, 'succeeded');
+});
+
+test('post-rename execution claim failure reconciles its persisted lease and releases capability reservation', async () => {
+  const context = await fixture(); const record = join(context.directory, 'claim-post-rename-failure.jsonl'); await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', 'must not execute after ambiguous claim commit'], {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller('claim-post-rename-owner'),
+  });
+  const injected = new Error('injected chmod/fsync failure after claim rename'); let injectedWrites = 0;
+  const faultedStore = createStateStore({ dataRoot: context.dataRoot, testOnlyExecutionClaimWriteOptions: {
+    testOnlyAfterRename: async () => { injectedWrites += 1; throw injected; },
+  } });
+  await assert.rejects(runCompanion(reserved.privateInvocation, {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+    dependencies: { createStateStore: () => faultedStore },
+  }), { code: 'ATOMIC_WRITE_FAILED' });
+  assert.equal(injectedWrites, 1); assert.equal((await readFile(record, 'utf8')).trim(), '');
+  const store = createStateStore({ dataRoot: context.dataRoot }); const terminal = await store.readJob(context.workspace, reserved.job.id);
+  assert.equal(terminal.status, 'failed'); assert.equal(terminal.rescueExecutionClaim, undefined);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+  const capabilityPath = join(storage.directory, 'identity', 'capabilities',
+    `${createHash('sha256').update(reserved.executionCapability).digest('hex')}.json`);
+  const capability = JSON.parse(await readFile(capabilityPath, 'utf8'));
+  assert.equal(capability.consumedAt, null); assert.equal(capability.executionReservationId, undefined);
+  await context.identity.revokeExecutionCapability(reserved.executionCapability, { jobId: reserved.job.id,
+    ownerSessionId: reserved.job.ownerSessionId, workspace: context.workspace, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' });
+});
+
+test('unreadable ambiguous own claim remains reserved until terminal recovery and retry release it', async () => {
+  const context = await fixture(); const record = join(context.directory, 'claim-unreadable-recovery.jsonl'); await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', 'recover ambiguous own claim'], {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller('claim-unreadable-recovery-owner'),
+  });
+  const injected = new Error('injected post-rename failure'); const unreadable = new Error('injected reconciliation read failure');
+  const faultedBase = createStateStore({ dataRoot: context.dataRoot, testOnlyExecutionClaimWriteOptions: {
+    testOnlyAfterRename: async () => { throw injected; },
+  } });
+  const faultedStore = { ...faultedBase, finishJobAfterExecutionClaimFailure: async () => { throw unreadable; } };
+  await assert.rejects(runCompanion(reserved.privateInvocation, {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+    dependencies: { createStateStore: () => faultedStore },
+  }), { code: 'ATOMIC_WRITE_FAILED' });
+  const store = createStateStore({ dataRoot: context.dataRoot }); const claimed = await store.readJob(context.workspace, reserved.job.id);
+  assert.equal(claimed.status, 'queued'); assert.ok(claimed.rescueExecutionClaim);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+  const capabilityPath = join(storage.directory, 'identity', 'capabilities',
+    `${createHash('sha256').update(reserved.executionCapability).digest('hex')}.json`);
+  assert.ok(JSON.parse(await readFile(capabilityPath, 'utf8')).executionReservationId);
+  await store.finishJob(context.workspace, reserved.job.id, ['queued'], 'failed', { error: { message: 'orphan recovery' }, exitCode: 1 });
+  await assert.rejects(runCompanion(reserved.privateInvocation, {
+    cwd: context.workspace, env: context.env,
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+  }), { code: 'RESERVED_JOB_NOT_QUEUED' });
+  assert.equal(JSON.parse(await readFile(capabilityPath, 'utf8')).executionReservationId, undefined);
+  await context.identity.revokeExecutionCapability(reserved.executionCapability, { jobId: reserved.job.id,
+    ownerSessionId: reserved.job.ownerSessionId, workspace: context.workspace, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' });
+});
+
 test('reserved execution losing revoke race before its atomic claim has no prompt or ZCode side effects', async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const parentSessionId = 'execution-claim-race-parent'; const childId = 'execution-claim-race-child';

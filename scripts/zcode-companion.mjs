@@ -95,10 +95,11 @@ export async function runCompanion(argv, runtime = {}) {
         : MANAGED_ROLE_STATUSES.has(inspection?.status) ? inspection.status : 'inspection-unavailable';
     return { type: 'role-status', role: 'zcode-rescue', status, ...(status === 'ready' ? {} : { remedy: ROLE_REMEDIES[status] ?? '$zcode:setup' }) };
   }
-  const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
+  const identity = createIdentityStore({ dataRoot });
+  const store = (runtime.dependencies?.createStateStore ?? createStateStore)({ dataRoot });
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies, signal: runtime.signal });
   const caller = runtime.caller ?? await identity.consumeCallerContext(requireAuthorization(runtime.authorization, ['callerContext']).callerContext, { workspace: cwd });
-  const reconcile = () => reconcileOwnedJobs({ store, dataRoot, workspace: cwd, ownerSessionId: caller.sessionId, createClient: async (job, ownerId) => {
+  const reconcile = () => reconcileOwnedJobs({ store, dataRoot, workspace: cwd, ownerSessionId: caller.sessionId, createClient: async (/** @type {any} */ job, ownerId) => {
     runtime.signal?.throwIfAborted();
     const launch = await discoverLaunch(env);
     return (runtime.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: cwd, launch, ownerId, env, ...managedWireOptionsForJob(job) });
@@ -107,7 +108,7 @@ export async function runCompanion(argv, runtime = {}) {
   await reconcile();
   if (parsed.command === 'status') {
     const modelPolicy = summarizeWorkspaceModelConfig(await readWorkspaceModelConfig({ dataRoot, workspace: cwd }));
-    if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId, 'list')), modelPolicy };
+    if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((/** @type {any} */ job) => publicJob(job, caller.sessionId, 'list')), modelPolicy };
     let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
     if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs, runtime.signal);
     return { job: publicJob(job, caller.sessionId, 'detail'), modelPolicy };
@@ -793,7 +794,11 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const inspected = await identity.inspectExecutionCapability(authorization.executionCapability, capabilityExpected, capabilityReservationId);
   if (record.version === 1 && inspected.jobSpecFormat !== undefined) throw jobSpecTampered();
   if (!sameJson(inspected.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
-  if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
+  if (job.status !== 'queued') {
+    if (['cancelled', 'failed', 'succeeded'].includes(job.status)) await identity.releaseExecutionCapability(
+      authorization.executionCapability, capabilityExpected, capabilityReservationId);
+    throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
+  }
   return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, loadSpecAfterClaim,
     executionAuthorization, legacySpecDigest, legacyReservationProof, executionCapability: authorization.executionCapability,
     capabilityExpected, capabilityReservationId,
@@ -841,18 +846,11 @@ async function executeWithWorkerLease(context) {
       await context.dependencies?.testOnlyAfterExecutionClaim?.();
       if (context.loadSpecAfterClaim) spec = await context.loadSpecAfterClaim();
     } catch (error) {
-      await context.store.finishJobAfterExecutionClaimFailure(context.cwd, context.job.id, workerLeaseId, {
+      const reconciliation = await context.store.finishJobAfterExecutionClaimFailure(context.cwd, context.job.id, workerLeaseId, {
         error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution authorization failed' }, exitCode: 1,
-      }).catch(() => {});
-      if (!capabilityCommitted && context.executionCapability !== undefined) {
-        // A competing worker can share the deterministic retry reservation while it wins the
-        // StateStore claim. Never let the loser release that winner's pre-commit reservation.
-        const persisted = job === undefined
-          ? await context.store.readJob(context.cwd, context.job.id).catch(() => undefined)
-          : undefined;
-        const safeToRelease = job !== undefined || persisted === undefined
-          || persisted.childPid === undefined && persisted.workerLeaseId === undefined;
-        if (safeToRelease) await context.identity.releaseExecutionCapability(context.executionCapability,
+      }).catch(() => undefined);
+      if (!capabilityCommitted && context.executionCapability !== undefined && reconciliation?.kind === 'settled') {
+        await context.identity.releaseExecutionCapability(context.executionCapability,
           context.capabilityExpected, context.capabilityReservationId).catch(() => {});
       }
       throw error;

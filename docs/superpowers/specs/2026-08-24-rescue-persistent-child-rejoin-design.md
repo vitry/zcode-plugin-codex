@@ -126,8 +126,12 @@ authenticates the envelope and read-validates a capability explicitly bound to
 `sealed-v2`. StateStore then performs a read-only locked authority inspection;
 the capability receives a private, releasable consumption reservation; and the
 worker claim revalidates the inspection digest under the StateStore lock before
-`consumedAt` commits. Any proof/CAS rejection releases that reservation without
-consuming the capability. The claim also compares the envelope commitment
+`consumedAt` commits. A proof/CAS rejection releases that reservation without
+consuming the capability only when locked reconciliation proves the job remains
+unclaimed or belongs to the rejecting attempt's exact lease. An exact foreign
+winning lease, or unreadable StateStore evidence, preserves the shared
+reservation: the winner commits it, or orphan terminalization plus a later
+terminal retry releases it. The claim also compares the envelope commitment
 against the independently persisted job value, so possession of the capability
 cannot authorize a valid re-sealing. It decrypts and validates the
 normalized spec in memory only after the claim succeeds. Unknown versions and
@@ -151,7 +155,9 @@ the exact historical bound proof, and either field alone fails before identity
 capability proof, reservation, or consumption with no persistent mutation.
 When same-capability retries race, failed-claim compensation may terminalize
 only an unclaimed queued job or the exact worker lease owned by that attempt; a
-foreign winning lease is an atomic no-op and continues execution.
+foreign winning lease is an atomic no-op and continues execution. An ambiguous
+post-rename claim-write failure is reconciled under the same StateStore lock;
+an exact persisted own lease is safely terminalized before reservation release.
 Every modern writable Rescue reservation requires this claim before
 queued-to-running. The advancing caller must explicitly submit both its PID
 and lease (inherited persisted values are not arguments); both must match the

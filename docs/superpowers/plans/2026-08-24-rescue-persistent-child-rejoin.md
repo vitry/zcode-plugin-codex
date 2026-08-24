@@ -156,9 +156,12 @@ tests.
   owner-v1/v1-v2 or markerless rollback evidence for in-flight compatibility
   and recovery; never issue a `legacy-v1` format label.
 - [x] Read-validate historical capability and StateStore proof before reserving
-  consumption; revalidate one exact inspection digest at claim, release on
-  rejection, and commit `consumedAt` only after the durable claim. Use one exact
-  six-field v1 parser for execution, controller cancellation, and recovery.
+  consumption; revalidate one exact inspection digest at claim, release on a
+  rejection only after locked proof of an unclaimed or exact-own lease, and
+  commit `consumedAt` only after the durable claim. Preserve the reservation on
+  an exact foreign winner or unreadable state for winner commit or terminal
+  recovery/retry. Use one exact six-field v1 parser for execution, controller
+  cancellation, and recovery.
 - [x] Reject one-sided v1 resume/candidate identity before capability proof and
   make failed-claim terminal compensation an exact worker-lease CAS, so a
   same-capability retry loser cannot terminate the winning queued claim.
