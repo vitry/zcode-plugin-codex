@@ -276,7 +276,7 @@ export function createStateStore(options) {
         if (readOnlySnapshot.records.has(rescueBindingKey(preview.identity))) throw invalidRescueBinding();
         const previewAuthority = authorityForReservation(preview, null, input.reservation, storage.workspacePath, false);
         const previewBase = createRescueBinding({ ...preview.identity, childAuthority: previewAuthority,
-          anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex') });
+          anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex'), superseded: [] });
         const plannedBeforeSnapshot = planBindingSlot(readOnlySnapshot, previewBase.key, Date.now() - RESCUE_BINDING_CLOSED_GC_MS);
         ensureProspectiveBindingCapacity(storage, preview.identity.parentSessionId,
           bindingSnapshotWith(plannedBeforeSnapshot, previewBase), bindingPartitionMaxBytes);
@@ -289,7 +289,7 @@ export function createStateStore(options) {
         const { record: existing, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity);
         if (existing !== null) throw invalidRescueBinding();
         const base = createRescueBinding({ ...exactIdentity, childAuthority,
-          anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex') });
+          anchorJobId: anchorJob.id, currentJobId: anchorJob.id, operationId: randomBytes(32).toString('hex'), superseded: [] });
         const baseSnapshot = bindingSnapshotWith(beforeSnapshot, base);
         ensureProspectiveBindingCapacity(storage, base.parentSessionId, baseSnapshot, bindingPartitionMaxBytes);
         await publicationCheckpoint(publicationHook, 'adopt:base-binding');

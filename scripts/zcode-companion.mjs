@@ -197,20 +197,22 @@ export async function runDirectInvocation(argv, runtime = {}) {
       }
     }
     if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && executor) validateLegacyConvergedChild(host, executor, caller);
+    if (executor && host) {
+      validateExecutorHostIdentity(host, executor);
+      if (prepared.activation && prepared.activation.kind !== 'spawn'
+        && prepared.activation.agentPathDigest !== createHash('sha256').update(host.agentPath).digest('hex')) {
+        throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation does not match this child.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+      }
+      executor = { ...executor, agentPath: host.agentPath };
+    }
     if (prepared.requiredExecutorAgentId !== null && executor?.active
       && !['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind)) {
       throw new PluginError('EXECUTOR_STATE_MISMATCH', 'A Rescue continuation requires the original child to be stopped.', { category: 'authorization', remedy: 'Wait for the original Rescue child to stop, then prepare the continuation again.' });
     }
-    if (executor) {
-      host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
-        ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
-      ), executor.parentSessionId, executor.agentId);
-      validateExecutorHostIdentity(host, executor);
-      const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
-      if (prepared.activation && prepared.activation.kind !== 'spawn' && prepared.activation.agentPathDigest !== agentPathDigest) {
-        throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation does not match this child.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
-      }
-      executor = { ...executor, agentPath: host.agentPath };
+    if (executor && prepared.activation?.kind === 'spawn') {
+      const agentPath = `/root/${prepared.activation.taskName}`;
+      if (createHash('sha256').update(agentPath).digest('hex') !== prepared.activation.agentPathDigest) throw rescueRouteInvalid();
+      executor = { ...executor, agentPath };
     }
     const reactivatedFresh = prepared.generation === 1
       && prepared.activation?.kind === 'reactivate'
@@ -226,20 +228,34 @@ export async function runDirectInvocation(argv, runtime = {}) {
     }
     if ((!executor || !executor.active) && !reactivatedFresh && prepared.activation?.kind !== 'legacy-adopt') {
       const state = createStateStore({ dataRoot });
-      const lookup = executor ? bindingLookup(executor, caller.workspace) : legacyBindingLookup(host, caller);
+      let lookup = executor ? bindingLookup(executor, caller.workspace) : legacyBindingLookup(host, caller);
       let migrationProof;
-      if (prepared.envelope.options.resume === 'resume') {
-        const proof = await state.readRescueBindingMigrationProof({
-          workspace: caller.workspace, parentSessionId: caller.sessionId,
-          executorAgentId: executor?.agentId ?? host.id, childAgentType: executor?.agentType ?? host.agentRole,
-          originWorkspace: host.cwd, executionWorkspace: caller.workspace,
-          agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex'),
+      let resolved;
+      try {
+        resolved = await state.resolveRescueBinding(lookup);
+      } catch (error) {
+        if (prepared.envelope.options.resume !== 'resume' || /** @type {any} */ (error)?.code !== 'RESCUE_BINDING_CLOSED') throw error;
+        if (executor) {
+          host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
+            ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
+          ), executor.parentSessionId, executor.agentId);
+          validateExecutorHostIdentity(host, executor);
+          if (prepared.activation && prepared.activation.kind !== 'spawn'
+            && prepared.activation.agentPathDigest !== createHash('sha256').update(host.agentPath).digest('hex')) {
+            throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation does not match this child.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+          }
+          executor = { ...executor, agentPath: host.agentPath };
+          lookup = bindingLookup(executor, caller.workspace);
+        }
+        const proof = await state.readRescueBindingMigrationProof({ workspace: caller.workspace,
+          parentSessionId: caller.sessionId, executorAgentId: executor?.agentId ?? host.id,
+          childAgentType: executor?.agentType ?? host.agentRole, originWorkspace: host.cwd,
+          executionWorkspace: caller.workspace, agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex'),
           ...(executor ? { agentPath: host.agentPath } : {}) });
-        if (proof.kind === 'proof') migrationProof = proof.migrationProof;
+        if (proof.kind !== 'proof') throw error;
+        migrationProof = proof.migrationProof;
+        resolved = await state.resolveRescueBindingForResume({ ...lookup, permissionMode: caller.permissionMode, migrationProof });
       }
-      const resolved = prepared.envelope.options.resume === 'resume'
-        ? await state.resolveRescueBindingForResume({ ...lookup, permissionMode: caller.permissionMode, ...(migrationProof ? { migrationProof } : {}) })
-        : await state.resolveRescueBinding(lookup);
       if (resolved.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
       rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId,
         expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId,

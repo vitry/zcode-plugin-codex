@@ -54,17 +54,20 @@ export function rescueBindingPartitionKey(input) {
 
 /** @param {any} input */
 export function createRescueBinding(input) {
-  const childAuthority = input?.childAuthority === undefined ? validateChildAuthority({
+  const candidateAuthority = input?.childAuthority === undefined ? {
     kind: 'subagent-start', childAgentId: input?.executorAgentId, childAgentType: input?.executorAgentType,
     parentTurnId: input?.executorParentTurnId, parentPermissionMode: input?.executorParentPermissionMode,
-    agentPath: input?.executorAgentPath,
-  }, input?.workspace) : validateChildAuthority(input.childAuthority, input?.workspace);
+    ...(input?.executorAgentPath === undefined ? {} : { agentPath: input.executorAgentPath }),
+  } : input.childAuthority;
+  const legacyHook = candidateAuthority?.kind === 'subagent-start' && candidateAuthority.agentPath === undefined;
+  const childAuthority = validateChildAuthority(candidateAuthority, input?.workspace, legacyHook);
+  const modernRecord = !legacyHook && (childAuthority.kind === 'subagent-start' || input?.superseded !== undefined);
   const identity = { parentSessionId: input?.parentSessionId, executorAgentId: childAuthority.childAgentId, workspace: input?.workspace };
   validateIdentity(identity);
   if (!PERMISSION_MODES.includes(input.permissionMode) || !digest(input.anchorJobId) || !digest(input.currentJobId) || !digest(input.operationId)) throw invalidBinding();
   const now = timestamp(input.now);
-  return {
-    version: RESCUE_BINDING_VERSION,
+  const record = {
+    version: modernRecord ? RESCUE_BINDING_VERSION : 2,
     key: rescueBindingKey(identity),
     operationId: input.operationId,
     state: 'active',
@@ -74,12 +77,12 @@ export function createRescueBinding(input) {
     permissionMode: input.permissionMode,
     anchorJobId: input.anchorJobId,
     currentJobId: input.currentJobId,
-    superseded: validateSuperseded(input.superseded ?? []),
     createdAt: now,
     updatedAt: now,
     closedAt: null,
     closeReason: null,
   };
+  return modernRecord ? { ...record, superseded: validateSuperseded(input.superseded ?? []) } : record;
 }
 
 /** @param {any} record @param {Date|number|string} [now] */
