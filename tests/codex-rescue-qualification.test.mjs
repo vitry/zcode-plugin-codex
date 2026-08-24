@@ -2,15 +2,17 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { createIdentityStore } from '../scripts/lib/identity.mjs';
+import { createInvocationStore, readPendingLegacyChildAuthorityContext } from '../scripts/lib/invocation.mjs';
 import { createRescueBinding, createRescueBindingAuthority, createRescueBindingPartition } from '../scripts/lib/rescue-binding.mjs';
-import { createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
+import { createConsumedLegacyChildAuthority, createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { planRescueActivation } from '../scripts/lib/rescue-route-planner.mjs';
+import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 import {
   assertCodexRescueDisplayName,
@@ -74,15 +76,48 @@ test('qualifies host-only legacy adoption without reconstructing Hook provenance
     ['legacy-adoption-private-task', (value) => { value.faultExecutorArtifacts[0].bytes = 'recover the private legacy adoption objective\n'; }, 'ordinaryIsolationJson'],
     ['legacy-adoption-first-modes', (value) => { value[0].authority.authorityId = '0'.repeat(64); }, 'firstLifecyclesJson'],
     ['legacy-adoption-first-modes', (value) => { value[0].extra = true; }, 'firstLifecyclesJson'],
+    ['legacy-adoption-first-modes', (value) => { const envelope = JSON.parse(value[0].initialEnvelopeBytes); envelope.options.resume = 'fresh'; value[0].initialEnvelopeBytes = `${JSON.stringify(envelope)}\n`; }, 'firstLifecyclesJson'],
+    ['legacy-adoption-first-modes', (value) => { const pending = JSON.parse(value[0].pendingRecordBytes); pending.extra = true; value[0].pendingRecordBytes = `${JSON.stringify(pending)}\n`; }, 'firstLifecyclesJson'],
+    ['legacy-adoption-first-modes', (value) => { const pending = JSON.parse(value[1].pendingRecordBytes); pending.candidateJobId = '0'.repeat(64); value[1].pendingRecordBytes = `${JSON.stringify(pending)}\n`; }, 'firstLifecyclesJson'],
+    ['legacy-adoption-first-modes', (value) => { value[0].choiceRequest.executorAgentId = 'sibling-child'; }, 'firstLifecyclesJson'],
+    ['legacy-adoption-first-modes', (value) => { value[1].replayCode = 'PENDING_INVOCATION_EXPIRED'; }, 'firstLifecyclesJson'],
     ['legacy-adoption-first-modes', (value) => { value[1].candidateTranscript.request.ownerTurnId = 'sibling-turn'; }, 'firstLifecyclesJson'],
     ['legacy-adoption-private-task', (value) => { value[0].routeTranscript.response.task = 'recover the private legacy adoption objective'; }, 'firstLifecyclesJson'],
     ['legacy-adoption-bound-continuation', (value) => { value.extra = true; }, 'boundContinuationJson'],
+    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.requiredExecutorAgentId = null; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
+    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.requiredExecutorAgentId = 'sibling-child'; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
+    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.generation = 2; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
+    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.expiresAt = record.createdAt; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
+    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.envelope.source = 'explicit'; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
+    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.activation.bindingKey = '0'.repeat(64); value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
     ['legacy-adoption-private-task', (value) => { value.peerCalls[1].response = 'recover the private legacy adoption objective'; }, 'boundContinuationJson'],
   ]) {
     const changed = structuredClone(input); const value = JSON.parse(changed[field]); mutate(value); changed[field] = JSON.stringify(value);
     await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(changed),
       (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
   }
+});
+
+test('legacy adoption qualification captures production one-shot choice and bound preparation lifecycles', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-legacy-lifecycle-qualification-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const originDirectory = join(temporary, 'origin'); const targetDirectory = join(temporary, 'target');
+  await mkdir(originDirectory); await runGit(['init', '-q'], originDirectory); await writeFile(join(originDirectory, 'fixture.txt'), 'base\n');
+  await runGit(['add', 'fixture.txt'], originDirectory); await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
+  await runGit(['worktree', 'add', '-qb', 'legacy-lifecycle-target', targetDirectory], originDirectory);
+  const input = await legacyAdoptionQualificationFixture({ originWorkspace: await realpath(originDirectory), executionWorkspace: await realpath(targetDirectory) });
+  const lifecycles = JSON.parse(input.firstLifecyclesJson);
+  for (const mode of ['choice-fresh', 'choice-resume']) {
+    const lifecycle = lifecycles.find((entry) => entry.mode === mode);
+    assert.equal(Object.hasOwn(JSON.parse(lifecycle.initialEnvelopeBytes).options, 'resume'), false);
+    assert.equal(lifecycle.startPublic.status, 'needs-choice');
+    assert.equal(JSON.parse(lifecycle.pendingRecordBytes).version, 3);
+    assert.equal(lifecycle.pendingDeleted, true);
+    assert.equal(lifecycle.replayCode, 'PENDING_INVOCATION_NOT_FOUND');
+  }
+  const bound = JSON.parse(input.boundContinuationJson); const preparation = JSON.parse(bound.preparationRecordBytes);
+  assert.equal(preparation.requiredExecutorAgentId, childId);
+  assert.equal(preparation.activation.bindingKey, JSON.parse(bound.bindingBeforeBytes).key);
 });
 
 test('qualifies a resumed parent reactivating one initially unloaded original child in its linked worktree', async (t) => {
@@ -2481,41 +2516,73 @@ async function legacyAdoptionQualificationFixture({ originWorkspace, executionWo
       const response = request.childId === ordinaryExecutor.agentId ? { kind: 'bound', binding: ordinalBinding } : { kind: 'missing' };
       bindingTranscript.push({ request, response }); return response; },
   });
-  const firstLifecycles = ['choice-fresh', 'choice-resume', 'fresh', 'resume'].map((mode, index) => {
+  const firstLifecycles = await Promise.all(['choice-fresh', 'choice-resume', 'fresh', 'resume'].map(async (mode, index) => {
     const turnId = `legacy-${mode}-turn`; const modeCreatedAt = `2026-08-24T0${index + 1}:00:00.000Z`;
-    const key = createHash('sha256').update(JSON.stringify([parentId, turnId, executionWorkspace, 'rescue'])).digest('hex');
-    const modeAuthorityId = createHash('sha256').update(JSON.stringify(['rescue-legacy-adoption-authority-v1', key, childId, 1, modeCreatedAt])).digest('hex');
-    const modeAuthority = { ...authority, authorityId: modeAuthorityId, authorizingParentTurnId: turnId };
     const modeJobId = (index + 10).toString(16).repeat(64).slice(0, 64); const operationId = (index + 11).toString(16).repeat(64).slice(0, 64);
+    const resumes = mode.endsWith('resume'); const choiceMode = mode.startsWith('choice-');
+    const initialEnvelope = { version: 1, source: 'explicit', task: privateTask,
+      options: { execution: 'foreground', ...(choiceMode ? {} : { resume: resumes ? 'resume' : 'fresh' }) } };
+    const lifecycleRoot = join(executionWorkspace, `.qualification-${mode}`); const preparationStore = createRescuePreparationStore({ dataRoot: lifecycleRoot });
+    const preparationInput = { sessionId: parentId, turnId, workspace: executionWorkspace, permissionMode,
+      recordedPrompt: `$zcode:rescue ${privateTask}`, envelope: initialEnvelope,
+      activation: { kind: 'legacy-adopt', childThreadId: childId, agentPathDigest: pathDigest } };
+    await preparationStore.save({ ...preparationInput, now: modeCreatedAt });
+    const receipt = await preparationStore.consume({ ...preparationInput, executorAgentId: childId,
+      activationProof: preparationInput.activation, now: new Date(Date.parse(modeCreatedAt) + 500) });
+    const modeAuthority = createConsumedLegacyChildAuthority(receipt, { authorizingParentGenerationId: generationId,
+      originWorkspace, executionWorkspace });
     const modeBinding = createRescueBinding({ parentSessionId: parentId, childAuthority: modeAuthority, workspace: executionWorkspace, permissionMode,
       anchorJobId: modeJobId, currentJobId: modeJobId, operationId, now: new Date(Date.parse(modeCreatedAt) + 1000).toISOString() });
-    const resumes = mode.endsWith('resume'); const sessionId = resumes ? `candidate-${mode}` : `created-${mode}`;
-    const preparation = { version: 3, key, sessionId: parentId, turnId, workspace: executionWorkspace, permissionMode, source: 'explicit',
-      envelope: { version: 1, source: 'explicit', task: privateTask, options: { execution: 'foreground', resume: resumes ? 'resume' : 'fresh' } },
-      generation: 1, requiredExecutorAgentId: null, activation: { kind: 'legacy-adopt', childThreadId: childId, agentPathDigest: pathDigest },
-      createdAt: modeCreatedAt, expiresAt: new Date(Date.parse(modeCreatedAt) + 30 * 60_000).toISOString(),
-      consumedAt: new Date(Date.parse(modeCreatedAt) + 500).toISOString(), executorAgentId: childId };
-    return { version: 1, mode, preparationRecordBytes: `${JSON.stringify(preparation)}\n`, authority: modeAuthority,
+    const storage = await resolveWorkspaceStorage({ dataRoot: lifecycleRoot, workspace: executionWorkspace });
+    const [preparationName] = await readdir(join(storage.directory, 'invocations', 'prepared'));
+    const preparationRecordBytes = await readFile(join(storage.directory, 'invocations', 'prepared', preparationName), 'utf8');
+    const sessionId = resumes ? `candidate-${mode}` : `created-${mode}`;
+    const common = { version: 1, mode, preparationRecordBytes, authority: modeAuthority,
       routeTranscript: { request: { parentSessionId: parentId, parentTurnId: turnId, childThreadId: childId, workspace: executionWorkspace, mode },
-        response: { activation: preparation.activation, directive: { version: 2, action: 'followup', target: restoredPath, assignment: 'zcode-rescue' } } },
+        response: { activation: preparationInput.activation, directive: { version: 2, action: 'followup', target: restoredPath, assignment: 'zcode-rescue' } } },
       candidateTranscript: { request: { mode, ownerSessionId: parentId, ownerTurnId: turnId, workspace: executionWorkspace },
         response: { method: resumes ? 'session/resume' : 'session/create', sessionId } },
       jobRecordBytes: `${JSON.stringify({ id: modeJobId, ownerSessionId: parentId, ownerTurnId: turnId, workspace: executionWorkspace,
         command: 'rescue', status: 'succeeded', zcodeSessionId: sessionId })}\n`,
       peerCalls: [{ method: resumes ? 'session/resume' : 'session/create', sessionId }, { method: 'session/send', sessionId, response: publicOutput }],
       resultBindingBytes: `${JSON.stringify(modeBinding)}\n` };
-  });
+    if (!choiceMode) return common;
+    const invocationStore = createInvocationStore({ dataRoot: lifecycleRoot });
+    await invocationStore.savePending({ sessionId: parentId, turnId, workspace: executionWorkspace, permissionMode, command: 'rescue', source: 'explicit',
+      executorAgentId: childId, spec: { argv: ['rescue', privateTask] }, routeKind: 'legacy', candidateJobId: modeJobId, legacyAuthority: modeAuthority,
+      now: new Date(Date.parse(modeCreatedAt) + 600) });
+    const pendingDirectory = join(storage.directory, 'invocations', 'pending'); const [pendingName] = await readdir(pendingDirectory);
+    const pendingPath = join(pendingDirectory, pendingName); const pendingRecordBytes = await readFile(pendingPath, 'utf8');
+    const choiceRequest = { sessionId: parentId, workspace: executionWorkspace, command: 'rescue', choice: resumes ? 'resume' : 'fresh',
+      executorAgentId: childId, turnId, permissionMode, parentGenerationId: generationId, originWorkspace, executionWorkspace,
+      now: new Date(Date.parse(modeCreatedAt) + 700) };
+    const consumedPending = await invocationStore.consumePending(choiceRequest);
+    const pendingAuthority = structuredClone(readPendingLegacyChildAuthorityContext(consumedPending.authority).authority);
+    let replayCode; try { await invocationStore.consumePending(choiceRequest); } catch (error) { replayCode = error?.code; }
+    let pendingDeleted = false; try { await stat(pendingPath); } catch (error) { pendingDeleted = error?.code === 'ENOENT'; }
+    return { ...common, initialEnvelopeBytes: `${JSON.stringify(initialEnvelope)}\n`, startPublic: { status: 'needs-choice', choices: ['resume', 'fresh'] },
+      startPrivateRoute: { routeKind: 'legacy', candidateJobId: modeJobId }, pendingRecordBytes,
+      choiceRequest: { ...choiceRequest, now: choiceRequest.now.toISOString() },
+      consumedPending: { argv: consumedPending.argv, source: consumedPending.source, caller: consumedPending.caller,
+        route: consumedPending.route, authority: pendingAuthority },
+      pendingDeleted, replayCode };
+  }));
   const resumeLifecycle = firstLifecycles.find((entry) => entry.mode === 'resume'); const before = JSON.parse(resumeLifecycle.resultBindingBytes);
   const continuationTurnId = 'legacy-bound-continuation-turn'; const continuationCreatedAt = '2026-08-24T06:00:00.000Z';
-  const continuationKey = createHash('sha256').update(JSON.stringify([parentId, continuationTurnId, executionWorkspace, 'rescue'])).digest('hex');
   const continuationJobId = '7'.repeat(64); const after = { ...before, currentJobId: continuationJobId, updatedAt: '2026-08-24T06:00:01.000Z' };
-  const boundContinuation = { version: 1, preparationRecordBytes: `${JSON.stringify({ version: 3, key: continuationKey, sessionId: parentId,
-    turnId: continuationTurnId, workspace: executionWorkspace, permissionMode, source: 'proactive', envelope: { version: 1, source: 'proactive',
-      task: privateTask, options: { execution: 'foreground', resume: 'resume' } }, generation: 1, requiredExecutorAgentId: null,
-    activation: { kind: 'legacy-bound', childThreadId: childId, agentPathDigest: pathDigest, bindingKey: before.key }, createdAt: continuationCreatedAt,
-    expiresAt: '2026-08-24T06:30:00.000Z', consumedAt: '2026-08-24T06:00:00.500Z', executorAgentId: childId })}\n`,
+  const boundActivation = { kind: 'legacy-bound', childThreadId: childId, agentPathDigest: pathDigest, bindingKey: before.key };
+  const boundRoot = join(executionWorkspace, '.qualification-bound'); const boundStore = createRescuePreparationStore({ dataRoot: boundRoot });
+  const boundInput = { sessionId: parentId, turnId: continuationTurnId, workspace: executionWorkspace, permissionMode, recordedPrompt: privateTask,
+    envelope: { version: 1, source: 'proactive', task: privateTask, options: { execution: 'foreground', resume: 'resume' } }, activation: boundActivation };
+  await boundStore.save({ ...boundInput, now: continuationCreatedAt });
+  await boundStore.consume({ ...boundInput, executorAgentId: childId, activationProof: boundActivation,
+    now: '2026-08-24T06:00:00.500Z' });
+  const boundStorage = await resolveWorkspaceStorage({ dataRoot: boundRoot, workspace: executionWorkspace });
+  const [boundPreparationName] = await readdir(join(boundStorage.directory, 'invocations', 'prepared'));
+  const boundPreparationRecordBytes = await readFile(join(boundStorage.directory, 'invocations', 'prepared', boundPreparationName), 'utf8');
+  const boundContinuation = { version: 1, preparationRecordBytes: boundPreparationRecordBytes,
     routeTranscript: { request: { parentSessionId: parentId, parentTurnId: continuationTurnId, childThreadId: childId, workspace: executionWorkspace },
-      response: { activation: { kind: 'legacy-bound', childThreadId: childId, agentPathDigest: pathDigest, bindingKey: before.key },
+      response: { activation: boundActivation,
         directive: { version: 2, action: 'followup', target: restoredPath, assignment: 'zcode-rescue' } } },
     jobRecordBytes: `${JSON.stringify({ id: continuationJobId, ownerSessionId: parentId, ownerTurnId: continuationTurnId,
       workspace: executionWorkspace, command: 'rescue', status: 'succeeded', zcodeSessionId: 'candidate-resume' })}\n`,
