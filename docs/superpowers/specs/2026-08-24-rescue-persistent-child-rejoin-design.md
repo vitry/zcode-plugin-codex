@@ -106,6 +106,16 @@ delivery, launch failure, worker death, orphan settlement, and ordinary queued
 `$zcode:cancel` must all restore an eligible migrated tombstone before
 terminalizing the queued attempt.
 
+Every newly published writable Rescue job also fixes a private reservation
+class (`bound` or `unbound`) in both the canonical job and its independently
+published owner binding. The owner binding is published first. Queued-to-
+running and queued-to-terminal transitions compare both records under the
+state lock. Thus deleting a migration marker and its child binding cannot turn
+a bound attempt into an ordinary unbound job; missing or contradictory class
+evidence fails closed. Historical records that predate this class remain
+eligible only when their exact persisted child binding or rollback evidence
+proves the transition—absence alone is deliberately not guessed.
+
 Migration requires: closed + `session-ended`; exact canonical workspace and
 parent; exact persisted child ID/thread/path/Role; valid anchor/current jobs;
 non-empty original ZCode ID; no cancel/invalidation/fresh supersession; and

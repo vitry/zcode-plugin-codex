@@ -869,7 +869,7 @@ function publicJob(job, ownerSessionId, projection) {
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin;
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueReservationKind;
   if (projection !== 'detail') delete visible.logFile;
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
@@ -884,7 +884,7 @@ function publicJob(job, ownerSessionId, projection) {
   return { ...visible, owned: true, owner: 'same-owner' };
 }
 /** @param {any} job */
-function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; return visible; }
+function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueReservationKind; return visible; }
 /** @param {any} job */
 function terminalResultJob(job) {
   const visible = {

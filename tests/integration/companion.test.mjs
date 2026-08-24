@@ -728,8 +728,8 @@ test('legacy session-ended migration rolls back its tombstone when exact remote 
   assert.equal(proof.kind, 'bound'); assert.deepEqual(proof.binding, closed.binding);
 });
 
-for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence']) test(['corrupt legacy worker execution', 'missing legacy worker evidence'].includes(failurePoint)
-  ? `background execution rejects ${failurePoint === 'corrupt legacy worker execution' ? 'corrupt markerless legacy rollback metadata' : 'missing markerless legacy rollback evidence'} without terminalizing its queued job`
+for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding']) test(['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
+  ? `background execution rejects ${failurePoint === 'corrupt legacy worker execution' ? 'corrupt markerless legacy rollback metadata' : failurePoint === 'missing legacy worker evidence' ? 'missing markerless legacy rollback evidence' : 'missing markerless rollback evidence and binding'} without terminalizing its queued job`
   : `background session-ended migration restores its closed tombstone when ${failurePoint} fails`, async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const record = join(context.directory, `background-migration-${failurePoint.replace(' ', '-')}.jsonl`); await writeFile(record, '');
@@ -782,9 +782,9 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
     cwd: workspace, env: childEnv,
     dependencies: { readCodexThreadSpawnChild: async () => host, ...failureDependency },
   });
-  if (['worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence'].includes(failurePoint)) {
+  if (['worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)) {
     const queued = await attempt; assert.equal(queued.type, 'background');
-    assert.doesNotMatch(JSON.stringify(queued), /rescueMigrationRollback|priorCurrentJobId|priorClosedAt/u);
+    assert.doesNotMatch(JSON.stringify(queued), /rescueMigrationRollback|rescueReservationKind|priorCurrentJobId|priorClosedAt/u);
     if (failurePoint === 'worker crash') {
       const status = await runCompanion(['status', '--all'], { cwd: workspace, env: childEnv,
         caller: { sessionId: parentSessionId, turnId: 'turn-b', permissionMode: 'workspace-write' } });
@@ -799,7 +799,7 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
       await scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace, createClient: async () => { throw failure; } });
     } else {
       const rollback = queuedJob.rescueMigrationRollback; assert.ok(rollback);
-      if (failurePoint !== 'missing legacy worker evidence') Object.assign(specRecord.spec, {
+      if (!failurePoint.startsWith('missing legacy worker evidence')) Object.assign(specRecord.spec, {
           migrationParentSessionId: rollback.parentSessionId, migrationChildAgentId: rollback.childAgentId,
           migrationOperationId: rollback.operationId, migrationPriorCurrentJobId: failurePoint === 'corrupt legacy worker execution' ? 'f'.repeat(64) : rollback.priorCurrentJobId,
           migrationPriorUpdatedAt: rollback.priorUpdatedAt, migrationPriorClosedAt: rollback.priorClosedAt,
@@ -807,6 +807,9 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
         });
       specRecord.digest = createHash('sha256').update(JSON.stringify(specRecord.spec, Object.keys(specRecord.spec).sort())).digest('hex');
       await atomicWriteJson(specPath, specRecord); delete queuedJob.rescueMigrationRollback; await atomicWriteJson(queuedJobPath, queuedJob);
+      if (failurePoint === 'missing legacy worker evidence and binding') {
+        for (const name of await readdir(storage.directory)) if (/^rescue-binding-(?:authority|session)-[a-f0-9]{64}\.json$/u.test(name)) await unlink(join(storage.directory, name));
+      }
       if (failurePoint === 'legacy recovery') {
         await scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace, createClient: async () => { throw failure; } });
       } else {
@@ -817,12 +820,13 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
         await assert.rejects(runCompanion(['run-reserved-job', queued.job.id], {
           cwd: workspace, env: { ...childEnv, FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
           authorization: { executionCapability: capability, jobId: queued.job.id },
-        }), (error) => { executionError = error; return ['corrupt legacy worker execution', 'missing legacy worker evidence'].includes(failurePoint)
+        }), (error) => { executionError = error; return ['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
           ? /** @type {any} */ (error)?.code === 'JOB_SPEC_INVALID' : true; });
         const executionJob = await store.readJob(workspace, queued.job.id);
-        assert.equal(executionJob.status, ['corrupt legacy worker execution', 'missing legacy worker evidence'].includes(failurePoint) ? 'queued' : 'failed',
+        assert.equal(executionJob.status, ['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint) ? 'queued' : 'failed',
           `legacy execution left ${executionError?.code ?? 'error'}: ${executionError?.message ?? executionError}`);
-        if (['corrupt legacy worker execution', 'missing legacy worker evidence'].includes(failurePoint)) {
+        if (['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)) {
+          if (failurePoint === 'missing legacy worker evidence and binding') return;
           const activeAfterRejection = await store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId });
           assert.equal(activeAfterRejection.kind, 'bound'); assert.equal(activeAfterRejection.binding.currentJobId, queued.job.id);
           return;

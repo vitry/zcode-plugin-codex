@@ -20,7 +20,7 @@ import {
   rescueBindingKey,
 } from '../scripts/lib/rescue-binding.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
-import { scavengeWritableJobs } from '../scripts/lib/recovery.mjs';
+import { scavengeWritableJobs, settleEndedOwnerWritableJob } from '../scripts/lib/recovery.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { createConsumedLegacyChildAuthority, createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
@@ -636,6 +636,73 @@ for (const seam of ['continuation:marker', 'continuation:current-advance']) test
   assert.deepEqual(await readFile(bindingPath), priorBytes);
 });
 
+for (const seam of ['adopt:marker', 'adopt:current-advance']) for (const terminalizer of ['direct', 'controller', 'recovery', 'SessionEnd']) test(`${terminalizer} settles legacy adoption published through ${seam} without changing its base binding`, async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace, { parentTurnId: 'adopt' });
+  const candidate = await store.reserveJob(reservation(workspace, 'candidate'));
+  await makeEligible(store, workspace, candidate, 'adoption-pre-advance-session'); await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
+  const faulted = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt(seam) });
+  await assert.rejects(faulted.adoptRescueCandidate({ workspace, reservation: reservation(workspace, 'adopt'),
+    executor: { ...hook, parentTurnId: 'adopt' }, candidateJobId: candidate.id }), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
+  const adoption = (await store.listJobs(workspace)).find((job) => job.id !== candidate.id);
+  assert.ok(adoption?.rescueContinuationOrigin?.priorBinding);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [bindingPath] = await bindingFiles(storage.directory);
+  const baseBytes = await readFile(bindingPath);
+  let terminal;
+  if (terminalizer === 'direct') terminal = await store.finishJob(workspace, adoption.id, ['queued'], 'failed', { error: { message: 'direct settlement' }, exitCode: 1 });
+  else if (terminalizer === 'controller') terminal = await createJobController({ store, dataRoot }).cancel(workspace, adoption.id, adoption.ownerSessionId);
+  else if (terminalizer === 'recovery') {
+    await store.claimJobWorker(workspace, adoption.id, { childPid: 999_999_999, workerLeaseId: '6'.repeat(64) });
+    await scavengeWritableJobs({ store, dataRoot, workspace, createClient: async () => { throw new Error('queued worker must not create a client'); } });
+    terminal = await store.readJob(workspace, adoption.id);
+  } else terminal = await settleEndedOwnerWritableJob({ store, dataRoot, workspace, ownerSessionId: adoption.ownerSessionId,
+    createClient: async () => { throw new Error('queued SessionEnd must not create a client'); } });
+  assert.equal(terminal.status, ['controller', 'SessionEnd'].includes(terminalizer) ? 'cancelled' : 'failed');
+  assert.equal(terminal.rescueContinuationOrigin, undefined); assert.deepEqual(await readFile(bindingPath), baseBytes);
+  const resolved = await store.resolveRescueBinding(bindingExpected(workspace, hook));
+  assert.equal(resolved.binding.currentJobId, candidate.id);
+});
+
+for (const transition of ['execution preflight', 'running', 'failed', 'controller', 'recovery']) test(`missing bound reservation proof and binding fail closed during ${transition}`, async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'missing-all-proof-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId, executorAgentId: hook.agentId,
+    operationId: first.binding.operationId, reason: 'session-ended' });
+  const proof = await store.readRescueBindingMigrationProof({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, childAgentType: hook.agentType, originWorkspace: workspace,
+    executionWorkspace: workspace, agentPath: hook.agentPath });
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const jobPath = join(storage.directory, 'jobs', `${continuation.job.id}.json`);
+  const stripped = JSON.parse(await readFile(jobPath, 'utf8')); delete stripped.rescueMigrationRollback;
+  await writeFile(jobPath, `${JSON.stringify(stripped, null, 2)}\n`);
+  for (const name of await readdir(storage.directory)) if (/^rescue-binding-(?:authority|session)-[a-f0-9]{64}\.json$/u.test(name)) await unlink(join(storage.directory, name));
+  if (transition === 'recovery') await store.claimJobWorker(workspace, continuation.job.id, { childPid: 999_999_999, workerLeaseId: '5'.repeat(64) });
+  const operation = transition === 'execution preflight'
+    ? () => store.resolveQueuedRescueMigrationRollback(workspace, continuation.job.id, undefined)
+    : transition === 'running' ? () => store.transitionJob(workspace, continuation.job.id, ['queued'], 'running')
+      : transition === 'failed' ? () => store.finishJob(workspace, continuation.job.id, ['queued'], 'failed', { error: { message: 'must fail closed' }, exitCode: 1 })
+        : transition === 'controller' ? () => createJobController({ store, dataRoot }).cancel(workspace, continuation.job.id, continuation.job.ownerSessionId)
+          : () => scavengeWritableJobs({ store, dataRoot, workspace, createClient: async () => { throw new Error('queued worker must not create a client'); } });
+  if (transition === 'recovery') await operation(); else await assert.rejects(operation(), { code: transition === 'controller' ? 'JOB_CANCEL_FAILED' : 'RESCUE_BINDING_INVALID' });
+  assert.equal((await store.readJob(workspace, continuation.job.id)).status, 'queued');
+});
+
+for (const transition of ['execution', 'failed', 'controller', 'recovery']) test(`genuine ordinary unbound Rescue job remains settleable through ${transition}`, async () => {
+  const { dataRoot, workspace, store } = await fixture(); const job = await store.reserveJob(reservation(workspace)); let settled;
+  if (transition === 'execution') {
+    assert.equal(await store.resolveQueuedRescueMigrationRollback(workspace, job.id, undefined), undefined);
+    settled = await store.transitionJob(workspace, job.id, ['queued'], 'running');
+  } else if (transition === 'failed') settled = await store.finishJob(workspace, job.id, ['queued'], 'failed', { error: { message: 'ordinary failure' }, exitCode: 1 });
+  else if (transition === 'controller') settled = await createJobController({ store, dataRoot }).cancel(workspace, job.id, job.ownerSessionId);
+  else {
+    await store.claimJobWorker(workspace, job.id, { childPid: 999_999_999, workerLeaseId: '4'.repeat(64) });
+    await scavengeWritableJobs({ store, dataRoot, workspace, createClient: async () => { throw new Error('queued worker must not create a client'); } });
+    settled = await store.readJob(workspace, job.id);
+  }
+  assert.equal(settled.status, transition === 'execution' ? 'running' : transition === 'controller' ? 'cancelled' : 'failed');
+});
+
 test('queued to running revalidates missing continuation proof under the final StateStore lock', async () => {
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
@@ -1179,14 +1246,16 @@ test('a valid prospective new record that exceeds the partition byte budget repo
   assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, trusted))).kind, 'bound');
 });
 
-test('legacy-style job readers observe unchanged job schema and ignore Rescue binding storage', async () => {
+test('legacy-style job readers tolerate the private Rescue reservation class and ignore binding storage', async () => {
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   const legacy = await store.reserveJob({ ...reservation(workspace, 'legacy'), command: 'review', readOnly: true });
   const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const jobsDirectory = join(storage.directory, 'jobs');
   const legacyRead = async () => Promise.all((await readdir(jobsDirectory)).filter((name) => /^[a-f0-9]{64}\.json$/u.test(name)).map(async (name) => JSON.parse(await readFile(join(jobsDirectory, name), 'utf8'))));
   const jobs = await legacyRead(); assert.equal(jobs.length, 2);
-  assert.deepEqual(Object.keys(jobs.find((job) => job.id === fresh.job.id)).sort(), Object.keys(legacy).sort());
+  const persistedFresh = jobs.find((job) => job.id === fresh.job.id); assert.equal(persistedFresh.rescueReservationKind, 'bound');
+  delete persistedFresh.rescueReservationKind;
+  assert.deepEqual(Object.keys(persistedFresh).sort(), Object.keys(legacy).sort());
   assert.equal((await bindingFiles(storage.directory)).length, 1);
 });
 

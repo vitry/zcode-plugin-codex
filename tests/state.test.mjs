@@ -871,6 +871,7 @@ test('owned job index repairs deleted bindings and mixed-version canonical write
     ownerTurnId: 'turn-from-old-writer',
     readOnly: true,
   };
+  delete legacy.rescueReservationKind;
   await atomicWriteJson(join(storage.directory, 'jobs', `${legacyId}.json`), legacy);
 
   const secondStore = createStateStore({ dataRoot });
@@ -945,7 +946,9 @@ test('owned job index rejects directory and binding symlinks that escape private
     assert.doesNotMatch(error.message, new RegExp(bindingFixture.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     return true;
   });
-  assert.deepEqual(JSON.parse(await readFile(outsideBinding, 'utf8')), { jobId: bindingJob.id, ownerSessionId: bindingJob.ownerSessionId, version: 1 });
+  assert.deepEqual(JSON.parse(await readFile(outsideBinding, 'utf8')), {
+    jobId: bindingJob.id, ownerSessionId: bindingJob.ownerSessionId, rescueReservationKind: 'unbound', version: 2,
+  });
 });
 
 test('owned job index rejects a huge sparse binding through its bounded reader', async () => {

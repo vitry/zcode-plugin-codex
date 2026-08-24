@@ -56,6 +56,7 @@ const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling']);
 const BEFORE_MESSAGE_IDS_MAX_BYTES = 256 * 1024;
 const OWNER_INDEX_VERSION = 3;
 const OWNER_BINDING_VERSION = 1;
+const OWNER_BINDING_RECORD_VERSION = 2;
 const OWNER_SESSION_ID_MAX_BYTES = 4 * 1024;
 const OWNER_BINDING_MAX_BYTES = 8 * 1024;
 const OWNER_INDEX_MARKER_MAX_BYTES = 1024;
@@ -177,7 +178,7 @@ export function createStateStore(options) {
             || readOnlyPrevious.anchorJobId !== input.expectedAnchorJobId || readOnlyPrevious.currentJobId !== input.expectedCurrentJobId)) throw staleRescueBinding();
         const childAuthority = authorityForReservation(context, readOnlyPrevious, input.reservation, storage.workspacePath, true);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
-        const job = makeReservedJob(storage, jobs, input.reservation);
+        const job = makeReservedJob(storage, jobs, input.reservation, 'bound');
         const createdAt = new Date().toISOString();
         const binding = createRescueBinding({ ...exactIdentity, childAuthority,
           anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex'), now: createdAt,
@@ -220,7 +221,7 @@ export function createStateStore(options) {
         authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, input.migrationProof !== undefined);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
-        const reservedJob = makeReservedJob(storage, jobs, input.reservation);
+        const reservedJob = makeReservedJob(storage, jobs, input.reservation, 'bound');
         await ensureOwnerIndex(storage, jobs);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
         const migrating = resolved.binding.state === 'closed';
@@ -301,7 +302,7 @@ export function createStateStore(options) {
         if (JSON.stringify(context.identity) !== JSON.stringify(preview.identity)
           || JSON.stringify(childAuthority) !== JSON.stringify(previewAuthority)) throw invalidRescueBinding();
         const exactIdentity = context.identity; await ensureOwnerIndex(storage, jobs);
-        const reservedJob = makeReservedJob(storage, jobs, input.reservation);
+        const reservedJob = makeReservedJob(storage, jobs, input.reservation, 'bound');
         const { record: existing, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity);
         if (existing !== null) throw invalidRescueBinding();
         const base = createRescueBinding({ ...exactIdentity, childAuthority,
@@ -311,7 +312,9 @@ export function createStateStore(options) {
         await publicationCheckpoint(publicationHook, 'adopt:base-binding');
         await writeBindingPartitionGuarded(storage, base.parentSessionId, beforeSnapshot, baseSnapshot, lockIdentity);
         const binding = validateRescueBinding({ ...base, currentJobId: reservedJob.id, updatedAt: new Date(Math.max(Date.now(), Date.parse(base.updatedAt))).toISOString() });
-        const job = { ...reservedJob, rescueContinuationOrigin: { kind: 'legacy-adoption', binding: structuredClone(binding) } };
+        const job = { ...reservedJob, rescueContinuationOrigin: {
+          kind: 'legacy-adoption', priorBinding: structuredClone(base), binding: structuredClone(binding),
+        } };
         await publishJobRecord(storage, job, { lockIdentity, expectedSnapshot: baseSnapshot, publicationHook, route: 'adopt', parentSessionId: base.parentSessionId });
         const afterSnapshot = bindingSnapshotWith(baseSnapshot, binding);
         await publicationCheckpoint(publicationHook, 'adopt:current-advance');
@@ -679,8 +682,8 @@ async function reserveJobLocked(storage, jobs, reservation) {
   return job;
 }
 
-/** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation */
-function makeReservedJob(storage, jobs, reservation) {
+/** @param {any} storage @param {any[]} jobs @param {JobReservation} reservation @param {'bound'|'unbound'} [rescueReservationKind] */
+function makeReservedJob(storage, jobs, reservation, rescueReservationKind = 'unbound') {
   validateReservation(reservation);
   if (!reservation.readOnly && jobs.some(isActiveWritableJob)) {
     throw new PluginError('WRITABLE_JOB_EXISTS', 'This workspace already has an active writable rescue job.', {
@@ -693,6 +696,7 @@ function makeReservedJob(storage, jobs, reservation) {
     ownerSessionId: reservation.ownerSessionId, ownerTurnId: reservation.ownerTurnId,
     command: reservation.command, readOnly: reservation.readOnly,
     permissionSnapshot: reservation.permissionSnapshot,
+    ...(reservation.command === 'rescue' && reservation.readOnly === false ? { rescueReservationKind } : {}),
     ...(reservation.codexThreadId === undefined ? {} : { codexThreadId: reservation.codexThreadId }),
     status: 'queued', createdAt: timestamp, updatedAt: timestamp,
   };
@@ -836,19 +840,26 @@ async function restoreQueuedMigrationLocked(storage, job, rollback) {
 /** Classify one queued Rescue transition from exact persisted proof while the StateStore lock is held. @param {any} storage @param {any} job @param {any} legacyRollback */
 async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback) {
   if (job.status !== 'queued') throw invalidRescueBinding();
+  const writableRescue = job.command === 'rescue' && job.readOnly === false;
+  const reservationEvidence = writableRescue ? await readRescueReservationEvidence(storage, job) : undefined;
+  const requireBoundReservation = () => {
+    if (reservationEvidence?.kind === 'unbound') throw invalidRescueBinding();
+  };
   if (job.rescueMigrationRollback !== undefined) {
+    requireBoundReservation();
     if (!validPersistedMigrationRollback(job.rescueMigrationRollback, job)
       || legacyRollback !== undefined && !sameMigrationRollback(job.rescueMigrationRollback, legacyRollback)) throw invalidRescueBinding();
     const migration = await inspectQueuedMigrationLocked(storage, job, job.rescueMigrationRollback);
     return { kind: 'migration', rollback: migration.rollback, bindingState: migration.state };
   }
   if (job.rescueContinuationOrigin !== undefined) {
+    requireBoundReservation();
     if (legacyRollback !== undefined || !validRescueContinuationOrigin(job.rescueContinuationOrigin, job)) throw invalidRescueBinding();
     const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, false);
     const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
     if (matches.length > 1) throw invalidRescueBinding();
     const current = matches[0]; const origin = job.rescueContinuationOrigin;
-    if (origin.kind === 'active-continuation' && current === undefined) {
+    if (origin.priorBinding !== undefined && current === undefined) {
       const prior = snapshot.records.get(origin.priorBinding.key);
       if (prior === undefined || !sameExactBinding(prior, origin.priorBinding)) throw invalidRescueBinding();
       return { kind: 'ordinary-unadvanced' };
@@ -860,6 +871,7 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
     return { kind: 'ordinary-current' };
   }
   if (legacyRollback !== undefined) {
+    requireBoundReservation();
     if (!validPersistedMigrationRollback(legacyRollback, job)) throw invalidRescueBinding();
     const migration = await inspectQueuedMigrationLocked(storage, job, legacyRollback);
     if (migration.state !== 'active') throw invalidRescueBinding();
@@ -868,14 +880,18 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
     await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), marked);
     return { kind: 'migration', rollback: migration.rollback, bindingState: migration.state };
   }
-  if (job.command !== 'rescue' || job.readOnly !== false) return { kind: 'ordinary-unbound' };
+  if (!writableRescue) return { kind: 'ordinary-unbound' };
   const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, true);
   const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
-  if (matches.length === 0) return { kind: 'ordinary-unbound' };
+  if (matches.length === 0) {
+    if (reservationEvidence?.kind !== 'unbound') throw invalidRescueBinding();
+    return { kind: 'ordinary-unbound' };
+  }
   if (matches.length !== 1) throw invalidRescueBinding();
   const binding = matches[0];
   if (binding.state !== 'active' || binding.parentSessionId !== job.ownerSessionId
-    || binding.permissionMode !== job.permissionSnapshot.permissionMode) throw invalidRescueBinding();
+    || binding.permissionMode !== job.permissionSnapshot.permissionMode
+    || reservationEvidence?.kind === 'unbound') throw invalidRescueBinding();
   if (binding.anchorJobId === job.id) return { kind: 'ordinary-current' };
   if (binding.version < 3) {
     const anchorJob = await readExactBindingJob(storage, binding.anchorJobId);
@@ -986,21 +1002,34 @@ function validRollbackPriorBinding(candidate, rollback, job) {
 /** @param {any} value @param {any} job */
 function validRescueContinuationOrigin(value, job) {
   if (!isPlainJsonObject(value) || ![
-    ['kind', 'priorBinding'], ['binding', 'kind'],
+    ['kind', 'priorBinding'], ['binding', 'kind'], ['binding', 'kind', 'priorBinding'],
   ].some((keys) => Object.keys(value).sort().join('\0') === keys.sort().join('\0'))
     || !['active-continuation', 'legacy-adoption'].includes(value.kind)
-    || value.kind === 'active-continuation' !== Object.hasOwn(value, 'priorBinding')) return false;
+    || value.kind === 'active-continuation' && !Object.hasOwn(value, 'priorBinding')
+    || value.kind === 'legacy-adoption' && !Object.hasOwn(value, 'binding')) return false;
   try {
-    const binding = validateRescueBinding(value.priorBinding ?? value.binding); const authority = rescueBindingAuthorityView(binding);
-    return job.command === 'rescue' && job.readOnly === false && job.status === 'queued'
+    const binding = validateRescueBinding(value.binding ?? value.priorBinding); const authority = rescueBindingAuthorityView(binding);
+    const common = job.command === 'rescue' && job.readOnly === false && job.status === 'queued'
       && binding.state === 'active' && binding.parentSessionId === job.ownerSessionId && binding.workspace === job.workspace
-      && authority.childAgentId.length > 0
-      && (value.kind === 'active-continuation' ? binding.currentJobId !== job.id : binding.currentJobId === job.id)
-      && (value.kind === 'active-continuation'
-        ? Date.parse(job.createdAt) >= Date.parse(binding.updatedAt)
-        : Date.parse(binding.updatedAt) >= Date.parse(job.createdAt));
+      && authority.childAgentId.length > 0;
+    if (!common) return false;
+    if (value.kind === 'legacy-adoption' && value.priorBinding !== undefined) {
+      const prior = validateRescueBinding(value.priorBinding);
+      const expected = validateRescueBinding({ ...prior, currentJobId: job.id, updatedAt: binding.updatedAt });
+      return prior.state === 'active' && prior.parentSessionId === job.ownerSessionId && prior.workspace === job.workspace
+        && prior.currentJobId === prior.anchorJobId && prior.currentJobId !== job.id
+        && Date.parse(binding.updatedAt) >= Date.parse(prior.updatedAt)
+        && Date.parse(binding.updatedAt) >= Date.parse(job.createdAt) && sameExactBinding(binding, expected);
+    }
+    return binding.currentJobId !== job.id && value.kind === 'active-continuation'
+      && Date.parse(job.createdAt) >= Date.parse(binding.updatedAt)
+      || binding.currentJobId === job.id && value.kind === 'legacy-adoption'
+      && Date.parse(binding.updatedAt) >= Date.parse(job.createdAt);
   } catch { return false; }
 }
+
+/** @param {unknown} value */
+function validRescueReservationKind(value) { return value === 'bound' || value === 'unbound'; }
 
 /** @param {any} storage @param {any} binding @returns {Promise<Extract<RescueBindingResumeResult, {kind:'bound'}>>} */
 async function resolveBindingJobsLocked(storage, binding) {
@@ -1427,12 +1456,31 @@ async function writeOwnerBinding(storage, job) {
   const directory = ownerBindingDirectory(storage.ownerIndexDirectory, job.ownerSessionId);
   try {
     await ensurePrivateDirectoryWithin(storage.ownerIndexDirectory, directory);
-    await atomicWriteJson(join(directory, `${job.id}.json`), {
-      jobId: job.id,
-      ownerSessionId: job.ownerSessionId,
-      version: OWNER_BINDING_VERSION,
+    const rescueReservationKind = validRescueReservationKind(job.rescueReservationKind)
+      ? job.rescueReservationKind : undefined;
+    await atomicWriteJson(join(directory, `${job.id}.json`), rescueReservationKind === undefined ? {
+      jobId: job.id, ownerSessionId: job.ownerSessionId, version: OWNER_BINDING_VERSION,
+    } : {
+      jobId: job.id, ownerSessionId: job.ownerSessionId, rescueReservationKind,
+      version: OWNER_BINDING_RECORD_VERSION,
     }, { privateRoot: storage.ownerIndexDirectory });
   } catch { throw ownedJobIndexInvalid(job.id); }
+}
+
+/** Read the independently-published reservation class for one writable Rescue job. @param {any} storage @param {any} job */
+async function readRescueReservationEvidence(storage, job) {
+  const path = join(ownerBindingDirectory(storage.ownerIndexDirectory, job.ownerSessionId), `${job.id}.json`);
+  let binding;
+  try {
+    binding = await readBoundedJsonFile(storage.ownerIndexDirectory, path, OWNER_BINDING_MAX_BYTES);
+  } catch { throw invalidRescueBinding(); }
+  const common = isPlainJsonObject(binding) && binding.jobId === job.id && binding.ownerSessionId === job.ownerSessionId;
+  if (common && Object.keys(binding).sort().join(',') === 'jobId,ownerSessionId,version'
+    && binding.version === OWNER_BINDING_VERSION && job.rescueReservationKind === undefined) return { kind: 'legacy' };
+  if (common && Object.keys(binding).sort().join(',') === 'jobId,ownerSessionId,rescueReservationKind,version'
+    && binding.version === OWNER_BINDING_RECORD_VERSION && validRescueReservationKind(binding.rescueReservationKind)
+    && binding.rescueReservationKind === job.rescueReservationKind) return { kind: binding.rescueReservationKind };
+  throw invalidRescueBinding();
 }
 
 /** @param {any} storage @param {string} ownerSessionId */
@@ -1464,10 +1512,13 @@ async function readOwnedJobs(storage, ownerSessionId) {
     } catch {
       throw ownedJobIndexInvalid(jobId);
     }
-    if (!isPlainJsonObject(binding)
-      || Object.keys(binding).sort().join(',') !== 'jobId,ownerSessionId,version'
-      || binding.version !== OWNER_BINDING_VERSION || binding.jobId !== jobId
-      || binding.ownerSessionId !== ownerSessionId) {
+    const validLegacy = isPlainJsonObject(binding)
+      && Object.keys(binding).sort().join(',') === 'jobId,ownerSessionId,version'
+      && binding.version === OWNER_BINDING_VERSION;
+    const validModern = isPlainJsonObject(binding)
+      && Object.keys(binding).sort().join(',') === 'jobId,ownerSessionId,rescueReservationKind,version'
+      && binding.version === OWNER_BINDING_RECORD_VERSION && validRescueReservationKind(binding.rescueReservationKind);
+    if (!(validLegacy || validModern) || binding.jobId !== jobId || binding.ownerSessionId !== ownerSessionId) {
       throw ownedJobIndexInvalid(jobId);
     }
     let job;
@@ -1483,7 +1534,9 @@ async function readOwnedJobs(storage, ownerSessionId) {
       if (error instanceof PluginError && error.code === 'JOB_NOT_FOUND') continue;
       throw ownedJobRecordInvalid(jobId);
     }
-    if (job.ownerSessionId !== ownerSessionId) throw ownedJobRecordInvalid(jobId);
+    if (job.ownerSessionId !== ownerSessionId
+      || validModern !== validRescueReservationKind(job.rescueReservationKind)
+      || validModern && binding.rescueReservationKind !== job.rescueReservationKind) throw ownedJobRecordInvalid(jobId);
     jobs.push(job);
   }
   return jobs;
@@ -1819,6 +1872,8 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLo
     && (!('lastActivityAt' in job) || isIsoTimestamp(job.lastActivityAt))
     && (!('progressPreview' in job) || validProgressPreview(job.progressPreview))
     && (!('progressProbe' in job) || validProgressProbe(job.progressProbe))
+    && (!('rescueReservationKind' in job) || job.command === 'rescue' && job.readOnly === false
+      && validRescueReservationKind(job.rescueReservationKind))
     && (!('rescueMigrationRollback' in job) || validPersistedMigrationRollback(job.rescueMigrationRollback, job))
     && (!('rescueContinuationOrigin' in job) || validRescueContinuationOrigin(job.rescueContinuationOrigin, job))
     && !('rescueMigrationRollback' in job && 'rescueContinuationOrigin' in job);
