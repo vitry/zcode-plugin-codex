@@ -162,6 +162,28 @@ test('session-ended resume validation leaves its closed tombstone unchanged unti
   assert.deepEqual(await readFile(partitionPath), before);
 });
 
+test('failed remote resume can atomically restore the exact session-ended tombstone before failing its attempt', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    authority: await brandedStateAuthority(base.dataRoot, workspace, 'legacy-adopt') });
+  await store.transitionJob(workspace, first.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'legacy-session' });
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId: 'parent-session', executorAgentId: 'legacy-child',
+    operationId: first.binding.operationId, reason: 'session-ended' });
+  const proof = legacyMigrationProof(first.binding);
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: rescueReservation(workspace, 'turn-b'),
+    authority: await brandedStateAuthority(base.dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key),
+    operationId: first.binding.operationId, migrationProof: proof });
+  assert.ok(continuation.migrationRollback);
+  await store.rollbackSessionEndedRescueContinuation({ workspace, jobId: continuation.job.id, ...continuation.migrationRollback });
+  await store.finishJob(workspace, continuation.job.id, ['queued'], 'failed', { error: { message: 'remote resume rejected' }, exitCode: 1 });
+  const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace });
+  const partitionName = (await readdir(storage.directory)).find((name) => name.startsWith('rescue-binding-session-'));
+  assert.ok(partitionName); const partition = JSON.parse(await readFile(join(storage.directory, partitionName), 'utf8'));
+  assert.deepEqual(partition.records[0], closed.binding);
+  assert.equal((await store.readJob(workspace, continuation.job.id)).status, 'failed');
+});
+
 test('StateStore rejects non-migratable closed bindings without mutation', async (t) => {
   for (const reason of ['fresh', 'invalidated']) await t.test(reason, async () => {
     const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });

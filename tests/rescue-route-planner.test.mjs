@@ -113,6 +113,25 @@ test('resume rejoins an unloaded modern Hook binding from the persisted child gr
   });
 });
 
+test('resume rejoins an unloaded historical v1 Hook tombstone after exact child-graph migration proof', async () => {
+  const input = await context(); input.envelope.options.resume = 'resume';
+  const host = child(input.caller.workspace); const modern = modernBinding(input, host);
+  const binding = {
+    version: 1, key: modern.key, operationId: modern.operationId, state: 'closed',
+    parentSessionId: modern.parentSessionId, executorAgentId: host.id, executorAgentType: 'zcode-rescue',
+    executorParentTurnId: 'turn-old', executorParentPermissionMode: input.caller.permissionMode,
+    workspace: modern.workspace, permissionMode: modern.permissionMode, anchorJobId: modern.anchorJobId,
+    currentJobId: modern.currentJobId, createdAt: modern.createdAt, updatedAt: '2026-08-20T01:00:00.000Z',
+    closedAt: '2026-08-20T01:00:00.000Z', closeReason: 'session-ended',
+  };
+  const planned = await planRescueActivation({ ...input,
+    ...adapters([host], new Map(), new Map([[host.id, { kind: 'bound', binding }]])) });
+  assert.deepEqual(planned, {
+    activation: { kind: 'reactivate', executorAgentId: host.id, agentPathDigest: digest(host.agentPath) },
+    directive: { version: 2, action: 'followup', target: host.agentPath, assignment: 'zcode-rescue' },
+  });
+});
+
 test('resume permits a resident exact modern child without requiring a stopped executor record', async () => {
   const input = await context(); input.envelope.options.resume = 'resume';
   const host = child(input.caller.workspace, { status: { type: 'active', activeFlags: [] } });

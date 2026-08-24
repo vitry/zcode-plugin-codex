@@ -62,6 +62,24 @@ test('binding codec creates one exact active generation without copying caller o
   assert.equal(created.state, 'active');
 });
 
+test('v3 Hook authority preserves an exact real canonical absolute agent path', () => {
+  const executorAgentPath = '/Users/codex/.codex/agents/zcode-rescue.toml';
+  const created = createRescueBinding({
+    ...identity,
+    executorAgentPath,
+    anchorJobId: 'a'.repeat(64),
+    currentJobId: 'b'.repeat(64),
+    operationId: 'c'.repeat(64),
+  });
+  assert.equal(created.childAuthority.agentPath, executorAgentPath);
+  assert.equal(parseRescueBinding(`${JSON.stringify(created)}\n`, { ...identity, executorAgentPath }).childAuthority.agentPath, executorAgentPath);
+  for (const invalid of ['relative/agent.toml', '/Users/codex/../other/agent.toml', '/Users/codex/agent\u0000.toml']) {
+    assert.throws(() => createRescueBinding({ ...identity, executorAgentPath: invalid,
+      anchorJobId: 'a'.repeat(64), currentJobId: 'b'.repeat(64), operationId: 'c'.repeat(64) }),
+    { code: 'RESCUE_BINDING_INVALID' });
+  }
+});
+
 test('version one binding remains readable through the version-neutral child authority view', () => {
   const legacy = {
     version: 1, key: rescueBindingKey(identity), operationId: 'c'.repeat(64), state: 'active',
@@ -480,7 +498,34 @@ test('StateStore reads and legally advances an active v1 Hook binding', async ()
   await store.finishJob(workspace, continued.job.id, ['queued'], 'failed');
   const replaced = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-c'), executor: hook });
   assert.equal(replaced.binding.version, 3);
-  assert.deepEqual(replaced.binding.childAuthority, rescueBindingAuthorityView(continued.binding));
+  assert.deepEqual(replaced.binding.childAuthority, { ...rescueBindingAuthorityView(continued.binding), agentPath: hook.agentPath });
+});
+
+test('StateStore lazily migrates an exact session-ended v1 Hook binding using persisted child path proof', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'historical-hook-session');
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory);
+  const partition = JSON.parse(await readFile(path, 'utf8')); const current = partition.records[0];
+  partition.records[0] = { version: 1, key: current.key, operationId: current.operationId, state: current.state,
+    parentSessionId: current.parentSessionId, executorAgentId: hook.agentId, executorAgentType: hook.agentType,
+    executorParentTurnId: hook.parentTurnId, executorParentPermissionMode: hook.parentPermissionMode,
+    workspace: current.workspace, permissionMode: current.permissionMode, anchorJobId: current.anchorJobId,
+    currentJobId: current.currentJobId, createdAt: current.createdAt, updatedAt: current.updatedAt,
+    closedAt: current.closedAt, closeReason: current.closeReason };
+  await writeFile(path, `${JSON.stringify(partition, null, 2)}\n`);
+  const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: first.binding.operationId, reason: 'session-ended' });
+  assert.equal(closed.binding.version, 1);
+  const lookup = { workspace, parentSessionId: hook.parentSessionId, executorAgentId: hook.agentId,
+    childAgentType: hook.agentType, originWorkspace: workspace, executionWorkspace: workspace, agentPath: hook.agentPath };
+  const proof = await store.readRescueBindingMigrationProof(lookup);
+  assert.equal(proof.kind, 'proof'); assert.equal(proof.migrationProof.agentPath, hook.agentPath);
+  const resumed = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
+  assert.equal(resumed.binding.version, 1); assert.equal(resumed.binding.state, 'active');
+  assert.equal(resumed.anchorJob.zcodeSessionId, 'historical-hook-session');
 });
 
 test('Rescue reservation methods require one explicit workspace matching reservation and executor', async () => {
@@ -613,14 +658,14 @@ test('StateStore rejects a persisted exact-shape binding with a duplicate JSON k
   await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
 });
 
-test('StateStore rejects permission changes, sessionless and cancelled anchors without fallback', async () => {
+test('StateStore rejects sessionless and permission-mismatched anchors while reporting cancelled operations closed', async () => {
   const { workspace, store } = await fixture(); const trusted = executor(workspace);
   const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
   await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
   await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted, { permissionMode: 'read-only' })), { code: 'RESCUE_BINDING_INVALID' });
   await store.finishJob(workspace, fresh.job.id, ['queued'], 'cancelled', { exitCode: null });
-  await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
-  await assert.rejects(store.readBoundRescueCurrentJob({ workspace, parentSessionId: trusted.parentSessionId, executorAgentId: trusted.agentId }), { code: 'RESCUE_BINDING_INVALID' });
+  await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_CLOSED' });
+  await assert.rejects(store.readBoundRescueCurrentJob({ workspace, parentSessionId: trusted.parentSessionId, executorAgentId: trusted.agentId }), { code: 'RESCUE_BINDING_CLOSED' });
 });
 
 test('StateStore rejects a symlinked binding and bounds SessionEnd scans', async () => {
@@ -873,13 +918,13 @@ test('child-scoped closure cannot close a sibling and the session-wide close API
   assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, siblingExecutor))).binding.operationId, sibling.binding.operationId);
 });
 
-test('cancelled current job permanently closes only its exact child binding', async () => {
+test('cancelling the exact current job atomically revokes its binding before publishing cancellation', async () => {
   const { workspace, store } = await fixture(); const trusted = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
   await store.finishJob(workspace, first.job.id, ['queued'], 'cancelled');
+  await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_CLOSED' });
   const closed = await store.closeRescueBindingForCancelledJob({ workspace, parentSessionId: first.binding.parentSessionId, jobId: first.job.id });
   assert.equal(closed.binding.state, 'closed'); assert.equal(closed.binding.closeReason, 'cancel');
-  await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_CLOSED' });
 });
 
 test('fresh on a different child preserves the first child binding', async () => {
