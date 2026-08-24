@@ -164,7 +164,7 @@ function redact(value, progressProbeOwner = null) {
   if (!value || typeof value !== 'object') return value;
   /** @type {Record<string,any>} */ const result = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (/token|capability|permissionSnapshot|privateInvocation|rescueMigrationRollback|rescueContinuationOrigin|rescueReservationKind/i.test(key)) continue;
+    if (/token|capability|permissionSnapshot|privateInvocation|rescueMigrationRollback|rescueContinuationOrigin|rescueExecutionClaim|rescueReservationKind/i.test(key)) continue;
     if (/progressProbe/i.test(key) && (value !== progressProbeOwner || key !== 'progressProbe' || !validProgressProbe(entry))) continue;
     if (key === 'logFile' && value !== progressProbeOwner) continue;
     result[key] = redact(entry, progressProbeOwner);

@@ -844,6 +844,100 @@ test('queued migrated continuation revalidates its marker after preflight and re
   assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueMigrationRollback, continuation.migrationRollback);
 });
 
+test('execution claim rejects a revoke winner and exact terminalization preserves that revocation', async () => {
+  const { workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'claim-revoke-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId });
+  const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: continuation.binding.operationId, reason: 'invalidated' });
+  await assert.rejects(store.claimJobWorkerForExecution(workspace, continuation.job.id, {
+    childPid: 999_999_999, workerLeaseId: 'a'.repeat(64),
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  const failed = await store.finishJob(workspace, continuation.job.id, ['queued'], 'failed', {
+    error: { message: 'authorization was revoked before execution claim' }, exitCode: 1,
+  });
+  assert.equal(failed.status, 'failed'); assert.equal(failed.workerLeaseId, undefined);
+  const persisted = await store.resolveRescueBinding({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId }).catch((error) => error);
+  assert.equal(persisted.code, 'RESCUE_BINDING_CLOSED');
+  const repeated = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: continuation.binding.operationId, reason: 'invalidated' });
+  assert.deepEqual(repeated.binding, closed.binding);
+});
+
+test('fresh execution claim rejects a revoke winner and remains terminalizable', async () => {
+  const { workspace, store } = await fixture(); const hook = executor(workspace);
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: fresh.binding.operationId, reason: 'invalidated' });
+  await assert.rejects(store.claimJobWorkerForExecution(workspace, fresh.job.id, {
+    childPid: 999_999_999, workerLeaseId: 'f'.repeat(64),
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  const failed = await store.finishJob(workspace, fresh.job.id, ['queued'], 'failed', {
+    error: { message: 'fresh authorization was revoked before execution claim' }, exitCode: 1,
+  });
+  assert.equal(failed.status, 'failed'); assert.equal(failed.rescueExecutionClaim, undefined);
+  const repeated = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: fresh.binding.operationId, reason: 'invalidated' });
+  assert.deepEqual(repeated.binding, closed.binding);
+});
+
+test('execution claim is the authorization boundary for a later binding revoke', async () => {
+  const { workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'claimed-revoke-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId });
+  const claimed = await store.claimJobWorkerForExecution(workspace, continuation.job.id, {
+    childPid: 999_999_999, workerLeaseId: 'b'.repeat(64),
+  });
+  assert.equal(claimed.status, 'queued'); assert.ok(claimed.rescueExecutionClaim);
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: continuation.binding.operationId, reason: 'invalidated' });
+  const running = await store.transitionJob(workspace, continuation.job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+  });
+  assert.equal(running.status, 'running'); assert.equal(running.rescueExecutionClaim, undefined);
+  assert.equal(running.rescueContinuationOrigin, undefined);
+});
+
+test('queued to running accepts only the exact worker lease that owns the execution claim', async () => {
+  const { workspace, store } = await fixture(); const hook = executor(workspace);
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  const claimed = await store.claimJobWorkerForExecution(workspace, fresh.job.id, {
+    childPid: 999_999_999, workerLeaseId: 'd'.repeat(64),
+  });
+  await assert.rejects(store.transitionJob(workspace, fresh.job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), childPid: claimed.childPid, workerLeaseId: 'e'.repeat(64),
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  const queued = await store.readJob(workspace, fresh.job.id);
+  assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueExecutionClaim, claimed.rescueExecutionClaim);
+  assert.equal(queued.workerLeaseId, claimed.workerLeaseId);
+});
+
+test('orphan recovery terminalizes a revoked execution claim without reopening its binding', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'claimed-orphan-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId });
+  const claimed = await store.claimJobWorkerForExecution(workspace, continuation.job.id, {
+    childPid: 999_999_999, workerLeaseId: 'c'.repeat(64),
+  });
+  const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: continuation.binding.operationId, reason: 'invalidated' });
+  await scavengeWritableJobs({ store, dataRoot, workspace,
+    createClient: async () => { throw new Error('queued execution claim must recover before remote inspection'); } });
+  const failed = await store.readJob(workspace, claimed.id);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.rescueExecutionClaim, undefined);
+  assert.equal(failed.workerLeaseId, claimed.workerLeaseId);
+  const repeated = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: continuation.binding.operationId, reason: 'invalidated' });
+  assert.deepEqual(repeated.binding, closed.binding);
+});
+
 for (const kind of ['active continuation', 'legacy adoption']) for (const action of ['running', 'controller cancel', 'recovery']) test(`pre-origin v2 ${kind} supports ${action} without weakening ambiguous v3 handling`, async () => {
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace); let queued;
   if (kind === 'active continuation') {

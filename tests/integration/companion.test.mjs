@@ -780,6 +780,100 @@ test('reserved execution rejects an old unadvanced adoption before prompt or ZCo
   assert.equal(requests.some((request) => ['session/resume', 'session/setModel', 'session/setThoughtLevel'].includes(request.method)), false);
 });
 
+test('reserved execution losing revoke race before its atomic claim has no prompt or ZCode side effects', async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const parentSessionId = 'execution-claim-race-parent'; const childId = 'execution-claim-race-child';
+  /** @param {string} turn */
+  const reservation = (turn) => ({ workspace, ownerSessionId: parentSessionId, ownerTurnId: turn,
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const executor = { parentSessionId, parentTurnId: 'origin', agentId: childId, agentType: 'zcode-rescue',
+    agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation('first'), executor });
+  await store.transitionJob(workspace, first.job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), zcodeSessionId: 'execution-claim-race-session',
+  });
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation('second'),
+    executor, operationId: first.binding.operationId });
+  const spec = { command: 'rescue', task: 'must not cross revoked claim', model: 'fake2/other', effort: 'high',
+    resumeSessionId: 'execution-claim-race-session', candidateJobId: first.job.id };
+  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'job-specs', `${continuation.job.id}.json`), {
+    version: 1, jobId: continuation.job.id, ownerSessionId: parentSessionId, workspace, digest, spec,
+  });
+  const capability = await context.identity.createExecutionCapability({ jobId: continuation.job.id,
+    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', specDigest: digest,
+    permissionSnapshot: continuation.job.permissionSnapshot });
+  const record = join(context.directory, 'execution-claim-race.jsonl'); await writeFile(record, '');
+  let revoked = false;
+  await assert.rejects(runCompanion(['run-reserved-job', continuation.job.id], {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: capability, jobId: continuation.job.id },
+    dependencies: { testOnlyBeforeExecutionClaim: async () => {
+      revoked = true;
+      await store.closeRescueBindingForChild({ workspace, parentSessionId, executorAgentId: childId,
+        operationId: continuation.binding.operationId, reason: 'invalidated' });
+    } },
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal(revoked, true);
+  const failed = await store.readJob(workspace, continuation.job.id);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.workerLeaseId, undefined);
+  assert.equal(failed.promptArtifact, undefined); assert.equal(failed.logFile, undefined);
+  await assert.rejects(stat(join(storage.directory, 'prompts', `${continuation.job.id}.md`)), { code: 'ENOENT' });
+  const rawRequests = (await readFile(record, 'utf8')).trim();
+  const requests = rawRequests === '' ? [] : rawRequests.split('\n').map((line) => JSON.parse(line));
+  assert.equal(requests.some((request) => ['session/create', 'session/resume', 'session/setModel',
+    'session/setThoughtLevel', 'session/send'].includes(request.method)), false);
+});
+
+test('reserved execution winning its atomic claim remains authorized across a later binding revoke', async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const parentSessionId = 'execution-claim-winner-parent'; const childId = 'execution-claim-winner-child';
+  /** @param {string} turn */
+  const reservation = (turn) => ({ workspace, ownerSessionId: parentSessionId, ownerTurnId: turn,
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const executor = { parentSessionId, parentTurnId: 'origin', agentId: childId, agentType: 'zcode-rescue',
+    agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation('first'), executor });
+  await store.transitionJob(workspace, first.job.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), zcodeSessionId: 'execution-claim-winner-session',
+  });
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation('second'),
+    executor, operationId: first.binding.operationId });
+  const spec = { command: 'rescue', task: 'claim winner remains bounded', model: 'fake2/other', effort: 'xhigh',
+    resumeSessionId: 'execution-claim-winner-session', candidateJobId: first.job.id };
+  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'job-specs', `${continuation.job.id}.json`), {
+    version: 1, jobId: continuation.job.id, ownerSessionId: parentSessionId, workspace, digest, spec,
+  });
+  const capability = await context.identity.createExecutionCapability({ jobId: continuation.job.id,
+    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', specDigest: digest,
+    permissionSnapshot: continuation.job.permissionSnapshot });
+  const record = join(context.directory, 'execution-claim-winner.jsonl'); await writeFile(record, '');
+  let revoked = false;
+  const result = await runCompanion(['run-reserved-job', continuation.job.id], {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RESULT: 'claim winner result' },
+    authorization: { executionCapability: capability, jobId: continuation.job.id },
+    dependencies: { testOnlyAfterExecutionClaim: async () => {
+      revoked = true;
+      await store.closeRescueBindingForChild({ workspace, parentSessionId, executorAgentId: childId,
+        operationId: continuation.binding.operationId, reason: 'invalidated' });
+    } },
+  });
+  assert.equal(revoked, true); assert.equal(result.job.status, 'succeeded');
+  assert.equal(result.job.rescueExecutionClaim, undefined);
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(requests.filter((request) => request.method === 'session/resume').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
+  await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId }),
+    { code: 'RESCUE_BINDING_CLOSED' });
+});
+
 for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding']) test(['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
   ? `background execution rejects ${failurePoint === 'corrupt legacy worker execution' ? 'corrupt markerless legacy rollback metadata' : failurePoint === 'missing legacy worker evidence' ? 'missing markerless legacy rollback evidence' : 'missing markerless rollback evidence and binding'} without terminalizing its queued job`
   : `background session-ended migration restores its closed tombstone when ${failurePoint} fails`, async () => {

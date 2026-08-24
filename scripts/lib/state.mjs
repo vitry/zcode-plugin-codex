@@ -379,25 +379,50 @@ export function createStateStore(options) {
 
     /** @param {string} workspace @param {string} jobId @param {{childPid:number,workerLeaseId:string}} worker */
     async claimJobWorker(workspace, jobId, worker) {
-      if (!isNonEmptyString(workspace) || !isDigest(jobId) || !isPlainJsonObject(worker)
-        || !Number.isSafeInteger(worker.childPid) || worker.childPid <= 0 || !isDigest(worker.workerLeaseId)) {
-        throw new PluginError('WORKER_LEASE_INVALID', 'Worker lease claim is invalid.', {
-          category: 'state',
-          remedy: 'Claim a queued job with one positive process ID and one 64-character lease digest.',
-        });
-      }
+      validateWorkerClaimInput(workspace, jobId, worker);
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         const path = jobPath(storage.jobsDirectory, jobId);
         const job = await readJobRecord(path, jobId, storage.workspacePath);
         if (job.childPid === worker.childPid && job.workerLeaseId === worker.workerLeaseId) return job;
         if (job.status !== 'queued' || job.childPid !== undefined || job.workerLeaseId !== undefined) {
-          throw new PluginError('WORKER_LEASE_CONFLICT', `Job ${jobId} is already claimed or no longer queued.`, {
-            category: 'state',
-            remedy: 'Only the worker holding the exact durable lease may execute this reservation.',
-          });
+          throw workerLeaseConflict(jobId);
         }
         const claimed = { ...job, ...worker, updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString() };
+        validateJobRecord(claimed, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
+        await atomicWriteJson(path, claimed);
+        return claimed;
+      });
+    },
+
+    /**
+     * Atomically validates one queued execution's current Rescue authority and claims its worker.
+     * The private claim is the linearization point: a later binding close cannot retroactively
+     * revoke this attempt, while a close that wins first prevents the claim.
+     * @param {string} workspace @param {string} jobId @param {{childPid:number,workerLeaseId:string}} worker @param {any} [legacyRollback]
+     */
+    async claimJobWorkerForExecution(workspace, jobId, worker, legacyRollback) {
+      validateWorkerClaimInput(workspace, jobId, worker);
+      if (legacyRollback !== undefined && !isPlainJsonObject(legacyRollback)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const path = jobPath(storage.jobsDirectory, jobId);
+        let job = await readJobRecord(path, jobId, storage.workspacePath);
+        if (job.childPid === worker.childPid && job.workerLeaseId === worker.workerLeaseId
+          && validRescueExecutionClaim(job.rescueExecutionClaim, job)) return job;
+        if (job.status !== 'queued' || job.childPid !== undefined || job.workerLeaseId !== undefined) throw workerLeaseConflict(jobId);
+        let classification;
+        if (job.command === 'rescue' && job.readOnly === false) {
+          classification = await classifyQueuedRescueTransitionLocked(storage, job, legacyRollback);
+          if (classification.kind === 'ordinary-unadvanced') throw notRunnableRescueBinding();
+          if (classification.kind === 'ordinary-revoked-current'
+            || classification.kind === 'migration' && classification.bindingState === 'revoked') throw invalidRescueBinding();
+          // Legacy marker adoption may have rewritten the queued job while this lock remained held.
+          job = await readJobRecord(path, jobId, storage.workspacePath);
+        }
+        const rescueExecutionClaim = classification ? executionClaimForClassification(classification, worker.workerLeaseId) : undefined;
+        const claimed = { ...job, ...worker, ...(rescueExecutionClaim ? { rescueExecutionClaim } : {}),
+          updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString() };
         validateJobRecord(claimed, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
         await atomicWriteJson(path, claimed);
         return claimed;
@@ -618,18 +643,26 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
       )).toISOString(),
       workspace: job.workspace,
     };
+    let executionClaim;
+    if (job.status === 'queued' && nextStatus === 'running' && job.rescueExecutionClaim !== undefined) {
+      if (!validRescueExecutionClaim(job.rescueExecutionClaim, job)) throw invalidRescueBinding();
+      executionClaim = job.rescueExecutionClaim;
+      if (updated.workerLeaseId !== executionClaim.workerLeaseId || updated.childPid !== job.childPid) throw invalidRescueBinding();
+    }
     const queuedClassification = job.status === 'queued' && (nextStatus === 'running' || TERMINAL_STATUSES.has(nextStatus))
-      ? await classifyQueuedRescueTransitionLocked(storage, job, requestedRollback)
-      : undefined;
+      && executionClaim === undefined ? await classifyQueuedRescueTransitionLocked(storage, job, requestedRollback) : undefined;
     if (nextStatus === 'running' && (queuedClassification?.kind === 'ordinary-unadvanced'
+      || queuedClassification?.kind === 'ordinary-revoked-current'
       || queuedClassification?.kind === 'migration' && queuedClassification.bindingState !== 'active')) throw invalidRescueBinding();
     const migrationRollback = queuedClassification?.kind === 'migration'
       ? queuedClassification.rollback : job.rescueMigrationRollback ?? requestedRollback;
     if (migrationRollback && nextStatus !== 'queued') delete updated.rescueMigrationRollback;
     if (nextStatus !== 'queued') delete updated.rescueContinuationOrigin;
+    if (nextStatus !== 'queued') delete updated.rescueExecutionClaim;
     if (effectivePatch.lastCancelError === null) delete updated.lastCancelError;
     validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
-    if (job.status === 'queued' && migrationRollback && TERMINAL_STATUSES.has(nextStatus)) {
+    if (job.status === 'queued' && migrationRollback && TERMINAL_STATUSES.has(nextStatus)
+      && queuedClassification?.bindingState !== 'revoked') {
       await restoreQueuedMigrationLocked(storage, job, migrationRollback);
       await publicationCheckpoint(options.publicationHook ?? (async () => {}), 'rollback:terminal');
     } else if (nextStatus === 'cancelled' && job.command === 'rescue') {
@@ -853,7 +886,7 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
     if (!validPersistedMigrationRollback(job.rescueMigrationRollback, job)
       || legacyRollback !== undefined && !sameMigrationRollback(job.rescueMigrationRollback, legacyRollback)) throw invalidRescueBinding();
     const migration = await inspectQueuedMigrationLocked(storage, job, job.rescueMigrationRollback);
-    return { kind: 'migration', rollback: migration.rollback, bindingState: migration.state };
+    return { kind: 'migration', rollback: migration.rollback, bindingState: migration.state, binding: migration.binding };
   }
   if (job.rescueContinuationOrigin !== undefined) {
     requireBoundReservation();
@@ -876,8 +909,9 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
     }
     const expected = origin.kind === 'legacy-adoption' ? origin.binding
       : validateRescueBinding({ ...origin.priorBinding, currentJobId: job.id, updatedAt: current.updatedAt });
-    if (current.state !== 'active' || !sameExactBinding(current, expected)) throw invalidRescueBinding();
-    return { kind: 'ordinary-current' };
+    if (current.state === 'active' && sameExactBinding(current, expected)) return { kind: 'ordinary-current', binding: current };
+    if (sameClosedBindingLifecycle(current, expected)) return { kind: 'ordinary-revoked-current', binding: current };
+    throw invalidRescueBinding();
   }
   if (legacyRollback !== undefined) {
     requireBoundReservation();
@@ -887,7 +921,7 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
     const marked = { ...job, rescueMigrationRollback: migration.rollback };
     validateJobRecord(marked, job.id, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, job.id));
     await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), marked);
-    return { kind: 'migration', rollback: migration.rollback, bindingState: migration.state };
+    return { kind: 'migration', rollback: migration.rollback, bindingState: migration.state, binding: migration.binding };
   }
   if (!writableRescue) return { kind: 'ordinary-unbound' };
   const snapshot = await readBindingPartitionSnapshot(storage, job.ownerSessionId, true);
@@ -898,15 +932,16 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
   }
   if (matches.length !== 1) throw invalidRescueBinding();
   const binding = matches[0];
-  if (binding.state !== 'active' || binding.parentSessionId !== job.ownerSessionId
-    || binding.permissionMode !== job.permissionSnapshot.permissionMode
+  if (binding.parentSessionId !== job.ownerSessionId || binding.permissionMode !== job.permissionSnapshot.permissionMode
     || reservationEvidence?.kind === 'unbound') throw invalidRescueBinding();
-  if (binding.anchorJobId === job.id) return { kind: 'ordinary-current' };
+  if (binding.state === 'closed' && binding.anchorJobId === job.id) return { kind: 'ordinary-revoked-current', binding };
+  if (binding.state !== 'active') throw invalidRescueBinding();
+  if (binding.anchorJobId === job.id) return { kind: 'ordinary-current', binding };
   if (binding.version < 3) {
     const anchorJob = await readExactBindingJob(storage, binding.anchorJobId);
     validateAnchorJob(anchorJob, binding.parentSessionId, storage.workspacePath);
     validateCurrentJob(job, binding.parentSessionId, storage.workspacePath);
-    return { kind: 'ordinary-current' };
+    return { kind: 'ordinary-current', binding };
   }
   throw invalidRescueBinding();
 }
@@ -945,15 +980,73 @@ async function inspectQueuedMigrationLocked(storage, job, rollback) {
       authority.kind === 'subagent-start' ? { agentPath: authority.agentPath } : undefined,
       job.id, record.updatedAt);
     if (!sameExactBinding(record, expectedActive)) throw invalidRescueBinding();
-    return { state: 'active', snapshot, restored, rollback: { ...rollback, priorBinding: structuredClone(restored) } };
+    return { state: 'active', snapshot, binding: record, restored, rollback: { ...rollback, priorBinding: structuredClone(restored) } };
   }
   if (record.state === 'closed' && record.closeReason === 'session-ended'
     && record.version === rollback.priorVersion && record.currentJobId === rollback.priorCurrentJobId
     && record.updatedAt === rollback.priorUpdatedAt && record.closedAt === rollback.priorClosedAt
     && rollback.priorBinding !== undefined && sameExactBinding(record, rollback.priorBinding)) {
-    return { state: 'restored', snapshot, restored: structuredClone(record), rollback: structuredClone(rollback) };
+    return { state: 'restored', snapshot, binding: record, restored: structuredClone(record), rollback: structuredClone(rollback) };
+  }
+  const restored = rollback.priorBinding === undefined ? null : structuredClone(rollback.priorBinding);
+  if (restored !== null && record.state === 'closed' && record.currentJobId === job.id) {
+    const authority = rescueBindingAuthorityView(record);
+    const expectedActive = migratedActiveBinding(restored,
+      authority.kind === 'subagent-start' ? { agentPath: authority.agentPath } : undefined,
+      job.id, record.updatedAt);
+    if (sameClosedBindingLifecycle(record, expectedActive)) {
+      return { state: 'revoked', snapshot, binding: record, restored, rollback: structuredClone(rollback) };
+    }
   }
   throw staleRescueBinding();
+}
+
+/** Prove that only the lifecycle fields of one exact active binding changed. @param {any} record @param {any} active */
+function sameClosedBindingLifecycle(record, active) {
+  if (record?.state !== 'closed' || !['cancel', 'invalidated', 'session-ended'].includes(record.closeReason)
+    || record.closedAt !== record.updatedAt || Date.parse(record.updatedAt) < Date.parse(active.updatedAt)) return false;
+  try {
+    const expected = validateRescueBinding({ ...active, state: 'closed', updatedAt: record.updatedAt,
+      closedAt: record.closedAt, closeReason: record.closeReason });
+    return sameExactBinding(record, expected);
+  } catch { return false; }
+}
+
+/** @param {any} classification @param {string} workerLeaseId */
+function executionClaimForClassification(classification, workerLeaseId) {
+  if (classification.kind === 'ordinary-unbound') return { version: 1, kind: 'unbound', workerLeaseId };
+  if (!classification.binding || classification.binding.state !== 'active') throw invalidRescueBinding();
+  return { version: 1, kind: 'bound', workerLeaseId, binding: structuredClone(classification.binding) };
+}
+
+/** @param {any} value @param {any} job */
+function validRescueExecutionClaim(value, job) {
+  if (!isPlainJsonObject(value) || value.version !== 1 || value.workerLeaseId !== job.workerLeaseId
+    || job.status !== 'queued' || job.command !== 'rescue' || job.readOnly !== false) return false;
+  if (value.kind === 'unbound') return Object.keys(value).sort().join(',') === 'kind,version,workerLeaseId'
+    && job.rescueReservationKind === 'unbound' && job.rescueContinuationOrigin === undefined && job.rescueMigrationRollback === undefined;
+  if (value.kind !== 'bound' || Object.keys(value).sort().join(',') !== 'binding,kind,version,workerLeaseId') return false;
+  try {
+    const binding = validateRescueBinding(value.binding);
+    if (binding.state !== 'active' || binding.currentJobId !== job.id || binding.parentSessionId !== job.ownerSessionId
+      || binding.workspace !== job.workspace || binding.permissionMode !== job.permissionSnapshot.permissionMode) return false;
+    if (job.rescueContinuationOrigin !== undefined) {
+      const origin = job.rescueContinuationOrigin;
+      const expected = origin.kind === 'legacy-adoption' ? origin.binding
+        : validateRescueBinding({ ...origin.priorBinding, currentJobId: job.id, updatedAt: binding.updatedAt });
+      return sameExactBinding(binding, expected);
+    }
+    if (job.rescueMigrationRollback !== undefined) {
+      const restored = job.rescueMigrationRollback.priorBinding;
+      if (restored === undefined) return false;
+      const authority = rescueBindingAuthorityView(binding);
+      const expected = migratedActiveBinding(restored,
+        authority.kind === 'subagent-start' ? { agentPath: authority.agentPath } : undefined,
+        job.id, binding.updatedAt);
+      return sameExactBinding(binding, expected);
+    }
+    return job.rescueReservationKind === 'bound' && (binding.anchorJobId === job.id || binding.version < 3);
+  } catch { return false; }
 }
 
 /** Verify an idempotent terminal retry against the exact already-restored tombstone. @param {any} storage @param {any} job @param {any} rollback */
@@ -1404,6 +1497,21 @@ function validateCurrentJob(job, parentSessionId, workspace) {
 }
 function invalidRescueBinding() { return new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' }); }
 function notRunnableRescueBinding() { return new PluginError('RESCUE_BINDING_NOT_RUNNABLE', 'The queued Rescue reservation was never advanced to its runnable binding.', { category: 'state', remedy: 'Terminalize the interrupted reservation and retry from the persisted child operation.' }); }
+/** @param {string} workspace @param {string} jobId @param {any} worker */
+function validateWorkerClaimInput(workspace, jobId, worker) {
+  if (!isNonEmptyString(workspace) || !isDigest(jobId) || !isPlainJsonObject(worker)
+    || !Number.isSafeInteger(worker.childPid) || worker.childPid <= 0 || !isDigest(worker.workerLeaseId)) {
+    throw new PluginError('WORKER_LEASE_INVALID', 'Worker lease claim is invalid.', {
+      category: 'state', remedy: 'Claim a queued job with one positive process ID and one 64-character lease digest.',
+    });
+  }
+}
+/** @param {string} jobId */
+function workerLeaseConflict(jobId) {
+  return new PluginError('WORKER_LEASE_CONFLICT', `Job ${jobId} is already claimed or no longer queued.`, {
+    category: 'state', remedy: 'Only the worker holding the exact durable lease may execute this reservation.',
+  });
+}
 function closedRescueBinding() { return new PluginError('RESCUE_BINDING_CLOSED', 'The Rescue operation binding is closed.', { category: 'state', remedy: 'Start a fresh Rescue operation from the active parent turn.' }); }
 function staleRescueBinding() { return new PluginError('RESCUE_BINDING_STALE', 'The Rescue operation generation changed.', { category: 'state', remedy: 'Reload the exact Rescue binding before retrying.' }); }
 function rescueBindingCapacity() { return new PluginError('RESCUE_BINDING_CAPACITY', 'The Rescue binding capacity is exhausted.', { category: 'state', remedy: 'End or clean up old Rescue operations before retrying.' }); }
@@ -1900,6 +2008,7 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLo
       && validRescueReservationKind(job.rescueReservationKind))
     && (!('rescueMigrationRollback' in job) || validPersistedMigrationRollback(job.rescueMigrationRollback, job))
     && (!('rescueContinuationOrigin' in job) || validRescueContinuationOrigin(job.rescueContinuationOrigin, job))
+    && (!('rescueExecutionClaim' in job) || validRescueExecutionClaim(job.rescueExecutionClaim, job))
     && !('rescueMigrationRollback' in job && 'rescueContinuationOrigin' in job);
   const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
   const hasBoundary = boundaryFields.some((field) => field in job);

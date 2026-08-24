@@ -790,9 +790,20 @@ async function executeWithWorkerLease(context) {
     }
     throw error;
   }
+  await context.dependencies?.testOnlyBeforeExecutionClaim?.();
   const workerLeaseId = randomBytes(32).toString('hex');
   return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, async () => {
-    const job = await context.store.claimJobWorker(context.cwd, context.job.id, { childPid: process.pid, workerLeaseId });
+    let job;
+    try {
+      job = await context.store.claimJobWorkerForExecution(context.cwd, context.job.id,
+        { childPid: process.pid, workerLeaseId }, migrationRollback);
+      await context.dependencies?.testOnlyAfterExecutionClaim?.();
+    } catch (error) {
+      await context.store.finishJob(context.cwd, context.job.id, ['queued'], 'failed', {
+        error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution authorization failed' }, exitCode: 1,
+      }).catch(() => {});
+      throw error;
+    }
     return executeReserved({ ...context, job, migrationRollback, childPid: process.pid, workerLeaseId });
   });
 }
@@ -878,7 +889,7 @@ function publicJob(job, ownerSessionId, projection) {
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueReservationKind;
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueReservationKind;
   if (projection !== 'detail') delete visible.logFile;
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
@@ -893,7 +904,7 @@ function publicJob(job, ownerSessionId, projection) {
   return { ...visible, owned: true, owner: 'same-owner' };
 }
 /** @param {any} job */
-function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueReservationKind; return visible; }
+function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueReservationKind; return visible; }
 /** @param {any} job */
 function terminalResultJob(job) {
   const visible = {

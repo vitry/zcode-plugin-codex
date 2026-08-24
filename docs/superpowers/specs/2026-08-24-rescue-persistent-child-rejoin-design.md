@@ -108,13 +108,21 @@ terminalizing the queued attempt.
 
 Every newly published writable Rescue job also fixes a private reservation
 class (`bound` or `unbound`) in both the canonical job and its independently
-published owner binding. The owner binding is published first. Queued-to-
-running and queued-to-terminal transitions compare both records under the
-state lock. Thus deleting a migration marker and its child binding cannot turn
-a bound attempt into an ordinary unbound job; missing or contradictory class
-evidence fails closed. Historical records that predate this class remain
-eligible only when their exact persisted child binding or rollback evidence
-proves the transition—absence alone is deliberately not guessed.
+published owner binding. The owner binding is published first. Before any
+prompt artifact or ZCode session/configuration RPC, execution compares the job,
+owner binding, child binding, rollback/origin proof, permission snapshot, and
+worker lease under the state lock, then publishes a private worker-bound
+execution claim. A revoke that commits before this claim prevents execution; a
+revoke after it does not retroactively withdraw that one already-authorized
+attempt, but the closed binding remains unavailable to every later follow-up.
+Queued-to-running accepts only the exact claimed worker and clears the claim;
+queued terminalization and orphan recovery also clear it while preserving a
+revocation that already won. Thus deleting a migration marker and its child
+binding cannot turn a bound attempt into an ordinary unbound job; missing or
+contradictory class or claim evidence fails closed. Historical records that
+predate the reservation class remain eligible only when their exact persisted
+child binding or rollback evidence proves the transition—absence alone is
+deliberately not guessed.
 
 Migration requires: closed + `session-ended`; exact canonical workspace and
 parent; exact persisted child ID/thread/path/Role; valid anchor/current jobs;
