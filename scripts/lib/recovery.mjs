@@ -1,11 +1,9 @@
-import { createHash } from 'node:crypto';
-import { resolve, sep } from 'node:path';
-
 import { PluginError } from './errors.mjs';
 import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
 import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
-import { readBoundedJsonFile, withFileLock } from './fs.mjs';
+import { withFileLock } from './fs.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
+import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
 
@@ -184,29 +182,8 @@ async function reconcileOrphan(input, job) {
 function hasBoundary(job) { return typeof job.inputId === 'string' && Number.isSafeInteger(job.startRevision) && Array.isArray(job.beforeMessageIds); }
 /** Resolve exact rollback evidence for atomic queued terminalization. @param {any} input @param {any} job */
 async function queuedMigrationRollback(input, job) {
-  if (job.rescueMigrationRollback !== undefined) return job.rescueMigrationRollback;
-  const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
-  const root = resolve(storage.directory, 'job-specs'); const path = resolve(root, `${job.id}.json`);
-  if (!path.startsWith(`${root}${sep}`)) throw recoveryError('Queued migration specification path is invalid.');
-  let record;
-  try { record = await readBoundedJsonFile(storage.directory, path, 512 * 1024, { requirePrivatePermissions: true }); }
-  catch (error) { if (/** @type {any} */ (error)?.code === 'ENOENT') return undefined; throw error; }
-  const spec = record?.spec; const migrationKeys = ['migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId',
-    'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt', 'migrationPriorVersion'];
-  const present = migrationKeys.filter((key) => spec?.[key] !== undefined);
-  if (present.length === 0) return undefined;
-  const digest = spec && typeof spec === 'object' && !Array.isArray(spec)
-    ? createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex') : null;
-  const priorVersion = Number(spec?.migrationPriorVersion);
-  if (present.length !== migrationKeys.length || record?.version !== 1 || record.jobId !== job.id
-    || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace || record.digest !== digest
-    || spec.migrationParentSessionId !== job.ownerSessionId || ![1, 2, 3].includes(priorVersion)) {
-    throw recoveryError('Queued migration specification is invalid.');
-  }
-  return {
-    parentSessionId: spec.migrationParentSessionId, childAgentId: spec.migrationChildAgentId,
-    operationId: spec.migrationOperationId, priorCurrentJobId: spec.migrationPriorCurrentJobId,
-    priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt, priorVersion };
+  return readQueuedRescueMigrationRollback({ dataRoot: input.dataRoot, workspace: input.workspace, job,
+    invalid: () => recoveryError('Queued migration specification is invalid.') });
 }
 /** @param {any} input @param {any} job @param {unknown} error */
 async function failJob(input, job, error) {

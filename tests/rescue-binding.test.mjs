@@ -1,5 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { mkdtemp, mkdir, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -588,6 +589,7 @@ for (const version of [1, 2, 3]) for (const terminalizer of ['controller cancel'
   const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
     executor: hook, operationId: current.operationId, migrationProof: proof.migrationProof });
   assert.equal(continuation.job.rescueMigrationRollback.priorVersion, version);
+  assert.deepEqual(continuation.job.rescueMigrationRollback.priorBinding, closed.binding);
   if (terminalizer === 'controller cancel') await createJobController({ store, dataRoot }).cancel(workspace, continuation.job.id, hook.parentSessionId);
   else {
     await store.claimJobWorker(workspace, continuation.job.id, { childPid: 999_999_999, workerLeaseId: '9'.repeat(64) });
@@ -656,6 +658,7 @@ test('markerless legacy rollback metadata is adopted only for its unique queued 
     executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
   const jobPath = join(storage.directory, 'jobs', `${continuation.job.id}.json`); const legacyJob = JSON.parse(await readFile(jobPath, 'utf8'));
+  const { priorBinding, ...legacyRollback } = continuation.migrationRollback;
   delete legacyJob.rescueMigrationRollback; await writeFile(jobPath, `${JSON.stringify(legacyJob, null, 2)}\n`);
   const [bindingPath] = await bindingFiles(storage.directory); const originalPartition = JSON.parse(await readFile(bindingPath, 'utf8'));
   const active = originalPartition.records[0]; const ambiguous = createRescueBinding({ parentSessionId: hook.parentSessionId,
@@ -666,21 +669,87 @@ test('markerless legacy rollback metadata is adopted only for its unique queued 
   await writeFile(bindingPath, `${JSON.stringify(createRescueBindingPartition({ parentSessionId: hook.parentSessionId,
     workspace, records: [active, ambiguous] }), null, 2)}\n`);
   await assert.rejects(
-    store.finishSessionEndedRescueContinuation(workspace, continuation.job.id, continuation.migrationRollback, 'failed',
+    store.finishSessionEndedRescueContinuation(workspace, continuation.job.id, legacyRollback, 'failed',
       { error: { message: 'ambiguous legacy metadata' }, exitCode: 1 }),
     { code: 'RESCUE_BINDING_INVALID' },
   );
   assert.equal((await store.readJob(workspace, continuation.job.id)).status, 'queued');
   await writeFile(bindingPath, `${JSON.stringify(originalPartition, null, 2)}\n`);
-  const corrupt = { ...continuation.migrationRollback, priorCurrentJobId: 'f'.repeat(64) };
+  const corrupt = { ...legacyRollback, priorCurrentJobId: 'f'.repeat(64) };
   await assert.rejects(
     store.finishSessionEndedRescueContinuation(workspace, continuation.job.id, corrupt, 'failed', { error: { message: 'bad legacy metadata' }, exitCode: 1 }),
     { code: 'RESCUE_BINDING_INVALID' },
   );
   assert.equal((await store.readJob(workspace, continuation.job.id)).status, 'queued');
-  const failed = await store.finishSessionEndedRescueContinuation(workspace, continuation.job.id, continuation.migrationRollback, 'failed',
-    { error: { message: 'valid legacy metadata' }, exitCode: 1 });
+  const patch = { error: { message: 'valid legacy metadata' }, exitCode: 1 };
+  const faulted = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt('rollback:terminal') });
+  await assert.rejects(faulted.finishSessionEndedRescueContinuation(workspace, continuation.job.id, legacyRollback, 'failed', patch),
+    { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
+  const adopted = await store.readJob(workspace, continuation.job.id);
+  assert.equal(adopted.status, 'queued'); assert.deepEqual(adopted.rescueMigrationRollback, { ...legacyRollback, priorBinding });
+  assert.deepEqual(JSON.parse(await readFile(bindingPath, 'utf8')).records[0], priorBinding);
+  const failed = await store.finishSessionEndedRescueContinuation(workspace, continuation.job.id, legacyRollback, 'failed', patch);
   assert.equal(failed.status, 'failed'); assert.equal(failed.rescueMigrationRollback, undefined);
+});
+
+test('ordinary controller cancel adopts markerless legacy job-spec evidence and restores the exact tombstone', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, 'legacy-controller-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: first.binding.operationId, reason: 'session-ended' });
+  const proof = await store.readRescueBindingMigrationProof({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, childAgentType: hook.agentType, originWorkspace: workspace,
+    executionWorkspace: workspace, agentPath: hook.agentPath });
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const jobPath = join(storage.directory, 'jobs', `${continuation.job.id}.json`); const legacyJob = JSON.parse(await readFile(jobPath, 'utf8'));
+  const rollback = legacyJob.rescueMigrationRollback; delete legacyJob.rescueMigrationRollback; await writeFile(jobPath, `${JSON.stringify(legacyJob, null, 2)}\n`);
+  const spec = { command: 'rescue', migrationParentSessionId: rollback.parentSessionId, migrationChildAgentId: rollback.childAgentId,
+    migrationOperationId: rollback.operationId, migrationPriorCurrentJobId: rollback.priorCurrentJobId,
+    migrationPriorUpdatedAt: rollback.priorUpdatedAt, migrationPriorClosedAt: rollback.priorClosedAt,
+    migrationPriorVersion: String(rollback.priorVersion) };
+  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
+  const specDirectory = join(storage.directory, 'job-specs'); await mkdir(specDirectory, { recursive: true, mode: 0o700 });
+  await writeFile(join(specDirectory, `${continuation.job.id}.json`), `${JSON.stringify({ version: 1, jobId: continuation.job.id,
+    ownerSessionId: continuation.job.ownerSessionId, workspace, digest, spec }, null, 2)}\n`, { mode: 0o600 });
+  const cancelled = await createJobController({ store, dataRoot }).cancel(workspace, continuation.job.id, hook.parentSessionId);
+  assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.rescueMigrationRollback, undefined);
+  const [bindingPath] = await bindingFiles(storage.directory);
+  assert.deepEqual(JSON.parse(await readFile(bindingPath, 'utf8')).records[0], closed.binding);
+});
+
+for (const [field, mutate] of [
+  ['anchorJobId', (binding) => { binding.anchorJobId = 'f'.repeat(64); }],
+  ['permissionMode', (binding) => { binding.permissionMode = 'read-only'; }],
+  ['child authority path', (binding) => { binding.childAuthority.agentPath = '/root/tampered-child'; }],
+  ['child authority Role', (binding) => { binding.childAuthority.childAgentType = 'default'; }],
+  ['createdAt', (binding) => { binding.createdAt = '2020-01-01T00:00:00.000Z'; }],
+  ['v3 superseded history', (binding) => { binding.superseded = [{ operationId: 'd'.repeat(64), anchorJobId: binding.anchorJobId,
+    currentJobId: binding.currentJobId, closedAt: binding.closedAt, closeReason: 'fresh' }]; }],
+]) test(`rollback retry rejects a restored tombstone with tampered ${field} and retains its queued marker`, async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await makeEligible(store, workspace, first.job, `tampered-${field.replaceAll(' ', '-')}-session`); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, operationId: first.binding.operationId, reason: 'session-ended' });
+  const proof = await store.readRescueBindingMigrationProof({ workspace, parentSessionId: hook.parentSessionId,
+    executorAgentId: hook.agentId, childAgentType: hook.agentType, originWorkspace: workspace,
+    executionWorkspace: workspace, agentPath: hook.agentPath });
+  const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
+  const patch = { error: { message: 'resume rejected' }, exitCode: 1 };
+  const faulted = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt('rollback:terminal') });
+  await assert.rejects(faulted.finishSessionEndedRescueContinuation(workspace, continuation.job.id,
+    continuation.migrationRollback, 'failed', patch), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [bindingPath] = await bindingFiles(storage.directory);
+  const partition = JSON.parse(await readFile(bindingPath, 'utf8')); mutate(partition.records[0]);
+  await writeFile(bindingPath, `${JSON.stringify(partition, null, 2)}\n`);
+  await assert.rejects(store.finishSessionEndedRescueContinuation(workspace, continuation.job.id,
+    continuation.migrationRollback, 'failed', patch), (error) => ['RESCUE_BINDING_INVALID', 'RESCUE_BINDING_STALE'].includes(error?.code));
+  const queued = await store.readJob(workspace, continuation.job.id);
+  assert.equal(queued.status, 'queued'); assert.deepEqual(queued.rescueMigrationRollback, continuation.migrationRollback);
 });
 
 test('Rescue reservation methods require one explicit workspace matching reservation and executor', async () => {

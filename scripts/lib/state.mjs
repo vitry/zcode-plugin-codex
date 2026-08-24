@@ -228,7 +228,7 @@ export function createStateStore(options) {
           parentSessionId: resolved.binding.parentSessionId, childAgentId: context.identity.executorAgentId,
           operationId: resolved.binding.operationId, priorCurrentJobId: resolved.binding.currentJobId,
           priorUpdatedAt: resolved.binding.updatedAt, priorClosedAt: resolved.binding.closedAt,
-          priorVersion: resolved.binding.version,
+          priorVersion: resolved.binding.version, priorBinding: structuredClone(resolved.binding),
         } : undefined;
         const job = migrationRollback ? { ...reservedJob, rescueMigrationRollback: migrationRollback } : reservedJob;
         const binding = migrating
@@ -760,7 +760,7 @@ async function resolveBindingForResumeLocked(storage, expected, migrationProof) 
   return await resolveBindingJobsLocked(storage, binding);
 }
 
-/** @param {any} binding @param {RescueMigrationProof|undefined} proof @param {string} currentJobId @param {string} updatedAt */
+/** @param {any} binding @param {{agentPath?:string}|undefined} proof @param {string} currentJobId @param {string} updatedAt */
 function migratedActiveBinding(binding, proof, currentJobId, updatedAt) {
   if (binding.version === 3) return validateRescueBinding({ ...binding, state: 'active', currentJobId, updatedAt, closedAt: null, closeReason: null });
   const authority = rescueBindingAuthorityView(binding);
@@ -806,12 +806,26 @@ async function restoreQueuedMigrationLocked(storage, job, rollback) {
     const anchorJob = await readExactBindingJob(storage, record.anchorJobId); validateAnchorJob(anchorJob, record.parentSessionId, storage.workspacePath);
     const priorJob = await readExactBindingJob(storage, rollback.priorCurrentJobId); validateCurrentJob(priorJob, record.parentSessionId, storage.workspacePath);
     if (priorJob.id === job.id || Date.parse(priorJob.updatedAt) > Date.parse(rollback.priorUpdatedAt)) throw invalidRescueBinding();
-    restored = restoreMigratedTombstone(record, rollback);
+    if (rollback.priorBinding !== undefined) {
+      const authority = rescueBindingAuthorityView(record);
+      const expectedActive = migratedActiveBinding(rollback.priorBinding,
+        authority.kind === 'subagent-start' ? { agentPath: authority.agentPath } : undefined,
+        job.id, record.updatedAt);
+      if (!sameExactBinding(record, expectedActive)) throw invalidRescueBinding();
+      restored = structuredClone(rollback.priorBinding);
+    } else {
+      restored = restoreMigratedTombstone(record, rollback);
+      const adopted = { ...rollback, priorBinding: structuredClone(restored) };
+      const marked = { ...job, rescueMigrationRollback: adopted };
+      validateJobRecord(marked, job.id, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, job.id));
+      await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), marked);
+    }
     const lockIdentity = await captureStateLockIdentity(storage);
     await writeBindingPartitionGuarded(storage, rollback.parentSessionId, snapshot, bindingSnapshotWith(snapshot, restored), lockIdentity);
   } else if (record.state === 'closed' && record.closeReason === 'session-ended'
     && record.version === rollback.priorVersion && record.currentJobId === rollback.priorCurrentJobId
-    && record.updatedAt === rollback.priorUpdatedAt && record.closedAt === rollback.priorClosedAt) restored = record;
+    && record.updatedAt === rollback.priorUpdatedAt && record.closedAt === rollback.priorClosedAt
+    && rollback.priorBinding !== undefined && sameExactBinding(record, rollback.priorBinding)) restored = record;
   else throw staleRescueBinding();
   return restored;
 }
@@ -824,14 +838,21 @@ async function verifyRestoredMigrationLocked(storage, job, rollback) {
   const record = snapshot.records.get(key) ?? null;
   if (record === null || record.operationId !== rollback.operationId || record.state !== 'closed' || record.closeReason !== 'session-ended'
     || record.version !== rollback.priorVersion || record.currentJobId !== rollback.priorCurrentJobId
-    || record.updatedAt !== rollback.priorUpdatedAt || record.closedAt !== rollback.priorClosedAt) throw invalidRescueBinding();
+    || record.updatedAt !== rollback.priorUpdatedAt || record.closedAt !== rollback.priorClosedAt
+    || rollback.priorBinding === undefined || !sameExactBinding(record, rollback.priorBinding)) throw invalidRescueBinding();
+}
+
+/** @param {any} left @param {any} right */
+function sameExactBinding(left, right) {
+  try { return bindingRecordDigest(left) === bindingRecordDigest(right); } catch { return false; }
 }
 
 /** @param {any} input */
 function migrationRollbackFromInput(input) {
   return { parentSessionId: input.parentSessionId, childAgentId: input.childAgentId, operationId: input.operationId,
     priorCurrentJobId: input.priorCurrentJobId, priorUpdatedAt: input.priorUpdatedAt,
-    priorClosedAt: input.priorClosedAt, priorVersion: input.priorVersion };
+    priorClosedAt: input.priorClosedAt, priorVersion: input.priorVersion,
+    ...(input.priorBinding === undefined ? {} : { priorBinding: input.priorBinding }) };
 }
 
 /** @param {any} left @param {any} right */
@@ -839,7 +860,7 @@ function sameMigrationRollback(left, right) {
   const keys = ['childAgentId', 'operationId', 'parentSessionId', 'priorClosedAt', 'priorCurrentJobId', 'priorUpdatedAt', 'priorVersion'];
   return isPlainJsonObject(left) && isPlainJsonObject(right)
     && keys.every((key) => left[key] === right[key])
-    && Object.keys(left).length === keys.length && Object.keys(right).length === keys.length;
+    && (left.priorBinding === undefined || right.priorBinding === undefined || sameExactBinding(left.priorBinding, right.priorBinding));
 }
 
 /** @param {any} value @param {any} job */
@@ -850,13 +871,29 @@ function validPersistedMigrationRollback(value, job) {
 /** @param {unknown} value @param {any} job */
 function validMigrationRollbackIdentity(value, job) {
   const keys = ['childAgentId', 'operationId', 'parentSessionId', 'priorClosedAt', 'priorCurrentJobId', 'priorUpdatedAt', 'priorVersion'];
-  return isPlainJsonObject(value) && Object.keys(value).sort().join('\0') === keys.sort().join('\0')
+  const validKeys = isPlainJsonObject(value) && [keys, [...keys, 'priorBinding']]
+    .some((candidate) => Object.keys(value).sort().join('\0') === candidate.sort().join('\0'));
+  if (!validKeys) return false;
+  const priorBinding = value.priorBinding === undefined ? undefined : validRollbackPriorBinding(value.priorBinding, value, job);
+  return (value.priorBinding === undefined || priorBinding)
     && job.command === 'rescue' && job.readOnly === false
     && value.parentSessionId === job.ownerSessionId && isNonEmptyString(value.childAgentId)
     && isDigest(value.operationId) && isDigest(value.priorCurrentJobId) && [1, 2, 3].includes(value.priorVersion)
     && isIsoTimestamp(value.priorUpdatedAt) && isIsoTimestamp(value.priorClosedAt)
     && Date.parse(value.priorUpdatedAt) === Date.parse(value.priorClosedAt)
     && value.priorCurrentJobId !== job.id && Date.parse(job.createdAt) >= Date.parse(value.priorClosedAt);
+}
+
+/** @param {any} candidate @param {any} rollback @param {any} job */
+function validRollbackPriorBinding(candidate, rollback, job) {
+  try {
+    const binding = validateRescueBinding(candidate); const authority = rescueBindingAuthorityView(binding);
+    return binding.state === 'closed' && binding.closeReason === 'session-ended' && binding.parentSessionId === rollback.parentSessionId
+      && binding.workspace === job.workspace && authority.childAgentId === rollback.childAgentId
+      && binding.operationId === rollback.operationId && binding.currentJobId === rollback.priorCurrentJobId
+      && binding.updatedAt === rollback.priorUpdatedAt && binding.closedAt === rollback.priorClosedAt
+      && binding.version === rollback.priorVersion;
+  } catch { return false; }
 }
 
 /** @param {any} storage @param {any} binding @returns {Promise<Extract<RescueBindingResumeResult, {kind:'bound'}>>} */
@@ -1164,7 +1201,8 @@ function validateBindingMigrationLookup(input) {
 /** @param {any} input */
 function validateMigrationRollbackInput(input) {
   const keys = ['childAgentId', 'jobId', 'operationId', 'parentSessionId', 'priorClosedAt', 'priorCurrentJobId', 'priorUpdatedAt', 'priorVersion', 'workspace'];
-  if (!isPlainJsonObject(input) || Object.keys(input).sort().join('\0') !== keys.sort().join('\0')
+  if (!isPlainJsonObject(input) || ![keys, [...keys, 'priorBinding']]
+    .some((candidate) => Object.keys(input).sort().join('\0') === candidate.sort().join('\0'))
     || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.parentSessionId)
     || !isNonEmptyString(input.childAgentId) || !isDigest(input.jobId) || !isDigest(input.operationId)
     || !isDigest(input.priorCurrentJobId) || !isIsoTimestamp(input.priorUpdatedAt)

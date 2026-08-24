@@ -6,6 +6,7 @@ import { createCancelAttemptStore } from './cancel-attempt.mjs';
 import { PluginError } from './errors.mjs';
 import { withFileLock } from './fs.mjs';
 import { waitForCompletionOrAbort } from './progress.mjs';
+import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
@@ -154,8 +155,12 @@ async function performCancellation(input, attempts, election) {
   else attempt = await attempts.start(job.id, input.ownerSessionId);
   if (job.status === 'queued') {
     if (job.workerLeaseId) throw cancelError(job.id, 'The claimed worker is still starting; retry after it advances or recovery proves it orphaned.');
+    const rollback = await readQueuedRescueMigrationRollback({ dataRoot: input.options.dataRoot ?? input.options.store.dataRoot,
+      workspace: input.workspace, job, invalid: () => cancelError(job.id, 'Queued migration specification is invalid.') });
     let cancelled;
-    try { cancelled = await finishJob(input.options.store, input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
+    try { cancelled = rollback
+      ? await input.options.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'cancelled', { exitCode: null })
+      : await finishJob(input.options.store, input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
     catch (error) { cancelled = await durableCancelledWinner(cancelledWinnerInput(input), error); }
     return recordCancelledAttempt(input, attempts, attempt, cancelled);
   }

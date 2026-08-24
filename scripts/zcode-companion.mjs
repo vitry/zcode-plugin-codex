@@ -28,6 +28,7 @@ import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { serializeRescueProgressRelay } from './lib/rescue-progress-relay.mjs';
+import { legacyRescueMigrationRollbackFromSpec } from './lib/rescue-migration.mjs';
 import { createStateStore, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
@@ -920,17 +921,8 @@ function normalizeSpec(input) {
 }
 /** @param {Record<string,string>} spec @param {any} job */
 function migrationRollbackFromSpec(spec, job) {
-  const keys = ['migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId', 'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt', 'migrationPriorVersion'];
-  const present = keys.filter((key) => spec[key] !== undefined);
-  if (present.length === 0) return undefined;
-  if (present.length !== keys.length || spec.migrationParentSessionId !== job.ownerSessionId || job.command !== 'rescue') {
-    throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' });
-  }
-  const priorVersion = Number(spec.migrationPriorVersion);
-  if (![1, 2, 3].includes(priorVersion)) throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' });
-  return { parentSessionId: spec.migrationParentSessionId, childAgentId: spec.migrationChildAgentId,
-    operationId: spec.migrationOperationId, priorCurrentJobId: spec.migrationPriorCurrentJobId,
-    priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt, priorVersion };
+  return legacyRescueMigrationRollbackFromSpec(spec, job,
+    () => new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }));
 }
 /** Prefer the state-validated queued marker; old specs remain readable only for in-flight upgrade compatibility. @param {Record<string,string>} spec @param {any} job */
 function migrationRollbackForExecution(spec, job) {
