@@ -995,7 +995,7 @@ test('SessionEnd removes only its session contexts and leaves sibling jobs/sessi
   const inventedModel = await runHook('session-end-hook.mjs', { session_id: 'b', cwd, hook_event_name: 'SessionEnd', transcript_path: null, model: 'gpt', reason: 'other' }, env); assert.notEqual(inventedModel.code, 0, 'SessionEnd must keep an exact native field contract');
 });
 
-test('SessionEnd closes exact Rescue bindings while retaining their durable jobs', async () => {
+test('SessionEnd preserves exact Rescue bindings while retaining their durable jobs', async () => {
   const { cwd, data, env } = await workspace(); const store = createStateStore({ dataRoot: data });
   await runHook('session-lifecycle-hook.mjs', { session_id: 'bound-parent', cwd, hook_event_name: 'SessionStart', transcript_path: null, model: 'gpt', permission_mode: 'default', source: 'startup' }, env);
   const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: 'bound-parent', parentTurnId: 'turn-a', parentPermissionMode: 'workspace-write', workspace: cwd };
@@ -1003,7 +1003,8 @@ test('SessionEnd closes exact Rescue bindings while retaining their durable jobs
   await store.finishJob(cwd, reserved.job.id, ['queued'], 'failed');
   const ended = await runHook('session-end-hook.mjs', { session_id: 'bound-parent', cwd, hook_event_name: 'SessionEnd', transcript_path: null, reason: 'other' }, env);
   assert.equal(ended.code, 0, ended.stderr || ended.stdout);
-  await assert.rejects(store.resolveRescueBinding({ workspace: cwd, parentSessionId: 'bound-parent', executorAgentId: 'bound-child', executorAgentType: 'zcode-rescue', permissionMode: 'workspace-write' }), { code: 'RESCUE_BINDING_CLOSED' });
+  const binding = await store.resolveRescueBinding({ workspace: cwd, parentSessionId: 'bound-parent', executorAgentId: 'bound-child', executorAgentType: 'zcode-rescue', permissionMode: 'workspace-write' });
+  assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.state, 'active');
   assert.equal((await store.readJob(cwd, reserved.job.id)).id, reserved.job.id);
 });
 
