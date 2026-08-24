@@ -108,12 +108,19 @@ test('qualifies host-only legacy adoption without reconstructing Hook provenance
   for (const [field, code] of [['ordinaryIsolationJson', 'legacy-adoption-ordinary-isolation'], ['boundContinuationJson', 'legacy-adoption-bound-continuation']]) {
     const oversized = structuredClone(input); oversized[field] += ' '.repeat(17 * 1024 * 1024);
     await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(oversized),
-      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
-    const deep = structuredClone(input); const value = JSON.parse(deep[field]); let cursor = value;
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code && /oversized/u.test(error.message));
+    const manyLeaves = structuredClone(input); const leavesValue = JSON.parse(manyLeaves[field]);
+    if (field === 'ordinaryIsolationJson') leavesValue.faultExecutorArtifacts = Array.from({ length: 8_193 }, (_, index) => index);
+    else leavesValue.peerCalls = Array.from({ length: 8_193 }, (_, index) => index);
+    manyLeaves[field] = JSON.stringify(leavesValue);
+    await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(manyLeaves),
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code && /structural bound/u.test(error.message));
+    const deep = structuredClone(input); const value = JSON.parse(deep[field]);
+    let cursor = field === 'ordinaryIsolationJson' ? value.planResult : value.routeTranscript.response;
     for (let depth = 0; depth < 16; depth += 1) cursor = cursor.deep = {};
     deep[field] = JSON.stringify(value);
     await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(deep),
-      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code);
+      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code && /structural bound/u.test(error.message));
   }
 });
 

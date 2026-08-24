@@ -536,7 +536,7 @@ function parseLegacyCapturedObject(text, code) {
     const current = pending.pop(); count += 1;
     if (count > MAX_EVENTS_PER_ROLLOUT || current.depth > MAX_LEGACY_JSON_DEPTH) mismatch(code, 'Captured evidence exceeds its structural bound.');
     if (current.value && typeof current.value === 'object') {
-      for (const child of Object.values(current.value)) if (child && typeof child === 'object') pending.push({ value: child, depth: current.depth + 1 });
+      for (const child of Object.values(current.value)) pending.push({ value: child, depth: current.depth + 1 });
     }
   }
   return value;
