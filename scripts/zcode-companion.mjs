@@ -121,11 +121,19 @@ export async function runCompanion(argv, runtime = {}) {
   }
   if (parsed.command === 'cancel') {
     const selected = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'cancel');
-    if (!['running', 'cancelling'].includes(selected.status)) return { job: await controller.cancel(cwd, selected.id, caller.sessionId) };
+    if (!['running', 'cancelling'].includes(selected.status)) {
+      const job = await controller.cancel(cwd, selected.id, caller.sessionId);
+      if (job.command === 'rescue' && job.status === 'cancelled') await store.closeRescueBindingForCancelledJob({ workspace: cwd, parentSessionId: caller.sessionId, jobId: job.id });
+      return { job };
+    }
     runtime.signal?.throwIfAborted(); const launch = await discoverLaunch(env);
     const client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId: ownerIdForSession(caller.sessionId), env, ...managedWireOptionsForJob(selected) });
     const cancelling = createJobController({ store, dataRoot, stopSession: (sessionId) => client.stopSession(sessionId) });
-    try { return { job: await cancelling.cancel(cwd, selected.id, caller.sessionId) }; }
+    try {
+      const job = await cancelling.cancel(cwd, selected.id, caller.sessionId);
+      if (job.command === 'rescue' && job.status === 'cancelled') await store.closeRescueBindingForCancelledJob({ workspace: cwd, parentSessionId: caller.sessionId, jobId: job.id });
+      return { job };
+    }
     finally { await client.close().catch(() => {}); }
   }
   return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, executor: runtime.executor, authority: runtime.authority, legacyActivation: runtime.legacyActivation, rescueRoute: runtime.rescueRoute, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
@@ -157,7 +165,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
   }
   if (preparedInvocation) {
     const execution = await resolvePreparedExecutionContext(dataRoot, cwd, ambientThreadId);
-    const executor = execution.executor;
+    let executor = execution.executor;
     let caller;
     /** @type {any} */
     let host;
@@ -189,8 +197,14 @@ export async function runDirectInvocation(argv, runtime = {}) {
       }
     }
     if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && executor) validateLegacyConvergedChild(host, executor, caller);
-    if (prepared.requiredExecutorAgentId !== null && executor?.active
-      && !['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind)) throw new PluginError('EXECUTOR_STATE_MISMATCH', 'A Rescue continuation requires the original child to be stopped.', { category: 'authorization', remedy: 'Wait for the original Rescue child to stop, then prepare the continuation again.' });
+    if (executor) {
+      host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
+        ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
+      ), executor.parentSessionId, executor.agentId);
+      const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
+      if (prepared.activation?.agentPathDigest !== agentPathDigest) throw rescueRouteInvalid();
+      executor = { ...executor, agentPath: host.agentPath };
+    }
     const reactivatedFresh = prepared.generation === 1
       && prepared.activation?.kind === 'reactivate'
       && prepared.envelope.options.resume === 'fresh';
@@ -204,10 +218,18 @@ export async function runDirectInvocation(argv, runtime = {}) {
       });
     }
     if ((!executor || !executor.active) && !reactivatedFresh && prepared.activation?.kind !== 'legacy-adopt') {
-      const resolved = await createStateStore({ dataRoot }).resolveRescueBinding({
-        ...(executor ? bindingLookup(executor, caller.workspace) : legacyBindingLookup(host, caller)),
-        ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
-      });
+      const state = createStateStore({ dataRoot });
+      const lookup = executor ? bindingLookup(executor, caller.workspace) : legacyBindingLookup(host, caller);
+      let migrationProof;
+      if (prepared.envelope.options.resume === 'resume') {
+        const proof = await state.readRescueBindingMigrationProof({ ...lookup, childAgentType: executor?.agentType ?? host.agentRole,
+          originWorkspace: host.cwd, executionWorkspace: caller.workspace, agentPathDigest: prepared.activation.agentPathDigest,
+          ...(executor ? { agentPath: host.agentPath } : {}) });
+        if (proof.kind === 'proof') migrationProof = proof.migrationProof;
+      }
+      const resolved = prepared.envelope.options.resume === 'resume'
+        ? await state.resolveRescueBindingForResume({ ...lookup, permissionMode: caller.permissionMode, ...(migrationProof ? { migrationProof } : {}) })
+        : await state.resolveRescueBinding(lookup);
       if (resolved.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
       rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId, expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId };
       await afterPreparedBindingResolution(runtime.dependencies);
@@ -526,12 +548,18 @@ async function startPublic(context) {
   if (parsed.command === 'rescue') {
     if (childAuthorized) {
       if (parsed.options.resume !== 'fresh') {
-        const resolved = await store.resolveRescueBinding({
+        const lookup = {
           ...(context.legacyActivation
             ? authorityBindingLookup(context.authority ?? { childAgentId: context.executor.agentId }, caller, cwd)
             : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)),
           ...(parsed.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
-        });
+        };
+        const migrationProof = parsed.options.resume === 'resume' && context.rescueRoute?.expectedOperationId && context.authority
+          ? { parentSessionId: caller.sessionId, childAgentId: context.authority.childAgentId, childAgentType: context.authority.childAgentType,
+            operationId: context.rescueRoute.expectedOperationId, originWorkspace: context.authority.originWorkspace,
+            executionWorkspace: context.authority.executionWorkspace, agentPathDigest: context.authority.agentPathDigest }
+          : undefined;
+        const resolved = migrationProof ? await store.resolveRescueBindingForResume({ ...lookup, migrationProof }) : await store.resolveRescueBinding(lookup);
         binding = resolved.kind === 'bound' ? resolved.binding : null;
         if (context.rescueRoute?.routeKind === 'bound' && !binding) throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
         if (context.rescueRoute?.routeKind === 'legacy' && binding) throw new PluginError('RESCUE_BINDING_STALE', 'The Rescue operation generation changed.', { category: 'state', remedy: 'Repeat the Rescue choice.' });
@@ -552,10 +580,18 @@ async function startPublic(context) {
     const childProof = context.executor ? { executor: context.executor } : { authority: context.authority };
     if (parsed.options.resume === 'fresh' || !binding && !candidate) reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, ...childProof, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
     else if (binding) {
+      const proofOperationId = context.rescueRoute?.expectedOperationId ?? binding.operationId;
+      const previewMigrationProof = binding.state === 'closed' && context.authority
+        ? { parentSessionId: caller.sessionId, childAgentId: context.authority.childAgentId, childAgentType: context.authority.childAgentType,
+          operationId: proofOperationId, originWorkspace: context.authority.originWorkspace,
+          executionWorkspace: context.authority.executionWorkspace, agentPathDigest: context.authority.agentPathDigest }
+        : undefined;
       const resolved = await store.resolveRescueBindingForResume({ ...(context.legacyActivation
         ? authorityBindingLookup(context.authority ?? { childAgentId: context.executor.agentId }, caller, cwd)
-        : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)), permissionMode: caller.permissionMode });
-      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
+        : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)),
+      permissionMode: caller.permissionMode, ...(previewMigrationProof ? { migrationProof: previewMigrationProof } : {}) });
+      const migrationProof = previewMigrationProof;
+      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
       candidate = reserved.anchorJob;
     } else {
       reserved = await reservePublicRescueJob(context, () => store.adoptRescueCandidate({ workspace: cwd, reservation, ...childProof, candidateJobId: candidate.id })); candidate = reserved.anchorJob;
@@ -603,7 +639,8 @@ function legacyNeedsChoice(candidate, privateRoute) { const output = { type: 'ne
 /** @param {any} executor @param {string} workspace */
 function bindingLookup(executor, workspace) {
   return { workspace, parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId, executorAgentType: executor.agentType,
-    executorParentTurnId: executor.parentTurnId, executorParentPermissionMode: executor.parentPermissionMode };
+    executorParentTurnId: executor.parentTurnId, executorParentPermissionMode: executor.parentPermissionMode,
+    ...(executor.agentPath ? { executorAgentPath: executor.agentPath } : {}) };
 }
 
 /** @param {any} authority @param {any} caller @param {string} workspace */

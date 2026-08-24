@@ -7,7 +7,7 @@ import { PluginError } from './errors.mjs';
 import { samePathHandleFileSnapshot } from './fs.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
 
-export const RESCUE_BINDING_VERSION = 2;
+export const RESCUE_BINDING_VERSION = 3;
 export const RESCUE_BINDING_MAX_BYTES = 16 * 1024;
 export const RESCUE_BINDING_MAX_RECORDS = 1024;
 export const RESCUE_BINDING_PARTITION_MAX_BYTES = 16 * 1024 * 1024;
@@ -23,12 +23,15 @@ const V2_KEYS = [
   'anchorJobId', 'childAuthority', 'closeReason', 'closedAt', 'createdAt', 'currentJobId',
   'key', 'operationId', 'parentSessionId', 'permissionMode', 'state', 'updatedAt', 'version', 'workspace',
 ];
-const HOOK_AUTHORITY_KEYS = ['childAgentId', 'childAgentType', 'kind', 'parentPermissionMode', 'parentTurnId'];
+const V3_KEYS = [...V2_KEYS, 'superseded'];
+const LEGACY_HOOK_AUTHORITY_KEYS = ['childAgentId', 'childAgentType', 'kind', 'parentPermissionMode', 'parentTurnId'];
+const HOOK_AUTHORITY_KEYS = [...LEGACY_HOOK_AUTHORITY_KEYS, 'agentPath'];
 const ADOPTION_AUTHORITY_KEYS = [
   'agentPathDigest', 'authorityId', 'authorizingParentGenerationId', 'authorizingParentTurnId',
   'authorizingPermissionMode', 'childAgentId', 'childAgentType', 'executionWorkspace', 'kind', 'originWorkspace',
 ];
-const CLOSE_REASONS = new Set(['fresh', 'session-ended', 'invalidated']);
+const CLOSE_REASONS = new Set(['cancel', 'fresh', 'session-ended', 'invalidated']);
+const SUPERSEDED_KEYS = ['anchorJobId', 'closedAt', 'closeReason', 'currentJobId', 'operationId'];
 const EXECUTOR_AGENT_TYPES = new Set(['zcode-rescue', 'default']);
 
 /** @param {{parentSessionId:string,executorAgentId:string,workspace:string}} input */
@@ -53,6 +56,7 @@ export function createRescueBinding(input) {
   const childAuthority = input?.childAuthority === undefined ? validateChildAuthority({
     kind: 'subagent-start', childAgentId: input?.executorAgentId, childAgentType: input?.executorAgentType,
     parentTurnId: input?.executorParentTurnId, parentPermissionMode: input?.executorParentPermissionMode,
+    agentPath: input?.executorAgentPath,
   }, input?.workspace) : validateChildAuthority(input.childAuthority, input?.workspace);
   const identity = { parentSessionId: input?.parentSessionId, executorAgentId: childAuthority.childAgentId, workspace: input?.workspace };
   validateIdentity(identity);
@@ -69,11 +73,25 @@ export function createRescueBinding(input) {
     permissionMode: input.permissionMode,
     anchorJobId: input.anchorJobId,
     currentJobId: input.currentJobId,
+    superseded: validateSuperseded(input.superseded ?? []),
     createdAt: now,
     updatedAt: now,
     closedAt: null,
     closeReason: null,
   };
+}
+
+/** @param {any} record @param {Date|number|string} [now] */
+export function rescueBindingFreshSuperseded(record, now) {
+  const valid = validateRescueBinding(record);
+  if (valid.state !== 'active') throw staleBinding();
+  const closedAt = timestamp(now);
+  if (Date.parse(closedAt) < Date.parse(valid.updatedAt)) throw invalidBinding();
+  const prior = valid.version === 3 ? valid.superseded : [];
+  return validateSuperseded([...prior, {
+    operationId: valid.operationId, anchorJobId: valid.anchorJobId, currentJobId: valid.currentJobId,
+    closedAt, closeReason: 'fresh',
+  }]);
 }
 
 /** @param {any} record @param {{operationId:string,reason:string,now?:Date|number|string}} input */
@@ -162,6 +180,7 @@ export function parseRescueBinding(bytes, expected) {
     || identity.executorAgentType !== undefined && authority.childAgentType !== identity.executorAgentType
     || identity.executorParentTurnId !== undefined && (authority.kind !== 'subagent-start' || authority.parentTurnId !== identity.executorParentTurnId)
     || identity.executorParentPermissionMode !== undefined && (authority.kind !== 'subagent-start' || authority.parentPermissionMode !== identity.executorParentPermissionMode)
+    || valid.version === 3 && identity.executorAgentPath !== undefined && (authority.kind !== 'subagent-start' || authority.agentPath !== identity.executorAgentPath)
     || valid.workspace !== identity.workspace
     || identity.permissionMode !== undefined && valid.permissionMode !== identity.permissionMode) throw invalidBinding();
   return structuredClone(valid);
@@ -211,7 +230,7 @@ async function readExactPrivateFile(root, path, maximumBytes) {
 
 /** @param {any} record */
 export function validateRescueBinding(record) {
-  const keys = record?.version === 1 ? V1_KEYS : record?.version === 2 ? V2_KEYS : null;
+  const keys = record?.version === 1 ? V1_KEYS : record?.version === 2 ? V2_KEYS : record?.version === 3 ? V3_KEYS : null;
   if (!plain(record) || keys === null || Object.keys(record).sort().join('\0') !== [...keys].sort().join('\0')
     || !digest(record.key) || !digest(record.operationId)
     || !PERMISSION_MODES.includes(record.permissionMode)
@@ -220,10 +239,12 @@ export function validateRescueBinding(record) {
     || Date.parse(record.updatedAt) < Date.parse(record.createdAt)) throw invalidBinding();
   const authority = record.version === 1 ? validateChildAuthority({ kind: 'subagent-start', childAgentId: record.executorAgentId,
     childAgentType: record.executorAgentType, parentTurnId: record.executorParentTurnId,
-    parentPermissionMode: record.executorParentPermissionMode }, record.workspace) : validateChildAuthority(record.childAuthority, record.workspace);
+    parentPermissionMode: record.executorParentPermissionMode }, record.workspace, true)
+    : validateChildAuthority(record.childAuthority, record.workspace, record.version === 2);
   const identity = { parentSessionId: record.parentSessionId, executorAgentId: authority.childAgentId, workspace: record.workspace };
   validateIdentity(identity);
   if (record.key !== rescueBindingKey(identity)) throw invalidBinding();
+  if (record.version === 3) validateSuperseded(record.superseded);
   if (record.state === 'active' ? record.closedAt !== null || record.closeReason !== null
     : !canonicalTimestamp(record.closedAt) || !CLOSE_REASONS.has(record.closeReason)
       || Date.parse(record.closedAt) !== Date.parse(record.updatedAt)) throw invalidBinding();
@@ -245,12 +266,14 @@ export function validateRescueBindingChildAuthority(authority, workspace) {
 }
 
 /** @param {any} authority @param {unknown} workspace */
-function validateChildAuthority(authority, workspace) {
+function validateChildAuthority(authority, workspace, legacyHook = false) {
   if (!plain(authority)) throw invalidBinding();
   if (authority.kind === 'subagent-start') {
-    if (Object.keys(authority).sort().join('\0') !== [...HOOK_AUTHORITY_KEYS].sort().join('\0')
+    const keys = legacyHook ? LEGACY_HOOK_AUTHORITY_KEYS : HOOK_AUTHORITY_KEYS;
+    if (Object.keys(authority).sort().join('\0') !== [...keys].sort().join('\0')
       || !safeIdentifier(authority.childAgentId, 512) || !EXECUTOR_AGENT_TYPES.has(authority.childAgentType)
-      || !safeIdentifier(authority.parentTurnId, 4096) || !PERMISSION_MODES.includes(authority.parentPermissionMode)) throw invalidBinding();
+      || !safeIdentifier(authority.parentTurnId, 4096) || !PERMISSION_MODES.includes(authority.parentPermissionMode)
+      || !legacyHook && !agentPath(authority.agentPath)) throw invalidBinding();
   } else if (authority.kind === 'codex-legacy-adoption') {
     if (Object.keys(authority).sort().join('\0') !== [...ADOPTION_AUTHORITY_KEYS].sort().join('\0')
       || !digest(authority.authorityId) || !safeIdentifier(authority.childAgentId, 512)
@@ -260,6 +283,25 @@ function validateChildAuthority(authority, workspace) {
       || authority.executionWorkspace !== workspace || !digest(authority.agentPathDigest)) throw invalidBinding();
   } else throw invalidBinding();
   return structuredClone(authority);
+}
+
+/** @param {any} value */
+function validateSuperseded(value) {
+  if (!Array.isArray(value) || value.length > RESCUE_BINDING_MAX_RECORDS) throw invalidBinding();
+  const seen = new Set();
+  for (const entry of value) {
+    if (!plain(entry) || Object.keys(entry).sort().join('\0') !== [...SUPERSEDED_KEYS].sort().join('\0')
+      || !digest(entry.operationId) || !digest(entry.anchorJobId) || !digest(entry.currentJobId)
+      || entry.closeReason !== 'fresh' || !canonicalTimestamp(entry.closedAt) || seen.has(entry.operationId)) throw invalidBinding();
+    seen.add(entry.operationId);
+  }
+  return structuredClone(value);
+}
+
+/** @param {unknown} value */
+function agentPath(value) {
+  return typeof value === 'string' && Buffer.byteLength(value) <= 1024
+    && /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u.test(value);
 }
 
 /** @param {any} input */

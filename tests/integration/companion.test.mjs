@@ -666,7 +666,7 @@ test('first legacy adoption resumes on a new parent-turn generation one without 
   const initialBinding = await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({ workspace,
     parentSessionId, executorAgentId: childId, permissionMode: 'workspace-write' });
   assert.equal(initialBinding.kind, 'bound'); const operationId = initialBinding.binding.operationId;
-  await createStateStore({ dataRoot: context.dataRoot }).closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'session-ended' });
+  await createStateStore({ dataRoot: context.dataRoot }).closeRescueBindingForChild({ workspace, parentSessionId, executorAgentId: childId, operationId, reason: 'session-ended' });
   await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-b', workspace,
     permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume --wait second',
     sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
@@ -3057,7 +3057,7 @@ test('rescue requires an explicit choice when an owned resumable session exists'
 });
 
 test('trusted bound routing keeps choice identity private and permits only fresh permission replacement', async () => {
-  const context = await fixture(); const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: 'bound-parent', parentTurnId: 'turn-a', parentPermissionMode: 'workspace-write', workspace: context.workspace };
+  const context = await fixture(); const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', parentSessionId: 'bound-parent', parentTurnId: 'turn-a', parentPermissionMode: 'workspace-write', workspace: context.workspace };
   const initial = await runCompanion(['rescue', '--fresh', 'bound first'], { cwd: context.workspace, env: context.env, caller: caller('bound-parent', 'turn-a'), executor });
   assert.equal(initial.job.status, 'succeeded');
   const choice = await runCompanion(['rescue', 'bound next'], { cwd: context.workspace, env: context.env, caller: caller('bound-parent', 'turn-b'), executor });

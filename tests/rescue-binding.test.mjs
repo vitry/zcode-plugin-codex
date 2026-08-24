@@ -30,6 +30,7 @@ const identity = {
   executorAgentType: 'zcode-rescue',
   executorParentTurnId: 'origin-turn',
   executorParentPermissionMode: 'workspace-write',
+  executorAgentPath: '/root/zcode_rescue_task',
   workspace: codecWorkspace,
   permissionMode: 'workspace-write',
 };
@@ -45,13 +46,13 @@ test('binding codec creates one exact active generation without copying caller o
   assert.deepEqual(Object.keys(created).sort(), [
     'anchorJobId', 'closeReason', 'closedAt', 'createdAt', 'currentJobId',
     'childAuthority', 'key', 'operationId', 'parentSessionId', 'permissionMode',
-    'state', 'updatedAt', 'version', 'workspace',
+    'state', 'superseded', 'updatedAt', 'version', 'workspace',
   ].sort());
   assert.equal(created.key, rescueBindingKey(identity));
-  assert.equal(created.version, 2);
+  assert.equal(created.version, 3);
   assert.deepEqual(created.childAuthority, {
     kind: 'subagent-start', childAgentId: 'rescue-child', childAgentType: 'zcode-rescue',
-    parentTurnId: 'origin-turn', parentPermissionMode: 'workspace-write',
+    parentTurnId: 'origin-turn', parentPermissionMode: 'workspace-write', agentPath: '/root/zcode_rescue_task',
   });
   assert.equal(created.state, 'active');
   assert.equal(created.closedAt, null);
@@ -154,7 +155,7 @@ test('partition codec enforces one exact bounded parent-session envelope and uni
   assert.throws(() => parseRescueBindingAuthority(Buffer.alloc(RESCUE_BINDING_AUTHORITY_MAX_BYTES + 1, 0x20), identity), { code: 'RESCUE_BINDING_INVALID' });
 });
 
-test('mixed v1/v2 partitions retain stable ordering, keys, and authority variants', () => {
+test('mixed v1/v3 partitions retain stable ordering, keys, and authority variants', () => {
   const legacyIdentity = { ...identity, executorAgentId: 'legacy-v1' };
   const legacy = { version: 1, key: rescueBindingKey(legacyIdentity), operationId: '1'.repeat(64), state: 'active',
     parentSessionId: identity.parentSessionId, executorAgentId: 'legacy-v1', executorAgentType: 'default',
@@ -166,7 +167,7 @@ test('mixed v1/v2 partitions retain stable ordering, keys, and authority variant
     records: [current, legacy] });
   const parsed = parseRescueBindingPartition(`${JSON.stringify(partition)}\n`, identity);
   assert.deepEqual(parsed.records.map((record) => record.key), [...parsed.records.map((record) => record.key)].sort());
-  assert.deepEqual(parsed.records.map((record) => record.version).sort(), [1, 2]);
+  assert.deepEqual(parsed.records.map((record) => record.version).sort(), [1, 3]);
   assert.deepEqual(parsed.records.map(rescueBindingAuthorityView).map((authority) => authority.kind), ['subagent-start', 'subagent-start']);
 });
 
@@ -187,12 +188,13 @@ async function fixture(options = {}) {
 }
 
 function executor(workspace, patch = {}) {
-  return { parentSessionId: 'parent-session', parentTurnId: 'origin-turn', agentId: 'rescue-child', agentType: 'zcode-rescue', workspace, parentPermissionMode: 'workspace-write', ...patch };
+  return { parentSessionId: 'parent-session', parentTurnId: 'origin-turn', agentId: 'rescue-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write', ...patch };
 }
 
 function bindingExpected(workspace, value, patch = {}) {
   return { workspace, parentSessionId: value.parentSessionId, executorAgentId: value.agentId, executorAgentType: value.agentType,
-    executorParentTurnId: value.parentTurnId, executorParentPermissionMode: value.parentPermissionMode, permissionMode: value.parentPermissionMode, ...patch };
+    executorParentTurnId: value.parentTurnId, executorParentPermissionMode: value.parentPermissionMode,
+    executorAgentPath: value.agentPath, permissionMode: value.parentPermissionMode, ...patch };
 }
 
 function reservation(workspace, turn = 'turn-a') {
@@ -266,7 +268,7 @@ test('StateStore atomically reserves and resolves an exact fresh Rescue generati
 test('StateStore atomically publishes first legacy adoption and persists only its durable authority', async () => {
   const { dataRoot, workspace, store } = await fixture(); const authority = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority });
-  assert.equal(first.binding.version, 2);
+  assert.equal(first.binding.version, 3);
   assert.deepEqual(first.binding.childAuthority, authority);
   assert.equal((await store.listJobs(workspace)).length, 1);
   await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority }),
@@ -355,7 +357,7 @@ test('rejected branded stale CAS and cloned binding authority leave an existing 
   const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
   await store.finishJob(workspace, first.job.id, ['queued'], 'failed');
-  await store.closeRescueBindingsForSession({ workspace, parentSessionId: 'parent-session', reason: 'session-ended' });
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: 'parent-session', executorAgentId: 'legacy-child', operationId: first.binding.operationId, reason: 'session-ended' });
   const transient = await brandedAuthority(dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key);
   const before = await privateTreeBytes(dataRoot);
   await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), authority: transient,
@@ -389,7 +391,7 @@ test('prospective capacity rejection cannot publish an authority marker or colle
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace, { agentId: 'closed-hook' });
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
   await store.finishJob(workspace, first.job.id, ['queued'], 'failed');
-  await store.closeRescueBindingsForSession({ workspace, parentSessionId: hook.parentSessionId, reason: 'session-ended' });
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId, executorAgentId: hook.agentId, operationId: first.binding.operationId, reason: 'session-ended' });
   const authority = await brandedAuthority(dataRoot, workspace, 'legacy-adopt', 'turn-b');
   const before = await privateTreeBytes(dataRoot);
   const bounded = createStateStore({ dataRoot, testOnlyBindingPartitionMaxBytes: 1 });
@@ -411,7 +413,7 @@ test('existing branded slot replacement enforces prospective partition bytes bef
   assert.deepEqual(await privateTreeBytes(dataRoot), before);
 });
 
-test('existing v1 Hook slot cannot expand to v2 beyond prospective capacity or mutate private state', async () => {
+test('existing v1 Hook slot cannot expand to v3 beyond prospective capacity or mutate private state', async () => {
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
   await store.finishJob(workspace, first.job.id, ['queued'], 'failed');
@@ -477,7 +479,7 @@ test('StateStore reads and legally advances an active v1 Hook binding', async ()
   assert.equal(rescueBindingAuthorityView(continued.binding).kind, 'subagent-start');
   await store.finishJob(workspace, continued.job.id, ['queued'], 'failed');
   const replaced = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-c'), executor: hook });
-  assert.equal(replaced.binding.version, 2);
+  assert.equal(replaced.binding.version, 3);
   assert.deepEqual(replaced.binding.childAuthority, rescueBindingAuthorityView(continued.binding));
 });
 
@@ -574,8 +576,8 @@ test('StateStore closes exact session bindings as tombstones without deleting jo
   const siblingExecutor = executor(workspace, { parentSessionId: 'sibling-session', agentId: 'sibling-child' });
   const siblingReservation = { ...reservation(workspace, 'sibling-turn'), ownerSessionId: 'sibling-session' };
   const sibling = await store.reserveFreshRescueJob({ workspace, reservation: siblingReservation, executor: siblingExecutor }); await store.finishJob(workspace, sibling.job.id, ['queued'], 'failed');
-  const closed = await store.closeRescueBindingsForSession({ workspace, parentSessionId: trusted.parentSessionId, reason: 'session-ended' });
-  assert.equal(closed, 1);
+  const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId: trusted.parentSessionId, executorAgentId: trusted.agentId, operationId: fresh.binding.operationId, reason: 'session-ended' });
+  assert.equal(closed.kind, 'closed');
   await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_CLOSED' });
   assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, siblingExecutor))).kind, 'bound');
   assert.equal((await store.readJob(workspace, fresh.job.id)).id, fresh.job.id);
@@ -618,7 +620,7 @@ test('StateStore rejects permission changes, sessionless and cancelled anchors w
   await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted, { permissionMode: 'read-only' })), { code: 'RESCUE_BINDING_INVALID' });
   await store.finishJob(workspace, fresh.job.id, ['queued'], 'cancelled', { exitCode: null });
   await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
-  assert.equal((await store.readBoundRescueCurrentJob({ workspace, parentSessionId: trusted.parentSessionId, executorAgentId: trusted.agentId })).status, 'cancelled');
+  await assert.rejects(store.readBoundRescueCurrentJob({ workspace, parentSessionId: trusted.parentSessionId, executorAgentId: trusted.agentId }), { code: 'RESCUE_BINDING_INVALID' });
 });
 
 test('StateStore rejects a symlinked binding and bounds SessionEnd scans', async () => {
@@ -628,7 +630,7 @@ test('StateStore rejects a symlinked binding and bounds SessionEnd scans', async
   const outside = join(root, 'outside.json'); await writeFile(outside, await readFile(path));
   await import('node:fs/promises').then(({ unlink }) => unlink(path)); await symlink(outside, path);
   await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' });
-  await assert.rejects(store.closeRescueBindingsForSession({ workspace, parentSessionId: trusted.parentSessionId, reason: 'session-ended' }), { code: 'RESCUE_BINDING_INVALID' });
+  await assert.rejects(store.closeRescueBindingForChild({ workspace, parentSessionId: trusted.parentSessionId, executorAgentId: trusted.agentId, operationId: 'a'.repeat(64), reason: 'session-ended' }), { code: 'RESCUE_BINDING_INVALID' });
 });
 
 test('unpublished atomic temp remnants are harmless beside the exact partition file', async () => {
@@ -724,7 +726,7 @@ test('legacy-style job readers observe unchanged job schema and ignore Rescue bi
   assert.equal((await bindingFiles(storage.directory)).length, 1);
 });
 
-test('legacy reservation ignores Rescue publication hooks and SessionEnd closes one whole partition idempotently', async () => {
+test('legacy reservation ignores Rescue publication hooks and child closure is scoped and idempotent', async () => {
   const { dataRoot, workspace } = await fixture();
   const legacy = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt('fresh:binding') });
   assert.equal((await legacy.reserveJob({ ...reservation(workspace), command: 'review', readOnly: true })).command, 'review');
@@ -734,11 +736,12 @@ test('legacy reservation ignores Rescue publication hooks and SessionEnd closes 
   const secondExecutor = executor(workspace, { agentId: 'second-child' }); const second = await clean.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'second'), executor: secondExecutor });
   await makeEligible(clean, workspace, second.job, 'second-session'); await clean.finishJob(workspace, second.job.id, ['running'], 'succeeded');
   const partial = createStateStore({ dataRoot, testOnlyPublicationHook: throwingAt('close:binding') });
-  await assert.rejects(partial.closeRescueBindingsForSession({ workspace, parentSessionId: firstExecutor.parentSessionId, reason: 'session-ended' }), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
+  await assert.rejects(partial.closeRescueBindingForChild({ workspace, parentSessionId: firstExecutor.parentSessionId, executorAgentId: firstExecutor.agentId, operationId: first.binding.operationId, reason: 'session-ended' }), { code: 'RESCUE_PUBLICATION_TEST_FAULT' });
   assert.equal((await clean.resolveRescueBinding(bindingExpected(workspace, firstExecutor))).kind, 'bound');
   assert.equal((await clean.resolveRescueBinding(bindingExpected(workspace, secondExecutor))).kind, 'bound');
-  assert.equal(await clean.closeRescueBindingsForSession({ workspace, parentSessionId: firstExecutor.parentSessionId, reason: 'session-ended' }), 2);
-  assert.equal(await clean.closeRescueBindingsForSession({ workspace, parentSessionId: firstExecutor.parentSessionId, reason: 'session-ended' }), 0);
+  assert.equal((await clean.closeRescueBindingForChild({ workspace, parentSessionId: firstExecutor.parentSessionId, executorAgentId: firstExecutor.agentId, operationId: first.binding.operationId, reason: 'session-ended' })).kind, 'closed');
+  assert.equal((await clean.closeRescueBindingForChild({ workspace, parentSessionId: secondExecutor.parentSessionId, executorAgentId: secondExecutor.agentId, operationId: second.binding.operationId, reason: 'session-ended' })).kind, 'closed');
+  assert.equal((await clean.closeRescueBindingForChild({ workspace, parentSessionId: firstExecutor.parentSessionId, executorAgentId: firstExecutor.agentId, operationId: first.binding.operationId, reason: 'session-ended' })).kind, 'closed');
   await assert.rejects(clean.resolveRescueBinding(bindingExpected(workspace, firstExecutor)), { code: 'RESCUE_BINDING_CLOSED' });
   await assert.rejects(clean.resolveRescueBinding(bindingExpected(workspace, secondExecutor)), { code: 'RESCUE_BINDING_CLOSED' });
 });
@@ -848,8 +851,35 @@ test('fresh replacement changes the operation generation and rejects the old CAS
   await makeEligible(store, workspace, first.job, 'zcode-session-a'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
   const second = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), executor: trusted });
   assert.notEqual(second.binding.operationId, first.binding.operationId);
+  assert.deepEqual(second.binding.superseded.at(-1), {
+    operationId: first.binding.operationId, anchorJobId: first.binding.anchorJobId,
+    currentJobId: first.binding.currentJobId, closeReason: 'fresh', closedAt: second.binding.createdAt,
+  });
   await makeEligible(store, workspace, second.job, 'zcode-session-b'); await store.finishJob(workspace, second.job.id, ['running'], 'succeeded');
   await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-c'), executor: trusted, operationId: first.binding.operationId }), { code: 'RESCUE_BINDING_STALE' });
+});
+
+test('child-scoped closure cannot close a sibling and the session-wide close API is retired', async () => {
+  const { workspace, store } = await fixture(); const firstExecutor = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: firstExecutor });
+  await makeEligible(store, workspace, first.job, 'zcode-session-a'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const siblingExecutor = executor(workspace, { agentId: 'sibling-child', parentTurnId: 'sibling-turn' });
+  const sibling = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'sibling-turn'), executor: siblingExecutor });
+  await makeEligible(store, workspace, sibling.job, 'zcode-session-b'); await store.finishJob(workspace, sibling.job.id, ['running'], 'succeeded');
+  assert.equal(store.closeRescueBindingsForSession, undefined);
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: first.binding.parentSessionId,
+    executorAgentId: firstExecutor.agentId, operationId: first.binding.operationId, reason: 'invalidated' });
+  await assert.rejects(store.resolveRescueBinding(bindingExpected(workspace, firstExecutor)), { code: 'RESCUE_BINDING_CLOSED' });
+  assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, siblingExecutor))).binding.operationId, sibling.binding.operationId);
+});
+
+test('cancelled current job permanently closes only its exact child binding', async () => {
+  const { workspace, store } = await fixture(); const trusted = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
+  await store.finishJob(workspace, first.job.id, ['queued'], 'cancelled');
+  const closed = await store.closeRescueBindingForCancelledJob({ workspace, parentSessionId: first.binding.parentSessionId, jobId: first.job.id });
+  assert.equal(closed.binding.state, 'closed'); assert.equal(closed.binding.closeReason, 'cancel');
+  await assert.rejects(store.resolveRescueBindingForResume(bindingExpected(workspace, trusted)), { code: 'RESCUE_BINDING_CLOSED' });
 });
 
 test('fresh on a different child preserves the first child binding', async () => {
@@ -914,7 +944,7 @@ test('new-slot creation GCs only valid closed tombstones older than thirty days'
   const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: trusted });
   await makeEligible(store, workspace, first.job, 'zcode-session-a'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
-  await store.closeRescueBindingsForSession({ workspace, parentSessionId: trusted.parentSessionId, reason: 'session-ended' });
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: trusted.parentSessionId, executorAgentId: trusted.agentId, operationId: first.binding.operationId, reason: 'session-ended' });
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [closedPath] = await bindingFiles(storage.directory);
   const old = createRescueBinding({ ...identity, workspace: storage.workspacePath, anchorJobId: first.job.id, currentJobId: first.job.id, operationId: first.binding.operationId, now: '2020-01-01T00:00:00.000Z' });
   const records = [closeRescueBinding(old, { operationId: old.operationId, reason: 'session-ended', now: '2020-01-02T00:00:00.000Z' })];
