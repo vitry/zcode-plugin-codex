@@ -356,7 +356,7 @@ async function readLegacyAmbientChild(dependencies, childId, env, cwd, signal) {
 function validateLegacyAmbientChild(host, caller, childId) {
   const managed = /^\/root\/zcode_rescue_task(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u.test(host.agentPath);
   if (host.id !== childId || host.parentThreadId !== caller.sessionId || host.agentRole !== 'zcode-rescue'
-    || host.status.type !== 'notLoaded' || !managed || host.cwd !== caller.originWorkspace
+    || host.status.type !== 'active' || !managed || host.cwd !== caller.originWorkspace
     || caller.executionWorkspace !== caller.workspace || !/^[a-f0-9]{64}$/u.test(caller.generationId)) {
     throw new PluginError('EXECUTOR_IDENTITY_INVALID', 'The persisted Rescue child identity is not eligible for legacy adoption.', { category: 'authorization', remedy: 'Return to the active parent turn and prepare Rescue again.' });
   }
@@ -384,7 +384,7 @@ function validateLegacyConvergedChild(host, executor, caller) {
 
 /** @param {any} host @param {any} caller */
 function legacyBindingLookup(host, caller) {
-  return { workspace: caller.workspace, parentSessionId: caller.sessionId, executorAgentId: host.id, permissionMode: caller.permissionMode };
+  return { workspace: caller.workspace, parentSessionId: caller.sessionId, executorAgentId: host.id };
 }
 
 /** @param {{dataRoot:string,caller:any,cwd:string,source:'explicit'|'proactive',executor:any,authority?:any,argv:string[],output:any}} input */

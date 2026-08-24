@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "ddca5a16e31360b40b7684ff59e4e2abaa742fc3",
-  "sourceSha": "ddca5a16e31360b40b7684ff59e4e2abaa742fc3",
+  "sourceRef": "79544e3b49119e9359237ca7a3e4abdfea8e5bbe",
+  "sourceSha": "79544e3b49119e9359237ca7a3e4abdfea8e5bbe",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "97dc685a632acee4dcde8adceb8b549c3e60d8db1e48d8e555afce351ca9dbaa",
+    "sha256": "7141d5524f1246b522fb0932d8db48755494eb809cb487652e691883a04a506b",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -643,8 +643,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-route-planner.mjs",
-        "size": 18703,
-        "sha256": "c1d9bf3714924ce4b33d8ff2d17e0889023326c27772a87990d717eadbb0ba35"
+        "size": 18740,
+        "sha256": "e30f759b7f3b411ee304690a2e4c131c1e6bb933ed9290cdcfa1596b346804e1"
       },
       {
         "path": "plugins/zcode/scripts/lib/review-schema.mjs",
@@ -718,8 +718,8 @@
       },
       {
         "path": "plugins/zcode/scripts/zcode-companion.mjs",
-        "size": 77816,
-        "sha256": "91103b39428b36e628b67fb5ef5dfcd0728640704c6db033a5b457878c6c1aec"
+        "size": 77774,
+        "sha256": "9d4a1f1dc3a8a56b9a30b895915ffc633e41920b80b5a310ebcff76aca89509f"
       },
       {
         "path": "plugins/zcode/skills/adversarial-review/SKILL.md",
