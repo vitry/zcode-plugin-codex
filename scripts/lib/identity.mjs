@@ -1030,14 +1030,13 @@ function validateTurnIdentity(input) {
 /** @param {any} input @param {boolean} requireSnapshot */
 function validateExecutionInput(input, requireSnapshot) {
   const sealed = isPlainObject(input) && input.jobSpecFormat === 'sealed-v2' && input.specDigest === undefined;
-  const legacy = isPlainObject(input) && input.jobSpecFormat === 'legacy-v1' && isDigest(input.specDigest);
   const historical = isPlainObject(input) && input.jobSpecFormat === undefined && isDigest(input.specDigest);
   if (!isPlainObject(input) || !isNonEmptyString(input.jobId)
     || !isNonEmptyString(input.ownerSessionId) || !isNonEmptyString(input.workspace)
     || !EXECUTION_OPERATIONS.includes(input.operation)
-    || input.jobSpecFormat !== undefined && !['sealed-v2', 'legacy-v1'].includes(input.jobSpecFormat)
+    || input.jobSpecFormat !== undefined && input.jobSpecFormat !== 'sealed-v2'
     || input.specDigest !== undefined && !isDigest(input.specDigest)
-    || input.operation === 'run-reserved-job' && !sealed && !legacy && !historical
+    || input.operation === 'run-reserved-job' && !sealed && !historical
     || requireSnapshot && !isPlainJsonObject(input.permissionSnapshot)) throw invalidIdentityInput();
 }
 
@@ -1188,10 +1187,9 @@ function isExecutionRecord(record) {
   return isPlainObject(record) && isDigest(record.digest) && isNonEmptyString(record.jobId)
     && isNonEmptyString(record.ownerSessionId) && isNonEmptyString(record.workspace)
     && EXECUTION_OPERATIONS.includes(record.operation) && isPlainJsonObject(record.permissionSnapshot)
-    && (!('jobSpecFormat' in record) || ['sealed-v2', 'legacy-v1'].includes(record.jobSpecFormat))
+    && (!('jobSpecFormat' in record) || record.jobSpecFormat === 'sealed-v2')
     && (!('specDigest' in record) || isDigest(record.specDigest))
     && (record.operation !== 'run-reserved-job' || record.jobSpecFormat === 'sealed-v2' && !('specDigest' in record)
-      || record.jobSpecFormat === 'legacy-v1' && isDigest(record.specDigest)
       || !('jobSpecFormat' in record) && isDigest(record.specDigest))
     && isDate(record.createdAt) && (record.consumedAt === null || isDate(record.consumedAt))
     && (!('revokedAt' in record) || record.revokedAt === null || isDate(record.revokedAt));
@@ -1348,7 +1346,7 @@ function authorizationError(code, message, remedy = 'Use the exact credential is
  * @property {string} ownerSessionId
  * @property {string} workspace
  * @property {string} operation
- * @property {'sealed-v2'|'legacy-v1'} [jobSpecFormat]
+ * @property {'sealed-v2'} [jobSpecFormat]
  * @property {string} [specDigest]
  */
 

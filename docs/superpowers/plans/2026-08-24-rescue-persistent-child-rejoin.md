@@ -37,8 +37,9 @@ or SessionEnd revocation.
   atomic claim, and retains exact v1 job-spec compatibility.
 - [x] The post-`d4cdb14` format hardening rejects unknown/non-exact schemas,
   binds new capabilities to `sealed-v2`, replaces the public plaintext digest
-  with a capability-keyed commitment, and limits exact v1 plaintext reading to
-  legacy capability plus locked historical publication evidence.
+  with a capability-keyed commitment independently pinned on the private queued
+  job before exposure, and limits exact v1 plaintext reading to genuinely old
+  untyped capability plus locked historical publication evidence.
 - [x] Twelve iterative sol/medium spec/semantic review rounds historically
   reported no unresolved high/medium findings at `246acbf`.
 - [x] The historical focused lifecycle verification passed at `246acbf`:
@@ -149,9 +150,11 @@ tests.
 - [x] Publish new background task/focus/resume data only as a
   capability-authenticated encrypted v2 job-spec; authenticate before capability
   consumption, decrypt only after the execution claim, expose only a keyed
-  commitment, reject unknown/non-exact records, and retain exact v1 reading
-  solely with legacy capability plus exact classless owner-v1 or markerless
-  rollback evidence for in-flight compatibility and recovery.
+  commitment independently pinned to the private queued job, reject
+  unknown/non-exact records and valid same-capability re-sealing, and retain
+  exact v1 reading solely with an old untyped capability plus exact classless
+  owner-v1/v1-v2 or markerless rollback evidence for in-flight compatibility
+  and recovery; never issue a `legacy-v1` format label.
 - [x] Linearize claim-first/revoke-first behavior. Require an exact explicit PID
   and lease for claimed queued-to-running; clear claims on running/terminal
   commit while preserving the first revocation.

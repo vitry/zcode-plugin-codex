@@ -625,6 +625,25 @@ test('a queued job durably claims one exact worker before long-running setup', a
   assert.equal(running.childPid, 4321);
 });
 
+test('sealed job commitment publishes once and the execution claim requires its exact value', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const job = await store.reserveJob(rescueReservation(context.workspace));
+  const commitment = 'a'.repeat(64); const replacement = 'b'.repeat(64);
+  const published = await store.publishJobSpecCommitment(context.workspace, job.id, commitment);
+  assert.equal(published.rescueJobSpecCommitment, commitment);
+  await assert.rejects(store.publishJobSpecCommitment(context.workspace, job.id, replacement), { code: 'RESCUE_BINDING_INVALID' });
+  const worker = { childPid: 999_999_999, workerLeaseId: 'c'.repeat(64) };
+  await assert.rejects(store.claimJobWorkerForExecution(context.workspace, job.id, worker, undefined,
+    { sealedCommitment: replacement }), { code: 'RESCUE_BINDING_INVALID' });
+  const claimed = await store.claimJobWorkerForExecution(context.workspace, job.id, worker, undefined,
+    { sealedCommitment: commitment });
+  assert.equal(claimed.rescueJobSpecCommitment, commitment);
+  const running = await store.transitionJob(context.workspace, job.id, ['queued'], 'running', {
+    childPid: worker.childPid, workerLeaseId: worker.workerLeaseId, startedAt: new Date().toISOString(), zcodeSessionId: 'sealed-session',
+  });
+  assert.equal(running.rescueJobSpecCommitment, undefined);
+});
+
 test('cancellation can finish or return to running with the stop error', async () => {
   const { dataRoot, workspace } = await fixture();
   const store = createStateStore({ dataRoot });

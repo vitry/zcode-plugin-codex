@@ -120,16 +120,23 @@ capability-encrypted envelope. Its public structure contains only exact
 job/owner/workspace binding, a capability-keyed commitment, and cryptographic
 metadata; it contains no plaintext task, focus, prompt, model, or resume
 payload and no unkeyed plaintext-derived digest that permits offline guessing.
-The worker authenticates this exact sealed envelope and consumes a capability
-explicitly bound to `sealed-v2`, but decrypts and validates the normalized spec
-in memory only after the atomic execution claim succeeds. Unknown versions and
+Before the envelope or bearer capability is exposed, the reservation publishes
+the envelope's exact commitment on the private queued job. The worker
+authenticates the envelope, consumes a capability explicitly bound to
+`sealed-v2`, and compares that commitment against the independently persisted
+job value under the atomic execution-claim lock; possession of the capability
+therefore cannot authorize a valid re-sealing. It decrypts and validates the
+normalized spec in memory only after the claim succeeds. Unknown versions and
 non-exact outer schemas fail closed. Newly reserved jobs never persist a
 plaintext spec. Version-1 plaintext job-specs remain readable only with their
-exact six-field outer schema and an older untyped or explicitly `legacy-v1`
-capability carrying the exact normalized-spec digest. An untyped capability is
+exact six-field outer schema and a genuinely older untyped capability carrying
+the exact normalized-spec digest. Newly issued `legacy-v1` labels are forbidden
+and do not establish history. An untyped capability is
 not sufficient by itself: the locked StateStore classification must also prove
-an exact classless owner-v1 reservation or one exact markerless migration
-rollback. A modern `sealed-v2` capability or modern reservation without that
+an exact classless owner-v1 reservation with v1/v2 child evidence, or one exact
+markerless migration rollback adopted with a private digest proof under that
+lock. An existing modern durable rollback marker is not markerless evidence. A
+modern `sealed-v2` capability or modern reservation without that
 historical proof cannot be downgraded by replacing its file. Queued
 cancel/recovery classifies a v2 record from durable job/binding state without
 decrypting its task payload.
@@ -151,9 +158,9 @@ contradictory, or ambiguous reservation, origin, rollback, binding, permission,
 PID, lease, or claim evidence fails closed. No execution claim, prompt artifact,
 plaintext task/prompt publication, sealed-payload decryption, job-spec rewrite,
 or remote RPC may occur before this classification succeeds. A pre-claim v2
-sealed-envelope publication is permitted because it exposes no task artifact
-or guessable plaintext commitment and remains format-bound to the single-use
-execution capability.
+sealed-envelope publication is permitted only after its exact commitment has
+been independently published on the private queued job; it exposes no task
+artifact or guessable plaintext commitment.
 
 Historical writable records that predate reservation classes are compatible
 only when the canonical job omits the class and its exact owner binding has the

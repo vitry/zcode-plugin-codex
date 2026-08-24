@@ -642,7 +642,7 @@ async function startPublic(context) {
   const permissionSnapshot = Object.freeze({ permissionMode: caller.permissionMode });
   const transferSource = parsed.command === 'transfer' ? resolveTransferSource(parsed.options, caller) : undefined;
   const reservation = { workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) };
-  let job;
+  /** @type {any} */ let job;
   if (parsed.command === 'rescue' && childAuthorized) {
     let reserved;
     const childProof = context.executor ? { executor: context.executor } : { authority: context.authority };
@@ -676,6 +676,7 @@ async function startPublic(context) {
       capability = await (context.dependencies?.createExecutionCapability ?? ((/** @type {any} */ input) => identity.createExecutionCapability(input)))({ ...binding, permissionSnapshot });
       context.signal?.throwIfAborted();
       const record = sealJobSpec(job, spec, capability);
+      job = await store.publishJobSpecCommitment(cwd, job.id, record.commitment);
       await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, record);
       if (context.autoLaunchBackground) {
         context.signal?.throwIfAborted();
@@ -770,32 +771,38 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const jobId = parsed.positionals[0]; const job = await store.readJob(cwd, jobId);
   if (authorization.jobId !== jobId) throw authorizationInputError();
   const record = await readJobSpec(dataRoot, cwd, jobId);
-  let spec; let loadSpecAfterClaim; let capabilityBinding;
+  let spec; let loadSpecAfterClaim; let capabilityBinding; let executionAuthorization; let legacySpecDigest;
   if (record?.version === 2) {
     const sealed = verifySealedJobSpec(record, job, authorization.executionCapability);
     spec = { command: job.command };
     loadSpecAfterClaim = () => openSealedJobSpec(sealed, authorization.executionCapability);
     capabilityBinding = { jobSpecFormat: 'sealed-v2' };
+    executionAuthorization = { sealedCommitment: sealed.commitment };
   } else if (record?.version === 1) {
     if (!exactLegacyJobSpecRecord(record)) throw jobSpecTampered();
     spec = normalizeSpec(record.spec);
     const specDigest = digestSpec(spec);
     if (record.digest !== specDigest || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace) throw jobSpecTampered();
     capabilityBinding = { specDigest };
+    legacySpecDigest = specDigest;
   } else throw jobSpecTampered();
   const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', ...capabilityBinding });
-  if (record.version === 1 && consumed.jobSpecFormat !== undefined && consumed.jobSpecFormat !== 'legacy-v1') throw jobSpecTampered();
+  if (record.version === 1 && consumed.jobSpecFormat !== undefined) throw jobSpecTampered();
   if (!sameJson(consumed.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
   return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, loadSpecAfterClaim,
-    requireLegacyReservation: record.version === 1 && consumed.jobSpecFormat === undefined,
+    executionAuthorization, legacySpecDigest,
     caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
 
 /** @param {any} context */
 async function executeWithWorkerLease(context) {
-  let migrationRollback;
-  try { migrationRollback = await migrationRollbackForExecution(context.store, context.cwd, context.spec, context.job); }
+  let migrationRollback; let markerlessMigration = false;
+  try {
+    const migration = await migrationRollbackForExecution(context.store, context.cwd, context.spec, context.job,
+      context.legacySpecDigest);
+    migrationRollback = migration.rollback; markerlessMigration = migration.markerless;
+  }
   catch (error) {
     if (error instanceof PluginError && error.code === 'RESCUE_BINDING_NOT_RUNNABLE') {
       await context.store.finishJob(context.cwd, context.job.id, ['queued'], 'failed', { error: { message: error.message }, exitCode: 1 });
@@ -809,7 +816,9 @@ async function executeWithWorkerLease(context) {
     try {
       job = await context.store.claimJobWorkerForExecution(context.cwd, context.job.id,
         { childPid: process.pid, workerLeaseId }, migrationRollback,
-        (context.requireLegacyReservation ?? false) && migrationRollback === undefined);
+        context.executionAuthorization ?? (context.legacySpecDigest === undefined ? undefined : markerlessMigration
+          ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
+          : { legacyProof: 'classless-owner-v1' }));
       await context.dependencies?.testOnlyAfterExecutionClaim?.();
       if (context.loadSpecAfterClaim) spec = await context.loadSpecAfterClaim();
     } catch (error) {
@@ -964,7 +973,7 @@ function publicJob(job, ownerSessionId, projection) {
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueReservationKind;
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof;
   if (projection !== 'detail') delete visible.logFile;
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
@@ -979,7 +988,7 @@ function publicJob(job, ownerSessionId, projection) {
   return { ...visible, owned: true, owner: 'same-owner' };
 }
 /** @param {any} job */
-function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueReservationKind; return visible; }
+function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof; return visible; }
 /** @param {any} job */
 function terminalResultJob(job) {
   const visible = {
@@ -1019,11 +1028,13 @@ function migrationRollbackFromSpec(spec, job) {
   return legacyRescueMigrationRollbackFromSpec(spec, job,
     () => new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }));
 }
-/** Prefer the state-validated queued marker; old specs remain readable only for in-flight upgrade compatibility. @param {any} store @param {string} workspace @param {Record<string,string>} spec @param {any} job */
-async function migrationRollbackForExecution(store, workspace, spec, job) {
+/** Prefer the state-validated queued marker; old specs remain readable only for in-flight upgrade compatibility. @param {any} store @param {string} workspace @param {Record<string,string>} spec @param {any} job @param {string|undefined} [legacySpecDigest] */
+async function migrationRollbackForExecution(store, workspace, spec, job, legacySpecDigest) {
   const legacy = migrationRollbackFromSpec(spec, job);
-  return resolveQueuedRescueMigrationRollback({ store, workspace, job, mode: 'execution',
-    invalid: () => new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }) }, legacy);
+  const rollback = await resolveQueuedRescueMigrationRollback({ store, workspace, job, mode: 'execution',
+    invalid: () => new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }) }, legacy,
+  legacy === undefined ? undefined : legacySpecDigest);
+  return { rollback, markerless: legacy !== undefined };
 }
 /** @param {any} spec */
 function digestSpec(spec) { return createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex'); }

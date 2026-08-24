@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -45,6 +45,35 @@ const claimedSealedWorker = join(root, 'tests', 'fixtures', 'claimed-sealed-work
 const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
 const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
 const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
+
+/** Produce a cryptographically valid replacement with the bearer capability, without using production sealing code.
+ * @param {any} job @param {any} spec @param {string} capability */
+function resealJobSpecForTest(job, spec, capability) {
+  /** @param {string} purpose */
+  const key = (purpose) => createHash('sha256').update(`zcode-job-spec-${purpose}-v2\0`).update(capability).digest();
+  const plaintext = Buffer.from(JSON.stringify(spec));
+  const commitment = createHmac('sha256', key('commitment')).update(plaintext).digest('hex');
+  const identity = { version: 2, jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace, commitment };
+  const aad = Buffer.from(JSON.stringify(identity)); const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key('encryption'), iv); cipher.setAAD(aad);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]); const tag = cipher.getAuthTag();
+  const mac = createHmac('sha256', key('authentication')).update(aad).update(iv).update(tag).update(ciphertext).digest();
+  return { ...identity, sealedSpec: { algorithm: 'aes-256-gcm', iv: iv.toString('base64url'),
+    ciphertext: ciphertext.toString('base64url'), tag: tag.toString('base64url'), mac: mac.toString('base64url') } };
+}
+
+/** Publish a modern sealed-v2 fixture through the same StateStore commitment boundary as production.
+ * @param {any} context @param {any} store @param {string} workspace @param {any} job @param {any} spec */
+async function publishSealedSpecForTest(context, store, workspace, job, spec) {
+  const capability = await context.identity.createExecutionCapability({ jobId: job.id,
+    ownerSessionId: job.ownerSessionId, workspace, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2',
+    permissionSnapshot: job.permissionSnapshot });
+  const record = resealJobSpecForTest(job, spec, capability);
+  await store.publishJobSpecCommitment(workspace, job.id, record.commitment);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'job-specs', `${job.id}.json`), record);
+  return { capability, storage };
+}
 const legacyPreparedRoute = Object.freeze({ type: 'prepared', command: 'rescue', route: { version: 1, action: 'spawn', taskName: 'zcode_rescue_task' } });
 const baseAgentPathDigest = createHash('sha256').update('/root/zcode_rescue_task').digest('hex');
 const legacyPreparationDependencies = Object.freeze({
@@ -848,14 +877,7 @@ test('reserved execution losing revoke race before its atomic claim has no promp
     executor, operationId: first.binding.operationId });
   const spec = { command: 'rescue', task: 'must not cross revoked claim', model: 'fake2/other', effort: 'high',
     resumeSessionId: 'execution-claim-race-session', candidateJobId: first.job.id };
-  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
-  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
-  await atomicWriteJson(join(storage.directory, 'job-specs', `${continuation.job.id}.json`), {
-    version: 1, jobId: continuation.job.id, ownerSessionId: parentSessionId, workspace, digest, spec,
-  });
-  const capability = await context.identity.createExecutionCapability({ jobId: continuation.job.id,
-    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', jobSpecFormat: 'legacy-v1', specDigest: digest,
-    permissionSnapshot: continuation.job.permissionSnapshot });
+  const { capability, storage } = await publishSealedSpecForTest(context, store, workspace, continuation.job, spec);
   const record = join(context.directory, 'execution-claim-race.jsonl'); await writeFile(record, '');
   let revoked = false;
   await assert.rejects(runCompanion(['run-reserved-job', continuation.job.id], {
@@ -896,14 +918,7 @@ test('reserved execution winning its atomic claim remains authorized across a la
     executor, operationId: first.binding.operationId });
   const spec = { command: 'rescue', task: 'claim winner remains bounded', model: 'fake2/other', effort: 'xhigh',
     resumeSessionId: 'execution-claim-winner-session', candidateJobId: first.job.id };
-  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
-  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
-  await atomicWriteJson(join(storage.directory, 'job-specs', `${continuation.job.id}.json`), {
-    version: 1, jobId: continuation.job.id, ownerSessionId: parentSessionId, workspace, digest, spec,
-  });
-  const capability = await context.identity.createExecutionCapability({ jobId: continuation.job.id,
-    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', jobSpecFormat: 'legacy-v1', specDigest: digest,
-    permissionSnapshot: continuation.job.permissionSnapshot });
+  const { capability } = await publishSealedSpecForTest(context, store, workspace, continuation.job, spec);
   const record = join(context.directory, 'execution-claim-winner.jsonl'); await writeFile(record, '');
   let revoked = false;
   const result = await runCompanion(['run-reserved-job', continuation.job.id], {
@@ -933,6 +948,7 @@ test('background revoke-first persists no plaintext task or focus before its exe
   const reserved = await runCompanion(['rescue', '--background', '--fresh', secretTask], {
     cwd: workspace, env: context.env, caller: caller(parentSessionId), executor,
   });
+  assert.doesNotMatch(JSON.stringify(reserved), /rescueJobSpecCommitment|rescueLegacyJobSpecProof/u);
   const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
   const specPath = join(storage.directory, 'job-specs', `${reserved.job.id}.json`);
   const beforeClaim = await readFile(specPath, 'utf8');
@@ -1028,6 +1044,51 @@ test('background resume with model remains sealed and revoke-first performs no R
   }), { code: 'RESCUE_BINDING_INVALID' });
   assert.equal((await readFile(record, 'utf8')).trim(), '');
   await assert.rejects(stat(join(storage.directory, 'prompts', `${reserved.job.id}.md`)), { code: 'ENOENT' });
+});
+
+test('bearer cannot re-seal a valid replacement task model effort resume and candidate with the same capability', async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const parentSessionId = 'reseal-parent'; const childId = 'reseal-child';
+  const executor = { parentSessionId, parentTurnId: 'origin', agentId: childId, agentType: 'zcode-rescue',
+    agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const record = join(context.directory, 'reseal-rpc.jsonl'); await writeFile(record, '');
+  const anchor = await runCompanion(['rescue', '--fresh', 'establish exact anchor'], {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor,
+  });
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const foreignCandidate = await store.reserveJob({ workspace, ownerSessionId: parentSessionId, ownerTurnId: 'foreign-candidate',
+    command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const foreignRunning = await startWritableRescueForTest(store, workspace, foreignCandidate, {
+    startedAt: new Date().toISOString(), zcodeSessionId: 'reseal-foreign-session',
+  });
+  await store.finishJob(workspace, foreignRunning.id, ['running'], 'succeeded');
+  await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--resume', 'original sealed continuation'], {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor,
+  });
+  assert.equal(anchor.job.zcodeSessionId === foreignRunning.zcodeSessionId, false);
+  const replacement = { command: 'rescue', focus: 'FORGED_RESEALED_TASK', task: 'FORGED_RESEALED_TASK',
+    model: 'fake2/other', effort: 'xhigh', resumeSessionId: foreignRunning.zcodeSessionId, candidateJobId: foreignRunning.id };
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  await atomicWriteJson(join(storage.directory, 'job-specs', `${reserved.job.id}.json`),
+    resealJobSpecForTest(reserved.job, replacement, reserved.executionCapability));
+  await assert.rejects(runCompanion(reserved.privateInvocation, {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  const denied = await store.readJob(workspace, reserved.job.id);
+  assert.equal(denied.status, 'failed'); assert.equal(denied.rescueExecutionClaim, undefined); assert.equal(denied.promptArtifact, undefined);
+  assert.equal((await readFile(record, 'utf8')).trim(), '');
+});
+
+test('legacy-v1 execution capability cannot be newly issued for a modern reservation', async () => {
+  const context = await fixture(); const reserved = await runCompanion(['rescue', '--background', '--fresh', 'modern sealed task'], {
+    cwd: context.workspace, env: context.env, caller: caller('legacy-label-owner'),
+  });
+  await assert.rejects(context.identity.createExecutionCapability(/** @type {any} */ ({ jobId: reserved.job.id,
+    ownerSessionId: reserved.job.ownerSessionId, workspace: context.workspace, operation: 'run-reserved-job',
+    jobSpecFormat: 'legacy-v1', specDigest: 'a'.repeat(64), permissionSnapshot: reserved.job.permissionSnapshot })),
+  { code: 'IDENTITY_INPUT_INVALID' });
 });
 
 for (const mutation of ['unknown-version', 'sealed-to-v1', 'v1-extra-field']) test(`background ${mutation} job-spec mutation fails closed before execution`, async () => {
@@ -1170,14 +1231,7 @@ test('background interruption after claim preserves the binding revoke and termi
     executor, operationId: first.binding.operationId });
   const spec = { command: 'rescue', task: 'cancel after claim', model: 'fake2/other', effort: 'xhigh',
     resumeSessionId: 'execution-claim-cancel-session', candidateJobId: first.job.id };
-  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
-  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
-  await atomicWriteJson(join(storage.directory, 'job-specs', `${continuation.job.id}.json`), {
-    version: 1, jobId: continuation.job.id, ownerSessionId: parentSessionId, workspace, digest, spec,
-  });
-  const capability = await context.identity.createExecutionCapability({ jobId: continuation.job.id,
-    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', jobSpecFormat: 'legacy-v1', specDigest: digest,
-    permissionSnapshot: continuation.job.permissionSnapshot });
+  const { capability } = await publishSealedSpecForTest(context, store, workspace, continuation.job, spec);
   const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'cancel after claim');
   const record = join(context.directory, 'execution-claim-cancel.jsonl'); await writeFile(record, '');
   const observed = /** @type {{closed:any}} */ ({ closed: null });
@@ -1199,7 +1253,7 @@ test('background interruption after claim preserves the binding revoke and termi
   assert.equal((await readFile(record, 'utf8')).trim(), '');
 });
 
-for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding']) test(['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
+for (const failurePoint of ['spec write', 'capability write', 'worker launch', 'worker crash', 'legacy worker execution', 'durable marker v1 downgrade', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding']) test(['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
   ? `background execution rejects ${failurePoint === 'corrupt legacy worker execution' ? 'corrupt markerless legacy rollback metadata' : failurePoint === 'missing legacy worker evidence' ? 'missing markerless legacy rollback evidence' : 'missing markerless rollback evidence and binding'} without terminalizing its queued job`
   : `background session-ended migration restores its closed tombstone when ${failurePoint} fails`, async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
@@ -1253,7 +1307,7 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
     cwd: workspace, env: childEnv,
     dependencies: { readCodexThreadSpawnChild: async () => host, ...failureDependency },
   });
-  if (['worker crash', 'legacy worker execution', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)) {
+  if (['worker crash', 'legacy worker execution', 'durable marker v1 downgrade', 'legacy recovery', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)) {
     const queued = await attempt; assert.equal(queued.type, 'background');
     assert.doesNotMatch(JSON.stringify(queued), /rescueMigrationRollback|rescueReservationKind|priorCurrentJobId|priorClosedAt/u);
     if (failurePoint === 'worker crash') {
@@ -1281,7 +1335,12 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
           migrationPriorVersion: String(rollback.priorVersion),
         });
       specRecord.digest = createHash('sha256').update(JSON.stringify(specRecord.spec, Object.keys(specRecord.spec).sort())).digest('hex');
-      await atomicWriteJson(specPath, specRecord); delete queuedJob.rescueMigrationRollback; await atomicWriteJson(queuedJobPath, queuedJob);
+      await atomicWriteJson(specPath, specRecord);
+      if (failurePoint !== 'durable marker v1 downgrade') {
+        delete queuedJob.rescueMigrationRollback;
+        delete queuedJob.rescueJobSpecCommitment;
+      }
+      await atomicWriteJson(queuedJobPath, queuedJob);
       if (failurePoint === 'missing legacy worker evidence and binding') {
         for (const name of await readdir(storage.directory)) if (/^rescue-binding-(?:authority|session)-[a-f0-9]{64}\.json$/u.test(name)) await unlink(join(storage.directory, name));
       }
@@ -1295,12 +1354,14 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
         await assert.rejects(runCompanion(['run-reserved-job', queued.job.id], {
           cwd: workspace, env: { ...childEnv, FAKE_ZCODE_BAD_SNAPSHOT_METHOD: 'session/resume', FAKE_ZCODE_BAD_SNAPSHOT: 'wrong-workspace' },
           authorization: { executionCapability: capability, jobId: queued.job.id },
-        }), (error) => { executionError = error; return ['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
-          ? /** @type {any} */ (error)?.code === 'JOB_SPEC_INVALID' : true; });
+        }), (error) => { executionError = error; return failurePoint === 'durable marker v1 downgrade'
+          ? /** @type {any} */ (error)?.code === 'JOB_SPEC_INVALID'
+          : ['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)
+            ? /** @type {any} */ (error)?.code === 'JOB_SPEC_INVALID' : true; });
         const executionJob = await store.readJob(workspace, queued.job.id);
-        assert.equal(executionJob.status, ['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint) ? 'queued' : 'failed',
+        assert.equal(executionJob.status, ['durable marker v1 downgrade', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint) ? 'queued' : 'failed',
           `legacy execution left ${executionError?.code ?? 'error'}: ${executionError?.message ?? executionError}`);
-        if (['corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)) {
+        if (['durable marker v1 downgrade', 'corrupt legacy worker execution', 'missing legacy worker evidence', 'missing legacy worker evidence and binding'].includes(failurePoint)) {
           if (failurePoint === 'missing legacy worker evidence and binding') return;
           const activeAfterRejection = await store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId });
           assert.equal(activeAfterRejection.kind, 'bound'); assert.equal(activeAfterRejection.binding.currentJobId, queued.job.id);

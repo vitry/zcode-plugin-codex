@@ -266,16 +266,35 @@ export function createStateStore(options) {
      * Execution preflight rejects terminal-only publication remnants explicitly; terminal callers omit the mode.
      * @param {string} workspace @param {string} jobId @param {any} legacyRollback @param {'terminal'|'execution'} [mode]
      */
-    async resolveQueuedRescueMigrationRollback(workspace, jobId, legacyRollback, mode = 'terminal') {
+    async resolveQueuedRescueMigrationRollback(workspace, jobId, legacyRollback, mode = 'terminal', legacySpecDigest = undefined) {
       if (!isNonEmptyString(workspace) || !isDigest(jobId)
         || legacyRollback !== undefined && !isPlainJsonObject(legacyRollback)
+        || legacySpecDigest !== undefined && (!isDigest(legacySpecDigest) || mode !== 'execution' || legacyRollback === undefined)
         || !['terminal', 'execution'].includes(mode)) throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         const job = await readJobRecord(jobPath(storage.jobsDirectory, jobId), jobId, storage.workspacePath);
-        const classification = await classifyQueuedRescueTransitionLocked(storage, job, legacyRollback);
+        const classification = await classifyQueuedRescueTransitionLocked(storage, job, legacyRollback, legacySpecDigest);
         if (mode === 'execution' && classification.kind === 'ordinary-unadvanced') throw notRunnableRescueBinding();
         return classification.kind === 'migration' ? classification.rollback : undefined;
+      });
+    },
+
+    /** Publish the exact sealed background payload commitment before exposing its job-spec or worker capability.
+     * @param {string} workspace @param {string} jobId @param {string} commitment */
+    async publishJobSpecCommitment(workspace, jobId, commitment) {
+      if (!isNonEmptyString(workspace) || !isDigest(jobId) || !isDigest(commitment)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const path = jobPath(storage.jobsDirectory, jobId);
+        const job = await readJobRecord(path, jobId, storage.workspacePath);
+        if (job.status !== 'queued' || job.childPid !== undefined || job.workerLeaseId !== undefined
+          || job.rescueJobSpecCommitment !== undefined || job.rescueLegacyJobSpecProof !== undefined) throw invalidRescueBinding();
+        const published = { ...job, rescueJobSpecCommitment: commitment,
+          updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString() };
+        validateJobRecord(published, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
+        await atomicWriteJson(path, published);
+        return published;
       });
     },
 
@@ -399,16 +418,17 @@ export function createStateStore(options) {
      * The private claim is the linearization point: a later binding close cannot retroactively
      * revoke this attempt, while a close that wins first prevents the claim.
      * @param {string} workspace @param {string} jobId @param {{childPid:number,workerLeaseId:string}} worker
-     * @param {any} [legacyRollback] @param {boolean} [requireLegacyReservation]
+     * @param {any} [legacyRollback] @param {any} [executionAuthorization]
      */
-    async claimJobWorkerForExecution(workspace, jobId, worker, legacyRollback, requireLegacyReservation = false) {
+    async claimJobWorkerForExecution(workspace, jobId, worker, legacyRollback, executionAuthorization) {
       validateWorkerClaimInput(workspace, jobId, worker);
       if (legacyRollback !== undefined && !isPlainJsonObject(legacyRollback)
-        || typeof requireLegacyReservation !== 'boolean') throw invalidRescueBinding();
+        || !validExecutionAuthorization(executionAuthorization)) throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         const path = jobPath(storage.jobsDirectory, jobId);
         let job = await readJobRecord(path, jobId, storage.workspacePath);
+        validateJobSpecExecutionAuthorization(job, executionAuthorization, legacyRollback);
         if (job.childPid === worker.childPid && job.workerLeaseId === worker.workerLeaseId
           && validRescueExecutionClaim(job.rescueExecutionClaim, job)) return job;
         if (job.status !== 'queued' || job.childPid !== undefined || job.workerLeaseId !== undefined) throw workerLeaseConflict(jobId);
@@ -422,7 +442,10 @@ export function createStateStore(options) {
           job = await readJobRecord(path, jobId, storage.workspacePath);
         }
         const legacyReservation = classification !== undefined && job.rescueReservationKind === undefined;
-        if (requireLegacyReservation && !legacyReservation) throw invalidRescueBinding();
+        if (executionAuthorization?.legacyProof === 'classless-owner-v1'
+          && (!legacyReservation || classification?.kind === 'migration')) throw invalidRescueBinding();
+        if (executionAuthorization?.legacyProof === 'markerless-migration'
+          && (classification?.kind !== 'migration' || job.rescueLegacyJobSpecProof?.specDigest !== executionAuthorization.specDigest)) throw invalidRescueBinding();
         if (legacyReservation && classification?.binding?.version >= 3) throw invalidRescueBinding();
         const rescueExecutionClaim = classification
           ? executionClaimForClassification(classification, worker.workerLeaseId, legacyReservation) : undefined;
@@ -669,6 +692,8 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     if (migrationRollback && nextStatus !== 'queued') delete updated.rescueMigrationRollback;
     if (nextStatus !== 'queued') delete updated.rescueContinuationOrigin;
     if (nextStatus !== 'queued') delete updated.rescueExecutionClaim;
+    if (nextStatus !== 'queued') delete updated.rescueJobSpecCommitment;
+    if (nextStatus !== 'queued') delete updated.rescueLegacyJobSpecProof;
     if (effectivePatch.lastCancelError === null) delete updated.lastCancelError;
     validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
     if (job.status === 'queued' && migrationRollback && TERMINAL_STATUSES.has(nextStatus)
@@ -883,7 +908,7 @@ async function restoreQueuedMigrationLocked(storage, job, rollback) {
 }
 
 /** Classify one queued Rescue transition from exact persisted proof while the StateStore lock is held. @param {any} storage @param {any} job @param {any} legacyRollback */
-async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback) {
+async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback, legacySpecDigest = undefined) {
   if (job.status !== 'queued') throw invalidRescueBinding();
   const writableRescue = job.command === 'rescue' && job.readOnly === false;
   const reservationEvidence = writableRescue ? await readRescueReservationEvidence(storage, job) : undefined;
@@ -896,6 +921,7 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
     if (reservationEvidence?.kind === 'unbound') throw invalidRescueBinding();
   };
   if (job.rescueMigrationRollback !== undefined) {
+    if (legacySpecDigest !== undefined && job.rescueLegacyJobSpecProof?.specDigest !== legacySpecDigest) throw invalidRescueBinding();
     requireBoundReservation();
     if (!validPersistedMigrationRollback(job.rescueMigrationRollback, job)
       || legacyRollback !== undefined && !sameMigrationRollback(job.rescueMigrationRollback, legacyRollback)) throw invalidRescueBinding();
@@ -934,7 +960,10 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
     if (migration.state !== 'active') throw invalidRescueBinding();
     const classification = classified({ kind: 'migration', rollback: migration.rollback,
       bindingState: migration.state, binding: migration.binding });
-    const marked = { ...job, rescueMigrationRollback: migration.rollback };
+    const marked = { ...job, rescueMigrationRollback: migration.rollback,
+      ...(legacySpecDigest === undefined ? {} : { rescueLegacyJobSpecProof: {
+        version: 1, kind: 'markerless-migration', specDigest: legacySpecDigest,
+      } }) };
     validateJobRecord(marked, job.id, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, job.id));
     await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), marked);
     return classification;
@@ -1078,6 +1107,42 @@ function validRescueExecutionClaim(value, job) {
     return legacyReservation ? binding.version < 3
       : job.rescueReservationKind === 'bound' && (binding.anchorJobId === job.id || binding.version < 3);
   } catch { return false; }
+}
+
+/** @param {any} value */
+function validExecutionAuthorization(value) {
+  if (value === undefined) return true;
+  if (!isPlainJsonObject(value)) return false;
+  const keys = Object.keys(value).sort().join(',');
+  if (keys === 'sealedCommitment') return isDigest(value.sealedCommitment);
+  if (keys === 'legacyProof' && value.legacyProof === 'classless-owner-v1') return true;
+  return keys === 'legacyProof,specDigest' && value.legacyProof === 'markerless-migration' && isDigest(value.specDigest);
+}
+
+/** Reject any attempt that omits or contradicts the private queued job-spec publication proof. @param {any} job @param {any} authorization @param {any} legacyRollback */
+function validateJobSpecExecutionAuthorization(job, authorization, legacyRollback) {
+  if (job.rescueJobSpecCommitment !== undefined) {
+    if (authorization?.sealedCommitment !== job.rescueJobSpecCommitment) throw invalidRescueBinding();
+  } else if (authorization?.sealedCommitment !== undefined) throw invalidRescueBinding();
+  if (job.rescueLegacyJobSpecProof !== undefined) {
+    if (authorization?.legacyProof !== 'markerless-migration'
+      || authorization.specDigest !== job.rescueLegacyJobSpecProof.specDigest) throw invalidRescueBinding();
+  }
+  if (authorization?.legacyProof === 'classless-owner-v1'
+    && (job.rescueMigrationRollback !== undefined || job.rescueLegacyJobSpecProof !== undefined)) throw invalidRescueBinding();
+  if (authorization?.legacyProof === 'markerless-migration') {
+    if (legacyRollback === undefined || job.rescueMigrationRollback !== undefined && job.rescueLegacyJobSpecProof === undefined) throw invalidRescueBinding();
+  } else if (job.rescueLegacyJobSpecProof !== undefined) throw invalidRescueBinding();
+  if (authorization === undefined && (job.rescueJobSpecCommitment !== undefined || job.rescueLegacyJobSpecProof !== undefined)) throw invalidRescueBinding();
+}
+
+/** @param {any} value @param {any} job */
+function validLegacyJobSpecProof(value, job) {
+  return isPlainJsonObject(value)
+    && Object.keys(value).sort().join(',') === 'kind,specDigest,version'
+    && value.version === 1 && value.kind === 'markerless-migration' && isDigest(value.specDigest)
+    && job.status === 'queued' && job.command === 'rescue' && job.readOnly === false
+    && job.rescueMigrationRollback !== undefined;
 }
 
 /** Verify an idempotent terminal retry against the exact already-restored tombstone. @param {any} storage @param {any} job @param {any} rollback */
@@ -2040,6 +2105,9 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLo
     && (!('rescueMigrationRollback' in job) || validPersistedMigrationRollback(job.rescueMigrationRollback, job))
     && (!('rescueContinuationOrigin' in job) || validRescueContinuationOrigin(job.rescueContinuationOrigin, job))
     && (!('rescueExecutionClaim' in job) || validRescueExecutionClaim(job.rescueExecutionClaim, job))
+    && (!('rescueJobSpecCommitment' in job) || job.status === 'queued' && isDigest(job.rescueJobSpecCommitment))
+    && (!('rescueLegacyJobSpecProof' in job) || validLegacyJobSpecProof(job.rescueLegacyJobSpecProof, job))
+    && !('rescueJobSpecCommitment' in job && 'rescueLegacyJobSpecProof' in job)
     && !('rescueMigrationRollback' in job && 'rescueContinuationOrigin' in job);
   const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
   const hasBoundary = boundaryFields.some((field) => field in job);
