@@ -121,6 +121,26 @@ export function createStateStore(options) {
       return withFileLock(storage.lockPath, () => resolveBindingForResumeLocked(storage, bindingIdentity(input, storage.workspacePath), input.migrationProof));
     },
 
+    /** @param {{workspace:string,parentSessionId:string,executorAgentId:string,childAgentType:string,originWorkspace:string,executionWorkspace:string,agentPathDigest:string}} input */
+    async readRescueBindingMigrationProof(input) {
+      validateBindingMigrationLookup(input);
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, true);
+        const binding = snapshot.records.get(rescueBindingKey(input)) ?? null;
+        if (binding === null) return { kind: 'missing' };
+        const authority = rescueBindingAuthorityView(binding);
+        if (binding.state === 'active') return { kind: 'bound' };
+        if (binding.closeReason !== 'session-ended') throw closedRescueBinding();
+        const migrationProof = migrationProofForBinding(binding);
+        if (migrationProof.childAgentId !== input.executorAgentId || migrationProof.childAgentType !== input.childAgentType
+          || migrationProof.originWorkspace !== input.originWorkspace || migrationProof.executionWorkspace !== input.executionWorkspace
+          || migrationProof.agentPathDigest !== input.agentPathDigest || authority.kind !== 'codex-legacy-adoption') throw invalidRescueBinding();
+        await resolveActiveBindingLocked(storage, validateRescueBinding({ ...binding, state: 'active', closedAt: null, closeReason: null }));
+        return { kind: 'proof', migrationProof };
+      });
+    },
+
     /** @param {{workspace:string,parentSessionId:string,executorAgentId:string}} input */
     async readBoundRescueCurrentJob(input) {
       if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isBoundedOwnerSessionId(input.parentSessionId) || !isNonEmptyString(input.executorAgentId)) throw invalidRescueBinding();
@@ -653,6 +673,14 @@ function migrateSessionEndedBinding(binding, expected, proof) {
   return validateRescueBinding({ ...binding, state: 'active', updatedAt: new Date(Math.max(Date.now(), Date.parse(binding.updatedAt))).toISOString(), closedAt: null, closeReason: null });
 }
 
+/** @param {any} binding */
+function migrationProofForBinding(binding) {
+  const authority = rescueBindingAuthorityView(binding);
+  return { parentSessionId: binding.parentSessionId, childAgentId: authority.childAgentId, childAgentType: authority.childAgentType,
+    operationId: binding.operationId, originWorkspace: authority.originWorkspace, executionWorkspace: authority.executionWorkspace,
+    agentPathDigest: authority.agentPathDigest };
+}
+
 /** @param {any} storage @param {any} expected */
 async function readBindingLocked(storage, expected) {
   const snapshot = await readBindingPartitionSnapshot(storage, expected.parentSessionId, true);
@@ -881,6 +909,15 @@ function validateBindingMigrationProof(proof) {
     || !isNonEmptyString(proof.parentSessionId) || !isNonEmptyString(proof.childAgentId)
     || proof.childAgentType !== 'zcode-rescue' || !isDigest(proof.operationId) || !isDigest(proof.agentPathDigest)
     || typeof proof.originWorkspace !== 'string' || typeof proof.executionWorkspace !== 'string') throw invalidRescueBinding();
+}
+
+/** @param {any} input */
+function validateBindingMigrationLookup(input) {
+  if (!isPlainJsonObject(input) || Object.keys(input).sort().join('\0') !== ['agentPathDigest', 'childAgentType', 'executionWorkspace', 'executorAgentId', 'originWorkspace', 'parentSessionId', 'workspace'].sort().join('\0')
+    || !isNonEmptyString(input.parentSessionId) || !isNonEmptyString(input.executorAgentId) || !['zcode-rescue', 'default'].includes(input.childAgentType)
+    || !isDigest(input.agentPathDigest) || typeof input.workspace !== 'string' || typeof input.originWorkspace !== 'string'
+    || typeof input.executionWorkspace !== 'string') throw invalidRescueBinding();
+  try { rescueBindingKey(input); } catch { throw invalidRescueBinding(); }
 }
 
 /** @param {any} input @param {string} workspace */

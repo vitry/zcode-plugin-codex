@@ -365,7 +365,12 @@ function validateLegacyAmbientChild(host, caller, childId) {
 /** @param {{dataRoot:string,caller:any,host:any,executor:any}} input */
 async function legacyActivationProof({ dataRoot, caller, host }) {
   const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
-  const binding = await createStateStore({ dataRoot }).resolveRescueBindingForResume(legacyBindingLookup(host, caller));
+  const store = createStateStore({ dataRoot });
+  const lookup = legacyBindingLookup(host, caller);
+  const proof = await store.readRescueBindingMigrationProof({ ...lookup, childAgentType: host.agentRole,
+    originWorkspace: host.cwd, executionWorkspace: caller.workspace, agentPathDigest });
+  const binding = await store.resolveRescueBindingForResume({ ...lookup,
+    ...(proof.kind === 'proof' ? { migrationProof: proof.migrationProof } : {}) });
   return binding.kind === 'bound'
     ? { kind: 'legacy-bound', childThreadId: host.id, agentPathDigest, bindingKey: binding.binding.key }
     : { kind: 'legacy-adopt', childThreadId: host.id, agentPathDigest };

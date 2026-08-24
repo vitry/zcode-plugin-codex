@@ -662,18 +662,23 @@ test('first legacy adoption resumes on a new parent-turn generation one without 
   const invoke = () => runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: workspace,
     env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
     dependencies: { readCodexThreadSpawnChildIdentity: async () => activatedLegacyHost(host) } });
-  await prepare('first', 'fresh'); assert.equal((await invoke()).job.status, 'succeeded');
+  await prepare('first', 'fresh'); const first = await invoke(); assert.equal(first.job.status, 'succeeded');
+  const operationId = (await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({ workspace,
+    parentSessionId, executorAgentId: childId, permissionMode: 'workspace-write' })).binding.operationId;
+  await createStateStore({ dataRoot: context.dataRoot }).closeRescueBindingsForSession({ workspace, parentSessionId, reason: 'session-ended' });
   await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-b', workspace,
     permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume --wait second',
     sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
-  await prepare('second', 'resume'); assert.equal((await invoke()).job.status, 'succeeded');
+  await prepare('second', 'resume'); const resumed = await invoke(); assert.equal(resumed.job.status, 'succeeded');
+  assert.equal(resumed.job.zcodeSessionId, first.job.zcodeSessionId);
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(workspace); assert.equal(jobs.length, 2);
   const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
   assert.deepEqual((await readdir(join(storage.directory, 'hook-state')).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
     .filter((name) => name.startsWith('executor-') || name.startsWith('route-')), []);
   const binding = await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({ workspace,
     parentSessionId, executorAgentId: childId, permissionMode: 'workspace-write' });
-  assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.childAuthority.kind, 'codex-legacy-adoption');
+  assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.operationId, operationId);
+  assert.equal(binding.binding.childAuthority.kind, 'codex-legacy-adoption');
 });
 
 test('legacy-bound fresh replaces only the binding permission while resume rejects before reservation', async () => {

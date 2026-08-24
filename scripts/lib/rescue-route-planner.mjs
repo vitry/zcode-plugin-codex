@@ -225,7 +225,8 @@ function validateCandidate(resolved, host, caller, originWorkspace, executionWor
 /** @param {string} dataRoot */
 function defaultBindingResolver(dataRoot) {
   const store = createStateStore({ dataRoot });
-  return (/** @type {any} */ { caller, envelope, executor, host, executionWorkspace }) => store.resolveRescueBindingForResume({
+  return async (/** @type {any} */ { caller, envelope, executor, host, executionWorkspace }) => {
+    const lookup = {
     workspace: executionWorkspace,
     parentSessionId: caller.sessionId,
     executorAgentId: executor?.agentId ?? host.id,
@@ -235,7 +236,18 @@ function defaultBindingResolver(dataRoot) {
       executorParentPermissionMode: executor.parentPermissionMode,
     } : {}),
     ...(envelope.options?.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
-  });
+    };
+    let migrationProof;
+    if (envelope.options?.resume === 'resume') {
+      const proof = await store.readRescueBindingMigrationProof({
+        workspace: executionWorkspace, parentSessionId: caller.sessionId, executorAgentId: executor?.agentId ?? host.id,
+        childAgentType: executor?.agentType ?? host.agentRole, originWorkspace: host.cwd, executionWorkspace,
+        agentPathDigest: pathDigest(host.agentPath),
+      });
+      if (proof.kind === 'proof') migrationProof = proof.migrationProof;
+    }
+    return store.resolveRescueBindingForResume({ ...lookup, ...(migrationProof ? { migrationProof } : {}) });
+  };
 }
 
 /** @param {Set<string>} occupied */
