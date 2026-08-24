@@ -398,11 +398,13 @@ export function createStateStore(options) {
      * Atomically validates one queued execution's current Rescue authority and claims its worker.
      * The private claim is the linearization point: a later binding close cannot retroactively
      * revoke this attempt, while a close that wins first prevents the claim.
-     * @param {string} workspace @param {string} jobId @param {{childPid:number,workerLeaseId:string}} worker @param {any} [legacyRollback]
+     * @param {string} workspace @param {string} jobId @param {{childPid:number,workerLeaseId:string}} worker
+     * @param {any} [legacyRollback] @param {boolean} [requireLegacyReservation]
      */
-    async claimJobWorkerForExecution(workspace, jobId, worker, legacyRollback) {
+    async claimJobWorkerForExecution(workspace, jobId, worker, legacyRollback, requireLegacyReservation = false) {
       validateWorkerClaimInput(workspace, jobId, worker);
-      if (legacyRollback !== undefined && !isPlainJsonObject(legacyRollback)) throw invalidRescueBinding();
+      if (legacyRollback !== undefined && !isPlainJsonObject(legacyRollback)
+        || typeof requireLegacyReservation !== 'boolean') throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, workspace);
       return withFileLock(storage.lockPath, async () => {
         const path = jobPath(storage.jobsDirectory, jobId);
@@ -420,6 +422,7 @@ export function createStateStore(options) {
           job = await readJobRecord(path, jobId, storage.workspacePath);
         }
         const legacyReservation = classification !== undefined && job.rescueReservationKind === undefined;
+        if (requireLegacyReservation && !legacyReservation) throw invalidRescueBinding();
         if (legacyReservation && classification?.binding?.version >= 3) throw invalidRescueBinding();
         const rescueExecutionClaim = classification
           ? executionClaimForClassification(classification, worker.workerLeaseId, legacyReservation) : undefined;

@@ -669,14 +669,13 @@ async function startPublic(context) {
   }
   const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' ') || context.originalPrompt, task: parsed.positionals.join(' ') || context.originalPrompt, model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined });
   if (parsed.options.execution === 'background') {
-    const specDigest = digestSpec(spec);
-    const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', specDigest };
+    const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
     let capability;
     try {
       context.signal?.throwIfAborted();
       capability = await (context.dependencies?.createExecutionCapability ?? ((/** @type {any} */ input) => identity.createExecutionCapability(input)))({ ...binding, permissionSnapshot });
       context.signal?.throwIfAborted();
-      const record = sealJobSpec(job, spec, specDigest, capability);
+      const record = sealJobSpec(job, spec, capability);
       await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, record);
       if (context.autoLaunchBackground) {
         context.signal?.throwIfAborted();
@@ -771,21 +770,25 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const jobId = parsed.positionals[0]; const job = await store.readJob(cwd, jobId);
   if (authorization.jobId !== jobId) throw authorizationInputError();
   const record = await readJobSpec(dataRoot, cwd, jobId);
-  let spec; let loadSpecAfterClaim; let specDigest;
+  let spec; let loadSpecAfterClaim; let capabilityBinding;
   if (record?.version === 2) {
     const sealed = verifySealedJobSpec(record, job, authorization.executionCapability);
-    specDigest = sealed.digest;
     spec = { command: job.command };
     loadSpecAfterClaim = () => openSealedJobSpec(sealed, authorization.executionCapability);
-  } else {
+    capabilityBinding = { jobSpecFormat: 'sealed-v2' };
+  } else if (record?.version === 1) {
+    if (!exactLegacyJobSpecRecord(record)) throw jobSpecTampered();
     spec = normalizeSpec(record.spec);
-    specDigest = digestSpec(spec);
+    const specDigest = digestSpec(spec);
     if (record.digest !== specDigest || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace) throw jobSpecTampered();
-  }
-  const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', specDigest });
+    capabilityBinding = { specDigest };
+  } else throw jobSpecTampered();
+  const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', ...capabilityBinding });
+  if (record.version === 1 && consumed.jobSpecFormat !== undefined && consumed.jobSpecFormat !== 'legacy-v1') throw jobSpecTampered();
   if (!sameJson(consumed.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
   return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, loadSpecAfterClaim,
+    requireLegacyReservation: record.version === 1 && consumed.jobSpecFormat === undefined,
     caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
 
@@ -805,7 +808,8 @@ async function executeWithWorkerLease(context) {
     let job; let spec = context.spec;
     try {
       job = await context.store.claimJobWorkerForExecution(context.cwd, context.job.id,
-        { childPid: process.pid, workerLeaseId }, migrationRollback);
+        { childPid: process.pid, workerLeaseId }, migrationRollback,
+        (context.requireLegacyReservation ?? false) && migrationRollback === undefined);
       await context.dependencies?.testOnlyAfterExecutionClaim?.();
       if (context.loadSpecAfterClaim) spec = await context.loadSpecAfterClaim();
     } catch (error) {
@@ -857,17 +861,19 @@ async function discoverLaunch(env, dependencies = {}) {
   return (await discoverZCode({ explicitPath: env.ZCODE_PATH, env })).launch;
 }
 
-/** @param {any} job @param {Record<string,string>} spec @param {string} digest @param {string} capability */
-function sealJobSpec(job, spec, digest, capability) {
-  const identity = { version: 2, jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace, digest };
+/** @param {any} job @param {Record<string,string>} spec @param {string} capability */
+function sealJobSpec(job, spec, capability) {
+  const plaintext = Buffer.from(JSON.stringify(spec));
+  const commitment = createHmac('sha256', jobSpecKey('commitment', capability)).update(plaintext).digest('hex');
+  const identity = { version: 2, jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace, commitment };
   const aad = Buffer.from(JSON.stringify(identity)); const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', jobSpecKey('encryption', capability), iv); cipher.setAAD(aad);
-  const ciphertext = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(spec))), cipher.final()]); const tag = cipher.getAuthTag();
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]); const tag = cipher.getAuthTag();
   const mac = jobSpecMac(jobSpecKey('authentication', capability), aad, iv, tag, ciphertext);
   return { ...identity, sealedSpec: { algorithm: 'aes-256-gcm', iv: iv.toString('base64url'), ciphertext: ciphertext.toString('base64url'), tag: tag.toString('base64url'), mac: mac.toString('base64url') } };
 }
 
-/** @param {'encryption'|'authentication'} purpose @param {string} capability */
+/** @param {'encryption'|'authentication'|'commitment'} purpose @param {string} capability */
 function jobSpecKey(purpose, capability) { return createHash('sha256').update(`zcode-job-spec-${purpose}-v2\0`).update(capability).digest(); }
 /** @param {Buffer} key @param {Buffer} aad @param {Buffer} iv @param {Buffer} tag @param {Buffer} ciphertext */
 function jobSpecMac(key, aad, iv, tag, ciphertext) { return createHmac('sha256', key).update(aad).update(iv).update(tag).update(ciphertext).digest(); }
@@ -880,27 +886,28 @@ function decodeJobSpecBase64(value, exactBytes) {
 }
 /** @param {any} record @param {any} job @param {string} capability */
 function verifySealedJobSpec(record, job, capability) {
-  const outerKeys = ['version', 'jobId', 'ownerSessionId', 'workspace', 'digest', 'sealedSpec'];
+  const outerKeys = ['version', 'jobId', 'ownerSessionId', 'workspace', 'commitment', 'sealedSpec'];
   const sealedKeys = ['algorithm', 'iv', 'ciphertext', 'tag', 'mac'];
   if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).length !== outerKeys.length || outerKeys.some((key) => !Object.hasOwn(record, key))
-    || record.version !== 2 || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace || !/^[a-f0-9]{64}$/u.test(record.digest)
+    || record.version !== 2 || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace || !/^[a-f0-9]{64}$/u.test(record.commitment)
     || !record.sealedSpec || typeof record.sealedSpec !== 'object' || Array.isArray(record.sealedSpec) || Object.keys(record.sealedSpec).length !== sealedKeys.length || sealedKeys.some((key) => !Object.hasOwn(record.sealedSpec, key))
     || record.sealedSpec.algorithm !== 'aes-256-gcm') throw jobSpecTampered();
-  const identity = { version: 2, jobId: record.jobId, ownerSessionId: record.ownerSessionId, workspace: record.workspace, digest: record.digest };
+  const identity = { version: 2, jobId: record.jobId, ownerSessionId: record.ownerSessionId, workspace: record.workspace, commitment: record.commitment };
   const aad = Buffer.from(JSON.stringify(identity)); const iv = decodeJobSpecBase64(record.sealedSpec.iv, 12);
   const ciphertext = decodeJobSpecBase64(record.sealedSpec.ciphertext, undefined); const tag = decodeJobSpecBase64(record.sealedSpec.tag, 16); const mac = decodeJobSpecBase64(record.sealedSpec.mac, 32);
   if (ciphertext.length === 0 || ciphertext.length > 512 * 1024) throw jobSpecTampered();
   const expected = jobSpecMac(jobSpecKey('authentication', capability), aad, iv, tag, ciphertext);
   if (!timingSafeEqual(mac, expected)) throw jobSpecTampered();
-  return { digest: record.digest, aad, iv, ciphertext, tag };
+  return { commitment: record.commitment, aad, iv, ciphertext, tag };
 }
-/** @param {{digest:string,aad:Buffer,iv:Buffer,ciphertext:Buffer,tag:Buffer}} sealed @param {string} capability */
+/** @param {{commitment:string,aad:Buffer,iv:Buffer,ciphertext:Buffer,tag:Buffer}} sealed @param {string} capability */
 function openSealedJobSpec(sealed, capability) {
   try {
     const decipher = createDecipheriv('aes-256-gcm', jobSpecKey('encryption', capability), sealed.iv); decipher.setAAD(sealed.aad); decipher.setAuthTag(sealed.tag);
     const plaintext = Buffer.concat([decipher.update(sealed.ciphertext), decipher.final()]);
     const spec = normalizeSpec(JSON.parse(plaintext.toString('utf8')));
-    if (digestSpec(spec) !== sealed.digest) throw jobSpecTampered();
+    const commitment = createHmac('sha256', jobSpecKey('commitment', capability)).update(Buffer.from(JSON.stringify(spec))).digest('hex');
+    if (!timingSafeEqual(Buffer.from(commitment, 'hex'), Buffer.from(sealed.commitment, 'hex'))) throw jobSpecTampered();
     return spec;
   } catch (error) {
     if (error instanceof PluginError) throw error;
@@ -908,6 +915,12 @@ function openSealedJobSpec(sealed, capability) {
   }
 }
 function jobSpecTampered() { return new PluginError('JOB_SPEC_TAMPERED', 'Reserved job specification failed its immutable binding.', { category: 'authorization', remedy: 'Reserve a new background job.' }); }
+/** @param {any} record */
+function exactLegacyJobSpecRecord(record) {
+  const keys = ['version', 'jobId', 'ownerSessionId', 'workspace', 'digest', 'spec'];
+  return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).length === keys.length
+    && keys.every((key) => Object.hasOwn(record, key));
+}
 
 /** @param {string} dataRoot @param {string} workspace @param {any} job @param {any} record */
 async function writeJobSpec(dataRoot, workspace, job, record) {

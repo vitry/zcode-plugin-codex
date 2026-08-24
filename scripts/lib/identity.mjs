@@ -380,6 +380,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         workspace: storage.workspacePath,
         operation: input.operation,
         permissionSnapshot: input.permissionSnapshot,
+        ...(input.jobSpecFormat === undefined ? {} : { jobSpecFormat: input.jobSpecFormat }),
         ...(input.specDigest === undefined ? {} : { specDigest: input.specDigest }),
         createdAt: new Date().toISOString(),
         consumedAt: null,
@@ -414,6 +415,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         }
         /** @type {(keyof ExecutionCapabilityExpected)[]} */
         const identityFields = ['jobId', 'ownerSessionId', 'operation'];
+        if (expected.jobSpecFormat !== undefined) identityFields.push('jobSpecFormat');
         if (expected.specDigest !== undefined) identityFields.push('specDigest');
         for (const field of identityFields) {
           if (!safeEqual(record[field], expected[field])) {
@@ -453,6 +455,7 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         }
         /** @type {(keyof ExecutionCapabilityExpected)[]} */
         const fields = ['jobId', 'ownerSessionId', 'operation'];
+        if (expected.jobSpecFormat !== undefined) fields.push('jobSpecFormat');
         if (expected.specDigest !== undefined) fields.push('specDigest');
         for (const field of fields) {
           if (!safeEqual(record[field], expected[field])) throw authorizationError('EXECUTION_CAPABILITY_MISMATCH', `Execution capability does not match ${field}.`);
@@ -1026,11 +1029,15 @@ function validateTurnIdentity(input) {
 
 /** @param {any} input @param {boolean} requireSnapshot */
 function validateExecutionInput(input, requireSnapshot) {
+  const sealed = isPlainObject(input) && input.jobSpecFormat === 'sealed-v2' && input.specDigest === undefined;
+  const legacy = isPlainObject(input) && input.jobSpecFormat === 'legacy-v1' && isDigest(input.specDigest);
+  const historical = isPlainObject(input) && input.jobSpecFormat === undefined && isDigest(input.specDigest);
   if (!isPlainObject(input) || !isNonEmptyString(input.jobId)
     || !isNonEmptyString(input.ownerSessionId) || !isNonEmptyString(input.workspace)
     || !EXECUTION_OPERATIONS.includes(input.operation)
+    || input.jobSpecFormat !== undefined && !['sealed-v2', 'legacy-v1'].includes(input.jobSpecFormat)
     || input.specDigest !== undefined && !isDigest(input.specDigest)
-    || input.operation === 'run-reserved-job' && !isDigest(input.specDigest)
+    || input.operation === 'run-reserved-job' && !sealed && !legacy && !historical
     || requireSnapshot && !isPlainJsonObject(input.permissionSnapshot)) throw invalidIdentityInput();
 }
 
@@ -1181,7 +1188,11 @@ function isExecutionRecord(record) {
   return isPlainObject(record) && isDigest(record.digest) && isNonEmptyString(record.jobId)
     && isNonEmptyString(record.ownerSessionId) && isNonEmptyString(record.workspace)
     && EXECUTION_OPERATIONS.includes(record.operation) && isPlainJsonObject(record.permissionSnapshot)
+    && (!('jobSpecFormat' in record) || ['sealed-v2', 'legacy-v1'].includes(record.jobSpecFormat))
     && (!('specDigest' in record) || isDigest(record.specDigest))
+    && (record.operation !== 'run-reserved-job' || record.jobSpecFormat === 'sealed-v2' && !('specDigest' in record)
+      || record.jobSpecFormat === 'legacy-v1' && isDigest(record.specDigest)
+      || !('jobSpecFormat' in record) && isDigest(record.specDigest))
     && isDate(record.createdAt) && (record.consumedAt === null || isDate(record.consumedAt))
     && (!('revokedAt' in record) || record.revokedAt === null || isDate(record.revokedAt));
 }
@@ -1337,6 +1348,7 @@ function authorizationError(code, message, remedy = 'Use the exact credential is
  * @property {string} ownerSessionId
  * @property {string} workspace
  * @property {string} operation
+ * @property {'sealed-v2'|'legacy-v1'} [jobSpecFormat]
  * @property {string} [specDigest]
  */
 

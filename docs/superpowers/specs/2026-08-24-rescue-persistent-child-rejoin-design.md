@@ -117,13 +117,20 @@ revoke after it does not retroactively withdraw that one already-authorized
 attempt, but the closed binding remains unavailable to every later follow-up.
 For background execution, the pre-claim job-spec is a v2 authenticated,
 capability-encrypted envelope. Its public structure contains only exact
-job/owner/workspace binding, the normalized-spec digest, and cryptographic
+job/owner/workspace binding, a capability-keyed commitment, and cryptographic
 metadata; it contains no plaintext task, focus, prompt, model, or resume
-payload. The worker authenticates this sealed envelope before consuming the
-capability, but decrypts and validates the normalized spec in memory only after
-the atomic execution claim succeeds. Newly reserved jobs never persist a
-plaintext spec. Version-1 plaintext job-specs remain readable only for exact
-in-flight compatibility, including markerless migration recovery. Queued
+payload and no unkeyed plaintext-derived digest that permits offline guessing.
+The worker authenticates this exact sealed envelope and consumes a capability
+explicitly bound to `sealed-v2`, but decrypts and validates the normalized spec
+in memory only after the atomic execution claim succeeds. Unknown versions and
+non-exact outer schemas fail closed. Newly reserved jobs never persist a
+plaintext spec. Version-1 plaintext job-specs remain readable only with their
+exact six-field outer schema and an older untyped or explicitly `legacy-v1`
+capability carrying the exact normalized-spec digest. An untyped capability is
+not sufficient by itself: the locked StateStore classification must also prove
+an exact classless owner-v1 reservation or one exact markerless migration
+rollback. A modern `sealed-v2` capability or modern reservation without that
+historical proof cannot be downgraded by replacing its file. Queued
 cancel/recovery classifies a v2 record from durable job/binding state without
 decrypting its task payload.
 Every modern writable Rescue reservation requires this claim before
@@ -145,7 +152,8 @@ PID, lease, or claim evidence fails closed. No execution claim, prompt artifact,
 plaintext task/prompt publication, sealed-payload decryption, job-spec rewrite,
 or remote RPC may occur before this classification succeeds. A pre-claim v2
 sealed-envelope publication is permitted because it exposes no task artifact
-and remains bound to the single-use execution capability.
+or guessable plaintext commitment and remains format-bound to the single-use
+execution capability.
 
 Historical writable records that predate reservation classes are compatible
 only when the canonical job omits the class and its exact owner binding has the

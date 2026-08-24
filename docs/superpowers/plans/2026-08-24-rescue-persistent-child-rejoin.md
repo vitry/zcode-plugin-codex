@@ -35,6 +35,10 @@ or SessionEnd revocation.
 - [x] The post-`b125a6d` background sequencing fix publishes only an
   authenticated encrypted v2 task payload before claim, opens it only after the
   atomic claim, and retains exact v1 job-spec compatibility.
+- [x] The post-`d4cdb14` format hardening rejects unknown/non-exact schemas,
+  binds new capabilities to `sealed-v2`, replaces the public plaintext digest
+  with a capability-keyed commitment, and limits exact v1 plaintext reading to
+  legacy capability plus locked historical publication evidence.
 - [x] Twelve iterative sol/medium spec/semantic review rounds historically
   reported no unresolved high/medium findings at `246acbf`.
 - [x] The historical focused lifecycle verification passed at `246acbf`:
@@ -60,6 +64,9 @@ The change is complete only when every item below is checked:
 - [x] Named background tests prove revoke-first leaves no plaintext task/focus
   or prompt/RPC artifact, claim-first opens the exact task, and a claimed crash
   terminalizes without exposing the sealed payload.
+- [x] Named background tests cover model plus resume secrecy, unknown versions,
+  sealed-v2 to v1 replacement, non-exact v1 records, and a real detached worker
+  killed after claim and before decryption followed by orphan recovery.
 - [ ] Source and `marketplace/plugins/zcode` runtime/docs copies satisfy the
   repository byte-identity, provenance, package, and install snapshot contracts.
 - [x] Independent sol/medium specification review reports no unresolved
@@ -141,8 +148,10 @@ tests.
   or performing artifacts/session/model/thought side effects.
 - [x] Publish new background task/focus/resume data only as a
   capability-authenticated encrypted v2 job-spec; authenticate before capability
-  consumption, decrypt only after the execution claim, and retain v1 reading
-  solely for exact in-flight compatibility and markerless rollback recovery.
+  consumption, decrypt only after the execution claim, expose only a keyed
+  commitment, reject unknown/non-exact records, and retain exact v1 reading
+  solely with legacy capability plus exact classless owner-v1 or markerless
+  rollback evidence for in-flight compatibility and recovery.
 - [x] Linearize claim-first/revoke-first behavior. Require an exact explicit PID
   and lease for claimed queued-to-running; clear claims on running/terminal
   commit while preserving the first revocation.

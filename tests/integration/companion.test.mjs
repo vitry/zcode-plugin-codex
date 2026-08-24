@@ -41,6 +41,7 @@ const signalHandlerProbe = join(root, 'tests', 'fixtures', 'signal-handler-probe
 const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs');
 const sessionEndHook = join(root, 'hooks', 'session-end-hook.mjs');
 const lockHolder = join(root, 'tests', 'fixtures', 'lock-holder.mjs');
+const claimedSealedWorker = join(root, 'tests', 'fixtures', 'claimed-sealed-worker.mjs');
 const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
 const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
 const windowsRealSignalSkip = process.platform === 'win32' ? 'Node child.kill cannot emulate Windows console control events' : false;
@@ -853,7 +854,7 @@ test('reserved execution losing revoke race before its atomic claim has no promp
     version: 1, jobId: continuation.job.id, ownerSessionId: parentSessionId, workspace, digest, spec,
   });
   const capability = await context.identity.createExecutionCapability({ jobId: continuation.job.id,
-    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', specDigest: digest,
+    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', jobSpecFormat: 'legacy-v1', specDigest: digest,
     permissionSnapshot: continuation.job.permissionSnapshot });
   const record = join(context.directory, 'execution-claim-race.jsonl'); await writeFile(record, '');
   let revoked = false;
@@ -901,7 +902,7 @@ test('reserved execution winning its atomic claim remains authorized across a la
     version: 1, jobId: continuation.job.id, ownerSessionId: parentSessionId, workspace, digest, spec,
   });
   const capability = await context.identity.createExecutionCapability({ jobId: continuation.job.id,
-    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', specDigest: digest,
+    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', jobSpecFormat: 'legacy-v1', specDigest: digest,
     permissionSnapshot: continuation.job.permissionSnapshot });
   const record = join(context.directory, 'execution-claim-winner.jsonl'); await writeFile(record, '');
   let revoked = false;
@@ -993,6 +994,122 @@ test('claimed background crash terminalizes without exposing its sealed task', a
   assert.doesNotMatch(await readFile(join(storage.directory, 'job-specs', `${reserved.job.id}.json`), 'utf8'), new RegExp(secretTask));
 });
 
+test('background resume with model remains sealed and revoke-first performs no RPC', async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const parentSessionId = 'sealed-resume-parent'; const childId = 'sealed-resume-child';
+  const executor = { parentSessionId, parentTurnId: 'origin', agentId: childId, agentType: 'zcode-rescue',
+    agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const record = join(context.directory, 'sealed-resume-model.jsonl'); await writeFile(record, '');
+  const first = await runCompanion(['rescue', '--fresh', 'establish sealed resume'], {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor,
+  });
+  await writeFile(record, '');
+  const task = 'PRIVATE_RESUME_TASK_21af7d'; const model = 'fake2/other';
+  const reserved = await runCompanion(['rescue', '--background', '--resume', '--model', model, task], {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor,
+  });
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  const specPath = join(storage.directory, 'job-specs', `${reserved.job.id}.json`); const raw = await readFile(specPath, 'utf8');
+  const envelope = JSON.parse(raw); const normalized = { command: 'rescue', focus: task, task, model,
+    resumeSessionId: first.job.zcodeSessionId, candidateJobId: first.job.id };
+  const plaintextDigest = createHash('sha256').update(JSON.stringify(normalized, Object.keys(normalized).sort())).digest('hex');
+  assert.match(envelope.commitment, /^[a-f0-9]{64}$/u); assert.notEqual(envelope.commitment, plaintextDigest);
+  assert.doesNotMatch(raw, new RegExp(task)); assert.doesNotMatch(raw, new RegExp(model.replace('/', '\\/')));
+  assert.doesNotMatch(raw, new RegExp(first.job.zcodeSessionId)); assert.doesNotMatch(raw, /"(?:task|focus|model|resumeSessionId|candidateJobId|digest)"/u);
+  const active = await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId });
+  assert.equal(active.kind, 'bound');
+  await assert.rejects(runCompanion(reserved.privateInvocation, {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+    dependencies: { testOnlyBeforeExecutionClaim: async () => {
+      await createStateStore({ dataRoot: context.dataRoot }).closeRescueBindingForChild({ workspace, parentSessionId,
+        executorAgentId: childId, operationId: active.binding.operationId, reason: 'invalidated' });
+    } },
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal((await readFile(record, 'utf8')).trim(), '');
+  await assert.rejects(stat(join(storage.directory, 'prompts', `${reserved.job.id}.md`)), { code: 'ENOENT' });
+});
+
+for (const mutation of ['unknown-version', 'sealed-to-v1', 'v1-extra-field']) test(`background ${mutation} job-spec mutation fails closed before execution`, async () => {
+  const context = await fixture(); const task = `PRIVATE_${mutation.toUpperCase().replaceAll('-', '_')}_TASK`;
+  const record = join(context.directory, `${mutation}.jsonl`); await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', task], {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(`${mutation}-owner`),
+  });
+  const storage = await resolveWorkspaceStorage(context); const path = join(storage.directory, 'job-specs', `${reserved.job.id}.json`);
+  const originalRecord = JSON.parse(await readFile(path, 'utf8'));
+  const spec = { command: 'rescue', focus: task, task };
+  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
+  await atomicWriteJson(path, { version: mutation === 'unknown-version' ? 99 : 1, jobId: reserved.job.id,
+    ownerSessionId: reserved.job.ownerSessionId, workspace: await realpath(context.workspace), digest, spec,
+    ...(mutation === 'v1-extra-field' ? { unexpected: true } : {}) });
+  await assert.rejects(runCompanion(reserved.privateInvocation, {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+  }), (error) => ['JOB_SPEC_TAMPERED', 'EXECUTION_CAPABILITY_MISMATCH'].includes(/** @type {any} */ (error)?.code));
+  const denied = await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, reserved.job.id);
+  assert.equal(denied.status, 'queued'); assert.equal(denied.rescueExecutionClaim, undefined); assert.equal(denied.promptArtifact, undefined);
+  assert.equal((await readFile(record, 'utf8')).trim(), '');
+  if (mutation === 'sealed-to-v1') {
+    await atomicWriteJson(path, originalRecord);
+    const recovered = await runCompanion(reserved.privateInvocation, {
+      cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+      authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+    });
+    assert.equal(recovered.job.status, 'succeeded');
+  }
+});
+
+test('historical untyped capability cannot downgrade a modern sealed reservation to v1', async () => {
+  const context = await fixture(); const task = 'PRIVATE_UNTYPED_DOWNGRADE_TASK';
+  const record = join(context.directory, 'untyped-downgrade.jsonl'); await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', task], {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller('untyped-downgrade-owner'),
+  });
+  const spec = { command: 'rescue', focus: task, task };
+  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
+  const oldCapability = await context.identity.createExecutionCapability({ jobId: reserved.job.id,
+    ownerSessionId: reserved.job.ownerSessionId, workspace: context.workspace, operation: 'run-reserved-job',
+    specDigest: digest, permissionSnapshot: reserved.job.permissionSnapshot });
+  const storage = await resolveWorkspaceStorage(context); await atomicWriteJson(join(storage.directory, 'job-specs', `${reserved.job.id}.json`), {
+    version: 1, jobId: reserved.job.id, ownerSessionId: reserved.job.ownerSessionId,
+    workspace: await realpath(context.workspace), digest, spec,
+  });
+  await assert.rejects(runCompanion(reserved.privateInvocation, {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: oldCapability, jobId: reserved.job.id },
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  const denied = await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, reserved.job.id);
+  assert.equal(denied.status, 'failed'); assert.equal(denied.rescueExecutionClaim, undefined); assert.equal(denied.promptArtifact, undefined);
+  assert.equal((await readFile(record, 'utf8')).trim(), '');
+});
+
+test('detached worker death after claim and before decrypt is recovered without task execution', { skip: process.platform === 'win32' ? 'POSIX SIGKILL evidence is required' : false }, async (t) => {
+  const context = await fixture(); const workspace = await realpath(context.workspace); const ownerSessionId = 'sealed-kill-owner';
+  const task = 'DETACHED_PRIVATE_TASK_5f7a92'; const rpcRecord = join(context.directory, 'sealed-kill-rpc.jsonl'); await writeFile(rpcRecord, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', task], {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: rpcRecord }, caller: caller(ownerSessionId),
+  });
+  const marker = join(context.directory, 'sealed-worker-claimed.json');
+  const started = await startBackgroundWorker({ companionPath: claimedSealedWorker, jobId: reserved.job.id,
+    executionCapability: reserved.executionCapability, cwd: workspace,
+    env: { ...context.env, FAKE_ZCODE_RECORD: rpcRecord, ZCODE_TEST_CLAIM_MARKER: marker } });
+  assert.ok(started.pid); const workerPid = started.pid;
+  let exited = false; t.after(async () => { if (!exited && processAlive(workerPid)) try { process.kill(workerPid, 'SIGKILL'); } catch { /* exited */ } });
+  await waitFor(async () => { try { return JSON.parse(await readFile(marker, 'utf8')).pid === workerPid; } catch { return false; } }, 'detached worker did not persist its post-claim marker');
+  const store = createStateStore({ dataRoot: context.dataRoot }); const claimed = await store.readJob(workspace, reserved.job.id);
+  assert.equal(claimed.status, 'queued'); assert.equal(claimed.childPid, workerPid); assert.ok(claimed.rescueExecutionClaim);
+  process.kill(workerPid, 'SIGKILL'); exited = await waitForProcessExit(workerPid, 2_000); assert.equal(exited, true);
+  let clients = 0; await scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace,
+    createClient: async () => { clients += 1; throw new Error('claimed queued recovery must not start ZCode'); } });
+  const recovered = await store.readJob(workspace, reserved.job.id);
+  assert.equal(recovered.status, 'failed'); assert.equal(recovered.rescueExecutionClaim, undefined); assert.equal(recovered.promptArtifact, undefined);
+  assert.equal(clients, 0); assert.equal((await readFile(rpcRecord, 'utf8')).trim(), '');
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  const rawSpec = await readFile(join(storage.directory, 'job-specs', `${reserved.job.id}.json`), 'utf8'); assert.doesNotMatch(rawSpec, new RegExp(task));
+  await assert.rejects(stat(join(storage.directory, 'prompts', `${reserved.job.id}.md`)), { code: 'ENOENT' });
+});
+
 test('foreground production execution claims an exact owner-v1 classless unbound Rescue', async () => {
   const context = await fixture(); const record = join(context.directory, 'legacy-classless-foreground.jsonl');
   await writeFile(record, ''); let downgradedJobId;
@@ -1059,7 +1176,7 @@ test('background interruption after claim preserves the binding revoke and termi
     version: 1, jobId: continuation.job.id, ownerSessionId: parentSessionId, workspace, digest, spec,
   });
   const capability = await context.identity.createExecutionCapability({ jobId: continuation.job.id,
-    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', specDigest: digest,
+    ownerSessionId: parentSessionId, workspace, operation: 'run-reserved-job', jobSpecFormat: 'legacy-v1', specDigest: digest,
     permissionSnapshot: continuation.job.permissionSnapshot });
   const controller = new AbortController(); const interruption = new PluginError('JOB_INTERRUPTED', 'cancel after claim');
   const record = join(context.directory, 'execution-claim-cancel.jsonl'); await writeFile(record, '');

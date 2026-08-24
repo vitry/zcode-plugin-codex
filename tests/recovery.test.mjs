@@ -405,9 +405,8 @@ test('delivery failure revokes the minted capability and fails the queued job', 
   const fixture = await context();
   const output = await runCompanion(['rescue', '--background', '--fresh', 'repair'], { cwd: fixture.workspace, env: fixture.env, authorization: { callerContext: fixture.callerContext } });
   await failBackgroundDelivery(output, Object.assign(new Error('fd4 closed'), { code: 'EPIPE' }));
-  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.workspace });
-  const spec = JSON.parse(await readFile(join(storage.directory, 'job-specs', `${output.job.id}.json`), 'utf8'));
-  const binding = { jobId: output.job.id, ownerSessionId: 'owner', workspace: fixture.workspace, operation: 'run-reserved-job', specDigest: spec.digest };
+  const binding = { jobId: output.job.id, ownerSessionId: 'owner', workspace: fixture.workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
   await assert.rejects(fixture.identity.consumeExecutionCapability(output.executionCapability, binding), { code: 'EXECUTION_CAPABILITY_REVOKED' });
   assert.equal((await createStateStore({ dataRoot: fixture.dataRoot }).readJob(fixture.workspace, output.job.id)).status, 'failed');
 });
