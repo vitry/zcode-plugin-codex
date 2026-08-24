@@ -13,6 +13,7 @@ import {
 } from './fs.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
+import { consumePendingLegacyChildAuthorityContext, readPendingLegacyChildAuthorityContext } from './invocation.mjs';
 import { consumeConsumedLegacyChildAuthorityContext, readConsumedLegacyChildAuthorityContext } from './rescue-preparation.mjs';
 import {
   closeRescueBinding,
@@ -715,7 +716,11 @@ function reservationBindingContext(input, workspace, permissionMode, consumeAuth
   let trustedContext;
   try { trustedContext = consumeAuthority
     ? consumeConsumedLegacyChildAuthorityContext(input.authority) : readConsumedLegacyChildAuthorityContext(input.authority); }
-  catch { throw invalidRescueBinding(); }
+  catch {
+    try { trustedContext = consumeAuthority
+      ? consumePendingLegacyChildAuthorityContext(input.authority) : readPendingLegacyChildAuthorityContext(input.authority); }
+    catch { throw invalidRescueBinding(); }
+  }
   if (trustedContext.parentSessionId !== input.reservation.ownerSessionId) throw invalidRescueBinding();
   const trustedAuthority = trustedContext.authority;
   if (trustedAuthority.kind === 'codex-legacy-adoption') {

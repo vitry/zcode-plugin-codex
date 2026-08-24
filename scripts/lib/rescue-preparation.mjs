@@ -315,6 +315,8 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             'RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.',
           );
         }
+        if (kind === 'current' && ['legacy-adopt', 'legacy-bound'].includes(record.activation?.kind)
+          && input.beforeLegacyConsume !== undefined) await input.beforeLegacyConsume();
         const consumedAt = timestamp(input.now);
         if (consumedAt < Date.parse(record.createdAt)) throw invalidPreparation();
         if (consumedAt >= Date.parse(record.expiresAt)) throw preparationError(
@@ -586,7 +588,8 @@ function validateSaveInput(input) {
 /** @param {any} input */
 function validateConsumeInput(input) {
   validateTurnInput(input);
-  if (!PERMISSION_MODES.includes(input.permissionMode) || !safeIdentifier(input.executorAgentId)) {
+  if (!PERMISSION_MODES.includes(input.permissionMode) || !safeIdentifier(input.executorAgentId)
+    || input.beforeLegacyConsume !== undefined && typeof input.beforeLegacyConsume !== 'function') {
     throw invalidPreparation();
   }
   timestamp(input.now);

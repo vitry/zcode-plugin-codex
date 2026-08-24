@@ -385,6 +385,33 @@ Hook slot may write version two; no read or unrelated transition does.
 Version-one Hook-backed bindings remain byte-readable and are rewritten only by
 an existing legal state transition. No bulk migration or history scan occurs.
 
+### Pending choice continuation amendment
+
+A `legacy-bound` preparation may intentionally omit both `fresh` and `resume`.
+After the child consumes that preparation and observes the exact durable
+adoption binding, it saves a private version-three pending choice. This record
+atomically inherits the already-consumed preparation authority's exact child,
+path digest, binding key, parent session/turn/generation, permission, origin,
+and execution workspace, together with the exact presented binding snapshot.
+It never stores or synthesizes a Hook executor or route artifact.
+
+The later fixed `invoke-choice rescue resume|fresh` first prefers an exact
+current Hook executor. Only final exact `EXECUTOR_IDENTITY_NOT_FOUND` may use
+the same ambient child app-server read and active-parent execution-workspace
+join as prepared invocation. The pending record is consumed only when the
+current child, parent turn/generation, permission, origin, and execution
+workspace match. Consumption issues one in-process, one-shot branded
+continuation authority; StateStore accepts that exact object identity and
+rejects raw persisted objects, clones, replay, and every field mutation before
+publication. The durable adoption authority remains unchanged. A matching new
+Hook may authorize the current reservation while the pending record still
+supplies the exact one-shot choice and binding snapshot.
+
+Version-one and version-two pending records retain their existing compatibility
+rules. Only a genuine consumed `legacy-bound` preparation authority can create
+the version-three variant, and expiry or mismatch cannot publish a job, reserve
+a ZCode operation, or consume unrelated preparation state.
+
 ## Failure and Lifecycle Semantics
 
 - Child read missing, malformed, foreign, contradictory, or unsupported: fail

@@ -25,6 +25,7 @@ import test from 'node:test';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson, isLockPublishCollision, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
+import { createInvocationStore } from '../scripts/lib/invocation.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { createConsumedLegacyChildAuthority, createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
 
@@ -116,6 +117,35 @@ test('StateStore transient continuation matrix rejects child, key, turn, permiss
     operationId: first.binding.operationId }), { code: /RESCUE_BINDING_(?:INVALID|STALE)/u });
   }
   assert.equal((await store.listJobs(workspace)).length, before);
+});
+
+test('StateStore accepts only the one-shot pending-derived continuation brand without early publication', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    authority: await brandedStateAuthority(base.dataRoot, workspace, 'legacy-adopt') });
+  await store.transitionJob(workspace, first.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'legacy-session' });
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const preparationAuthority = await brandedStateAuthority(base.dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key);
+  const pending = createInvocationStore({ dataRoot: base.dataRoot });
+  await pending.savePending({ sessionId: 'parent-session', turnId: 'turn-b', workspace, permissionMode: 'workspace-write', command: 'rescue',
+    source: 'explicit', executorAgentId: 'legacy-child', spec: { argv: ['rescue', 'next'] }, routeKind: 'bound',
+    candidateJobId: first.binding.anchorJobId, expectedOperationId: first.binding.operationId,
+    expectedCurrentJobId: first.binding.currentJobId, legacyAuthority: preparationAuthority });
+  const invocation = await pending.consumePending({ sessionId: 'parent-session', workspace, command: 'rescue', choice: 'resume',
+    executorAgentId: 'legacy-child', turnId: 'turn-b', permissionMode: 'workspace-write', parentGenerationId: '5'.repeat(64),
+    originWorkspace: workspace, executionWorkspace: workspace });
+  const reservation = rescueReservation(workspace, 'turn-b'); const before = await store.listJobs(workspace);
+  for (const authority of [structuredClone(invocation.authority), { ...invocation.authority }, invocation.authority.legacyAuthority]) {
+    await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation, authority,
+      operationId: first.binding.operationId }), { code: 'RESCUE_BINDING_INVALID' });
+    assert.deepEqual(await store.listJobs(workspace), before);
+  }
+  const second = await store.reserveBoundRescueContinuation({ workspace, reservation, authority: invocation.authority,
+    operationId: first.binding.operationId });
+  assert.equal(second.binding.childAuthority.kind, 'codex-legacy-adoption'); assert.equal((await store.listJobs(workspace)).length, 2);
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation, authority: invocation.authority,
+    operationId: first.binding.operationId }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal((await store.listJobs(workspace)).length, 2);
 });
 
 /** @param {string} indexRoot @param {string} jobId */

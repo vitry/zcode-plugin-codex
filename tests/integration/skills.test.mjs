@@ -1268,7 +1268,7 @@ test('same-parent sibling cannot consume a pending Rescue choice without trusted
   assert.notEqual(sibling.code, 0);
   assert.match(sibling.stdout, /(?:PENDING_INVOCATION_NOT_FOUND|EXECUTOR_STATE_MISMATCH)/);
   const parent = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'shared-parent' } });
-  assert.notEqual(parent.code, 0); assert.match(parent.stdout, /EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)/);
+  assert.notEqual(parent.code, 0); assert.match(parent.stdout, /(?:EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)|CODEX_CHILD_METADATA_INVALID)/);
   const accepted = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'rescue-child' } });
   assert.equal(accepted.code, 0, accepted.stderr || accepted.stdout);
   await assert.rejects(

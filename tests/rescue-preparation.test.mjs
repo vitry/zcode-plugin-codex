@@ -438,6 +438,21 @@ test('legacy-adopt concurrent consume has exactly one branded winner', async () 
     && result.reason.code === 'RESCUE_PREPARATION_CONSUMED').length, 11);
 });
 
+test('legacy convergence callback runs after exact proof matching but before one-shot consumption', async () => {
+  const { store, workspaceA } = await storeFixture();
+  const base = { sessionId: 'parent', turnId: 'legacy-before-consume', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue adopt' };
+  await store.save({ ...base, envelope: validEnvelope, activation: legacyAdoptActivation });
+  let validations = 0;
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'legacy-child', activationProof: legacyAdoptActivation,
+    beforeLegacyConsume: () => { validations += 1; throw new PluginError('EXECUTOR_IDENTITY_INVALID', 'mismatch', { category: 'authorization' }); } }),
+  { code: 'EXECUTOR_IDENTITY_INVALID' });
+  assert.equal(validations, 1);
+  const receipt = await store.consume({ ...base, executorAgentId: 'legacy-child', activationProof: legacyAdoptActivation,
+    beforeLegacyConsume: () => { validations += 1; } });
+  assert.equal(receipt.executorAgentId, 'legacy-child'); assert.equal(validations, 2);
+});
+
 test('legacy-bound works at new-turn generation one and same-turn generation two with exact binding authority', async (t) => {
   await t.test('new-turn generation one', async () => {
     const { store, workspaceA } = await storeFixture();
