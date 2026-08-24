@@ -6,6 +6,18 @@ import { resolveWorkspaceStorage } from './workspace.mjs';
 
 const LEGACY_KEYS = ['migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId',
   'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt', 'migrationPriorVersion'];
+const LEGACY_OUTER_KEYS = ['digest', 'jobId', 'ownerSessionId', 'spec', 'version', 'workspace'];
+
+/** Parse one exact pre-sealed job-spec outer record. @param {any} record @param {any} job @param {()=>Error} invalid */
+export function parseExactLegacyJobSpecRecord(record, job, invalid) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)
+    || Object.keys(record).sort().join(',') !== LEGACY_OUTER_KEYS.join(',')
+    || record.version !== 1 || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId
+    || record.workspace !== job.workspace || !record.spec || typeof record.spec !== 'object' || Array.isArray(record.spec)) throw invalid();
+  const digest = createHash('sha256').update(JSON.stringify(record.spec, Object.keys(record.spec).sort())).digest('hex');
+  if (record.digest !== digest) throw invalid();
+  return record.spec;
+}
 
 /** Parse the exact rollback fields emitted by the pre-marker job-spec format. @param {any} spec @param {any} job @param {()=>Error} invalid */
 export function legacyRescueMigrationRollbackFromSpec(spec, job, invalid) {
@@ -43,10 +55,6 @@ export async function readQueuedRescueMigrationRollback(input) {
   // Current job-specs keep task material in a capability-authenticated sealed payload. Queued
   // terminalization needs only the StateStore's durable marker/binding proof and must not open it.
   if (record?.version === 2) return resolveQueuedRescueMigrationRollback(input, undefined);
-  const spec = record?.spec;
-  const digest = spec && typeof spec === 'object' && !Array.isArray(spec)
-    ? createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex') : null;
-  if (record?.version !== 1 || record.jobId !== input.job.id || record.ownerSessionId !== input.job.ownerSessionId
-    || record.workspace !== input.job.workspace || record.digest !== digest) throw input.invalid();
+  const spec = parseExactLegacyJobSpecRecord(record, input.job, input.invalid);
   return resolveQueuedRescueMigrationRollback(input, legacyRescueMigrationRollbackFromSpec(spec, input.job, input.invalid));
 }

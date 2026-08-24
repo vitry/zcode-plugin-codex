@@ -122,14 +122,19 @@ metadata; it contains no plaintext task, focus, prompt, model, or resume
 payload and no unkeyed plaintext-derived digest that permits offline guessing.
 Before the envelope or bearer capability is exposed, the reservation publishes
 the envelope's exact commitment on the private queued job. The worker
-authenticates the envelope, consumes a capability explicitly bound to
-`sealed-v2`, and compares that commitment against the independently persisted
-job value under the atomic execution-claim lock; possession of the capability
-therefore cannot authorize a valid re-sealing. It decrypts and validates the
+authenticates the envelope and read-validates a capability explicitly bound to
+`sealed-v2`. StateStore then performs a read-only locked authority inspection;
+the capability receives a private, releasable consumption reservation; and the
+worker claim revalidates the inspection digest under the StateStore lock before
+`consumedAt` commits. Any proof/CAS rejection releases that reservation without
+consuming the capability. The claim also compares the envelope commitment
+against the independently persisted job value, so possession of the capability
+cannot authorize a valid re-sealing. It decrypts and validates the
 normalized spec in memory only after the claim succeeds. Unknown versions and
 non-exact outer schemas fail closed. Newly reserved jobs never persist a
 plaintext spec. Version-1 plaintext job-specs remain readable only with their
-exact six-field outer schema and a genuinely older untyped capability carrying
+same shared exact six-field outer schema in execution, cancellation, and
+recovery, plus a genuinely older untyped capability carrying
 the exact normalized-spec digest. Newly issued `legacy-v1` labels are forbidden
 and do not establish history. An untyped capability is
 not sufficient by itself: the locked StateStore classification must also prove
@@ -167,10 +172,17 @@ only when the canonical job omits the class and its exact owner binding has the
 legacy v1 format. A classless owner-v1 job may be ordinary unbound, or may be
 bound by complete and exact historical v1/v2 child evidence. Production
 execution upgrades that authority only by publishing a private v2 execution
-claim under the state lock. A classless owner-v1 job associated with any v3
-child binding fails closed, whether it appears as a continuation, adoption,
-migration, fresh/ordinary reservation, production claim, or direct transition.
+claim under the state lock. A classless owner-v1 job associated with a v3 child
+binding fails closed for continuation, adoption, fresh/ordinary, production
+claim, and direct-transition paths. The sole v3 exception is an exact
+markerless migration successor reconstructed from a v1/v2 `session-ended`
+predecessor and exact six-field v1 spec; its private proof records that boundary.
 The existence or absence of one field is never enough to infer the class.
+
+The commitment protects against a bearer replacing the job-spec artifact or
+racing normal plugin APIs. It does not claim to withstand a hostile same-UID
+process that can rewrite both private StateStore and identity records directly.
+That attacker is outside this protocol's authority boundary.
 
 An old adoption publication remnant whose binding was not advanced is
 terminal-only. It is recognized only when its private origin reconstructs one

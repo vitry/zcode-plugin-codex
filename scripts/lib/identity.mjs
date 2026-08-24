@@ -393,6 +393,63 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
       return token;
     },
 
+    /** Read-only capability validation used before StateStore historical-proof validation.
+     * @param {string} token @param {ExecutionCapabilityExpected} expected @param {string} reservationId */
+    async inspectExecutionCapability(token, expected, reservationId) {
+      validateExecutionInput(expected, false); validateToken(token);
+      if (!isDigest(reservationId)) throw invalidIdentityInput();
+      const storage = await identityStorage(dataRoot, expected.workspace); const digest = tokenDigest(token);
+      return withFileLock(storage.lockPath, async () => {
+        const { record } = await readMatchingExecutionCapability(storage, digest, expected);
+        validateAvailableExecutionCapability(record, reservationId);
+        return publicRecord(record);
+      });
+    },
+
+    /** Reserve capability consumption without setting consumedAt; idempotent for one exact attempt.
+     * @param {string} token @param {ExecutionCapabilityExpected} expected @param {string} reservationId */
+    async reserveExecutionCapability(token, expected, reservationId) {
+      validateExecutionInput(expected, false); validateToken(token);
+      if (!isDigest(reservationId)) throw invalidIdentityInput();
+      const storage = await identityStorage(dataRoot, expected.workspace); const digest = tokenDigest(token);
+      return withFileLock(storage.lockPath, async () => {
+        const { path, record } = await readMatchingExecutionCapability(storage, digest, expected);
+        validateAvailableExecutionCapability(record, reservationId);
+        if (record.executionReservationId === reservationId) return publicRecord(record);
+        const reserved = { ...record, executionReservationId: reservationId };
+        await atomicWriteJson(path, reserved); return publicRecord(reserved);
+      });
+    },
+
+    /** Commit a previously reserved capability only after the StateStore claim succeeds.
+     * @param {string} token @param {ExecutionCapabilityExpected} expected @param {string} reservationId */
+    async commitExecutionCapability(token, expected, reservationId) {
+      validateExecutionInput(expected, false); validateToken(token);
+      if (!isDigest(reservationId)) throw invalidIdentityInput();
+      const storage = await identityStorage(dataRoot, expected.workspace); const digest = tokenDigest(token);
+      return withFileLock(storage.lockPath, async () => {
+        const { path, record } = await readMatchingExecutionCapability(storage, digest, expected);
+        validateAvailableExecutionCapability(record, reservationId);
+        if (record.executionReservationId !== reservationId) throw invalidAuthorizationRecord('execution capability reservation');
+        const consumed = { ...record, consumedAt: new Date().toISOString() }; delete consumed.executionReservationId;
+        await atomicWriteJson(path, consumed); return publicRecord(consumed);
+      });
+    },
+
+    /** Release one failed pre-claim reservation without consuming the capability.
+     * @param {string} token @param {ExecutionCapabilityExpected} expected @param {string} reservationId */
+    async releaseExecutionCapability(token, expected, reservationId) {
+      validateExecutionInput(expected, false); validateToken(token);
+      if (!isDigest(reservationId)) throw invalidIdentityInput();
+      const storage = await identityStorage(dataRoot, expected.workspace); const digest = tokenDigest(token);
+      return withFileLock(storage.lockPath, async () => {
+        const { path, record } = await readMatchingExecutionCapability(storage, digest, expected);
+        if (record.consumedAt !== null || (record.revokedAt ?? null) !== null) return;
+        if (record.executionReservationId !== reservationId) return;
+        const released = { ...record }; delete released.executionReservationId; await atomicWriteJson(path, released);
+      });
+    },
+
     /** @param {string} token @param {ExecutionCapabilityExpected} expected */
     async consumeExecutionCapability(token, expected) {
       validateExecutionInput(expected, false);
@@ -435,6 +492,10 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         if ((record.revokedAt ?? null) !== null) {
           throw authorizationError('EXECUTION_CAPABILITY_REVOKED', 'Execution capability has been revoked.', 'Create a new execution capability.');
         }
+        if (record.executionReservationId !== undefined) {
+          throw authorizationError('EXECUTION_CAPABILITY_CONSUMED', 'Execution capability is reserved by another execution attempt.',
+            'Wait for the owning execution attempt to settle.');
+        }
         const consumed = { ...record, consumedAt: new Date().toISOString() };
         await atomicWriteJson(path, consumed);
         return publicRecord(consumed);
@@ -462,6 +523,10 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
         }
         if (record.consumedAt !== null) {
           throw authorizationError('EXECUTION_CAPABILITY_CONSUMED', 'Execution capability has already been consumed.', 'Create a new child execution capability.');
+        }
+        if (record.executionReservationId !== undefined) {
+          throw authorizationError('EXECUTION_CAPABILITY_CONSUMED', 'Execution capability is reserved by an execution attempt.',
+            'Wait for the owning execution attempt to settle.');
         }
         if ((record.revokedAt ?? null) !== null) return;
         await atomicWriteJson(path, { ...record, revokedAt: new Date().toISOString() });
@@ -981,6 +1046,35 @@ function tokenDigest(token) {
   return createHash('sha256').update(token).digest('hex');
 }
 
+/** Read and match one execution record while its identity-store lock is held. @param {any} storage @param {string} digest @param {ExecutionCapabilityExpected} expected */
+async function readMatchingExecutionCapability(storage, digest, expected) {
+  const path = join(storage.capabilitiesDirectory, `${digest}.json`);
+  const record = await readAuthorizationRecord(path, 'EXECUTION_CAPABILITY_INVALID', 'Execution capability is invalid for this workspace.');
+  if (!isExecutionRecord(record) || !safeEqual(record.digest, digest) || record.workspace !== storage.workspacePath) {
+    throw authorizationError('EXECUTION_CAPABILITY_INVALID', 'Execution capability is invalid for this workspace.');
+  }
+  /** @type {(keyof ExecutionCapabilityExpected)[]} */
+  const fields = ['jobId', 'ownerSessionId', 'operation'];
+  if (expected.jobSpecFormat !== undefined) fields.push('jobSpecFormat');
+  if (expected.specDigest !== undefined) fields.push('specDigest');
+  for (const field of fields) if (!safeEqual(record[field], expected[field])) {
+    throw authorizationError('EXECUTION_CAPABILITY_MISMATCH', `Execution capability does not match ${field}.`);
+  }
+  return { path, record };
+}
+
+/** @param {any} record @param {string} reservationId */
+function validateAvailableExecutionCapability(record, reservationId) {
+  if (record.consumedAt !== null) throw authorizationError('EXECUTION_CAPABILITY_CONSUMED',
+    'Execution capability has already been consumed.', 'Create a new child execution capability.');
+  if ((record.revokedAt ?? null) !== null) throw authorizationError('EXECUTION_CAPABILITY_REVOKED',
+    'Execution capability has been revoked.', 'Create a new execution capability.');
+  if (record.executionReservationId !== undefined && record.executionReservationId !== reservationId) {
+    throw authorizationError('EXECUTION_CAPABILITY_CONSUMED', 'Execution capability is reserved by another execution attempt.',
+      'Wait for the owning execution attempt to settle.');
+  }
+}
+
 /** @param {string} sessionId @param {string} turnId @param {string} workspace */
 function gateKey(sessionId, turnId, workspace) {
   return createHash('sha256')
@@ -1036,7 +1130,7 @@ function validateExecutionInput(input, requireSnapshot) {
     || !EXECUTION_OPERATIONS.includes(input.operation)
     || input.jobSpecFormat !== undefined && input.jobSpecFormat !== 'sealed-v2'
     || input.specDigest !== undefined && !isDigest(input.specDigest)
-    || input.operation === 'run-reserved-job' && !sealed && !historical
+    || input.operation === 'run-reserved-job' && (requireSnapshot ? !sealed : !sealed && !historical)
     || requireSnapshot && !isPlainJsonObject(input.permissionSnapshot)) throw invalidIdentityInput();
 }
 
@@ -1189,6 +1283,7 @@ function isExecutionRecord(record) {
     && EXECUTION_OPERATIONS.includes(record.operation) && isPlainJsonObject(record.permissionSnapshot)
     && (!('jobSpecFormat' in record) || record.jobSpecFormat === 'sealed-v2')
     && (!('specDigest' in record) || isDigest(record.specDigest))
+    && (!('executionReservationId' in record) || isDigest(record.executionReservationId) && record.consumedAt === null)
     && (record.operation !== 'run-reserved-job' || record.jobSpecFormat === 'sealed-v2' && !('specDigest' in record)
       || !('jobSpecFormat' in record) && isDigest(record.specDigest))
     && isDate(record.createdAt) && (record.consumedAt === null || isDate(record.consumedAt))
@@ -1287,6 +1382,7 @@ function publicRecord(record) {
   const visible = { ...record };
   delete visible.digest;
   delete visible.key;
+  delete visible.executionReservationId;
   return visible;
 }
 

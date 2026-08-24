@@ -28,7 +28,7 @@ import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { serializeRescueProgressRelay } from './lib/rescue-progress-relay.mjs';
-import { legacyRescueMigrationRollbackFromSpec, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
+import { legacyRescueMigrationRollbackFromSpec, parseExactLegacyJobSpecRecord, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
 import { createStateStore, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
@@ -677,6 +677,7 @@ async function startPublic(context) {
       context.signal?.throwIfAborted();
       const record = sealJobSpec(job, spec, capability);
       job = await store.publishJobSpecCommitment(cwd, job.id, record.commitment);
+      await context.dependencies?.testOnlyAfterJobSpecCommitment?.(job);
       await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, record);
       if (context.autoLaunchBackground) {
         context.signal?.throwIfAborted();
@@ -779,19 +780,22 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
     capabilityBinding = { jobSpecFormat: 'sealed-v2' };
     executionAuthorization = { sealedCommitment: sealed.commitment };
   } else if (record?.version === 1) {
-    if (!exactLegacyJobSpecRecord(record)) throw jobSpecTampered();
-    spec = normalizeSpec(record.spec);
+    spec = normalizeSpec(parseExactLegacyJobSpecRecord(record, job, jobSpecTampered));
     const specDigest = digestSpec(spec);
     if (record.digest !== specDigest || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace) throw jobSpecTampered();
     capabilityBinding = { specDigest };
     legacySpecDigest = specDigest;
   } else throw jobSpecTampered();
-  const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', ...capabilityBinding });
-  if (record.version === 1 && consumed.jobSpecFormat !== undefined) throw jobSpecTampered();
-  if (!sameJson(consumed.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
+  const capabilityExpected = { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', ...capabilityBinding };
+  const capabilityReservationId = createHash('sha256').update('zcode-execution-reservation-v1\0')
+    .update(authorization.executionCapability).digest('hex');
+  const inspected = await identity.inspectExecutionCapability(authorization.executionCapability, capabilityExpected, capabilityReservationId);
+  if (record.version === 1 && inspected.jobSpecFormat !== undefined) throw jobSpecTampered();
+  if (!sameJson(inspected.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
   return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, loadSpecAfterClaim,
-    executionAuthorization, legacySpecDigest,
+    executionAuthorization, legacySpecDigest, executionCapability: authorization.executionCapability,
+    capabilityExpected, capabilityReservationId,
     caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
 
@@ -809,22 +813,46 @@ async function executeWithWorkerLease(context) {
     }
     throw error;
   }
+  await context.dependencies?.testOnlyBeforeExecutionInspection?.();
+  const executionInspection = await context.store.inspectJobWorkerExecution(context.cwd, context.job.id, migrationRollback,
+    context.executionAuthorization ?? (context.legacySpecDigest === undefined ? undefined : markerlessMigration
+      ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
+      : { legacyProof: legacyClasslessProof(context.spec) }));
+  if (context.executionCapability !== undefined) await context.identity.reserveExecutionCapability(
+    context.executionCapability, context.capabilityExpected, context.capabilityReservationId);
   await context.dependencies?.testOnlyBeforeExecutionClaim?.();
   const workerLeaseId = randomBytes(32).toString('hex');
   return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, async () => {
     let job; let spec = context.spec;
+    let capabilityCommitted = context.executionCapability === undefined;
     try {
+      const executionAuthorization = context.executionAuthorization ?? (context.legacySpecDigest === undefined ? undefined : markerlessMigration
+        ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
+        : { legacyProof: legacyClasslessProof(context.spec) });
       job = await context.store.claimJobWorkerForExecution(context.cwd, context.job.id,
         { childPid: process.pid, workerLeaseId }, migrationRollback,
-        context.executionAuthorization ?? (context.legacySpecDigest === undefined ? undefined : markerlessMigration
-          ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
-          : { legacyProof: 'classless-owner-v1' }));
+        executionAuthorization, executionInspection);
+      if (context.executionCapability !== undefined) {
+        await context.identity.commitExecutionCapability(context.executionCapability, context.capabilityExpected, context.capabilityReservationId);
+        capabilityCommitted = true;
+      }
       await context.dependencies?.testOnlyAfterExecutionClaim?.();
       if (context.loadSpecAfterClaim) spec = await context.loadSpecAfterClaim();
     } catch (error) {
       await context.store.finishJob(context.cwd, context.job.id, ['queued'], 'failed', {
         error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution authorization failed' }, exitCode: 1,
       }).catch(() => {});
+      if (!capabilityCommitted && context.executionCapability !== undefined) {
+        // A competing worker can share the deterministic retry reservation while it wins the
+        // StateStore claim. Never let the loser release that winner's pre-commit reservation.
+        const persisted = job === undefined
+          ? await context.store.readJob(context.cwd, context.job.id).catch(() => undefined)
+          : undefined;
+        const safeToRelease = job !== undefined || persisted === undefined
+          || persisted.childPid === undefined && persisted.workerLeaseId === undefined;
+        if (safeToRelease) await context.identity.releaseExecutionCapability(context.executionCapability,
+          context.capabilityExpected, context.capabilityReservationId).catch(() => {});
+      }
       throw error;
     }
     return executeReserved({ ...context, job, spec, migrationRollback, childPid: process.pid, workerLeaseId });
@@ -924,13 +952,6 @@ function openSealedJobSpec(sealed, capability) {
   }
 }
 function jobSpecTampered() { return new PluginError('JOB_SPEC_TAMPERED', 'Reserved job specification failed its immutable binding.', { category: 'authorization', remedy: 'Reserve a new background job.' }); }
-/** @param {any} record */
-function exactLegacyJobSpecRecord(record) {
-  const keys = ['version', 'jobId', 'ownerSessionId', 'workspace', 'digest', 'spec'];
-  return record && typeof record === 'object' && !Array.isArray(record) && Object.keys(record).length === keys.length
-    && keys.every((key) => Object.hasOwn(record, key));
-}
-
 /** @param {string} dataRoot @param {string} workspace @param {any} job @param {any} record */
 async function writeJobSpec(dataRoot, workspace, job, record) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); await atomicWriteJson(join(storage.directory, 'job-specs', `${job.id}.json`), record);
@@ -1035,6 +1056,11 @@ async function migrationRollbackForExecution(store, workspace, spec, job, legacy
     invalid: () => new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }) }, legacy,
   legacy === undefined ? undefined : legacySpecDigest);
   return { rollback, markerless: legacy !== undefined };
+}
+/** Historical v1 continuations must retain one exact v1/v2 child binding; they cannot degrade to unbound. @param {Record<string,string>} spec */
+function legacyClasslessProof(spec) {
+  return spec.resumeSessionId !== undefined || spec.candidateJobId !== undefined
+    ? 'classless-owner-v1-bound' : 'classless-owner-v1';
 }
 /** @param {any} spec */
 function digestSpec(spec) { return createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex'); }

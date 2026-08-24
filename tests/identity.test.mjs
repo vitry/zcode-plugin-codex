@@ -1375,13 +1375,13 @@ test('ending an active turn does not hide corrupted private identity state', asy
 
 test('execution capability is exact-match and atomically single-use', async () => {
   const { identity, workspaceA, workspaceB } = await fixture();
-  const expected = {
+  const expected = /** @type {any} */ ({
     jobId: 'job-a',
     ownerSessionId: 'session-a',
     workspace: workspaceA,
     operation: 'run-reserved-job',
-    specDigest: 'a'.repeat(64),
-  };
+    jobSpecFormat: 'sealed-v2',
+  });
   const token = await identity.createExecutionCapability({
     ...expected,
     permissionSnapshot: { permissionMode: 'workspace-write' },
@@ -1413,11 +1413,36 @@ test('execution capability is exact-match and atomically single-use', async () =
   assert.equal(JSON.stringify(success.value).includes(token), false);
 });
 
+test('execution capability reservation is private releasable and commits consumedAt exactly once', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture(); const expected = /** @type {any} */ ({
+    jobId: 'reserved-capability', ownerSessionId: 'session-a', workspace: workspaceA,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2',
+  });
+  const token = await identity.createExecutionCapability({ ...expected, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const reservationId = 'a'.repeat(64); const foreignReservation = 'b'.repeat(64);
+  assert.equal((await identity.inspectExecutionCapability(token, expected, reservationId)).jobId, expected.jobId);
+  const reserved = await identity.reserveExecutionCapability(token, expected, reservationId);
+  assert.equal(reserved.executionReservationId, undefined);
+  await assert.rejects(identity.reserveExecutionCapability(token, expected, foreignReservation), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+  await assert.rejects(identity.consumeExecutionCapability(token, expected), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+  await assert.rejects(identity.revokeExecutionCapability(token, expected), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+  await identity.releaseExecutionCapability(token, expected, foreignReservation);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const path = join(storage.directory,
+    'identity', 'capabilities', `${createHash('sha256').update(token).digest('hex')}.json`);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).executionReservationId, reservationId);
+  await identity.releaseExecutionCapability(token, expected, reservationId);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).executionReservationId, undefined);
+  await identity.reserveExecutionCapability(token, expected, reservationId);
+  const consumed = await identity.commitExecutionCapability(token, expected, reservationId);
+  assert.ok(Date.parse(consumed.consumedAt)); assert.equal(consumed.executionReservationId, undefined);
+  await assert.rejects(identity.commitExecutionCapability(token, expected, reservationId), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+});
+
 test('revocation preserves consumed outcomes for legacy and spec-bound capabilities', async () => {
-  for (const expected of [
+  for (const expected of /** @type {any[]} */ ([
     { jobId: 'legacy-job', ownerSessionId: 'session-a', operation: 'continue' },
-    { jobId: 'spec-job', ownerSessionId: 'session-a', operation: 'run-reserved-job', specDigest: 'c'.repeat(64) },
-  ]) {
+    { jobId: 'spec-job', ownerSessionId: 'session-a', operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' },
+  ])) {
     const { identity, workspaceA } = await fixture(); const binding = { ...expected, workspace: workspaceA };
     const token = await identity.createExecutionCapability({ ...binding, permissionSnapshot: { permissionMode: 'workspace-write' } });
     await identity.consumeExecutionCapability(token, binding);
@@ -1427,10 +1452,10 @@ test('revocation preserves consumed outcomes for legacy and spec-bound capabilit
 });
 
 test('revocation durably tombstones unconsumed legacy and spec-bound capabilities', async () => {
-  for (const expected of [
+  for (const expected of /** @type {any[]} */ ([
     { jobId: 'legacy-job', ownerSessionId: 'session-a', operation: 'continue' },
-    { jobId: 'spec-job', ownerSessionId: 'session-a', operation: 'run-reserved-job', specDigest: 'd'.repeat(64) },
-  ]) {
+    { jobId: 'spec-job', ownerSessionId: 'session-a', operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' },
+  ])) {
     const { dataRoot, identity, workspaceA } = await fixture(); const binding = { ...expected, workspace: workspaceA };
     const token = await identity.createExecutionCapability({ ...binding, permissionSnapshot: { permissionMode: 'workspace-write' } }); await identity.revokeExecutionCapability(token, binding);
     const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const path = join(storage.directory, 'identity', 'capabilities', `${createHash('sha256').update(token).digest('hex')}.json`);
@@ -1604,6 +1629,13 @@ test('identity creation rejects missing identities and uncontrolled modes or ope
       (error) => error instanceof PluginError && error.code === 'IDENTITY_INPUT_INVALID',
     );
   }
+});
+
+test('production issuer rejects an untyped historical run-reserved-job capability', async () => {
+  const { identity, workspaceA } = await fixture();
+  await assert.rejects(identity.createExecutionCapability({ jobId: 'historical-only', ownerSessionId: 'session-a',
+    workspace: workspaceA, operation: 'run-reserved-job', specDigest: 'a'.repeat(64),
+    permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'IDENTITY_INPUT_INVALID' });
 });
 
 test('identity consumption validates expected identities before storage access', async () => {

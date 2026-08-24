@@ -1156,7 +1156,7 @@ test('background qualification checks all core evidence before treating only spa
 test('background qualification rejects a production-minted capability across every visible evidence surface', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'zcode-background-qualification-')); t.after(() => rm(directory, { recursive: true, force: true }));
   const token = await createIdentityStore({ dataRoot: join(directory, 'data') }).createExecutionCapability({
-    jobId: backgroundJobId, ownerSessionId: 'qualification-owner', workspace: directory, operation: 'run-reserved-job', specDigest: 'c'.repeat(64), permissionSnapshot: { permissionMode: 'workspace-write' },
+    jobId: backgroundJobId, ownerSessionId: 'qualification-owner', workspace: directory, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2', permissionSnapshot: { permissionMode: 'workspace-write' },
   });
   assert.equal(qualifyCodexRescueBackgroundEvidence(backgroundFixture(), backgroundOptions({ privateExecutionCapability: token })).capabilityChecked, true);
   const cases = [

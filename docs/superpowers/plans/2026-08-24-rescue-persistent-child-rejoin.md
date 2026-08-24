@@ -155,13 +155,17 @@ tests.
   exact v1 reading solely with an old untyped capability plus exact classless
   owner-v1/v1-v2 or markerless rollback evidence for in-flight compatibility
   and recovery; never issue a `legacy-v1` format label.
+- [x] Read-validate historical capability and StateStore proof before reserving
+  consumption; revalidate one exact inspection digest at claim, release on
+  rejection, and commit `consumedAt` only after the durable claim. Use one exact
+  six-field v1 parser for execution, controller cancellation, and recovery.
 - [x] Linearize claim-first/revoke-first behavior. Require an exact explicit PID
   and lease for claimed queued-to-running; clear claims on running/terminal
   commit while preserving the first revocation.
 - [x] Apply one classification matrix to production claim and direct transition:
   classless owner-v1 ordinary or exact v1/v2-bound jobs remain compatible;
-  classless owner-v1 plus v3 continuation/adoption/migration/fresh/ordinary
-  state fails closed.
+  classless owner-v1 plus v3 continuation/adoption/fresh/ordinary state fails
+  closed; allow only an exact markerless v1/v2-to-v3 migration successor.
 - [x] Recognize ordinary-unadvanced adoption remnants only from one complete
   exact prior binding, permit safe terminalization with prior bytes unchanged,
   and forbid execution. Reject markerless migration before any durable write
