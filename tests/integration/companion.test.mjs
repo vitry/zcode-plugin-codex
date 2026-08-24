@@ -779,7 +779,13 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
     dependencies: { readCodexThreadSpawnChild: async () => host, ...failureDependency },
   });
   if (failurePoint === 'worker crash') {
-    assert.equal((await attempt).type, 'background');
+    const queued = await attempt; assert.equal(queued.type, 'background');
+    assert.doesNotMatch(JSON.stringify(queued), /rescueMigrationRollback|priorCurrentJobId|priorClosedAt/u);
+    const specPath = join(storage.directory, 'job-specs', `${(await store.listJobs(workspace))[1].id}.json`);
+    const specRecord = JSON.parse(await readFile(specPath, 'utf8'));
+    for (const key of Object.keys(specRecord.spec)) if (key.startsWith('migration')) delete specRecord.spec[key];
+    specRecord.digest = createHash('sha256').update(JSON.stringify(specRecord.spec, Object.keys(specRecord.spec).sort())).digest('hex');
+    await atomicWriteJson(specPath, specRecord);
     await scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace, createClient: async () => { throw failure; } });
   } else await assert.rejects(attempt, (error) => error === failure);
   assert.deepEqual(await readFile(partitionPath), closedTombstoneBytes);
@@ -820,8 +826,12 @@ test('explicit fresh replaces a closed session-ended same-child binding with a n
   const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId, executorAgentId: childId,
     operationId: initial.binding.operationId, reason: 'session-ended' });
   assert.equal(closed.kind, 'closed');
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  const hookState = join(storage.directory, 'hook-state');
+  for (const name of await readdir(hookState)) if (name.startsWith('executor-') || name.startsWith('route-')) await unlink(join(hookState, name));
   await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-b', workspace, permissionMode: 'workspace-write',
-    prompt: '$zcode:rescue --fresh --wait replace closed operation' });
+    prompt: '$zcode:rescue --fresh --wait replace closed operation', lifecycleResult: true,
+    sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'resume' });
   const host = { id: childId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
     cwd: workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 5 };
   const prepared = await runDirectInvocation(['prepare', 'rescue'], {
@@ -832,15 +842,30 @@ test('explicit fresh replaces a closed session-ended same-child binding with a n
   assert.deepEqual(prepared, { type: 'prepared', command: 'rescue',
     route: { version: 2, action: 'followup', target: host.agentPath, assignment: 'zcode-rescue' } });
   const replacement = await runDirectInvocation(['invoke-prepared', 'rescue'], {
-    cwd: workspace, env: childEnv, dependencies: { readCodexThreadSpawnChild: async () => host },
+    cwd: workspace, env: childEnv, dependencies: { readCodexThreadSpawnChildIdentity: async () => activatedLegacyHost(host) },
   });
   assert.equal(replacement.job.status, 'succeeded'); assert.notEqual(replacement.job.zcodeSessionId, first.job.zcodeSessionId);
   const current = await store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId });
   assert.equal(current.kind, 'bound'); assert.notEqual(current.binding.operationId, closed.binding.operationId);
   assert.equal(current.binding.currentJobId, replacement.job.id);
+  await store.closeRescueBindingForChild({ workspace, parentSessionId, executorAgentId: childId,
+    operationId: current.binding.operationId, reason: 'session-ended' });
+  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-c', workspace, permissionMode: 'workspace-write',
+    prompt: '$zcode:rescue --resume --wait continue route-less replacement', lifecycleResult: true,
+    sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'resume' });
+  const resumePrepared = await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
+    input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'continue route-less replacement', options: { execution: 'foreground', resume: 'resume' } })}\n`]),
+    dependencies: { planRescueActivation: (/** @type {any} */ input) => planRescueActivation({ ...input, listChildren: async () => [host] }) },
+  });
+  assert.equal(resumePrepared.route.action, 'followup');
+  const resumed = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: workspace, env: childEnv, dependencies: { readCodexThreadSpawnChildIdentity: async () => activatedLegacyHost(host) },
+  });
+  assert.equal(resumed.job.status, 'succeeded'); assert.equal(resumed.job.zcodeSessionId, replacement.job.zcodeSessionId);
   const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 2);
-  assert.equal(calls.filter((frame) => frame.method === 'session/resume').length, 0);
+  assert.equal(calls.filter((frame) => frame.method === 'session/resume').length, 1);
 });
 
 test('legacy-bound fresh replaces only the binding permission while resume rejects before reservation', async () => {

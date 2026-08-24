@@ -21,6 +21,7 @@ import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
 import { createConsumedLegacyChildAuthority, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
+import { rescueBindingAuthorityView } from './lib/rescue-binding.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
@@ -179,6 +180,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     }
     const preparations = createRescuePreparationStore({ dataRoot });
     let prepared;
+    let recoveredRescueRoute;
     try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId }); }
     catch (error) {
       if (!(error instanceof PluginError) || error.code !== 'RESCUE_PREPARATION_MISMATCH') throw error;
@@ -199,9 +201,14 @@ export async function runDirectInvocation(argv, runtime = {}) {
           }
         }
         if (!prepared) {
-          activationProof = await legacyActivationProof({ dataRoot, caller, host, executor });
+          const originalExecutor = executor;
+          const recovered = await legacyActivationContext({ dataRoot, caller, host });
+          activationProof = recovered.activationProof;
+          if (recovered.executor) executor = recovered.executor;
+          recoveredRescueRoute = recovered.rescueRoute;
           prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof,
-            ...(executor ? { beforeLegacyConsume: () => validateLegacyConvergedChild(host, executor, caller) } : {}) });
+            ...(originalExecutor && ['legacy-adopt', 'legacy-bound'].includes(activationProof.kind)
+              ? { beforeLegacyConsume: () => validateLegacyConvergedChild(host, originalExecutor, caller) } : {}) });
         }
       }
     }
@@ -235,7 +242,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     const reactivatedFresh = prepared.generation === 1
       && prepared.activation?.kind === 'reactivate'
       && prepared.envelope.options.resume === 'fresh';
-    let rescueRoute;
+    let rescueRoute = recoveredRescueRoute;
     let authority;
     if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && !executor) {
       authority = createConsumedLegacyChildAuthority(prepared, {
@@ -438,18 +445,28 @@ function validateLegacyAmbientChild(host, caller, childId) {
   }
 }
 
-/** @param {{dataRoot:string,caller:any,host:any,executor:any}} input */
-async function legacyActivationProof({ dataRoot, caller, host }) {
+/** @param {{dataRoot:string,caller:any,host:any}} input */
+async function legacyActivationContext({ dataRoot, caller, host }) {
   const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
   const store = createStateStore({ dataRoot });
   const lookup = legacyBindingLookup(host, caller);
   const proof = await store.readRescueBindingMigrationProof({ ...lookup, childAgentType: host.agentRole,
-    originWorkspace: host.cwd, executionWorkspace: caller.workspace, agentPathDigest });
+    originWorkspace: host.cwd, executionWorkspace: caller.workspace, agentPathDigest, agentPath: host.agentPath });
   const binding = await store.resolveRescueBindingForResume({ ...lookup,
     ...(proof.kind === 'proof' ? { migrationProof: proof.migrationProof } : {}) });
-  return binding.kind === 'bound'
-    ? { kind: 'legacy-bound', childThreadId: host.id, agentPathDigest, bindingKey: binding.binding.key }
-    : { kind: 'legacy-adopt', childThreadId: host.id, agentPathDigest };
+  if (binding.kind !== 'bound') return { activationProof: { kind: 'legacy-adopt', childThreadId: host.id, agentPathDigest }, executor: null, rescueRoute: undefined };
+  const authority = rescueBindingAuthorityView(binding.binding);
+  if (authority.kind === 'subagent-start') return {
+    activationProof: { kind: 'reactivate', agentPathDigest },
+    executor: { active: true, agentId: authority.childAgentId, agentType: authority.childAgentType,
+      parentSessionId: binding.binding.parentSessionId, parentTurnId: authority.parentTurnId,
+      parentPermissionMode: authority.parentPermissionMode, originWorkspace: host.cwd,
+      workspace: caller.workspace, agentPath: host.agentPath },
+    rescueRoute: { routeKind: 'bound', candidateJobId: binding.binding.anchorJobId,
+      expectedOperationId: binding.binding.operationId, expectedCurrentJobId: binding.binding.currentJobId,
+      ...(proof.kind === 'proof' ? { migrationProof: proof.migrationProof } : {}) },
+  };
+  return { activationProof: { kind: 'legacy-bound', childThreadId: host.id, agentPathDigest, bindingKey: binding.binding.key }, executor: null, rescueRoute: undefined };
 }
 
 /** @param {any} host @param {any} executor @param {any} caller */
@@ -669,9 +686,9 @@ async function startPublic(context) {
       if (context.autoLaunchBackground) {
         context.signal?.throwIfAborted();
         await (context.dependencies?.startBackgroundWorker ?? startBackgroundWorker)({ companionPath: fileURLToPath(import.meta.url), jobId: job.id, executionCapability: capability, cwd, env: context.env });
-        return { type: 'background', job };
+        return { type: 'background', job: publicReservedJob(job) };
       }
-      const output = (context.dependencies?.buildBackgroundOutput ?? ((/** @type {any} */ value) => value))({ type: 'background', job, privateInvocation: ['run-reserved-job', job.id], executionCapability: capability });
+      const output = (context.dependencies?.buildBackgroundOutput ?? ((/** @type {any} */ value) => value))({ type: 'background', job: publicReservedJob(job), privateInvocation: ['run-reserved-job', job.id], executionCapability: capability });
       backgroundBindings.set(output, { identity, store, capability, binding });
       return output;
     } catch (error) {
@@ -861,7 +878,7 @@ function publicJob(job, ownerSessionId, projection) {
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe;
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback;
   if (projection !== 'detail') delete visible.logFile;
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
@@ -875,6 +892,8 @@ function publicJob(job, ownerSessionId, projection) {
   if (projection === 'detail' && validProgressProbe(job.progressProbe)) visible.progressProbe = { ...job.progressProbe, rejected: { ...job.progressProbe.rejected } };
   return { ...visible, owned: true, owner: 'same-owner' };
 }
+/** @param {any} job */
+function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; return visible; }
 /** @param {any} job */
 function terminalResultJob(job) {
   const visible = {

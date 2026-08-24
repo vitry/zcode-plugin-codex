@@ -91,10 +91,12 @@ state/integration tests.
   session. On rejection, mismatch, broker failure, or timeout, fail the new
   attempt and preserve/rollback the closed tombstone with exact CAS; never
   fall back to session/create, another session, or another child.
-- Persist enough private rollback metadata before launching a background
-  worker to reconstruct the exact historical v1/v2/v3 tombstone. Apply the
-  same rollback before terminalization on preparation, capability-delivery,
-  launch, worker-crash/orphan, and queued-cancellation paths.
+- Persist enough private rollback metadata on the queued job before publishing
+  the active successor binding, under the reservation state lock, to reconstruct
+  the exact historical v1/v2/v3 tombstone. Do not rely on later job-spec
+  publication and do not expose the marker publicly. Apply the same rollback
+  before terminalization on preparation, capability-delivery, launch,
+  worker-crash/orphan, and ordinary queued-cancellation paths.
 - Test legacy and modern migration, missing/wrong remote sessions, rollback,
   competing reservations, complete-proof mutation, v1/v2-to-v3 upgrade,
   worker-crash recovery, operation/anchor/current mismatch, and no mutation.

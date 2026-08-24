@@ -242,14 +242,12 @@ function defaultBindingResolver(dataRoot) {
     ...(envelope.options?.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
     };
     let migrationProof;
-    if (envelope.options?.resume === 'resume') {
-      const proof = await store.readRescueBindingMigrationProof({
-        workspace: executionWorkspace, parentSessionId: caller.sessionId, executorAgentId: executor?.agentId ?? host.id,
-        childAgentType: executor?.agentType ?? host.agentRole, originWorkspace: host.cwd, executionWorkspace,
-        agentPathDigest: pathDigest(host.agentPath), agentPath: host.agentPath,
-      });
-      if (proof.kind === 'proof') migrationProof = proof.migrationProof;
-    }
+    const proof = await store.readRescueBindingMigrationProof({
+      workspace: executionWorkspace, parentSessionId: caller.sessionId, executorAgentId: executor?.agentId ?? host.id,
+      childAgentType: executor?.agentType ?? host.agentRole, originWorkspace: host.cwd, executionWorkspace,
+      agentPathDigest: pathDigest(host.agentPath), agentPath: host.agentPath,
+    });
+    if (proof.kind === 'proof') migrationProof = proof.migrationProof;
     return store.resolveRescueBindingForResume({ ...lookup, ...(migrationProof ? { migrationProof } : {}) });
   };
 }

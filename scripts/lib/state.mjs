@@ -220,22 +220,24 @@ export function createStateStore(options) {
         authorityForReservation(context, resolved.binding, input.reservation, storage.workspacePath, input.migrationProof !== undefined);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const beforeSnapshot = await readBindingPartitionSnapshot(storage, resolved.binding.parentSessionId, false);
-        const job = makeReservedJob(storage, jobs, input.reservation);
+        const reservedJob = makeReservedJob(storage, jobs, input.reservation);
         await ensureOwnerIndex(storage, jobs);
         const now = new Date(Math.max(Date.now(), Date.parse(resolved.binding.updatedAt))).toISOString();
         const migrating = resolved.binding.state === 'closed';
+        const migrationRollback = migrating ? {
+          parentSessionId: resolved.binding.parentSessionId, childAgentId: context.identity.executorAgentId,
+          operationId: resolved.binding.operationId, priorCurrentJobId: resolved.binding.currentJobId,
+          priorUpdatedAt: resolved.binding.updatedAt, priorClosedAt: resolved.binding.closedAt,
+          priorVersion: resolved.binding.version,
+        } : undefined;
+        const job = migrationRollback ? { ...reservedJob, rescueMigrationRollback: migrationRollback } : reservedJob;
         const binding = migrating
           ? migratedActiveBinding(resolved.binding, input.migrationProof, job.id, now)
           : validateRescueBinding({ ...resolved.binding, currentJobId: job.id, updatedAt: now });
         const afterSnapshot = bindingSnapshotWith(beforeSnapshot, binding);
         await publishRescueReservation(storage, job, binding, { bindingFirst: false, beforeSnapshot, afterSnapshot, lockIdentity, publicationHook, route: 'continuation' });
         await publicationCheckpoint(publicationHook, 'continuation:final'); await assertPublicationGuard(storage, lockIdentity, afterSnapshot, binding.parentSessionId);
-        return { job, binding, anchorJob: resolved.anchorJob, ...(migrating ? { migrationRollback: {
-          parentSessionId: resolved.binding.parentSessionId, childAgentId: context.identity.executorAgentId,
-          operationId: resolved.binding.operationId, priorCurrentJobId: resolved.binding.currentJobId,
-          priorUpdatedAt: resolved.binding.updatedAt, priorClosedAt: resolved.binding.closedAt,
-          priorVersion: resolved.binding.version,
-        } } : {}) };
+        return { job, binding, anchorJob: resolved.anchorJob, ...(migrationRollback ? { migrationRollback } : {}) };
       });
     },
 
@@ -246,14 +248,11 @@ export function createStateStore(options) {
       return withFileLock(storage.lockPath, async () => {
         const job = await readExactBindingJob(storage, input.jobId);
         if (job.ownerSessionId !== input.parentSessionId || job.command !== 'rescue' || job.status !== 'queued') throw invalidRescueBinding();
-        const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, false);
-        const key = rescueBindingKey({ parentSessionId: input.parentSessionId, executorAgentId: input.childAgentId, workspace: storage.workspacePath });
-        const record = snapshot.records.get(key) ?? null;
-        if (record === null || record.state !== 'active' || record.operationId !== input.operationId
-          || record.currentJobId !== input.jobId) throw staleRescueBinding();
-        const restored = restoreMigratedTombstone(record, input);
-        const lockIdentity = await captureStateLockIdentity(storage);
-        await writeBindingPartitionGuarded(storage, input.parentSessionId, snapshot, bindingSnapshotWith(snapshot, restored), lockIdentity);
+        if (!sameMigrationRollback(job.rescueMigrationRollback, migrationRollbackFromInput(input))) throw invalidRescueBinding();
+        const restored = await restoreQueuedMigrationLocked(storage, job, job.rescueMigrationRollback);
+        const updated = { ...job }; delete updated.rescueMigrationRollback;
+        validateJobRecord(updated, job.id, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, job.id));
+        await atomicWriteJson(jobPath(storage.jobsDirectory, job.id), updated);
         return { kind: 'rolled-back', binding: restored };
       });
     },
@@ -585,9 +584,12 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
       )).toISOString(),
       workspace: job.workspace,
     };
+    if (job.rescueMigrationRollback && nextStatus !== 'queued') delete updated.rescueMigrationRollback;
     if (effectivePatch.lastCancelError === null) delete updated.lastCancelError;
     validateJobRecord(updated, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
-    if (nextStatus === 'cancelled' && job.command === 'rescue') {
+    if (job.status === 'queued' && job.rescueMigrationRollback && TERMINAL_STATUSES.has(nextStatus)) {
+      await restoreQueuedMigrationLocked(storage, job, job.rescueMigrationRollback);
+    } else if (nextStatus === 'cancelled' && job.command === 'rescue') {
       await closeCurrentRescueBindingForCancellationLocked(storage, job);
     }
     await atomicWriteJson(path, updated);
@@ -776,6 +778,51 @@ function restoreMigratedTombstone(record, input) {
       parentTurnId: authority.parentTurnId, parentPermissionMode: authority.parentPermissionMode }
     : authority;
   return validateRescueBinding({ version: 2, ...common, childAuthority });
+}
+
+/** @param {any} storage @param {any} job @param {any} rollback */
+async function restoreQueuedMigrationLocked(storage, job, rollback) {
+  if (!validPersistedMigrationRollback(rollback, job)) throw invalidRescueBinding();
+  const snapshot = await readBindingPartitionSnapshot(storage, rollback.parentSessionId, false);
+  const key = rescueBindingKey({ parentSessionId: rollback.parentSessionId, executorAgentId: rollback.childAgentId, workspace: storage.workspacePath });
+  const record = snapshot.records.get(key) ?? null;
+  if (record === null || record.operationId !== rollback.operationId) throw staleRescueBinding();
+  let restored;
+  if (record.state === 'active' && record.currentJobId === job.id) {
+    restored = restoreMigratedTombstone(record, rollback);
+    const lockIdentity = await captureStateLockIdentity(storage);
+    await writeBindingPartitionGuarded(storage, rollback.parentSessionId, snapshot, bindingSnapshotWith(snapshot, restored), lockIdentity);
+  } else if (record.state === 'closed' && record.closeReason === 'session-ended'
+    && record.version === rollback.priorVersion && record.currentJobId === rollback.priorCurrentJobId
+    && record.updatedAt === rollback.priorUpdatedAt && record.closedAt === rollback.priorClosedAt) restored = record;
+  else throw staleRescueBinding();
+  return restored;
+}
+
+/** @param {any} input */
+function migrationRollbackFromInput(input) {
+  return { parentSessionId: input.parentSessionId, childAgentId: input.childAgentId, operationId: input.operationId,
+    priorCurrentJobId: input.priorCurrentJobId, priorUpdatedAt: input.priorUpdatedAt,
+    priorClosedAt: input.priorClosedAt, priorVersion: input.priorVersion };
+}
+
+/** @param {any} left @param {any} right */
+function sameMigrationRollback(left, right) {
+  const keys = ['childAgentId', 'operationId', 'parentSessionId', 'priorClosedAt', 'priorCurrentJobId', 'priorUpdatedAt', 'priorVersion'];
+  return isPlainJsonObject(left) && isPlainJsonObject(right)
+    && keys.every((key) => left[key] === right[key])
+    && Object.keys(left).length === keys.length && Object.keys(right).length === keys.length;
+}
+
+/** @param {any} value @param {any} job */
+function validPersistedMigrationRollback(value, job) {
+  const keys = ['childAgentId', 'operationId', 'parentSessionId', 'priorClosedAt', 'priorCurrentJobId', 'priorUpdatedAt', 'priorVersion'];
+  return isPlainJsonObject(value) && Object.keys(value).sort().join('\0') === keys.sort().join('\0')
+    && job.command === 'rescue' && job.status === 'queued' && job.readOnly === false
+    && value.parentSessionId === job.ownerSessionId && isNonEmptyString(value.childAgentId)
+    && isDigest(value.operationId) && isDigest(value.priorCurrentJobId) && [1, 2, 3].includes(value.priorVersion)
+    && isIsoTimestamp(value.priorUpdatedAt) && isIsoTimestamp(value.priorClosedAt)
+    && Date.parse(value.priorUpdatedAt) === Date.parse(value.priorClosedAt);
 }
 
 /** @param {any} storage @param {any} binding @returns {Promise<Extract<RescueBindingResumeResult, {kind:'bound'}>>} */
@@ -1593,7 +1640,8 @@ function validateJobRecord(job, expectedJobId, expectedWorkspacePath, expectedLo
     && (!('phase' in job) || PROGRESS_PHASES.includes(job.phase))
     && (!('lastActivityAt' in job) || isIsoTimestamp(job.lastActivityAt))
     && (!('progressPreview' in job) || validProgressPreview(job.progressPreview))
-    && (!('progressProbe' in job) || validProgressProbe(job.progressProbe));
+    && (!('progressProbe' in job) || validProgressProbe(job.progressProbe))
+    && (!('rescueMigrationRollback' in job) || validPersistedMigrationRollback(job.rescueMigrationRollback, job));
   const boundaryFields = ['inputId', 'startRevision', 'beforeMessageIds'];
   const hasBoundary = boundaryFields.some((field) => field in job);
   const validBoundary = !hasBoundary || boundaryFields.every((field) => field in job)

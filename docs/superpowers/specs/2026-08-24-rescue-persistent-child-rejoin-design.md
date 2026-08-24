@@ -98,9 +98,12 @@ session/workspace, or broker access is unavailable, the new attempt is failed
 without fallback to `session/create`, another session, or another child. The
 closed legacy tombstone remains closed (or an exact rollback restores the
 pre-reservation snapshot, including its original v1/v2/v3 schema, under CAS).
-Rollback metadata is durable before background worker launch. Preparation,
-capability delivery, launch failure, worker death, orphan settlement, and
-queued cancellation must all restore an eligible migrated tombstone before
+Rollback metadata is a private field of the queued job published before the
+active successor binding under the same state lock; job-spec is not its source
+of truth. It is removed when remote resume commits the job to `running`, and it
+must never enter public or child-facing output. Preparation, capability
+delivery, launch failure, worker death, orphan settlement, and ordinary queued
+`$zcode:cancel` must all restore an eligible migrated tombstone before
 terminalizing the queued attempt.
 
 Migration requires: closed + `session-ended`; exact canonical workspace and
