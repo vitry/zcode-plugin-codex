@@ -135,7 +135,7 @@ async function prepareRescue(ctx, parentSessionId, envelope, childId) {
   const stopped = childId !== undefined && ctx.stoppedChildren.has(childId);
   const dependencies = stopped ? { planRescueActivation: async () => ({
     activation: { kind: 'reactivate', executorAgentId: childId, agentPathDigest: baseAgentPathDigest },
-    directive: { version: 1, action: 'followup', target: '/root/zcode_rescue_task' },
+    directive: { version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'zcode-rescue' },
   }) } : legacyPreparationDependencies;
   return runDirectInvocation(['prepare', 'rescue'], {
     cwd: ctx.workspace,
@@ -362,7 +362,7 @@ test('installed-style persisted child reactivation executes through the linked-w
     cwd: canonicalTarget, env: { ...env, CODEX_THREAD_ID: parentSessionId },
     input: Readable.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'recovered installed task', options: { execution: 'foreground', resume: 'fresh' } })}\n`]),
   });
-  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue', route: { version: 1, action: 'followup', target: agentPath } });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue', route: { version: 2, action: 'followup', target: agentPath, assignment: 'zcode-rescue' } });
   const record = join(ctx.directory, 'installed-reactivation-zcode.jsonl'); await writeFile(record, '');
   const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], {
     cwd: origin, env: { ...env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
@@ -758,13 +758,13 @@ test('prepared Rescue is single-use and bound to the exact parent turn, workspac
   await identity.beginCallerTurn({ sessionId: 'bound-parent', turnId: 'bound-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue exact objective' });
   await prepareRescue(ctx, 'bound-parent', { version: 1, source: 'explicit', task: 'exact objective', options: { resume: 'fresh' } });
   const parent = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-parent' } });
-  assert.notEqual(parent.code, 0); assert.match(parent.stdout, /EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)/);
+  assert.notEqual(parent.code, 0); assert.match(parent.stdout, /(?:EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)|CODEX_CHILD_METADATA_INVALID)/);
   const sibling = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'sibling-child' } });
-  assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)/);
+  assert.notEqual(sibling.code, 0); assert.match(sibling.stdout, /(?:EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)|CODEX_CHILD_METADATA_INVALID)/);
   await startRescueChild(ctx, 'bound-parent', 'bound-child');
   const wrongWorkspace = join(ctx.directory, 'wrong-workspace'); await mkdir(wrongWorkspace);
   const wrong = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: wrongWorkspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-child' } });
-  assert.notEqual(wrong.code, 0); assert.match(wrong.stdout, /EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)/);
+  assert.notEqual(wrong.code, 0); assert.match(wrong.stdout, /(?:EXECUTOR_IDENTITY_(?:NOT_FOUND|UNAVAILABLE)|CODEX_CHILD_METADATA_INVALID|ACTIVE_TURN_(?:NOT_FOUND|WORKSPACE_INELIGIBLE))/);
   const accepted = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-child' } });
   assert.equal(accepted.code, 0, accepted.stderr || accepted.stdout);
   const replay = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-child' } });

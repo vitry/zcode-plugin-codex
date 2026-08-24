@@ -603,7 +603,7 @@ test('captured restored-child qualification reactivates the unloaded original pa
     const agentRole = route === 'named' ? 'zcode-rescue' : null; const agentType = route === 'named' ? 'zcode-rescue' : 'default';
     const assignment = route === 'named' ? expectedNamedRescueMessage : expectedGenericRescueMessage.replaceAll('<rescue-launcher-command>', launcherCommand);
     const thread = installedCodexThreadSpawnChild({ id: childThreadId, parentThreadId: parentSessionId, agentPath, cwd: originWorkspace, agentRole });
-    const routeDirective = { version: 1, action: 'followup', target: agentPath };
+    const routeDirective = { version: 2, action: 'followup', target: agentPath, assignment: agentType };
     const childTurnId = `restored-${route}-child-turn-7`;
     const preparationEnvelope = { version: 1, source: 'proactive', task: `diagnose the agent path collision in restored ${route} e2e`, options: { execution: 'foreground', resume: 'resume' } };
     const spawnArgs = { fork_turns: 'none', task_name: 'zcode_rescue_task', message: assignment, ...(route === 'named' ? { agent_type: 'zcode-rescue' } : {}) };
@@ -1728,7 +1728,7 @@ async function captureInstalledPreparedContinuationEvidence(input) {
     .find((artifact) => artifact.value?.parentSessionId === input.parentSessionId && artifact.value?.workspace === input.workspace);
   const partitionArtifact = parsed.findLast((artifact) => artifact.sequence === undefined && basename(artifact.path).startsWith('rescue-binding-session-'));
   assert.ok(authority && prePartitionArtifact && partitionArtifact, 'raw private snapshots must retain pre-reservation and final binding partitions');
-  const binding = partitionArtifact.value.records.find((record) => record.executorAgentId === childThreadId);
+  const binding = partitionArtifact.value.records.find((record) => (record.childAuthority?.childAgentId ?? record.executorAgentId) === childThreadId);
   assert.ok(binding, 'raw binding partition must retain the exact child');
   const jobs = [binding.anchorJobId, binding.currentJobId].map((jobId) => parsed.findLast((artifact) => artifact.path === `jobs/${jobId}.json`));
   assert.ok(jobs.every(Boolean), 'raw private snapshot must retain anchor and current jobs');
@@ -2263,7 +2263,7 @@ function installedPreparedContinuationCapture(route, overrides = {}) {
     { ...installedToolCall('prepare-2', installedExecInput('node "/installed/zcode/skills/rescue/launcher.mjs" prepare rescue', { tty: true, workdir: workspace })), timestamp: '2026-08-10T01:01:00.000Z' },
     { ...installedToolOutput('prepare-2', { output: `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`, session_id: 72 }), timestamp: '2026-08-10T01:01:00.250Z' },
     { ...installedToolCall('prepare-write-2', installedPreparationInput(72, `${JSON.stringify(installedContinuationEnvelope('proactive', 'resume'))}\n`)), timestamp: '2026-08-10T01:01:00.500Z' },
-    { ...installedToolOutput('prepare-write-2', { output: installedPreparedAck({ version: 1, action: 'followup', target: '/root/zcode_rescue_task' }), exit_code: 0 }), timestamp: '2026-08-10T01:01:01.000Z' },
+    { ...installedToolOutput('prepare-write-2', { output: installedPreparedAck({ version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: route === 'named' ? 'zcode-rescue' : 'default' }), exit_code: 0 }), timestamp: '2026-08-10T01:01:01.000Z' },
     { type: 'response_item', timestamp: '2026-08-10T01:01:02.000Z', payload: { type: 'function_call', name: 'followup_task', call_id: 'followup-1', arguments: JSON.stringify({ target: childThreadId, message }) } },
     { type: 'response_item', timestamp: '2026-08-10T01:01:03.000Z', payload: { type: 'function_call_output', call_id: 'followup-1', output: JSON.stringify({ accepted: true, target: childThreadId }) } },
   ];

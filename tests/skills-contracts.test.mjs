@@ -35,12 +35,13 @@ function assertRescueNamingContract(source) {
   const namingText = naming.text;
   assert.match(namingText, /prepared[^\n]+route[^\n]+action[^\n]+followup[\s\S]+exact[^\n]+target/i);
   assert.match(namingText, /prepared[^\n]+route[^\n]+action[^\n]+spawn[\s\S]+exact[^\n]+taskName/i);
-  assert.match(namingText, /malformed[^\n]+extra key[^\n]+wrong action[^\n]+unsafe[^\n]+path[^\n]+invalid task name/i);
+  assert.match(namingText, /malformed[^\n]+extra key[^\n]+wrong action[^\n]+unsafe[^\n]+path[^\n]+invalid assignment[^\n]+invalid task name/i);
   assert.match(namingText, /exactly one child-producing activation/i);
   assert.match(namingText, /must not[^\n]+collision[^\n]+fallback/i);
-  assert.match(namingText, /trusted[^\n]+original spawn provenance[\s\S]+exact target/i);
-  assert.match(namingText, /named[^\n]+named assignment[\s\S]+generic[^\n]+complete fixed generic message/i);
-  assert.match(namingText, /missing[^\n]+ambiguous[^\n]+mismatched[\s\S]+fail closed/i);
+  assert.match(namingText, /version 2[^\n]+follow-up route[\s\S]+exact task-free `assignment`/i);
+  assert.match(namingText, /`zcode-rescue`[^\n]+named assignment[\s\S]+`default`[^\n]+complete fixed generic message/i);
+  assert.match(namingText, /missing[^\n]+ambiguous[^\n]+mismatched[^\n]+unknown assignment[^\n]+fail closed/i);
+  assert.match(namingText, /do not consult retained historical spawn provenance/i);
   assert.doesNotMatch(namingText, /Root chooses[^\n]+rescueTaskName/i);
 }
 

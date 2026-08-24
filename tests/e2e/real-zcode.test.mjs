@@ -64,7 +64,7 @@ test('real qualification preflight proves the installed origin-to-worktree autho
   assert.deepEqual(observed.prepared.route, { version: 1, action: 'spawn', taskName: 'zcode_rescue_task' });
   const first = await observed.invokePrepared({ childId: 'real-preflight-child', zcodePath: fakeZCode }); assert.equal(first.code, 0, first.stderr || first.stdout);
   await observed.stopChild('real-preflight-child'); const recovered = await observed.prepareProactive({ task: 'continue preflight' });
-  assert.deepEqual(recovered.route, { version: 1, action: 'followup', target: '/root/zcode_rescue_task' });
+  assert.deepEqual(recovered.route, { version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'zcode-rescue' });
   const second = await observed.invokePrepared({ childId: 'real-preflight-child', zcodePath: fakeZCode }); assert.equal(second.code, 0, second.stderr || second.stdout);
   const jobs = await readBoundJobs(join(temporary, 'plugin-data'), await realpath(executionDirectory));
   assert.equal(jobs.length, 2); assert.equal(new Set(jobs.map((job) => job.zcodeSessionId)).size, 1);

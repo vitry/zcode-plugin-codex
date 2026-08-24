@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { isDeepStrictEqual } from 'node:util';
 import { parseRescueProgressRelay, RESCUE_RELAY_MESSAGES, RESCUE_RELAY_PREFIX } from '../../scripts/lib/rescue-progress-relay.mjs';
-import { parseRescueBindingAuthority, parseRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
+import { parseRescueBindingAuthority, parseRescueBindingPartition, rescueBindingAuthorityView } from '../../scripts/lib/rescue-binding.mjs';
 import { createRescuePreparationStore, readRescuePreparation } from '../../scripts/lib/rescue-preparation.mjs';
 import { sanitizeCodexThreadSpawnChild } from '../../scripts/lib/codex-app-server.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
@@ -148,7 +148,7 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   const workspaceAuthority = activeTurn.version === 3
     ? await validateContinuationWorkspaceBinding(input, { ...expected, childTurnId: executorChildTurnId(input.executorRecordBytes), originalParentTurnId }, activeTurn)
     : { originWorkspace: expected.workspace, executionWorkspace: expected.workspace, generationId: undefined, checked: false };
-  const preparationRecords = await validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution }, activeTurn, requireLongLifecycle);
+  const preparationRecords = await validateContinuationPreparations(parent, input.preparationRecordBytesJson, { ...expected, childThreadId, originalParentTurnId, continuationParentTurnId, execution: input.execution, route: input.route }, activeTurn, requireLongLifecycle);
   const observedAgentPath = boundedString(starts[0].payload.agent_path); const observedTaskName = boundedString(spawn.task_name);
   if (!observedTaskName || !observedAgentPath || observedAgentPath !== `/root/${observedTaskName}`
     || stops[0].payload.agent_path !== observedAgentPath) mismatch('continuation-presentation', 'Captured child presentation is internally inconsistent.');
@@ -183,11 +183,11 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   if (authority.key !== partition.key || authority.key !== prePartition.key || prePartition.records.length !== 1 || partition.records.length !== 1) mismatch('continuation-binding-invalid', 'Raw Rescue binding authority and partitions do not match.');
   const preBinding = prePartition.records[0];
   const binding = partition.records[0];
-  if (binding.executorAgentId !== childThreadId || binding.executorAgentType !== executor.agentType || binding.executorParentTurnId !== originalParentTurnId
-    || binding.executorParentPermissionMode !== expected.permissionMode || binding.permissionMode !== expected.permissionMode
-    || binding.state !== 'active' || preBinding.key !== binding.key || preBinding.executorAgentId !== binding.executorAgentId
-    || preBinding.executorAgentType !== binding.executorAgentType || preBinding.executorParentTurnId !== binding.executorParentTurnId
-    || preBinding.executorParentPermissionMode !== binding.executorParentPermissionMode || preBinding.permissionMode !== binding.permissionMode
+  const preChildAuthority = rescueBindingAuthorityView(preBinding); const childAuthority = rescueBindingAuthorityView(binding);
+  if (childAuthority.kind !== 'subagent-start' || childAuthority.childAgentId !== childThreadId || childAuthority.childAgentType !== executor.agentType
+    || childAuthority.parentTurnId !== originalParentTurnId || childAuthority.parentPermissionMode !== expected.permissionMode
+    || binding.permissionMode !== expected.permissionMode || binding.state !== 'active' || preBinding.key !== binding.key
+    || !isDeepStrictEqual(preChildAuthority, childAuthority) || preBinding.permissionMode !== binding.permissionMode
     || preBinding.operationId !== binding.operationId || preBinding.anchorJobId !== binding.anchorJobId) mismatch('continuation-binding-identity', 'Raw Rescue binding identity is invalid.');
   if (preBinding.state !== 'active' || preBinding.currentJobId !== preBinding.anchorJobId
     || binding.currentJobId === preBinding.currentJobId) mismatch('continuation-current-job-stale', 'Raw current job binding does not prove the exact pre-reservation CAS transition.');
@@ -347,7 +347,8 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
     || writeCall.host.envelope.get('session_id') !== readyOutput.session_id || preparedOutput.exit_code !== 0 || Object.hasOwn(preparedOutput, 'session_id')) mismatch('restored-child-directive', 'Restored Role readiness or TTY prepare handshake is invalid.');
   const chars = writeCall.host.envelope.get('chars'); let preparationEnvelope;
   try { preparationEnvelope = await readRescuePreparation(Readable.from([chars])); } catch { mismatch('restored-child-directive', 'Restored TTY write does not contain one production-valid preparation envelope.'); }
-  const exactPreparedLine = `${JSON.stringify({ type: 'prepared', command: 'rescue', route: { version: 1, action: 'followup', target: expected.agentPath } })}\n`;
+  const exactPreparedLine = `${JSON.stringify({ type: 'prepared', command: 'rescue', route: { version: 2, action: 'followup', target: expected.agentPath,
+    assignment: Object.hasOwn(spawnArgs, 'agent_type') ? 'zcode-rescue' : 'default' } })}\n`;
   if (preparedOutput.output !== exactPreparedLine) mismatch('restored-child-directive', 'Prepared follow-up directive is not linked to the exact original path.');
 
   const followupCall = currentFunctions[0]; const followup = parseObject(followupCall.payload.arguments, 'restored-child-followup');
@@ -1662,7 +1663,7 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
     const ready = parseCapturedHostResult(readyOutput[0].event.payload.output); const ack = parseCapturedHostResult(ackOutput[0].event.payload.output);
     const expectedRoute = generationIndex === 0
       ? { version: 1, action: 'spawn', taskName: expected.agentPath.slice('/root/'.length) }
-      : { version: 1, action: 'followup', target: expected.agentPath };
+      : { version: 2, action: 'followup', target: expected.agentPath, assignment: expected.route === 'named' ? 'zcode-rescue' : 'default' };
     const expectedAck = `${JSON.stringify({ type: 'prepared', command: 'rescue', route: expectedRoute })}\n`;
     if (ready.output !== PREPARATION_READY_LINE || !Number.isSafeInteger(ready.session_id) || Object.hasOwn(ready, 'exit_code')
       || write.host.envelope.get('session_id') !== ready.session_id || typeof write.host.envelope.get('chars') !== 'string'
