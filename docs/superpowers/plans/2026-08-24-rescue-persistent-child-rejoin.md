@@ -1,179 +1,122 @@
-# Rescue Persistent Child Rejoin Implementation Plan
-
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
-**Goal:** Preserve and safely rejoin completed Rescue child operations across SessionEnd, plugin restart, and Root resume while keeping explicit cancellation and fresh replacement irreversible.
-
-**Architecture:** Keep the existing durable binding and job records. Stop using SessionEnd as operation revocation, add a lock-protected legacy migration for exact `session-ended` tombstones, and make route planning validate the exact persisted child before publishing a resumed route. Preserve the constant private child assignment and original ZCode session.
-
-**Tech Stack:** Node.js ESM, `node:test`, private JSON state files, Codex app-server child discovery, ESLint, TypeScript checks.
-
----
-
-### Task 1: Add the failing state migration tests
-
-**Files:**
-- Modify: `tests/state.test.mjs`
-- Modify: `tests/integration/companion.test.mjs`
-
-- [ ] **Step 1: Add a state-level RED test for exact `session-ended` migration**
-
-Create a binding with a succeeded anchor job, close it only through the `session-ended` path, then call the new resume resolver with the exact parent, child, workspace, permission, and migration proof. Assert that it returns the same operation ID, anchor job, current job, and active binding. Assert a second call is idempotent and does not create another job or binding record.
-
-- [ ] **Step 2: Add state-level RED tests for non-migratable closures**
-
-Cover `fresh`, cancel/invalidation, wrong parent session, wrong workspace, wrong child, missing anchor job, and missing ZCode session. Each assertion must expect the existing closed/invalid error and must assert the binding partition and job list are unchanged.
-
-- [ ] **Step 3: Run only the new tests and verify the expected RED failure**
-
-```bash
-node --test --test-concurrency=1 --test-name-pattern='session-ended migration|non-migratable closure' tests/state.test.mjs
-```
-
-Expected: failures because no migration API exists and SessionEnd closures are currently rejected.
-
-- [ ] **Step 4: Add the integration RED test for Root resume after SessionEnd**
-
-Extend the existing legacy adoption fixture in `tests/integration/companion.test.mjs`: complete the first Rescue job, invoke the exact SessionEnd binding lifecycle, begin a resumed Root turn with the same session ID, prepare a proactive resume, and assert the second invocation uses the original ZCode session and creates no child replacement.
-
-- [ ] **Step 5: Run the integration RED test**
-
-```bash
-node --test --test-concurrency=1 --test-name-pattern='resume after SessionEnd' tests/integration/companion.test.mjs
-```
-
-Expected: failure with the current closed-binding behavior.
-
-### Task 2: Implement lock-safe binding migration and SessionEnd preservation
-
-**Files:**
-- Modify: `scripts/lib/state.mjs`
-- Modify: `scripts/lib/rescue-binding.mjs`
-- Modify: `hooks/session-end-hook.mjs`
-
-- [ ] **Step 1: Add an exact migration input contract**
-
-Define an internal state-store operation that accepts the canonical workspace, parent session, child identity, permission snapshot, operation ID, and the validated child/path/session proof supplied by route planning. Reject every missing or malformed field before mutation.
-
-- [ ] **Step 2: Implement `session-ended` migration under the existing state lock**
-
-Read the binding partition and exact anchor/current job records. Permit only an active structural binding or a closed binding whose sole close reason is `session-ended`. For a closed record, compare the complete expected snapshot, replace it with an active record using the same operation/anchor/current IDs, and publish via the existing guarded partition writer. A competing writer must return the current exact state or fail closed; it must not duplicate records.
-
-- [ ] **Step 3: Stop closing valid Rescue bindings from SessionEnd**
-
-Remove the unconditional `closeRescueBindingsForSession` call from `hooks/session-end-hook.mjs`. Preserve the existing writable-job settlement, broker cleanup, and preparation cleanup. Do not change explicit cancel/fresh close paths.
-
-- [ ] **Step 4: Run the state tests GREEN**
-
-```bash
-node --test --test-concurrency=1 --test-name-pattern='session-ended migration|non-migratable closure' tests/state.test.mjs
-```
-
-Expected: all migration and fail-closed tests pass.
-
-### Task 3: Integrate exact child rejoin into route planning
-
-**Files:**
-- Modify: `scripts/lib/rescue-route-planner.mjs`
-- Modify: `scripts/zcode-companion.mjs`
-- Modify: `tests/rescue-route-planner.test.mjs`
-- Modify: `tests/integration/companion.test.mjs`
-
-- [ ] **Step 1: Add planner RED coverage for a closed legacy binding**
-
-Provide a stopped persisted host with the exact child ID/path and a `session-ended` binding. Assert that resume planning returns the existing follow-up directive with `legacy-bound`, never a spawn directive.
-
-- [ ] **Step 2: Pass exact child/path proof to migration**
-
-When the planner has identified the stopped host and canonical origin/execution workspaces, validate the persisted authority view and path digest before requesting migration. The migration resolver must receive the exact host ID, agent role, agent path digest, parent session, and execution workspace.
-
-- [ ] **Step 3: Preserve the original operation and ZCode session**
-
-Ensure the prepared activation and reservation path continue using the binding operation ID and current/anchor job IDs. Do not call fresh reservation or create a new ZCode peer for this route.
-
-- [ ] **Step 4: Run planner and integration tests GREEN**
-
-```bash
-node --test --test-concurrency=1 tests/rescue-route-planner.test.mjs tests/integration/companion.test.mjs
-```
-
-Expected: existing route tests and the new resume-after-SessionEnd scenario pass.
-
-### Task 4: Preserve explicit revocation and sibling isolation
-
-**Files:**
-- Modify: `tests/hooks.test.mjs`
-- Modify: `tests/integration/companion.test.mjs`
-- Modify: `SECURITY.md`
-- Modify: `docs/adr/0013-bind-rescue-child-to-zcode-session.md`
-- Modify: `README.md`
-- Modify: `README.zh-CN.md`
-
-- [ ] **Step 1: Add SessionEnd and sibling lifecycle tests**
-
-Assert that SessionEnd leaves completed bindings for the exact owner intact, does not alter another parent session's binding, and does not allow an active writable job to bypass existing settlement/guard behavior.
-
-- [ ] **Step 2: Add explicit revocation tests**
-
-Assert that cancel and fresh replacement close the old operation and that the migration path rejects those records. Assert that a new fresh operation gets a new operation ID and ZCode session.
-
-- [ ] **Step 3: Update security and architecture documentation**
-
-Replace statements claiming SessionEnd permanently revokes all Rescue bindings with the precise rule: SessionEnd removes runtime ownership and performs writable-job settlement, while exact persisted completed bindings are rejoinable; explicit cancel/fresh/invalidation remain revocation boundaries.
-
-- [ ] **Step 4: Run focused lifecycle tests**
-
-```bash
-node --test --test-concurrency=1 --test-name-pattern='SessionEnd|sibling|fresh|cancel|migration' tests/hooks.test.mjs tests/integration/companion.test.mjs
-```
-
-Expected: all lifecycle, revocation, and isolation tests pass.
-
-### Task 5: Full verification and handoff
-
-**Files:**
-- Modify: `CHANGELOG.md`
-
-- [ ] **Step 1: Add a changelog entry describing persistent child rejoin**
-
-State that Root resume after runtime/session restart reuses the exact child and ZCode session, while explicit cancellation and fresh replacement remain terminal.
-
-- [ ] **Step 2: Run formatting and static checks**
-
-```bash
-npm run check:line-endings
-npm run lint
-npm run typecheck
-```
-
-Expected: exit code 0 for all commands.
-
-- [ ] **Step 3: Run the complete test suite**
-
-```bash
-npm test
-```
-
-Expected: all unit, integration, and marketplace snapshot tests pass.
-
-- [ ] **Step 4: Run qualified tests if prerequisites are available**
-
-```bash
-npm run test:qualified
-```
-
-Expected: qualified tests pass; if the environment is not authenticated or the installed fixture is unavailable, record the exact prerequisite failure without weakening the local proof.
-
-- [ ] **Step 5: Review the final diff and commit implementation**
-
-```bash
-git diff --check
-git status --short
-git diff --stat
-```
-
-Then commit only the implementation/spec/documentation files belonging to this change with:
-
-```bash
-git commit -m "fix: preserve Rescue child rejoin across session resume"
-```
+# Rescue Persistent Child Rejoin Hardening Plan (sol/medium revision)
+
+This is a corrective implementation plan after the initial implementation and
+independent sol/medium audit. The revised spec is the source of truth:
+docs/superpowers/specs/2026-08-24-rescue-persistent-child-rejoin-design.md.
+Do not reintroduce eager standalone migration.
+
+## Acceptance gates
+
+The change is complete only when:
+
+1. Every binding, residency, job, revocation, migration, sibling, and
+   no-mutation requirement in the revised spec has a named test.
+2. Source and marketplace/plugins/zcode runtime/docs copies pass the
+   repository's byte-identity/snapshot contracts.
+3. Independent sol/medium specification review and quality/security review
+   both report no unresolved high/medium findings.
+4. npm run check:line-endings, npm run lint, npm run typecheck, all focused
+   suites, and npm test pass. Qualified/native tests must either pass with
+   captured exact evidence or be explicitly blocked by an external
+   prerequisite; skipped output is not acceptance evidence.
+5. Final diff, PR checks, and CI matrix are reviewed before claiming completion.
+
+## Task 1 — Freeze the state model and version contract
+
+Owners: scripts/lib/rescue-binding.mjs, scripts/lib/state.mjs,
+tests/rescue-binding.test.mjs, tests/state.test.mjs.
+
+- Define orthogonal binding, residency, and job semantics in code comments and
+  validation. Keep v1/v2 readable under their historical schemas; write v3
+  only for new/replaced records.
+- Persist exact modern subagent-start agent_path; preserve legacy adoption path
+  digest/provenance. Reject unknown versions, mixed malformed records, duplicate
+  supersession operations, and capacity overflow without mutation.
+- Record bounded same-child fresh supersession history. Fresh child B must not
+  modify child A; stale same-child writers must fail CAS.
+- Add tests for schema compatibility, path mismatch, supersession, sibling
+  byte equality, and all malformed/oversized/duplicate cases.
+
+## Task 2 — Make close/cancel operations exact and child-scoped
+
+Owners: scripts/lib/state.mjs, scripts/zcode-companion.mjs,
+scripts/lib/job-control.mjs, relevant hooks/tests.
+
+- Replace any session-wide binding close API with exact
+  (workspace,parentSessionId,childAgentId,operationId,reason) CAS closure.
+- Durable cancellation of the exact current bound job closes only that
+  operation with cancel. Linearize cancellation and binding closure so a
+  continuation cannot publish between them. A failed/unacknowledged remote
+  stop remains running/guarded and does not become cancel.
+- Preserve explicit invalidation and same-child fresh replacement as permanent
+  revocations; repeated/different closure reasons fail closed.
+- Test cancellation races, historical anchor cancellation, orphan settlement,
+  sibling isolation, same-child replacement, cross-process locking, and zero
+  mutation on rejection.
+
+## Task 3 — Implement exact resident/notLoaded rejoin
+
+Owners: scripts/lib/rescue-route-planner.mjs, scripts/zcode-companion.mjs,
+hook discovery/state readers, route/planner and companion tests.
+
+- Use exact-parent persisted child graph evidence: same thread ID and
+  thread_spawn parent, approved Role/type, exact agent_path, canonical
+  origin/execution workspaces, and unambiguous identity.
+- Permit resident exact children and notLoaded children. Rejoin follows the
+  same child thread and never spawns or emits a new SubagentStart.
+- Keep legacy host-only adoption as a separate compatibility route. Do not
+  downgrade modern bindings to legacy.
+- Preserve precise existing error families for active contradictions,
+  mismatches, stale CAS, missing binding, and ambiguity.
+- Test resident, unloaded, missing, contradictory, duplicate, pagination,
+  unsupported parent-filter, path/Role drift, and zero-side-effect failures.
+
+## Task 4 — Make migration lazy, atomic, and remote-safe
+
+Owners: scripts/lib/state.mjs, reservation/review flow, companion and
+state/integration tests.
+
+- Migration proof lookup is read-only. It returns a closed session-ended
+  tombstone plus complete operation/anchor/current/path proof; it never
+  activates the binding.
+- Only continuation reservation consumes that proof. Under one state lock,
+  re-read and compare every exact field and supersession record, validate local
+  anchor/current structure and non-empty anchor zcodeSessionId, then
+  atomically publish the queued continuation and active successor binding.
+- Ensure two consumers of one proof produce one winner and one stale loser.
+  Do not allow proof A to resolve a newer same-child operation B.
+- Before sending work, call remote session/resume for exactly the anchor ZCode
+  session. On rejection, mismatch, broker failure, or timeout, fail the new
+  attempt and preserve/rollback the closed tombstone with exact CAS; never
+  fall back to session/create, another session, or another child.
+- Test legacy and modern migration, missing/wrong remote sessions, rollback,
+  competing reservations, operation/anchor/current mismatch, and no mutation.
+
+## Task 5 — Preserve SessionEnd semantics and documentation
+
+Owners: SessionEnd hook, source and marketplace docs/copies, changelog,
+snapshot/provenance tests.
+
+- SessionEnd settles jobs, cleans runtime/preparation/broker ownership, and
+  preserves durable jobs/bindings. It must not revoke siblings or valid
+  completed operations.
+- Update source and marketplace README/Chinese README, SECURITY, ADR, and
+  CHANGELOG. Explain the three orthogonal state dimensions, exact mapping,
+  same-child versus sibling fresh, cancel, and writable exclusion.
+- Update marketplace mirrored runtime files and verify source/marketplace byte
+  identity rather than hand-editing only source files.
+
+## Task 6 — Native qualification and verification
+
+Owners: qualification/e2e helpers and final verification.
+
+- Add captured/native evidence for same Root session, same child thread ID,
+  notLoaded lazy reload, one follow-up, zero spawn, exact session/resume, and
+  no private-envelope leakage.
+- Cover installed marketplace and package snapshot flows. Run
+  npm run test:qualified when prerequisites exist; record exact external
+  blockers otherwise.
+- Run line endings, lint, typecheck, focused lifecycle/state/planner/companion
+  suites, marketplace/snapshot tests, and full npm test.
+- Perform sol/medium spec review, then sol/medium security/quality review,
+  fix all findings, inspect final diff, open PR, and verify CI.

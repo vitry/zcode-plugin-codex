@@ -1,123 +1,144 @@
-# Rescue Persistent Child Rejoin Design
+# Rescue Persistent Child Rejoin Design (sol/medium revision)
 
 ## Goal
 
-Make Rescue continuation follow Codex native subagent semantics: ending the
-Codex runtime, restarting the plugin, or resuming the Root thread must not
-destroy a valid completed Rescue operation. A later Root follow-up must be
-able to rejoin the exact child and continue the exact persisted ZCode session.
+Match native Codex child semantics: Root `SessionEnd`, companion/plugin
+restart, app-server/broker restart, and Root resume remove runtime residency
+but do not revoke a valid child operation. A later active Root turn may follow
+the same persisted child thread and resume the same persisted ZCode session.
+No replacement child or ZCode session may be selected by name, path, latest
+job, or timestamp.
 
-Explicit cancellation, fresh replacement, invalidation, and corrupt or
-ambiguous state remain permanently non-resumable.
+This feature does not make explicit cancellation, invalidation, or an explicit
+same-child fresh replacement reversible. Missing, corrupt, contradictory, or
+temporarily unverifiable evidence fails closed without writing a revocation.
 
-## Current problem
+## Orthogonal state dimensions
 
-Rescue already persists a binding containing the parent session, child
-identity, canonical execution workspace, anchor/current jobs, operation ID,
-and the ZCode session through the job record. However, `SessionEnd` currently
-closes the binding with `closeReason: "session-ended"`. Resume then rejects the
-closed binding before route planning, even when Codex has resumed the same Root
-thread and the child/job/session records remain valid.
+These dimensions are independent; they are not one four-state enum.
 
-The implementation therefore conflates runtime disappearance with explicit
-operation revocation.
+| Dimension | Values | Meaning |
+| --- | --- | --- |
+| Binding | `active`; legacy `closed/session-ended`; revoked `cancel`, `invalidated`, or same-child `fresh` superseded | Durable operation authorization. Only the legacy session-ended value is migration-eligible. |
+| Codex residency | `resident`; `notLoaded`; `missing`; `contradictory` | Host runtime state. `resident` can be followed up directly; `notLoaded` is lazily reloaded from the same persisted thread. |
+| Job | `queued`; `running`; `cancelling`; `succeeded`; `failed`; `cancelled` | Attempt state. Exact anchor/current validation defines which combinations are resumable. |
 
-## Semantics
+The binding remains resumable for a valid resident or notLoaded exact child
+when its anchor contains a non-empty ZCode session ID and the current attempt
+is not explicitly cancelled. Orphan settlement may turn an abandoned attempt
+into `failed` without revoking the binding. A cancelled current attempt is
+revoked. `running`/`cancelling` attempts retain existing stop/lease safety
+and must not be guessed resumable after an unacknowledged stop.
 
-The lifecycle has four distinct states:
+## Ownership and SessionEnd
 
-1. **Resident**: the child runtime is loaded and can receive follow-up input.
-2. **Unloaded but resumable**: the runtime is gone, but the exact child
-   identity, workspace, job, and ZCode session are persisted and can be
-   rejoined.
-3. **Completed but resumable**: the previous job is terminal, while its
-   operation binding remains active for a later follow-up.
-4. **Revoked**: explicit `cancel`, an explicit operation replacement for the
-   same child, explicit invalidation, or invalid/corrupt/ambiguous state
-   permanently prevents continuation for that operation.
+`SessionEnd` removes active Root-turn/runtime authority, consumes or cleans
+preparation capabilities, performs bounded writable-job settlement, and
+conditionally releases broker ownership. It does not change durable job
+ownership or valid binding records. A later Root turn must establish fresh
+active caller authority for the same persisted parent session before rejoin.
+Timeout or partial cleanup is handled by existing orphan/lease safety; it is
+not converted into binding revocation.
 
-`SessionEnd`, plugin replacement, process restart, and Root resume are runtime
-events, not revocation events. They must preserve resumability. An active
-remote job may still be stopped or settled by the existing orphan-safety
-logic; that operational cleanup must not silently convert a valid completed
-binding into an explicit revocation.
+The plugin retains the conservative one-active-writable-job-per-canonical-
+workspace rule. It is independent of child lifecycle: a writable conflict or
+failed remote stop must not close, migrate, supersede, or advance either
+sibling binding.
 
-## Rejoin flow
+## Exact child-scoped mapping
 
-For a continuation request, the companion must:
+The binding slot is:
 
-1. Resolve the canonical execution workspace and exact Root session.
-2. Discover the exact persisted Codex child by parent thread, child ID, agent
-   path, and approved Role.
-3. Validate the durable binding and its anchor/current jobs.
-4. Validate that the original ZCode session ID is present and resumable.
-5. If the child runtime is absent, restore the child runtime from persisted
-   Codex history; do not spawn a replacement child.
-6. Send the continuation through the existing private prepared envelope and
-   resume the original ZCode session.
+`(parentSessionId, childAgentId, canonicalExecutionWorkspace)`
 
-The child-facing assignment remains the constant `invoke-prepared rescue`;
-private task and binding data never cross the Root-to-child message boundary.
+It additionally fixes child authority: kind, approved Role/type, exact
+persisted `agent_path` for modern `subagent-start`, or legacy path digest and
+origin/execution provenance for adoption, plus operation ID, anchor/current
+job IDs, permission, and supersession history.
 
-## Legacy migration
+`anchorJobId -> zcodeSessionId` selects the original ZCode session.
+`currentJobId` is the exact CAS generation/current attempt; it is not the
+source of the ZCode session. No value may be inferred from latest-job order.
 
-Migration is lazy and exact. A closed binding may be reopened only when all of
-the following hold:
+Multiple child slots may coexist. Fresh on child B leaves child A byte-identical
+and resumable. Fresh on child A must CAS against A's exact operation/anchor/
+current snapshot and retain a bounded durable `fresh` supersession record for
+A only. A stale competing writer fails without changing siblings.
 
-- `state === "closed"` and `closeReason === "session-ended"`;
-- the requested Root session ID exactly matches the binding owner;
-- the canonical workspace and binding key match;
-- the exact child ID/path/Role is present in persisted Codex child state;
-- anchor/current jobs are structurally valid and the original ZCode session is
-  present;
-- no later fresh replacement, cancel, or invalidation superseded the binding;
-- the transition occurs under the state lock with an atomic compare-and-swap.
+## Native Codex rejoin contract
 
-Any failed condition keeps the binding closed and fails closed. The migration
-must not reopen bindings closed for `fresh`, `cancel`, or `invalidated`.
+Exact-parent child discovery is required. The child must have the same
+persisted thread ID and `thread_spawn` parent; top-level and nested Role/path
+metadata must agree; duplicate IDs/paths or contradictory active state fail
+closed. `notLoaded` children are accepted for lazy reload of that same thread.
+Rejoin sends the existing fixed `invoke-prepared rescue` assignment and causes
+follow-up on the original thread; it never calls `spawn_agent` or emits a new
+`SubagentStart`.
 
-## Fresh and cancellation
+Resident children are eligible for direct follow-up. Executor cleanup after
+SessionEnd may remove Hook route records, so modern v3 binding authority is
+also sufficient to validate the exact persisted child path; legacy adoption
+is a compatibility-only path.
 
-`fresh` creates an independent operation and ZCode session. If it selects a
-different child, the previous child binding remains resumable and can still be
-followed up later. If Root explicitly replaces the operation on the *same*
-child, only that child's previous binding is closed/superseded; fresh never
-closes sibling child bindings. `cancel` remains permanent. Neither action
-deletes the workspace or the historical job/result artifacts.
+## Lazy migration and atomic reservation
 
-Bindings are child-scoped by
-`(parentSessionId, childAgentId, canonicalWorkspace) -> currentJob ->
-zcodeSessionId`. Rejoin must resolve that exact tuple from the persisted child
-graph and binding records. It must not select a session by workspace, latest
-job, or timestamp, and ambiguous child/path/Role/binding state must fail
-closed.
+Migration lookup is read-only and may return a validated closed tombstone. It
+does not publish an active binding. Only continuation reservation may consume
+the proof. Under one state lock, reservation re-reads and compares the exact
+binding, parent, child, path/Role, permission, operation, anchor/current IDs,
+and supersession state; then validates local ZCode ID presence and atomically
+publishes the continuation job plus active successor binding. Two consumers of
+one proof yield at most one publication; the loser fails stale with no
+mutation.
 
-The existing one-active-writable-job-per-workspace rule is a separate,
-conservative plugin safety policy. It is not a Codex child lifecycle rule and
-must not be implemented by closing completed or sibling bindings. Whether to
-make that write exclusion configurable is a separate future decision.
+Actual remote resumability is proven by `session/resume` for exactly the
+anchor's ZCode session before sending work. If it rejects, returns a mismatched
+session/workspace, or broker access is unavailable, the new attempt is failed
+without fallback to `session/create`, another session, or another child. The
+closed legacy tombstone remains closed (or an exact rollback restores the
+pre-reservation snapshot under CAS).
 
-## Testing requirements
+Migration requires: closed + `session-ended`; exact canonical workspace and
+parent; exact persisted child ID/thread/path/Role; valid anchor/current jobs;
+non-empty original ZCode ID; no cancel/invalidation/fresh supersession; and
+state-lock CAS. V1/V2 historical records remain readable under historical
+validation. New/replaced records use binding schema v3 with exact modern path
+authority and bounded same-child supersession records.
 
-The regression suite must prove:
+## Revocation rules
 
-- a completed operation survives SessionEnd and resumes its original ZCode
-  session;
-- a legacy `session-ended` closed binding migrates exactly once;
-- fresh/cancel/invalidation closed bindings never migrate;
-- child runtime absence causes rejoin from persisted identity, not spawn;
-- workspace, Root session, child, Role, job, or ZCode session mismatches fail
-  closed without mutation;
-- active-job SessionEnd still preserves existing orphan and writable-exclusion
-  safety;
-- multiple child bindings remain isolated and one child lifecycle does not
-  close siblings;
-- a fresh operation on a different child preserves the first child's binding,
-  while an explicit same-child replacement affects only that child;
-- existing launcher secrecy and private-envelope contracts remain unchanged.
+- Exact durable cancellation of the current bound job closes only that child
+  operation with `cancel`. A stop failure or unacknowledged stop is not cancel.
+- Explicit invalidation closes only the exact child/operation under operation
+  CAS.
+- Same-child fresh replacement records `fresh` supersession for only the old
+  operation. Fresh on a different child does not close siblings.
+- Repeated close with a different operation/reason fails stale/closed; it never
+  reopens an operation.
+
+## Acceptance matrix
+
+Tests must cover every mutation and no-mutation outcome for:
+
+- resident and notLoaded modern child rejoin, same child ID/path/Role, zero
+  spawn and exact `session/resume`;
+- legacy session-ended migration, repeated read-only proof lookup, competing
+  reservations, and remote-resume failure with closed-tombstone preservation;
+- cancel current job, invalidation, same-child fresh, sibling fresh, orphan
+  settlement, failed/unacknowledged stop, and child-scoped close;
+- mismatched origin/execution workspace, parent, child ID/thread, exact path or
+  digest, Role/kind, permission, operation, anchor/current job, and ZCode ID;
+- duplicate IDs/paths, unknown schema, duplicate JSON keys, oversized history,
+  symlink/path or lock replacement, pagination/unsupported parent filtering,
+  malformed host metadata, and transient discovery failure;
+- same-process and cross-process writable races, preserving sibling bytes and
+  `WRITABLE_JOB_EXISTS` semantics;
+- source/marketplace byte identity, installed package snapshots, private
+  envelope secrecy, and qualified native Codex evidence. Skipped or
+  unauthenticated qualification is not acceptance evidence.
 
 ## Non-goals
 
-This change does not redesign the ZCode protocol, change the child-facing
-launcher command, remove workspace canonicalization, permit latest-session
-fallback, or make explicit cancellation reversible.
+Do not redesign the ZCode protocol, remove writable exclusion, allow latest
+session fallback, infer authority from collisions, or make explicit cancel,
+invalidation, or same-child fresh supersession reversible.
