@@ -19,6 +19,7 @@ import {
   hasRecordedRescueMarker,
   readRescuePreparation,
   readConsumedLegacyChildAuthority,
+  readConsumedLegacyChildAuthorityContext,
   validateRescuePreparation,
 } from '../scripts/lib/rescue-preparation.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
@@ -339,6 +340,8 @@ test('legacy-adopt generation one consumes once with exact child proof and deriv
     authorizingPermissionMode: 'workspace-write', originWorkspace: workspaceA, executionWorkspace: consumed.workspace,
     agentPathDigest: legacyAdoptActivation.agentPathDigest,
   });
+  assert.equal(readConsumedLegacyChildAuthorityContext(authority).parentSessionId, 'parent');
+  assert.equal(Object.hasOwn(authority, 'parentSessionId'), false);
   assert.equal(createConsumedLegacyChildAuthority(consumed, {
     authorizingParentGenerationId: '9'.repeat(64), originWorkspace: workspaceA, executionWorkspace: consumed.workspace,
   }), authority);

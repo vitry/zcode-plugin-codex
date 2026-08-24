@@ -13,7 +13,7 @@ import {
 } from './fs.mjs';
 import { isSafeIdentifier } from './identifier.mjs';
 import { PERMISSION_MODES } from './identity.mjs';
-import { consumeConsumedLegacyChildAuthority, readConsumedLegacyChildAuthority } from './rescue-preparation.mjs';
+import { consumeConsumedLegacyChildAuthorityContext, readConsumedLegacyChildAuthorityContext } from './rescue-preparation.mjs';
 import {
   closeRescueBinding,
   createRescueBindingAuthority,
@@ -153,7 +153,7 @@ export function createStateStore(options) {
         const closedGcCutoff = Date.now() - RESCUE_BINDING_CLOSED_GC_MS;
         const plannedBeforeSnapshot = planBindingSlot(readOnlySnapshot, binding.key, closedGcCutoff);
         const plannedAfterSnapshot = bindingSnapshotWith(plannedBeforeSnapshot, binding);
-        if (!plannedBeforeSnapshot.records.has(binding.key)) ensureProspectiveBindingCapacity(storage, binding.parentSessionId, plannedAfterSnapshot, bindingPartitionMaxBytes);
+        ensureProspectiveBindingCapacity(storage, binding.parentSessionId, plannedAfterSnapshot, bindingPartitionMaxBytes);
         await ensureOwnerIndex(storage, jobs);
         const { record: previous, snapshot: beforeSnapshot } = await prepareBindingSlot(storage, exactIdentity, lockIdentity,
           { allowAuthorityOnlyRepair: true, closedGcCutoff });
@@ -712,14 +712,16 @@ function reservationBindingContext(input, workspace, permissionMode, consumeAuth
     } };
   }
   if (!isPlainJsonObject(input.authority)) throw invalidRescueBinding();
-  let trustedAuthority;
-  try { trustedAuthority = consumeAuthority
-    ? consumeConsumedLegacyChildAuthority(input.authority) : readConsumedLegacyChildAuthority(input.authority); }
+  let trustedContext;
+  try { trustedContext = consumeAuthority
+    ? consumeConsumedLegacyChildAuthorityContext(input.authority) : readConsumedLegacyChildAuthorityContext(input.authority); }
   catch { throw invalidRescueBinding(); }
+  if (trustedContext.parentSessionId !== input.reservation.ownerSessionId) throw invalidRescueBinding();
+  const trustedAuthority = trustedContext.authority;
   if (trustedAuthority.kind === 'codex-legacy-adoption') {
     const childAuthority = validateRescueBindingChildAuthority(trustedAuthority, workspace);
     return { kind: 'adoption', childAuthority, identity: {
-      parentSessionId: input.reservation.ownerSessionId, executorAgentId: childAuthority.childAgentId, workspace, permissionMode,
+      parentSessionId: trustedContext.parentSessionId, executorAgentId: childAuthority.childAgentId, workspace, permissionMode,
     } };
   }
   const authority = trustedAuthority;
@@ -732,7 +734,7 @@ function reservationBindingContext(input, workspace, permissionMode, consumeAuth
     || !isNonEmptyString(authority.originWorkspace) || authority.executionWorkspace !== workspace
     || !isDigest(authority.agentPathDigest)) throw invalidRescueBinding();
   return { kind: 'continuation', authority: structuredClone(authority), identity: {
-    parentSessionId: input.reservation.ownerSessionId, executorAgentId: authority.childAgentId, workspace, permissionMode,
+    parentSessionId: trustedContext.parentSessionId, executorAgentId: authority.childAgentId, workspace, permissionMode,
   } };
 }
 

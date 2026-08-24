@@ -129,7 +129,8 @@ export function createConsumedLegacyChildAuthority(receipt, input) {
   const consumed = /** @type {any} */ (receipt); const activation = consumed.activation;
   if (!plain(activation) || !['legacy-adopt', 'legacy-bound'].includes(activation.kind)
     || consumed.workspace !== input.executionWorkspace || !safeIdentifier(consumed.executorAgentId)
-    || !safeIdentifier(consumed.turnId) || !PERMISSION_MODES.includes(consumed.permissionMode)) throw invalidPreparation();
+    || !safeIdentifier(consumed.sessionId, 4096) || !safeIdentifier(consumed.turnId, 4096)
+    || !PERMISSION_MODES.includes(consumed.permissionMode)) throw invalidPreparation();
   const issued = issuedLegacyChildAuthorities.get(/** @type {object} */ (receipt));
   if (issued !== undefined) {
     if (issued.authorizingParentGenerationId !== input.authorizingParentGenerationId
@@ -151,26 +152,36 @@ export function createConsumedLegacyChildAuthority(receipt, input) {
     agentPathDigest: activation.agentPathDigest,
   };
   const authority = Object.freeze(stable);
-  brandedLegacyChildAuthorities.set(authority, authority);
+  brandedLegacyChildAuthorities.set(authority, Object.freeze({ authority, parentSessionId: consumed.sessionId }));
   issuedLegacyChildAuthorities.set(/** @type {object} */ (receipt), authority);
   return authority;
 }
 
 /** Read one authority only if it retains the exact factory-issued object identity. @param {unknown} value */
 export function readConsumedLegacyChildAuthority(value) {
-  let authority;
-  try { authority = brandedLegacyChildAuthorities.get(/** @type {object} */ (value)); }
+  return readConsumedLegacyChildAuthorityContext(value).authority;
+}
+
+/** Read the private parent session retained outside the persisted authority schema. @param {unknown} value */
+export function readConsumedLegacyChildAuthorityContext(value) {
+  let context;
+  try { context = brandedLegacyChildAuthorities.get(/** @type {object} */ (value)); }
   catch { throw invalidPreparation(); }
-  if (authority === undefined) throw invalidPreparation();
-  return authority;
+  if (context === undefined) throw invalidPreparation();
+  return context;
 }
 
 /** Consume one issued authority exactly once before any StateStore publication. @param {unknown} value */
 export function consumeConsumedLegacyChildAuthority(value) {
-  const authority = readConsumedLegacyChildAuthority(value);
-  if (consumedLegacyChildAuthorities.has(authority)) throw invalidPreparation();
-  consumedLegacyChildAuthorities.add(authority);
-  return authority;
+  return consumeConsumedLegacyChildAuthorityContext(value).authority;
+}
+
+/** Consume one private branded context exactly once. @param {unknown} value */
+export function consumeConsumedLegacyChildAuthorityContext(value) {
+  const context = readConsumedLegacyChildAuthorityContext(value);
+  if (consumedLegacyChildAuthorities.has(context.authority)) throw invalidPreparation();
+  consumedLegacyChildAuthorities.add(context.authority);
+  return context;
 }
 
 /** @param {{dataRoot:string,testOnlyBeforeSaveLockOpen?:()=>Promise<void>}} options */
@@ -808,9 +819,9 @@ function nonempty(value) {
   return typeof value === 'string' && value.trim().length > 0 && Buffer.byteLength(value) <= RESCUE_TASK_MAX_BYTES;
 }
 
-/** @param {unknown} value */
-function safeIdentifier(value) {
-  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 512
+/** @param {unknown} value @param {number} [maximumBytes] */
+function safeIdentifier(value, maximumBytes = 512) {
+  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= maximumBytes
     && ![...value].some((character) => {
       const code = /** @type {number} */ (character.codePointAt(0));
       return code <= 31 || code === 127;

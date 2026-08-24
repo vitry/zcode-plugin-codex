@@ -274,6 +274,17 @@ test('StateStore atomically publishes first legacy adoption and persists only it
   assert.equal((await store.listJobs(workspace)).length, 1);
 });
 
+test('genuine first-adoption authority cannot cross parent sessions and remains usable by its correct session', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const authority = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
+  const foreign = { ...reservation(workspace), ownerSessionId: 'foreign-session' };
+  const before = await privateTreeBytes(dataRoot);
+  await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: foreign, authority }),
+    { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual(await privateTreeBytes(dataRoot), before);
+  assert.equal((await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority })).binding.parentSessionId,
+    'parent-session');
+});
+
 test('legacy continuation requires the exact durable adoption and never persists its transient proof', async () => {
   const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
@@ -283,6 +294,21 @@ test('legacy continuation requires the exact durable adoption and never persists
     authority: transient, operationId: first.binding.operationId });
   assert.deepEqual(continued.binding.childAuthority, durable);
   assert.equal(JSON.stringify(continued.binding).includes(transient.preparationAuthorityId), false);
+});
+
+test('genuine legacy continuation cannot cross parent sessions or consume the correct session brand', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
+  await makeEligible(store, workspace, first.job, 'legacy-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const transient = await brandedAuthority(dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key);
+  const foreign = { ...reservation(workspace, 'turn-b'), ownerSessionId: 'foreign-session' };
+  const before = await privateTreeBytes(dataRoot);
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace, reservation: foreign, authority: transient,
+    operationId: first.binding.operationId }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual(await privateTreeBytes(dataRoot), before);
+  const continued = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+    authority: transient, operationId: first.binding.operationId });
+  assert.equal(continued.binding.parentSessionId, 'parent-session');
 });
 
 test('a newly emitted exact Hook proof continues without replacing durable adoption authority', async () => {
@@ -368,6 +394,40 @@ test('prospective capacity rejection cannot publish an authority marker or colle
   const before = await privateTreeBytes(dataRoot);
   const bounded = createStateStore({ dataRoot, testOnlyBindingPartitionMaxBytes: 1 });
   await assert.rejects(bounded.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), authority }),
+    { code: 'RESCUE_BINDING_CAPACITY' });
+  assert.deepEqual(await privateTreeBytes(dataRoot), before);
+});
+
+test('existing branded slot replacement enforces prospective partition bytes before any private mutation', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
+  await store.finishJob(workspace, first.job.id, ['queued'], 'failed');
+  const transient = await brandedAuthority(dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory);
+  const maximumBytes = Buffer.byteLength(await readFile(path)) - 1; const before = await privateTreeBytes(dataRoot);
+  const bounded = createStateStore({ dataRoot, testOnlyBindingPartitionMaxBytes: maximumBytes });
+  await assert.rejects(bounded.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), authority: transient }),
+    { code: 'RESCUE_BINDING_CAPACITY' });
+  assert.deepEqual(await privateTreeBytes(dataRoot), before);
+});
+
+test('existing v1 Hook slot cannot expand to v2 beyond prospective capacity or mutate private state', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await store.finishJob(workspace, first.job.id, ['queued'], 'failed');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const [path] = await bindingFiles(storage.directory);
+  const partition = JSON.parse(await readFile(path, 'utf8')); const v2Bytes = Buffer.byteLength(`${JSON.stringify(partition, null, 2)}\n`);
+  const current = partition.records[0];
+  partition.records[0] = { version: 1, key: current.key, operationId: current.operationId, state: current.state,
+    parentSessionId: current.parentSessionId, executorAgentId: hook.agentId, executorAgentType: hook.agentType,
+    executorParentTurnId: hook.parentTurnId, executorParentPermissionMode: hook.parentPermissionMode,
+    workspace: current.workspace, permissionMode: current.permissionMode, anchorJobId: current.anchorJobId,
+    currentJobId: current.currentJobId, createdAt: current.createdAt, updatedAt: current.updatedAt,
+    closedAt: current.closedAt, closeReason: current.closeReason };
+  await writeFile(path, `${JSON.stringify(partition, null, 2)}\n`);
+  const before = await privateTreeBytes(dataRoot);
+  const bounded = createStateStore({ dataRoot, testOnlyBindingPartitionMaxBytes: v2Bytes - 1 });
+  await assert.rejects(bounded.reserveFreshRescueJob({ workspace, reservation: reservation(workspace, 'turn-b'), executor: hook }),
     { code: 'RESCUE_BINDING_CAPACITY' });
   assert.deepEqual(await privateTreeBytes(dataRoot), before);
 });
