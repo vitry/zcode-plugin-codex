@@ -419,7 +419,10 @@ export function createStateStore(options) {
           // Legacy marker adoption may have rewritten the queued job while this lock remained held.
           job = await readJobRecord(path, jobId, storage.workspacePath);
         }
-        const rescueExecutionClaim = classification ? executionClaimForClassification(classification, worker.workerLeaseId) : undefined;
+        const legacyReservation = classification !== undefined && job.rescueReservationKind === undefined;
+        if (legacyReservation && classification?.binding?.version >= 3) throw invalidRescueBinding();
+        const rescueExecutionClaim = classification
+          ? executionClaimForClassification(classification, worker.workerLeaseId, legacyReservation) : undefined;
         const claimed = { ...job, ...worker, ...(rescueExecutionClaim ? { rescueExecutionClaim } : {}),
           updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString() };
         validateJobRecord(claimed, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
@@ -937,6 +940,7 @@ async function classifyQueuedRescueTransitionLocked(storage, job, legacyRollback
   const binding = matches[0];
   if (binding.parentSessionId !== job.ownerSessionId || binding.permissionMode !== job.permissionSnapshot.permissionMode
     || reservationEvidence?.kind === 'unbound') throw invalidRescueBinding();
+  if (reservationEvidence?.kind === 'legacy' && binding.version >= 3) throw invalidRescueBinding();
   if (binding.state === 'closed' && binding.anchorJobId === job.id) return { kind: 'ordinary-revoked-current', binding };
   if (binding.state !== 'active') throw invalidRescueBinding();
   if (binding.anchorJobId === job.id) return { kind: 'ordinary-current', binding };
@@ -1015,24 +1019,38 @@ function sameClosedBindingLifecycle(record, active) {
   } catch { return false; }
 }
 
-/** @param {any} classification @param {string} workerLeaseId */
-function executionClaimForClassification(classification, workerLeaseId) {
-  if (classification.kind === 'ordinary-unbound') return { version: 1, kind: 'unbound', workerLeaseId };
+/**
+ * Version 2 is a durable private proof that this lock holder classified an exact owner-v1
+ * classless reservation. Bound v2 claims are intentionally limited to historical v1/v2 bindings.
+ * @param {any} classification @param {string} workerLeaseId @param {boolean} legacyReservation
+ */
+function executionClaimForClassification(classification, workerLeaseId, legacyReservation) {
+  const version = legacyReservation ? 2 : 1;
+  const proof = legacyReservation ? { reservationProof: 'owner-v1-classless' } : {};
+  if (classification.kind === 'ordinary-unbound') return { version, kind: 'unbound', workerLeaseId, ...proof };
   if (!classification.binding || classification.binding.state !== 'active') throw invalidRescueBinding();
-  return { version: 1, kind: 'bound', workerLeaseId, binding: structuredClone(classification.binding) };
+  if (legacyReservation && classification.binding.version >= 3) throw invalidRescueBinding();
+  return { version, kind: 'bound', workerLeaseId, binding: structuredClone(classification.binding), ...proof };
 }
 
 /** @param {any} value @param {any} job */
 function validRescueExecutionClaim(value, job) {
-  if (!isPlainJsonObject(value) || value.version !== 1 || value.workerLeaseId !== job.workerLeaseId
+  if (!isPlainJsonObject(value) || ![1, 2].includes(value.version) || value.workerLeaseId !== job.workerLeaseId
     || job.status !== 'queued' || job.command !== 'rescue' || job.readOnly !== false) return false;
-  if (value.kind === 'unbound') return Object.keys(value).sort().join(',') === 'kind,version,workerLeaseId'
-    && job.rescueReservationKind === 'unbound' && job.rescueContinuationOrigin === undefined && job.rescueMigrationRollback === undefined;
-  if (value.kind !== 'bound' || Object.keys(value).sort().join(',') !== 'binding,kind,version,workerLeaseId') return false;
+  const legacyReservation = value.version === 2;
+  if (legacyReservation !== (job.rescueReservationKind === undefined)) return false;
+  const unboundKeys = legacyReservation ? 'kind,reservationProof,version,workerLeaseId' : 'kind,version,workerLeaseId';
+  const boundKeys = legacyReservation ? 'binding,kind,reservationProof,version,workerLeaseId' : 'binding,kind,version,workerLeaseId';
+  if (legacyReservation && value.reservationProof !== 'owner-v1-classless') return false;
+  if (value.kind === 'unbound') return Object.keys(value).sort().join(',') === unboundKeys
+    && (legacyReservation || job.rescueReservationKind === 'unbound')
+    && job.rescueContinuationOrigin === undefined && job.rescueMigrationRollback === undefined;
+  if (value.kind !== 'bound' || Object.keys(value).sort().join(',') !== boundKeys) return false;
   try {
     const binding = validateRescueBinding(value.binding);
     if (binding.state !== 'active' || binding.currentJobId !== job.id || binding.parentSessionId !== job.ownerSessionId
       || binding.workspace !== job.workspace || binding.permissionMode !== job.permissionSnapshot.permissionMode) return false;
+    if (legacyReservation && binding.version >= 3) return false;
     if (job.rescueContinuationOrigin !== undefined) {
       const origin = job.rescueContinuationOrigin;
       const expected = origin.kind === 'legacy-adoption' ? origin.binding
@@ -1048,7 +1066,8 @@ function validRescueExecutionClaim(value, job) {
         job.id, binding.updatedAt);
       return sameExactBinding(binding, expected);
     }
-    return job.rescueReservationKind === 'bound' && (binding.anchorJobId === job.id || binding.version < 3);
+    return legacyReservation ? binding.version < 3
+      : job.rescueReservationKind === 'bound' && (binding.anchorJobId === job.id || binding.version < 3);
   } catch { return false; }
 }
 

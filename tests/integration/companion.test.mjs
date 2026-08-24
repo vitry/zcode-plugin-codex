@@ -18,6 +18,7 @@ import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
 import { ownerIdForSession } from '../../scripts/lib/job-control.mjs';
 import { managedRolePaths, MANAGED_ROLE_DESCRIPTION, renderManagedRescueRole } from '../../scripts/lib/managed-agent-role.mjs';
 import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparation.mjs';
+import { createRescueBindingPartition } from '../../scripts/lib/rescue-binding.mjs';
 import { planRescueActivation } from '../../scripts/lib/rescue-route-planner.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
@@ -380,6 +381,43 @@ async function startWritableRescueForTest(store, workspace, job, patch = {}) {
   return store.transitionJob(workspace, job.id, ['queued'], 'running', {
     ...patch, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
   });
+}
+
+/** @param {any} context @param {string} jobId @param {1|2} [bindingVersion] */
+async function downgradeCompanionReservationToOwnerV1(context, jobId, bindingVersion) {
+  const storage = await resolveWorkspaceStorage(context);
+  const jobPath = join(storage.directory, 'jobs', `${jobId}.json`);
+  const job = JSON.parse(await readFile(jobPath, 'utf8')); delete job.rescueReservationKind;
+  await atomicWriteJson(jobPath, job);
+  const ownerRoot = join(storage.directory, 'job-owners'); let ownerBindingPath;
+  for (const entry of await readdir(ownerRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{64}$/u.test(entry.name)) continue;
+    const candidate = join(ownerRoot, entry.name, `${jobId}.json`);
+    try { await readFile(candidate); ownerBindingPath = candidate; break; }
+    catch (error) { if ((/** @type {NodeJS.ErrnoException} */ (error))?.code !== 'ENOENT') throw error; }
+  }
+  assert.ok(ownerBindingPath);
+  await atomicWriteJson(ownerBindingPath, { jobId, ownerSessionId: job.ownerSessionId, version: 1 });
+  if (bindingVersion === undefined) return;
+  const [partitionName] = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'));
+  const partitionPath = join(storage.directory, partitionName); const partition = JSON.parse(await readFile(partitionPath, 'utf8'));
+  const current = partition.records.find((/** @type {any} */ record) => record.currentJobId === jobId); assert.ok(current);
+  const v2 = { ...current, version: 2, childAuthority: { ...current.childAuthority } };
+  delete v2.superseded; delete v2.childAuthority.agentPath;
+  await atomicWriteJson(partitionPath, createRescueBindingPartition({
+    parentSessionId: job.ownerSessionId, workspace: job.workspace, records: [v2],
+  }));
+}
+
+/** @param {any} context */
+async function onlyQueuedJobId(context) {
+  const storage = await resolveWorkspaceStorage(context); const queued = [];
+  for (const name of await readdir(join(storage.directory, 'jobs'))) {
+    if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
+    const job = JSON.parse(await readFile(join(storage.directory, 'jobs', name), 'utf8'));
+    if (job.status === 'queued') queued.push(job.id);
+  }
+  assert.equal(queued.length, 1); return queued[0];
 }
 
 /** @param {string} sessionId @param {string} [turnId] */
@@ -883,6 +921,44 @@ test('reserved execution winning its atomic claim remains authorized across a la
   assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
   await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId }),
     { code: 'RESCUE_BINDING_CLOSED' });
+});
+
+test('foreground production execution claims an exact owner-v1 classless unbound Rescue', async () => {
+  const context = await fixture(); const record = join(context.directory, 'legacy-classless-foreground.jsonl');
+  await writeFile(record, ''); let downgradedJobId;
+  const result = await runCompanion(['rescue', '--fresh', 'legacy foreground claim'], {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller('legacy-foreground'),
+    dependencies: { testOnlyBeforeExecutionClaim: async () => {
+      downgradedJobId = await onlyQueuedJobId(context);
+      await downgradeCompanionReservationToOwnerV1(context, downgradedJobId);
+    } },
+  });
+  assert.equal(result.job.id, downgradedJobId); assert.equal(result.job.status, 'succeeded');
+  assert.equal(result.job.rescueExecutionClaim, undefined); assert.equal(result.job.rescueReservationKind, undefined);
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(requests.filter((request) => request.method === 'session/create').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
+});
+
+test('background production execution claims an exact owner-v1 classless v2-bound Rescue', async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const parentSessionId = 'legacy-background-parent'; const childId = 'legacy-background-child';
+  const executor = { parentSessionId, parentTurnId: 'origin', agentId: childId, agentType: 'zcode-rescue',
+    agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const record = join(context.directory, 'legacy-classless-background.jsonl'); await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', 'legacy background claim'], {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor,
+  });
+  await downgradeCompanionReservationToOwnerV1(context, reserved.job.id, 2);
+  const result = await runCompanion(reserved.privateInvocation, {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+  });
+  assert.equal(result.job.id, reserved.job.id); assert.equal(result.job.status, 'succeeded');
+  assert.equal(result.job.rescueExecutionClaim, undefined); assert.equal(result.job.rescueReservationKind, undefined);
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(requests.filter((request) => request.method === 'session/create').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
 });
 
 test('background interruption after claim preserves the binding revoke and terminalizes without ZCode RPC', async () => {

@@ -250,6 +250,42 @@ async function bindingFiles(directory) {
     .map((entry) => join(directory, entry.name));
 }
 
+async function downgradeReservationToOwnerV1(dataRoot, workspace, job, bindingVersion) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const jobRecordPath = join(storage.directory, 'jobs', `${job.id}.json`);
+  const historical = JSON.parse(await readFile(jobRecordPath, 'utf8'));
+  delete historical.rescueReservationKind;
+  await writeFile(jobRecordPath, `${JSON.stringify(historical, null, 2)}\n`);
+  const ownerRoot = join(storage.directory, 'job-owners'); let ownerBindingPath;
+  for (const entry of await readdir(ownerRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{64}$/u.test(entry.name)) continue;
+    const candidate = join(ownerRoot, entry.name, `${job.id}.json`);
+    try { await readFile(candidate); ownerBindingPath = candidate; break; }
+    catch (error) { if (error?.code !== 'ENOENT') throw error; }
+  }
+  assert.ok(ownerBindingPath);
+  await writeFile(ownerBindingPath, `${JSON.stringify({ jobId: job.id,
+    ownerSessionId: job.ownerSessionId, version: 1 }, null, 2)}\n`);
+  if (bindingVersion === undefined) return;
+  const [bindingPath] = await bindingFiles(storage.directory);
+  const partition = JSON.parse(await readFile(bindingPath, 'utf8')); const current = partition.records[0];
+  if (bindingVersion === 2) {
+    const v2 = { ...current, version: 2, childAuthority: { ...current.childAuthority } };
+    delete v2.superseded; delete v2.childAuthority.agentPath; partition.records = [v2];
+  } else {
+    const authority = current.childAuthority;
+    partition.records = [{ version: 1, key: current.key, operationId: current.operationId, state: current.state,
+      parentSessionId: current.parentSessionId, executorAgentId: authority.childAgentId,
+      executorAgentType: authority.childAgentType, executorParentTurnId: authority.parentTurnId,
+      executorParentPermissionMode: authority.parentPermissionMode, workspace: current.workspace,
+      permissionMode: current.permissionMode, anchorJobId: current.anchorJobId, currentJobId: current.currentJobId,
+      createdAt: current.createdAt, updatedAt: current.updatedAt, closedAt: current.closedAt, closeReason: current.closeReason }];
+  }
+  await writeFile(bindingPath, `${JSON.stringify(createRescueBindingPartition({
+    parentSessionId: job.ownerSessionId, workspace, records: partition.records,
+  }), null, 2)}\n`);
+}
+
 async function privateTreeBytes(root) {
   const entries = [];
   async function visit(directory, prefix = '') {
@@ -979,6 +1015,38 @@ test('historical writable Rescue lacking reservation class retains direct queued
     startedAt: new Date().toISOString(), childPid: 999_999_999, workerLeaseId: '3'.repeat(64),
   });
   assert.equal(running.status, 'running'); assert.equal(running.rescueExecutionClaim, undefined);
+});
+
+for (const legacyKind of ['unbound', 'bound-v1', 'bound-v2']) test(`production claim authorizes exact owner-v1 classless ${legacyKind} Rescue`, async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const reserved = legacyKind === 'unbound' ? { job: await store.reserveJob(reservation(workspace)) }
+    : await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await downgradeReservationToOwnerV1(dataRoot, workspace, reserved.job,
+    legacyKind === 'unbound' ? undefined : Number(legacyKind.at(-1)));
+  const claimed = await store.claimJobWorkerForExecution(workspace, reserved.job.id, {
+    childPid: 999_999_999, workerLeaseId: '8'.repeat(64),
+  });
+  assert.equal(claimed.status, 'queued'); assert.equal(claimed.rescueReservationKind, undefined);
+  assert.equal(claimed.rescueExecutionClaim.version, 2);
+  assert.equal(claimed.rescueExecutionClaim.reservationProof, 'owner-v1-classless');
+  assert.equal(claimed.rescueExecutionClaim.kind, legacyKind === 'unbound' ? 'unbound' : 'bound');
+  const running = await store.transitionJob(workspace, reserved.job.id, ['queued'], 'running', {
+    childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+  });
+  assert.equal(running.status, 'running'); assert.equal(running.rescueExecutionClaim, undefined);
+});
+
+test('production claim rejects owner-v1 classless Rescue attached to a modern v3 binding', async () => {
+  const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
+  const fresh = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+  await downgradeReservationToOwnerV1(dataRoot, workspace, fresh.job);
+  await assert.rejects(store.claimJobWorkerForExecution(workspace, fresh.job.id, {
+    childPid: 999_999_999, workerLeaseId: '9'.repeat(64),
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  await assert.rejects(store.transitionJob(workspace, fresh.job.id, ['queued'], 'running', {
+    childPid: 999_999_999, workerLeaseId: 'a'.repeat(64),
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal((await store.readJob(workspace, fresh.job.id)).status, 'queued');
 });
 
 for (const closeReason of ['invalidated', 'session-ended']) for (const phase of ['queued', 'running']) test(`claim-first ${phase} cancellation preserves a ${closeReason} binding tombstone`, async () => {
