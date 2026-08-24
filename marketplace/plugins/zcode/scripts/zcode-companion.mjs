@@ -11,7 +11,7 @@ import { parseArgs, resolveModel } from './lib/args.mjs';
 import { readCodexThread, readCodexThreadSpawnChild, readCodexThreadSpawnChildIdentity, sanitizeCodexThreadSpawnChild } from './lib/codex-app-server.mjs';
 import { inspectRescueRoleStatus, runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
-import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
+import { atomicWriteJson, readBoundedJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
 import { createJobController, ownerIdForSession, readBoundRescueStatus, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
@@ -191,9 +191,18 @@ export async function runDirectInvocation(argv, runtime = {}) {
         else throw error;
       } catch (proofError) {
         if (!(proofError instanceof PluginError) || proofError.code !== 'RESCUE_PREPARATION_MISMATCH') throw proofError;
-        activationProof = await legacyActivationProof({ dataRoot, caller, host, executor });
-        prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof,
-          ...(executor ? { beforeLegacyConsume: () => validateLegacyConvergedChild(host, executor, caller) } : {}) });
+        if (executor?.active) {
+          activationProof = { kind: 'reactivate', agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex') };
+          try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof }); }
+          catch (residentError) {
+            if (!(residentError instanceof PluginError) || residentError.code !== 'RESCUE_PREPARATION_MISMATCH') throw residentError;
+          }
+        }
+        if (!prepared) {
+          activationProof = await legacyActivationProof({ dataRoot, caller, host, executor });
+          prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof,
+            ...(executor ? { beforeLegacyConsume: () => validateLegacyConvergedChild(host, executor, caller) } : {}) });
+        }
       }
     }
     if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && executor) validateLegacyConvergedChild(host, executor, caller);
@@ -207,7 +216,16 @@ export async function runDirectInvocation(argv, runtime = {}) {
     }
     if (prepared.requiredExecutorAgentId !== null && executor?.active
       && !['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind)) {
-      throw new PluginError('EXECUTOR_STATE_MISMATCH', 'A Rescue continuation requires the original child to be stopped.', { category: 'authorization', remedy: 'Wait for the original Rescue child to stop, then prepare the continuation again.' });
+      host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
+        ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
+      ), executor.parentSessionId, executor.agentId);
+      validateExecutorHostIdentity(host, executor);
+      if (host.status.type !== 'active' || prepared.activation !== null
+        && (prepared.activation?.kind !== 'reactivate'
+          || prepared.activation.agentPathDigest !== createHash('sha256').update(host.agentPath).digest('hex'))) {
+        throw new PluginError('EXECUTOR_STATE_MISMATCH', 'The resident Rescue child no longer matches its prepared continuation.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+      }
+      executor = { ...executor, agentPath: host.agentPath };
     }
     if (executor && prepared.activation?.kind === 'spawn') {
       const agentPath = `/root/${prepared.activation.taskName}`;
@@ -234,7 +252,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
       try {
         resolved = await state.resolveRescueBinding(lookup);
       } catch (error) {
-        if (prepared.envelope.options.resume !== 'resume' || /** @type {any} */ (error)?.code !== 'RESCUE_BINDING_CLOSED') throw error;
+        if (/** @type {any} */ (error)?.code !== 'RESCUE_BINDING_CLOSED') throw error;
         if (executor) {
           host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
             ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
@@ -254,7 +272,8 @@ export async function runDirectInvocation(argv, runtime = {}) {
           ...(executor ? { agentPath: host.agentPath } : {}) });
         if (proof.kind !== 'proof') throw error;
         migrationProof = proof.migrationProof;
-        resolved = await state.resolveRescueBindingForResume({ ...lookup, permissionMode: caller.permissionMode, migrationProof });
+        resolved = await state.resolveRescueBindingForResume({ ...lookup,
+          ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}), migrationProof });
       }
       if (resolved.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
       rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId,
@@ -589,13 +608,7 @@ async function startPublic(context) {
             : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)),
           ...(parsed.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
         };
-        const migrationProof = parsed.options.resume === 'resume'
-          ? context.rescueRoute?.migrationProof ?? (context.rescueRoute?.expectedOperationId && context.authority
-            ? { parentSessionId: caller.sessionId, childAgentId: context.authority.childAgentId, childAgentType: context.authority.childAgentType,
-              operationId: context.rescueRoute.expectedOperationId, originWorkspace: context.authority.originWorkspace,
-              executionWorkspace: context.authority.executionWorkspace, agentPathDigest: context.authority.agentPathDigest }
-            : undefined)
-          : undefined;
+        const migrationProof = parsed.options.resume === 'resume' ? context.rescueRoute?.migrationProof : undefined;
         const resolved = migrationProof ? await store.resolveRescueBindingForResume({ ...lookup, migrationProof }) : await store.resolveRescueBinding(lookup);
         binding = resolved.kind === 'bound' ? resolved.binding : null;
         if (context.rescueRoute?.routeKind === 'bound' && !binding) throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
@@ -617,14 +630,7 @@ async function startPublic(context) {
     const childProof = context.executor ? { executor: context.executor } : { authority: context.authority };
     if (parsed.options.resume === 'fresh' || !binding && !candidate) reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, ...childProof, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
     else if (binding) {
-      const proofOperationId = context.rescueRoute?.expectedOperationId ?? binding.operationId;
-      const previewMigrationProof = binding.state === 'closed'
-        ? context.rescueRoute?.migrationProof ?? (context.authority
-          ? { parentSessionId: caller.sessionId, childAgentId: context.authority.childAgentId, childAgentType: context.authority.childAgentType,
-            operationId: proofOperationId, originWorkspace: context.authority.originWorkspace,
-            executionWorkspace: context.authority.executionWorkspace, agentPathDigest: context.authority.agentPathDigest }
-          : undefined)
-        : undefined;
+      const previewMigrationProof = binding.state === 'closed' ? context.rescueRoute?.migrationProof : undefined;
       const resolved = await store.resolveRescueBindingForResume({ ...(context.legacyActivation
         ? authorityBindingLookup(context.authority ?? { childAgentId: context.executor.agentId }, caller, cwd)
         : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)),
@@ -649,6 +655,7 @@ async function startPublic(context) {
       migrationParentSessionId: migrationRollback.parentSessionId, migrationChildAgentId: migrationRollback.childAgentId,
       migrationOperationId: migrationRollback.operationId, migrationPriorCurrentJobId: migrationRollback.priorCurrentJobId,
       migrationPriorUpdatedAt: migrationRollback.priorUpdatedAt, migrationPriorClosedAt: migrationRollback.priorClosedAt,
+      migrationPriorVersion: String(migrationRollback.priorVersion),
     } : {}) });
   if (parsed.options.execution === 'background') {
     const specDigest = digestSpec(spec);
@@ -669,6 +676,7 @@ async function startPublic(context) {
       return output;
     } catch (error) {
       if (capability) await identity.revokeExecutionCapability(capability, binding).catch(() => {});
+      if (migrationRollback) await store.rollbackSessionEndedRescueContinuation({ workspace: cwd, jobId: job.id, ...migrationRollback });
       await failQueuedJob(store, cwd, job.id, error);
       throw error;
     }
@@ -819,7 +827,7 @@ async function writeJobSpec(dataRoot, workspace, job, spec, digest) {
 async function readJobSpec(dataRoot, workspace, jobId) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const root = resolve(storage.directory, 'job-specs'); const path = resolve(root, `${jobId}.json`);
   if (!path.startsWith(`${root}${sep}`)) throw new PluginError('JOB_SPEC_INVALID', 'Job specification path is invalid.', { category: 'storage', remedy: 'Reserve a new background job.' });
-  return readJsonFile(path);
+  return readBoundedJsonFile(storage.directory, path, 512 * 1024, { requirePrivatePermissions: true });
 }
 /** @param {unknown} left @param {unknown} right */
 function sameJson(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
@@ -895,7 +903,7 @@ function copyOptionalFields(source, fields) {
 /** @param {any} input */
 function normalizeSpec(input) {
   const allowed = ['command', 'scope', 'base', 'focus', 'task', 'model', 'effort', 'resumeSessionId', 'candidateJobId',
-    'migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId', 'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt'];
+    'migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId', 'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt', 'migrationPriorVersion'];
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !allowed.includes(key)) || typeof input.command !== 'string') throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' });
   /** @type {Record<string,string>} */ const output = {};
   for (const key of allowed) if (input[key] !== undefined) { if (typeof input[key] !== 'string') throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }); output[key] = input[key]; }
@@ -903,15 +911,17 @@ function normalizeSpec(input) {
 }
 /** @param {Record<string,string>} spec @param {any} job */
 function migrationRollbackFromSpec(spec, job) {
-  const keys = ['migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId', 'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt'];
+  const keys = ['migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId', 'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt', 'migrationPriorVersion'];
   const present = keys.filter((key) => spec[key] !== undefined);
   if (present.length === 0) return undefined;
   if (present.length !== keys.length || spec.migrationParentSessionId !== job.ownerSessionId || job.command !== 'rescue') {
     throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' });
   }
+  const priorVersion = Number(spec.migrationPriorVersion);
+  if (![1, 2, 3].includes(priorVersion)) throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' });
   return { parentSessionId: spec.migrationParentSessionId, childAgentId: spec.migrationChildAgentId,
     operationId: spec.migrationOperationId, priorCurrentJobId: spec.migrationPriorCurrentJobId,
-    priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt };
+    priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt, priorVersion };
 }
 /** @param {any} spec */
 function digestSpec(spec) { return createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex'); }
