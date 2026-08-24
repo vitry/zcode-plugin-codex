@@ -13,6 +13,7 @@ import {
   RESCUE_PREPARATION_VERSION,
   RESCUE_TASK_MAX_BYTES,
   createRescuePreparationStore,
+  deriveConsumedLegacyActivationAuthorityId,
   hasRecordedRescueMarker,
   readRescuePreparation,
   validateRescuePreparation,
@@ -34,6 +35,12 @@ const reactivateActivation = Object.freeze({
 });
 const reactivateActivationProof = Object.freeze({
   kind: 'reactivate', agentPathDigest: 'b'.repeat(64),
+});
+const legacyAdoptActivation = Object.freeze({
+  kind: 'legacy-adopt', childThreadId: 'legacy-child', agentPathDigest: 'c'.repeat(64),
+});
+const legacyBoundActivation = Object.freeze({
+  kind: 'legacy-bound', childThreadId: 'legacy-child', agentPathDigest: 'c'.repeat(64), bindingKey: 'd'.repeat(64),
 });
 
 /** @param {unknown} value */
@@ -296,6 +303,144 @@ test('activation codecs reject unknown keys, invalid digests, and illegal cross-
       code: 'RESCUE_PREPARATION_INVALID',
     });
   }
+});
+
+test('legacy-adopt generation one consumes once with exact child proof and derives branded authority', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const now = new Date('2026-08-24T00:00:00.000Z');
+  const base = { sessionId: 'parent', turnId: 'legacy-adopt', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue adopt', now };
+  await store.save({ ...base, envelope: validEnvelope, activation: legacyAdoptActivation });
+  const path = await preparedPath(dataRoot, workspaceA, 'parent', 'legacy-adopt');
+  const persisted = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(persisted.version, 3); assert.equal(persisted.generation, 1);
+  assert.equal(persisted.requiredExecutorAgentId, null);
+  assert.deepEqual(persisted.activation, legacyAdoptActivation);
+
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'sibling', activationProof: legacyAdoptActivation }),
+    { code: 'RESCUE_PREPARATION_MISMATCH' });
+  const consumed = await store.consume({
+    ...base, executorAgentId: 'legacy-child', activationProof: legacyAdoptActivation,
+  });
+  const expected = createHash('sha256').update(JSON.stringify([
+    'rescue-legacy-adoption-authority-v1', consumed.key, consumed.executorAgentId,
+    consumed.generation, consumed.createdAt,
+  ])).digest('hex');
+  assert.equal(deriveConsumedLegacyActivationAuthorityId(consumed), expected);
+  assert.throws(() => deriveConsumedLegacyActivationAuthorityId(structuredClone(consumed)),
+    { code: 'RESCUE_PREPARATION_INVALID' });
+  await assert.rejects(store.consume({
+    ...base, executorAgentId: 'legacy-child', activationProof: legacyAdoptActivation,
+  }), { code: 'RESCUE_PREPARATION_CONSUMED' });
+});
+
+test('legacy activation proof codecs reject type confusion, mutations, expiry, and unknown keys', async (t) => {
+  /** @type {Array<[string, any]>} */
+  const mutations = [
+    ['missing proof', undefined],
+    ['wrong kind', { ...legacyAdoptActivation, kind: 'legacy-bound', bindingKey: 'd'.repeat(64) }],
+    ['wrong digest', { ...legacyAdoptActivation, agentPathDigest: 'e'.repeat(64) }],
+    ['wrong child', { ...legacyAdoptActivation, childThreadId: 'sibling' }],
+    ['unknown key', { ...legacyAdoptActivation, extra: true }],
+  ];
+  for (const [name, activationProof] of mutations) await t.test(name, async () => {
+    const { store, workspaceA } = await storeFixture();
+    const base = { sessionId: 'parent', turnId: `legacy-${name}`, workspace: workspaceA,
+      permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue adopt' };
+    await store.save({ ...base, envelope: validEnvelope, activation: legacyAdoptActivation });
+    await assert.rejects(store.consume({
+      ...base, executorAgentId: 'legacy-child',
+      ...(activationProof === undefined ? {} : { activationProof }),
+    }), { code: 'RESCUE_PREPARATION_MISMATCH' });
+    await store.consume({ ...base, executorAgentId: 'legacy-child', activationProof: legacyAdoptActivation });
+  });
+
+  const { store, workspaceA } = await storeFixture();
+  const now = new Date('2026-08-24T00:00:00.000Z');
+  const base = { sessionId: 'parent', turnId: 'expired-adopt', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue adopt' };
+  await store.save({ ...base, envelope: validEnvelope, activation: legacyAdoptActivation, now });
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'legacy-child',
+    activationProof: legacyAdoptActivation, now: new Date(now.getTime() + 30 * 60_000) }),
+  { code: 'RESCUE_PREPARATION_EXPIRED' });
+});
+
+test('legacy-adopt concurrent consume has exactly one branded winner', async () => {
+  const { store, workspaceA } = await storeFixture();
+  const base = { sessionId: 'parent', turnId: 'concurrent-adopt', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue adopt' };
+  await store.save({ ...base, envelope: validEnvelope, activation: legacyAdoptActivation });
+  const results = await Promise.allSettled(Array.from({ length: 12 }, () => store.consume({
+    ...base, executorAgentId: 'legacy-child', activationProof: legacyAdoptActivation,
+  })));
+  const winners = results.filter((result) => result.status === 'fulfilled');
+  assert.equal(winners.length, 1);
+  assert.match(deriveConsumedLegacyActivationAuthorityId(winners[0].value), /^[a-f0-9]{64}$/u);
+  assert.equal(results.filter((result) => result.status === 'rejected'
+    && result.reason.code === 'RESCUE_PREPARATION_CONSUMED').length, 11);
+});
+
+test('legacy-bound works at new-turn generation one and same-turn generation two with exact binding authority', async (t) => {
+  await t.test('new-turn generation one', async () => {
+    const { store, workspaceA } = await storeFixture();
+    const base = { sessionId: 'parent', turnId: 'bound-new-turn', workspace: workspaceA,
+      permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue continue' };
+    await store.save({ ...base, envelope: validEnvelope, activation: legacyBoundActivation });
+    await assert.rejects(store.consume({ ...base, executorAgentId: 'sibling', activationProof: legacyBoundActivation }),
+      { code: 'RESCUE_PREPARATION_MISMATCH' });
+    const consumed = await store.consume({ ...base, executorAgentId: 'legacy-child', activationProof: legacyBoundActivation });
+    assert.equal(consumed.generation, 1);
+    assert.equal(consumed.requiredExecutorAgentId, 'legacy-child');
+    const expected = createHash('sha256').update(JSON.stringify([
+      'rescue-legacy-bound-authority-v1', consumed.key, consumed.executorAgentId,
+      consumed.generation, consumed.createdAt, legacyBoundActivation.bindingKey,
+    ])).digest('hex');
+    assert.equal(deriveConsumedLegacyActivationAuthorityId(consumed), expected);
+    consumed.activation.bindingKey = 'e'.repeat(64);
+    assert.throws(() => deriveConsumedLegacyActivationAuthorityId(consumed),
+      { code: 'RESCUE_PREPARATION_INVALID' });
+  });
+
+  await t.test('same-turn generation two', async () => {
+    const { store, workspaceA } = await storeFixture();
+    const base = { sessionId: 'parent', turnId: 'bound-same-turn', workspace: workspaceA,
+      permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue start' };
+    await store.save({ ...base, envelope: validEnvelope, activation: legacyBoundActivation });
+    await store.consume({ ...base, executorAgentId: 'legacy-child', activationProof: legacyBoundActivation });
+    await store.save({
+      ...base, recordedPrompt: 'continue', activation: legacyBoundActivation,
+      envelope: { ...validEnvelope, source: 'proactive', options: { resume: 'resume' } },
+    });
+    const consumed = await store.consume({ ...base, executorAgentId: 'legacy-child', activationProof: legacyBoundActivation });
+    assert.equal(consumed.generation, 2); assert.equal(consumed.requiredExecutorAgentId, 'legacy-child');
+    assert.equal(deriveConsumedLegacyActivationAuthorityId(consumed), createHash('sha256').update(JSON.stringify([
+      'rescue-legacy-bound-authority-v1', consumed.key, consumed.executorAgentId,
+      consumed.generation, consumed.createdAt, legacyBoundActivation.bindingKey,
+    ])).digest('hex'));
+  });
+});
+
+test('legacy-bound exact binding key and legacy-adopt generation rules fail closed', async () => {
+  const { store, workspaceA } = await storeFixture();
+  const base = { sessionId: 'parent', turnId: 'bound-key', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue continue' };
+  await store.save({ ...base, envelope: validEnvelope, activation: legacyBoundActivation });
+  await assert.rejects(store.consume({ ...base, executorAgentId: 'legacy-child',
+    activationProof: { ...legacyBoundActivation, bindingKey: 'e'.repeat(64) } }),
+  { code: 'RESCUE_PREPARATION_MISMATCH' });
+  const bound = await store.consume({ ...base, executorAgentId: 'legacy-child', activationProof: legacyBoundActivation });
+  assert.throws(() => deriveConsumedLegacyActivationAuthorityId({ ...bound, activation: legacyAdoptActivation }),
+    { code: 'RESCUE_PREPARATION_INVALID' });
+
+  const adoptBase = { ...base, turnId: 'adopt-generation-two', recordedPrompt: '$zcode:rescue start' };
+  await store.save({ ...adoptBase, envelope: validEnvelope });
+  await store.consume({ ...adoptBase, executorAgentId: 'legacy-child' });
+  await assert.rejects(store.save({
+    ...adoptBase, recordedPrompt: 'continue', activation: legacyAdoptActivation,
+    envelope: { ...validEnvelope, source: 'proactive', options: { resume: 'resume' } },
+  }), { code: 'RESCUE_PREPARATION_INVALID' });
+  assert.throws(() => deriveConsumedLegacyActivationAuthorityId(bound.envelope),
+    { code: 'RESCUE_PREPARATION_INVALID' });
 });
 
 test('preparation store validates and invokes only its private save-lock seam', async () => {

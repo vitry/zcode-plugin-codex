@@ -45,6 +45,9 @@ const V3_RECORD_KEYS = Object.freeze([
 const SPAWN_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'kind', 'taskName']);
 const REACTIVATE_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'executorAgentId', 'kind']);
 const REACTIVATE_PROOF_KEYS = Object.freeze(['agentPathDigest', 'kind']);
+const LEGACY_ADOPT_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'childThreadId', 'kind']);
+const LEGACY_BOUND_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'bindingKey', 'childThreadId', 'kind']);
+const consumedLegacyActivationReceipts = new WeakMap();
 
 /** @param {NodeJS.ReadableStream} stream */
 export async function readRescuePreparation(stream) {
@@ -102,6 +105,18 @@ export function hasRecordedRescueMarker(prompt) {
   return typeof prompt === 'string' && /(?:^|\s)\$zcode:rescue(?=$|\s)/u.test(prompt);
 }
 
+/** Derive authority only from the exact validated receipt returned by consume(). @param {unknown} value */
+export function deriveConsumedLegacyActivationAuthorityId(value) {
+  if (!plain(value) || consumedLegacyActivationReceipts.get(value) !== JSON.stringify(value)
+    || !validRecord(value, value.key, value.workspace) || value.consumedAt === null
+    || !plain(value.activation) || !['legacy-adopt', 'legacy-bound'].includes(value.activation.kind)
+    || value.executorAgentId !== value.activation.childThreadId) throw invalidPreparation();
+  const domain = value.activation.kind === 'legacy-adopt'
+    ? ['rescue-legacy-adoption-authority-v1', value.key, value.executorAgentId, value.generation, value.createdAt]
+    : ['rescue-legacy-bound-authority-v1', value.key, value.executorAgentId, value.generation, value.createdAt, value.activation.bindingKey];
+  return createHash('sha256').update(JSON.stringify(domain)).digest('hex');
+}
+
 /** @param {{dataRoot:string,testOnlyBeforeSaveLockOpen?:()=>Promise<void>}} options */
 export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockOpen }) {
   if (typeof dataRoot !== 'string' || dataRoot.length === 0) throw preparationError(
@@ -152,9 +167,20 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             generation = kind === 'legacy' ? 2 : current.generation + 1;
             if (!Number.isSafeInteger(generation)) throw invalidPreparation();
             requiredExecutorAgentId = current.executorAgentId;
+            if (input.activation !== undefined) {
+              activation = validateActivation(input.activation);
+              const legacyActivation = /** @type {any} */ (activation);
+              if (activation.kind !== 'legacy-bound'
+                || legacyActivation.childThreadId !== requiredExecutorAgentId) throw invalidPreparation();
+            }
           } else {
             if (input.activation === undefined) recordVersion = 2;
-            else activation = validateActivation(input.activation);
+            else {
+              activation = validateActivation(input.activation);
+              if (activation.kind === 'legacy-bound') {
+                requiredExecutorAgentId = /** @type {any} */ (activation).childThreadId;
+              }
+            }
             const marker = hasRecordedRescueMarker(input.recordedPrompt);
             if ((envelope.source === 'explicit') !== marker) throw preparationError(
               'RESCUE_PREPARATION_SOURCE_MISMATCH',
@@ -230,7 +256,11 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           executorAgentId: input.executorAgentId,
         };
         await atomicWriteJson(path, consumed, { privateRoot: storage.privateRoot });
-        return cloneRecord(consumed);
+        const receipt = cloneRecord(consumed);
+        if (kind === 'current' && ['legacy-adopt', 'legacy-bound'].includes(record.activation?.kind)) {
+          consumedLegacyActivationReceipts.set(receipt, JSON.stringify(receipt));
+        }
+        return receipt;
       });
     },
 
@@ -421,8 +451,10 @@ function validRecord(record, key, workspace) {
     && (kind === 'legacy' || record.requiredExecutorAgentId === null
       || record.executorAgentId === record.requiredExecutorAgentId)
     && (kind !== 'current' || record.activation === null
-      || record.activation.kind !== 'reactivate'
-      || record.executorAgentId === record.activation.executorAgentId);
+      || record.activation.kind === 'reactivate' && record.executorAgentId === record.activation.executorAgentId
+      || ['legacy-adopt', 'legacy-bound'].includes(record.activation.kind)
+        && record.executorAgentId === record.activation.childThreadId
+      || !['reactivate', 'legacy-adopt', 'legacy-bound'].includes(record.activation.kind));
 }
 
 /** @param {any} record @returns {'legacy'|'v2'|'current'|null} */
@@ -435,10 +467,25 @@ function recordKind(record) {
     return 'v2';
   }
   if (record.version !== RESCUE_PREPARATION_RECORD_VERSION || !sameKeys(record, V3_RECORD_KEYS)
-    || !validGenerationBinding(record)
-    || record.generation === 1 && !validActivation(record.activation)
-    || record.generation > 1 && record.activation !== null) return null;
+    || !validActivationForGeneration(record)) return null;
   return 'current';
+}
+
+/** @param {any} record */
+function validActivationForGeneration(record) {
+  if (!Number.isSafeInteger(record.generation) || record.generation < 1
+    || record.requiredExecutorAgentId !== null && !safeIdentifier(record.requiredExecutorAgentId)) return false;
+  if (record.generation === 1) {
+    if (!validActivation(record.activation)) return false;
+    if (record.activation.kind === 'legacy-bound') {
+      return record.requiredExecutorAgentId === record.activation.childThreadId;
+    }
+    return record.requiredExecutorAgentId === null;
+  }
+  return record.requiredExecutorAgentId !== null
+    && (record.activation === null || validActivation(record.activation)
+      && record.activation.kind === 'legacy-bound'
+      && record.activation.childThreadId === record.requiredExecutorAgentId);
 }
 
 /** @param {any} record */
@@ -474,13 +521,20 @@ function validateConsumeInput(input) {
 function validateActivation(value) {
   if (!validActivation(value)) throw invalidPreparation();
   const activation = /** @type {any} */ (value);
-  return activation.kind === 'spawn'
-    ? { kind: activation.kind, taskName: activation.taskName, agentPathDigest: activation.agentPathDigest }
-    : {
+  if (activation.kind === 'spawn') return {
+    kind: activation.kind, taskName: activation.taskName, agentPathDigest: activation.agentPathDigest,
+  };
+  if (activation.kind === 'reactivate') return {
       kind: activation.kind,
       executorAgentId: activation.executorAgentId,
       agentPathDigest: activation.agentPathDigest,
-    };
+  };
+  return {
+    kind: activation.kind,
+    childThreadId: activation.childThreadId,
+    agentPathDigest: activation.agentPathDigest,
+    ...(activation.kind === 'legacy-bound' ? { bindingKey: activation.bindingKey } : {}),
+  };
 }
 
 /** @param {unknown} value */
@@ -492,6 +546,13 @@ function validActivation(value) {
   if (value.kind === 'reactivate') {
     return sameKeys(value, REACTIVATE_ACTIVATION_KEYS) && safeIdentifier(value.executorAgentId);
   }
+  if (value.kind === 'legacy-adopt') {
+    return sameKeys(value, LEGACY_ADOPT_ACTIVATION_KEYS) && safeIdentifier(value.childThreadId);
+  }
+  if (value.kind === 'legacy-bound') {
+    return sameKeys(value, LEGACY_BOUND_ACTIVATION_KEYS) && safeIdentifier(value.childThreadId)
+      && /^[a-f0-9]{64}$/u.test(value.bindingKey);
+  }
   return false;
 }
 
@@ -502,7 +563,14 @@ function activationProofMatches(activation, proof, executorAgentId) {
   if (activation.kind === 'spawn') {
     return sameKeys(proof, SPAWN_ACTIVATION_KEYS) && proof.taskName === activation.taskName;
   }
-  return sameKeys(proof, REACTIVATE_PROOF_KEYS) && executorAgentId === activation.executorAgentId;
+  if (activation.kind === 'reactivate') {
+    return sameKeys(proof, REACTIVATE_PROOF_KEYS) && executorAgentId === activation.executorAgentId;
+  }
+  const keys = activation.kind === 'legacy-adopt'
+    ? LEGACY_ADOPT_ACTIVATION_KEYS : LEGACY_BOUND_ACTIVATION_KEYS;
+  return sameKeys(proof, keys) && executorAgentId === activation.childThreadId
+    && proof.childThreadId === activation.childThreadId
+    && (activation.kind !== 'legacy-bound' || proof.bindingKey === activation.bindingKey);
 }
 
 /** @param {any} input */
