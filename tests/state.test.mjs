@@ -19,7 +19,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -141,6 +141,8 @@ test('StateStore transient continuation matrix rejects child, key, turn, permiss
   await store.transitionJob(workspace, first.job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'legacy-session' });
   await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
   const before = (await store.listJobs(workspace)).length;
+  const foreignOrigin = join(base.root, 'foreign-origin');
+  assert.equal(isAbsolute(foreignOrigin), true);
   const genuine = [
     [await brandedStateAuthority(base.dataRoot, workspace, 'legacy-bound', 'sibling-turn', first.binding.key,
       { childAgentId: 'sibling' }), 'sibling-turn', 'workspace-write'],
@@ -151,7 +153,7 @@ test('StateStore transient continuation matrix rejects child, key, turn, permiss
     [await brandedStateAuthority(base.dataRoot, workspace, 'legacy-bound', 'path-turn', first.binding.key,
       { agentPathDigest: '8'.repeat(64) }), 'path-turn', 'workspace-write'],
     [await brandedStateAuthority(base.dataRoot, workspace, 'legacy-bound', 'origin-turn', first.binding.key,
-      { originWorkspace: '/private/foreign' }), 'origin-turn', 'workspace-write'],
+      { originWorkspace: foreignOrigin }), 'origin-turn', 'workspace-write'],
     [await brandedStateAuthority(base.dataRoot, workspace, 'legacy-adopt', 'kind-turn'), 'kind-turn', 'workspace-write'],
   ];
   for (const [authority, turn, permissionMode] of genuine) {

@@ -569,7 +569,11 @@ for (const scenario of ['explicit-resume', 'choice-resume', 'choice-fresh']) tes
     input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'recover candidate',
       options: { execution: 'foreground', ...(scenario === 'explicit-resume' ? { resume: 'resume' } : {}) } })}\n`]),
     dependencies: { planRescueActivation: (/** @type {any} */ input) => planRescueActivation({ ...input, listChildren: async () => [host] }) } });
-  const childRuntime = { cwd: workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+  // A persisted candidate exists outside the fake peer's in-memory session map.
+  // Windows intentionally launches that peer from tmpdir, so the fixture must
+  // state the candidate's durable workspace instead of inheriting process.cwd().
+  const childRuntime = { cwd: workspace, env: { ...context.env, CODEX_THREAD_ID: childId,
+    FAKE_ZCODE_RECORD: record, FAKE_ZCODE_WORKSPACE: workspace },
     dependencies: { readCodexThreadSpawnChildIdentity: async () => activatedLegacyHost(host) } };
   let output = await runDirectInvocation(['invoke-prepared', 'rescue'], childRuntime);
   if (scenario !== 'explicit-resume') {
