@@ -685,6 +685,62 @@ for (const choice of ['resume', 'fresh']) test(`host-only legacy-bound omission 
   assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 2);
 });
 
+for (const choice of ['resume', 'fresh']) test(`v3 legacy ${choice} choice prefers a newly active exact Hook without replacing durable adoption authority`, async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const record = join(context.directory, `legacy-choice-active-hook-${choice}.jsonl`); await writeFile(record, '');
+  const parentSessionId = `legacy-choice-active-${choice}-parent`; const childId = `legacy-choice-active-${choice}-child`;
+  const identity = createIdentityStore({ dataRoot: context.dataRoot }); const store = createStateStore({ dataRoot: context.dataRoot });
+  const host = { id: childId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
+    cwd: workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
+  /** @param {string} task @param {Record<string,string>} options */
+  const prepare = (task, options) => runDirectInvocation(['prepare', 'rescue'], { cwd: workspace,
+    env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
+    input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task, options: { execution: 'foreground', ...options } })}\n`]),
+    dependencies: { planRescueActivation: (/** @type {any} */ input) => planRescueActivation({ ...input, listChildren: async () => [host] }) } });
+  const invokePrepared = () => runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: workspace,
+    env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+    dependencies: { readCodexThreadSpawnChildIdentity: async () => host } });
+  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-a', workspace, permissionMode: 'workspace-write',
+    prompt: '$zcode:rescue --fresh --wait establish adoption', sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  await prepare('establish adoption', { resume: 'fresh' }); const initial = await invokePrepared(); assert.equal(initial.job.status, 'succeeded');
+  const bindingBefore = await store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId, permissionMode: 'workspace-write' });
+  assert.equal(bindingBefore.kind, 'bound'); const durableAuthorityBytes = JSON.stringify(bindingBefore.binding.childAuthority);
+  await identity.beginCallerTurn({ sessionId: parentSessionId, turnId: 'turn-b', workspace, permissionMode: 'workspace-write',
+    prompt: '$zcode:rescue choose after Hook', sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'startup', lifecycleResult: true });
+  await prepare('choose after Hook', {}); assert.deepEqual(await invokePrepared(), { type: 'needs-choice', choices: ['--resume', '--fresh'] });
+  const active = await identity.resolveActiveTurn({ sessionId: parentSessionId, workspace, workspaceBinding: 'execution' });
+  await markForwarding(context.dataRoot, { session_id: parentSessionId, turn_id: 'active-choice-child-turn', cwd: workspace,
+    hook_event_name: 'SubagentStart', agent_id: childId, agent_type: 'zcode-rescue' }, active);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace }); const names = await readdir(join(storage.directory, 'hook-state'));
+  const executorName = names.find((name) => name.startsWith('executor-')); const routeName = names.find((name) => name.startsWith('route-'));
+  assert.ok(executorName); assert.ok(routeName);
+  const executorPath = join(storage.directory, 'hook-state', executorName);
+  const routePath = join(storage.directory, 'hook-state', routeName);
+  const executorBytes = await readFile(executorPath); const routeBytes = await readFile(routePath);
+  const executorRecord = JSON.parse(executorBytes.toString('utf8')); const routeRecord = JSON.parse(routeBytes.toString('utf8'));
+  const jobsBefore = await store.listJobs(workspace); const rpcBefore = await readFile(record, 'utf8');
+  for (const mutation of [
+    { parentTurnId: 'wrong-turn' }, { parentGenerationId: '9'.repeat(64) }, { parentPermissionMode: 'read-only' },
+    { originWorkspace: context.directory }, { workspace: context.directory, targetWorkspace: context.directory },
+  ]) {
+    await writeFile(executorPath, `${JSON.stringify({ ...executorRecord, ...mutation }, null, 2)}\n`);
+    await writeFile(routePath, `${JSON.stringify({ ...routeRecord, ...mutation }, null, 2)}\n`);
+    await assert.rejects(runDirectInvocation(['invoke-choice', 'rescue', choice], { cwd: workspace,
+      env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } }));
+    assert.deepEqual(await store.listJobs(workspace), jobsBefore); assert.equal(await readFile(record, 'utf8'), rpcBefore);
+    await writeFile(executorPath, executorBytes); await writeFile(routePath, routeBytes);
+  }
+  const resumed = await runDirectInvocation(['invoke-choice', 'rescue', choice], { cwd: workspace,
+    env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record } });
+  assert.equal(resumed.job.status, 'succeeded');
+  if (choice === 'resume') assert.equal(resumed.job.zcodeSessionId, initial.job.zcodeSessionId);
+  else assert.notEqual(resumed.job.zcodeSessionId, initial.job.zcodeSessionId);
+  const bindingAfter = await store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId, permissionMode: 'workspace-write' });
+  assert.equal(bindingAfter.kind, 'bound'); assert.equal(JSON.stringify(bindingAfter.binding.childAuthority), durableAuthorityBytes);
+  await assert.rejects(runDirectInvocation(['invoke-choice', 'rescue', choice], { cwd: workspace,
+    env: { ...context.env, CODEX_THREAD_ID: childId } }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+});
+
 test('legacy adoption rejects host mismatches and admits exactly one concurrent consumer before side effects', async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const record = join(context.directory, 'legacy-concurrency.jsonl'); await writeFile(record, '');

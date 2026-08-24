@@ -236,11 +236,12 @@ export async function runDirectInvocation(argv, runtime = {}) {
   }
   let sessionId = ambientThreadId; let executorAgentId; let executor; let authority; let legacyChoiceFallback = false; let executionWorkspace = cwd;
   if (command === 'rescue') {
-    try {
-      const resolved = await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId, entry === 'invoke-choice' ? { continuation: true, durableProvenance: true } : {});
+    const resolved = entry === 'invoke-choice'
+      ? await resolvePreparedExecutionContext(dataRoot, cwd, ambientThreadId)
+      : await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId);
+    if (resolved.executor) {
       executor = resolved.executor; executionWorkspace = resolved.executionWorkspace; sessionId = executor.parentSessionId; executorAgentId = executor.agentId;
-    } catch (error) {
-      if (entry !== 'invoke-choice' || !(error instanceof PluginError) || error.code !== 'EXECUTOR_IDENTITY_NOT_FOUND') throw error;
+    } else {
       const host = await readLegacyAmbientChild(runtime.dependencies, ambientThreadId, env, cwd, runtime.signal);
       const legacyCaller = await identity.resolveActiveTurn({ sessionId: host.parentThreadId, workspace: cwd, workspaceBinding: 'execution' });
       validateLegacyAmbientChild(host, legacyCaller, ambientThreadId);
@@ -248,7 +249,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     }
   }
   const caller = await identity.resolveActiveTurn({ sessionId, workspace: executionWorkspace, ...(command === 'rescue' ? { workspaceBinding: 'execution' } : {}) }); const invocations = createInvocationStore({ dataRoot });
-  if (command === 'rescue' && entry === 'invoke') assertExecutorMatchesCaller(executor, caller);
+  if (command === 'rescue' && (entry === 'invoke' || entry === 'invoke-choice' && executor?.active)) assertExecutorMatchesCaller(executor, caller);
   /** @type {any} */ let invocation; let executionCaller = caller;
   if (entry === 'invoke-choice') {
     invocation = await invocations.consumePending({ sessionId, workspace: command === 'rescue' ? caller.workspace : cwd, command, choice,
