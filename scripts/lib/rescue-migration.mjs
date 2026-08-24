@@ -40,6 +40,9 @@ export async function readQueuedRescueMigrationRollback(input) {
     if (/** @type {any} */ (error)?.code === 'ENOENT') return resolveQueuedRescueMigrationRollback(input, undefined);
     throw error;
   }
+  // Current job-specs keep task material in a capability-authenticated sealed payload. Queued
+  // terminalization needs only the StateStore's durable marker/binding proof and must not open it.
+  if (record?.version === 2) return resolveQueuedRescueMigrationRollback(input, undefined);
   const spec = record?.spec;
   const digest = spec && typeof spec === 'object' && !Array.isArray(spec)
     ? createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex') : null;

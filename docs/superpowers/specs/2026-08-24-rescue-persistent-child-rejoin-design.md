@@ -115,6 +115,17 @@ worker lease under the state lock, then publishes a private worker-bound
 execution claim. A revoke that commits before this claim prevents execution; a
 revoke after it does not retroactively withdraw that one already-authorized
 attempt, but the closed binding remains unavailable to every later follow-up.
+For background execution, the pre-claim job-spec is a v2 authenticated,
+capability-encrypted envelope. Its public structure contains only exact
+job/owner/workspace binding, the normalized-spec digest, and cryptographic
+metadata; it contains no plaintext task, focus, prompt, model, or resume
+payload. The worker authenticates this sealed envelope before consuming the
+capability, but decrypts and validates the normalized spec in memory only after
+the atomic execution claim succeeds. Newly reserved jobs never persist a
+plaintext spec. Version-1 plaintext job-specs remain readable only for exact
+in-flight compatibility, including markerless migration recovery. Queued
+cancel/recovery classifies a v2 record from durable job/binding state without
+decrypting its task payload.
 Every modern writable Rescue reservation requires this claim before
 queued-to-running. The advancing caller must explicitly submit both its PID
 and lease (inherited persisted values are not arguments); both must match the
@@ -130,8 +141,11 @@ The production claim path and every direct queued transition use the same
 classification rules. Thus deleting a migration marker and its child binding
 cannot turn a bound attempt into an ordinary unbound job; missing,
 contradictory, or ambiguous reservation, origin, rollback, binding, permission,
-PID, lease, or claim evidence fails closed. No claim, artifact, job-spec rewrite,
-or remote RPC may occur before this classification succeeds.
+PID, lease, or claim evidence fails closed. No execution claim, prompt artifact,
+plaintext task/prompt publication, sealed-payload decryption, job-spec rewrite,
+or remote RPC may occur before this classification succeeds. A pre-claim v2
+sealed-envelope publication is permitted because it exposes no task artifact
+and remains bound to the single-use execution capability.
 
 Historical writable records that predate reservation classes are compatible
 only when the canonical job omits the class and its exact owner binding has the
@@ -197,9 +211,10 @@ Tests must cover every mutation and no-mutation outcome for:
   and queued-cancel rollback, plus age/capacity retention of session-ended
   tombstones;
 - private reservation/origin/rollback/claim publication order, crash retry,
-  public-output filtering, exact PID/lease matching, and claim-first versus
-  revoke-first linearization through foreground, background, controller,
-  recovery, and direct transition paths;
+  pre-claim sealed-payload confidentiality/authentication, v1 job-spec
+  compatibility, public-output filtering, exact PID/lease matching, and
+  claim-first versus revoke-first linearization through foreground, background,
+  controller, recovery, and direct transition paths;
 - classless owner-v1 ordinary-unbound and exact v1/v2-bound compatibility, plus
   fail-closed classless-v3 continuation, adoption, migration, fresh/ordinary,
   production-claim, and direct-transition cases;

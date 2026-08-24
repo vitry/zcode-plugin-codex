@@ -923,6 +923,76 @@ test('reserved execution winning its atomic claim remains authorized across a la
     { code: 'RESCUE_BINDING_CLOSED' });
 });
 
+test('background revoke-first persists no plaintext task or focus before its execution claim', async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const parentSessionId = 'sealed-revoke-parent'; const childId = 'sealed-revoke-child';
+  const executor = { parentSessionId, parentTurnId: 'origin', agentId: childId, agentType: 'zcode-rescue',
+    agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
+  const secretTask = 'REVOKE_FIRST_PRIVATE_TASK_7f194c';
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', secretTask], {
+    cwd: workspace, env: context.env, caller: caller(parentSessionId), executor,
+  });
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  const specPath = join(storage.directory, 'job-specs', `${reserved.job.id}.json`);
+  const beforeClaim = await readFile(specPath, 'utf8');
+  assert.doesNotMatch(beforeClaim, new RegExp(secretTask)); assert.doesNotMatch(beforeClaim, /"(?:task|focus)"/u);
+  const binding = await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({
+    workspace, parentSessionId, executorAgentId: childId,
+  });
+  assert.equal(binding.kind, 'bound');
+  const record = join(context.directory, 'sealed-revoke-first.jsonl'); await writeFile(record, '');
+  await assert.rejects(runCompanion(reserved.privateInvocation, {
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+    dependencies: { testOnlyBeforeExecutionClaim: async () => {
+      await createStateStore({ dataRoot: context.dataRoot }).closeRescueBindingForChild({ workspace, parentSessionId,
+        executorAgentId: childId, operationId: binding.binding.operationId, reason: 'invalidated' });
+    } },
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  const denied = await createStateStore({ dataRoot: context.dataRoot }).readJob(workspace, reserved.job.id);
+  assert.equal(denied.status, 'failed'); assert.equal(denied.rescueExecutionClaim, undefined); assert.equal(denied.promptArtifact, undefined);
+  assert.equal((await readFile(record, 'utf8')).trim(), '');
+  await assert.rejects(stat(join(storage.directory, 'prompts', `${reserved.job.id}.md`)), { code: 'ENOENT' });
+});
+
+test('background claim-first opens its private task only after claim and executes it exactly', async () => {
+  const context = await fixture(); const secretTask = 'CLAIM_FIRST_PRIVATE_TASK_903e2a';
+  const record = join(context.directory, 'sealed-claim-first.jsonl'); await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', secretTask], {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller('sealed-claim-owner'),
+  });
+  const storage = await resolveWorkspaceStorage(context); const specPath = join(storage.directory, 'job-specs', `${reserved.job.id}.json`);
+  const beforeClaim = await readFile(specPath, 'utf8');
+  assert.doesNotMatch(beforeClaim, new RegExp(secretTask)); assert.doesNotMatch(beforeClaim, /"(?:task|focus)"/u);
+  let claimed = false;
+  const result = await runCompanion(reserved.privateInvocation, {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+    dependencies: { testOnlyAfterExecutionClaim: async () => { claimed = true; } },
+  });
+  assert.equal(claimed, true); assert.equal(result.job.status, 'succeeded');
+  assert.doesNotMatch(await readFile(specPath, 'utf8'), new RegExp(secretTask));
+  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.match(JSON.stringify(requests.find((request) => request.method === 'session/send')), new RegExp(secretTask));
+});
+
+test('claimed background crash terminalizes without exposing its sealed task', async () => {
+  const context = await fixture(); const secretTask = 'CLAIMED_CRASH_PRIVATE_TASK_55d681';
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', secretTask], {
+    cwd: context.workspace, env: context.env, caller: caller('sealed-crash-owner'),
+  });
+  const crash = new Error('injected crash after claim');
+  await assert.rejects(runCompanion(reserved.privateInvocation, {
+    cwd: context.workspace, env: context.env,
+    authorization: { executionCapability: reserved.executionCapability, jobId: reserved.job.id },
+    dependencies: { testOnlyAfterExecutionClaim: async () => { throw crash; } },
+  }), (error) => error === crash);
+  const store = createStateStore({ dataRoot: context.dataRoot }); const failed = await store.readJob(context.workspace, reserved.job.id);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.rescueExecutionClaim, undefined);
+  const storage = await resolveWorkspaceStorage(context);
+  assert.doesNotMatch(await readFile(join(storage.directory, 'job-specs', `${reserved.job.id}.json`), 'utf8'), new RegExp(secretTask));
+});
+
 test('foreground production execution claims an exact owner-v1 classless unbound Rescue', async () => {
   const context = await fixture(); const record = join(context.directory, 'legacy-classless-foreground.jsonl');
   await writeFile(record, ''); let downgradedJobId;
@@ -1075,14 +1145,18 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
       assert.doesNotMatch(JSON.stringify(status), /rescueMigrationRollback|migrationPrior|priorCurrentJobId|priorClosedAt/u);
     }
     const specPath = join(storage.directory, 'job-specs', `${(await store.listJobs(workspace))[1].id}.json`);
-    const specRecord = JSON.parse(await readFile(specPath, 'utf8'));
+    let specRecord = JSON.parse(await readFile(specPath, 'utf8'));
     const queuedJobPath = join(storage.directory, 'jobs', `${queued.job.id}.json`);
     const queuedJob = JSON.parse(await readFile(queuedJobPath, 'utf8'));
     if (failurePoint === 'worker crash') {
-      assert.deepEqual(Object.keys(specRecord.spec).filter((key) => key.startsWith('migration')), []);
+      assert.equal(specRecord.version, 2); assert.equal(specRecord.spec, undefined);
+      assert.doesNotMatch(JSON.stringify(specRecord), /continue after SessionEnd/u);
       await scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace, createClient: async () => { throw failure; } });
     } else {
       const rollback = queuedJob.rescueMigrationRollback; assert.ok(rollback);
+      const legacySpec = { command: 'rescue', focus: 'continue after SessionEnd', task: 'continue after SessionEnd',
+        resumeSessionId: first.job.zcodeSessionId, candidateJobId: first.job.id };
+      specRecord = { version: 1, jobId: queued.job.id, ownerSessionId: parentSessionId, workspace, spec: legacySpec };
       if (!failurePoint.startsWith('missing legacy worker evidence')) Object.assign(specRecord.spec, {
           migrationParentSessionId: rollback.parentSessionId, migrationChildAgentId: rollback.childAgentId,
           migrationOperationId: rollback.operationId, migrationPriorCurrentJobId: failurePoint === 'corrupt legacy worker execution' ? 'f'.repeat(64) : rollback.priorCurrentJobId,
@@ -3214,7 +3288,7 @@ test('status/list/result and queued cancellation enforce owned job semantics', a
   const unfinished = await companion(context, ['result', id]);
   assert.notEqual(unfinished.code, 0); assert.match(unfinished.json.error.remedy, new RegExp(`\\$zcode:status ${id} --wait`));
   const cancelled = await companion(context, ['cancel', id], { FAKE_ZCODE_VERSION: '0.1.0' });
-  assert.equal(cancelled.code, 0); assert.equal(cancelled.json.job.status, 'cancelled');
+  assert.equal(cancelled.code, 0, `${cancelled.stderr}${cancelled.stdout}`); assert.equal(cancelled.json.job.status, 'cancelled');
   const status = await companion(context, ['status', id, '--wait', '--timeout-ms', '10']);
   assert.equal(status.code, 0); assert.equal(status.json.job.status, 'cancelled');
 });
@@ -3708,7 +3782,8 @@ test('tampered background spec is rejected before consuming its capability', asy
   const reserved = await companion(context, ['rescue', '--background', '--fresh', 'original task']);
   const storage = await resolveWorkspaceStorage(context);
   const path = join(storage.directory, 'job-specs', `${reserved.json.job.id}.json`);
-  const original = JSON.parse(await readFile(path, 'utf8')); const tampered = structuredClone(original); tampered.spec.task = 'tampered task';
+  const original = JSON.parse(await readFile(path, 'utf8')); const tampered = structuredClone(original);
+  tampered.sealedSpec.ciphertext = `${tampered.sealedSpec.ciphertext[0] === 'A' ? 'B' : 'A'}${tampered.sealedSpec.ciphertext.slice(1)}`;
   await atomicWriteJson(path, tampered);
   const authorization = { executionCapability: reserved.json.executionCapability, jobId: reserved.json.job.id };
   const denied = await companion(context, reserved.json.privateInvocation, {}, authorization);

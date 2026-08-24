@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import process from 'node:process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { closeSync as closeFdSync, realpathSync } from 'node:fs';
 import { Socket } from 'node:net';
 import { Readable } from 'node:stream';
@@ -674,9 +674,10 @@ async function startPublic(context) {
     let capability;
     try {
       context.signal?.throwIfAborted();
-      await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, spec, specDigest);
-      context.signal?.throwIfAborted();
       capability = await (context.dependencies?.createExecutionCapability ?? ((/** @type {any} */ input) => identity.createExecutionCapability(input)))({ ...binding, permissionSnapshot });
+      context.signal?.throwIfAborted();
+      const record = sealJobSpec(job, spec, specDigest, capability);
+      await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, record);
       if (context.autoLaunchBackground) {
         context.signal?.throwIfAborted();
         await (context.dependencies?.startBackgroundWorker ?? startBackgroundWorker)({ companionPath: fileURLToPath(import.meta.url), jobId: job.id, executionCapability: capability, cwd, env: context.env });
@@ -770,13 +771,21 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const jobId = parsed.positionals[0]; const job = await store.readJob(cwd, jobId);
   if (authorization.jobId !== jobId) throw authorizationInputError();
   const record = await readJobSpec(dataRoot, cwd, jobId);
-  const spec = normalizeSpec(record.spec);
-  const recomputed = digestSpec(spec);
-  if (record.digest !== recomputed || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace) throw new PluginError('JOB_SPEC_TAMPERED', 'Reserved job specification failed its immutable binding.', { category: 'authorization', remedy: 'Reserve a new background job.' });
-  const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', specDigest: recomputed });
+  let spec; let loadSpecAfterClaim; let specDigest;
+  if (record?.version === 2) {
+    const sealed = verifySealedJobSpec(record, job, authorization.executionCapability);
+    specDigest = sealed.digest;
+    spec = { command: job.command };
+    loadSpecAfterClaim = () => openSealedJobSpec(sealed, authorization.executionCapability);
+  } else {
+    spec = normalizeSpec(record.spec);
+    specDigest = digestSpec(spec);
+    if (record.digest !== specDigest || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace) throw jobSpecTampered();
+  }
+  const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', specDigest });
   if (!sameJson(consumed.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
-  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec,
+  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, loadSpecAfterClaim,
     caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
 
@@ -793,18 +802,19 @@ async function executeWithWorkerLease(context) {
   await context.dependencies?.testOnlyBeforeExecutionClaim?.();
   const workerLeaseId = randomBytes(32).toString('hex');
   return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, async () => {
-    let job;
+    let job; let spec = context.spec;
     try {
       job = await context.store.claimJobWorkerForExecution(context.cwd, context.job.id,
         { childPid: process.pid, workerLeaseId }, migrationRollback);
       await context.dependencies?.testOnlyAfterExecutionClaim?.();
+      if (context.loadSpecAfterClaim) spec = await context.loadSpecAfterClaim();
     } catch (error) {
       await context.store.finishJob(context.cwd, context.job.id, ['queued'], 'failed', {
         error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution authorization failed' }, exitCode: 1,
       }).catch(() => {});
       throw error;
     }
-    return executeReserved({ ...context, job, migrationRollback, childPid: process.pid, workerLeaseId });
+    return executeReserved({ ...context, job, spec, migrationRollback, childPid: process.pid, workerLeaseId });
   });
 }
 
@@ -847,9 +857,61 @@ async function discoverLaunch(env, dependencies = {}) {
   return (await discoverZCode({ explicitPath: env.ZCODE_PATH, env })).launch;
 }
 
-/** @param {string} dataRoot @param {string} workspace @param {any} job @param {any} spec @param {string} digest */
-async function writeJobSpec(dataRoot, workspace, job, spec, digest) {
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); await atomicWriteJson(join(storage.directory, 'job-specs', `${job.id}.json`), { version: 1, jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace, digest, spec });
+/** @param {any} job @param {Record<string,string>} spec @param {string} digest @param {string} capability */
+function sealJobSpec(job, spec, digest, capability) {
+  const identity = { version: 2, jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace, digest };
+  const aad = Buffer.from(JSON.stringify(identity)); const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', jobSpecKey('encryption', capability), iv); cipher.setAAD(aad);
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(spec))), cipher.final()]); const tag = cipher.getAuthTag();
+  const mac = jobSpecMac(jobSpecKey('authentication', capability), aad, iv, tag, ciphertext);
+  return { ...identity, sealedSpec: { algorithm: 'aes-256-gcm', iv: iv.toString('base64url'), ciphertext: ciphertext.toString('base64url'), tag: tag.toString('base64url'), mac: mac.toString('base64url') } };
+}
+
+/** @param {'encryption'|'authentication'} purpose @param {string} capability */
+function jobSpecKey(purpose, capability) { return createHash('sha256').update(`zcode-job-spec-${purpose}-v2\0`).update(capability).digest(); }
+/** @param {Buffer} key @param {Buffer} aad @param {Buffer} iv @param {Buffer} tag @param {Buffer} ciphertext */
+function jobSpecMac(key, aad, iv, tag, ciphertext) { return createHmac('sha256', key).update(aad).update(iv).update(tag).update(ciphertext).digest(); }
+/** @param {unknown} value @param {number|undefined} exactBytes */
+function decodeJobSpecBase64(value, exactBytes) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/u.test(value)) throw jobSpecTampered();
+  const decoded = Buffer.from(value, 'base64url');
+  if (decoded.toString('base64url') !== value || (exactBytes !== undefined && decoded.length !== exactBytes)) throw jobSpecTampered();
+  return decoded;
+}
+/** @param {any} record @param {any} job @param {string} capability */
+function verifySealedJobSpec(record, job, capability) {
+  const outerKeys = ['version', 'jobId', 'ownerSessionId', 'workspace', 'digest', 'sealedSpec'];
+  const sealedKeys = ['algorithm', 'iv', 'ciphertext', 'tag', 'mac'];
+  if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).length !== outerKeys.length || outerKeys.some((key) => !Object.hasOwn(record, key))
+    || record.version !== 2 || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace || !/^[a-f0-9]{64}$/u.test(record.digest)
+    || !record.sealedSpec || typeof record.sealedSpec !== 'object' || Array.isArray(record.sealedSpec) || Object.keys(record.sealedSpec).length !== sealedKeys.length || sealedKeys.some((key) => !Object.hasOwn(record.sealedSpec, key))
+    || record.sealedSpec.algorithm !== 'aes-256-gcm') throw jobSpecTampered();
+  const identity = { version: 2, jobId: record.jobId, ownerSessionId: record.ownerSessionId, workspace: record.workspace, digest: record.digest };
+  const aad = Buffer.from(JSON.stringify(identity)); const iv = decodeJobSpecBase64(record.sealedSpec.iv, 12);
+  const ciphertext = decodeJobSpecBase64(record.sealedSpec.ciphertext, undefined); const tag = decodeJobSpecBase64(record.sealedSpec.tag, 16); const mac = decodeJobSpecBase64(record.sealedSpec.mac, 32);
+  if (ciphertext.length === 0 || ciphertext.length > 512 * 1024) throw jobSpecTampered();
+  const expected = jobSpecMac(jobSpecKey('authentication', capability), aad, iv, tag, ciphertext);
+  if (!timingSafeEqual(mac, expected)) throw jobSpecTampered();
+  return { digest: record.digest, aad, iv, ciphertext, tag };
+}
+/** @param {{digest:string,aad:Buffer,iv:Buffer,ciphertext:Buffer,tag:Buffer}} sealed @param {string} capability */
+function openSealedJobSpec(sealed, capability) {
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', jobSpecKey('encryption', capability), sealed.iv); decipher.setAAD(sealed.aad); decipher.setAuthTag(sealed.tag);
+    const plaintext = Buffer.concat([decipher.update(sealed.ciphertext), decipher.final()]);
+    const spec = normalizeSpec(JSON.parse(plaintext.toString('utf8')));
+    if (digestSpec(spec) !== sealed.digest) throw jobSpecTampered();
+    return spec;
+  } catch (error) {
+    if (error instanceof PluginError) throw error;
+    throw jobSpecTampered();
+  }
+}
+function jobSpecTampered() { return new PluginError('JOB_SPEC_TAMPERED', 'Reserved job specification failed its immutable binding.', { category: 'authorization', remedy: 'Reserve a new background job.' }); }
+
+/** @param {string} dataRoot @param {string} workspace @param {any} job @param {any} record */
+async function writeJobSpec(dataRoot, workspace, job, record) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); await atomicWriteJson(join(storage.directory, 'job-specs', `${job.id}.json`), record);
 }
 /** @param {string} dataRoot @param {string} workspace @param {string} jobId */
 async function readJobSpec(dataRoot, workspace, jobId) {

@@ -28,13 +28,16 @@ The revised design is the source of truth:
 Do not reintroduce eager standalone migration, workspace/latest-job guessing,
 or SessionEnd revocation.
 
-## Progress at source HEAD `246acbf`
+## Progress after source HEAD `b125a6d`
 
-- [x] Lifecycle implementation and named regression coverage are complete in
-  source through `246acbf`.
-- [x] Twelve iterative sol/medium spec/semantic review rounds report no
-  unresolved high/medium findings at `246acbf`.
-- [x] Final focused lifecycle verification passed at `246acbf`:
+- [x] Lifecycle implementation and prior named regression coverage are complete
+  through `b125a6d`.
+- [x] The post-`b125a6d` background sequencing fix publishes only an
+  authenticated encrypted v2 task payload before claim, opens it only after the
+  atomic claim, and retains exact v1 job-spec compatibility.
+- [x] Twelve iterative sol/medium spec/semantic review rounds historically
+  reported no unresolved high/medium findings at `246acbf`.
+- [x] The historical focused lifecycle verification passed at `246acbf`:
   `node --test --test-concurrency=1 tests/rescue-binding.test.mjs tests/integration/companion.test.mjs`
   (`289` passed, `0` failed).
 - [ ] Regenerate marketplace artifacts from the final reviewed source commit;
@@ -54,6 +57,9 @@ The change is complete only when every item below is checked:
 - [x] Named tests cover claim/revoke linearization, exact PID/lease ownership,
   direct/claim consistency, ordinary-unadvanced recovery, v1/v2 compatibility,
   and classless owner-v1 plus v3 fail-closed behavior.
+- [x] Named background tests prove revoke-first leaves no plaintext task/focus
+  or prompt/RPC artifact, claim-first opens the exact task, and a claimed crash
+  terminalizes without exposing the sealed payload.
 - [ ] Source and `marketplace/plugins/zcode` runtime/docs copies satisfy the
   repository byte-identity, provenance, package, and install snapshot contracts.
 - [x] Independent sol/medium specification review reports no unresolved
@@ -133,6 +139,10 @@ tests.
   owner record. Validate job, owner, child binding, permission, origin/rollback,
   PID, lease, and revocation under one lock before publishing an execution claim
   or performing artifacts/session/model/thought side effects.
+- [x] Publish new background task/focus/resume data only as a
+  capability-authenticated encrypted v2 job-spec; authenticate before capability
+  consumption, decrypt only after the execution claim, and retain v1 reading
+  solely for exact in-flight compatibility and markerless rollback recovery.
 - [x] Linearize claim-first/revoke-first behavior. Require an exact explicit PID
   and lease for claimed queued-to-running; clear claims on running/terminal
   commit while preserving the first revocation.
@@ -222,7 +232,7 @@ git status --short
 - [ ] Run required native qualification with authenticated prerequisites:
 
 ```bash
-npm run test:qualification-required
+ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_E2E_MODEL='provider/model' npm run test:qualification-required
 ```
 
   Expected: same parent session and child thread, notLoaded reload, one
