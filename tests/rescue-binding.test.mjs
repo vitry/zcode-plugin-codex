@@ -286,6 +286,38 @@ async function downgradeReservationToOwnerV1(dataRoot, workspace, job, bindingVe
   }), null, 2)}\n`);
 }
 
+async function classlessOwnerV1V3QueuedForTest(kind) {
+  const context = await fixture(); const { dataRoot, workspace, store } = context;
+  const hook = executor(workspace, kind === 'adoption' ? { parentTurnId: 'adopt-turn' } : {}); let queued; let rollback;
+  if (kind === 'continuation') {
+    const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+    await makeEligible(store, workspace, first.job, 'classless-v3-continuation-session');
+    await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+    queued = (await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+      executor: hook, operationId: first.binding.operationId })).job;
+  } else if (kind === 'adoption') {
+    const candidate = await store.reserveJob(reservation(workspace, 'candidate'));
+    await makeEligible(store, workspace, candidate, 'classless-v3-adoption-session');
+    await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
+    queued = (await store.adoptRescueCandidate({ workspace, reservation: reservation(workspace, 'adopt-turn'),
+      authority: await brandedAuthority(dataRoot, workspace, 'legacy-adopt', 'adopt-turn'), candidateJobId: candidate.id })).job;
+  } else {
+    const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
+    await makeEligible(store, workspace, first.job, 'classless-v3-migration-session');
+    await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+    await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
+      executorAgentId: hook.agentId, operationId: first.binding.operationId, reason: 'session-ended' });
+    const proof = await store.readRescueBindingMigrationProof({ workspace, parentSessionId: hook.parentSessionId,
+      executorAgentId: hook.agentId, childAgentType: hook.agentType, originWorkspace: workspace,
+      executionWorkspace: workspace, agentPath: hook.agentPath });
+    const continuation = await store.reserveBoundRescueContinuation({ workspace, reservation: reservation(workspace, 'turn-b'),
+      executor: hook, operationId: first.binding.operationId, migrationProof: proof.migrationProof });
+    queued = continuation.job; rollback = continuation.migrationRollback;
+  }
+  await downgradeReservationToOwnerV1(dataRoot, workspace, queued);
+  return { ...context, queued, rollback };
+}
+
 async function privateTreeBytes(root) {
   const entries = [];
   async function visit(directory, prefix = '') {
@@ -736,24 +768,28 @@ async function legacyAdoptionPublicationFixture() {
   return { ...value, hook, candidate, adoption: oldJob, storage, jobPath, bindingPath, baseBytes };
 }
 
-for (const terminalizer of ['execution', 'direct', 'controller', 'recovery', 'SessionEnd']) test(`upgrade settles an old-shape unadvanced legacy adoption through ${terminalizer} without changing its base binding`, async () => {
+for (const terminalizer of ['execution', 'direct', 'controller', 'recovery', 'SessionEnd']) test(`old-shape classless-v3 adoption fails closed through ${terminalizer} without changing its base binding`, async () => {
   const { dataRoot, workspace, store, hook, candidate, adoption, bindingPath, baseBytes } = await legacyAdoptionPublicationFixture();
-  let terminal;
   if (terminalizer === 'execution') {
     await assert.rejects(store.resolveQueuedRescueMigrationRollback(workspace, adoption.id, undefined, 'execution'),
-      { code: 'RESCUE_BINDING_NOT_RUNNABLE' });
+      { code: 'RESCUE_BINDING_INVALID' });
     await assert.rejects(store.transitionJob(workspace, adoption.id, ['queued'], 'running'), { code: 'RESCUE_BINDING_INVALID' });
-    terminal = await store.finishJob(workspace, adoption.id, ['queued'], 'failed', { error: { message: 'execution cannot start unadvanced adoption' }, exitCode: 1 });
-  } else if (terminalizer === 'direct') terminal = await store.finishJob(workspace, adoption.id, ['queued'], 'failed', { error: { message: 'direct settlement' }, exitCode: 1 });
-  else if (terminalizer === 'controller') terminal = await createJobController({ store, dataRoot }).cancel(workspace, adoption.id, adoption.ownerSessionId);
+  } else if (terminalizer === 'direct') await assert.rejects(
+    store.finishJob(workspace, adoption.id, ['queued'], 'failed', { error: { message: 'direct settlement' }, exitCode: 1 }),
+    { code: 'RESCUE_BINDING_INVALID' },
+  );
+  else if (terminalizer === 'controller') await assert.rejects(
+    createJobController({ store, dataRoot }).cancel(workspace, adoption.id, adoption.ownerSessionId),
+    { code: 'JOB_CANCEL_FAILED' },
+  );
   else if (terminalizer === 'recovery') {
     await store.claimJobWorker(workspace, adoption.id, { childPid: 999_999_999, workerLeaseId: '8'.repeat(64) });
     await scavengeWritableJobs({ store, dataRoot, workspace, createClient: async () => { throw new Error('queued worker must not create a client'); } });
-    terminal = await store.readJob(workspace, adoption.id);
-  } else terminal = await settleEndedOwnerWritableJob({ store, dataRoot, workspace, ownerSessionId: adoption.ownerSessionId,
-    createClient: async () => { throw new Error('queued SessionEnd must not create a client'); } });
-  assert.equal(terminal.status, ['controller', 'SessionEnd'].includes(terminalizer) ? 'cancelled' : 'failed');
-  assert.equal(terminal.rescueContinuationOrigin, undefined); assert.deepEqual(await readFile(bindingPath), baseBytes);
+  } else await assert.rejects(settleEndedOwnerWritableJob({ store, dataRoot, workspace, ownerSessionId: adoption.ownerSessionId,
+    createClient: async () => { throw new Error('queued SessionEnd must not create a client'); } }), { code: 'JOB_RECOVERY_FAILED' });
+  const persisted = await store.readJob(workspace, adoption.id);
+  assert.equal(persisted.status, 'queued'); assert.deepEqual(persisted.rescueContinuationOrigin, adoption.rescueContinuationOrigin);
+  assert.deepEqual(await readFile(bindingPath), baseBytes);
   assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, hook))).binding.currentJobId, candidate.id);
 });
 
@@ -1047,6 +1083,34 @@ test('production claim rejects owner-v1 classless Rescue attached to a modern v3
     childPid: 999_999_999, workerLeaseId: 'a'.repeat(64),
   }), { code: 'RESCUE_BINDING_INVALID' });
   assert.equal((await store.readJob(workspace, fresh.job.id)).status, 'queued');
+});
+
+for (const kind of ['continuation', 'adoption', 'migration']) for (const path of ['direct running', 'production claim']) test(`classless owner-v1 v3 ${kind} fails closed through ${path}`, async () => {
+  const { workspace, store, queued } = await classlessOwnerV1V3QueuedForTest(kind);
+  const operation = path === 'direct running'
+    ? store.transitionJob(workspace, queued.id, ['queued'], 'running', {
+      childPid: 999_999_999, workerLeaseId: 'b'.repeat(64),
+    })
+    : store.claimJobWorkerForExecution(workspace, queued.id, {
+      childPid: 999_999_999, workerLeaseId: 'c'.repeat(64),
+    });
+  await assert.rejects(operation, { code: 'RESCUE_BINDING_INVALID' });
+  const persisted = await store.readJob(workspace, queued.id);
+  assert.equal(persisted.status, 'queued'); assert.equal(persisted.workerLeaseId, undefined);
+});
+
+test('classless owner-v1 v3 markerless migration rejects before adopting its rollback marker', async () => {
+  const { dataRoot, workspace, store, queued, rollback } = await classlessOwnerV1V3QueuedForTest('migration');
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const jobPath = join(storage.directory, 'jobs', `${queued.id}.json`);
+  const markerless = JSON.parse(await readFile(jobPath, 'utf8')); delete markerless.rescueMigrationRollback;
+  await writeFile(jobPath, `${JSON.stringify(markerless, null, 2)}\n`);
+  await assert.rejects(store.claimJobWorkerForExecution(workspace, queued.id, {
+    childPid: 999_999_999, workerLeaseId: 'd'.repeat(64),
+  }, rollback), { code: 'RESCUE_BINDING_INVALID' });
+  const persisted = await store.readJob(workspace, queued.id);
+  assert.equal(persisted.status, 'queued'); assert.equal(persisted.workerLeaseId, undefined);
+  assert.equal(persisted.rescueMigrationRollback, undefined);
 });
 
 for (const closeReason of ['invalidated', 'session-ended']) for (const phase of ['queued', 'running']) test(`claim-first ${phase} cancellation preserves a ${closeReason} binding tombstone`, async () => {

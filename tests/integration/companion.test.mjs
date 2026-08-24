@@ -821,9 +821,9 @@ test('reserved execution rejects an old unadvanced adoption before prompt or ZCo
   await assert.rejects(runCompanion(['run-reserved-job', adoption.id], {
     cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
     authorization: { executionCapability: capability, jobId: adoption.id },
-  }), { code: 'RESCUE_BINDING_NOT_RUNNABLE' });
-  const failed = await store.readJob(workspace, adoption.id); assert.equal(failed.status, 'failed');
-  assert.equal(failed.promptArtifact, undefined); assert.equal(failed.logFile, undefined);
+  }), { code: 'JOB_SPEC_INVALID' });
+  const failed = await store.readJob(workspace, adoption.id); assert.equal(failed.status, 'queued');
+  assert.equal(failed.promptArtifact, undefined); assert.equal(failed.logFile, undefined); assert.equal(failed.workerLeaseId, undefined);
   await assert.rejects(stat(join(storage.directory, 'prompts', `${adoption.id}.md`)), { code: 'ENOENT' });
   const rawRequests = (await readFile(record, 'utf8')).trim(); const requests = rawRequests === '' ? [] : rawRequests.split('\n').map((line) => JSON.parse(line));
   assert.equal(requests.some((request) => ['session/resume', 'session/setModel', 'session/setThoughtLevel'].includes(request.method)), false);
