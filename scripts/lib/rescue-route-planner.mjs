@@ -49,6 +49,7 @@ export async function planRescueActivation(input) {
   }
   if (!Array.isArray(children) || children.length > MAX_CHILDREN) throw plannerError('CODEX_CHILD_DISCOVERY_FAILED');
   const hostChildren = validateChildren(children, input.caller.sessionId);
+  const resume = input.envelope.options?.resume === 'resume';
   const provenCandidates = []; const legacyCandidates = [];
   for (const host of hostChildren) {
     const hostClass = classifyHost(host);
@@ -61,7 +62,9 @@ export async function planRescueActivation(input) {
         if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
         const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, host, executionWorkspace });
         if (binding.kind === 'missing') legacyCandidates.push({ binding: null, host });
-        else legacyCandidates.push({ binding: validateLegacyBinding(binding.binding, { caller: input.caller, executionWorkspace, host, originWorkspace }), host });
+        else legacyCandidates.push({ binding: validateLegacyBinding(binding.binding, {
+          caller: input.caller, executionWorkspace, host, originWorkspace, requirePermissionMatch: resume,
+        }), host });
         continue;
       }
       throw sanitizeExecutorError(error);
@@ -70,7 +73,6 @@ export async function planRescueActivation(input) {
     provenCandidates.push(candidate);
   }
 
-  const resume = input.envelope.options?.resume === 'resume';
   let selected = null;
   if (resume) {
     const bound = [];
@@ -88,8 +90,6 @@ export async function planRescueActivation(input) {
     }
   } else if (provenCandidates.length > 0) {
     selected = preferredCandidate(provenCandidates);
-  } else if (legacyCandidates.filter((candidate) => candidate.binding !== null).length > 1) {
-    throw plannerError('RESCUE_CHILD_AMBIGUOUS');
   } else if (legacyCandidates.length > 0) {
     selected = preferredCandidate(legacyCandidates);
   }
@@ -179,7 +179,7 @@ async function resolveExactBinding(resolveBinding, input) {
 /**
  * Strict planner-side v2 seam. The binding codec owns the same closed schema
  * once it exports a version-neutral validated authority view.
- * @param {any} binding @param {{caller:any,executionWorkspace:string,host:any,originWorkspace:string}} expected
+ * @param {any} binding @param {{caller:any,executionWorkspace:string,host:any,originWorkspace:string,requirePermissionMatch:boolean}} expected
  */
 function validateLegacyBinding(binding, expected) {
   let valid; let authority;
@@ -195,7 +195,7 @@ function validateLegacyBinding(binding, expected) {
   } catch { throw plannerError('RESCUE_BINDING_INVALID'); }
   if (valid.version !== 2 || valid.key !== expectedKey || valid.state !== 'active'
     || valid.parentSessionId !== expected.caller.sessionId || valid.workspace !== expected.executionWorkspace
-    || valid.permissionMode !== expected.caller.permissionMode
+    || expected.requirePermissionMatch && valid.permissionMode !== expected.caller.permissionMode
     || authority.kind !== 'codex-legacy-adoption'
     || authority.childAgentId !== expected.host.id || authority.childAgentType !== 'zcode-rescue'
     || authority.originWorkspace !== expected.originWorkspace || authority.originWorkspace !== expected.host.cwd
@@ -225,7 +225,7 @@ function validateCandidate(resolved, host, caller, originWorkspace, executionWor
 /** @param {string} dataRoot */
 function defaultBindingResolver(dataRoot) {
   const store = createStateStore({ dataRoot });
-  return (/** @type {any} */ { caller, executor, host, executionWorkspace }) => store.resolveRescueBindingForResume({
+  return (/** @type {any} */ { caller, envelope, executor, host, executionWorkspace }) => store.resolveRescueBindingForResume({
     workspace: executionWorkspace,
     parentSessionId: caller.sessionId,
     executorAgentId: executor?.agentId ?? host.id,
@@ -234,7 +234,7 @@ function defaultBindingResolver(dataRoot) {
       executorParentTurnId: executor.parentTurnId,
       executorParentPermissionMode: executor.parentPermissionMode,
     } : {}),
-    permissionMode: caller.permissionMode,
+    ...(envelope.options?.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
   });
 }
 

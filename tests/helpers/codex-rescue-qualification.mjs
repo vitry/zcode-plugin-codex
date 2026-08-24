@@ -340,7 +340,13 @@ export async function qualifyCodexRescueLegacyAdoptionEvidence(input) {
   catch { mismatch('legacy-adoption-host', 'Legacy adoption app-server metadata is invalid.'); }
   const base = children.find((candidate) => candidate.id === expected.childThreadId);
   if (!base || base.agentPath !== expected.agentPath || base.agentRole !== 'zcode-rescue' || base.cwd !== expected.originWorkspace
-    || base.status.type !== 'notLoaded' || !isDeepStrictEqual(base, reread)) mismatch('legacy-adoption-host', 'Legacy adoption did not preserve the exact unloaded named base child.');
+    || base.status.type !== 'notLoaded' || reread.status.type !== 'active'
+    || !isDeepStrictEqual({ id: reread.id, parentThreadId: reread.parentThreadId, agentPath: reread.agentPath,
+      agentRole: reread.agentRole, cwd: reread.cwd, createdAt: reread.createdAt },
+    { id: base.id, parentThreadId: base.parentThreadId, agentPath: base.agentPath,
+      agentRole: base.agentRole, cwd: base.cwd, createdAt: base.createdAt })) {
+    mismatch('legacy-adoption-host', 'Legacy adoption must activate the exact unloaded named base child without changing its immutable host identity.');
+  }
 
   const ordinaryChildren = children.filter((candidate) => ['default', 'explorer'].includes(candidate.agentRole));
   const ordinaryKeys = ['bindingTranscript', 'boundBindingBytes', 'faultExecutorArtifacts', 'planResult', 'resolverTranscript', 'version'];

@@ -285,7 +285,7 @@ test('legacy-bound planning requires the exact complete adoption binding authori
   });
 });
 
-test('fresh planning rejects multiple exact adoption bindings as ambiguous', async () => {
+test('fresh planning prefers the base path among multiple exact adoption bindings', async () => {
   const input = await context();
   const base = child(input.caller.workspace, { id: 'legacy-base' });
   const ordinal = child(input.caller.workspace, { id: 'legacy-ordinal', agentPath: '/root/zcode_rescue_task_2' });
@@ -293,7 +293,35 @@ test('fresh planning rejects multiple exact adoption bindings as ambiguous', asy
     [base.id, { kind: 'bound', binding: adoptionBinding(input, base) }],
     [ordinal.id, { kind: 'bound', binding: adoptionBinding(input, ordinal) }],
   ]);
-  await assert.rejects(planRescueActivation({ ...input, ...adapters([base, ordinal], new Map(), bindings) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
+  const planned = await planRescueActivation({ ...input, ...adapters([ordinal, base], new Map(), bindings) });
+  assert.equal(planned.activation.kind, 'legacy-bound');
+  assert.equal(planned.directive.target, base.agentPath);
+});
+
+test('fresh planning prefers the newest path when multiple exact adoption bindings have no base', async () => {
+  const input = await context();
+  const older = child(input.caller.workspace, { id: 'legacy-older', agentPath: '/root/zcode_rescue_task_2', createdAt: 100 });
+  const newest = child(input.caller.workspace, { id: 'legacy-newest', agentPath: '/root/zcode_rescue_task_3', createdAt: 300 });
+  const bindings = new Map([
+    [older.id, { kind: 'bound', binding: adoptionBinding(input, older) }],
+    [newest.id, { kind: 'bound', binding: adoptionBinding(input, newest) }],
+  ]);
+  const planned = await planRescueActivation({ ...input, ...adapters([older, newest], new Map(), bindings) });
+  assert.equal(planned.activation.kind, 'legacy-bound');
+  assert.equal(planned.directive.target, newest.agentPath);
+});
+
+test('fresh legacy-bound planning permits permission replacement while resume remains exact', async () => {
+  const input = await context();
+  input.caller.permissionMode = 'read-only';
+  const legacy = child(input.caller.workspace, { id: 'legacy-base' });
+  const original = structuredClone(input); original.caller.permissionMode = 'workspace-write';
+  const binding = adoptionBinding(original, legacy);
+  const route = { ...input, ...adapters([legacy], new Map(), new Map([[legacy.id, { kind: 'bound', binding }]])) };
+  const planned = await planRescueActivation(route);
+  assert.equal(planned.activation.kind, 'legacy-bound');
+  input.envelope.options.resume = 'resume';
+  await assert.rejects(planRescueActivation(route), { code: 'RESCUE_BINDING_INVALID' });
 });
 
 test('fresh proven executor candidate outranks multiple legacy adoption bindings', async () => {

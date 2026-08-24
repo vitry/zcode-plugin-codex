@@ -74,6 +74,9 @@ test('qualifies host-only legacy adoption without reconstructing Hook provenance
     ['legacy-adoption-ordinary-isolation', (value) => { value.resolverTranscript.push({ request: { childId: 'ordinary-default', cwd: originWorkspace }, response: { code: 'EXECUTOR_ROLE_UNAPPROVED', ok: false } }); }, 'ordinaryIsolationJson'],
     ['legacy-adoption-directive', (rows) => { rows.find((row) => row?.payload?.call_id === 'legacy-prepare' && row.payload.type === 'custom_tool_call_output').payload.output = capturedResult({ output: preparedAck({ version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'default' }), exit_code: 0 }); }, 'parentRolloutJson'],
     ['legacy-adoption-parent', (rows) => { rows.find((row) => row?.payload?.call_id === 'legacy-followup').turn_id = 'sibling-turn'; }, 'parentRolloutJson'],
+    ['legacy-adoption-host', (rows) => { rows[3].result.thread.status = { type: 'notLoaded' }; }, 'appServerTranscriptJson'],
+    ['legacy-adoption-host', (rows) => { rows[3].result.thread.status = { type: 'idle' }; }, 'appServerTranscriptJson'],
+    ['legacy-adoption-host', (rows) => { rows[3].result.thread.cwd = `${originWorkspace}-drift`; }, 'appServerTranscriptJson'],
     ['legacy-adoption-ordinary-isolation', (value) => { value.extra = true; }, 'ordinaryIsolationJson'],
     ['legacy-adoption-private-task', (value) => { value.faultExecutorArtifacts[0].bytes = 'recover the private legacy adoption objective\n'; }, 'ordinaryIsolationJson'],
     ['legacy-adoption-private-task', (value) => { value.faultExecutorArtifacts[0].bytes = `${encodedPrivateTask}\n`; }, 'ordinaryIsolationJson'],
@@ -2514,6 +2517,8 @@ async function legacyAdoptionQualificationFixture({ originWorkspace, executionWo
   const binding = createRescueBinding({ parentSessionId: parentId, childAuthority: authority, workspace: executionWorkspace,
     permissionMode, anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64), operationId: 'b'.repeat(64), now: '2026-08-24T00:00:01.000Z' });
   const base = legacyQualificationRawChild({ id: childId, path: restoredPath, role: 'zcode-rescue', cwd: originWorkspace, createdAt: 1 });
+  const activeBase = structuredClone(base); activeBase.updatedAt = 2; activeBase.recencyAt = 2;
+  activeBase.status = { type: 'active', activeFlags: [] };
   const ordinaryDefault = legacyQualificationRawChild({ id: 'ordinary-default', path: '/root/t1_spec_review', role: 'default', cwd: originWorkspace, createdAt: 2 });
   const ordinaryExplorer = legacyQualificationRawChild({ id: 'ordinary-explorer', path: '/root/explore', role: 'explorer', cwd: originWorkspace, createdAt: 3 });
   const bound = legacyQualificationRawChild({ id: 'bound-rescue-child', path: boundPath, role: 'zcode-rescue', cwd: originWorkspace, createdAt: 4 });
@@ -2630,7 +2635,7 @@ async function legacyAdoptionQualificationFixture({ originWorkspace, executionWo
       { direction: 'request', id: 1, method: 'thread/list', params: { parentThreadId: parentId, sourceKinds: ['subAgentThreadSpawn'], limit: 100, sortKey: 'created_at', sortDirection: 'desc' } },
       { direction: 'response', id: 1, result: { data: [base, ordinaryDefault, ordinaryExplorer, bound], nextCursor: null, backwardsCursor: null } },
       { direction: 'request', id: 2, method: 'thread/read', params: { threadId: childId, includeTurns: false } },
-      { direction: 'response', id: 2, result: { thread: base } },
+      { direction: 'response', id: 2, result: { thread: activeBase } },
     ]),
     preparationRecordBytes: `${JSON.stringify({ version: 3, key: preparationKey, sessionId: parentId, turnId: parentTurnId,
       workspace: executionWorkspace, permissionMode, source: 'explicit', envelope: { version: 1, source: 'explicit', task: privateTask,
