@@ -43,6 +43,7 @@ const sessionEndHook = join(root, 'hooks', 'session-end-hook.mjs');
 const lockHolder = join(root, 'tests', 'fixtures', 'lock-holder.mjs');
 const claimedSealedWorker = join(root, 'tests', 'fixtures', 'claimed-sealed-worker.mjs');
 const ambiguousClaimWorker = join(root, 'tests', 'fixtures', 'ambiguous-claim-worker.mjs');
+const legacyFenceWorker = join(root, 'tests', 'fixtures', 'legacy-fence-worker.mjs');
 const commitmentPublicationCrash = join(root, 'tests', 'fixtures', 'commitment-publication-crash.mjs');
 const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
 const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
@@ -88,6 +89,18 @@ async function writeLegacyExecutionCapabilityFixture(context, job, specDigest) {
     operation: 'run-reserved-job', permissionSnapshot: job.permissionSnapshot, specDigest,
     createdAt: new Date().toISOString(), consumedAt: null });
   return { token, path };
+}
+
+/** Replace one production-issued capability with its exact pre-format historical record.
+ * @param {any} context @param {any} job @param {string} specDigest @param {string} token */
+async function rewriteLegacyExecutionCapabilityFixture(context, job, specDigest, token) {
+  const digest = createHash('sha256').update(token).digest('hex');
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: job.workspace });
+  const path = join(storage.directory, 'identity', 'capabilities', `${digest}.json`);
+  await atomicWriteJson(path, { digest, jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace,
+    operation: 'run-reserved-job', permissionSnapshot: job.permissionSnapshot, specDigest,
+    createdAt: new Date().toISOString(), consumedAt: null });
+  return path;
 }
 const legacyPreparedRoute = Object.freeze({ type: 'prepared', command: 'rescue', route: { version: 1, action: 'spawn', taskName: 'zcode_rescue_task' } });
 const baseAgentPathDigest = createHash('sha256').update('/root/zcode_rescue_task').digest('hex');
@@ -178,6 +191,22 @@ function run(command, args, options = {}) {
     /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(options.rawInput ?? `${JSON.stringify(options.input ?? {})}\n`);
     child.once('error', reject); child.once('exit', (code) => resolvePromise({ code, stdout, stderr, internal }));
   });
+}
+
+/** Launch one real private execution worker and retain only its process/exit handles.
+ * @param {any} context @param {string} jobId @param {string} executionCapability @param {NodeJS.ProcessEnv} [extraEnv] */
+function spawnLegacyFenceWorker(context, jobId, executionCapability, extraEnv = {}) {
+  const child = spawn(process.execPath, [legacyFenceWorker, 'run-reserved-job', jobId], {
+    cwd: context.workspace, env: { ...context.env, ZCODE_TEST_DATA_ROOT: context.dataRoot, ...extraEnv },
+    detached: true, stdio: ['ignore', 'ignore', 'pipe', 'pipe'], shell: false,
+  });
+  let stderr = ''; child.stderr?.on('data', (chunk) => { stderr += chunk; });
+  /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(`${JSON.stringify({ executionCapability, jobId })}\n`);
+  const exit = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolve({ code, signal, stderr }));
+  });
+  return { child, exit };
 }
 
 function consumePipeError() {}
@@ -452,6 +481,26 @@ async function downgradeCompanionReservationToOwnerV1(context, jobId, bindingVer
   await atomicWriteJson(partitionPath, createRescueBindingPartition({
     parentSessionId: job.ownerSessionId, workspace: job.workspace, records: [v2],
   }));
+}
+
+/** Publish a production background job, then restore an exact pre-format v1 on-disk fixture.
+ * @param {any} context @param {string} task @param {string} ownerSessionId */
+async function historicalV1BackgroundFixture(context, task, ownerSessionId) {
+  const record = join(context.directory, `${ownerSessionId}.jsonl`); await writeFile(record, '');
+  const reserved = await runCompanion(['rescue', '--background', '--fresh', task], {
+    cwd: context.workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(ownerSessionId),
+  });
+  const storage = await resolveWorkspaceStorage(context); const jobPath = join(storage.directory, 'jobs', `${reserved.job.id}.json`);
+  const job = JSON.parse(await readFile(jobPath, 'utf8'));
+  delete job.rescueReservationKind; delete job.rescueExecutionReservation; delete job.rescueJobSpecCommitment;
+  await atomicWriteJson(jobPath, job); await downgradeCompanionReservationToOwnerV1(context, job.id);
+  const spec = { command: 'rescue', focus: task, task };
+  const digest = createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex');
+  await atomicWriteJson(join(storage.directory, 'job-specs', `${job.id}.json`), {
+    version: 1, jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace, digest, spec,
+  });
+  const capabilityPath = await rewriteLegacyExecutionCapabilityFixture(context, job, digest, reserved.executionCapability);
+  return { ...reserved, job, record, capabilityPath };
 }
 
 /** @param {any} context */
@@ -861,12 +910,15 @@ test('reserved execution rejects an old unadvanced adoption before prompt or ZCo
     version: 1, jobId: adoption.id, ownerSessionId: parentSessionId, workspace, digest, spec,
   });
   const legacyCapability = await writeLegacyExecutionCapabilityFixture(context, oldJob, digest);
+  const rejectedJobBytes = await readFile(jobPath); const rejectedCapabilityBytes = await readFile(legacyCapability.path);
   const record = join(context.directory, 'old-adoption-execution.jsonl'); await writeFile(record, '');
   await assert.rejects(runCompanion(['run-reserved-job', adoption.id], {
     cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
     authorization: { executionCapability: legacyCapability.token, jobId: adoption.id },
   }), { code: 'JOB_SPEC_INVALID' });
   assert.equal(JSON.parse(await readFile(legacyCapability.path, 'utf8')).consumedAt, null);
+  assert.deepEqual(await readFile(jobPath), rejectedJobBytes);
+  assert.deepEqual(await readFile(legacyCapability.path), rejectedCapabilityBytes);
   await assert.rejects(runCompanion(['run-reserved-job', adoption.id], {
     cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record },
     authorization: { executionCapability: legacyCapability.token, jobId: adoption.id },
@@ -1461,6 +1513,71 @@ test('background production execution claims an exact owner-v1 classless v2-boun
   const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   assert.equal(requests.filter((request) => request.method === 'session/create').length, 1);
   assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
+});
+
+test('two real historical-v1 workers preserve the State-fenced Identity winner', async (t) => {
+  const context = await fixture(); const historical = await historicalV1BackgroundFixture(
+    context, 'historical v1 concurrent fence', 'legacy-v1-fence-race');
+  const reached = join(context.directory, 'legacy-v1-a-reached.json'); const release = join(context.directory, 'legacy-v1-a-release');
+  const workerA = spawnLegacyFenceWorker(context, historical.job.id, historical.executionCapability, {
+    ZCODE_TEST_FENCE_REACHED: reached, ZCODE_TEST_FENCE_RELEASE: release, FAKE_ZCODE_RECORD: historical.record,
+  });
+  let aExited = false; void workerA.exit.then(() => { aExited = true; });
+  t.after(() => { if (!aExited) workerA.child.kill('SIGKILL'); });
+  await waitFor(() => stat(reached).then(() => true).catch(() => false), 'worker A did not reach its post-reservation gate');
+  const marker = JSON.parse(await readFile(reached, 'utf8')); const store = createStateStore({ dataRoot: context.dataRoot });
+  const fenced = await store.readJob(context.workspace, historical.job.id);
+  assert.equal(fenced.status, 'queued'); assert.equal(fenced.rescueExecutionReservation.workerLeaseId, marker.workerLeaseId);
+  const rendered = renderOutput({ job: { ...fenced, owned: true, owner: 'same-owner' } }, { json: true });
+  assert.doesNotMatch(rendered, /rescueExecutionReservation|capabilityDigest|reservationId|workerLeaseId|specDigest/u);
+
+  const workerB = spawnLegacyFenceWorker(context, historical.job.id, historical.executionCapability,
+    { FAKE_ZCODE_RECORD: historical.record });
+  const loser = await workerB.exit;
+  assert.notEqual(loser.code, 0); assert.match(loser.stderr, /WORKER_LEASE_CONFLICT/u);
+  const afterLoser = await store.readJob(context.workspace, historical.job.id);
+  assert.equal(afterLoser.status, 'queued'); assert.equal(afterLoser.rescueExecutionReservation.workerLeaseId, marker.workerLeaseId);
+
+  await writeFile(release, 'release\n'); const winner = await workerA.exit; aExited = true;
+  assert.deepEqual({ code: winner.code, signal: winner.signal }, { code: 0, signal: null }, winner.stderr);
+  const succeeded = await store.readJob(context.workspace, historical.job.id);
+  assert.equal(succeeded.status, 'succeeded'); assert.equal(succeeded.rescueExecutionReservation, undefined);
+  const capability = JSON.parse(await readFile(historical.capabilityPath, 'utf8')); assert.ok(capability.consumedAt);
+  const requests = (await readFile(historical.record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(requests.filter((request) => request.method === 'session/create').length, 1);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
+});
+
+test('real detached historical-v1 fence crash is bearerlessly and idempotently scavenged', {
+  skip: process.platform === 'win32' ? 'real detached SIGKILL evidence is required' : false,
+}, async (t) => {
+  const context = await fixture(); const historical = await historicalV1BackgroundFixture(
+    context, 'historical v1 crash fence', 'legacy-v1-fence-crash');
+  const reached = join(context.directory, 'legacy-v1-crash-reached.json'); const release = join(context.directory, 'legacy-v1-crash-release');
+  let bearer = historical.executionCapability;
+  const worker = spawnLegacyFenceWorker(context, historical.job.id, bearer, {
+    ZCODE_TEST_FENCE_REACHED: reached, ZCODE_TEST_FENCE_RELEASE: release, FAKE_ZCODE_RECORD: historical.record,
+  });
+  bearer = undefined; delete historical.executionCapability;
+  let exited = false; void worker.exit.then(() => { exited = true; });
+  t.after(() => { if (!exited) worker.child.kill('SIGKILL'); });
+  await waitFor(() => stat(reached).then(() => true).catch(() => false), 'crash worker did not reach its post-reservation gate');
+  const marker = JSON.parse(await readFile(reached, 'utf8')); const store = createStateStore({ dataRoot: context.dataRoot });
+  const fenced = await store.readJob(context.workspace, historical.job.id);
+  assert.equal(fenced.rescueExecutionReservation.workerLeaseId, marker.workerLeaseId);
+  assert.ok(JSON.parse(await readFile(historical.capabilityPath, 'utf8')).executionReservationId);
+  worker.child.kill('SIGKILL'); await worker.exit; exited = true;
+
+  const recover = () => scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace: context.workspace,
+    now: () => Date.now() + 10 * 60_000,
+    createClient: async () => { throw new Error('queued v1 fence recovery must not start ZCode'); } });
+  await recover(); await recover();
+  const terminal = await store.readJob(context.workspace, historical.job.id);
+  assert.equal(terminal.status, 'failed'); assert.equal(terminal.rescueExecutionReservation, undefined);
+  const capability = JSON.parse(await readFile(historical.capabilityPath, 'utf8'));
+  assert.equal(capability.consumedAt, null); assert.equal(capability.executionReservationId, undefined);
+  assert.equal((await readFile(historical.record, 'utf8')).trim(), '');
+  assert.equal(bearer, undefined);
 });
 
 test('background interruption after claim preserves the binding revoke and terminalizes without ZCode RPC', async () => {

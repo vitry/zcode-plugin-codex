@@ -289,7 +289,7 @@ ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_E2
 `tests/integration/companion.test.mjs`, `tests/state.test.mjs`, and
 `tests/identity.test.mjs`.
 
-- [ ] Add a real two-worker RED fixture. Worker A pauses after the State fence
+- [x] Add a real two-worker RED fixture. Worker A pauses after the State fence
   and Identity reservation; worker B uses the same historical v1 bearer with a
   different lease. Assert B gets a foreign-lease conflict without terminalizing
   or releasing A, then release A and assert exactly one claim, consumption, and
@@ -303,7 +303,7 @@ await gate.release('a');
 assert.equal((await workerA.exit()).code, 0);
 ```
 
-- [ ] Add a real crash RED fixture. Kill worker A after its State fence and
+- [x] Add a real crash RED fixture. Kill worker A after its State fence and
   Identity reservation without retaining the bearer in the recovery process;
   run the production orphan scavenger twice and assert terminal settlement,
   exact Identity reservation release, private-authority clearing, and
@@ -317,12 +317,12 @@ await scavengeWritableJobs({ dataRoot, workspace });
 assert.equal((await store.readJob(workspace, jobId)).rescueExecutionReservation, undefined);
 ```
 
-- [ ] Add zero-mutation RED controls for malformed v1 pairing, corrupt or
+- [x] Add zero-mutation RED controls for malformed v1 pairing, corrupt or
   ambiguous historical proof, and State CAS rejection. Compare the exact job
   and capability bytes before and after each rejection and require no fence or
   Identity reservation.
 
-- [ ] Extend the private execution-authority schema with an exact historical
+- [x] Extend the private execution-authority schema with an exact historical
   v1 variant carrying `specDigest`, and add one StateStore API that atomically
   revalidates the prior inspection/proof and either installs the exact lease
   fence, returns the same-lease fence idempotently, or rejects a foreign lease.
@@ -333,17 +333,17 @@ await store.fenceJobWorkerExecution(workspace, jobId, worker, rollback,
 await identity.reserveExecutionCapability(token, expected, reservationId, worker.workerLeaseId);
 ```
 
-- [ ] Make claim, failure reconciliation, terminal cleanup, Identity
+- [x] Make claim, failure reconciliation, terminal cleanup, Identity
   release-by-reservation, and orphan recovery consume the same sealed-v2 or
   historical-v1 authority union. Foreign, nonterminal, corrupt, mismatched, or
   unreadable evidence remains fail closed; release then State clearing remains
   crash-idempotent.
 
-- [ ] Strip both authority variants from every public/render/job-spec path and
+- [x] Strip both authority variants from every public/render/job-spec path and
   add direct assertions that capability digest, reservation, worker lease, and
   legacy spec digest never appear.
 
-- [ ] Run the focused real-worker tests first, then the complete
+- [x] Run the focused real-worker tests first, then the complete
   identity/state/binding/controller/recovery/SessionEnd/hooks/companion/skills
   suites, followed by `npm run typecheck`, `npm run lint`,
   `npm run check:line-endings`, and `git diff --check`. Commit only source,

@@ -337,6 +337,47 @@ export function createStateStore(options) {
       });
     },
 
+    /** Atomically publish or bind the exact State execution fence before Identity reservation.
+     * @param {string} workspace @param {string} jobId @param {{childPid:number,workerLeaseId:string}} worker
+     * @param {any} legacyRollback @param {any} executionAuthorization @param {string} expectedInspection
+     * @param {any} executionReservation */
+    async fenceJobWorkerExecution(workspace, jobId, worker, legacyRollback, executionAuthorization,
+      expectedInspection, executionReservation) {
+      validateWorkerClaimInput(workspace, jobId, worker);
+      if (legacyRollback !== undefined && !isPlainJsonObject(legacyRollback)
+        || !validExecutionAuthorization(executionAuthorization) || !isDigest(expectedInspection)
+        || !isPlainJsonObject(executionReservation)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const path = jobPath(storage.jobsDirectory, jobId);
+        const job = await readJobRecord(path, jobId, storage.workspacePath);
+        validateJobSpecExecutionAuthorization(job, executionAuthorization, legacyRollback);
+        if (job.status !== 'queued' || job.childPid !== undefined || job.workerLeaseId !== undefined) throw workerLeaseConflict(jobId);
+        const classification = job.command === 'rescue' && job.readOnly === false
+          ? await classifyQueuedRescueTransitionLocked(storage, job, legacyRollback, executionAuthorization?.specDigest, false)
+          : undefined;
+        validateRunnableExecutionClassification(job, classification, executionAuthorization);
+        const currentAuthority = job.rescueExecutionReservation;
+        if (executionInspectionDigest(job, classification, legacyRollback, executionAuthorization) !== expectedInspection) {
+          throw invalidRescueBinding();
+        }
+        if (!validExecutionReservation(executionReservation, job, false)
+          || executionReservation.workerLeaseId !== undefined) throw invalidRescueBinding();
+        if (currentAuthority !== undefined) {
+          if (!sameExecutionReservationBase(currentAuthority, executionReservation)) throw invalidRescueBinding();
+          if (currentAuthority.workerLeaseId !== undefined && currentAuthority.workerLeaseId !== worker.workerLeaseId) {
+            throw workerLeaseConflict(jobId);
+          }
+        }
+        const fenced = { ...job, rescueExecutionReservation: { ...executionReservation, workerLeaseId: worker.workerLeaseId },
+          updatedAt: new Date(Math.max(Date.now(), Date.parse(job.updatedAt))).toISOString() };
+        validateJobRecord(fenced, jobId, storage.workspacePath, expectedJobLogPath(storage.jobsDirectory, jobId));
+        if (currentAuthority?.workerLeaseId === undefined) await atomicWriteJson(path, fenced);
+        const persisted = currentAuthority?.workerLeaseId === undefined ? fenced : job;
+        return { job: persisted, inspection: executionInspectionDigest(persisted, classification, legacyRollback, executionAuthorization) };
+      });
+    },
+
     /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,candidateJobId:string}} input */
     async adoptRescueCandidate(input) {
       validateRescueReservationInput(input);
@@ -610,6 +651,7 @@ export function createStateStore(options) {
           workerLeaseId: authority.workerLeaseId ?? null, jobId: authority.jobId,
           ownerSessionId: authority.ownerSessionId, workspace: authority.workspace,
           operation: authority.operation, jobSpecFormat: authority.jobSpecFormat,
+          ...(authority.specDigest === undefined ? {} : { specDigest: authority.specDigest }),
           terminalStatus: job.status,
         });
         const cleaned = { ...job }; delete cleaned.rescueExecutionReservation;
@@ -1292,15 +1334,30 @@ function validLegacyJobSpecProof(value, job) {
 function validExecutionReservation(value, job, allowTerminal) {
   if (!isPlainJsonObject(value)) return false;
   const keys = Object.keys(value).sort().join(',');
-  if (!['capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,version,workspace',
-    'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,version,workerLeaseId,workspace'].includes(keys)) return false;
+  const sealed = ['capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,version,workspace',
+    'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,version,workerLeaseId,workspace'].includes(keys)
+    && value.jobSpecFormat === 'sealed-v2' && value.specDigest === undefined;
+  const legacy = ['capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,specDigest,version,workspace',
+    'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,specDigest,version,workerLeaseId,workspace'].includes(keys)
+    && value.jobSpecFormat === 'legacy-v1' && isDigest(value.specDigest)
+    && job.rescueReservationKind === undefined && job.rescueJobSpecCommitment === undefined;
+  if (!sealed && !legacy) return false;
   return value.version === 1 && isDigest(value.capabilityDigest) && isDigest(value.reservationId)
     && value.jobId === job.id && value.ownerSessionId === job.ownerSessionId && value.workspace === job.workspace
-    && value.operation === 'run-reserved-job' && value.jobSpecFormat === 'sealed-v2'
+    && value.operation === 'run-reserved-job'
     && (value.workerLeaseId === undefined || isDigest(value.workerLeaseId))
     && (allowTerminal || job.status === 'queued')
     && (job.workerLeaseId === undefined || value.workerLeaseId === job.workerLeaseId)
     && (job.status !== 'running' || value.workerLeaseId !== undefined);
+}
+
+/** @param {any} left @param {any} right */
+function sameExecutionReservationBase(left, right) {
+  return left.version === right.version && left.capabilityDigest === right.capabilityDigest
+    && left.reservationId === right.reservationId && left.jobId === right.jobId
+    && left.ownerSessionId === right.ownerSessionId && left.workspace === right.workspace
+    && left.operation === right.operation && left.jobSpecFormat === right.jobSpecFormat
+    && left.specDigest === right.specDigest;
 }
 
 /** Verify an idempotent terminal retry against the exact already-restored tombstone. @param {any} storage @param {any} job @param {any} rollback */

@@ -797,6 +797,13 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const capabilityExpected = { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', ...capabilityBinding };
   const capabilityReservationId = createHash('sha256').update('zcode-execution-reservation-v1\0')
     .update(authorization.executionCapability).digest('hex');
+  const executionReservation = {
+    version: 1, capabilityDigest: createHash('sha256').update(authorization.executionCapability).digest('hex'),
+    reservationId: capabilityReservationId, jobId: job.id, ownerSessionId: job.ownerSessionId,
+    workspace: job.workspace, operation: 'run-reserved-job',
+    ...(record.version === 2 ? { jobSpecFormat: 'sealed-v2' }
+      : { jobSpecFormat: 'legacy-v1', specDigest: legacySpecDigest }),
+  };
   const inspected = await identity.inspectExecutionCapability(authorization.executionCapability, capabilityExpected, capabilityReservationId);
   if (record.version === 1 && inspected.jobSpecFormat !== undefined) throw jobSpecTampered();
   if (!sameJson(inspected.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
@@ -809,7 +816,7 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   }
   return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, loadSpecAfterClaim,
     executionAuthorization, legacySpecDigest, legacyReservationProof, executionCapability: authorization.executionCapability,
-    capabilityExpected, capabilityReservationId,
+    capabilityExpected, capabilityReservationId, executionReservation,
     caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
 
@@ -831,22 +838,24 @@ async function executeWithWorkerLease(context) {
     ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
     : { legacyProof: context.legacyReservationProof });
   await context.dependencies?.testOnlyBeforeExecutionInspection?.();
-  await context.store.inspectJobWorkerExecution(context.cwd, context.job.id, migrationRollback, executionAuthorization);
+  const initialExecutionInspection = await context.store.inspectJobWorkerExecution(
+    context.cwd, context.job.id, migrationRollback, executionAuthorization);
   const workerLeaseId = randomBytes(32).toString('hex');
   return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, async () => {
     let job; let spec = context.spec;
     let capabilityCommitted = context.executionCapability === undefined;
     try {
       await context.dependencies?.testOnlyBeforeExecutionClaim?.();
-      if (context.job.rescueExecutionReservation !== undefined) await context.store.bindJobExecutionReservationLease(
-        context.cwd, context.job.id, {
-          capabilityDigest: context.job.rescueExecutionReservation.capabilityDigest,
-          reservationId: context.capabilityReservationId, workerLeaseId,
-        });
-      const executionInspection = await context.store.inspectJobWorkerExecution(context.cwd, context.job.id, migrationRollback,
-        executionAuthorization);
-      if (context.executionCapability !== undefined) await context.identity.reserveExecutionCapability(
-        context.executionCapability, context.capabilityExpected, context.capabilityReservationId, workerLeaseId);
+      let executionInspection;
+      if (context.executionCapability !== undefined) {
+        const fenced = await context.store.fenceJobWorkerExecution(context.cwd, context.job.id,
+          { childPid: process.pid, workerLeaseId }, migrationRollback, executionAuthorization,
+          initialExecutionInspection, context.executionReservation);
+        executionInspection = fenced.inspection;
+        await context.identity.reserveExecutionCapability(context.executionCapability,
+          context.capabilityExpected, context.capabilityReservationId, workerLeaseId);
+      } else executionInspection = await context.store.inspectJobWorkerExecution(context.cwd, context.job.id,
+        migrationRollback, executionAuthorization);
       job = await context.store.claimJobWorkerForExecution(context.cwd, context.job.id,
         { childPid: process.pid, workerLeaseId }, migrationRollback,
         executionAuthorization, executionInspection);
@@ -863,7 +872,7 @@ async function executeWithWorkerLease(context) {
         error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution authorization failed' }, exitCode: 1,
       }).catch(() => undefined);
       if (!capabilityCommitted && context.executionCapability !== undefined && reconciliation?.kind === 'settled') {
-        if (context.job.rescueExecutionReservation !== undefined) {
+        if (context.executionReservation !== undefined) {
           await context.store.cleanupTerminalExecutionReservation(context.cwd, context.job.id, context.identity).catch(() => {});
         } else {
           await context.identity.releaseExecutionCapability(context.executionCapability,
@@ -876,12 +885,12 @@ async function executeWithWorkerLease(context) {
     try {
       result = await executeReserved({ ...context, job, spec, migrationRollback, childPid: process.pid, workerLeaseId });
     } catch (error) {
-      if (context.job.rescueExecutionReservation !== undefined) {
+      if (context.executionReservation !== undefined) {
         await context.store.cleanupTerminalExecutionReservation(context.cwd, context.job.id, context.identity).catch(() => {});
       }
       throw error;
     }
-    if (context.job.rescueExecutionReservation === undefined) return result;
+    if (context.executionReservation === undefined) return result;
     const cleaned = await context.store.cleanupTerminalExecutionReservation(
       context.cwd, context.job.id, context.identity).catch(() => undefined);
     return cleaned === undefined || result?.job === undefined ? result : { ...result, job: cleaned };

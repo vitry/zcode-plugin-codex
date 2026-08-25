@@ -1473,6 +1473,31 @@ test('terminal recovery releases an exact lease reservation by private capabilit
   await identity.releaseExecutionReservation(proof);
 });
 
+test('historical v1 terminal recovery requires its exact private spec and lease proof', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture(); const workspace = await realpath(workspaceA);
+  const token = 'historical-v1-terminal-capability'; const capabilityDigest = createHash('sha256').update(token).digest('hex');
+  const specDigest = '1'.repeat(64); const reservationId = '2'.repeat(64); const workerLeaseId = '3'.repeat(64);
+  const expected = /** @type {any} */ ({ jobId: 'historical-v1-job', ownerSessionId: 'historical-v1-owner', workspace,
+    operation: 'run-reserved-job', specDigest });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const capabilityPath = join(storage.directory, 'identity', 'capabilities', `${capabilityDigest}.json`);
+  await mkdir(dirname(capabilityPath), { recursive: true, mode: 0o700 });
+  await atomicWriteJson(capabilityPath, { digest: capabilityDigest, ...expected,
+    permissionSnapshot: { permissionMode: 'workspace-write' }, createdAt: new Date().toISOString(), consumedAt: null });
+  await identity.reserveExecutionCapability(token, expected, reservationId, workerLeaseId);
+  const proof = /** @type {any} */ ({ capabilityDigest, reservationId, workerLeaseId, jobId: expected.jobId,
+    ownerSessionId: expected.ownerSessionId, workspace, operation: expected.operation,
+    jobSpecFormat: 'legacy-v1', specDigest, terminalStatus: 'failed' });
+  await assert.rejects(identity.releaseExecutionReservation({ ...proof, specDigest: '4'.repeat(64) }),
+    { code: 'EXECUTION_CAPABILITY_MISMATCH' });
+  assert.equal(JSON.parse(await readFile(capabilityPath, 'utf8')).executionReservationId, reservationId);
+  await assert.rejects(identity.releaseExecutionReservation({ ...proof, workerLeaseId: '5'.repeat(64) }),
+    { code: 'AUTHORIZATION_RECORD_INVALID' });
+  assert.equal(JSON.parse(await readFile(capabilityPath, 'utf8')).executionReservationId, reservationId);
+  await identity.releaseExecutionReservation(proof); await identity.releaseExecutionReservation(proof);
+  assert.equal(JSON.parse(await readFile(capabilityPath, 'utf8')).executionReservationId, undefined);
+});
+
 test('revocation preserves consumed outcomes for legacy and spec-bound capabilities', async () => {
   for (const expected of /** @type {any[]} */ ([
     { jobId: 'legacy-job', ownerSessionId: 'session-a', operation: 'continue' },

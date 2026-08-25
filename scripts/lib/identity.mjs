@@ -466,12 +466,15 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
 
     /** Release an orphaned reservation from one exact private terminal State proof, without its bearer token.
      * A null lease proves pre-reservation terminalization and may clear only an actually unreserved capability.
-     * @param {{capabilityDigest:string,reservationId:string,workerLeaseId:string|null,jobId:string,ownerSessionId:string,workspace:string,operation:'run-reserved-job',jobSpecFormat:'sealed-v2',terminalStatus:'succeeded'|'failed'|'cancelled'}} proof */
+     * @param {{capabilityDigest:string,reservationId:string,workerLeaseId:string|null,jobId:string,ownerSessionId:string,workspace:string,operation:'run-reserved-job',jobSpecFormat:'sealed-v2'|'legacy-v1',specDigest?:string,terminalStatus:'succeeded'|'failed'|'cancelled'}} proof */
     async releaseExecutionReservation(proof) {
       validateExecutionReservationProof(proof);
       const storage = await identityStorage(dataRoot, proof.workspace);
       return withFileLock(storage.lockPath, async () => {
-        const { path, record } = await readMatchingExecutionCapability(storage, proof.capabilityDigest, proof);
+        const expected = { jobId: proof.jobId, ownerSessionId: proof.ownerSessionId, workspace: proof.workspace,
+          operation: proof.operation, ...(proof.jobSpecFormat === 'sealed-v2'
+            ? { jobSpecFormat: proof.jobSpecFormat } : { specDigest: proof.specDigest }) };
+        const { path, record } = await readMatchingExecutionCapability(storage, proof.capabilityDigest, expected);
         if (record.consumedAt !== null) {
           if (record.executionCommittedReservationId !== proof.reservationId
             || record.executionCommittedWorkerLeaseId !== proof.workerLeaseId) {
@@ -1180,12 +1183,17 @@ function validateExecutionInput(input, requireSnapshot) {
 
 /** @param {any} proof */
 function validateExecutionReservationProof(proof) {
-  if (!isPlainObject(proof)
-    || Object.keys(proof).sort().join(',') !== 'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,terminalStatus,workerLeaseId,workspace'
+  if (!isPlainObject(proof)) throw invalidIdentityInput();
+  const keys = Object.keys(proof).sort().join(',');
+  const sealed = keys === 'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,terminalStatus,workerLeaseId,workspace'
+    && proof.jobSpecFormat === 'sealed-v2' && proof.specDigest === undefined;
+  const legacy = keys === 'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,specDigest,terminalStatus,workerLeaseId,workspace'
+    && proof.jobSpecFormat === 'legacy-v1' && isDigest(proof.specDigest);
+  if (!sealed && !legacy
     || !isDigest(proof.capabilityDigest) || !isDigest(proof.reservationId)
     || proof.workerLeaseId !== null && !isDigest(proof.workerLeaseId)
     || !isNonEmptyString(proof.jobId) || !isNonEmptyString(proof.ownerSessionId) || !isNonEmptyString(proof.workspace)
-    || proof.operation !== 'run-reserved-job' || proof.jobSpecFormat !== 'sealed-v2'
+    || proof.operation !== 'run-reserved-job'
     || !['succeeded', 'failed', 'cancelled'].includes(proof.terminalStatus)) throw invalidIdentityInput();
 }
 
