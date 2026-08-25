@@ -38,9 +38,9 @@ An **exact follow-up** targets that same persisted Codex child ID/path and
 operation. It does not spawn, substitute, adopt an unbound child, or select
 another binding.
 
-Exact child authority comes from Root's native explicit `followup_task` target,
-whose child-local ambient identity names that child when it runs, or one
-uniquely eligible complete binding. This adds no selector or public API.
+New-turn routing and migration require one uniquely eligible complete binding.
+No selector/API is added: prepare fixes the route before Root follows a child,
+so later child-local ambient identity is not selection authority.
 
 An **independent fresh child** is created by the active parent planner through
 the ordinary collision-free spawn route. It has no prior Rescue binding and
@@ -55,8 +55,7 @@ The following invariants are absolute:
   stopped/resumable child.
 - Path suffixes are identities, not preferences. In particular,
   `/root/zcode_rescue_task_2` must recover its own binding and session.
-- Missing, corrupt, contradictory, or ambiguous required evidence fails closed;
-  a valid revoked record is ineligible and cannot authorize.
+- Missing, corrupt, contradictory, or ambiguous required evidence fails closed; a valid revoked record is ineligible.
 
 ## Routing contract
 
@@ -69,8 +68,7 @@ planner:
 2. Lists only persisted `thread_spawn` children of the exact parent session.
 3. Joins child ID, full path, Role/type, parent graph, and canonical workspace
    to durable Rescue bindings.
-4. Uses native follow-up ambient child authority when present; otherwise
-   requires exactly one complete eligible binding.
+4. Requires exactly one complete eligible binding.
 5. Reads the binding's original ZCode session from its exact anchor job.
 6. Emits one follow-up to the same child path and reserves a normal
    continuation against the binding's current generation.
@@ -81,10 +79,11 @@ No step may rank candidates by base path, `createdAt`, updated time, list
 position, latest job, latest session, or workspace proximity. No failure may
 fall back to another child, `session/create`, or fresh.
 
-Without native exact-child authority, two or more complete usable bindings are
-ambiguous and fail with `RESCUE_CHILD_AMBIGUOUS`, zero mutation, and zero RPC.
-Duplicate child IDs/paths or disagreement between top-level and nested
-parent/path/Role metadata fails the same way.
+Two or more complete usable bindings are ambiguous and fail with
+`RESCUE_CHILD_AMBIGUOUS`, zero mutation, and zero RPC. Duplicate child IDs or
+paths and disagreement between top-level and nested parent/path/Role metadata
+fail the same way. A retained-child pending choice may use its existing native
+target after the route is fixed; that target does not select migration.
 
 ### Fresh
 
@@ -126,12 +125,12 @@ Only one complete match may be activated. The existing lock/CAS atomically
 changes that exact binding to active continuation state and reserves the next
 job. A competing or stale consumer performs no write and no RPC.
 
-Resolve exact child authority, then binding eligibility. In the incident,
-`/root/zcode_rescue_task_2` is the sole complete eligible binding; an unbound,
-host-only, revoked, nonmatching, or incomplete base is only a distractor. `_2`
-wins by eligibility, never suffix. If both are usable without native exact
-authority, return `RESCUE_CHILD_AMBIGUOUS`; an explicit native follow-up to
-`_2` instead supplies its ambient exact authority inside that child.
+Resolve binding eligibility before routing. In the incident,
+`/root/zcode_rescue_task_2` is the sole complete eligible binding; an unbound
+or host-only base, or a structurally complete and verifiably revoked or
+nonmatching sibling, is an ineligible distractor. `_2` wins by eligibility,
+never suffix. If base and `_2` are both usable, return
+`RESCUE_CHILD_AMBIGUOUS` with zero mutation and zero RPC.
 
 The following are never migration authority:
 
@@ -142,9 +141,10 @@ The following are never migration authority:
 - a cancelled, invalidated, explicitly closed, or otherwise revoked binding;
 - incomplete, corrupt, duplicate, contradictory, or ambiguous evidence.
 
-These grant no authority. A safely classified distractor is ineligible;
-unclassifiable evidence or no unique eligible result fails closed. Migration
-does not replace a session or child, or authorize fresh.
+Only unbound/host-only or structurally complete, verifiably revoked/nonmatching
+siblings may be ignored. Incomplete, corrupt, contradictory, duplicate, or
+unclassifiable evidence fails with zero mutation/RPC, as does no unique result.
+Migration does not replace a session or child, or authorize fresh.
 
 ## Lifecycle and SessionEnd
 
@@ -221,7 +221,7 @@ binding mismatch is rejected for this rejoin route.
 | Original problem | Decision | Concrete acceptance test |
 | --- | --- | --- |
 | 1. 2026-08-24 `RESCUE_BINDING_INVALID` because `SessionEnd` closed a completed binding | Preserve completed/no-active-attempt and exact legacy migration candidates; retain active-job settlement safety | A4: completed resumes, while confirmed active stop may close only that operation and never siblings |
-| 2. The real eligible binding is `/root/zcode_rescue_task_2`, never fallback `task` | Eligibility or native exact-child authority decides; suffix/base/latest never does | A1: `_2` sole eligible wins; two usable bindings without exact authority are ambiguous |
+| 2. The real eligible binding is `/root/zcode_rescue_task_2`, never fallback `task` | One uniquely complete eligible binding decides before follow-up; suffix/base/latest never does | A1: `_2` sole eligible wins; two usable bindings are always ambiguous |
 | 3. 2026-08-25 `EXECUTOR_IDENTITY_INVALID` from active-only rejection of `notLoaded` | Independent app-server `notLoaded` is acceptable only with exact identity plus binding | A5: accept exact `notLoaded`; reject idle, systemError, or identity/binding mismatch |
 | 4. Same child must retain original-thread semantics and `zcodeSessionId` | Follow up the same Codex ID/path and call `session/resume`, never create | A2: same-parent same-child follow-up proves exact thread/path and original session with zero create/spawn |
 | 5. Only a new child is fresh; task 2 must not close task 1 | Fresh always collision-free spawns; siblings are byte-identical | A3: existing task 1/task 2 plus fresh yields a third child and one create, with no old follow-up/close |
@@ -234,13 +234,12 @@ binding mismatch is rejected for this rejoin route.
 Acceptance is limited to these eight regressions; parameterized variants may
 share one test:
 
-1. **A1 exact `_2` authority/migration:** `_2` is the only complete eligible
-   legacy `closed/session-ended` binding while base is parameterized as
-   unbound, host-only, revoked, nonmatching, or incomplete; recover `_2`'s
-   original `zcodeSessionId` without suffix/order inference. If base and `_2`
-   are both usable and no native follow-up supplies exact child authority,
-   return `RESCUE_CHILD_AMBIGUOUS` with zero mutation/RPC; an explicit native
-   follow-up to `_2` supplies its ambient exact authority without a new API.
+1. **A1 exact `_2` migration:** `_2` is the only complete eligible legacy
+   `closed/session-ended` binding while base is unbound, host-only, or a
+   structurally complete and verifiably revoked/nonmatching sibling; recover
+   `_2`'s original `zcodeSessionId` without suffix/order inference. Two usable
+   bindings always return `RESCUE_CHILD_AMBIGUOUS`; incomplete, corrupt, or
+   contradictory evidence also fails closed, all with zero mutation/RPC.
 2. **A2 same-child continuation:** same parent, Codex child ID/path, operation,
    and workspace produce one follow-up and exact `session/resume`; zero spawn,
    adoption, or `session/create` occurs.
@@ -255,8 +254,9 @@ share one test:
    remains byte-identical.
 5. **A5 independent observation:** separate app-server `notLoaded` plus exact
    parent graph, child ID/path/Role, workspace, and binding rejoins; idle,
-   systemError, foreign/contradictory metadata, jobs-only, duplicate, ambiguous,
-   corrupt, or revoked evidence causes zero mutation and zero RPC.
+   systemError, foreign metadata, incomplete/corrupt/contradictory evidence,
+   jobs-only, duplicate, ambiguous, or a revoked target/sole candidate causes
+   zero mutation/RPC. A valid revoked sibling is only an ineligible distractor.
 6. **A6 response loss:** lost foreground/background status and result responses
    recover the same durable job through `status`, `result`, `reconcileOwnedJobs`,
    `readSession`, and `resultArtifact`, with exactly one accepted send and no
