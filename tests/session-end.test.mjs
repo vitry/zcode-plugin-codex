@@ -1,6 +1,7 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -8,6 +9,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
+import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { reconcileOwnedJobs, settleEndedOwnerWritableJob, withWorkerLease } from '../scripts/lib/recovery.mjs';
 import { executeJob as executeJobProduction } from '../scripts/lib/review.mjs';
@@ -133,8 +135,9 @@ test('SessionEnd returns its exact queued cancelled winner when finish applies t
   const input = await fixture(); const value = await job(input, { claim: false, status: 'queued' }); const storageError = new PluginError('ATOMIC_WRITE_FAILED', 'late queued SessionEnd write failure', { category: 'storage', remedy: 'retry' }); let finishes = 0;
   const wrapped = {
     ...input.store,
-    finishJob: async (workspace, jobId, expected, next, patch) => {
-      const winner = await input.store.finishJob(workspace, jobId, expected, next, patch); finishes += 1; assert.equal(winner.status, 'cancelled'); throw storageError;
+    finishQueuedJobAfterRecoveryLease: async (...args) => {
+      const winner = await input.store.finishQueuedJobAfterRecoveryLease(...args);
+      finishes += 1; assert.equal(winner.status, 'cancelled'); throw storageError;
     },
   };
   const winner = await settle({ ...input, store: wrapped }, async () => { throw new Error('queued settlement must not create a client'); });
@@ -149,6 +152,36 @@ test('SessionEnd leaves a held claimed queued lease but cancels it after the lea
   assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'queued');
   await settle(input, async () => { throw new Error('queued jobs need no client'); });
   assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled');
+});
+
+test('SessionEnd retains failed private reservation cleanup and retries it from an already terminal job', async () => {
+  const input = await fixture(); const identity = createIdentityStore({ dataRoot: input.dataRoot });
+  const value = await job(input, { claim: false, status: 'queued' }); const workerLeaseId = '8'.repeat(64);
+  const expected = { jobId: value.id, ownerSessionId: value.ownerSessionId, workspace: value.workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
+  const token = await identity.createExecutionCapability({ ...expected, permissionSnapshot: value.permissionSnapshot });
+  const authority = { version: 1, capabilityDigest: createHash('sha256').update(token).digest('hex'),
+    reservationId: '9'.repeat(64), ...expected };
+  await input.store.publishJobSpecCommitment(input.workspace, value.id, 'a'.repeat(64), authority);
+  await input.store.bindJobExecutionReservationLease(input.workspace, value.id, {
+    capabilityDigest: authority.capabilityDigest, reservationId: authority.reservationId, workerLeaseId,
+  });
+  await identity.reserveExecutionCapability(token, expected, authority.reservationId, workerLeaseId);
+  const injected = new Error('injected SessionEnd cleanup failure'); let releases = 0;
+  const first = await settleEndedOwnerWritableJob({
+    store: input.store, identity: { releaseExecutionReservation: async () => { releases += 1; throw injected; } },
+    dataRoot: input.dataRoot, workspace: input.workspace, ownerSessionId: value.ownerSessionId,
+    lockTimeoutMs: 0, createClient: async () => { throw new Error('queued cleanup needs no client'); },
+  });
+  assert.equal(first.status, 'cancelled'); assert.equal(releases, 1);
+  assert.ok((await input.store.readJob(input.workspace, value.id)).rescueExecutionReservation);
+  await settleEndedOwnerWritableJob({
+    store: input.store, identity, dataRoot: input.dataRoot, workspace: input.workspace,
+    ownerSessionId: value.ownerSessionId, lockTimeoutMs: 0,
+    createClient: async () => { throw new Error('terminal cleanup needs no client'); },
+  });
+  const cleaned = await input.store.readJob(input.workspace, value.id);
+  assert.equal(cleaned.status, 'cancelled'); assert.equal(cleaned.rescueExecutionReservation, undefined);
 });
 
 test('SessionEnd publishes a completed first read with an artifact and never stops', async () => {

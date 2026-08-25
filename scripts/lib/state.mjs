@@ -266,6 +266,25 @@ export function createStateStore(options) {
         { migrationRollback: rollback, publicationHook });
     },
 
+    /** Terminalize one queued recovery candidate only if its exact effective worker lease is unchanged.
+     * `null` proves no claimed or private fenced lease existed at the caller's final probe.
+     * @param {string} workspace @param {string} jobId @param {string|null} expectedWorkerLeaseId
+     * @param {any} rollback @param {'failed'|'cancelled'} nextStatus @param {Record<string,unknown>} [patch] */
+    async finishQueuedJobAfterRecoveryLease(workspace, jobId, expectedWorkerLeaseId, rollback, nextStatus, patch = {}) {
+      validateTransitionInput(workspace, jobId, ['queued'], nextStatus, patch);
+      if (expectedWorkerLeaseId !== null && !isDigest(expectedWorkerLeaseId)
+        || rollback !== undefined && !isPlainJsonObject(rollback)
+        || !['failed', 'cancelled'].includes(nextStatus) || Object.hasOwn(patch, 'finishedAt')) throw invalidRescueBinding();
+      if (rollback !== undefined) {
+        const migrationInput = { workspace, jobId, ...rollback }; validateMigrationRollbackInput(migrationInput);
+        if (!sameMigrationRollback(rollback, migrationRollbackFromInput(migrationInput))) throw invalidRescueBinding();
+      }
+      return transitionStoredJob(dataRoot, workspace, jobId, ['queued'], nextStatus, patch, true, {
+        ...(rollback === undefined ? {} : { migrationRollback: rollback }),
+        publicationHook, recoveryWorkerLeaseId: expectedWorkerLeaseId,
+      });
+    },
+
     /**
      * Resolve durable or legacy rollback evidence against the exact queued job and its binding under one lock.
      * Absence is ordinary only with an exact private continuation proof, no current binding, or a fresh-anchor binding.
@@ -758,7 +777,7 @@ export function createStateStore(options) {
   };
 }
 
-/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>,failedExecutionLeaseId?:string}} [options] */
+/** @param {string} dataRoot @param {string} workspace @param {string} jobId @param {string[]} expectedStatuses @param {string} nextStatus @param {Record<string,unknown>} patch @param {boolean} assignFinishedAt @param {{migrationRollback?:any,publicationHook?:(seam:string)=>void|Promise<void>,failedExecutionLeaseId?:string,recoveryWorkerLeaseId?:string|null}} [options] */
 async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses, nextStatus, patch, assignFinishedAt, options = {}) {
   const storage = await jobStorage(dataRoot, workspace);
   return withFileLock(storage.lockPath, async () => {
@@ -770,6 +789,10 @@ async function transitionStoredJob(dataRoot, workspace, jobId, expectedStatuses,
     }
     const path = jobPath(storage.jobsDirectory, jobId);
     const job = await readJobRecord(path, jobId, storage.workspacePath);
+    if (Object.hasOwn(options, 'recoveryWorkerLeaseId')) {
+      const effectiveWorkerLeaseId = job.workerLeaseId ?? job.rescueExecutionReservation?.workerLeaseId ?? null;
+      if (effectiveWorkerLeaseId !== options.recoveryWorkerLeaseId) throw workerLeaseConflict(jobId);
+    }
     if (options.failedExecutionLeaseId !== undefined) {
       const reservationLease = job.rescueExecutionReservation?.workerLeaseId;
       const foreignClaim = job.workerLeaseId !== undefined && job.workerLeaseId !== options.failedExecutionLeaseId

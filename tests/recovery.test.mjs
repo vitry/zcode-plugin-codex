@@ -314,6 +314,60 @@ test('workspace scavenging fails closed on corrupt or contradictory private exec
   }
 });
 
+test('queued recovery and SessionEnd cannot terminalize a worker fence published after their first read', async () => {
+  for (const settlement of ['recovery', 'session-end']) {
+    const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
+    const job = await store.reserveJob({
+      workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: settlement,
+      command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' },
+    });
+    const authority = {
+      version: 1, capabilityDigest: '1'.repeat(64), reservationId: '2'.repeat(64),
+      jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace,
+      operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2',
+    };
+    await store.publishJobSpecCommitment(fixture.workspace, job.id, '3'.repeat(64), authority);
+    let releaseInitialRead; const initialReadReleased = new Promise((resolve) => { releaseInitialRead = resolve; });
+    let initialReadReached; const initialRead = new Promise((resolve) => { initialReadReached = resolve; }); let paused = false;
+    const wrapped = {
+      ...store,
+      readJob: async (...args) => {
+        const current = await store.readJob(...args);
+        if (!paused && current.id === job.id && current.status === 'queued'
+          && current.rescueExecutionReservation?.workerLeaseId === undefined) {
+          paused = true; initialReadReached(); await initialReadReleased;
+        }
+        return current;
+      },
+    };
+    const { scavengeWritableJobs, settleEndedOwnerWritableJob, withWorkerLease } = await import('../scripts/lib/recovery.mjs');
+    const settling = settlement === 'recovery'
+      ? scavengeWritableJobs({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+        now: () => Date.parse(job.createdAt) + 10 * 60_000,
+        createClient: async () => { throw new Error('queued fence race must not create a client'); } })
+      : settleEndedOwnerWritableJob({ store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+        ownerSessionId: job.ownerSessionId, lockTimeoutMs: 0,
+        createClient: async () => { throw new Error('queued fence race must not create a client'); } });
+    await initialRead;
+    const lease = settlement === 'recovery' ? '4'.repeat(64) : '5'.repeat(64);
+    let releaseWorker; const workerReleased = new Promise((resolve) => { releaseWorker = resolve; });
+    let fencePublished; const fenced = new Promise((resolve) => { fencePublished = resolve; });
+    const worker = withWorkerLease({ dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+      jobId: job.id, workerLeaseId: lease }, async () => {
+      await store.bindJobExecutionReservationLease(fixture.workspace, job.id, {
+        capabilityDigest: authority.capabilityDigest, reservationId: authority.reservationId, workerLeaseId: lease,
+      });
+      fencePublished(); await workerReleased;
+    });
+    await fenced; releaseInitialRead();
+    await settling;
+    const retained = await store.readJob(fixture.workspace, job.id);
+    assert.equal(retained.status, 'queued', settlement);
+    assert.equal(retained.rescueExecutionReservation.workerLeaseId, lease, settlement);
+    releaseWorker(); await worker; await cleanupRecoveryFixture(fixture);
+  }
+});
+
 test('workspace scavenging stops an active orphan and rereads completion before terminalizing', async () => {
   const fixture = await context(); const { job, store } = await orphanJob(fixture); let reads = 0; let stops = 0;
   const completed = { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'answer', parentMessageId: 'accepted-input' }, parts: [{ type: 'text', text: 'completion won the stop race' }] }] };

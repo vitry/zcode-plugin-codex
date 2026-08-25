@@ -398,6 +398,37 @@ await context.identity.reserveExecutionCapability(/* exact inputs */);
   `npm run check:line-endings`, and `git diff --check`. Commit source/tests/spec
   and plan only; do not regenerate marketplace.
 
+## Task 10 — Final queued lease CAS and SessionEnd authority cleanup
+
+**Files:** `scripts/lib/state.mjs`, `scripts/lib/recovery.mjs`,
+`tests/recovery.test.mjs`, `tests/session-end.test.mjs`,
+`tests/integration/companion.test.mjs`, this spec, and this plan.
+
+- [x] Add an exact interleaving where recovery and SessionEnd pause after a
+  no-lease read, a worker publishes its private fence while holding the exact
+  worker lock, and settlement resumes without terminalizing the live worker.
+
+- [x] Add one queued terminal State API that CAS-validates the caller's final
+  effective lease (`null` or exact digest) under the State lock. Recovery
+  acquires a present worker lease before invoking it and never acquires worker
+  lock while holding State lock.
+
+- [x] Route SessionEnd's new terminal outcomes and previously terminal owned
+  authorities through idempotent bearerless cleanup. Inject cleanup failure,
+  retain authority, retry through SessionEnd, and keep terminal owner-release
+  semantics unchanged.
+
+- [x] Use real detached historical-v1 workers at both the pre-Identity and
+  post-Identity gates. SIGKILL each without retaining its bearer, settle through
+  SessionEnd, then run actual recovery twice and assert terminal status,
+  cleared authority/reservation, zero RPC, and idempotence.
+
+- [x] Run focused RED/GREEN tests, then complete
+  identity/state/binding/controller/recovery/SessionEnd/hooks/companion/skills
+  suites and `npm run typecheck`, `npm run lint`,
+  `npm run check:line-endings`, and `git diff --check`. Commit source/tests/spec
+  and plan only; do not regenerate marketplace.
+
 ## Completion evidence
 
 - Final design and executable plan commits.

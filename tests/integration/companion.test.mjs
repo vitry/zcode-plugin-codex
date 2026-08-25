@@ -11,7 +11,7 @@ import test from 'node:test';
 import { PassThrough } from 'node:stream';
 
 import { startBackgroundWorker } from '../../scripts/lib/background-worker.mjs';
-import { scavengeWritableJobs } from '../../scripts/lib/recovery.mjs';
+import { scavengeWritableJobs, settleEndedOwnerWritableJob } from '../../scripts/lib/recovery.mjs';
 import { createIdentityStore } from '../../scripts/lib/identity.mjs';
 import { PluginError } from '../../scripts/lib/errors.mjs';
 import { atomicWriteJson } from '../../scripts/lib/fs.mjs';
@@ -1588,6 +1588,44 @@ test('live pre-Identity historical-v1 fence survives grace then SIGKILL is beare
   assert.equal(capability.consumedAt, null); assert.equal(capability.executionReservationId, undefined);
   assert.equal((await readFile(historical.record, 'utf8')).trim(), '');
   assert.equal(bearer, undefined);
+});
+
+test('SessionEnd cleans pre-Identity and post-Identity historical-v1 fence crashes before idempotent recovery', {
+  skip: process.platform === 'win32' ? 'real detached SIGKILL evidence is required' : false,
+}, async (t) => {
+  for (const stage of ['after-fence', 'before-claim']) {
+    const context = await fixture(); const historical = await historicalV1BackgroundFixture(
+      context, `historical v1 SessionEnd ${stage}`, `legacy-v1-session-end-${stage}`);
+    const reached = join(context.directory, `${stage}-reached.json`); const release = join(context.directory, `${stage}-release`);
+    let bearer = historical.executionCapability;
+    const worker = spawnLegacyFenceWorker(context, historical.job.id, bearer, {
+      ZCODE_TEST_FENCE_STAGE: stage, ZCODE_TEST_FENCE_REACHED: reached,
+      ZCODE_TEST_FENCE_RELEASE: release, FAKE_ZCODE_RECORD: historical.record,
+    });
+    bearer = undefined; delete historical.executionCapability;
+    let exited = false; void worker.exit.then(() => { exited = true; });
+    t.after(() => { if (!exited) worker.child.kill('SIGKILL'); });
+    await waitFor(() => stat(reached).then(() => true).catch(() => false), `${stage} worker did not reach its gate`);
+    const capabilityBefore = JSON.parse(await readFile(historical.capabilityPath, 'utf8'));
+    assert.equal(capabilityBefore.executionReservationId !== undefined, stage === 'before-claim', stage);
+    worker.child.kill('SIGKILL'); await worker.exit; exited = true;
+    const store = createStateStore({ dataRoot: context.dataRoot });
+    await settleEndedOwnerWritableJob({
+      store, identity: context.identity, dataRoot: context.dataRoot, workspace: context.workspace,
+      ownerSessionId: historical.job.ownerSessionId, lockTimeoutMs: 0,
+      createClient: async () => { throw new Error(`${stage} queued SessionEnd must not create a client`); },
+    });
+    const settled = await store.readJob(context.workspace, historical.job.id);
+    assert.equal(settled.status, 'cancelled', stage); assert.equal(settled.rescueExecutionReservation, undefined, stage);
+    const capability = JSON.parse(await readFile(historical.capabilityPath, 'utf8'));
+    assert.equal(capability.executionReservationId, undefined, stage);
+    const recover = () => scavengeWritableJobs({ store, identity: context.identity, dataRoot: context.dataRoot,
+      workspace: context.workspace, createClient: async () => { throw new Error(`${stage} recovery must not create a client`); } });
+    await recover(); await recover();
+    const retried = await store.readJob(context.workspace, historical.job.id);
+    assert.equal(retried.status, 'cancelled', stage); assert.equal(retried.rescueExecutionReservation, undefined, stage);
+    assert.equal((await readFile(historical.record, 'utf8')).trim(), '', stage); assert.equal(bearer, undefined, stage);
+  }
 });
 
 test('background interruption after claim preserves the binding revoke and terminalizes without ZCode RPC', async () => {

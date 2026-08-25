@@ -74,16 +74,22 @@ async function cleanupTerminalReservation(input, job) {
  * Best-effort settlement for the ending owner's one active writable Rescue.
  * Unlike orphan scavenging, SessionEnd is an explicit owner lifecycle signal, so
  * an accepted remote turn may be stopped even while its worker lease is held.
- * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,lockTimeoutMs?:number,requestTimeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal}} input
+ * @param {{store:any,identity?:any,dataRoot:string,workspace:string,ownerSessionId:string,lockTimeoutMs?:number,requestTimeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal}} input
  */
 export async function settleEndedOwnerWritableJob(input) {
-  const selected = (await input.store.listOwnedJobs(input.workspace, input.ownerSessionId))
+  const listed = await input.store.listOwnedJobs(input.workspace, input.ownerSessionId);
+  for (const terminal of listed.filter((/** @type {any} */ job) => TERMINAL.has(job.status)
+    && job.rescueExecutionReservation !== undefined)) {
+    await cleanupTerminalReservation(input, terminal).catch(() => terminal);
+  }
+  const selected = listed
     .filter((/** @type {any} */ job) => job.command === 'rescue'
       && job.readOnly === false && !TERMINAL.has(job.status))
     .at(-1);
   if (!selected) return null;
+  let settled;
   try {
-    return await withJobCancellationLock({
+    settled = await withJobCancellationLock({
       dataRoot: input.dataRoot,
       workspace: input.workspace,
       jobId: selected.id,
@@ -92,29 +98,16 @@ export async function settleEndedOwnerWritableJob(input) {
       const current = await input.store.readJob(input.workspace, selected.id);
       if (current.id !== selected.id || current.ownerSessionId !== input.ownerSessionId
         || current.command !== 'rescue' || current.readOnly !== false || TERMINAL.has(current.status)) return current;
-      const workerLeaseId = recoveryWorkerLease(current);
-      if (current.status === 'queued' && !isDigest(workerLeaseId)) return cancelQueuedJob(input, current);
-      if (current.status === 'queued') {
-        try {
-          return await withWorkerLease({
-            dataRoot: input.dataRoot,
-            workspace: input.workspace,
-            jobId: current.id,
-            workerLeaseId,
-            timeoutMs: 0,
-          }, () => cancelQueuedJob(input, current));
-        } catch (error) {
-          if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return current;
-          throw error;
-        }
-      }
+      if (current.status === 'queued') return cancelQueuedJob(input, current);
       if (!['running', 'cancelling'].includes(current.status) || typeof current.zcodeSessionId !== 'string') return current;
       return settleEndedRemoteJob(input, current);
     });
   } catch (error) {
-    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return input.store.readJob(input.workspace, selected.id);
-    throw error;
+    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') settled = await input.store.readJob(input.workspace, selected.id);
+    else throw error;
   }
+  try { return await cleanupTerminalReservation(input, settled); }
+  catch { return settled; }
 }
 
 /** @param {any} input */
@@ -124,17 +117,15 @@ async function settleSelectedJob(input) {
     if (current.id !== input.selectedJobId || current.ownerSessionId !== input.expectedOwnerSessionId || TERMINAL.has(current.status)) return current;
     if (input.intent === 'scavenge' && (current.command !== 'rescue' || current.readOnly !== false)) return current;
     const workerLeaseId = recoveryWorkerLease(current);
-    if (current.status === 'queued' && !isDigest(workerLeaseId)) {
-      return (input.now ?? Date.now)() - Date.parse(current.createdAt) >= LEGACY_QUEUED_STALE_MS
-        ? failJob(input, current, recoveryError('Queued reservation exceeded the conservative worker-claim grace period.'))
-        : current;
-    }
+    if (current.status === 'queued') return !isDigest(workerLeaseId)
+      && (input.now ?? Date.now)() - Date.parse(current.createdAt) < LEGACY_QUEUED_STALE_MS
+      ? current : failJob(input, current, recoveryError(isDigest(workerLeaseId)
+        ? 'Claimed queued worker exited before execution started.'
+        : 'Queued reservation exceeded the conservative worker-claim grace period.'));
     if (!isDigest(workerLeaseId) && legacyWorkerAlive(current)) return current;
     if (!isDigest(workerLeaseId)) return reconcileOrphan(input, current);
     try {
-      return await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: current.id, workerLeaseId, timeoutMs: 0 }, () => current.status === 'queued'
-        ? failJob(input, current, recoveryError('Claimed queued worker exited before execution started.'))
-        : reconcileOrphan(input, current));
+      return await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: current.id, workerLeaseId, timeoutMs: 0 }, () => reconcileOrphan(input, current));
     } catch (error) {
       if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return current;
       throw error;
@@ -242,10 +233,8 @@ async function failJob(input, job, error) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
   const patch = { error: { message: recoveryMessage(error) }, exitCode: 1 };
-  const rollback = current.status === 'queued' ? await queuedMigrationRollback(input, current) : undefined;
-  try { return rollback
-    ? await input.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'failed', patch)
-    : await input.store.finishJob(input.workspace, job.id, [current.status], 'failed', patch); }
+  if (current.status === 'queued') return finishQueuedJobAfterLeaseProbe(input, current, 'failed', patch);
+  try { return await input.store.finishJob(input.workspace, job.id, [current.status], 'failed', patch); }
   catch (transitionError) { return conflictWinner(input, job, transitionError); }
 }
 /** @param {any} input @param {any} job */
@@ -261,11 +250,28 @@ async function cancelJob(input, job) {
 async function cancelQueuedJob(input, job) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
-  const rollback = await queuedMigrationRollback(input, current);
-  try { return rollback
-    ? await input.store.finishSessionEndedRescueContinuation(input.workspace, job.id, rollback, 'cancelled', { exitCode: null })
-    : await input.store.finishJob(input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
+  try { return await finishQueuedJobAfterLeaseProbe(input, current, 'cancelled', { exitCode: null }); }
   catch (error) { return cancelledConflictWinner(input, job, error); }
+}
+
+/** Re-read, probe the exact effective lease, then let State CAS that same lease at terminal publication. @param {any} input @param {any} job @param {'failed'|'cancelled'} nextStatus @param {any} patch */
+async function finishQueuedJobAfterLeaseProbe(input, job, nextStatus, patch) {
+  const current = await input.store.readJob(input.workspace, job.id);
+  if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
+  const workerLeaseId = recoveryWorkerLease(current); const rollback = await queuedMigrationRollback(input, current);
+  const finish = () => input.store.finishQueuedJobAfterRecoveryLease(input.workspace, current.id,
+    workerLeaseId ?? null, rollback, nextStatus, patch);
+  try {
+    return isDigest(workerLeaseId)
+      ? await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace,
+        jobId: current.id, workerLeaseId, timeoutMs: 0 }, finish)
+      : await finish();
+  } catch (error) {
+    if (error instanceof PluginError && ['LOCK_TIMEOUT', 'WORKER_LEASE_CONFLICT'].includes(error.code)) {
+      return input.store.readJob(input.workspace, current.id);
+    }
+    throw error;
+  }
 }
 
 /** @param {any} input @param {any} job @param {unknown} error */

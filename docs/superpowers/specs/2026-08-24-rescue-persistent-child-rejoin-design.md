@@ -251,6 +251,20 @@ Status, list, result, background reservation output, logs, errors, and rendered
 diagnostics must remove these fields and must not reveal enough data to replay
 them.
 
+Queued recovery and SessionEnd terminalization use the same final lease CAS.
+After their final State read they derive the exact effective lease as the
+claimed worker lease or private fenced lease. A present lease must be acquired
+before terminal publication; explicit lease absence is submitted as `null`.
+The State lock compares that exact value immediately before the terminal write,
+so a fence published after an earlier recovery read wins and remains queued.
+Lock order never acquires a worker lease while holding the State lock.
+
+Every SessionEnd terminal result is passed through the same bearerless,
+idempotent private-reservation cleanup as orphan recovery. SessionEnd also
+retries authority left on an already-terminal owned job. Cleanup failure leaves
+the exact private authority durable for retry, but does not reopen a terminal
+job or retain the writable guard solely to block correct owner release.
+
 Migration requires: closed + `session-ended`; exact canonical workspace and
 parent; exact persisted child ID/thread/path/Role; valid anchor/current jobs;
 non-empty original ZCode ID; no cancel/invalidation/fresh supersession; and
@@ -286,6 +300,9 @@ Tests must cover every mutation and no-mutation outcome for:
 - background preparation, capability delivery, launch, worker-crash, orphan,
   and queued-cancel rollback, plus age/capacity retention of session-ended
   tombstones;
+- stale recovery reads racing a newly published live fence, pre-Identity and
+  post-Identity worker death through SessionEnd, cleanup failure followed by
+  terminal retry, and repeated bearerless orphan cleanup;
 - private reservation/origin/rollback/claim publication order, crash retry,
   pre-claim sealed-payload confidentiality/authentication, v1 job-spec
   compatibility, public-output filtering, exact PID/lease matching, and
