@@ -272,6 +272,17 @@ test('pending-fresh replan preserves the normalized objective and every original
     { code: 'RESCUE_PREPARATION_EXISTS' });
     assert.deepEqual(await readFile(path), before);
   });
+  await t.test('proactive resume cannot rewrite a consumed pending-fresh tombstone', async () => {
+    const { base, path, store } = await setup();
+    const before = await readFile(path);
+    await assert.rejects(store.save({ ...base, recordedPrompt: '', envelope: {
+      version: 1, source: 'proactive', task: 'DRIFTED',
+      options: { execution: 'background', model: 'other/model', effort: 'low', resume: 'resume' },
+    } }), { code: 'RESCUE_PREPARATION_EXISTS' });
+    assert.deepEqual(await readFile(path), before);
+    await assert.rejects(store.consume({ ...base, executorAgentId: 'pending-child' }),
+      { code: 'RESCUE_PREPARATION_CONSUMED' });
+  });
   const { base, path, store } = await setup();
   await store.save({ ...base,
     envelope: { ...original, options: { ...original.options, resume: 'fresh' } }, activation: spawnActivation });
@@ -281,6 +292,8 @@ test('pending-fresh replan preserves the normalized objective and every original
     { execution: 'foreground', model: 'provider/model', effort: 'low', resume: 'fresh' });
   assert.deepEqual(replanned.activation, spawnActivation);
   assert.equal(replanned.pendingFreshProvenance, undefined);
+  const consumed = await store.consume({ ...base, executorAgentId: 'spawned-child', activationProof: spawnActivationProof });
+  assert.equal(consumed.executorAgentId, 'spawned-child');
 });
 
 test('generation-one spawn and reactivate activations round trip with exact proofs', async (t) => {

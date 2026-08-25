@@ -230,6 +230,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
               && createdAt >= Date.parse(current.consumedAt);
             const boundResume = envelope.source === 'proactive'
               && envelope.options.resume === 'resume'
+              && kind !== 'pending-fresh'
               && sameConsumedTurn;
             const freshReplan = envelope.options.resume === 'fresh'
               && kind === 'pending-fresh'
