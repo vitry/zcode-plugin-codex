@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { join, resolve, sep } from 'node:path';
 
 import { parseArgs, resolveModel } from './lib/args.mjs';
-import { readCodexThread, readCodexThreadSpawnChild, readCodexThreadSpawnChildIdentity, sanitizeCodexThreadSpawnChild } from './lib/codex-app-server.mjs';
+import { readCodexThread, readCodexThreadSpawnChild, sanitizeCodexThreadSpawnChild } from './lib/codex-app-server.mjs';
 import { inspectRescueRoleStatus, runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readBoundedJsonFile } from './lib/fs.mjs';
@@ -20,8 +20,7 @@ import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
-import { createConsumedLegacyChildAuthority, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
-import { rescueBindingAuthorityView } from './lib/rescue-binding.mjs';
+import { createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
@@ -172,17 +171,11 @@ export async function runDirectInvocation(argv, runtime = {}) {
     let caller;
     /** @type {any} */
     let host;
-    if (executor) {
-      caller = await identity.resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: execution.executionWorkspace, workspaceBinding: 'execution' });
-      if (executor.active) assertExecutorMatchesCaller(executor, caller);
-    } else {
-      host = await readLegacyAmbientChild(runtime.dependencies, ambientThreadId, env, cwd, runtime.signal);
-      caller = await identity.resolveActiveTurn({ sessionId: host.parentThreadId, workspace: cwd, workspaceBinding: 'execution' });
-      validateLegacyAmbientChild(host, caller, ambientThreadId);
-    }
+    if (!executor) throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No exact Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Return to the active parent turn and prepare Rescue again.' });
+    caller = await identity.resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: execution.executionWorkspace, workspaceBinding: 'execution' });
+    if (executor.active) assertExecutorMatchesCaller(executor, caller);
     const preparations = createRescuePreparationStore({ dataRoot });
     let prepared;
-    let recoveredRescueRoute;
     try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId }); }
     catch (error) {
       if (!(error instanceof PluginError) || error.code !== 'RESCUE_PREPARATION_MISMATCH') throw error;
@@ -202,22 +195,12 @@ export async function runDirectInvocation(argv, runtime = {}) {
             if (!(residentError instanceof PluginError) || residentError.code !== 'RESCUE_PREPARATION_MISMATCH') throw residentError;
           }
         }
-        if (!prepared) {
-          const originalExecutor = executor;
-          const recovered = await legacyActivationContext({ dataRoot, caller, host });
-          activationProof = recovered.activationProof;
-          if (recovered.executor) executor = recovered.executor;
-          recoveredRescueRoute = recovered.rescueRoute;
-          prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof,
-            ...(originalExecutor && ['legacy-adopt', 'legacy-bound'].includes(activationProof.kind)
-              ? { beforeLegacyConsume: () => validateLegacyConvergedChild(host, originalExecutor, caller) } : {}) });
-        }
+        if (!prepared) throw proofError;
       }
     }
     if (prepared.envelope.options.resume === 'fresh' && prepared.activation?.kind !== 'spawn') {
       throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
     }
-    if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && executor) validateLegacyConvergedChild(host, executor, caller);
     if (executor && host) {
       validateExecutorHostIdentity(host, executor);
       if (prepared.activation && prepared.activation.kind !== 'spawn'
@@ -226,8 +209,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
       }
       executor = { ...executor, agentPath: host.agentPath };
     }
-    if (prepared.requiredExecutorAgentId !== null && executor?.active
-      && !['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind)) {
+    if (prepared.requiredExecutorAgentId !== null && executor.active) {
       host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
         ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
       ), executor.parentSessionId, executor.agentId);
@@ -244,18 +226,10 @@ export async function runDirectInvocation(argv, runtime = {}) {
       if (createHash('sha256').update(agentPath).digest('hex') !== prepared.activation.agentPathDigest) throw rescueRouteInvalid();
       executor = { ...executor, agentPath };
     }
-    let rescueRoute = recoveredRescueRoute;
-    let authority;
-    if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && !executor) {
-      authority = createConsumedLegacyChildAuthority(prepared, {
-        authorizingParentGenerationId: caller.generationId,
-        originWorkspace: caller.originWorkspace,
-        executionWorkspace: caller.workspace,
-      });
-    }
-    if ((!executor || !executor.active) && prepared.activation?.kind !== 'legacy-adopt') {
+    let rescueRoute;
+    if (!executor.active) {
       const state = createStateStore({ dataRoot });
-      let lookup = executor ? bindingLookup(executor, caller.workspace) : legacyBindingLookup(host, caller);
+      let lookup = bindingLookup(executor, caller.workspace);
       let migrationProof;
       let resolved;
       try {
@@ -275,8 +249,8 @@ export async function runDirectInvocation(argv, runtime = {}) {
           lookup = bindingLookup(executor, caller.workspace);
         }
         const proof = await state.readRescueBindingMigrationProof({ workspace: caller.workspace,
-          parentSessionId: caller.sessionId, executorAgentId: executor?.agentId ?? host.id,
-          childAgentType: executor?.agentType ?? host.agentRole, originWorkspace: host.cwd,
+          parentSessionId: caller.sessionId, executorAgentId: executor.agentId,
+          childAgentType: executor.agentType, originWorkspace: host.cwd,
           executionWorkspace: caller.workspace, agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex'),
           ...(executor ? { agentPath: host.agentPath } : {}) });
         if (proof.kind !== 'proof') throw error;
@@ -291,11 +265,11 @@ export async function runDirectInvocation(argv, runtime = {}) {
       await afterPreparedBindingResolution(runtime.dependencies);
     }
     const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
-    const output = await runCompanion(preparedArgv, { cwd: caller.workspace, env, caller, executor, authority,
-      legacyActivation: ['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind), rescueRoute,
+    const output = await runCompanion(preparedArgv, { cwd: caller.workspace, env, caller, executor,
+      legacyActivation: false, rescueRoute,
       rescueActivationKind: prepared.activation?.kind,
       originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
-    if (output?.type === 'needs-choice') await saveRescuePendingChoice({ dataRoot, caller, cwd: caller.workspace, source: prepared.envelope.source, executor, authority, argv: preparedArgv, output });
+    if (output?.type === 'needs-choice') await saveRescuePendingChoice({ dataRoot, caller, cwd: caller.workspace, source: prepared.envelope.source, executor, argv: preparedArgv, output });
     return output;
   }
   if (statusInvocation) {
@@ -313,19 +287,12 @@ export async function runDirectInvocation(argv, runtime = {}) {
     if (choice !== undefined) throw new PluginError('INVOCATION_COMMAND_INVALID', 'The direct companion command is invalid.', { category: 'validation', remedy: 'Use the constant command documented by the installed skill.' });
     throw new PluginError('PREPARED_INVOCATION_REQUIRED', 'Installed Rescue requires a prepared invocation.', { category: 'authorization', remedy: 'Return to the parent turn, run prepare rescue, and start one new Rescue child.' });
   }
-  let sessionId = ambientThreadId; let executorAgentId; let executor; let authority; let legacyChoiceFallback = false; let executionWorkspace = cwd;
+  let sessionId = ambientThreadId; let executorAgentId; let executor; let executionWorkspace = cwd;
   if (command === 'rescue') {
     const resolved = entry === 'invoke-choice'
       ? await resolvePreparedExecutionContext(dataRoot, cwd, ambientThreadId)
       : await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId);
-    if (resolved.executor) {
-      executor = resolved.executor; executionWorkspace = resolved.executionWorkspace; sessionId = executor.parentSessionId; executorAgentId = executor.agentId;
-    } else {
-      const host = await readLegacyAmbientChild(runtime.dependencies, ambientThreadId, env, cwd, runtime.signal);
-      const legacyCaller = await identity.resolveActiveTurn({ sessionId: host.parentThreadId, workspace: cwd, workspaceBinding: 'execution' });
-      validateLegacyAmbientChild(host, legacyCaller, ambientThreadId);
-      executionWorkspace = legacyCaller.workspace; sessionId = legacyCaller.sessionId; executorAgentId = host.id; legacyChoiceFallback = true;
-    }
+    executor = resolved.executor; executionWorkspace = resolved.executionWorkspace; sessionId = executor.parentSessionId; executorAgentId = executor.agentId;
   }
   const caller = await identity.resolveActiveTurn({ sessionId, workspace: executionWorkspace, ...(command === 'rescue' ? { workspaceBinding: 'execution' } : {}) }); const invocations = createInvocationStore({ dataRoot });
   if (command === 'rescue' && (entry === 'invoke' || entry === 'invoke-choice' && executor?.active)) assertExecutorMatchesCaller(executor, caller);
@@ -334,13 +301,14 @@ export async function runDirectInvocation(argv, runtime = {}) {
     invocation = await invocations.consumePending({ sessionId, workspace: command === 'rescue' ? caller.workspace : cwd, command, choice,
       ...(executorAgentId === undefined ? {} : { executorAgentId }), ...(command === 'rescue' ? {
         turnId: caller.turnId, permissionMode: caller.permissionMode, parentGenerationId: caller.generationId,
-        originWorkspace: caller.originWorkspace, executionWorkspace: caller.workspace, ...(legacyChoiceFallback ? { requireLegacyAuthority: true } : {}),
-      } : {}) }); executionCaller = invocation.caller; authority = invocation.authority;
+        originWorkspace: caller.originWorkspace, executionWorkspace: caller.workspace,
+      } : {}) }); executionCaller = invocation.caller;
+    if (command === 'rescue' && invocation.authority) throw new PluginError('PENDING_INVOCATION_INVALID', 'The pending Rescue invocation is invalid.', { category: 'authorization', remedy: 'Return to the active parent turn and prepare Rescue again.' });
     if (command === 'rescue' && choice === 'fresh') {
       await authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, invocation });
       return { type: 'parent-replan', command: 'rescue' };
     }
-    if (command === 'rescue' && invocation.route?.routeKind !== 'bound' && !authority) {
+    if (command === 'rescue' && invocation.route?.routeKind !== 'bound') {
       const refreshed = await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true });
       assertSameRoutedExecutionContext({ executor, executionWorkspace }, refreshed); executor = refreshed.executor;
     }
@@ -353,11 +321,11 @@ export async function runDirectInvocation(argv, runtime = {}) {
       return { type: 'needs-choice', choices: ['wait', 'background'] };
     }
   }
-  const output = await runCompanion(invocation.argv, { cwd: command === 'rescue' ? executionCaller.workspace : cwd, env, caller: executionCaller, executor, authority,
-    legacyActivation: Boolean(authority), rescueRoute: invocation.route, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies,
+  const output = await runCompanion(invocation.argv, { cwd: command === 'rescue' ? executionCaller.workspace : cwd, env, caller: executionCaller, executor,
+    legacyActivation: false, rescueRoute: invocation.route, originalPrompt: invocation.implicitText, autoLaunchBackground: true, dependencies: runtime.dependencies,
     progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
   if (output?.type === 'needs-choice') {
-    if (command === 'rescue') await saveRescuePendingChoice({ dataRoot, caller: executionCaller, cwd: executionCaller.workspace, source: invocation.source ?? 'explicit', executor, authority, argv: invocation.argv, output });
+    if (command === 'rescue') await saveRescuePendingChoice({ dataRoot, caller: executionCaller, cwd: executionCaller.workspace, source: invocation.source ?? 'explicit', executor, argv: invocation.argv, output });
     else await invocations.savePending({ sessionId, turnId: executionCaller.turnId, workspace: cwd, permissionMode: executionCaller.permissionMode, command, spec: { argv: invocation.argv } });
   }
   return output;
@@ -368,11 +336,7 @@ async function resolvePreparedExecutionContext(dataRoot, ambientWorkspace, agent
   try { return await resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId); }
   catch (error) {
     if (!(error instanceof PluginError) || !['EXECUTOR_IDENTITY_NOT_FOUND', 'EXECUTOR_IDENTITY_EXPIRED', 'EXECUTOR_STATE_MISMATCH'].includes(error.code)) throw error;
-    try { return await resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId, { continuation: true, durableProvenance: true }); }
-    catch (continuationError) {
-      if (!(continuationError instanceof PluginError) || continuationError.code !== 'EXECUTOR_IDENTITY_NOT_FOUND') throw continuationError;
-      return { executor: null, executionWorkspace: ambientWorkspace };
-    }
+    return resolveRoutedForwardingExecutor(dataRoot, ambientWorkspace, agentId, { continuation: true, durableProvenance: true });
   }
 }
 
@@ -394,14 +358,7 @@ function validatePlannedRescueActivation(value) {
       || !safeCompanionIdentifier(activation.executorAgentId) || activation.agentPathDigest !== digest) throw rescueRouteInvalid();
     return { activation: { kind: 'reactivate', executorAgentId: activation.executorAgentId, agentPathDigest: activation.agentPathDigest }, directive };
   }
-  const keys = activation?.kind === 'legacy-bound'
-    ? ['agentPathDigest', 'bindingKey', 'childThreadId', 'kind']
-    : ['agentPathDigest', 'childThreadId', 'kind'];
-  if (!['legacy-adopt', 'legacy-bound'].includes(activation?.kind) || !exactPlainObject(activation, keys)
-    || !safeCompanionIdentifier(activation.childThreadId) || activation.agentPathDigest !== digest
-    || activation.kind === 'legacy-bound' && !/^[a-f0-9]{64}$/u.test(activation.bindingKey)) throw rescueRouteInvalid();
-  return { activation: { kind: activation.kind, childThreadId: activation.childThreadId, agentPathDigest: activation.agentPathDigest,
-    ...(activation.kind === 'legacy-bound' ? { bindingKey: activation.bindingKey } : {}) }, directive };
+  throw rescueRouteInvalid();
 }
 
 /** @param {unknown} value @param {string[]} keys */
@@ -436,70 +393,14 @@ function validateExecutorHostIdentity(host, executor) {
   }
 }
 
-/** @param {any} dependencies @param {string} childId @param {NodeJS.ProcessEnv} env @param {string} cwd @param {AbortSignal|undefined} signal */
-async function readLegacyAmbientChild(dependencies, childId, env, cwd, signal) {
-  const read = dependencies?.readCodexThreadSpawnChildIdentity ?? readCodexThreadSpawnChildIdentity;
-  return sanitizeCodexThreadSpawnChild(await read(childId, codexAppServerOptions(env, cwd, signal)), undefined, childId);
-}
-
-/** @param {any} host @param {any} caller @param {string} childId */
-function validateLegacyAmbientChild(host, caller, childId) {
-  const managed = /^\/root\/zcode_rescue_task(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u.test(host.agentPath);
-  if (host.id !== childId || host.parentThreadId !== caller.sessionId || host.agentRole !== 'zcode-rescue'
-    || host.status.type !== 'active' || !managed || host.cwd !== caller.originWorkspace
-    || caller.executionWorkspace !== caller.workspace || !/^[a-f0-9]{64}$/u.test(caller.generationId)) {
-    throw new PluginError('EXECUTOR_IDENTITY_INVALID', 'The persisted Rescue child identity is not eligible for legacy adoption.', { category: 'authorization', remedy: 'Return to the active parent turn and prepare Rescue again.' });
-  }
-}
-
-/** @param {{dataRoot:string,caller:any,host:any}} input */
-async function legacyActivationContext({ dataRoot, caller, host }) {
-  const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
-  const store = createStateStore({ dataRoot });
-  const lookup = legacyBindingLookup(host, caller);
-  const proof = await store.readRescueBindingMigrationProof({ ...lookup, childAgentType: host.agentRole,
-    originWorkspace: host.cwd, executionWorkspace: caller.workspace, agentPathDigest, agentPath: host.agentPath });
-  const binding = await store.resolveRescueBindingForResume({ ...lookup,
-    ...(proof.kind === 'proof' ? { migrationProof: proof.migrationProof } : {}) });
-  if (binding.kind !== 'bound') return { activationProof: { kind: 'legacy-adopt', childThreadId: host.id, agentPathDigest }, executor: null, rescueRoute: undefined };
-  const authority = rescueBindingAuthorityView(binding.binding);
-  if (authority.kind === 'subagent-start') return {
-    activationProof: { kind: 'reactivate', agentPathDigest },
-    executor: { active: true, agentId: authority.childAgentId, agentType: authority.childAgentType,
-      parentSessionId: binding.binding.parentSessionId, parentTurnId: authority.parentTurnId,
-      parentPermissionMode: authority.parentPermissionMode, originWorkspace: host.cwd,
-      workspace: caller.workspace, agentPath: host.agentPath },
-    rescueRoute: { routeKind: 'bound', candidateJobId: binding.binding.anchorJobId,
-      expectedOperationId: binding.binding.operationId, expectedCurrentJobId: binding.binding.currentJobId,
-      ...(proof.kind === 'proof' ? { migrationProof: proof.migrationProof } : {}) },
-  };
-  return { activationProof: { kind: 'legacy-bound', childThreadId: host.id, agentPathDigest, bindingKey: binding.binding.key }, executor: null, rescueRoute: undefined };
-}
-
-/** @param {any} host @param {any} executor @param {any} caller */
-function validateLegacyConvergedChild(host, executor, caller) {
-  const managed = /^\/root\/zcode_rescue_task(?:_(?:[2-9]|[1-9][0-9]{1,3}))?$/u.test(host.agentPath);
-  if (host.id !== executor.agentId || host.parentThreadId !== caller.sessionId || host.agentRole !== 'zcode-rescue'
-    || !managed || host.cwd !== caller.originWorkspace || executor.parentSessionId !== caller.sessionId
-    || executor.originWorkspace !== host.cwd || executor.workspace !== caller.workspace
-    || executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode) {
-    throw new PluginError('EXECUTOR_IDENTITY_INVALID', 'The Rescue child host identity does not match its executor provenance.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
-  }
-}
-
-/** @param {any} host @param {any} caller */
-function legacyBindingLookup(host, caller) {
-  return { workspace: caller.workspace, parentSessionId: caller.sessionId, executorAgentId: host.id };
-}
-
-/** @param {{dataRoot:string,caller:any,cwd:string,source:'explicit'|'proactive',executor:any,authority?:any,argv:string[],output:any}} input */
-async function saveRescuePendingChoice({ dataRoot, caller, cwd, source, executor, authority, argv, output }) {
+/** @param {{dataRoot:string,caller:any,cwd:string,source:'explicit'|'proactive',executor:any,argv:string[],output:any}} input */
+async function saveRescuePendingChoice({ dataRoot, caller, cwd, source, executor, argv, output }) {
   const route = rescueChoiceRoutes.get(output);
   if (!route) throw new PluginError('RESCUE_CHOICE_ROUTE_INVALID', 'The private Rescue choice route is unavailable.', { category: 'authorization', remedy: 'Repeat the Rescue command.' });
-  const executorAgentId = executor?.agentId ?? authority?.childAgentId;
+  const executorAgentId = executor?.agentId;
   if (!executorAgentId) throw new PluginError('RESCUE_CHOICE_ROUTE_INVALID', 'The private Rescue choice route is unavailable.', { category: 'authorization', remedy: 'Repeat the Rescue command.' });
   await createInvocationStore({ dataRoot }).savePending({ sessionId: caller.sessionId, turnId: caller.turnId, workspace: cwd, permissionMode: caller.permissionMode,
-    command: 'rescue', source, executorAgentId, spec: { argv }, ...route, ...(authority ? { legacyAuthority: authority } : {}) });
+    command: 'rescue', source, executorAgentId, spec: { argv }, ...route });
 }
 
 /** @param {{dataRoot:string,caller:any,executorAgentId:string|undefined,invocation:any}} input */
@@ -650,6 +551,7 @@ async function startPublic(context) {
       throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
     }
     if (childAuthorized) {
+      if (context.rescueRoute?.routeKind === 'legacy') throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
       if (parsed.options.resume !== 'fresh') {
         const lookup = {
           ...(context.legacyActivation
@@ -661,11 +563,8 @@ async function startPublic(context) {
         const resolved = migrationProof ? await store.resolveRescueBindingForResume({ ...lookup, migrationProof }) : await store.resolveRescueBinding(lookup);
         binding = resolved.kind === 'bound' ? resolved.binding : null;
         if (context.rescueRoute?.routeKind === 'bound' && !binding) throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
-        if (context.rescueRoute?.routeKind === 'legacy' && binding) throw new PluginError('RESCUE_BINDING_STALE', 'The Rescue operation generation changed.', { category: 'state', remedy: 'Repeat the Rescue choice.' });
       }
       if (!parsed.options.resume && binding) return boundNeedsChoice(binding);
-      if (!binding && parsed.options.resume !== 'fresh') candidate = context.rescueRoute?.candidateJobId ? await store.readJob(cwd, context.rescueRoute.candidateJobId) : await controller.resumeCandidate(cwd, caller.sessionId);
-      if (!parsed.options.resume && candidate) return legacyNeedsChoice(candidate, childAuthorized);
     } else candidate = await controller.resumeCandidate(cwd, caller.sessionId);
     if (!childAuthorized && !parsed.options.resume && candidate) return { type: 'needs-choice', candidate, choices: ['--resume', '--fresh'] };
     if (parsed.options.resume === 'resume' && !binding && !candidate) throw new PluginError('RESUME_CANDIDATE_NOT_FOUND', 'No eligible rescue session can be resumed.', { category: 'state', remedy: 'Use --fresh to start a new ZCode session.' });
@@ -677,7 +576,7 @@ async function startPublic(context) {
   if (parsed.command === 'rescue' && childAuthorized) {
     let reserved;
     const childProof = context.executor ? { executor: context.executor } : { authority: context.authority };
-    if (parsed.options.resume === 'fresh' || !binding && !candidate) reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, ...childProof, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
+    if (parsed.options.resume === 'fresh' || !binding && context.rescueActivationKind === 'spawn') reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, ...childProof, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
     else if (binding) {
       const previewMigrationProof = binding.state === 'closed' ? context.rescueRoute?.migrationProof : undefined;
       const resolved = await store.resolveRescueBindingForResume({ ...(context.legacyActivation
@@ -687,9 +586,7 @@ async function startPublic(context) {
       const migrationProof = previewMigrationProof;
       reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
       candidate = reserved.anchorJob;
-    } else {
-      reserved = await reservePublicRescueJob(context, () => store.adoptRescueCandidate({ workspace: cwd, reservation, ...childProof, candidateJobId: candidate.id })); candidate = reserved.anchorJob;
-    }
+    } else throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
     job = reserved.job;
   } else job = await reservePublicJob(context, reservation);
   if (parsed.command === 'transfer') {
@@ -735,8 +632,6 @@ async function startPublic(context) {
 
 /** @param {any} binding */
 function boundNeedsChoice(binding) { const output = { type: 'needs-choice', choices: ['--resume', '--fresh'] }; rescueChoiceRoutes.set(output, { routeKind: 'bound', candidateJobId: binding.anchorJobId, expectedOperationId: binding.operationId, expectedCurrentJobId: binding.currentJobId }); return output; }
-/** @param {any} candidate @param {boolean} privateRoute */
-function legacyNeedsChoice(candidate, privateRoute) { const output = { type: 'needs-choice', ...(privateRoute ? {} : { candidate }), choices: ['--resume', '--fresh'] }; if (privateRoute) rescueChoiceRoutes.set(output, { routeKind: 'legacy', candidateJobId: candidate.id }); return output; }
 
 /** @param {any} executor @param {string} workspace */
 function bindingLookup(executor, workspace) {

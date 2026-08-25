@@ -81,6 +81,44 @@ function modernBinding(input, host, overrides = {}) {
   return binding;
 }
 
+function legacyHookBinding(input, host, version = 1, overrides = {}) {
+  const modern = modernBinding(input, host);
+  const common = {
+    version,
+    key: modern.key,
+    operationId: modern.operationId,
+    state: 'closed',
+    parentSessionId: modern.parentSessionId,
+    workspace: modern.workspace,
+    permissionMode: modern.permissionMode,
+    anchorJobId: modern.anchorJobId,
+    currentJobId: modern.currentJobId,
+    createdAt: modern.createdAt,
+    updatedAt: '2026-08-20T01:00:00.000Z',
+    closedAt: '2026-08-20T01:00:00.000Z',
+    closeReason: 'session-ended',
+    ...overrides,
+  };
+  if (version === 1) return {
+    ...common,
+    executorAgentId: host.id,
+    executorAgentType: 'zcode-rescue',
+    executorParentTurnId: 'turn-old',
+    executorParentPermissionMode: input.caller.permissionMode,
+  };
+  return {
+    ...common,
+    childAuthority: {
+      kind: 'subagent-start',
+      childAgentId: host.id,
+      childAgentType: 'zcode-rescue',
+      parentTurnId: 'turn-old',
+      parentPermissionMode: input.caller.permissionMode,
+      ...overrides.childAuthority,
+    },
+  };
+}
+
 function adapters(children, executors, bindings = new Map()) {
   return {
     listChildren: async (parentId) => { assert.equal(parentId, 'parent-1'); return children; },
@@ -298,61 +336,51 @@ test('fresh never lets executor proof outrank occupied names', async () => {
   assert.equal(planned.activation.kind, 'spawn');
 });
 
-test('resume rejects multiple unbound legacy hosts as ambiguous', async () => {
+test('resume ignores an unbound base distractor and selects the sole exact legacy task_2 binding by eligibility', async () => {
   const input = await context(); input.envelope.options.resume = 'resume';
   const base = child(input.caller.workspace, { id: 'legacy-base' });
-  const ordinal = child(input.caller.workspace, { id: 'legacy-ordinal', agentPath: '/root/zcode_rescue_task_2' });
-  await assert.rejects(planRescueActivation({ ...input, ...adapters([base, ordinal], new Map()) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
-});
-
-test('previously adopted exact binding produces legacy-bound activation', async () => {
-  const input = await context(); input.envelope.options.resume = 'resume';
-  const legacy = child(input.caller.workspace, { id: 'legacy-base' }); const binding = adoptionBinding(input, legacy);
-  const planned = await planRescueActivation({
-    ...input,
-    ...adapters([legacy], new Map(), new Map([[legacy.id, {
-      kind: 'bound',
-      binding,
-    }]])),
-  });
-  assert.deepEqual(planned.activation, {
-    kind: 'legacy-bound', childThreadId: legacy.id, agentPathDigest: digest(legacy.agentPath), bindingKey: binding.key,
+  const exact = child(input.caller.workspace, { id: 'legacy-exact', agentPath: '/root/zcode_rescue_task_2' });
+  const binding = legacyHookBinding(input, exact, 1);
+  const planned = await planRescueActivation({ ...input,
+    ...adapters([base, exact], new Map(), new Map([[exact.id, { kind: 'bound', binding }]])) });
+  assert.deepEqual(planned, {
+    activation: { kind: 'reactivate', executorAgentId: exact.id, agentPathDigest: digest(exact.agentPath) },
+    directive: { version: 2, action: 'followup', target: exact.agentPath, assignment: 'zcode-rescue' },
   });
 });
 
-test('legacy host rejects a contradictory Hook-backed binding', async () => {
-  const input = await context(); input.envelope.options.resume = 'resume'; const legacy = child(input.caller.workspace, { id: 'legacy-base' });
-  const binding = adoptionBinding(input, legacy, { childAuthority: {
-    kind: 'subagent-start', childAgentId: legacy.id, childAgentType: 'zcode-rescue',
-    parentTurnId: 'old-turn', parentPermissionMode: input.caller.permissionMode,
-  } });
-  await assert.rejects(planRescueActivation({
-    ...input,
-    ...adapters([legacy], new Map(), new Map([[legacy.id, {
-      kind: 'bound',
-      binding,
-    }]])),
-  }), { code: 'RESCUE_BINDING_INVALID' });
-});
-
-test('legacy-bound planning requires the exact complete adoption binding authority', async (t) => {
+test('resume rejects a host-only child instead of adopting it or spawning a replacement', async () => {
   const input = await context(); input.envelope.options.resume = 'resume';
   const legacy = child(input.caller.workspace, { id: 'legacy-base' });
-  const exact = adoptionBinding(input, legacy);
+  await assert.rejects(planRescueActivation({ ...input, ...adapters([legacy], new Map()) }),
+    { code: 'RESCUE_BINDING_INVALID' });
+});
+
+test('legacy migration planning accepts only exact notLoaded v1/v2 evidence and rejects mismatches', async (t) => {
+  const input = await context(); input.envelope.options.resume = 'resume';
+  const legacy = child(input.caller.workspace, { id: 'legacy-exact', agentPath: '/root/zcode_rescue_task_2' });
+  for (const version of [1, 2]) {
+    const planned = await planRescueActivation({ ...input,
+      ...adapters([legacy], new Map(), new Map([[legacy.id, { kind: 'bound', binding: legacyHookBinding(input, legacy, version) }]])) });
+    assert.equal(planned.directive.target, legacy.agentPath);
+  }
+  const exact = legacyHookBinding(input, legacy, 2);
   const mutations = [
     ['wrong parent', () => ({ ...exact, parentSessionId: 'other-parent' })],
     ['wrong binding key', () => ({ ...exact, key: '8'.repeat(64) })],
-    ['wrong path digest', () => ({ ...exact, childAuthority: { ...exact.childAuthority, agentPathDigest: '9'.repeat(64) } })],
+    ['wrong child', () => ({ ...exact, childAuthority: { ...exact.childAuthority, childAgentId: 'other-child' } })],
+    ['wrong Role', () => ({ ...exact, childAuthority: { ...exact.childAuthority, childAgentType: 'default' } })],
     ['wrong top-level workspace', () => ({ ...exact, workspace: '/private/other' })],
-    ['wrong execution workspace', () => ({ ...exact, childAuthority: { ...exact.childAuthority, executionWorkspace: '/private/other' } })],
-    ['wrong origin workspace', () => ({ ...exact, childAuthority: { ...exact.childAuthority, originWorkspace: '/private/other' } })],
-    ['closed binding', () => ({ ...exact, state: 'closed' })],
+    ['active legacy binding', () => ({ ...exact, state: 'active', closedAt: null, closeReason: null })],
+    ['revoked target', () => ({ ...exact, closeReason: 'invalidated' })],
+    ['closed v3 migration target', () => ({ ...modernBinding(input, legacy), state: 'closed',
+      updatedAt: exact.updatedAt, closedAt: exact.closedAt, closeReason: 'session-ended' })],
     ['noncanonical timestamp', () => ({ ...exact, updatedAt: '2026-08-20' })],
     ['normalized invalid calendar timestamp', () => ({ ...exact, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-02-30T00:00:00.000Z' })],
     ['top-level unknown field', () => ({ ...exact, unknown: true })],
     ['top-level missing field', () => { const value = { ...exact }; delete value.operationId; return value; }],
     ['authority unknown field', () => ({ ...exact, childAuthority: { ...exact.childAuthority, unknown: true } })],
-    ['authority missing field', () => { const authority = { ...exact.childAuthority }; delete authority.authorityId; return { ...exact, childAuthority: authority }; }],
+    ['authority missing field', () => { const authority = { ...exact.childAuthority }; delete authority.parentTurnId; return { ...exact, childAuthority: authority }; }],
     ['wrong authority version', () => ({ ...exact, childAuthority: { ...exact.childAuthority, kind: 'codex-legacy-continuation' } })],
   ];
   for (const [name, mutate] of mutations) await t.test(name, async () => {
@@ -360,6 +388,12 @@ test('legacy-bound planning requires the exact complete adoption binding authori
       ...input,
       ...adapters([legacy], new Map(), new Map([[legacy.id, { kind: 'bound', binding: mutate() }]])),
     }), { code: 'RESCUE_BINDING_INVALID' });
+  });
+  for (const status of [{ type: 'idle' }, { type: 'systemError' }]) await t.test(`rejects ${status.type} observation`, async () => {
+    const observed = { ...legacy, status };
+    await assert.rejects(planRescueActivation({ ...input,
+      ...adapters([observed], new Map(), new Map([[observed.id, { kind: 'bound', binding: exact }]])) }),
+    { code: 'EXECUTOR_STATE_MISMATCH' });
   });
 });
 

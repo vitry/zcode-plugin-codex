@@ -51,7 +51,7 @@ export async function planRescueActivation(input) {
   const hostChildren = validateChildren(children, input.caller.sessionId);
   const resume = input.envelope.options?.resume === 'resume';
   if (input.envelope.options?.resume === 'fresh') return spawnPlan(hostChildren);
-  const provenCandidates = []; const legacyCandidates = [];
+  const provenCandidates = []; const persistedCandidates = [];
   for (const host of hostChildren) {
     const hostClass = classifyHost(host);
     if (hostClass === 'occupancy') continue;
@@ -59,11 +59,10 @@ export async function planRescueActivation(input) {
     try { resolved = await resolveStoppedExecutor(input.dataRoot, host.cwd, host.id); }
     catch (error) {
       if (/** @type {any} */ (error)?.code === 'EXECUTOR_IDENTITY_NOT_FOUND') {
-        if (hostClass === 'generic') continue;
-        if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
         const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, host, executionWorkspace });
-        if (binding.kind === 'missing') legacyCandidates.push({ kind: /** @type {'legacy'} */ ('legacy'), binding: null, host });
-        else legacyCandidates.push({ kind: /** @type {'legacy'} */ ('legacy'), binding: validatePersistedBinding(binding.binding, {
+        if (binding.kind === 'missing' || binding.kind === 'ineligible') continue;
+        if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
+        persistedCandidates.push({ kind: /** @type {'persisted'} */ ('persisted'), binding: validatePersistedBinding(binding.binding, {
           caller: input.caller, executionWorkspace, host, originWorkspace, requirePermissionMatch: resume,
         }), host });
         continue;
@@ -82,16 +81,11 @@ export async function planRescueActivation(input) {
       const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, executor: candidate.executor, host: candidate.host, executionWorkspace });
       if (binding.kind === 'bound') bound.push(candidate);
     }
-    for (const candidate of legacyCandidates) if (candidate.binding !== null) bound.push(candidate);
+    for (const candidate of persistedCandidates) bound.push(candidate);
     if (bound.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
     selected = bound[0] ?? null;
-    if (selected === null) {
-      const unboundLegacy = legacyCandidates.filter((candidate) => candidate.binding === null);
-      if (unboundLegacy.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
-      selected = unboundLegacy[0] ?? null;
-    }
   } else {
-    const usable = [...provenCandidates, ...legacyCandidates];
+    const usable = [...provenCandidates, ...persistedCandidates];
     if (usable.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
     selected = usable[0] ?? null;
   }
@@ -102,17 +96,12 @@ export async function planRescueActivation(input) {
       activation = { kind: 'reactivate', executorAgentId: selected.executor.agentId, agentPathDigest: pathDigest(selected.host.agentPath) };
       assignment = selected.executor.agentType;
     } else {
-      const modernBinding = selected.binding !== null
-        && rescueBindingAuthorityView(selected.binding).kind === 'subagent-start';
-      activation = modernBinding
-        ? { kind: 'reactivate', executorAgentId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) }
-        : selected.binding !== null
-          ? { kind: 'legacy-bound', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath), bindingKey: selected.binding.key }
-          : { kind: 'legacy-adopt', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) };
+      activation = { kind: 'reactivate', executorAgentId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) };
       assignment = 'zcode-rescue';
     }
     return { activation, directive: validateRescueRouteDirective({ version: 2, action: 'followup', target: selected.host.agentPath, assignment }) };
   }
+  if (resume) throw plannerError('RESCUE_BINDING_INVALID');
   return spawnPlan(hostChildren);
 }
 
@@ -180,8 +169,9 @@ async function resolveExactBinding(resolveBinding, input) {
   let binding;
   try { binding = await resolveBinding(input); }
   catch { throw plannerError('RESCUE_BINDING_INVALID'); }
-  if (!binding || !['missing', 'bound'].includes(binding.kind)
+  if (!binding || !['missing', 'bound', 'ineligible'].includes(binding.kind)
     || binding.kind === 'missing' && !sameKeys(binding, ['kind'])
+    || binding.kind === 'ineligible' && !sameKeys(binding, ['kind'])
     || binding.kind === 'bound' && !plain(binding.binding)) throw plannerError('RESCUE_BINDING_INVALID');
   return binding;
 }
@@ -203,11 +193,14 @@ function validatePersistedBinding(binding, expected) {
       workspace: expected.executionWorkspace,
     });
   } catch { throw plannerError('RESCUE_BINDING_INVALID'); }
-  if (![1, 2, 3].includes(valid.version) || valid.key !== expectedKey
-    || valid.state !== 'active' && !(valid.state === 'closed' && valid.closeReason === 'session-ended')
+  const exactState = valid.version === 3 ? valid.state === 'active'
+    : [1, 2].includes(valid.version) && valid.state === 'closed' && valid.closeReason === 'session-ended';
+  const expectedAgentType = expected.host.agentRole === 'zcode-rescue' ? 'zcode-rescue'
+    : expected.host.agentRole === null ? 'default' : null;
+  if (!exactState || valid.key !== expectedKey
     || valid.parentSessionId !== expected.caller.sessionId || valid.workspace !== expected.executionWorkspace
     || expected.requirePermissionMatch && valid.permissionMode !== expected.caller.permissionMode
-    || authority.childAgentId !== expected.host.id || authority.childAgentType !== 'zcode-rescue'
+    || authority.childAgentId !== expected.host.id || expectedAgentType === null || authority.childAgentType !== expectedAgentType
     || authority.kind === 'codex-legacy-adoption' && (authority.originWorkspace !== expected.originWorkspace
       || authority.originWorkspace !== expected.host.cwd || authority.executionWorkspace !== expected.executionWorkspace
       || authority.agentPathDigest !== pathDigest(expected.host.agentPath))
@@ -255,6 +248,7 @@ function defaultBindingResolver(dataRoot) {
       childAgentType: executor?.agentType ?? host.agentRole, originWorkspace: host.cwd, executionWorkspace,
       agentPathDigest: pathDigest(host.agentPath), agentPath: host.agentPath,
     });
+    if (proof.kind === 'ineligible') return { kind: 'ineligible' };
     if (proof.kind === 'proof') migrationProof = proof.migrationProof;
     return store.resolveRescueBindingForResume({ ...lookup, ...(migrationProof ? { migrationProof } : {}) });
   };

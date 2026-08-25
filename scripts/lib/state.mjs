@@ -143,13 +143,14 @@ export function createStateStore(options) {
         if (binding === null) return { kind: 'missing' };
         const authority = rescueBindingAuthorityView(binding);
         if (binding.state === 'active') return { kind: 'bound' };
-        if (binding.closeReason !== 'session-ended') throw closedRescueBinding();
+        if (binding.closeReason !== 'session-ended') return { kind: 'ineligible' };
+        if (![1, 2].includes(binding.version)) throw invalidRescueBinding();
         const migrationProof = migrationProofForBinding(binding, input);
         if (migrationProof.childAgentId !== input.executorAgentId || migrationProof.childAgentType !== input.childAgentType
           || migrationProof.originWorkspace !== input.originWorkspace || migrationProof.executionWorkspace !== input.executionWorkspace
           || authority.kind === 'codex-legacy-adoption' && migrationProof.agentPathDigest !== input.agentPathDigest
           || authority.kind === 'subagent-start' && migrationProof.agentPath !== input.agentPath) throw invalidRescueBinding();
-        await resolveBindingJobsLocked(storage, binding);
+        await resolveMigrationBindingJobsLocked(storage, binding);
         return { kind: 'proof', migrationProof };
       });
     },
@@ -1021,18 +1022,19 @@ async function resolveBindingForResumeLocked(storage, expected, migrationProof) 
   }
   if (binding === null) return { kind: 'missing' };
   if (migrationProof !== undefined && binding.state === 'active') throw staleRescueBinding();
+  if (migrationProof !== undefined && ![1, 2].includes(binding.version)) throw invalidRescueBinding();
   if (migrationProof !== undefined) validateMigrationProofForBinding(binding, expected, migrationProof);
   if (binding.state !== 'active') {
     if (binding.closeReason !== 'session-ended') throw closedRescueBinding();
     validateMigrationProofForBinding(binding, expected, migrationProof);
-    return resolveBindingJobsLocked(storage, binding);
+    return resolveMigrationBindingJobsLocked(storage, binding);
   }
   return await resolveBindingJobsLocked(storage, binding);
 }
 
 /** @param {any} binding @param {{agentPath?:string}|undefined} proof @param {string} currentJobId @param {string} updatedAt */
 function migratedActiveBinding(binding, proof, currentJobId, updatedAt) {
-  if (binding.version === 3) return validateRescueBinding({ ...binding, state: 'active', currentJobId, updatedAt, closedAt: null, closeReason: null });
+  if (![1, 2].includes(binding.version) || binding.state !== 'closed' || binding.closeReason !== 'session-ended') throw invalidRescueBinding();
   const authority = rescueBindingAuthorityView(binding);
   const childAuthority = authority.kind === 'subagent-start'
     ? { ...authority, agentPath: proof?.agentPath }
@@ -1488,6 +1490,18 @@ async function resolveBindingJobsLocked(storage, binding) {
   validateAnchorJob(anchorJob, binding.parentSessionId, storage.workspacePath);
   validateCurrentJob(currentJob, binding.parentSessionId, storage.workspacePath);
   return { kind: 'bound', operationId: binding.operationId, anchorJob: structuredClone(anchorJob), currentJob: structuredClone(currentJob), binding: { ...binding } };
+}
+
+/** A migration candidate has no writable current attempt and retains one original non-empty session. @param {any} storage @param {any} binding */
+async function resolveMigrationBindingJobsLocked(storage, binding) {
+  if (![1, 2].includes(binding.version) || binding.state !== 'closed' || binding.closeReason !== 'session-ended') throw invalidRescueBinding();
+  const resolved = await resolveBindingJobsLocked(storage, binding);
+  const { anchorJob, currentJob } = resolved;
+  if (!isSafeIdentifier(anchorJob.zcodeSessionId) || !isSafeIdentifier(currentJob.zcodeSessionId)
+    || anchorJob.zcodeSessionId !== currentJob.zcodeSessionId
+    || !TERMINAL_STATUSES.has(anchorJob.status) || anchorJob.status === 'cancelled'
+    || !TERMINAL_STATUSES.has(currentJob.status) || currentJob.status === 'cancelled') throw invalidRescueBinding();
+  return resolved;
 }
 
 /** @param {any} binding @param {any} expected @param {RescueMigrationProof|undefined} proof */
