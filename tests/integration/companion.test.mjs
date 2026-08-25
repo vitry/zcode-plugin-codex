@@ -332,7 +332,7 @@ async function companionWithArchiveHandshake(context, args) {
   return result;
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'online',acceptedOnline:number,rejectedSequence:number}}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'online',acceptedOnline:number,rejectedSequence:number},waitForDurableProbe?:typeof waitForDurableConversationProbe}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
@@ -350,13 +350,13 @@ async function deterministicConversationScenario(context, scenario, options = {}
     catch (error) { gateWriteError ??= error; }
   };
   if (gatePath && gateNonce) await writeFile(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'held' }), { mode: 0o600 });
-  let output;
+  let output; let pendingExecution; let primaryError;
   try {
     if (gatePath) {
       gateDeadline = setTimeout(() => { gateTimedOut = true; void releaseGate(); }, 15_000);
       gateDeadline.unref?.();
     }
-    const execution = runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
+    pendingExecution = runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
       cwd: context.workspace,
       env: {
         ...context.env, ...options.env, FAKE_ZCODE_CONVERSATION_SCENARIO: scenario, FAKE_ZCODE_RECORD: record,
@@ -380,14 +380,25 @@ async function deterministicConversationScenario(context, scenario, options = {}
       heartbeat();
     }
     if (options.completionAfterProbe) {
-      await waitForDurableConversationProbe(context, record, owner.sessionId, options.completionAfterProbe);
+      await (options.waitForDurableProbe ?? waitForDurableConversationProbe)(context, record, owner.sessionId, options.completionAfterProbe);
       await releaseGate();
     }
+    const execution = pendingExecution;
+    pendingExecution = undefined;
     output = await execution;
+  } catch (error) {
+    primaryError = error;
   } finally {
     if (gateDeadline) clearTimeout(gateDeadline);
     await releaseGate();
+    if (pendingExecution) {
+      const execution = pendingExecution;
+      pendingExecution = undefined;
+      try { await execution; }
+      catch (error) { primaryError ??= error; }
+    }
   }
+  if (primaryError) throw primaryError;
   if (gateTimedOut || !observedExpectedLine && completionAfterProgressLine) throw new Error(`expected public progress line was not dispatched: ${completionAfterProgressLine}`);
   if (gateWriteError) throw gateWriteError;
   const status = await runCompanion(['status', output.job.id], { cwd: context.workspace, env: context.env, caller: owner });
@@ -3043,6 +3054,22 @@ test('conversation online progress reaches stderr and preview while initial and 
   assert.equal(status.json.job.progressProbe.acceptedOnline, 2);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   assert.equal(requests.filter((request) => request.method === 'session/read').length, 1, 'Task 3 progress must not add snapshot reads');
+});
+
+test('conversation scenario teardown settles its started execution after probe waiting fails', async () => {
+  const context = await fixture();
+  const injected = new Error('injected durable conversation probe failure');
+  await assert.rejects(deterministicConversationScenario(context, 'observed-traffic', {
+    completionAfterProbe: { state: 'online', acceptedOnline: 2, rejectedSequence: 1 },
+    env: { FAKE_ZCODE_COMPLETION_DELAY_MS: '100', FAKE_ZCODE_MALFORMED: 'session/read' },
+    waitForDurableProbe: async (...args) => {
+      await waitForDurableConversationProbe(...args);
+      throw injected;
+    },
+  }), (error) => error === injected);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].status, 'failed', 'failed test setup must settle the released execution rejection before returning');
 });
 
 test('observed unknown conversation rows and a sequence gap preserve later safe progress', async () => {
