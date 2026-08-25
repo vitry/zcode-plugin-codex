@@ -1,5 +1,7 @@
 # Changelog
 
+- Fixed persistent Rescue child rejoin so modern Hook-backed bindings retain the exact agent path and can rejoin unloaded or resident Codex children after runtime records disappear. Explicit cancel now closes only the exact child operation, same-child fresh replacement retains a durable `fresh` supersession record, stale migration proofs fail operation CAS, and SessionEnd remains non-revoking.
+
 All notable changes follow Semantic Versioning.
 
 ## Unreleased

@@ -1,16 +1,18 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { PluginError } from '../scripts/lib/errors.mjs';
+import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { ownerIdForSession } from '../scripts/lib/job-control.mjs';
 import { reconcileOwnedJobs, settleEndedOwnerWritableJob, withWorkerLease } from '../scripts/lib/recovery.mjs';
-import { executeJob } from '../scripts/lib/review.mjs';
+import { executeJob as executeJobProduction } from '../scripts/lib/review.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
@@ -33,15 +35,34 @@ async function job(input, options = {}) {
     readOnly: options.readOnly ?? false,
     permissionSnapshot: { permissionMode: 'workspace-write' },
   });
+  if (options.legacy === true) {
+    const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
+    const path = join(storage.directory, 'jobs', `${value.id}.json`); const historical = JSON.parse(await readFile(path, 'utf8'));
+    delete historical.rescueReservationKind; await writeFile(path, `${JSON.stringify(historical, null, 2)}\n`);
+    const ownerRoot = join(storage.directory, 'job-owners'); let ownerBindingPath;
+    for (const entry of await readdir(ownerRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^[a-f0-9]{64}$/u.test(entry.name)) continue;
+      const candidate = join(ownerRoot, entry.name, `${value.id}.json`);
+      try { await readFile(candidate); ownerBindingPath = candidate; break; }
+      catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    }
+    assert.ok(ownerBindingPath); await writeFile(ownerBindingPath, `${JSON.stringify({
+      jobId: value.id, ownerSessionId: value.ownerSessionId, version: 1,
+    }, null, 2)}\n`); value = historical;
+  }
+  const worker = {
+    childPid: 999_999,
+    workerLeaseId: options.workerLeaseId ?? 'd'.repeat(64),
+  };
   if (options.claim !== false) {
-    value = await input.store.claimJobWorker(input.workspace, value.id, {
-      childPid: 999_999,
-      workerLeaseId: options.workerLeaseId ?? 'd'.repeat(64),
-    });
+    value = value.command === 'rescue' && value.readOnly === false
+      ? await input.store.claimJobWorkerForExecution(input.workspace, value.id, worker)
+      : await input.store.claimJobWorker(input.workspace, value.id, worker);
   }
   if (options.status === 'queued') return value;
   value = await input.store.transitionJob(input.workspace, value.id, ['queued'], 'running', {
     startedAt: new Date().toISOString(),
+    ...(value.rescueExecutionClaim ? worker : {}),
     ...(options.accepted === false ? {} : { zcodeSessionId: options.zcodeSessionId ?? 'remote-a' }),
   });
   if (options.boundary !== false) value = await input.store.transitionJob(input.workspace, value.id, ['running'], 'running', {
@@ -49,6 +70,17 @@ async function job(input, options = {}) {
   });
   if (options.status === 'cancelling') value = await input.store.transitionJob(input.workspace, value.id, ['running'], 'cancelling');
   return value;
+}
+
+/** Lower-level executor tests receive the companion's already-claimed contract. @param {any} input */
+async function executeJob(input) {
+  let job = input.job; let childPid = input.childPid; let workerLeaseId = input.workerLeaseId;
+  if (job.command === 'rescue' && job.readOnly === false && job.status === 'queued'
+    && job.rescueReservationKind !== undefined && job.rescueExecutionClaim === undefined) {
+    childPid ??= 999_999_999; workerLeaseId ??= job.id;
+    job = await input.store.claimJobWorkerForExecution(input.workspace, job.id, { childPid, workerLeaseId });
+  }
+  return executeJobProduction({ ...input, job, ...(childPid ? { childPid } : {}), ...(workerLeaseId ? { workerLeaseId } : {}) });
 }
 
 function completed(text = 'session end completion') {
@@ -103,8 +135,9 @@ test('SessionEnd returns its exact queued cancelled winner when finish applies t
   const input = await fixture(); const value = await job(input, { claim: false, status: 'queued' }); const storageError = new PluginError('ATOMIC_WRITE_FAILED', 'late queued SessionEnd write failure', { category: 'storage', remedy: 'retry' }); let finishes = 0;
   const wrapped = {
     ...input.store,
-    finishJob: async (workspace, jobId, expected, next, patch) => {
-      const winner = await input.store.finishJob(workspace, jobId, expected, next, patch); finishes += 1; assert.equal(winner.status, 'cancelled'); throw storageError;
+    finishQueuedJobAfterRecoveryLease: async (...args) => {
+      const winner = await input.store.finishQueuedJobAfterRecoveryLease(...args);
+      finishes += 1; assert.equal(winner.status, 'cancelled'); throw storageError;
     },
   };
   const winner = await settle({ ...input, store: wrapped }, async () => { throw new Error('queued settlement must not create a client'); });
@@ -119,6 +152,36 @@ test('SessionEnd leaves a held claimed queued lease but cancels it after the lea
   assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'queued');
   await settle(input, async () => { throw new Error('queued jobs need no client'); });
   assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled');
+});
+
+test('SessionEnd retains failed private reservation cleanup and retries it from an already terminal job', async () => {
+  const input = await fixture(); const identity = createIdentityStore({ dataRoot: input.dataRoot });
+  const value = await job(input, { claim: false, status: 'queued' }); const workerLeaseId = '8'.repeat(64);
+  const expected = { jobId: value.id, ownerSessionId: value.ownerSessionId, workspace: value.workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
+  const token = await identity.createExecutionCapability({ ...expected, permissionSnapshot: value.permissionSnapshot });
+  const authority = { version: 1, capabilityDigest: createHash('sha256').update(token).digest('hex'),
+    reservationId: '9'.repeat(64), ...expected };
+  await input.store.publishJobSpecCommitment(input.workspace, value.id, 'a'.repeat(64), authority);
+  await input.store.bindJobExecutionReservationLease(input.workspace, value.id, {
+    capabilityDigest: authority.capabilityDigest, reservationId: authority.reservationId, workerLeaseId,
+  });
+  await identity.reserveExecutionCapability(token, expected, authority.reservationId, workerLeaseId);
+  const injected = new Error('injected SessionEnd cleanup failure'); let releases = 0;
+  const first = await settleEndedOwnerWritableJob({
+    store: input.store, identity: { releaseExecutionReservation: async () => { releases += 1; throw injected; } },
+    dataRoot: input.dataRoot, workspace: input.workspace, ownerSessionId: value.ownerSessionId,
+    lockTimeoutMs: 0, createClient: async () => { throw new Error('queued cleanup needs no client'); },
+  });
+  assert.equal(first.status, 'cancelled'); assert.equal(releases, 1);
+  assert.ok((await input.store.readJob(input.workspace, value.id)).rescueExecutionReservation);
+  await settleEndedOwnerWritableJob({
+    store: input.store, identity, dataRoot: input.dataRoot, workspace: input.workspace,
+    ownerSessionId: value.ownerSessionId, lockTimeoutMs: 0,
+    createClient: async () => { throw new Error('terminal cleanup needs no client'); },
+  });
+  const cleaned = await input.store.readJob(input.workspace, value.id);
+  assert.equal(cleaned.status, 'cancelled'); assert.equal(cleaned.rescueExecutionReservation, undefined);
 });
 
 test('SessionEnd publishes a completed first read with an artifact and never stops', async () => {
@@ -194,7 +257,7 @@ test('SessionEnd does not archive broker absence while the exact worker lease is
 });
 
 test('SessionEnd does not archive broker absence without an exact worker lease', async () => {
-  const input = await fixture(); const value = await job(input, { claim: false });
+  const input = await fixture(); const value = await job(input, { claim: false, legacy: true });
   await settle(input, async () => null);
   const stored = await input.store.readJob(input.workspace, value.id);
   assert.equal(stored.status, 'running');

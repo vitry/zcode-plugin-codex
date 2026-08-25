@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import process from 'node:process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { closeSync as closeFdSync, realpathSync } from 'node:fs';
 import { Socket } from 'node:net';
 import { Readable } from 'node:stream';
@@ -11,7 +11,7 @@ import { parseArgs, resolveModel } from './lib/args.mjs';
 import { readCodexThread, readCodexThreadSpawnChild, readCodexThreadSpawnChildIdentity, sanitizeCodexThreadSpawnChild } from './lib/codex-app-server.mjs';
 import { inspectRescueRoleStatus, runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
-import { atomicWriteJson, readJsonFile } from './lib/fs.mjs';
+import { atomicWriteJson, readBoundedJsonFile } from './lib/fs.mjs';
 import { createIdentityStore } from './lib/identity.mjs';
 import { createJobController, ownerIdForSession, readBoundRescueStatus, withJobCancellationLock } from './lib/job-control.mjs';
 import { resolvePluginDataContext, resolvePluginDataRoot } from './lib/plugin-data.mjs';
@@ -21,12 +21,14 @@ import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
 import { createConsumedLegacyChildAuthority, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
+import { rescueBindingAuthorityView } from './lib/rescue-binding.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
 import { errorEnvelope, renderOutput } from './lib/render.mjs';
 import { createForegroundSignalController } from './lib/signals.mjs';
 import { serializeRescueProgressRelay } from './lib/rescue-progress-relay.mjs';
+import { legacyRescueMigrationRollbackFromSpec, parseExactLegacyJobSpecRecord, resolveQueuedRescueMigrationRollback } from './lib/rescue-migration.mjs';
 import { createStateStore, validProgressProbe } from './lib/state.mjs';
 import { resolveWorkspaceStorage } from './lib/workspace.mjs';
 import { readWorkspaceModelConfig, summarizeWorkspaceModelConfig } from './lib/workspace-config.mjs';
@@ -93,10 +95,11 @@ export async function runCompanion(argv, runtime = {}) {
         : MANAGED_ROLE_STATUSES.has(inspection?.status) ? inspection.status : 'inspection-unavailable';
     return { type: 'role-status', role: 'zcode-rescue', status, ...(status === 'ready' ? {} : { remedy: ROLE_REMEDIES[status] ?? '$zcode:setup' }) };
   }
-  const identity = createIdentityStore({ dataRoot }); const store = createStateStore({ dataRoot });
+  const identity = createIdentityStore({ dataRoot });
+  const store = (runtime.dependencies?.createStateStore ?? createStateStore)({ dataRoot });
   if (parsed.command === 'run-reserved-job') return runReserved({ parsed, cwd, env, dataRoot, identity, store, authorization: requireAuthorization(runtime.authorization, ['executionCapability', 'jobId']), startupAck: runtime.startupAck, dependencies: runtime.dependencies, signal: runtime.signal });
   const caller = runtime.caller ?? await identity.consumeCallerContext(requireAuthorization(runtime.authorization, ['callerContext']).callerContext, { workspace: cwd });
-  const reconcile = () => reconcileOwnedJobs({ store, dataRoot, workspace: cwd, ownerSessionId: caller.sessionId, createClient: async (job, ownerId) => {
+  const reconcile = () => reconcileOwnedJobs({ store, dataRoot, workspace: cwd, ownerSessionId: caller.sessionId, createClient: async (/** @type {any} */ job, ownerId) => {
     runtime.signal?.throwIfAborted();
     const launch = await discoverLaunch(env);
     return (runtime.dependencies?.createManagedZCodeClient ?? createManagedZCodeClient)({ dataRoot, workspace: cwd, launch, ownerId, env, ...managedWireOptionsForJob(job) });
@@ -105,7 +108,7 @@ export async function runCompanion(argv, runtime = {}) {
   await reconcile();
   if (parsed.command === 'status') {
     const modelPolicy = summarizeWorkspaceModelConfig(await readWorkspaceModelConfig({ dataRoot, workspace: cwd }));
-    if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((job) => publicJob(job, caller.sessionId, 'list')), modelPolicy };
+    if (parsed.options.all) return { jobs: (await store.listJobs(cwd)).map((/** @type {any} */ job) => publicJob(job, caller.sessionId, 'list')), modelPolicy };
     let job = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0]);
     if (parsed.options.wait) job = await controller.wait(cwd, job.id, parsed.options.timeoutMs, runtime.signal);
     return { job: publicJob(job, caller.sessionId, 'detail'), modelPolicy };
@@ -121,11 +124,19 @@ export async function runCompanion(argv, runtime = {}) {
   }
   if (parsed.command === 'cancel') {
     const selected = await controller.selectOwned(cwd, caller.sessionId, parsed.positionals[0], 'cancel');
-    if (!['running', 'cancelling'].includes(selected.status)) return { job: await controller.cancel(cwd, selected.id, caller.sessionId) };
+    if (!['running', 'cancelling'].includes(selected.status)) {
+      const job = await controller.cancel(cwd, selected.id, caller.sessionId);
+      if (job.command === 'rescue' && job.status === 'cancelled') await store.closeRescueBindingForCancelledJob({ workspace: cwd, parentSessionId: caller.sessionId, jobId: job.id });
+      return { job };
+    }
     runtime.signal?.throwIfAborted(); const launch = await discoverLaunch(env);
     const client = await createManagedZCodeClient({ dataRoot, workspace: cwd, launch, ownerId: ownerIdForSession(caller.sessionId), env, ...managedWireOptionsForJob(selected) });
     const cancelling = createJobController({ store, dataRoot, stopSession: (sessionId) => client.stopSession(sessionId) });
-    try { return { job: await cancelling.cancel(cwd, selected.id, caller.sessionId) }; }
+    try {
+      const job = await cancelling.cancel(cwd, selected.id, caller.sessionId);
+      if (job.command === 'rescue' && job.status === 'cancelled') await store.closeRescueBindingForCancelledJob({ workspace: cwd, parentSessionId: caller.sessionId, jobId: job.id });
+      return { job };
+    }
     finally { await client.close().catch(() => {}); }
   }
   return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, executor: runtime.executor, authority: runtime.authority, legacyActivation: runtime.legacyActivation, rescueRoute: runtime.rescueRoute, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
@@ -157,7 +168,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
   }
   if (preparedInvocation) {
     const execution = await resolvePreparedExecutionContext(dataRoot, cwd, ambientThreadId);
-    const executor = execution.executor;
+    let executor = execution.executor;
     let caller;
     /** @type {any} */
     let host;
@@ -171,6 +182,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     }
     const preparations = createRescuePreparationStore({ dataRoot });
     let prepared;
+    let recoveredRescueRoute;
     try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId }); }
     catch (error) {
       if (!(error instanceof PluginError) || error.code !== 'RESCUE_PREPARATION_MISMATCH') throw error;
@@ -183,18 +195,56 @@ export async function runDirectInvocation(argv, runtime = {}) {
         else throw error;
       } catch (proofError) {
         if (!(proofError instanceof PluginError) || proofError.code !== 'RESCUE_PREPARATION_MISMATCH') throw proofError;
-        activationProof = await legacyActivationProof({ dataRoot, caller, host, executor });
-        prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof,
-          ...(executor ? { beforeLegacyConsume: () => validateLegacyConvergedChild(host, executor, caller) } : {}) });
+        if (executor?.active) {
+          activationProof = { kind: 'reactivate', agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex') };
+          try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof }); }
+          catch (residentError) {
+            if (!(residentError instanceof PluginError) || residentError.code !== 'RESCUE_PREPARATION_MISMATCH') throw residentError;
+          }
+        }
+        if (!prepared) {
+          const originalExecutor = executor;
+          const recovered = await legacyActivationContext({ dataRoot, caller, host });
+          activationProof = recovered.activationProof;
+          if (recovered.executor) executor = recovered.executor;
+          recoveredRescueRoute = recovered.rescueRoute;
+          prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof,
+            ...(originalExecutor && ['legacy-adopt', 'legacy-bound'].includes(activationProof.kind)
+              ? { beforeLegacyConsume: () => validateLegacyConvergedChild(host, originalExecutor, caller) } : {}) });
+        }
       }
     }
     if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && executor) validateLegacyConvergedChild(host, executor, caller);
+    if (executor && host) {
+      validateExecutorHostIdentity(host, executor);
+      if (prepared.activation && prepared.activation.kind !== 'spawn'
+        && prepared.activation.agentPathDigest !== createHash('sha256').update(host.agentPath).digest('hex')) {
+        throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation does not match this child.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+      }
+      executor = { ...executor, agentPath: host.agentPath };
+    }
     if (prepared.requiredExecutorAgentId !== null && executor?.active
-      && !['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind)) throw new PluginError('EXECUTOR_STATE_MISMATCH', 'A Rescue continuation requires the original child to be stopped.', { category: 'authorization', remedy: 'Wait for the original Rescue child to stop, then prepare the continuation again.' });
+      && !['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind)) {
+      host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
+        ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
+      ), executor.parentSessionId, executor.agentId);
+      validateExecutorHostIdentity(host, executor);
+      if (host.status.type !== 'active' || prepared.activation !== null
+        && (prepared.activation?.kind !== 'reactivate'
+          || prepared.activation.agentPathDigest !== createHash('sha256').update(host.agentPath).digest('hex'))) {
+        throw new PluginError('EXECUTOR_STATE_MISMATCH', 'The resident Rescue child no longer matches its prepared continuation.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+      }
+      executor = { ...executor, agentPath: host.agentPath };
+    }
+    if (executor && prepared.activation?.kind === 'spawn') {
+      const agentPath = `/root/${prepared.activation.taskName}`;
+      if (createHash('sha256').update(agentPath).digest('hex') !== prepared.activation.agentPathDigest) throw rescueRouteInvalid();
+      executor = { ...executor, agentPath };
+    }
     const reactivatedFresh = prepared.generation === 1
       && prepared.activation?.kind === 'reactivate'
       && prepared.envelope.options.resume === 'fresh';
-    let rescueRoute;
+    let rescueRoute = recoveredRescueRoute;
     let authority;
     if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && !executor) {
       authority = createConsumedLegacyChildAuthority(prepared, {
@@ -204,12 +254,40 @@ export async function runDirectInvocation(argv, runtime = {}) {
       });
     }
     if ((!executor || !executor.active) && !reactivatedFresh && prepared.activation?.kind !== 'legacy-adopt') {
-      const resolved = await createStateStore({ dataRoot }).resolveRescueBinding({
-        ...(executor ? bindingLookup(executor, caller.workspace) : legacyBindingLookup(host, caller)),
-        ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
-      });
+      const state = createStateStore({ dataRoot });
+      let lookup = executor ? bindingLookup(executor, caller.workspace) : legacyBindingLookup(host, caller);
+      let migrationProof;
+      let resolved;
+      try {
+        resolved = await state.resolveRescueBinding(lookup);
+      } catch (error) {
+        if (/** @type {any} */ (error)?.code !== 'RESCUE_BINDING_CLOSED') throw error;
+        if (executor) {
+          host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
+            ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
+          ), executor.parentSessionId, executor.agentId);
+          validateExecutorHostIdentity(host, executor);
+          if (prepared.activation && prepared.activation.kind !== 'spawn'
+            && prepared.activation.agentPathDigest !== createHash('sha256').update(host.agentPath).digest('hex')) {
+            throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation does not match this child.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+          }
+          executor = { ...executor, agentPath: host.agentPath };
+          lookup = bindingLookup(executor, caller.workspace);
+        }
+        const proof = await state.readRescueBindingMigrationProof({ workspace: caller.workspace,
+          parentSessionId: caller.sessionId, executorAgentId: executor?.agentId ?? host.id,
+          childAgentType: executor?.agentType ?? host.agentRole, originWorkspace: host.cwd,
+          executionWorkspace: caller.workspace, agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex'),
+          ...(executor ? { agentPath: host.agentPath } : {}) });
+        if (proof.kind !== 'proof') throw error;
+        migrationProof = proof.migrationProof;
+        resolved = await state.resolveRescueBindingForResume({ ...lookup,
+          ...(prepared.envelope.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}), migrationProof });
+      }
       if (resolved.kind !== 'bound') throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No bound stopped Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Start one new Rescue child for an unbound operation.' });
-      rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId, expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId };
+      rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId,
+        expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId,
+        ...(migrationProof ? { migrationProof } : {}) };
       await afterPreparedBindingResolution(runtime.dependencies);
     }
     const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
@@ -335,15 +413,22 @@ function rescueRouteInvalid() { return new PluginError('RESCUE_ROUTE_INVALID', '
 
 /** @param {any} host @param {any} executor */
 function preparedActivationProof(host, executor) {
+  validateExecutorHostIdentity(host, executor);
+  const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
+  if (executor.active) {
+    if (!host.agentPath.startsWith('/root/')) throw new PluginError('EXECUTOR_IDENTITY_INVALID', 'The Rescue child host identity does not match its executor provenance.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+    return { kind: 'spawn', taskName: host.agentPath.slice('/root/'.length), agentPathDigest };
+  }
+  return { kind: 'reactivate', agentPathDigest };
+}
+
+/** @param {any} host @param {any} executor */
+function validateExecutorHostIdentity(host, executor) {
   const expectedRole = executor.agentType === 'zcode-rescue' ? 'zcode-rescue' : executor.agentType === 'default' ? null : undefined;
   if (!host || host.id !== executor.agentId || host.parentThreadId !== executor.parentSessionId
-    || host.agentRole !== expectedRole || host.cwd !== executor.originWorkspace
-    || typeof host.agentPath !== 'string' || !host.agentPath.startsWith('/root/')) {
+    || host.agentRole !== expectedRole || host.cwd !== executor.originWorkspace) {
     throw new PluginError('EXECUTOR_IDENTITY_INVALID', 'The Rescue child host identity does not match its executor provenance.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
   }
-  const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
-  if (executor.active) return { kind: 'spawn', taskName: host.agentPath.slice('/root/'.length), agentPathDigest };
-  return { kind: 'reactivate', agentPathDigest };
 }
 
 /** @param {any} dependencies @param {string} childId @param {NodeJS.ProcessEnv} env @param {string} cwd @param {AbortSignal|undefined} signal */
@@ -362,13 +447,28 @@ function validateLegacyAmbientChild(host, caller, childId) {
   }
 }
 
-/** @param {{dataRoot:string,caller:any,host:any,executor:any}} input */
-async function legacyActivationProof({ dataRoot, caller, host }) {
+/** @param {{dataRoot:string,caller:any,host:any}} input */
+async function legacyActivationContext({ dataRoot, caller, host }) {
   const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
-  const binding = await createStateStore({ dataRoot }).resolveRescueBindingForResume(legacyBindingLookup(host, caller));
-  return binding.kind === 'bound'
-    ? { kind: 'legacy-bound', childThreadId: host.id, agentPathDigest, bindingKey: binding.binding.key }
-    : { kind: 'legacy-adopt', childThreadId: host.id, agentPathDigest };
+  const store = createStateStore({ dataRoot });
+  const lookup = legacyBindingLookup(host, caller);
+  const proof = await store.readRescueBindingMigrationProof({ ...lookup, childAgentType: host.agentRole,
+    originWorkspace: host.cwd, executionWorkspace: caller.workspace, agentPathDigest, agentPath: host.agentPath });
+  const binding = await store.resolveRescueBindingForResume({ ...lookup,
+    ...(proof.kind === 'proof' ? { migrationProof: proof.migrationProof } : {}) });
+  if (binding.kind !== 'bound') return { activationProof: { kind: 'legacy-adopt', childThreadId: host.id, agentPathDigest }, executor: null, rescueRoute: undefined };
+  const authority = rescueBindingAuthorityView(binding.binding);
+  if (authority.kind === 'subagent-start') return {
+    activationProof: { kind: 'reactivate', agentPathDigest },
+    executor: { active: true, agentId: authority.childAgentId, agentType: authority.childAgentType,
+      parentSessionId: binding.binding.parentSessionId, parentTurnId: authority.parentTurnId,
+      parentPermissionMode: authority.parentPermissionMode, originWorkspace: host.cwd,
+      workspace: caller.workspace, agentPath: host.agentPath },
+    rescueRoute: { routeKind: 'bound', candidateJobId: binding.binding.anchorJobId,
+      expectedOperationId: binding.binding.operationId, expectedCurrentJobId: binding.binding.currentJobId,
+      ...(proof.kind === 'proof' ? { migrationProof: proof.migrationProof } : {}) },
+  };
+  return { activationProof: { kind: 'legacy-bound', childThreadId: host.id, agentPathDigest, bindingKey: binding.binding.key }, executor: null, rescueRoute: undefined };
 }
 
 /** @param {any} host @param {any} executor @param {any} caller */
@@ -521,12 +621,14 @@ async function startPublic(context) {
   if (parsed.command === 'rescue') {
     if (childAuthorized) {
       if (parsed.options.resume !== 'fresh') {
-        const resolved = await store.resolveRescueBinding({
+        const lookup = {
           ...(context.legacyActivation
             ? authorityBindingLookup(context.authority ?? { childAgentId: context.executor.agentId }, caller, cwd)
             : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)),
           ...(parsed.options.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
-        });
+        };
+        const migrationProof = parsed.options.resume === 'resume' ? context.rescueRoute?.migrationProof : undefined;
+        const resolved = migrationProof ? await store.resolveRescueBindingForResume({ ...lookup, migrationProof }) : await store.resolveRescueBinding(lookup);
         binding = resolved.kind === 'bound' ? resolved.binding : null;
         if (context.rescueRoute?.routeKind === 'bound' && !binding) throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
         if (context.rescueRoute?.routeKind === 'legacy' && binding) throw new PluginError('RESCUE_BINDING_STALE', 'The Rescue operation generation changed.', { category: 'state', remedy: 'Repeat the Rescue choice.' });
@@ -541,16 +643,19 @@ async function startPublic(context) {
   const permissionSnapshot = Object.freeze({ permissionMode: caller.permissionMode });
   const transferSource = parsed.command === 'transfer' ? resolveTransferSource(parsed.options, caller) : undefined;
   const reservation = { workspace: cwd, ownerSessionId: caller.sessionId, ownerTurnId: caller.turnId, command: parsed.command, readOnly: parsed.command !== 'rescue', permissionSnapshot, ...(transferSource ? { codexThreadId: transferSource } : {}) };
-  let job;
+  /** @type {any} */ let job;
   if (parsed.command === 'rescue' && childAuthorized) {
     let reserved;
     const childProof = context.executor ? { executor: context.executor } : { authority: context.authority };
     if (parsed.options.resume === 'fresh' || !binding && !candidate) reserved = await reservePublicRescueJob(context, () => store.reserveFreshRescueJob({ workspace: cwd, reservation, ...childProof, ...(context.rescueRoute?.routeKind === 'bound' ? { expectedOperationId: context.rescueRoute.expectedOperationId, expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
     else if (binding) {
+      const previewMigrationProof = binding.state === 'closed' ? context.rescueRoute?.migrationProof : undefined;
       const resolved = await store.resolveRescueBindingForResume({ ...(context.legacyActivation
         ? authorityBindingLookup(context.authority ?? { childAgentId: context.executor.agentId }, caller, cwd)
-        : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)), permissionMode: caller.permissionMode });
-      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
+        : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)),
+      permissionMode: caller.permissionMode, ...(previewMigrationProof ? { migrationProof: previewMigrationProof } : {}) });
+      const migrationProof = previewMigrationProof;
+      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
       candidate = reserved.anchorJob;
     } else {
       reserved = await reservePublicRescueJob(context, () => store.adoptRescueCandidate({ workspace: cwd, reservation, ...childProof, candidateJobId: candidate.id })); candidate = reserved.anchorJob;
@@ -565,20 +670,28 @@ async function startPublic(context) {
   }
   const spec = normalizeSpec({ command: parsed.command, scope: parsed.options.scope, base: parsed.options.base, focus: parsed.positionals.join(' ') || context.originalPrompt, task: parsed.positionals.join(' ') || context.originalPrompt, model: parsed.options.model, effort: parsed.options.effort, resumeSessionId: parsed.options.resume === 'resume' ? candidate?.zcodeSessionId : undefined, candidateJobId: parsed.options.resume === 'resume' ? candidate?.id : undefined });
   if (parsed.options.execution === 'background') {
-    const specDigest = digestSpec(spec);
-    const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', specDigest };
+    const binding = { jobId: job.id, ownerSessionId: caller.sessionId, workspace: cwd, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
     let capability;
     try {
       context.signal?.throwIfAborted();
-      await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, spec, specDigest);
-      context.signal?.throwIfAborted();
       capability = await (context.dependencies?.createExecutionCapability ?? ((/** @type {any} */ input) => identity.createExecutionCapability(input)))({ ...binding, permissionSnapshot });
+      context.signal?.throwIfAborted();
+      const record = sealJobSpec(job, spec, capability);
+      const executionReservation = {
+        version: 1, capabilityDigest: createHash('sha256').update(capability).digest('hex'),
+        reservationId: createHash('sha256').update('zcode-execution-reservation-v1\0').update(capability).digest('hex'),
+        jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace,
+        operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2',
+      };
+      job = await store.publishJobSpecCommitment(cwd, job.id, record.commitment, executionReservation);
+      await context.dependencies?.testOnlyAfterJobSpecCommitment?.(job);
+      await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, record);
       if (context.autoLaunchBackground) {
         context.signal?.throwIfAborted();
         await (context.dependencies?.startBackgroundWorker ?? startBackgroundWorker)({ companionPath: fileURLToPath(import.meta.url), jobId: job.id, executionCapability: capability, cwd, env: context.env });
-        return { type: 'background', job };
+        return { type: 'background', job: publicReservedJob(job) };
       }
-      const output = (context.dependencies?.buildBackgroundOutput ?? ((/** @type {any} */ value) => value))({ type: 'background', job, privateInvocation: ['run-reserved-job', job.id], executionCapability: capability });
+      const output = (context.dependencies?.buildBackgroundOutput ?? ((/** @type {any} */ value) => value))({ type: 'background', job: publicReservedJob(job), privateInvocation: ['run-reserved-job', job.id], executionCapability: capability });
       backgroundBindings.set(output, { identity, store, capability, binding });
       return output;
     } catch (error) {
@@ -598,7 +711,8 @@ function legacyNeedsChoice(candidate, privateRoute) { const output = { type: 'ne
 /** @param {any} executor @param {string} workspace */
 function bindingLookup(executor, workspace) {
   return { workspace, parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId, executorAgentType: executor.agentType,
-    executorParentTurnId: executor.parentTurnId, executorParentPermissionMode: executor.parentPermissionMode };
+    executorParentTurnId: executor.parentTurnId, executorParentPermissionMode: executor.parentPermissionMode,
+    ...(executor.agentPath ? { executorAgentPath: executor.agentPath } : {}) };
 }
 
 /** @param {any} authority @param {any} caller @param {string} workspace */
@@ -665,28 +779,135 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   const jobId = parsed.positionals[0]; const job = await store.readJob(cwd, jobId);
   if (authorization.jobId !== jobId) throw authorizationInputError();
   const record = await readJobSpec(dataRoot, cwd, jobId);
-  const spec = normalizeSpec(record.spec);
-  const recomputed = digestSpec(spec);
-  if (record.digest !== recomputed || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace) throw new PluginError('JOB_SPEC_TAMPERED', 'Reserved job specification failed its immutable binding.', { category: 'authorization', remedy: 'Reserve a new background job.' });
-  const consumed = await identity.consumeExecutionCapability(authorization.executionCapability, { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', specDigest: recomputed });
-  if (!sameJson(consumed.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
-  if (job.status !== 'queued') throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
-  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
+  let spec; let loadSpecAfterClaim; let capabilityBinding; let executionAuthorization; let legacySpecDigest; let legacyReservationProof;
+  if (record?.version === 2) {
+    const sealed = verifySealedJobSpec(record, job, authorization.executionCapability);
+    spec = { command: job.command };
+    loadSpecAfterClaim = () => openSealedJobSpec(sealed, authorization.executionCapability);
+    capabilityBinding = { jobSpecFormat: 'sealed-v2' };
+    executionAuthorization = { sealedCommitment: sealed.commitment };
+  } else if (record?.version === 1) {
+    spec = normalizeSpec(parseExactLegacyJobSpecRecord(record, job, jobSpecTampered));
+    const specDigest = digestSpec(spec);
+    if (record.digest !== specDigest || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace) throw jobSpecTampered();
+    capabilityBinding = { specDigest };
+    legacySpecDigest = specDigest;
+    legacyReservationProof = legacyClasslessProof(spec);
+  } else throw jobSpecTampered();
+  const capabilityExpected = { jobId, ownerSessionId: job.ownerSessionId, workspace: cwd, operation: 'run-reserved-job', ...capabilityBinding };
+  const capabilityReservationId = createHash('sha256').update('zcode-execution-reservation-v1\0')
+    .update(authorization.executionCapability).digest('hex');
+  const executionReservation = {
+    version: 1, capabilityDigest: createHash('sha256').update(authorization.executionCapability).digest('hex'),
+    reservationId: capabilityReservationId, jobId: job.id, ownerSessionId: job.ownerSessionId,
+    workspace: job.workspace, operation: 'run-reserved-job',
+    ...(record.version === 2 ? { jobSpecFormat: 'sealed-v2' }
+      : { jobSpecFormat: 'legacy-v1', specDigest: legacySpecDigest }),
+  };
+  const inspected = await identity.inspectExecutionCapability(authorization.executionCapability, capabilityExpected, capabilityReservationId);
+  if (record.version === 1 && inspected.jobSpecFormat !== undefined) throw jobSpecTampered();
+  if (!sameJson(inspected.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
+  if (job.status !== 'queued') {
+    if (['cancelled', 'failed', 'succeeded'].includes(job.status)) {
+      if (job.rescueExecutionReservation !== undefined) await store.cleanupTerminalExecutionReservation(cwd, job.id, identity);
+      else await identity.releaseExecutionCapability(authorization.executionCapability, capabilityExpected, capabilityReservationId);
+    }
+    throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
+  }
+  return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, loadSpecAfterClaim,
+    executionAuthorization, legacySpecDigest, legacyReservationProof, executionCapability: authorization.executionCapability,
+    capabilityExpected, capabilityReservationId, executionReservation,
+    caller: { sessionId: job.ownerSessionId }, dependencies, signal, ...(startupAck ? { onBoundaryPersisted: async () => startupAck() } : {}) });
 }
 
 /** @param {any} context */
 async function executeWithWorkerLease(context) {
+  let migrationRollback; let markerlessMigration = false;
+  try {
+    const migration = await migrationRollbackForExecution(context.store, context.cwd, context.spec, context.job,
+      context.legacySpecDigest);
+    migrationRollback = migration.rollback; markerlessMigration = migration.markerless;
+  }
+  catch (error) {
+    if (error instanceof PluginError && error.code === 'RESCUE_BINDING_NOT_RUNNABLE') {
+      await context.store.finishJob(context.cwd, context.job.id, ['queued'], 'failed', { error: { message: error.message }, exitCode: 1 });
+    }
+    throw error;
+  }
+  const executionAuthorization = context.executionAuthorization ?? (context.legacySpecDigest === undefined ? undefined : markerlessMigration
+    ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
+    : { legacyProof: context.legacyReservationProof });
+  await context.dependencies?.testOnlyBeforeExecutionInspection?.();
+  const initialExecutionInspection = await context.store.inspectJobWorkerExecution(
+    context.cwd, context.job.id, migrationRollback, executionAuthorization);
   const workerLeaseId = randomBytes(32).toString('hex');
   return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, async () => {
-    const job = await context.store.claimJobWorker(context.cwd, context.job.id, { childPid: process.pid, workerLeaseId });
-    return executeReserved({ ...context, job, childPid: process.pid, workerLeaseId });
+    let job; let spec = context.spec;
+    let capabilityCommitted = context.executionCapability === undefined;
+    try {
+      await context.dependencies?.testOnlyBeforeExecutionClaim?.();
+      let executionInspection;
+      if (context.executionCapability !== undefined) {
+        await context.dependencies?.testOnlyBeforeExecutionFence?.({
+          inspection: initialExecutionInspection, workerLeaseId,
+        });
+        const fenced = await context.store.fenceJobWorkerExecution(context.cwd, context.job.id,
+          { childPid: process.pid, workerLeaseId }, migrationRollback, executionAuthorization,
+          initialExecutionInspection, context.executionReservation);
+        executionInspection = fenced.inspection;
+        await context.dependencies?.testOnlyAfterExecutionFence?.({
+          inspection: executionInspection, workerLeaseId,
+        });
+        await context.identity.reserveExecutionCapability(context.executionCapability,
+          context.capabilityExpected, context.capabilityReservationId, workerLeaseId);
+      } else executionInspection = await context.store.inspectJobWorkerExecution(context.cwd, context.job.id,
+        migrationRollback, executionAuthorization);
+      job = await context.store.claimJobWorkerForExecution(context.cwd, context.job.id,
+        { childPid: process.pid, workerLeaseId }, migrationRollback,
+        executionAuthorization, executionInspection);
+      await context.dependencies?.testOnlyAfterStateClaimBeforeCapabilityCommit?.();
+      if (context.executionCapability !== undefined) {
+        await context.identity.commitExecutionCapability(context.executionCapability, context.capabilityExpected,
+          context.capabilityReservationId, workerLeaseId);
+        capabilityCommitted = true;
+      }
+      await context.dependencies?.testOnlyAfterExecutionClaim?.();
+      if (context.loadSpecAfterClaim) spec = await context.loadSpecAfterClaim();
+    } catch (error) {
+      const reconciliation = await context.store.finishJobAfterExecutionClaimFailure(context.cwd, context.job.id, workerLeaseId, {
+        error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution authorization failed' }, exitCode: 1,
+      }).catch(() => undefined);
+      if (!capabilityCommitted && context.executionCapability !== undefined && reconciliation?.kind === 'settled') {
+        if (context.executionReservation !== undefined) {
+          await context.store.cleanupTerminalExecutionReservation(context.cwd, context.job.id, context.identity).catch(() => {});
+        } else {
+          await context.identity.releaseExecutionCapability(context.executionCapability,
+            context.capabilityExpected, context.capabilityReservationId, workerLeaseId).catch(() => {});
+        }
+      }
+      throw error;
+    }
+    let result;
+    try {
+      result = await executeReserved({ ...context, job, spec, migrationRollback, childPid: process.pid, workerLeaseId });
+    } catch (error) {
+      if (context.executionReservation !== undefined) {
+        await context.store.cleanupTerminalExecutionReservation(context.cwd, context.job.id, context.identity).catch(() => {});
+      }
+      throw error;
+    }
+    if (context.executionReservation === undefined) return result;
+    const cleaned = await context.store.cleanupTerminalExecutionReservation(
+      context.cwd, context.job.id, context.identity).catch(() => undefined);
+    return cleaned === undefined || result?.job === undefined ? result : { ...result, job: cleaned };
   });
 }
 
 /** @param {any} context */
 async function executeReserved(context) {
   const { cwd, env, dataRoot, store, job, spec } = context;
-  let client;
+  let client; let resumeSucceeded = false;
+  const migrationRollback = context.migrationRollback;
   try {
     context.signal?.throwIfAborted();
     const launch = await discoverLaunch(env, context.dependencies); const ownerId = ownerIdForSession(job.ownerSessionId);
@@ -695,11 +916,16 @@ async function executeReserved(context) {
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
     const executionClient = client; client = undefined;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); } });
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); }, onResumeSucceeded: () => { resumeSucceeded = true; }, ...(migrationRollback ? { onResumeFailure: async (error) => {
+      if (resumeSucceeded) return;
+      await store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
+    } } : {}) });
   } catch (error) {
     await client?.close().catch(() => {});
     const current = await store.readJob(cwd, job.id).catch(() => null);
-    if (isInterruption(error) && current?.status === 'queued') {
+    if (migrationRollback && !resumeSucceeded && current?.status === 'queued') {
+      await store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
+    } else if (isInterruption(error) && current?.status === 'queued') {
       if (current.workerLeaseId === context.workerLeaseId) await cancelClaimedQueuedInterruption(context).catch(() => {});
       else await createJobController({ store, dataRoot }).cancel(cwd, job.id, job.ownerSessionId).catch(() => {});
     } else if (!isInterruption(error) && current?.status === 'queued') {
@@ -716,15 +942,69 @@ async function discoverLaunch(env, dependencies = {}) {
   return (await discoverZCode({ explicitPath: env.ZCODE_PATH, env })).launch;
 }
 
-/** @param {string} dataRoot @param {string} workspace @param {any} job @param {any} spec @param {string} digest */
-async function writeJobSpec(dataRoot, workspace, job, spec, digest) {
-  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); await atomicWriteJson(join(storage.directory, 'job-specs', `${job.id}.json`), { version: 1, jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace, digest, spec });
+/** @param {any} job @param {Record<string,string>} spec @param {string} capability */
+function sealJobSpec(job, spec, capability) {
+  const plaintext = Buffer.from(JSON.stringify(spec));
+  const commitment = createHmac('sha256', jobSpecKey('commitment', capability)).update(plaintext).digest('hex');
+  const identity = { version: 2, jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace, commitment };
+  const aad = Buffer.from(JSON.stringify(identity)); const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', jobSpecKey('encryption', capability), iv); cipher.setAAD(aad);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]); const tag = cipher.getAuthTag();
+  const mac = jobSpecMac(jobSpecKey('authentication', capability), aad, iv, tag, ciphertext);
+  return { ...identity, sealedSpec: { algorithm: 'aes-256-gcm', iv: iv.toString('base64url'), ciphertext: ciphertext.toString('base64url'), tag: tag.toString('base64url'), mac: mac.toString('base64url') } };
+}
+
+/** @param {'encryption'|'authentication'|'commitment'} purpose @param {string} capability */
+function jobSpecKey(purpose, capability) { return createHash('sha256').update(`zcode-job-spec-${purpose}-v2\0`).update(capability).digest(); }
+/** @param {Buffer} key @param {Buffer} aad @param {Buffer} iv @param {Buffer} tag @param {Buffer} ciphertext */
+function jobSpecMac(key, aad, iv, tag, ciphertext) { return createHmac('sha256', key).update(aad).update(iv).update(tag).update(ciphertext).digest(); }
+/** @param {unknown} value @param {number|undefined} exactBytes */
+function decodeJobSpecBase64(value, exactBytes) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/u.test(value)) throw jobSpecTampered();
+  const decoded = Buffer.from(value, 'base64url');
+  if (decoded.toString('base64url') !== value || (exactBytes !== undefined && decoded.length !== exactBytes)) throw jobSpecTampered();
+  return decoded;
+}
+/** @param {any} record @param {any} job @param {string} capability */
+function verifySealedJobSpec(record, job, capability) {
+  const outerKeys = ['version', 'jobId', 'ownerSessionId', 'workspace', 'commitment', 'sealedSpec'];
+  const sealedKeys = ['algorithm', 'iv', 'ciphertext', 'tag', 'mac'];
+  if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).length !== outerKeys.length || outerKeys.some((key) => !Object.hasOwn(record, key))
+    || record.version !== 2 || record.jobId !== job.id || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace || !/^[a-f0-9]{64}$/u.test(record.commitment)
+    || !record.sealedSpec || typeof record.sealedSpec !== 'object' || Array.isArray(record.sealedSpec) || Object.keys(record.sealedSpec).length !== sealedKeys.length || sealedKeys.some((key) => !Object.hasOwn(record.sealedSpec, key))
+    || record.sealedSpec.algorithm !== 'aes-256-gcm') throw jobSpecTampered();
+  const identity = { version: 2, jobId: record.jobId, ownerSessionId: record.ownerSessionId, workspace: record.workspace, commitment: record.commitment };
+  const aad = Buffer.from(JSON.stringify(identity)); const iv = decodeJobSpecBase64(record.sealedSpec.iv, 12);
+  const ciphertext = decodeJobSpecBase64(record.sealedSpec.ciphertext, undefined); const tag = decodeJobSpecBase64(record.sealedSpec.tag, 16); const mac = decodeJobSpecBase64(record.sealedSpec.mac, 32);
+  if (ciphertext.length === 0 || ciphertext.length > 512 * 1024) throw jobSpecTampered();
+  const expected = jobSpecMac(jobSpecKey('authentication', capability), aad, iv, tag, ciphertext);
+  if (!timingSafeEqual(mac, expected)) throw jobSpecTampered();
+  return { commitment: record.commitment, aad, iv, ciphertext, tag };
+}
+/** @param {{commitment:string,aad:Buffer,iv:Buffer,ciphertext:Buffer,tag:Buffer}} sealed @param {string} capability */
+function openSealedJobSpec(sealed, capability) {
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', jobSpecKey('encryption', capability), sealed.iv); decipher.setAAD(sealed.aad); decipher.setAuthTag(sealed.tag);
+    const plaintext = Buffer.concat([decipher.update(sealed.ciphertext), decipher.final()]);
+    const spec = normalizeSpec(JSON.parse(plaintext.toString('utf8')));
+    const commitment = createHmac('sha256', jobSpecKey('commitment', capability)).update(Buffer.from(JSON.stringify(spec))).digest('hex');
+    if (!timingSafeEqual(Buffer.from(commitment, 'hex'), Buffer.from(sealed.commitment, 'hex'))) throw jobSpecTampered();
+    return spec;
+  } catch (error) {
+    if (error instanceof PluginError) throw error;
+    throw jobSpecTampered();
+  }
+}
+function jobSpecTampered() { return new PluginError('JOB_SPEC_TAMPERED', 'Reserved job specification failed its immutable binding.', { category: 'authorization', remedy: 'Reserve a new background job.' }); }
+/** @param {string} dataRoot @param {string} workspace @param {any} job @param {any} record */
+async function writeJobSpec(dataRoot, workspace, job, record) {
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); await atomicWriteJson(join(storage.directory, 'job-specs', `${job.id}.json`), record);
 }
 /** @param {string} dataRoot @param {string} workspace @param {string} jobId */
 async function readJobSpec(dataRoot, workspace, jobId) {
   const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const root = resolve(storage.directory, 'job-specs'); const path = resolve(root, `${jobId}.json`);
   if (!path.startsWith(`${root}${sep}`)) throw new PluginError('JOB_SPEC_INVALID', 'Job specification path is invalid.', { category: 'storage', remedy: 'Reserve a new background job.' });
-  return readJsonFile(path);
+  return readBoundedJsonFile(storage.directory, path, 512 * 1024, { requirePrivatePermissions: true });
 }
 /** @param {unknown} left @param {unknown} right */
 function sameJson(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
@@ -758,7 +1038,7 @@ function publicJob(job, ownerSessionId, projection) {
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe;
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueExecutionReservation; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof;
   if (projection !== 'detail') delete visible.logFile;
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
@@ -772,6 +1052,8 @@ function publicJob(job, ownerSessionId, projection) {
   if (projection === 'detail' && validProgressProbe(job.progressProbe)) visible.progressProbe = { ...job.progressProbe, rejected: { ...job.progressProbe.rejected } };
   return { ...visible, owned: true, owner: 'same-owner' };
 }
+/** @param {any} job */
+function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueExecutionReservation; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof; return visible; }
 /** @param {any} job */
 function terminalResultJob(job) {
   const visible = {
@@ -799,11 +1081,33 @@ function copyOptionalFields(source, fields) {
 }
 /** @param {any} input */
 function normalizeSpec(input) {
-  const allowed = ['command', 'scope', 'base', 'focus', 'task', 'model', 'effort', 'resumeSessionId', 'candidateJobId'];
+  const allowed = ['command', 'scope', 'base', 'focus', 'task', 'model', 'effort', 'resumeSessionId', 'candidateJobId',
+    'migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId', 'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt', 'migrationPriorVersion'];
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !allowed.includes(key)) || typeof input.command !== 'string') throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' });
   /** @type {Record<string,string>} */ const output = {};
   for (const key of allowed) if (input[key] !== undefined) { if (typeof input[key] !== 'string') throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }); output[key] = input[key]; }
   return output;
+}
+/** @param {Record<string,string>} spec @param {any} job */
+function migrationRollbackFromSpec(spec, job) {
+  return legacyRescueMigrationRollbackFromSpec(spec, job,
+    () => new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }));
+}
+/** Prefer the state-validated queued marker; old specs remain readable only for in-flight upgrade compatibility. @param {any} store @param {string} workspace @param {Record<string,string>} spec @param {any} job @param {string|undefined} [legacySpecDigest] */
+async function migrationRollbackForExecution(store, workspace, spec, job, legacySpecDigest) {
+  const legacy = migrationRollbackFromSpec(spec, job);
+  const rollback = await resolveQueuedRescueMigrationRollback({ store, workspace, job, mode: 'execution',
+    invalid: () => new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', { category: 'validation', remedy: 'Reserve a new background job.' }) }, legacy,
+  legacy === undefined ? undefined : legacySpecDigest);
+  return { rollback, markerless: legacy !== undefined };
+}
+/** Historical v1 continuations must retain one exact v1/v2 child binding; they cannot degrade to unbound. @param {Record<string,string>} spec */
+function legacyClasslessProof(spec) {
+  const hasResume = spec.resumeSessionId !== undefined; const hasCandidate = spec.candidateJobId !== undefined;
+  if (hasResume !== hasCandidate) throw new PluginError('JOB_SPEC_INVALID', 'Job specification is invalid.', {
+    category: 'validation', remedy: 'Reserve a new background job.',
+  });
+  return hasResume ? 'classless-owner-v1-bound' : 'classless-owner-v1';
 }
 /** @param {any} spec */
 function digestSpec(spec) { return createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex'); }

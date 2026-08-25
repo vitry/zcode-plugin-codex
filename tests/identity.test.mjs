@@ -1375,13 +1375,13 @@ test('ending an active turn does not hide corrupted private identity state', asy
 
 test('execution capability is exact-match and atomically single-use', async () => {
   const { identity, workspaceA, workspaceB } = await fixture();
-  const expected = {
+  const expected = /** @type {any} */ ({
     jobId: 'job-a',
     ownerSessionId: 'session-a',
     workspace: workspaceA,
     operation: 'run-reserved-job',
-    specDigest: 'a'.repeat(64),
-  };
+    jobSpecFormat: 'sealed-v2',
+  });
   const token = await identity.createExecutionCapability({
     ...expected,
     permissionSnapshot: { permissionMode: 'workspace-write' },
@@ -1413,11 +1413,96 @@ test('execution capability is exact-match and atomically single-use', async () =
   assert.equal(JSON.stringify(success.value).includes(token), false);
 });
 
+test('execution capability reservation is private releasable and commits consumedAt exactly once', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture(); const expected = /** @type {any} */ ({
+    jobId: 'reserved-capability', ownerSessionId: 'session-a', workspace: workspaceA,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2',
+  });
+  const token = await identity.createExecutionCapability({ ...expected, permissionSnapshot: { permissionMode: 'workspace-write' } });
+  const reservationId = 'a'.repeat(64); const foreignReservation = 'b'.repeat(64);
+  assert.equal((await identity.inspectExecutionCapability(token, expected, reservationId)).jobId, expected.jobId);
+  const reserved = await identity.reserveExecutionCapability(token, expected, reservationId);
+  assert.equal(reserved.executionReservationId, undefined);
+  await assert.rejects(identity.reserveExecutionCapability(token, expected, foreignReservation), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+  await assert.rejects(identity.consumeExecutionCapability(token, expected), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+  await assert.rejects(identity.revokeExecutionCapability(token, expected), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+  await identity.releaseExecutionCapability(token, expected, foreignReservation);
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const path = join(storage.directory,
+    'identity', 'capabilities', `${createHash('sha256').update(token).digest('hex')}.json`);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).executionReservationId, reservationId);
+  await identity.releaseExecutionCapability(token, expected, reservationId);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).executionReservationId, undefined);
+  await identity.reserveExecutionCapability(token, expected, reservationId);
+  const consumed = await identity.commitExecutionCapability(token, expected, reservationId);
+  assert.ok(Date.parse(consumed.consumedAt)); assert.equal(consumed.executionReservationId, undefined);
+  await assert.rejects(identity.commitExecutionCapability(token, expected, reservationId), { code: 'EXECUTION_CAPABILITY_CONSUMED' });
+});
+
+test('terminal recovery releases an exact lease reservation by private capability digest without its bearer', async () => {
+  const { dataRoot, identity, workspaceA, workspaceB } = await fixture(); const workspace = await realpath(workspaceA);
+  const expected = /** @type {any} */ ({ jobId: 'recovery-capability', ownerSessionId: 'session-a', workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' });
+  const token = await identity.createExecutionCapability({
+    ...expected, permissionSnapshot: { permissionMode: 'workspace-write' },
+  });
+  const capabilityDigest = createHash('sha256').update(token).digest('hex');
+  const reservationId = 'a'.repeat(64); const workerLeaseId = 'b'.repeat(64);
+  await identity.reserveExecutionCapability(token, expected, reservationId, workerLeaseId);
+  const proof = /** @type {any} */ ({ capabilityDigest, reservationId, workerLeaseId, jobId: expected.jobId,
+    ownerSessionId: expected.ownerSessionId, workspace, operation: expected.operation,
+    jobSpecFormat: expected.jobSpecFormat, terminalStatus: 'failed' });
+  for (const mismatch of [
+    { ...proof, reservationId: 'c'.repeat(64) },
+    { ...proof, workerLeaseId: 'd'.repeat(64) },
+    { ...proof, jobId: 'other-job' },
+    { ...proof, ownerSessionId: 'other-owner' },
+    { ...proof, workspace: workspaceB },
+    { ...proof, terminalStatus: 'running' },
+  ]) await assert.rejects(identity.releaseExecutionReservation(mismatch));
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace }); const path = join(storage.directory,
+    'identity', 'capabilities', `${capabilityDigest}.json`);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).executionReservationId, reservationId);
+  await identity.releaseExecutionReservation(proof);
+  const released = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(released.executionReservationId, undefined);
+  assert.equal(released.executionReservationWorkerLeaseId, undefined);
+  await identity.releaseExecutionReservation(proof);
+  await identity.reserveExecutionCapability(token, expected, reservationId, workerLeaseId);
+  await identity.commitExecutionCapability(token, expected, reservationId, workerLeaseId);
+  await assert.rejects(identity.releaseExecutionReservation({ ...proof, workerLeaseId: 'e'.repeat(64) }));
+  await identity.releaseExecutionReservation(proof);
+});
+
+test('historical v1 terminal recovery requires its exact private spec and lease proof', async () => {
+  const { dataRoot, identity, workspaceA } = await fixture(); const workspace = await realpath(workspaceA);
+  const token = 'historical-v1-terminal-capability'; const capabilityDigest = createHash('sha256').update(token).digest('hex');
+  const specDigest = '1'.repeat(64); const reservationId = '2'.repeat(64); const workerLeaseId = '3'.repeat(64);
+  const expected = /** @type {any} */ ({ jobId: 'historical-v1-job', ownerSessionId: 'historical-v1-owner', workspace,
+    operation: 'run-reserved-job', specDigest });
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace });
+  const capabilityPath = join(storage.directory, 'identity', 'capabilities', `${capabilityDigest}.json`);
+  await mkdir(dirname(capabilityPath), { recursive: true, mode: 0o700 });
+  await atomicWriteJson(capabilityPath, { digest: capabilityDigest, ...expected,
+    permissionSnapshot: { permissionMode: 'workspace-write' }, createdAt: new Date().toISOString(), consumedAt: null });
+  await identity.reserveExecutionCapability(token, expected, reservationId, workerLeaseId);
+  const proof = /** @type {any} */ ({ capabilityDigest, reservationId, workerLeaseId, jobId: expected.jobId,
+    ownerSessionId: expected.ownerSessionId, workspace, operation: expected.operation,
+    jobSpecFormat: 'legacy-v1', specDigest, terminalStatus: 'failed' });
+  await assert.rejects(identity.releaseExecutionReservation({ ...proof, specDigest: '4'.repeat(64) }),
+    { code: 'EXECUTION_CAPABILITY_MISMATCH' });
+  assert.equal(JSON.parse(await readFile(capabilityPath, 'utf8')).executionReservationId, reservationId);
+  await assert.rejects(identity.releaseExecutionReservation({ ...proof, workerLeaseId: '5'.repeat(64) }),
+    { code: 'AUTHORIZATION_RECORD_INVALID' });
+  assert.equal(JSON.parse(await readFile(capabilityPath, 'utf8')).executionReservationId, reservationId);
+  await identity.releaseExecutionReservation(proof); await identity.releaseExecutionReservation(proof);
+  assert.equal(JSON.parse(await readFile(capabilityPath, 'utf8')).executionReservationId, undefined);
+});
+
 test('revocation preserves consumed outcomes for legacy and spec-bound capabilities', async () => {
-  for (const expected of [
+  for (const expected of /** @type {any[]} */ ([
     { jobId: 'legacy-job', ownerSessionId: 'session-a', operation: 'continue' },
-    { jobId: 'spec-job', ownerSessionId: 'session-a', operation: 'run-reserved-job', specDigest: 'c'.repeat(64) },
-  ]) {
+    { jobId: 'spec-job', ownerSessionId: 'session-a', operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' },
+  ])) {
     const { identity, workspaceA } = await fixture(); const binding = { ...expected, workspace: workspaceA };
     const token = await identity.createExecutionCapability({ ...binding, permissionSnapshot: { permissionMode: 'workspace-write' } });
     await identity.consumeExecutionCapability(token, binding);
@@ -1427,10 +1512,10 @@ test('revocation preserves consumed outcomes for legacy and spec-bound capabilit
 });
 
 test('revocation durably tombstones unconsumed legacy and spec-bound capabilities', async () => {
-  for (const expected of [
+  for (const expected of /** @type {any[]} */ ([
     { jobId: 'legacy-job', ownerSessionId: 'session-a', operation: 'continue' },
-    { jobId: 'spec-job', ownerSessionId: 'session-a', operation: 'run-reserved-job', specDigest: 'd'.repeat(64) },
-  ]) {
+    { jobId: 'spec-job', ownerSessionId: 'session-a', operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' },
+  ])) {
     const { dataRoot, identity, workspaceA } = await fixture(); const binding = { ...expected, workspace: workspaceA };
     const token = await identity.createExecutionCapability({ ...binding, permissionSnapshot: { permissionMode: 'workspace-write' } }); await identity.revokeExecutionCapability(token, binding);
     const storage = await resolveWorkspaceStorage({ dataRoot, workspace: workspaceA }); const path = join(storage.directory, 'identity', 'capabilities', `${createHash('sha256').update(token).digest('hex')}.json`);
@@ -1604,6 +1689,13 @@ test('identity creation rejects missing identities and uncontrolled modes or ope
       (error) => error instanceof PluginError && error.code === 'IDENTITY_INPUT_INVALID',
     );
   }
+});
+
+test('production issuer rejects an untyped historical run-reserved-job capability', async () => {
+  const { identity, workspaceA } = await fixture();
+  await assert.rejects(identity.createExecutionCapability({ jobId: 'historical-only', ownerSessionId: 'session-a',
+    workspace: workspaceA, operation: 'run-reserved-job', specDigest: 'a'.repeat(64),
+    permissionSnapshot: { permissionMode: 'workspace-write' } }), { code: 'IDENTITY_INPUT_INVALID' });
 });
 
 test('identity consumption validates expected identities before storage access', async () => {

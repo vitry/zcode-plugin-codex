@@ -150,6 +150,14 @@ async function invokePreparedRescue(ctx, parentSessionId, childId, task, options
   return runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...env, FAKE_CODEX_THREAD_JSON: ctx.codexChildren.get(childId), CODEX_THREAD_ID: childId } });
 }
 
+async function startReservedRescueForTest(store, workspace, job, patch) {
+  const workerLeaseId = createHash('sha256').update(`skills-fixture\0${job.id}`).digest('hex');
+  const claimed = await store.claimJobWorkerForExecution(workspace, job.id, { childPid: process.pid, workerLeaseId });
+  return store.transitionJob(workspace, job.id, ['queued'], 'running', {
+    ...patch, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId,
+  });
+}
+
 async function materializePr39Scenario(t, name) {
   const ctx = await fixture(t); const target = join(ctx.directory, `pr39-${name}-target`);
   await run('git', ['worktree', 'add', '-q', '-b', `pr39-${name}-target`, target], ctx.workspace);
@@ -417,12 +425,12 @@ test('origin cwd status reads only the exact foreground job bound in the linked 
   const targetExecutor = { agentId: 'route-status-child', agentType: 'zcode-rescue', parentSessionId: 'route-status-parent', parentTurnId: 'route-status-turn', parentPermissionMode: 'workspace-write', workspace: canonicalTarget };
   const targetJob = (await store.reserveFreshRescueJob({ workspace: canonicalTarget, reservation: targetReservation, executor: targetExecutor })).job;
   const targetStartedAt = new Date().toISOString(); const targetObservedAt = new Date().toISOString();
-  await store.transitionJob(canonicalTarget, targetJob.id, ['queued'], 'running', { startedAt: targetStartedAt, zcodeSessionId: 'route-status-target-session' });
+  await startReservedRescueForTest(store, canonicalTarget, targetJob, { startedAt: targetStartedAt, zcodeSessionId: 'route-status-target-session' });
   await store.updateJobProgress(canonicalTarget, targetJob.id, { phase: 'running', message: 'target-only progress', observedAt: targetObservedAt });
   const originReservation = { workspace: ctx.workspace, ownerSessionId: 'unrelated-origin-parent', ownerTurnId: 'unrelated-origin-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
   const originExecutor = { agentId: 'unrelated-origin-child', agentType: 'zcode-rescue', parentSessionId: 'unrelated-origin-parent', parentTurnId: 'unrelated-origin-turn', parentPermissionMode: 'workspace-write', workspace: ctx.workspace };
   const originJob = (await store.reserveFreshRescueJob({ workspace: ctx.workspace, reservation: originReservation, executor: originExecutor })).job;
-  await store.transitionJob(ctx.workspace, originJob.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'route-status-origin-session' });
+  await startReservedRescueForTest(store, ctx.workspace, originJob, { startedAt: new Date().toISOString(), zcodeSessionId: 'route-status-origin-session' });
   await store.updateJobProgress(ctx.workspace, originJob.id, { phase: 'running', message: 'origin-unrelated progress', observedAt: new Date().toISOString() });
   const originStorage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
   const originOperation = await documentedOperationSnapshot(originStorage.directory);
@@ -515,7 +523,9 @@ test('PR #39 frozen prepared bytes execute from origin without rewriting authori
     added: ['broker/identity.json', 'broker/session-owners.json', ownerPath, 'job-owners/index.json', `jobs/${job.id}.json`, `jobs/${job.id}.log`, `prompts/${job.id}.md`, authorityPath, sessionPath, `results/${job.id}.md`].sort(),
     deleted: [], updated: [preparationPath], unchanged: unchangedSnapshotPaths(beforeOperation, [preparationPath]),
   });
-  assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, ownerPath), 'utf8')), { jobId: job.id, ownerSessionId: scenario.sessionId, version: 1 });
+  assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, ownerPath), 'utf8')), {
+    jobId: job.id, ownerSessionId: scenario.sessionId, rescueReservationKind: 'bound', version: 2,
+  });
   const ownerIndex = JSON.parse(await readFile(join(scenario.targetDirectory, 'job-owners', 'index.json'), 'utf8')); assert.equal(ownerIndex.version, 3); assert.equal(ownerIndex.complete, true); assert.equal(ownerIndex.canonicalJobIds.count, 1); assert.equal(ownerIndex.bindingTuples.count, 1);
   const authority = JSON.parse(await readFile(join(scenario.targetDirectory, authorityPath), 'utf8')); assert.equal(authority.parentSessionId, scenario.sessionId); assert.equal(authority.workspace, target);
   const bindingSession = JSON.parse(await readFile(join(scenario.targetDirectory, sessionPath), 'utf8')); assert.equal(bindingSession.records.length, 1); assert.equal(bindingSession.records[0].anchorJobId, job.id); assert.equal(bindingSession.records[0].currentJobId, job.id);
@@ -589,7 +599,9 @@ test('PR #39 frozen choice bytes consume once and keep fresh and resume transiti
       updated: [...(choice === 'fresh' ? ['broker/session-owners.json'] : []), 'job-owners/index.json', sessionPath].sort(),
       unchanged: unchangedSnapshotPaths(beforeOperation, [pendingPath, ...(choice === 'fresh' ? ['broker/session-owners.json'] : []), 'job-owners/index.json', sessionPath]),
     });
-    assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, nextOwnerPath), 'utf8')), { jobId: nextJob.id, ownerSessionId: scenario.sessionId, version: 1 });
+    assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, nextOwnerPath), 'utf8')), {
+      jobId: nextJob.id, ownerSessionId: scenario.sessionId, rescueReservationKind: 'bound', version: 2,
+    });
     const ownerIndex = JSON.parse(await readFile(join(scenario.targetDirectory, 'job-owners', 'index.json'), 'utf8')); assert.equal(ownerIndex.canonicalJobIds.count, 2); assert.equal(ownerIndex.bindingTuples.count, 2); assert.equal(ownerIndex.complete, true);
     await assertNoTransientTargetState(scenario.targetDirectory);
     await assertOriginExecutionStateAbsent(ctx.dataRoot, ctx.workspace);
@@ -626,7 +638,9 @@ test('PR #39 frozen stopped continuation consumes generation two and resumes its
     deleted: [], updated: [preparationPath, 'job-owners/index.json', sessionPath].sort(),
     unchanged: unchangedSnapshotPaths(beforeOperation, [preparationPath, 'job-owners/index.json', sessionPath]),
   });
-  assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, nextOwnerPath), 'utf8')), { jobId: nextJob.id, ownerSessionId: scenario.sessionId, version: 1 });
+  assert.deepEqual(JSON.parse(await readFile(join(scenario.targetDirectory, nextOwnerPath), 'utf8')), {
+    jobId: nextJob.id, ownerSessionId: scenario.sessionId, rescueReservationKind: 'bound', version: 2,
+  });
   const ownerIndex = JSON.parse(await readFile(join(scenario.targetDirectory, 'job-owners', 'index.json'), 'utf8')); assert.equal(ownerIndex.canonicalJobIds.count, 2); assert.equal(ownerIndex.bindingTuples.count, 2); assert.equal(ownerIndex.complete, true);
   await assertNoTransientTargetState(scenario.targetDirectory);
   await assertOriginExecutionStateAbsent(ctx.dataRoot, ctx.workspace);
@@ -809,7 +823,7 @@ test('bound needs-choice snapshots candidate A and ignores a newer eligible cand
   assert.equal(undecided.code, 3, undecided.stderr || undecided.stdout); assert.match(undecided.stdout, /needs-choice/);
 
   const candidateB = await store.reserveJob({ workspace: ctx.workspace, ownerSessionId: 'snapshot-parent', ownerTurnId: 'inserted-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } });
-  await store.transitionJob(ctx.workspace, candidateB.id, ['queued'], 'running', { zcodeSessionId: 'newer-session-b', startedAt: new Date().toISOString() });
+  await startReservedRescueForTest(store, ctx.workspace, candidateB, { zcodeSessionId: 'newer-session-b', startedAt: new Date().toISOString() });
   await store.transitionJob(ctx.workspace, candidateB.id, ['running'], 'succeeded', { finishedAt: new Date().toISOString(), exitCode: 0 });
   await identity.beginCallerTurn({ sessionId: 'snapshot-parent', turnId: 'answer-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: 'resume' });
   const resumed = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'resume'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'snapshot-child', FAKE_ZCODE_RECORD: record } });
@@ -895,7 +909,7 @@ test('bound Rescue status sidecar exposes only safe fixed fields and starts no Z
   await identity.beginCallerTurn({ sessionId: 'status-parent', turnId: 'status-parent-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait repair' });
   await startRescueChild(ctx, 'status-parent', 'status-child', 'status-child-turn');
   const reserved = await store.reserveFreshRescueJob({ workspace: ctx.workspace, ownerSessionId: 'status-parent', reservation: { workspace: ctx.workspace, ownerSessionId: 'status-parent', ownerTurnId: 'status-parent-turn', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } }, executor: { agentId: 'status-child', agentType: 'zcode-rescue', parentSessionId: 'status-parent', parentTurnId: 'status-parent-turn', parentPermissionMode: 'workspace-write', workspace: ctx.workspace } }); const job = reserved.job;
-  await store.transitionJob(ctx.workspace, job.id, ['queued'], 'running', { startedAt: new Date().toISOString(), zcodeSessionId: 'PRIVATE_SESSION' });
+  await startReservedRescueForTest(store, ctx.workspace, job, { startedAt: new Date().toISOString(), zcodeSessionId: 'PRIVATE_SESSION' });
   const observedAt = new Date().toISOString();
   await store.updateJobProgress(ctx.workspace, job.id, { phase: 'running', message: 'ZCode is working with a tool.', observedAt });
   const beforeStatus = await store.readJob(ctx.workspace, job.id);

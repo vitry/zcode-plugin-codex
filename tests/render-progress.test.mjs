@@ -251,6 +251,8 @@ test('JSON exposes only a valid exact-owner single-job probe while every other v
       id, status: 'running', phase: 'running', progressPreview: ['safe'], owned: true, owner: 'same-owner', progressProbe,
     },
     permissionSnapshot: { mode: 'workspace-write' },
+    rescueJobSpecCommitment: 'a'.repeat(64),
+    rescueLegacyJobSpecProof: { version: 1, kind: 'markerless-migration', specDigest: 'b'.repeat(64) },
     nested: { executionCapability: 'secret', visible: true },
   };
   assert.deepEqual(JSON.parse(renderOutput(value, { json: true })), {

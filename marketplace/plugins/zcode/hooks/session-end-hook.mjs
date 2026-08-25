@@ -84,7 +84,6 @@ try {
     });
   } finally { clearTimeout(remoteTimer); }
   await runBounded(knownWorkspaces, 4, (workspace) => Promise.allSettled([
-    store.closeRescueBindingsForSession({ workspace, parentSessionId: ownerSessionId, reason: 'session-ended' }),
     cleanupSession(dataRoot, workspace, ownerSessionId),
     createRescuePreparationStore({ dataRoot }).cleanupSession({ sessionId: ownerSessionId, workspace }),
   ]));

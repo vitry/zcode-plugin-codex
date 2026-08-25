@@ -11,19 +11,56 @@ import { atomicWriteJson } from '../scripts/lib/fs.mjs';
 import { createJobController, durableCancelledWinner, ownerIdForSession, readBoundRescueStatus } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
-import { executeJob } from '../scripts/lib/review.mjs';
+import { executeJob as executeJobProduction } from '../scripts/lib/review.mjs';
 import { runCompanion } from '../scripts/zcode-companion.mjs';
 import { conversationFrame, toolRow } from './fixtures/conversation-progress-frames.mjs';
 
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), 'zcode-job-control-'));
   const workspace = join(root, 'workspace'); await mkdir(workspace);
-  const store = createStateStore({ dataRoot: join(root, 'data') });
+  const persisted = createStateStore({ dataRoot: join(root, 'data') });
+  /** @type {typeof persisted.transitionJob} */
+  const transitionJob = async (targetWorkspace, jobId, expected, nextStatus, patch = {}) => {
+    let effectivePatch = patch;
+    if (expected.includes('queued') && nextStatus === 'running') {
+      const job = await persisted.readJob(targetWorkspace, jobId);
+      if (job.command === 'rescue' && job.readOnly === false && job.rescueReservationKind !== undefined
+        && job.rescueExecutionClaim === undefined) {
+        const childPid = Number.isSafeInteger(patch.childPid) ? Number(patch.childPid) : 999_999_999;
+        const workerLeaseId = typeof patch.workerLeaseId === 'string' ? patch.workerLeaseId : job.id;
+        const claimed = await persisted.claimJobWorkerForExecution(targetWorkspace, jobId, { childPid, workerLeaseId });
+        effectivePatch = { ...patch, childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId };
+      }
+    }
+    return persisted.transitionJob(targetWorkspace, jobId, expected, nextStatus, effectivePatch);
+  };
+  const store = { ...persisted, transitionJob };
   return { root, workspace, store, controller: createJobController({ store, pollIntervalMs: 1 }) };
 }
 
 const reservation = { ownerSessionId: 'session-a', ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
 const silentSubscribe = () => () => {};
+
+/** Lower-level executor tests receive the same already-claimed contract as the companion. @type {typeof executeJobProduction} */
+const executeJob = async (input) => {
+  let job = input.job; let childPid = input.childPid; let workerLeaseId = input.workerLeaseId;
+  if (job.command === 'rescue' && job.readOnly === false && job.status === 'queued'
+    && job.rescueReservationKind !== undefined && job.rescueExecutionClaim === undefined) {
+    childPid ??= 999_999_999; workerLeaseId ??= job.id;
+    job = await input.store.claimJobWorkerForExecution(input.workspace, job.id, { childPid, workerLeaseId });
+  }
+  try {
+    return await executeJobProduction({ ...input, job, ...(childPid ? { childPid } : {}), ...(workerLeaseId ? { workerLeaseId } : {}) });
+  } catch (error) {
+    if (error instanceof PluginError && error.code === 'JOB_INTERRUPTED') {
+      const current = await input.store.readJob(input.workspace, job.id).catch(() => null);
+      if (current?.status === 'queued' && current.rescueExecutionClaim !== undefined) {
+        await input.store.finishJob(input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }).catch(() => {});
+      }
+    }
+    throw error;
+  }
+};
 
 /** @param {string} value */
 function hasPublicControl(value) {

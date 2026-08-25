@@ -61,6 +61,26 @@ function adoptionBinding(input, host, overrides = {}) {
   return binding;
 }
 
+function modernBinding(input, host, overrides = {}) {
+  const authority = {
+    kind: 'subagent-start', childAgentId: host.id, childAgentType: 'zcode-rescue',
+    parentTurnId: 'turn-old', parentPermissionMode: input.caller.permissionMode,
+    agentPath: host.agentPath,
+    ...overrides.childAuthority,
+  };
+  const binding = {
+    version: 3,
+    key: rescueBindingKey({ parentSessionId: input.caller.sessionId, executorAgentId: host.id, workspace: input.caller.workspace }),
+    operationId: '7'.repeat(64), state: 'active', parentSessionId: input.caller.sessionId,
+    childAuthority: authority, workspace: input.caller.workspace, permissionMode: input.caller.permissionMode,
+    anchorJobId: '8'.repeat(64), currentJobId: '8'.repeat(64), superseded: [],
+    createdAt: '2026-08-20T00:00:00.000Z', updatedAt: '2026-08-20T00:00:00.000Z',
+    closedAt: null, closeReason: null, ...overrides,
+  };
+  binding.childAuthority = authority;
+  return binding;
+}
+
 function adapters(children, executors, bindings = new Map()) {
   return {
     listChildren: async (parentId) => { assert.equal(parentId, 'parent-1'); return children; },
@@ -81,6 +101,53 @@ test('fresh planning joins a stopped root executor and returns the exact base fo
     activation: { kind: 'reactivate', executorAgentId: 'child-1', agentPathDigest: digest('/root/zcode_rescue_task') },
     directive: { version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'zcode-rescue' },
   });
+});
+
+test('resume rejoins an unloaded modern Hook binding from the persisted child graph after executor loss', async () => {
+  const input = await context(); input.envelope.options.resume = 'resume';
+  const host = child(input.caller.workspace); const binding = modernBinding(input, host);
+  const planned = await planRescueActivation({ ...input, ...adapters([host], new Map(), new Map([[host.id, { kind: 'bound', binding }]])) });
+  assert.deepEqual(planned, {
+    activation: { kind: 'reactivate', executorAgentId: host.id, agentPathDigest: digest(host.agentPath) },
+    directive: { version: 2, action: 'followup', target: host.agentPath, assignment: 'zcode-rescue' },
+  });
+});
+
+test('resume rejoins an unloaded historical v1 Hook tombstone after exact child-graph migration proof', async () => {
+  const input = await context(); input.envelope.options.resume = 'resume';
+  const host = child(input.caller.workspace); const modern = modernBinding(input, host);
+  const binding = {
+    version: 1, key: modern.key, operationId: modern.operationId, state: 'closed',
+    parentSessionId: modern.parentSessionId, executorAgentId: host.id, executorAgentType: 'zcode-rescue',
+    executorParentTurnId: 'turn-old', executorParentPermissionMode: input.caller.permissionMode,
+    workspace: modern.workspace, permissionMode: modern.permissionMode, anchorJobId: modern.anchorJobId,
+    currentJobId: modern.currentJobId, createdAt: modern.createdAt, updatedAt: '2026-08-20T01:00:00.000Z',
+    closedAt: '2026-08-20T01:00:00.000Z', closeReason: 'session-ended',
+  };
+  const planned = await planRescueActivation({ ...input,
+    ...adapters([host], new Map(), new Map([[host.id, { kind: 'bound', binding }]])) });
+  assert.deepEqual(planned, {
+    activation: { kind: 'reactivate', executorAgentId: host.id, agentPathDigest: digest(host.agentPath) },
+    directive: { version: 2, action: 'followup', target: host.agentPath, assignment: 'zcode-rescue' },
+  });
+});
+
+test('resume permits a resident exact modern child without requiring a stopped executor record', async () => {
+  const input = await context(); input.envelope.options.resume = 'resume';
+  const host = child(input.caller.workspace, { status: { type: 'active', activeFlags: [] } });
+  const resident = executor(input.caller.workspace, { active: true });
+  const binding = modernBinding(input, host);
+  const planned = await planRescueActivation({ ...input, ...adapters([host], new Map([[host.id, { executor: resident, executionWorkspace: input.caller.workspace }]]), new Map([[host.id, { kind: 'bound', binding }]])) });
+  assert.equal(planned.directive.action, 'followup');
+  assert.equal(planned.directive.target, host.agentPath);
+});
+
+test('modern Hook binding path mismatch fails closed without legacy downgrade or replacement spawn', async () => {
+  const input = await context(); input.envelope.options.resume = 'resume';
+  const host = child(input.caller.workspace);
+  const binding = modernBinding(input, host, { childAuthority: { agentPath: '/root/zcode_rescue_task_2' } });
+  await assert.rejects(planRescueActivation({ ...input, ...adapters([host], new Map(), new Map([[host.id, { kind: 'bound', binding }]])) }),
+    { code: 'RESCUE_BINDING_INVALID' });
 });
 
 test('planning joins a stopped executor from its origin route into an immutable linked-worktree target', async () => {

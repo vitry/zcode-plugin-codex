@@ -263,7 +263,13 @@ function cloneStatus(value) {
 /** @param {unknown} value */
 function validRole(value) { return value === null || validBoundedString(value, MAX_ROLE_BYTES); }
 /** @param {unknown} value */
-function canonicalAgentPath(value) { return typeof value === 'string' && validBoundedString(value, MAX_AGENT_PATH_BYTES) && posix.normalize(value) === value && /^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(value); }
+export function isCanonicalCodexAgentPath(value) {
+  return typeof value === 'string' && validBoundedString(value, MAX_AGENT_PATH_BYTES)
+    && (posix.isAbsolute(value) && posix.normalize(value) === value
+      || win32.isAbsolute(value) && win32.normalize(value) === value);
+}
+/** @param {unknown} value */
+function canonicalAgentPath(value) { return isCanonicalCodexAgentPath(value); }
 /** @param {unknown} value */
 function canonicalCwd(value) { return typeof value === 'string' && validBoundedString(value, MAX_CWD_BYTES) && (posix.isAbsolute(value) && posix.normalize(value) === value || win32.isAbsolute(value) && win32.normalize(value) === value); }
 

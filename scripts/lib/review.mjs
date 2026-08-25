@@ -38,7 +38,7 @@ export function decidePermission(request, permissionSnapshot, command) {
 }
 
 /**
- * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
+ * @param {{job:any,workspace:string,dataRoot:string,store:any,client:any,scope?:string,base?:string,focus?:string,task?:string,model?:any,modelRequest?:string,modelAliases?:Record<string,unknown>,effort?:string,resumeSessionId?:string,onBeforeResume?:(job:any)=>Promise<void>,onResumeSucceeded?:()=>void,onResumeFailure?:(error:unknown)=>Promise<void>,childPid?:number,workerLeaseId?:string,onBoundaryPersisted?:(job:any)=>Promise<void>,syncDirectory?:(path:string)=>Promise<void>,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:{now?:()=>string,setInterval?:(callback:()=>void,milliseconds:number)=>any,clearInterval?:(timer:any)=>void},signal?:AbortSignal}} input
  */
 export async function executeJob(input) {
   const { job, client, workspace, dataRoot } = input;
@@ -102,6 +102,7 @@ export async function executeJob(input) {
       input.signal?.throwIfAborted();
       sessionId = input.resumeSessionId;
       snapshot = await boundedStep(() => client.resumeSession(input.resumeSessionId), input.signal);
+      input.onResumeSucceeded?.();
     } else snapshot = await boundedStep(async () => {
       const created = await client.createSession({ workspace, ...(input.model ? { model: input.model } : {}) });
       sessionId = created?.session?.sessionId;
@@ -168,8 +169,15 @@ export async function executeJob(input) {
     appliedFinalization = publication.appliedFinalization;
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
-    const current = await input.store.readJob(workspace, job.id).catch(() => running);
-    if (error instanceof SuccessfulResultFinalizationError) {
+    let current = await input.store.readJob(workspace, job.id).catch(() => running);
+    let resumeFailureSettlementRejected = false;
+    if (input.resumeSessionId && current?.status === 'queued' && input.onResumeFailure) {
+      try {
+        await input.onResumeFailure(primaryError);
+        current = await input.store.readJob(workspace, job.id).catch(() => current);
+      } catch (rollbackError) { primaryError = rollbackError; resumeFailureSettlementRejected = true; }
+    }
+    if (!resumeFailureSettlementRejected && error instanceof SuccessfulResultFinalizationError) {
       if (current?.status === 'succeeded' && current.resultArtifact === error.resultArtifact) {
         try { output = { job: current, result: await readResultArtifact({ dataRoot, workspace, artifact: error.resultArtifact }) }; primaryError = undefined; }
         catch (artifactError) { primaryError = artifactError; }
@@ -177,7 +185,7 @@ export async function executeJob(input) {
       else if (current && ['failed', 'cancelled', 'succeeded'].includes(current.status) && current.resultArtifact !== error.resultArtifact) await removeResultArtifact({ dataRoot, workspace, jobId: job.id, artifact: error.resultArtifact }).catch(() => {});
       /* Otherwise recovery owns the durable running job and retained result artifact. */
     }
-    else if (isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
+    else if (!resumeFailureSettlementRejected && isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
       if (current.status === 'queued' && sessionId) {
         let stopped = false;
         try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
@@ -186,7 +194,7 @@ export async function executeJob(input) {
         const cancellation = createJobController({ store: input.store, dataRoot, stopSession: (id) => client.stopSession(id) });
         await cancellation.cancel(workspace, job.id, job.ownerSessionId).catch(() => {});
       }
-    } else if (current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
+    } else if (!resumeFailureSettlementRejected && current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
       let canFail = true;
       if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven) {
         try { await client.stopSession(sessionId); }

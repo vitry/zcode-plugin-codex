@@ -62,7 +62,7 @@ export async function planRescueActivation(input) {
         if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
         const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, host, executionWorkspace });
         if (binding.kind === 'missing') legacyCandidates.push({ binding: null, host });
-        else legacyCandidates.push({ binding: validateLegacyBinding(binding.binding, {
+        else legacyCandidates.push({ binding: validatePersistedBinding(binding.binding, {
           caller: input.caller, executionWorkspace, host, originWorkspace, requirePermissionMatch: resume,
         }), host });
         continue;
@@ -70,6 +70,7 @@ export async function planRescueActivation(input) {
       throw sanitizeExecutorError(error);
     }
     const candidate = validateCandidate(resolved, host, input.caller, originWorkspace, executionWorkspace);
+    if (candidate.executor.active && !resume) throw plannerError('EXECUTOR_IDENTITY_INVALID');
     provenCandidates.push(candidate);
   }
 
@@ -95,8 +96,9 @@ export async function planRescueActivation(input) {
   }
 
   if (selected !== null) {
-    const activation = selected.executor
-      ? { kind: 'reactivate', executorAgentId: selected.executor.agentId, agentPathDigest: pathDigest(selected.host.agentPath) }
+    const modernBinding = selected.binding && rescueBindingAuthorityView(selected.binding).kind === 'subagent-start';
+    const activation = selected.executor || modernBinding
+      ? { kind: 'reactivate', executorAgentId: selected.executor?.agentId ?? selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) }
       : selected.binding
         ? { kind: 'legacy-bound', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath), bindingKey: selected.binding.key }
         : { kind: 'legacy-adopt', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) };
@@ -181,7 +183,7 @@ async function resolveExactBinding(resolveBinding, input) {
  * once it exports a version-neutral validated authority view.
  * @param {any} binding @param {{caller:any,executionWorkspace:string,host:any,originWorkspace:string,requirePermissionMatch:boolean}} expected
  */
-function validateLegacyBinding(binding, expected) {
+function validatePersistedBinding(binding, expected) {
   let valid; let authority;
   try { valid = validateRescueBinding(binding); authority = rescueBindingAuthorityView(valid); }
   catch { throw plannerError('RESCUE_BINDING_INVALID'); }
@@ -193,14 +195,15 @@ function validateLegacyBinding(binding, expected) {
       workspace: expected.executionWorkspace,
     });
   } catch { throw plannerError('RESCUE_BINDING_INVALID'); }
-  if (valid.version !== 2 || valid.key !== expectedKey || valid.state !== 'active'
+  if (![1, 2, 3].includes(valid.version) || valid.key !== expectedKey
+    || valid.state !== 'active' && !(valid.state === 'closed' && valid.closeReason === 'session-ended')
     || valid.parentSessionId !== expected.caller.sessionId || valid.workspace !== expected.executionWorkspace
     || expected.requirePermissionMatch && valid.permissionMode !== expected.caller.permissionMode
-    || authority.kind !== 'codex-legacy-adoption'
     || authority.childAgentId !== expected.host.id || authority.childAgentType !== 'zcode-rescue'
-    || authority.originWorkspace !== expected.originWorkspace || authority.originWorkspace !== expected.host.cwd
-    || authority.executionWorkspace !== expected.executionWorkspace
-    || authority.agentPathDigest !== pathDigest(expected.host.agentPath)) {
+    || authority.kind === 'codex-legacy-adoption' && (authority.originWorkspace !== expected.originWorkspace
+      || authority.originWorkspace !== expected.host.cwd || authority.executionWorkspace !== expected.executionWorkspace
+      || authority.agentPathDigest !== pathDigest(expected.host.agentPath))
+    || authority.kind === 'subagent-start' && valid.version === 3 && authority.agentPath !== expected.host.agentPath) {
     throw plannerError('RESCUE_BINDING_INVALID');
   }
   return valid;
@@ -225,17 +228,28 @@ function validateCandidate(resolved, host, caller, originWorkspace, executionWor
 /** @param {string} dataRoot */
 function defaultBindingResolver(dataRoot) {
   const store = createStateStore({ dataRoot });
-  return (/** @type {any} */ { caller, envelope, executor, host, executionWorkspace }) => store.resolveRescueBindingForResume({
+  return async (/** @type {any} */ { caller, envelope, executor, host, executionWorkspace }) => {
+    const lookup = {
     workspace: executionWorkspace,
     parentSessionId: caller.sessionId,
     executorAgentId: executor?.agentId ?? host.id,
+    executorAgentPath: host.agentPath,
     ...(executor ? {
       executorAgentType: executor.agentType,
       executorParentTurnId: executor.parentTurnId,
       executorParentPermissionMode: executor.parentPermissionMode,
     } : {}),
     ...(envelope.options?.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
-  });
+    };
+    let migrationProof;
+    const proof = await store.readRescueBindingMigrationProof({
+      workspace: executionWorkspace, parentSessionId: caller.sessionId, executorAgentId: executor?.agentId ?? host.id,
+      childAgentType: executor?.agentType ?? host.agentRole, originWorkspace: host.cwd, executionWorkspace,
+      agentPathDigest: pathDigest(host.agentPath), agentPath: host.agentPath,
+    });
+    if (proof.kind === 'proof') migrationProof = proof.migrationProof;
+    return store.resolveRescueBindingForResume({ ...lookup, ...(migrationProof ? { migrationProof } : {}) });
+  };
 }
 
 /** @param {Set<string>} occupied */
@@ -283,7 +297,7 @@ function canonicalTimestamp(value) {
 function validStoppedExecutor(value) {
   if (!plain(value)) return false;
   const executor = /** @type {Record<string,any>} */ (value);
-  return sameKeys(executor, EXECUTOR_KEYS) && executor.kind === 'subagent-executor' && executor.active === false
+  return sameKeys(executor, EXECUTOR_KEYS) && executor.kind === 'subagent-executor' && typeof executor.active === 'boolean'
     && [executor.agentId, executor.agentType, executor.parentSessionId, executor.parentTurnId, executor.childTurnId].every(boundedIdentifier)
     && (executor.parentGenerationId === null || typeof executor.parentGenerationId === 'string' && /^[a-f0-9]{64}$/u.test(executor.parentGenerationId))
     && PERMISSION_MODES.includes(executor.parentPermissionMode) && boundedWorkspace(executor.originWorkspace) && boundedWorkspace(executor.workspace)
