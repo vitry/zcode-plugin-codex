@@ -1195,8 +1195,12 @@ test('reserved execution winning its atomic claim remains authorized across a la
   const { capability } = await publishSealedSpecForTest(context, store, workspace, continuation.job, spec);
   const record = join(context.directory, 'execution-claim-winner.jsonl'); await writeFile(record, '');
   let revoked = false;
+  // This session exists only in durable Rescue state. Windows intentionally
+  // launches the fake peer from tmpdir, so its synthetic resume snapshot must
+  // use the exact durable workspace instead of inheriting process.cwd().
   const result = await runCompanion(['run-reserved-job', continuation.job.id], {
-    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RESULT: 'claim winner result' },
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RESULT: 'claim winner result',
+      FAKE_ZCODE_WORKSPACE: workspace },
     authorization: { executionCapability: capability, jobId: continuation.job.id },
     dependencies: { testOnlyAfterExecutionClaim: async () => {
       revoked = true;
