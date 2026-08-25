@@ -42,6 +42,7 @@ const statusWaitProbe = join(root, 'tests', 'fixtures', 'status-wait-probe.cjs')
 const sessionEndHook = join(root, 'hooks', 'session-end-hook.mjs');
 const lockHolder = join(root, 'tests', 'fixtures', 'lock-holder.mjs');
 const claimedSealedWorker = join(root, 'tests', 'fixtures', 'claimed-sealed-worker.mjs');
+const ambiguousClaimWorker = join(root, 'tests', 'fixtures', 'ambiguous-claim-worker.mjs');
 const commitmentPublicationCrash = join(root, 'tests', 'fixtures', 'commitment-publication-crash.mjs');
 const prepareTtyShim = new URL('../fixtures/prepare-tty-shim.mjs', import.meta.url).href;
 const dependencyNodeModules = dirname(dirname(createRequire(import.meta.url).resolve('fs-native-extensions/package.json')));
@@ -1041,6 +1042,41 @@ test('unreadable ambiguous own claim remains reserved until terminal recovery an
     ownerSessionId: reserved.job.ownerSessionId, workspace: context.workspace, operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' });
 });
 
+test('detached ambiguous claim recovery releases its reservation without retaining the bearer token', {
+  skip: process.platform === 'win32' ? 'real detached worker failure evidence is required' : false,
+}, async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const marker = join(context.directory, 'ambiguous-detached-claim.json');
+  await assert.rejects(runCompanion(['rescue', '--background', '--fresh', 'detached reservation cleanup'], {
+    cwd: workspace, env: { ...context.env, ZCODE_TEST_DATA_ROOT: context.dataRoot, ZCODE_TEST_CLAIM_MARKER: marker },
+    caller: caller('ambiguous-detached-owner'), autoLaunchBackground: true,
+    dependencies: { startBackgroundWorker: (/** @type {any} */ input) => startBackgroundWorker({
+      ...input, companionPath: ambiguousClaimWorker, timeoutMs: 5_000,
+    }) },
+  }), { code: 'BACKGROUND_WORKER_START_FAILED' });
+  const published = JSON.parse(await readFile(marker, 'utf8'));
+  assert.equal(published.code, 'ATOMIC_WRITE_FAILED', `${published.stage}: ${published.error}`);
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const failed = await store.readJob(workspace, published.jobId);
+  assert.equal(failed.status, 'failed'); assert.match(failed.workerLeaseId, /^[a-f0-9]{64}$/u);
+  assert.equal(failed.rescueExecutionReservation.workerLeaseId, failed.workerLeaseId);
+  const rendered = renderOutput({ job: { ...failed, owned: true, owner: 'same-owner' } }, { json: true });
+  assert.doesNotMatch(rendered, /rescueExecutionReservation|capabilityDigest|reservationId/u);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  const capabilityNames = (await readdir(join(storage.directory, 'identity', 'capabilities')))
+    .filter((name) => /^[a-f0-9]{64}\.json$/u.test(name));
+  assert.equal(capabilityNames.length, 1);
+  const capabilityPath = join(storage.directory, 'identity', 'capabilities', capabilityNames[0]);
+  const stranded = JSON.parse(await readFile(capabilityPath, 'utf8'));
+  assert.ok(stranded.executionReservationId); assert.equal(stranded.consumedAt, null);
+  await scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace,
+    createClient: async () => { throw new Error('terminal reservation cleanup must not start ZCode'); } });
+  const released = JSON.parse(await readFile(capabilityPath, 'utf8'));
+  assert.equal(released.executionReservationId, undefined); assert.equal(released.consumedAt, null);
+  const recovered = await store.readJob(workspace, published.jobId);
+  assert.equal(recovered.status, 'failed'); assert.equal(recovered.rescueExecutionReservation, undefined);
+});
+
 test('reserved execution losing revoke race before its atomic claim has no prompt or ZCode side effects', async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const parentSessionId = 'execution-claim-race-parent'; const childId = 'execution-claim-race-child';
@@ -1134,7 +1170,7 @@ test('background revoke-first persists no plaintext task or focus before its exe
   const reserved = await runCompanion(['rescue', '--background', '--fresh', secretTask], {
     cwd: workspace, env: context.env, caller: caller(parentSessionId), executor,
   });
-  assert.doesNotMatch(JSON.stringify(reserved), /rescueJobSpecCommitment|rescueLegacyJobSpecProof/u);
+  assert.doesNotMatch(JSON.stringify(reserved), /rescueExecutionReservation|rescueJobSpecCommitment|rescueLegacyJobSpecProof/u);
   const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
   const specPath = join(storage.directory, 'job-specs', `${reserved.job.id}.json`);
   const beforeClaim = await readFile(specPath, 'utf8');
@@ -1527,8 +1563,14 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
       : failurePoint === 'worker launch'
         ? { startBackgroundWorker: async () => { throw failure; } }
       : { startBackgroundWorker: async (/** @type {any} */ { jobId }) => {
-        if (['worker crash', 'legacy recovery'].includes(failurePoint)) await store.claimJobWorker(workspace, jobId,
-          { childPid: 999_999_999, workerLeaseId: '9'.repeat(64) });
+        if (['worker crash', 'legacy recovery'].includes(failurePoint)) {
+          const current = await store.readJob(workspace, jobId); const workerLeaseId = '9'.repeat(64);
+          await store.bindJobExecutionReservationLease(workspace, jobId, {
+            capabilityDigest: current.rescueExecutionReservation.capabilityDigest,
+            reservationId: current.rescueExecutionReservation.reservationId, workerLeaseId,
+          });
+          await store.claimJobWorker(workspace, jobId, { childPid: 999_999_999, workerLeaseId });
+        }
       } };
   const attempt = runDirectInvocation(['invoke-prepared', 'rescue'], {
     cwd: workspace, env: childEnv,
@@ -1565,6 +1607,7 @@ for (const failurePoint of ['spec write', 'capability write', 'worker launch', '
       await atomicWriteJson(specPath, specRecord);
       if (failurePoint !== 'durable marker v1 downgrade') {
         delete queuedJob.rescueMigrationRollback;
+        delete queuedJob.rescueExecutionReservation;
         delete queuedJob.rescueJobSpecCommitment;
       }
       await atomicWriteJson(queuedJobPath, queuedJob);

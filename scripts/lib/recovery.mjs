@@ -1,4 +1,5 @@
 import { PluginError } from './errors.mjs';
+import { createIdentityStore } from './identity.mjs';
 import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
 import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
 import { withFileLock } from './fs.mjs';
@@ -20,28 +21,53 @@ export async function withWorkerLease(input, operation) {
   return withFileLock(joinWorkerLease(storage.directory, input.jobId, input.workerLeaseId), operation, { timeoutMs: input.timeoutMs ?? 30_000 });
 }
 
-/** Reconcile only provably orphaned jobs owned by one exact Codex session. @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,createClient:(job:any,ownerId:string)=>Promise<any>,reconcileOwnership?:(input:any)=>Promise<any>,now?:()=>number,signal?:AbortSignal}} input */
+/** Reconcile only provably orphaned jobs owned by one exact Codex session. @param {{store:any,identity?:any,dataRoot:string,workspace:string,ownerSessionId:string,createClient:(job:any,ownerId:string)=>Promise<any>,reconcileOwnership?:(input:any)=>Promise<any>,now?:()=>number,signal?:AbortSignal}} input */
 export async function reconcileOwnedJobs(input) {
-  const jobs = (await input.store.listOwnedJobs(input.workspace, input.ownerSessionId))
-    .filter((/** @type {any} */ job) => !TERMINAL.has(job.status));
-  const outcomes = [];
+  const listed = await input.store.listOwnedJobs(input.workspace, input.ownerSessionId);
+  const outcomes = await cleanupListedTerminalReservations(input, listed);
+  const jobs = listed.filter((/** @type {any} */ job) => !TERMINAL.has(job.status));
   for (const job of jobs) {
-    try { outcomes.push(await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'owner-recovery' })); }
+    try {
+      const settled = await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'owner-recovery' });
+      outcomes.push(await cleanupTerminalReservation(input, settled));
+    }
     catch (error) { throwIfRecoveryInterrupted(input, error); if (error instanceof SuccessfulResultFinalizationError) throw error; outcomes.push(job); }
   }
   return outcomes;
 }
 
-/** Settle provably orphaned writable Rescue blockers without adopting their public ownership. @param {{store:any,dataRoot:string,workspace:string,createClient:(job:any,ownerId:string)=>Promise<any>,reconcileOwnership?:(input:any)=>Promise<any>,now?:()=>number,signal?:AbortSignal}} input */
+/** Settle provably orphaned writable Rescue blockers without adopting their public ownership. @param {{store:any,identity?:any,dataRoot:string,workspace:string,createClient:(job:any,ownerId:string)=>Promise<any>,reconcileOwnership?:(input:any)=>Promise<any>,now?:()=>number,signal?:AbortSignal}} input */
 export async function scavengeWritableJobs(input) {
-  const jobs = (await input.store.listJobs(input.workspace))
+  const listed = await input.store.listJobs(input.workspace);
+  const outcomes = await cleanupListedTerminalReservations(input, listed);
+  const jobs = listed
     .filter((/** @type {any} */ job) => job.command === 'rescue' && job.readOnly === false && !TERMINAL.has(job.status));
-  const outcomes = [];
   for (const job of jobs) {
-    try { outcomes.push(await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'scavenge' })); }
+    try {
+      const settled = await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'scavenge' });
+      outcomes.push(await cleanupTerminalReservation(input, settled));
+    }
     catch (error) { throwIfRecoveryInterrupted(input, error); if (error instanceof SuccessfulResultFinalizationError) throw error; outcomes.push(job); }
   }
   return outcomes;
+}
+
+/** @param {any} input @param {any[]} jobs */
+async function cleanupListedTerminalReservations(input, jobs) {
+  const outcomes = [];
+  for (const job of jobs.filter((/** @type {any} */ candidate) => TERMINAL.has(candidate.status)
+    && candidate.rescueExecutionReservation !== undefined)) {
+    try { outcomes.push(await cleanupTerminalReservation(input, job)); }
+    catch (error) { throwIfRecoveryInterrupted(input, error); outcomes.push(job); }
+  }
+  return outcomes;
+}
+
+/** @param {any} input @param {any} job */
+async function cleanupTerminalReservation(input, job) {
+  if (!TERMINAL.has(job.status) || job.rescueExecutionReservation === undefined) return job;
+  const identity = input.identity ?? createIdentityStore({ dataRoot: input.dataRoot });
+  return input.store.cleanupTerminalExecutionReservation(input.workspace, job.id, identity);
 }
 
 /**

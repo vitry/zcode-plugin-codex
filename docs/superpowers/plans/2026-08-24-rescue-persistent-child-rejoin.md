@@ -162,6 +162,13 @@ tests.
   an exact foreign winner or unreadable state for winner commit or terminal
   recovery/retry. Use one exact six-field v1 parser for execution, controller
   cancellation, and recovery.
+- [x] Publish a child/public-private execution recovery authority before worker
+  exposure, CAS-bind it to the exact attempt lease before Identity reservation,
+  retain it through terminal settlement, and let orphan recovery release by
+  exact capability digest/reservation/owner/workspace/job/lease under terminal
+  State proof without the bearer. Clear authority only after release; make both
+  steps idempotent and fail closed on foreign, nonterminal, missing, corrupt, or
+  mismatched proof.
 - [x] Reject one-sided v1 resume/candidate identity before capability proof and
   make failed-claim terminal compensation an exact worker-lease CAS, so a
   same-capability retry loser cannot terminate the winning queued claim.

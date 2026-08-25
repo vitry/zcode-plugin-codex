@@ -677,7 +677,13 @@ async function startPublic(context) {
       capability = await (context.dependencies?.createExecutionCapability ?? ((/** @type {any} */ input) => identity.createExecutionCapability(input)))({ ...binding, permissionSnapshot });
       context.signal?.throwIfAborted();
       const record = sealJobSpec(job, spec, capability);
-      job = await store.publishJobSpecCommitment(cwd, job.id, record.commitment);
+      const executionReservation = {
+        version: 1, capabilityDigest: createHash('sha256').update(capability).digest('hex'),
+        reservationId: createHash('sha256').update('zcode-execution-reservation-v1\0').update(capability).digest('hex'),
+        jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace,
+        operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2',
+      };
+      job = await store.publishJobSpecCommitment(cwd, job.id, record.commitment, executionReservation);
       await context.dependencies?.testOnlyAfterJobSpecCommitment?.(job);
       await (context.dependencies?.writeJobSpec ?? writeJobSpec)(dataRoot, cwd, job, record);
       if (context.autoLaunchBackground) {
@@ -795,8 +801,10 @@ async function runReserved({ parsed, cwd, env, dataRoot, identity, store, author
   if (record.version === 1 && inspected.jobSpecFormat !== undefined) throw jobSpecTampered();
   if (!sameJson(inspected.permissionSnapshot, job.permissionSnapshot)) throw new PluginError('EXECUTION_SNAPSHOT_MISMATCH', 'Execution capability permission snapshot does not match the reserved job.', { category: 'authorization', remedy: 'Issue a new capability from the exact reserved job.' });
   if (job.status !== 'queued') {
-    if (['cancelled', 'failed', 'succeeded'].includes(job.status)) await identity.releaseExecutionCapability(
-      authorization.executionCapability, capabilityExpected, capabilityReservationId);
+    if (['cancelled', 'failed', 'succeeded'].includes(job.status)) {
+      if (job.rescueExecutionReservation !== undefined) await store.cleanupTerminalExecutionReservation(cwd, job.id, identity);
+      else await identity.releaseExecutionCapability(authorization.executionCapability, capabilityExpected, capabilityReservationId);
+    }
     throw new PluginError('RESERVED_JOB_NOT_QUEUED', `Reserved job ${jobId} is ${job.status}.`, { category: 'state', remedy: 'Generate a new execution capability only for a queued job.' });
   }
   return executeWithWorkerLease({ parsed, cwd, env, dataRoot, identity, store, job, spec, loadSpecAfterClaim,
@@ -819,28 +827,33 @@ async function executeWithWorkerLease(context) {
     }
     throw error;
   }
+  const executionAuthorization = context.executionAuthorization ?? (context.legacySpecDigest === undefined ? undefined : markerlessMigration
+    ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
+    : { legacyProof: context.legacyReservationProof });
   await context.dependencies?.testOnlyBeforeExecutionInspection?.();
-  const executionInspection = await context.store.inspectJobWorkerExecution(context.cwd, context.job.id, migrationRollback,
-    context.executionAuthorization ?? (context.legacySpecDigest === undefined ? undefined : markerlessMigration
-      ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
-      : { legacyProof: context.legacyReservationProof }));
-  if (context.executionCapability !== undefined) await context.identity.reserveExecutionCapability(
-    context.executionCapability, context.capabilityExpected, context.capabilityReservationId);
-  await context.dependencies?.testOnlyBeforeExecutionClaim?.();
+  await context.store.inspectJobWorkerExecution(context.cwd, context.job.id, migrationRollback, executionAuthorization);
   const workerLeaseId = randomBytes(32).toString('hex');
   return withWorkerLease({ dataRoot: context.dataRoot, workspace: context.cwd, jobId: context.job.id, workerLeaseId }, async () => {
     let job; let spec = context.spec;
     let capabilityCommitted = context.executionCapability === undefined;
     try {
-      const executionAuthorization = context.executionAuthorization ?? (context.legacySpecDigest === undefined ? undefined : markerlessMigration
-        ? { legacyProof: 'markerless-migration', specDigest: context.legacySpecDigest }
-        : { legacyProof: context.legacyReservationProof });
+      await context.dependencies?.testOnlyBeforeExecutionClaim?.();
+      if (context.job.rescueExecutionReservation !== undefined) await context.store.bindJobExecutionReservationLease(
+        context.cwd, context.job.id, {
+          capabilityDigest: context.job.rescueExecutionReservation.capabilityDigest,
+          reservationId: context.capabilityReservationId, workerLeaseId,
+        });
+      const executionInspection = await context.store.inspectJobWorkerExecution(context.cwd, context.job.id, migrationRollback,
+        executionAuthorization);
+      if (context.executionCapability !== undefined) await context.identity.reserveExecutionCapability(
+        context.executionCapability, context.capabilityExpected, context.capabilityReservationId, workerLeaseId);
       job = await context.store.claimJobWorkerForExecution(context.cwd, context.job.id,
         { childPid: process.pid, workerLeaseId }, migrationRollback,
         executionAuthorization, executionInspection);
       await context.dependencies?.testOnlyAfterStateClaimBeforeCapabilityCommit?.();
       if (context.executionCapability !== undefined) {
-        await context.identity.commitExecutionCapability(context.executionCapability, context.capabilityExpected, context.capabilityReservationId);
+        await context.identity.commitExecutionCapability(context.executionCapability, context.capabilityExpected,
+          context.capabilityReservationId, workerLeaseId);
         capabilityCommitted = true;
       }
       await context.dependencies?.testOnlyAfterExecutionClaim?.();
@@ -850,12 +863,28 @@ async function executeWithWorkerLease(context) {
         error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'Execution authorization failed' }, exitCode: 1,
       }).catch(() => undefined);
       if (!capabilityCommitted && context.executionCapability !== undefined && reconciliation?.kind === 'settled') {
-        await context.identity.releaseExecutionCapability(context.executionCapability,
-          context.capabilityExpected, context.capabilityReservationId).catch(() => {});
+        if (context.job.rescueExecutionReservation !== undefined) {
+          await context.store.cleanupTerminalExecutionReservation(context.cwd, context.job.id, context.identity).catch(() => {});
+        } else {
+          await context.identity.releaseExecutionCapability(context.executionCapability,
+            context.capabilityExpected, context.capabilityReservationId, workerLeaseId).catch(() => {});
+        }
       }
       throw error;
     }
-    return executeReserved({ ...context, job, spec, migrationRollback, childPid: process.pid, workerLeaseId });
+    let result;
+    try {
+      result = await executeReserved({ ...context, job, spec, migrationRollback, childPid: process.pid, workerLeaseId });
+    } catch (error) {
+      if (context.job.rescueExecutionReservation !== undefined) {
+        await context.store.cleanupTerminalExecutionReservation(context.cwd, context.job.id, context.identity).catch(() => {});
+      }
+      throw error;
+    }
+    if (context.job.rescueExecutionReservation === undefined) return result;
+    const cleaned = await context.store.cleanupTerminalExecutionReservation(
+      context.cwd, context.job.id, context.identity).catch(() => undefined);
+    return cleaned === undefined || result?.job === undefined ? result : { ...result, job: cleaned };
   });
 }
 
@@ -994,7 +1023,7 @@ function publicJob(job, ownerSessionId, projection) {
       hasOwner: true,
     };
   }
-  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof;
+  const visible = { ...job }; delete visible.ownerSessionId; delete visible.ownerTurnId; delete visible.permissionSnapshot; delete visible.progressProbe; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueExecutionReservation; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof;
   if (projection !== 'detail') delete visible.logFile;
   if (Object.hasOwn(visible, 'error')) {
     const message = publicErrorMessage(visible.error);
@@ -1009,7 +1038,7 @@ function publicJob(job, ownerSessionId, projection) {
   return { ...visible, owned: true, owner: 'same-owner' };
 }
 /** @param {any} job */
-function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof; return visible; }
+function publicReservedJob(job) { const visible = { ...job }; delete visible.rescueMigrationRollback; delete visible.rescueContinuationOrigin; delete visible.rescueExecutionClaim; delete visible.rescueExecutionReservation; delete visible.rescueReservationKind; delete visible.rescueJobSpecCommitment; delete visible.rescueLegacyJobSpecProof; return visible; }
 /** @param {any} job */
 function terminalResultJob(job) {
   const visible = {

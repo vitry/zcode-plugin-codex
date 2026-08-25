@@ -121,17 +121,29 @@ job/owner/workspace binding, a capability-keyed commitment, and cryptographic
 metadata; it contains no plaintext task, focus, prompt, model, or resume
 payload and no unkeyed plaintext-derived digest that permits offline guessing.
 Before the envelope or bearer capability is exposed, the reservation publishes
-the envelope's exact commitment on the private queued job. The worker
+the envelope's exact commitment and a private bearer-independent recovery
+authority on the queued job. That authority binds the capability digest,
+reservation, job, owner session, canonical workspace, operation, and format;
+it is stripped from every public, child, render, and job-spec projection. The worker
 authenticates the envelope and read-validates a capability explicitly bound to
-`sealed-v2`. StateStore then performs a read-only locked authority inspection;
-the capability receives a private, releasable consumption reservation; and the
-worker claim revalidates the inspection digest under the StateStore lock before
-`consumedAt` commits. A proof/CAS rejection releases that reservation without
+`sealed-v2`. Before Identity reservation, StateStore CAS-binds that private
+authority to the attempt's exact worker lease. StateStore then performs a
+read-only locked authority inspection; the capability receives a private,
+lease-bound releasable consumption reservation; and the worker claim revalidates
+the inspection digest and exact recovery authority under the StateStore lock
+before `consumedAt` commits. A proof/CAS rejection releases that reservation without
 consuming the capability only when locked reconciliation proves the job remains
 unclaimed or belongs to the rejecting attempt's exact lease. An exact foreign
 winning lease, or unreadable StateStore evidence, preserves the shared
-reservation: the winner commits it, or orphan terminalization plus a later
-terminal retry releases it. The claim also compares the envelope commitment
+reservation. Terminal settlement retains the private authority, and orphan
+recovery can release Identity by exact capability digest, reservation, owner,
+workspace, job, and worker lease while holding the terminal State proof; no
+bearer token is required. A consumed capability retains those committed
+reservation and lease identifiers privately so terminal cleanup still rejects
+contradictory proof. Identity release and subsequent State-authority
+clearing are separately idempotent, so a crash between them retries safely.
+Missing, corrupt, nonterminal, or mismatched proof leaves both foreign
+reservation and recovery evidence untouched. The claim also compares the envelope commitment
 against the independently persisted job value, so possession of the capability
 cannot authorize a valid re-sealing. It decrypts and validates the
 normalized spec in memory only after the claim succeeds. Unknown versions and

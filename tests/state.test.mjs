@@ -27,6 +27,7 @@ import test from 'node:test';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { atomicWriteJson, isLockPublishCollision, readJsonFile, withFileLock } from '../scripts/lib/fs.mjs';
 import { createInvocationStore } from '../scripts/lib/invocation.mjs';
+import { createIdentityStore } from '../scripts/lib/identity.mjs';
 import { createJobController } from '../scripts/lib/job-control.mjs';
 import { createStateStore } from '../scripts/lib/state.mjs';
 import { createConsumedLegacyChildAuthority, createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
@@ -642,6 +643,66 @@ test('sealed job commitment publishes once and the execution claim requires its 
     childPid: worker.childPid, workerLeaseId: worker.workerLeaseId, startedAt: new Date().toISOString(), zcodeSessionId: 'sealed-session',
   });
   assert.equal(running.rescueJobSpecCommitment, undefined);
+});
+
+test('terminal State recovery releases and clears one exact private execution reservation idempotently', async () => {
+  const context = await fixture(); const workspace = await realpath(context.workspace);
+  const store = createStateStore({ dataRoot: context.dataRoot }); const identity = createIdentityStore({ dataRoot: context.dataRoot });
+  const job = await store.reserveJob(rescueReservation(workspace)); const commitment = '1'.repeat(64);
+  const expected = /** @type {any} */ ({ jobId: job.id, ownerSessionId: job.ownerSessionId, workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' });
+  const token = await identity.createExecutionCapability({
+    ...expected, permissionSnapshot: job.permissionSnapshot,
+  });
+  const authority = { version: 1, capabilityDigest: createHash('sha256').update(token).digest('hex'),
+    reservationId: '2'.repeat(64), jobId: job.id, ownerSessionId: job.ownerSessionId, workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' };
+  const published = await store.publishJobSpecCommitment(workspace, job.id, commitment, authority);
+  assert.deepEqual(published.rescueExecutionReservation, authority);
+  await assert.rejects(store.cleanupTerminalExecutionReservation(workspace, job.id, identity), { code: 'RESCUE_BINDING_INVALID' });
+  const workerLeaseId = '3'.repeat(64);
+  await store.bindJobExecutionReservationLease(workspace, job.id, {
+    capabilityDigest: authority.capabilityDigest, reservationId: authority.reservationId, workerLeaseId,
+  });
+  await assert.rejects(store.bindJobExecutionReservationLease(workspace, job.id, {
+    capabilityDigest: authority.capabilityDigest, reservationId: authority.reservationId, workerLeaseId: '4'.repeat(64),
+  }), { code: 'WORKER_LEASE_CONFLICT' });
+  await identity.reserveExecutionCapability(token, expected, authority.reservationId, workerLeaseId);
+  await store.claimJobWorkerForExecution(workspace, job.id, { childPid: 999_999_999, workerLeaseId },
+    undefined, { sealedCommitment: commitment });
+  const terminal = await store.finishJob(workspace, job.id, ['queued'], 'failed',
+    { error: { message: 'orphaned worker' }, exitCode: 1 });
+  assert.equal(terminal.rescueExecutionReservation.workerLeaseId, workerLeaseId);
+  await assert.rejects(store.cleanupTerminalExecutionReservation(workspace, job.id, {
+    releaseExecutionReservation: async (proof) => {
+      await identity.releaseExecutionReservation(proof);
+      throw new Error('injected crash after Identity release before State authority clear');
+    },
+  }));
+  assert.equal((await store.readJob(workspace, job.id)).rescueExecutionReservation.workerLeaseId, workerLeaseId);
+  const cleaned = await store.cleanupTerminalExecutionReservation(workspace, job.id, identity);
+  assert.equal(cleaned.rescueExecutionReservation, undefined);
+  assert.deepEqual(await store.cleanupTerminalExecutionReservation(workspace, job.id, identity), cleaned);
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
+  const capability = JSON.parse(await readFile(join(storage.directory, 'identity', 'capabilities',
+    `${authority.capabilityDigest}.json`), 'utf8'));
+  assert.equal(capability.executionReservationId, undefined);
+  assert.equal(capability.executionReservationWorkerLeaseId, undefined);
+
+  const damaged = await store.reserveJob(rescueReservation(workspace, 'damaged-terminal'));
+  const damagedExpected = /** @type {any} */ ({ jobId: damaged.id, ownerSessionId: damaged.ownerSessionId, workspace,
+    operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2' });
+  const damagedToken = await identity.createExecutionCapability({
+    ...damagedExpected, permissionSnapshot: damaged.permissionSnapshot,
+  });
+  const damagedAuthority = { ...authority, capabilityDigest: createHash('sha256').update(damagedToken).digest('hex'),
+    reservationId: '5'.repeat(64), jobId: damaged.id };
+  await store.publishJobSpecCommitment(workspace, damaged.id, '6'.repeat(64), damagedAuthority);
+  await identity.reserveExecutionCapability(damagedToken, damagedExpected, damagedAuthority.reservationId);
+  await store.finishJob(workspace, damaged.id, ['queued'], 'failed',
+    { error: { message: 'missing lease proof' }, exitCode: 1 });
+  await assert.rejects(store.cleanupTerminalExecutionReservation(workspace, damaged.id, identity));
+  assert.deepEqual((await store.readJob(workspace, damaged.id)).rescueExecutionReservation, damagedAuthority);
 });
 
 test('cancellation can finish or return to running with the stop error', async () => {

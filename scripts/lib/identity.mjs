@@ -407,46 +407,90 @@ export function createIdentityStore({ dataRoot, gitProbe, publicationSeam } = /*
     },
 
     /** Reserve capability consumption without setting consumedAt; idempotent for one exact attempt.
-     * @param {string} token @param {ExecutionCapabilityExpected} expected @param {string} reservationId */
-    async reserveExecutionCapability(token, expected, reservationId) {
+     * @param {string} token @param {ExecutionCapabilityExpected} expected @param {string} reservationId @param {string} [workerLeaseId] */
+    async reserveExecutionCapability(token, expected, reservationId, workerLeaseId) {
       validateExecutionInput(expected, false); validateToken(token);
-      if (!isDigest(reservationId)) throw invalidIdentityInput();
+      if (!isDigest(reservationId) || workerLeaseId !== undefined && !isDigest(workerLeaseId)) throw invalidIdentityInput();
       const storage = await identityStorage(dataRoot, expected.workspace); const digest = tokenDigest(token);
       return withFileLock(storage.lockPath, async () => {
         const { path, record } = await readMatchingExecutionCapability(storage, digest, expected);
         validateAvailableExecutionCapability(record, reservationId);
-        if (record.executionReservationId === reservationId) return publicRecord(record);
-        const reserved = { ...record, executionReservationId: reservationId };
+        if (record.executionReservationWorkerLeaseId !== undefined
+          && record.executionReservationWorkerLeaseId !== workerLeaseId) throw invalidAuthorizationRecord('execution capability reservation');
+        if (record.executionReservationId === reservationId
+          && (workerLeaseId === undefined || record.executionReservationWorkerLeaseId === workerLeaseId)) return publicRecord(record);
+        const reserved = { ...record, executionReservationId: reservationId,
+          ...(workerLeaseId === undefined ? {} : { executionReservationWorkerLeaseId: workerLeaseId }) };
         await atomicWriteJson(path, reserved); return publicRecord(reserved);
       });
     },
 
     /** Commit a previously reserved capability only after the StateStore claim succeeds.
-     * @param {string} token @param {ExecutionCapabilityExpected} expected @param {string} reservationId */
-    async commitExecutionCapability(token, expected, reservationId) {
+     * @param {string} token @param {ExecutionCapabilityExpected} expected @param {string} reservationId @param {string} [workerLeaseId] */
+    async commitExecutionCapability(token, expected, reservationId, workerLeaseId) {
       validateExecutionInput(expected, false); validateToken(token);
-      if (!isDigest(reservationId)) throw invalidIdentityInput();
+      if (!isDigest(reservationId) || workerLeaseId !== undefined && !isDigest(workerLeaseId)) throw invalidIdentityInput();
       const storage = await identityStorage(dataRoot, expected.workspace); const digest = tokenDigest(token);
       return withFileLock(storage.lockPath, async () => {
         const { path, record } = await readMatchingExecutionCapability(storage, digest, expected);
         validateAvailableExecutionCapability(record, reservationId);
-        if (record.executionReservationId !== reservationId) throw invalidAuthorizationRecord('execution capability reservation');
-        const consumed = { ...record, consumedAt: new Date().toISOString() }; delete consumed.executionReservationId;
+        if (record.executionReservationId !== reservationId
+          || record.executionReservationWorkerLeaseId !== undefined
+            && record.executionReservationWorkerLeaseId !== workerLeaseId) throw invalidAuthorizationRecord('execution capability reservation');
+        const consumed = { ...record, consumedAt: new Date().toISOString(),
+          ...(workerLeaseId === undefined ? {} : {
+            executionCommittedReservationId: reservationId,
+            executionCommittedWorkerLeaseId: workerLeaseId,
+          }) };
+        delete consumed.executionReservationId; delete consumed.executionReservationWorkerLeaseId;
         await atomicWriteJson(path, consumed); return publicRecord(consumed);
       });
     },
 
     /** Release one failed pre-claim reservation without consuming the capability.
-     * @param {string} token @param {ExecutionCapabilityExpected} expected @param {string} reservationId */
-    async releaseExecutionCapability(token, expected, reservationId) {
+     * @param {string} token @param {ExecutionCapabilityExpected} expected @param {string} reservationId @param {string} [workerLeaseId] */
+    async releaseExecutionCapability(token, expected, reservationId, workerLeaseId) {
       validateExecutionInput(expected, false); validateToken(token);
-      if (!isDigest(reservationId)) throw invalidIdentityInput();
+      if (!isDigest(reservationId) || workerLeaseId !== undefined && !isDigest(workerLeaseId)) throw invalidIdentityInput();
       const storage = await identityStorage(dataRoot, expected.workspace); const digest = tokenDigest(token);
       return withFileLock(storage.lockPath, async () => {
         const { path, record } = await readMatchingExecutionCapability(storage, digest, expected);
         if (record.consumedAt !== null || (record.revokedAt ?? null) !== null) return;
         if (record.executionReservationId !== reservationId) return;
-        const released = { ...record }; delete released.executionReservationId; await atomicWriteJson(path, released);
+        if (record.executionReservationWorkerLeaseId !== undefined
+          && record.executionReservationWorkerLeaseId !== workerLeaseId) throw invalidAuthorizationRecord('execution capability reservation');
+        const released = { ...record }; delete released.executionReservationId; delete released.executionReservationWorkerLeaseId;
+        await atomicWriteJson(path, released);
+      });
+    },
+
+    /** Release an orphaned reservation from one exact private terminal State proof, without its bearer token.
+     * A null lease proves pre-reservation terminalization and may clear only an actually unreserved capability.
+     * @param {{capabilityDigest:string,reservationId:string,workerLeaseId:string|null,jobId:string,ownerSessionId:string,workspace:string,operation:'run-reserved-job',jobSpecFormat:'sealed-v2',terminalStatus:'succeeded'|'failed'|'cancelled'}} proof */
+    async releaseExecutionReservation(proof) {
+      validateExecutionReservationProof(proof);
+      const storage = await identityStorage(dataRoot, proof.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const { path, record } = await readMatchingExecutionCapability(storage, proof.capabilityDigest, proof);
+        if (record.consumedAt !== null) {
+          if (record.executionCommittedReservationId !== proof.reservationId
+            || record.executionCommittedWorkerLeaseId !== proof.workerLeaseId) {
+            throw invalidAuthorizationRecord('execution capability terminal proof');
+          }
+          return;
+        }
+        if ((record.revokedAt ?? null) !== null) return;
+        if (proof.workerLeaseId === null) {
+          if (record.executionReservationId !== undefined) throw invalidAuthorizationRecord('execution capability reservation');
+          return;
+        }
+        if (record.executionReservationId === undefined) return;
+        if (record.executionReservationId !== proof.reservationId
+          || record.executionReservationWorkerLeaseId !== proof.workerLeaseId) {
+          throw invalidAuthorizationRecord('execution capability reservation');
+        }
+        const released = { ...record }; delete released.executionReservationId; delete released.executionReservationWorkerLeaseId;
+        await atomicWriteJson(path, released);
       });
     },
 
@@ -1134,6 +1178,17 @@ function validateExecutionInput(input, requireSnapshot) {
     || requireSnapshot && !isPlainJsonObject(input.permissionSnapshot)) throw invalidIdentityInput();
 }
 
+/** @param {any} proof */
+function validateExecutionReservationProof(proof) {
+  if (!isPlainObject(proof)
+    || Object.keys(proof).sort().join(',') !== 'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,terminalStatus,workerLeaseId,workspace'
+    || !isDigest(proof.capabilityDigest) || !isDigest(proof.reservationId)
+    || proof.workerLeaseId !== null && !isDigest(proof.workerLeaseId)
+    || !isNonEmptyString(proof.jobId) || !isNonEmptyString(proof.ownerSessionId) || !isNonEmptyString(proof.workspace)
+    || proof.operation !== 'run-reserved-job' || proof.jobSpecFormat !== 'sealed-v2'
+    || !['succeeded', 'failed', 'cancelled'].includes(proof.terminalStatus)) throw invalidIdentityInput();
+}
+
 /** @param {any} input */
 function validateGateIdentity(input) {
   if (!isPlainObject(input) || !isNonEmptyString(input.sessionId)
@@ -1284,6 +1339,12 @@ function isExecutionRecord(record) {
     && (!('jobSpecFormat' in record) || record.jobSpecFormat === 'sealed-v2')
     && (!('specDigest' in record) || isDigest(record.specDigest))
     && (!('executionReservationId' in record) || isDigest(record.executionReservationId) && record.consumedAt === null)
+    && (!('executionReservationWorkerLeaseId' in record)
+      || isDigest(record.executionReservationWorkerLeaseId) && isDigest(record.executionReservationId) && record.consumedAt === null)
+    && (('executionCommittedReservationId' in record) === ('executionCommittedWorkerLeaseId' in record))
+    && (!('executionCommittedReservationId' in record)
+      || isDigest(record.executionCommittedReservationId) && isDigest(record.executionCommittedWorkerLeaseId)
+        && record.consumedAt !== null && !('executionReservationId' in record))
     && (record.operation !== 'run-reserved-job' || record.jobSpecFormat === 'sealed-v2' && !('specDigest' in record)
       || !('jobSpecFormat' in record) && isDigest(record.specDigest))
     && isDate(record.createdAt) && (record.consumedAt === null || isDate(record.consumedAt))
@@ -1383,6 +1444,9 @@ function publicRecord(record) {
   delete visible.digest;
   delete visible.key;
   delete visible.executionReservationId;
+  delete visible.executionReservationWorkerLeaseId;
+  delete visible.executionCommittedReservationId;
+  delete visible.executionCommittedWorkerLeaseId;
   return visible;
 }
 
