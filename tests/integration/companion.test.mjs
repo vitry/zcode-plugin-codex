@@ -332,7 +332,7 @@ async function companionWithArchiveHandshake(context, args) {
   return result;
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'online',acceptedOnline:number,rejectedSequence:number},waitForDurableProbe?:typeof waitForDurableConversationProbe,writeGateFile?:(path:string,data:string,options:any)=>Promise<void>,runExecution?:(...args:any[])=>PromiseLike<any>}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'online',acceptedOnline:number,rejectedSequence:number},waitForDurableProbe?:typeof waitForDurableConversationProbe,waitForDurableTerminal?:(context:any,owner:any)=>Promise<any>,writeGateFile?:(path:string,data:string,options:any)=>Promise<void>,runExecution?:(...args:any[])=>PromiseLike<any>}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
@@ -361,7 +361,7 @@ async function deterministicConversationScenario(context, scenario, options = {}
     if (!executionController.signal.aborted) executionController.abort(gateWriteError);
   };
   if (gatePath && gateNonce) await (options.writeGateFile ?? writeFile)(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'held' }), { mode: 0o600 });
-  let output; let pendingExecutionOutcome; let primaryError;
+  let output; let pendingExecutionOutcome; let primaryError; let settledStartedExecution = false;
   try {
     if (gatePath) {
       gateDeadline = setTimeout(() => {
@@ -420,10 +420,15 @@ async function deterministicConversationScenario(context, scenario, options = {}
         executionOutcome,
         gateDeadlineReached.then(() => /** @type {{kind:'deadline'}} */ ({ kind: 'deadline' })),
       ]);
+      settledStartedExecution = outcome.kind !== 'deadline';
       if (outcome.kind === 'rejected') primaryError ??= outcome.error;
       else if (outcome.kind === 'deadline') primaryError ??= gateWriteError;
     }
     if (gateDeadline) clearTimeout(gateDeadline);
+    if (settledStartedExecution && (!options.runExecution || options.waitForDurableTerminal)) {
+      try { await (options.waitForDurableTerminal ?? waitForDurableConversationTerminal)(context, owner); }
+      catch (error) { primaryError ??= error; }
+    }
   }
   if (primaryError) throw primaryError;
   if (gateTimedOut || !observedExpectedLine && completionAfterProgressLine) throw new Error(`expected public progress line was not dispatched: ${completionAfterProgressLine}`);
@@ -450,6 +455,22 @@ async function waitForDurableConversationProbe(context, record, ownerSessionId, 
     }
     return false;
   }, `conversation probe for ${ownerSessionId} was not durably persisted before completion`);
+}
+
+/** @param {any} context @param {{sessionId:string,turnId:string,permissionMode:string}} owner */
+async function waitForDurableConversationTerminal(context, owner) {
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const owned = await store.listOwnedJobs(context.workspace, owner.sessionId);
+  assert.equal(owned.length, 1, 'conversation scenario must select one exact owned job');
+  const jobId = owned[0].id;
+  const status = await runCompanion(['status', jobId, '--wait', '--timeout-ms', '5000'], {
+    cwd: context.workspace, env: context.env, caller: owner,
+  });
+  assert.equal(status.job.id, jobId, 'conversation scenario status must preserve the exact job identity');
+  const stored = await store.readJob(context.workspace, jobId);
+  assert.equal(stored.ownerSessionId, owner.sessionId, 'conversation scenario terminal job must preserve its owner');
+  assert.ok(['succeeded', 'failed', 'cancelled'].includes(stored.status), 'conversation scenario job must be durably terminal');
+  return stored;
 }
 
 /** @param {any} context @param {string} record @param {string} scenario */
@@ -3086,6 +3107,7 @@ test('conversation online progress reaches stderr and preview while initial and 
 test('conversation scenario teardown settles its started execution after probe waiting fails', async () => {
   const context = await fixture();
   const injected = new Error('injected durable conversation probe failure');
+  let durableTerminalWaits = 0;
   await assert.rejects(deterministicConversationScenario(context, 'observed-traffic', {
     completionAfterProbe: { state: 'online', acceptedOnline: 2, rejectedSequence: 1 },
     env: { FAKE_ZCODE_COMPLETION_DELAY_MS: '100', FAKE_ZCODE_MALFORMED: 'session/read' },
@@ -3093,7 +3115,12 @@ test('conversation scenario teardown settles its started execution after probe w
       await waitForDurableConversationProbe(...args);
       throw injected;
     },
+    waitForDurableTerminal: async (...args) => {
+      durableTerminalWaits += 1;
+      return waitForDurableConversationTerminal(...args);
+    },
   }), (error) => error === injected);
+  assert.equal(durableTerminalWaits, 1, 'teardown must cross the durable terminal boundary after execution settlement');
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].status, 'failed', 'failed test setup must settle the released execution rejection before returning');
