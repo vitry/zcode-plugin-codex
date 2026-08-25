@@ -38,6 +38,10 @@ An **exact follow-up** targets that same persisted Codex child ID/path and
 operation. It does not spawn, substitute, adopt an unbound child, or select
 another binding.
 
+Exact child authority comes from Root's native explicit `followup_task` target,
+whose child-local ambient identity names that child when it runs, or one
+uniquely eligible complete binding. This adds no selector or public API.
+
 An **independent fresh child** is created by the active parent planner through
 the ordinary collision-free spawn route. It has no prior Rescue binding and
 starts one new ZCode session with `session/create`.
@@ -51,8 +55,8 @@ The following invariants are absolute:
   stopped/resumable child.
 - Path suffixes are identities, not preferences. In particular,
   `/root/zcode_rescue_task_2` must recover its own binding and session.
-- Missing, corrupt, contradictory, revoked, or ambiguous evidence fails closed
-  before job publication or Codex/ZCode RPC.
+- Missing, corrupt, contradictory, or ambiguous required evidence fails closed;
+  a valid revoked record is ineligible and cannot authorize.
 
 ## Routing contract
 
@@ -65,7 +69,8 @@ planner:
 2. Lists only persisted `thread_spawn` children of the exact parent session.
 3. Joins child ID, full path, Role/type, parent graph, and canonical workspace
    to durable Rescue bindings.
-4. Requires exactly one complete binding for the requested child operation.
+4. Uses native follow-up ambient child authority when present; otherwise
+   requires exactly one complete eligible binding.
 5. Reads the binding's original ZCode session from its exact anchor job.
 6. Emits one follow-up to the same child path and reserves a normal
    continuation against the binding's current generation.
@@ -76,9 +81,10 @@ No step may rank candidates by base path, `createdAt`, updated time, list
 position, latest job, latest session, or workspace proximity. No failure may
 fall back to another child, `session/create`, or fresh.
 
-Multiple exact bindings for the lookup identity, duplicate child IDs/paths, or
-disagreement between top-level and nested parent/path/Role metadata is
-ambiguous and fails closed with zero mutation and zero ZCode RPC.
+Without native exact-child authority, two or more complete usable bindings are
+ambiguous and fail with `RESCUE_CHILD_AMBIGUOUS`, zero mutation, and zero RPC.
+Duplicate child IDs/paths or disagreement between top-level and nested
+parent/path/Role metadata fails the same way.
 
 ### Fresh
 
@@ -120,10 +126,12 @@ Only one complete match may be activated. The existing lock/CAS atomically
 changes that exact binding to active continuation state and reserves the next
 job. A competing or stale consumer performs no write and no RPC.
 
-The implementation must first resolve the requested child identity, then its
-binding. Therefore a request for `/root/zcode_rescue_task_2` resolves `_2`'s
-own record and ZCode session even when a base-path binding is present, newer,
-older, active, or listed first.
+Resolve exact child authority, then binding eligibility. In the incident,
+`/root/zcode_rescue_task_2` is the sole complete eligible binding; an unbound,
+host-only, revoked, nonmatching, or incomplete base is only a distractor. `_2`
+wins by eligibility, never suffix. If both are usable without native exact
+authority, return `RESCUE_CHILD_AMBIGUOUS`; an explicit native follow-up to
+`_2` instead supplies its ambient exact authority inside that child.
 
 The following are never migration authority:
 
@@ -134,28 +142,31 @@ The following are never migration authority:
 - a cancelled, invalidated, explicitly closed, or otherwise revoked binding;
 - incomplete, corrupt, duplicate, contradictory, or ambiguous evidence.
 
-All such cases fail closed. Migration does not create a replacement session,
-change child identity, or authorize fresh.
+These grant no authority. A safely classified distractor is ineligible;
+unclassifiable evidence or no unique eligible result fails closed. Migration
+does not replace a session or child, or authorize fresh.
 
 ## Lifecycle and SessionEnd
 
 `SessionEnd` removes active root-turn/runtime authority and cleans preparation
-and runtime ownership according to the existing implementation. It does not
-close or revoke a completed exact binding. New state keeps that binding
-resumable by the same parent session and exact child after the parent is
-resumed. Legacy v1/v2 `closed/session-ended` is compatibility resumability
-state, not an explicit close, and is lazily migrated by the exact rules above.
+and runtime ownership according to the existing implementation. It preserves
+only an exact completed binding with no active current attempt, plus an exact
+v1/v2 `closed/session-ended` migration candidate. Those remain resumable by
+the same parent session and child; the legacy state is compatibility
+resumability state and is lazily migrated by the exact rules above.
 
-An active writable job continues to use the existing orphan, stop,
-cancellation-lock, worker-lease, and writable-guard safety. An unacknowledged
-stop retains the guard. Completion observed before or after a stop race is
-reconciled through durable state and its result artifact.
+An active writable job continues to use PR #44's existing orphan, stop,
+cancellation-lock, worker-lease, and writable-guard safety. After SessionEnd
+confirms remote stop/cancellation it may close that exact active operation. An
+unacknowledged stop retains the guard and does not infer completion or
+resumability. Completion observed before or after a stop race is reconciled
+through durable state and its result artifact.
 
-A binding becomes permanently closed only through explicit cancel, explicit
-close/revoke, or explicit invalidation of that exact child operation.
-Lifecycle cleanup, app-server unload, broker restart, failed observation, and
-sibling activity do not revoke it. Closing or cancelling one child must leave
-every sibling binding byte-identical.
+Otherwise a binding becomes permanently closed only through explicit cancel,
+close/revoke, or invalidation of that exact child operation. App-server unload,
+broker restart, failed observation, and sibling activity do not revoke an
+eligible completed binding. Every close or cancel must leave sibling bindings
+byte-identical.
 
 ## Response loss
 
@@ -209,12 +220,12 @@ binding mismatch is rejected for this rejoin route.
 
 | Original problem | Decision | Concrete acceptance test |
 | --- | --- | --- |
-| 1. 2026-08-24 `RESCUE_BINDING_INVALID` because `SessionEnd` closed the binding | Completion and unload remain resumable; only explicit revoke is permanent | A4: end a completed owner session, resume the same parent/child, and prove no close or sibling mutation |
-| 2. The real binding is `/root/zcode_rescue_task_2`, never fallback `task` | Resolve child identity before exact binding; forbid base/latest/order ranking | A1: place base and `_2` histories in adversarial order and resume only `_2`'s original session |
+| 1. 2026-08-24 `RESCUE_BINDING_INVALID` because `SessionEnd` closed a completed binding | Preserve completed/no-active-attempt and exact legacy migration candidates; retain active-job settlement safety | A4: completed resumes, while confirmed active stop may close only that operation and never siblings |
+| 2. The real eligible binding is `/root/zcode_rescue_task_2`, never fallback `task` | Eligibility or native exact-child authority decides; suffix/base/latest never does | A1: `_2` sole eligible wins; two usable bindings without exact authority are ambiguous |
 | 3. 2026-08-25 `EXECUTOR_IDENTITY_INVALID` from active-only rejection of `notLoaded` | Independent app-server `notLoaded` is acceptable only with exact identity plus binding | A5: accept exact `notLoaded`; reject idle, systemError, or identity/binding mismatch |
 | 4. Same child must retain original-thread semantics and `zcodeSessionId` | Follow up the same Codex ID/path and call `session/resume`, never create | A2: same-parent same-child follow-up proves exact thread/path and original session with zero create/spawn |
 | 5. Only a new child is fresh; task 2 must not close task 1 | Fresh always collision-free spawns; siblings are byte-identical | A3: existing task 1/task 2 plus fresh yields a third child and one create, with no old follow-up/close |
-| 6. Completed, unloaded, and legacy `session-ended` remain resumable | New `SessionEnd` does not close; exact v1/v2 tombstone migrates; explicit revoke blocks | A4: cover all three resumable states, then prove exact cancel/revoke alone permanently closes |
+| 6. Completed/unloaded and exact legacy `session-ended` remain resumable | Limit preservation to no-active-attempt completion/candidate; confirmed active stop and explicit revoke may close exactly one operation | A4: cover preservation, confirmed active settlement, unacknowledged stop guard, and sibling isolation |
 | 7. Response loss must use status/result | Reconcile the existing durable job/session/artifact; never resend | A6: lose status and result responses, recover via `status`/`result`, and prove one accepted send |
 | 8. Stale cancel must not stop a new operation | Re-read existing job/binding operation, generation, and lease guards immediately before stop | A7: advance the binding, release stale cancel, and prove zero stop plus untouched new operation |
 
@@ -223,18 +234,25 @@ binding mismatch is rejected for this rejoin route.
 Acceptance is limited to these eight regressions; parameterized variants may
 share one test:
 
-1. **A1 exact `_2` migration:** base plus `/root/zcode_rescue_task_2` legacy
-   `closed/session-ended` history recovers `_2`'s original non-empty
-   `zcodeSessionId`, independent of timestamps/list order, with no fallback.
+1. **A1 exact `_2` authority/migration:** `_2` is the only complete eligible
+   legacy `closed/session-ended` binding while base is parameterized as
+   unbound, host-only, revoked, nonmatching, or incomplete; recover `_2`'s
+   original `zcodeSessionId` without suffix/order inference. If base and `_2`
+   are both usable and no native follow-up supplies exact child authority,
+   return `RESCUE_CHILD_AMBIGUOUS` with zero mutation/RPC; an explicit native
+   follow-up to `_2` supplies its ambient exact authority without a new API.
 2. **A2 same-child continuation:** same parent, Codex child ID/path, operation,
    and workspace produce one follow-up and exact `session/resume`; zero spawn,
    adoption, or `session/create` occurs.
 3. **A3 independent fresh:** with stopped/resumable task 1 and task 2, fresh
    collision-free spawns a new child and calls `session/create` once; old
    children receive no follow-up and their bindings remain byte-identical.
-4. **A4 lifecycle/revoke:** completed, unloaded, and legacy session-ended exact
-   bindings resume after `SessionEnd`; active orphan guards remain; only an
-   explicit exact cancel/close/invalidation revokes, without closing siblings.
+4. **A4 lifecycle/revoke:** a completed exact binding with no active current
+   attempt, and an exact legacy session-ended candidate, resume after
+   `SessionEnd`. For an active attempt, confirmed remote stop/cancellation may
+   close only that operation; an unacknowledged stop retains the existing
+   guard. Explicit exact revocation also closes only its target; every sibling
+   remains byte-identical.
 5. **A5 independent observation:** separate app-server `notLoaded` plus exact
    parent graph, child ID/path/Role, workspace, and binding rejoins; idle,
    systemError, foreign/contradictory metadata, jobs-only, duplicate, ambiguous,
