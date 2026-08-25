@@ -90,10 +90,10 @@ export async function planRescueActivation(input) {
       if (unboundLegacy.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
       selected = unboundLegacy[0] ?? null;
     }
-  } else if (provenCandidates.length > 0) {
-    selected = preferredCandidate(provenCandidates);
-  } else if (legacyCandidates.length > 0) {
-    selected = preferredCandidate(legacyCandidates);
+  } else {
+    const usable = [...provenCandidates, ...legacyCandidates];
+    if (usable.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
+    selected = usable[0] ?? null;
   }
 
   if (selected !== null) {
@@ -166,11 +166,6 @@ function classifyHost(host) {
   if (host.agentRole === 'zcode-rescue') return 'named';
   if (host.agentRole === null) return 'generic';
   return 'occupancy';
-}
-
-/** @param {any[]} candidates */
-function preferredCandidate(candidates) {
-  return candidates.find((candidate) => candidate.host.agentPath === BASE_AGENT_PATH) ?? [...candidates].sort(compareNewest)[0];
 }
 
 /** @param {Function} resolveBinding @param {any} input */
@@ -268,8 +263,6 @@ function allocateTaskName(occupied) {
   throw plannerError('RESCUE_CHILD_AMBIGUOUS');
 }
 
-/** @param {any} left @param {any} right */
-function compareNewest(left, right) { return right.host.createdAt - left.host.createdAt || right.host.id.localeCompare(left.host.id); }
 /** @param {string} value */
 function pathDigest(value) { return createHash('sha256').update(value).digest('hex'); }
 /** @param {unknown} value */

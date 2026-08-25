@@ -443,6 +443,21 @@ test('duplicate IDs, duplicate paths, and two usable resume bindings fail as amb
   await assert.rejects(planRescueActivation({ ...input, ...adapters([one, { ...duplicatePath, agentPath: '/root/zcode_rescue_task_2', status: { type: 'active', activeFlags: [] } }], values, bound) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
 });
 
+test('two usable bindings without an explicit choice are ambiguous instead of preferring base or time', async () => {
+  const input = await context(); input.envelope.options = {};
+  const base = child(input.caller.workspace);
+  const newer = child(input.caller.workspace, { id: 'child-2', agentPath: '/root/zcode_rescue_task_2', createdAt: 300, updatedAt: 400 });
+  const values = new Map([
+    [base.id, { executor: executor(input.caller.workspace), executionWorkspace: input.caller.workspace }],
+    [newer.id, { executor: executor(input.caller.workspace, { agentId: newer.id, createdAt: '2026-08-21T00:00:00.000Z' }), executionWorkspace: input.caller.workspace }],
+  ]);
+  const bindings = new Map([
+    [base.id, { kind: 'bound', binding: modernBinding(input, base) }],
+    [newer.id, { kind: 'bound', binding: modernBinding(input, newer, { operationId: '9'.repeat(64), anchorJobId: 'a'.repeat(64), currentJobId: 'a'.repeat(64) }) }],
+  ]);
+  await assert.rejects(planRescueActivation({ ...input, ...adapters([base, newer], values, bindings) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
+});
+
 test('incomplete discovery fails closed and redacts adapter payloads', async () => {
   const input = await context();
   for (const listChildren of [

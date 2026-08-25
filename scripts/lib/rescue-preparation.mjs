@@ -230,6 +230,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
               && envelope.options.resume === 'resume'
               && sameConsumedTurn;
             const freshReplan = envelope.options.resume === 'fresh'
+              && kind === 'v2'
               && current.envelope.options.resume === undefined
               && current.source === envelope.source
               && sameConsumedTurn;

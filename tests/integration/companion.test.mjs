@@ -1029,7 +1029,7 @@ test('background revoke-first persists no plaintext task or focus before its exe
     agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
   const secretTask = 'REVOKE_FIRST_PRIVATE_TASK_7f194c';
   const reserved = await runCompanion(['rescue', '--background', '--fresh', secretTask], {
-    cwd: workspace, env: context.env, caller: caller(parentSessionId), executor,
+    cwd: workspace, env: context.env, caller: caller(parentSessionId), executor, rescueActivationKind: 'spawn',
   });
   assert.doesNotMatch(JSON.stringify(reserved), /rescueExecutionReservation|rescueJobSpecCommitment|rescueLegacyJobSpecProof/u);
   const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace });
@@ -1100,7 +1100,7 @@ test('background resume with model remains sealed and revoke-first performs no R
     agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
   const record = join(context.directory, 'sealed-resume-model.jsonl'); await writeFile(record, '');
   const first = await runCompanion(['rescue', '--fresh', 'establish sealed resume'], {
-    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor,
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor, rescueActivationKind: 'spawn',
   });
   await writeFile(record, '');
   const task = 'PRIVATE_RESUME_TASK_21af7d'; const model = 'fake2/other';
@@ -1136,7 +1136,7 @@ test('bearer cannot re-seal a valid replacement task model effort resume and can
     agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
   const record = join(context.directory, 'reseal-rpc.jsonl'); await writeFile(record, '');
   const anchor = await runCompanion(['rescue', '--fresh', 'establish exact anchor'], {
-    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor,
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor, rescueActivationKind: 'spawn',
   });
   const store = createStateStore({ dataRoot: context.dataRoot });
   const foreignCandidate = await store.reserveJob({ workspace, ownerSessionId: parentSessionId, ownerTurnId: 'foreign-candidate',
@@ -1310,7 +1310,7 @@ test('background production execution claims an exact owner-v1 classless v2-boun
     agentPath: '/root/zcode_rescue_task', workspace, parentPermissionMode: 'workspace-write' };
   const record = join(context.directory, 'legacy-classless-background.jsonl'); await writeFile(record, '');
   const reserved = await runCompanion(['rescue', '--background', '--fresh', 'legacy background claim'], {
-    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor,
+    cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record }, caller: caller(parentSessionId), executor, rescueActivationKind: 'spawn',
   });
   await downgradeCompanionReservationToOwnerV1(context, reserved.job.id, 2);
   const result = await runCompanion(reserved.privateInvocation, {
@@ -1689,7 +1689,7 @@ test('spawn-route preparation binds the newly active child path before ZCode exe
   assert.equal(output.job.status, 'succeeded'); assert.equal(output.result, 'done');
 });
 
-test('pending fresh invalidates the consumed old-child preparation and lets the parent prepare a new spawn', async () => {
+test('a completed preparation without a consumed pending fresh choice cannot be reprepared', async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const preparations = createRescuePreparationStore({ dataRoot: context.dataRoot });
   const caller = { sessionId: 'pending-fresh-parent', turnId: 'pending-fresh-turn', workspace,
@@ -1700,6 +1700,10 @@ test('pending fresh invalidates the consumed old-child preparation and lets the 
     activation: { kind: 'reactivate', executorAgentId: 'old-child', agentPathDigest: oldDigest } });
   await preparations.consume({ sessionId: caller.sessionId, turnId: caller.turnId, workspace,
     permissionMode: caller.permissionMode, executorAgentId: 'old-child', activationProof: { kind: 'reactivate', agentPathDigest: oldDigest } });
+  const storage = await resolveWorkspaceStorage(context);
+  const preparationName = (await readdir(join(storage.directory, 'invocations', 'prepared')))[0];
+  const preparationPath = join(storage.directory, 'invocations', 'prepared', preparationName);
+  const before = await readFile(preparationPath);
 
   const hosts = [
     { id: 'old-child', parentThreadId: caller.sessionId, agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue', cwd: workspace, status: { type: 'idle' }, createdAt: 1, updatedAt: 2 },
@@ -1712,17 +1716,10 @@ test('pending fresh invalidates the consumed old-child preparation and lets the 
     resolveStoppedExecutor: async () => { throw new Error('fresh must not inspect old children'); },
     resolveBinding: async () => { throw new Error('fresh must not inspect old bindings'); } });
   assert.deepEqual(planned.directive, { version: 1, action: 'spawn', taskName: 'zcode_rescue_task_3' });
-  await preparations.save({ ...caller,
-    envelope: { version: 1, source: 'explicit', task: 'continue or replace', options: { execution: 'foreground', resume: 'fresh' } },
-    activation: planned.activation });
-  const fresh = await preparations.consume({ sessionId: caller.sessionId, turnId: caller.turnId, workspace,
-    permissionMode: caller.permissionMode, executorAgentId: 'new-child',
-    activationProof: { kind: 'spawn', taskName: 'zcode_rescue_task_3', agentPathDigest: planned.activation.agentPathDigest } });
-  assert.equal(fresh.generation, 1); assert.equal(fresh.requiredExecutorAgentId, null);
-  assert.equal(fresh.executorAgentId, 'new-child'); assert.equal(fresh.envelope.options.resume, 'fresh');
   await assert.rejects(preparations.save({ ...caller,
-    envelope: { version: 1, source: 'explicit', task: 'continue or replace again', options: { execution: 'foreground', resume: 'fresh' } },
+    envelope: { version: 1, source: 'explicit', task: 'continue or replace', options: { execution: 'foreground', resume: 'fresh' } },
     activation: planned.activation }), { code: 'RESCUE_PREPARATION_EXISTS' });
+  assert.deepEqual(await readFile(preparationPath), before);
 });
 
 test('prepare rejects malformed or inconsistent planner authority before saving', async () => {
@@ -3759,7 +3756,7 @@ test('an executor-bound background conflict aborts after discovery with zero pub
   const boundCaller = caller('bound-new-owner', 'bound-origin');
   const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', parentSessionId: boundCaller.sessionId, parentTurnId: boundCaller.turnId, parentPermissionMode: boundCaller.permissionMode, workspace: context.workspace };
   await assert.rejects(runCompanion(['rescue', '--background', '--fresh', 'stop bound retry'], {
-    cwd: context.workspace, env: context.env, caller: boundCaller, executor, signal: controller.signal,
+    cwd: context.workspace, env: context.env, caller: boundCaller, executor, rescueActivationKind: 'spawn', signal: controller.signal,
     dependencies: {
       discoverLaunch: async () => { controller.abort(interruption); return { command: process.execPath, args: [fake], target: fake }; },
       createManagedZCodeClient: async () => { effects.clients += 1; throw new Error('must not create'); },
@@ -3987,18 +3984,33 @@ test('rescue requires an explicit choice when an owned resumable session exists'
   assert.doesNotMatch(resumeLog, /PRIVATE_REASONING|RAW_TOOL_OUTPUT|CAPABILITY_TOKEN/);
 });
 
-test('trusted bound routing keeps choice identity private and permits only fresh permission replacement', async () => {
-  const context = await fixture(); const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', parentSessionId: 'bound-parent', parentTurnId: 'turn-a', parentPermissionMode: 'workspace-write', workspace: context.workspace };
-  const initial = await runCompanion(['rescue', '--fresh', 'bound first'], { cwd: context.workspace, env: context.env, caller: caller('bound-parent', 'turn-a'), executor });
-  assert.equal(initial.job.status, 'succeeded');
-  const choice = await runCompanion(['rescue', 'bound next'], { cwd: context.workspace, env: context.env, caller: caller('bound-parent', 'turn-b'), executor });
-  assert.deepEqual(choice, { type: 'needs-choice', choices: ['--resume', '--fresh'] });
-  assert.doesNotMatch(JSON.stringify(choice), /bound-child|bound-parent|[a-f0-9]{64}/u);
-  const changedCaller = { ...caller('bound-parent', 'turn-c'), permissionMode: 'read-only' };
-  await assert.rejects(runCompanion(['rescue', '--resume', 'wrong permission'], { cwd: context.workspace, env: context.env, caller: changedCaller, executor }), { code: 'RESCUE_BINDING_INVALID' });
-  const replaced = await runCompanion(['rescue', '--fresh', 'authorized replacement'], { cwd: context.workspace, env: context.env, caller: changedCaller, executor });
-  assert.equal(replaced.job.status, 'succeeded'); assert.notEqual(replaced.job.zcodeSessionId, initial.job.zcodeSessionId);
-  assert.equal((await createStateStore({ dataRoot: context.dataRoot }).resolveRescueBinding({ workspace: context.workspace, parentSessionId: 'bound-parent', executorAgentId: 'bound-child', executorAgentType: 'zcode-rescue', executorParentTurnId: 'turn-a', executorParentPermissionMode: 'workspace-write', permissionMode: 'read-only' })).kind, 'bound');
+test('trusted bound routing rejects fresh without spawn preparation before job binding or ZCode mutation', async () => {
+  const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+  const executor = { agentId: 'bound-child', agentType: 'zcode-rescue', agentPath: '/root/zcode_rescue_task', parentSessionId: 'bound-parent', parentTurnId: 'turn-a', parentPermissionMode: 'workspace-write', workspace: context.workspace };
+  const reservation = { workspace: context.workspace, ownerSessionId: 'bound-parent', ownerTurnId: 'turn-a', command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } };
+  const initial = (await store.reserveFreshRescueJob({ workspace: context.workspace, reservation, executor })).job;
+  await startWritableRescueForTest(store, context.workspace, initial, { startedAt: new Date().toISOString(), zcodeSessionId: 'bound-session' });
+  await store.finishJob(context.workspace, initial.id, ['running'], 'succeeded');
+  const storage = await resolveWorkspaceStorage(context); const bindingName = (await readdir(storage.directory)).find((name) => name.startsWith('rescue-binding-session-'));
+  assert.ok(bindingName); const bindingPath = join(storage.directory, bindingName); const bindingBefore = await readFile(bindingPath); const jobsBefore = await store.listJobs(context.workspace);
+  await assert.rejects(runCompanion(['rescue', '--fresh', 'forbidden replacement'], {
+    cwd: context.workspace, env: context.env, caller: { ...caller('bound-parent', 'turn-c'), permissionMode: 'read-only' }, executor,
+  }), { code: 'RESCUE_PREPARATION_MISMATCH' });
+  assert.deepEqual(await store.listJobs(context.workspace), jobsBefore); assert.deepEqual(await readFile(bindingPath), bindingBefore);
+});
+
+test('persisted pre-activation fresh preparation cannot execute in an existing child', async () => {
+  const context = await fixture(); const identity = createIdentityStore({ dataRoot: context.dataRoot }); const store = createStateStore({ dataRoot: context.dataRoot });
+  const record = join(context.directory, 'pre-activation-fresh.jsonl');
+  await identity.beginCallerTurn({ sessionId: 'old-prep-parent', turnId: 'old-prep-turn', workspace: context.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh old preparation' });
+  await createRescuePreparationStore({ dataRoot: context.dataRoot }).save({ sessionId: 'old-prep-parent', turnId: 'old-prep-turn', workspace: context.workspace,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue --fresh old preparation', envelope: { version: 1, source: 'explicit', task: 'old preparation', options: { execution: 'foreground', resume: 'fresh' } } });
+  await markForwarding(context.dataRoot, { session_id: 'old-prep-parent', turn_id: 'old-prep-child-turn', cwd: context.workspace, hook_event_name: 'SubagentStart', agent_id: 'old-prep-child', agent_type: 'zcode-rescue' },
+    await identity.resolveActiveTurn({ sessionId: 'old-prep-parent', workspace: context.workspace }));
+  const jobsBefore = await store.listJobs(context.workspace);
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace,
+    env: { ...context.env, CODEX_THREAD_ID: 'old-prep-child', FAKE_ZCODE_RECORD: record } }), { code: 'RESCUE_PREPARATION_MISMATCH' });
+  assert.deepEqual(await store.listJobs(context.workspace), jobsBefore); await assert.rejects(readFile(record), { code: 'ENOENT' });
 });
 
 test('resumed rescue cannot reuse a historical visible result when the current turn is hidden', async () => {

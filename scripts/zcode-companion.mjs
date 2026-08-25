@@ -56,7 +56,7 @@ const SAFE_BOUND_STATUS_ERRORS = new Set([
   'EXECUTOR_ROUTE_INVALID', 'EXECUTOR_ROUTE_NOT_FOUND', 'EXECUTOR_STATE_MISMATCH',
 ]);
 
-/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,executor?:any,authority?:any,legacyActivation?:boolean,rescueRoute?:any,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
+/** @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,authorization?:Record<string,unknown>,dependencies?:any,caller?:any,executor?:any,authority?:any,legacyActivation?:boolean,rescueRoute?:any,rescueActivationKind?:string,startupAck?:()=>Promise<void>,originalPrompt?:string,autoLaunchBackground?:boolean,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
 export async function runCompanion(argv, runtime = {}) {
   const cwd = runtime.cwd ?? process.cwd(); const env = runtime.env ?? process.env;
   const pluginRoot = activePluginRoot; const parsed = parseArgs(argv); const pluginData = resolvePluginDataContext({ env, pluginRoot, entryPath: invocationEntryPath() }); const { dataRoot } = pluginData;
@@ -139,7 +139,7 @@ export async function runCompanion(argv, runtime = {}) {
     }
     finally { await client.close().catch(() => {}); }
   }
-  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, executor: runtime.executor, authority: runtime.authority, legacyActivation: runtime.legacyActivation, rescueRoute: runtime.rescueRoute, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
+  return startPublic({ parsed, caller, cwd, env, dataRoot, identity, store, controller, executor: runtime.executor, authority: runtime.authority, legacyActivation: runtime.legacyActivation, rescueRoute: runtime.rescueRoute, rescueActivationKind: runtime.rescueActivationKind, dependencies: runtime.dependencies, originalPrompt: runtime.originalPrompt, autoLaunchBackground: runtime.autoLaunchBackground, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
 }
 
 /** Resolve a hook-recorded active turn and invoke through ordinary stdio without caller-supplied authorization. @param {string[]} argv @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:NodeJS.ReadableStream,preparationTransport?:{writeReady:(line:string)=>unknown|Promise<unknown>},dependencies?:any,progressWriter?:(line:string)=>void,progressRelayWriter?:(record:{sequence:number,phase:string,code:string,observedAt:string})=>void|Promise<void>,progressDependencies?:any,signal?:AbortSignal}} [runtime] */
@@ -213,6 +213,9 @@ export async function runDirectInvocation(argv, runtime = {}) {
               ? { beforeLegacyConsume: () => validateLegacyConvergedChild(host, originalExecutor, caller) } : {}) });
         }
       }
+    }
+    if (prepared.envelope.options.resume === 'fresh' && prepared.activation?.kind !== 'spawn') {
+      throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
     }
     if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && executor) validateLegacyConvergedChild(host, executor, caller);
     if (executor && host) {
@@ -290,6 +293,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     const preparedArgv = rescueArgvFromPreparation(prepared.envelope);
     const output = await runCompanion(preparedArgv, { cwd: caller.workspace, env, caller, executor, authority,
       legacyActivation: ['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind), rescueRoute,
+      rescueActivationKind: prepared.activation?.kind,
       originalPrompt: undefined, autoLaunchBackground: true, dependencies: runtime.dependencies, progressWriter: runtime.progressWriter, progressRelayWriter: runtime.progressRelayWriter, progressDependencies: runtime.progressDependencies, signal: runtime.signal });
     if (output?.type === 'needs-choice') await saveRescuePendingChoice({ dataRoot, caller, cwd: caller.workspace, source: prepared.envelope.source, executor, authority, argv: preparedArgv, output });
     return output;
@@ -332,7 +336,10 @@ export async function runDirectInvocation(argv, runtime = {}) {
         turnId: caller.turnId, permissionMode: caller.permissionMode, parentGenerationId: caller.generationId,
         originWorkspace: caller.originWorkspace, executionWorkspace: caller.workspace, ...(legacyChoiceFallback ? { requireLegacyAuthority: true } : {}),
       } : {}) }); executionCaller = invocation.caller; authority = invocation.authority;
-    if (command === 'rescue' && choice === 'fresh') return { type: 'parent-replan', command: 'rescue' };
+    if (command === 'rescue' && choice === 'fresh') {
+      await authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, invocation });
+      return { type: 'parent-replan', command: 'rescue' };
+    }
     if (command === 'rescue' && invocation.route?.routeKind !== 'bound' && !authority) {
       const refreshed = await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true });
       assertSameRoutedExecutionContext({ executor, executionWorkspace }, refreshed); executor = refreshed.executor;
@@ -495,6 +502,24 @@ async function saveRescuePendingChoice({ dataRoot, caller, cwd, source, executor
     command: 'rescue', source, executorAgentId, spec: { argv }, ...route, ...(authority ? { legacyAuthority: authority } : {}) });
 }
 
+/** @param {{dataRoot:string,caller:any,executorAgentId:string|undefined,invocation:any}} input */
+async function authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, invocation }) {
+  if (!executorAgentId || invocation?.source === undefined) throw new PluginError(
+    'PENDING_INVOCATION_INVALID', 'The pending invocation is invalid.',
+    { category: 'authorization', remedy: 'Repeat the original command in this Codex thread.' },
+  );
+  const parsed = parseArgs(invocation.argv);
+  const options = { ...parsed.options }; delete options.resume;
+  const envelope = { version: 1, source: invocation.source, task: parsed.positionals.join(' '), options };
+  const preparations = createRescuePreparationStore({ dataRoot });
+  await preparations.save({
+    ...caller,
+    recordedPrompt: invocation.source === 'explicit' ? '$zcode:rescue' : '',
+    envelope,
+  });
+  await preparations.consume({ ...caller, executorAgentId });
+}
+
 /** @param {any} executor @param {any} caller */
 function assertExecutorMatchesCaller(executor, caller) {
   if (executor.parentTurnId !== caller.turnId || executor.parentPermissionMode !== caller.permissionMode
@@ -617,6 +642,9 @@ async function startPublic(context) {
   const childAuthorized = Boolean(context.executor || context.authority);
   /** @type {any} */ let candidate = null; /** @type {any} */ let binding = null;
   if (parsed.command === 'rescue') {
+    if (childAuthorized && parsed.options.resume === 'fresh' && context.rescueActivationKind !== 'spawn') {
+      throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+    }
     if (childAuthorized) {
       if (parsed.options.resume !== 'fresh') {
         const lookup = {
