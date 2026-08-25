@@ -332,7 +332,7 @@ async function companionWithArchiveHandshake(context, args) {
   return result;
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'online',acceptedOnline:number,rejectedSequence:number},waitForDurableProbe?:typeof waitForDurableConversationProbe,writeGateFile?:(path:string,data:string,options:any)=>Promise<void>}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'online',acceptedOnline:number,rejectedSequence:number},waitForDurableProbe?:typeof waitForDurableConversationProbe,writeGateFile?:(path:string,data:string,options:any)=>Promise<void>,runExecution?:(...args:any[])=>PromiseLike<any>}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
@@ -361,7 +361,7 @@ async function deterministicConversationScenario(context, scenario, options = {}
     if (!executionController.signal.aborted) executionController.abort(gateWriteError);
   };
   if (gatePath && gateNonce) await (options.writeGateFile ?? writeFile)(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'held' }), { mode: 0o600 });
-  let output; let pendingExecution; let primaryError;
+  let output; let pendingExecutionOutcome; let primaryError;
   try {
     if (gatePath) {
       gateDeadline = setTimeout(() => {
@@ -370,7 +370,7 @@ async function deterministicConversationScenario(context, scenario, options = {}
       }, 15_000);
       gateDeadline.unref?.();
     }
-    pendingExecution = runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
+    const execution = (options.runExecution ?? runCompanion)(['rescue', '--fresh', `${scenario} conversation compatibility`], {
       cwd: context.workspace,
       env: {
         ...context.env, ...options.env, FAKE_ZCODE_CONVERSATION_SCENARIO: scenario, FAKE_ZCODE_RECORD: record,
@@ -388,6 +388,10 @@ async function deterministicConversationScenario(context, scenario, options = {}
       } } : {}),
       signal: executionController.signal,
     });
+    pendingExecutionOutcome = /** @type {PromiseLike<{kind:'fulfilled',value:any}|{kind:'rejected',error:unknown}>} */ (execution.then(
+      (value) => ({ kind: 'fulfilled', value }),
+      (error) => ({ kind: 'rejected', error }),
+    ));
     if (options.heartbeat) {
       await heartbeatReady;
       await waitForConversationProbeBoundary(context, record, scenario);
@@ -398,24 +402,22 @@ async function deterministicConversationScenario(context, scenario, options = {}
       await (options.waitForDurableProbe ?? waitForDurableConversationProbe)(context, record, owner.sessionId, options.completionAfterProbe);
       if (!await releaseGate()) throw gateWriteError;
     }
-    const execution = pendingExecution;
-    pendingExecution = undefined;
-    output = await execution;
+    const executionOutcome = pendingExecutionOutcome;
+    pendingExecutionOutcome = undefined;
+    const outcome = await executionOutcome;
+    if (outcome.kind === 'rejected') throw outcome.error;
+    output = outcome.value;
   } catch (error) {
     primaryError = executionController.signal.aborted && executionController.signal.reason === gateWriteError ? gateWriteError : error;
   } finally {
     const released = await releaseGate();
     if (!released) abortHeldExecution();
-    if (pendingExecution) {
-      const execution = pendingExecution;
-      pendingExecution = undefined;
-      const observed = /** @type {Promise<{kind:'fulfilled'}|{kind:'rejected',error:unknown}>} */ (execution.then(
-        () => ({ kind: 'fulfilled' }),
-        (error) => ({ kind: 'rejected', error }),
-      ));
+    if (pendingExecutionOutcome) {
+      const executionOutcome = pendingExecutionOutcome;
+      pendingExecutionOutcome = undefined;
       /** @type {{kind:'fulfilled'}|{kind:'rejected',error:unknown}|{kind:'deadline'}} */
-      const outcome = released ? await observed : await Promise.race([
-        observed,
+      const outcome = released ? await executionOutcome : await Promise.race([
+        executionOutcome,
         gateDeadlineReached.then(() => /** @type {{kind:'deadline'}} */ ({ kind: 'deadline' })),
       ]);
       if (outcome.kind === 'rejected') primaryError ??= outcome.error;
@@ -3097,11 +3099,37 @@ test('conversation scenario teardown settles its started execution after probe w
   assert.equal(jobs[0].status, 'failed', 'failed test setup must settle the released execution rejection before returning');
 });
 
+test('conversation scenario observes execution rejection before durable probe waiting', async () => {
+  const context = await fixture();
+  const lateObserver = new Error('execution rejection observer was attached after probe waiting started');
+  const probeFailure = new Error('injected probe failure after observer boundary');
+  const executionFailure = new Error('injected early execution rejection');
+  let rejectionObserved = false;
+  /** @type {PromiseLike<never>} */
+  const controlledExecution = {
+    then(onFulfilled, onRejected) {
+      rejectionObserved = typeof onRejected === 'function';
+      return Promise.reject(executionFailure).then(onFulfilled, onRejected);
+    },
+  };
+  await assert.rejects(deterministicConversationScenario(context, 'observed-traffic', {
+    completionAfterProbe: { state: 'online', acceptedOnline: 2, rejectedSequence: 1 },
+    runExecution: () => controlledExecution,
+    waitForDurableProbe: async () => {
+      if (!rejectionObserved) throw lateObserver;
+      throw probeFailure;
+    },
+  }), (error) => error === probeFailure);
+  assert.equal(rejectionObserved, true);
+});
+
 test('conversation scenario gate write failure aborts held execution with bounded error priority', async () => {
   for (const original of [undefined, new Error('injected probe failure before gate release')]) {
     const context = await fixture();
     const gateFailure = new Error('injected gate release write failure');
     let releaseAttempts = 0;
+    let signalReleaseFailure = () => {};
+    const releaseFailed = new Promise((resolvePromise) => { signalReleaseFailure = () => resolvePromise(undefined); });
     /** @type {NodeJS.Timeout|undefined} */ let deadline;
     const execution = deterministicConversationScenario(context, 'observed-traffic', {
       completionAfterProbe: { state: 'online', acceptedOnline: 2, rejectedSequence: 1 },
@@ -3110,14 +3138,21 @@ test('conversation scenario gate write failure aborts held execution with bounde
         if (original) throw original;
       },
       writeGateFile: async (path, data, options) => {
-        if (JSON.parse(data).state === 'release') { releaseAttempts += 1; throw gateFailure; }
+        if (JSON.parse(data).state === 'release') { releaseAttempts += 1; signalReleaseFailure(); throw gateFailure; }
         await writeFile(path, data, options);
       },
     });
-    const bounded = Promise.race([execution, new Promise((_, reject) => {
-      deadline = setTimeout(() => reject(new Error('gate write failure teardown did not settle')), 2_000);
+    const observedExecution = execution.then(
+      (value) => ({ kind: 'fulfilled', value }),
+      (error) => ({ kind: 'rejected', error }),
+    );
+    await releaseFailed;
+    const outcome = await Promise.race([observedExecution, new Promise((resolvePromise) => {
+      deadline = setTimeout(() => resolvePromise({ kind: 'deadline' }), 2_000);
     })]).finally(() => clearTimeout(deadline));
-    await assert.rejects(bounded, (error) => error === (original ?? gateFailure));
+    assert.notEqual(outcome.kind, 'deadline', 'gate write failure teardown did not settle');
+    assert.equal(outcome.kind, 'rejected');
+    if (outcome.kind === 'rejected') assert.equal(outcome.error, original ?? gateFailure);
     assert.ok(releaseAttempts >= 1);
     const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
     assert.equal(jobs.length, 1);
