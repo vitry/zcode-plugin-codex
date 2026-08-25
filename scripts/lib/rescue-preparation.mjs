@@ -219,29 +219,40 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           if (occupied) {
             const current = await readPreparedRecord(storage, path, key, false);
             const kind = recordKind(current);
-            const boundResume = envelope.source === 'proactive'
-              && envelope.options.resume === 'resume'
-              && current.sessionId === input.sessionId
+            const sameConsumedTurn = current.sessionId === input.sessionId
               && current.turnId === input.turnId
               && current.workspace === storage.workspacePath
               && current.permissionMode === input.permissionMode
               && current.consumedAt !== null
               && safeIdentifier(current.executorAgentId)
               && createdAt >= Date.parse(current.consumedAt);
-            if (!boundResume) throw preparationError(
+            const boundResume = envelope.source === 'proactive'
+              && envelope.options.resume === 'resume'
+              && sameConsumedTurn;
+            const freshReplan = envelope.options.resume === 'fresh'
+              && current.envelope.options.resume === undefined
+              && current.source === envelope.source
+              && sameConsumedTurn;
+            if (!boundResume && !freshReplan) throw preparationError(
               'RESCUE_PREPARATION_EXISTS', 'A Rescue preparation already exists for this turn.',
             );
-            generation = kind === 'legacy' ? 2 : current.generation + 1;
-            if (!Number.isSafeInteger(generation)) throw invalidPreparation();
-            requiredExecutorAgentId = current.executorAgentId;
-            if (input.activation !== undefined) {
+            if (freshReplan) {
+              if (input.activation === undefined) throw invalidPreparation();
               activation = validateActivation(input.activation);
-              const legacyActivation = /** @type {any} */ (activation);
-              if (activation.kind === 'legacy-bound') {
-                if (legacyActivation.childThreadId !== requiredExecutorAgentId) throw invalidPreparation();
-              } else {
-                if (activation.kind === 'legacy-adopt') throw invalidPreparation();
-                activation = null;
+              if (activation.kind !== 'spawn') throw invalidPreparation();
+            } else {
+              generation = kind === 'legacy' ? 2 : current.generation + 1;
+              if (!Number.isSafeInteger(generation)) throw invalidPreparation();
+              requiredExecutorAgentId = current.executorAgentId;
+              if (input.activation !== undefined) {
+                activation = validateActivation(input.activation);
+                const legacyActivation = /** @type {any} */ (activation);
+                if (activation.kind === 'legacy-bound') {
+                  if (legacyActivation.childThreadId !== requiredExecutorAgentId) throw invalidPreparation();
+                } else {
+                  if (activation.kind === 'legacy-adopt') throw invalidPreparation();
+                  activation = null;
+                }
               }
             }
           } else {

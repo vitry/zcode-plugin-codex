@@ -337,51 +337,6 @@ async function rewriteOnlyExecutor(ctx, patch) {
   await writeFile(path, `${JSON.stringify({ ...record, ...patch }, null, 2)}\n`);
 }
 
-test('installed-style persisted child reactivation executes through the linked-worktree fake ZCode pipeline', async (t) => {
-  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
-  const target = join(ctx.directory, 'installed-reactivation-target');
-  await run('git', ['worktree', 'add', '-q', '-b', 'installed-reactivation-target', target], ctx.workspace);
-  const canonicalTarget = await realpath(target); const origin = await realpath(ctx.workspace);
-  const parentSessionId = 'installed-reactivation-parent'; const childId = 'installed-reactivation-child';
-  const childTurnId = 'installed-reactivation-child-turn'; const agentPath = '/root/zcode_rescue_task';
-  await identity.beginCallerTurn({
-    sessionId: parentSessionId, turnId: 'installed-old-parent-turn', workspace: origin,
-    permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait old installed task',
-    sessionStartedAt: '2026-08-23T00:00:00.000Z', sessionSource: 'startup', lifecycleResult: true,
-  });
-  await identity.resolveActiveTurn({ sessionId: parentSessionId, workspace: canonicalTarget, workspaceBinding: 'claim' });
-  await startRescueChild(ctx, parentSessionId, childId, childTurnId);
-  const stopped = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], {
-    cwd: origin, env: ctx.env, ordinaryInput: true,
-    input: { session_id: parentSessionId, turn_id: childTurnId, cwd: origin, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: 'zcode-rescue', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null },
-  });
-  assert.equal(stopped.code, 0, stopped.stderr || stopped.stdout);
-  await identity.beginCallerTurn({
-    sessionId: parentSessionId, turnId: 'installed-resumed-parent-turn', workspace: canonicalTarget,
-    permissionMode: 'workspace-write', prompt: '$zcode:rescue --fresh --wait recovered installed task',
-  });
-  const thread = persistedCodexChild({ id: childId, parentThreadId: parentSessionId, agentPath, cwd: origin });
-  const env = {
-    ...ctx.env,
-    FAKE_CODEX_THREAD_LIST_RESULTS_JSON: JSON.stringify({ data: [thread], nextCursor: null, backwardsCursor: null }),
-    FAKE_CODEX_THREAD_JSON: JSON.stringify(thread),
-  };
-  const prepared = await runDirectInvocation(['prepare', 'rescue'], {
-    cwd: canonicalTarget, env: { ...env, CODEX_THREAD_ID: parentSessionId },
-    input: Readable.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'recovered installed task', options: { execution: 'foreground', resume: 'fresh' } })}\n`]),
-  });
-  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue', route: { version: 2, action: 'followup', target: agentPath, assignment: 'zcode-rescue' } });
-  const record = join(ctx.directory, 'installed-reactivation-zcode.jsonl'); await writeFile(record, '');
-  const invoked = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], {
-    cwd: origin, env: { ...env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
-  });
-  assert.equal(invoked.code, 0, invoked.stderr || invoked.stdout); assert.equal(invoked.stdout, 'done\n');
-  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
-  assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 1);
-  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
-  assert.equal(calls.find((frame) => frame.method === 'session/create').params.workspace.workspacePath, canonicalTarget);
-});
-
 test('origin hook cwd executes prepared Rescue only in its bound linked worktree', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
   const target = join(ctx.directory, 'linked-execution');
@@ -442,8 +397,8 @@ test('origin cwd status reads only the exact foreground job bound in the linked 
   assert.deepEqual(await documentedOperationSnapshot(originStorage.directory), originOperation);
 });
 
-test('origin cwd choice fresh and resume consume and execute only in the linked worktree', async (t) => {
-  for (const choice of ['fresh', 'resume']) {
+test('origin cwd choice resume consumes and executes only in the linked worktree', async (t) => {
+  for (const choice of ['resume']) {
     const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
     const target = join(ctx.directory, `choice-${choice}-linked-execution`);
     await run('git', ['worktree', 'add', '-q', '-b', `choice-${choice}-linked-execution`, target], ctx.workspace);
@@ -565,8 +520,8 @@ test('origin status preserves malformed executor route vocabulary without leakin
   assertPrivateRouteFailure(result, scenario, ctx.workspace, target); assert.match(result.stdout, /EXECUTOR_ROUTE_INVALID/); assert.equal(result.stderr, '');
 });
 
-test('PR #39 frozen choice bytes consume once and keep fresh and resume transitions in target', async (t) => {
-  for (const choice of ['fresh', 'resume']) {
+test('PR #39 frozen choice bytes consume once and keep the fixed resume transition in target', async (t) => {
+  for (const choice of ['resume']) {
     const { ctx, scenario, target, immutable, env } = await materializePr39Scenario(t, 'choice'); const store = createStateStore({ dataRoot: ctx.dataRoot });
     const record = join(ctx.directory, `pr39-choice-${choice}-zcode.jsonl`); await writeFile(record, '');
     const pending = scenario.records.find((item) => item.classification === 'one-shot'); assert.ok(pending);
@@ -835,12 +790,17 @@ test('bound needs-choice snapshots candidate A and ignores a newer eligible cand
   assert.equal(binding.kind, 'bound'); assert.equal(binding.binding.anchorJobId, candidateA.id);
 });
 
-test('legacy executor-bound pending without a candidate rejects resume before reservation while fresh remains supported', async (t) => {
+test('legacy executor-bound pending without a candidate rejects resume and fresh returns to the parent without old-child work', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const pending = createInvocationStore({ dataRoot: ctx.dataRoot });
-  const peerRecord = join(ctx.directory, 'legacy-choice-peer.jsonl');
+  const peerRecord = join(ctx.directory, 'legacy-choice-peer.jsonl'); const seedRecord = join(ctx.directory, 'legacy-choice-seed.jsonl'); await writeFile(seedRecord, '');
   await identity.beginCallerTurn({ sessionId: 'legacy-parent', turnId: 'legacy-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue legacy' });
   await startRescueChild(ctx, 'legacy-parent', 'legacy-child', 'legacy-child-turn');
+  assert.equal((await invokePreparedRescue(ctx, 'legacy-parent', 'legacy-child', 'seed binding', { execution: 'foreground', resume: 'fresh' },
+    { ...ctx.env, FAKE_ZCODE_RECORD: seedRecord })).code, 0);
   await stopRescueChild(ctx, 'legacy-parent', 'legacy-child', 'legacy-child-turn');
+  const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace });
+  const bindingName = (await readdir(storage.directory)).find((name) => name.startsWith('rescue-binding-session-'));
+  assert.ok(bindingName); const bindingPath = join(storage.directory, bindingName); const bindingBytes = await readFile(bindingPath);
   const saveOldPending = async () => {
     await pending.savePending({ sessionId: 'legacy-parent', turnId: 'legacy-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', command: 'rescue', source: 'proactive', executorAgentId: 'legacy-child', spec: { argv: ['rescue', 'legacy task'] } });
     const storage = await resolveWorkspaceStorage({ dataRoot: ctx.dataRoot, workspace: ctx.workspace }); const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory);
@@ -854,8 +814,15 @@ test('legacy executor-bound pending without a candidate rejects resume before re
   assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), before);
   await assert.rejects(readFile(peerRecord, 'utf8'), { code: 'ENOENT' });
   await saveOldPending();
+  const beforeFresh = await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace);
   const fresh = await runChild(process.execPath, [cli, 'invoke-choice', 'rescue', 'fresh'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'legacy-child', FAKE_ZCODE_RECORD: peerRecord } });
   assert.equal(fresh.code, 0, fresh.stderr || fresh.stdout);
+  assert.deepEqual(JSON.parse(fresh.stdout), { type: 'parent-replan', command: 'rescue' });
+  assert.deepEqual(await createStateStore({ dataRoot: ctx.dataRoot }).listJobs(ctx.workspace), beforeFresh);
+  assert.deepEqual(await readFile(bindingPath), bindingBytes);
+  await assert.rejects(readFile(peerRecord, 'utf8'), { code: 'ENOENT' });
+  await assert.rejects(createInvocationStore({ dataRoot: ctx.dataRoot }).consumePending({ sessionId: 'legacy-parent', workspace: ctx.workspace,
+    command: 'rescue', choice: 'fresh', executorAgentId: 'legacy-child' }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
 });
 
 test('aged stopped executor cannot resume an eligible latest job when its exact binding is missing', async (t) => {
@@ -1291,13 +1258,13 @@ test('same-parent sibling cannot consume a pending Rescue choice without trusted
   );
 });
 
-test('installed Rescue instructions keep needs-choice and every wait continuation on one child', async () => {
+test('installed Rescue instructions keep resume on one child and route pending fresh back to a new parent-planned child', async () => {
   const source = await readFile(join(root, 'skills', 'rescue', 'SKILL.md'), 'utf8');
   const role = await readFile(join(root, 'agents', 'zcode-rescue.toml.template'), 'utf8');
   const resume = 'Continue the pending ZCode Rescue with resume. Run only the installed resume forwarder command and return its public stdout verbatim.';
   const fresh = 'Continue the pending ZCode Rescue with fresh. Run only the installed fresh forwarder command and return its public stdout verbatim.';
   assert.match(source, /Keep the returned child ID as `rescueChildId`/);
-  assert.match(source, /Do not call `spawn_agent` again after `rescueChildId` exists/);
+  assert.match(source, /While that operation remains selected, do not call `spawn_agent` again after `rescueChildId` exists/);
   assert.match(source, /ask the user exactly once/i);
   assert.match(source, /followup_task\(\{\s*target:\s*rescueChildId,\s*message:\s*continuationMessage,?\s*\}\)/s);
   assert.match(source, /wait_agent\(\{\s*timeout_ms:\s*30000\s*\}\)/);
@@ -1307,6 +1274,8 @@ test('installed Rescue instructions keep needs-choice and every wait continuatio
   assert.match(role, /return a `needs-choice` response byte-for-byte and stop without selecting/i);
   assert.match(role, /For the exact resume continuation above, run only:[\s\S]+invoke-choice rescue resume/);
   assert.match(role, /For the exact fresh continuation above, run only:[\s\S]+invoke-choice rescue fresh/);
+  assert.match(source, /`parent-replan`[\s\S]+prepare[\s\S]+spawn/i);
+  assert.match(source, /old child[\s\S]+no ZCode/i);
 });
 
 test('installed named and generic Rescue forwarders define terminal yielded-execution handling identically', async () => {

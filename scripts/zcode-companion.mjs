@@ -241,9 +241,6 @@ export async function runDirectInvocation(argv, runtime = {}) {
       if (createHash('sha256').update(agentPath).digest('hex') !== prepared.activation.agentPathDigest) throw rescueRouteInvalid();
       executor = { ...executor, agentPath };
     }
-    const reactivatedFresh = prepared.generation === 1
-      && prepared.activation?.kind === 'reactivate'
-      && prepared.envelope.options.resume === 'fresh';
     let rescueRoute = recoveredRescueRoute;
     let authority;
     if (['legacy-adopt', 'legacy-bound'].includes(prepared.activation?.kind) && !executor) {
@@ -253,7 +250,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
         executionWorkspace: caller.workspace,
       });
     }
-    if ((!executor || !executor.active) && !reactivatedFresh && prepared.activation?.kind !== 'legacy-adopt') {
+    if ((!executor || !executor.active) && prepared.activation?.kind !== 'legacy-adopt') {
       const state = createStateStore({ dataRoot });
       let lookup = executor ? bindingLookup(executor, caller.workspace) : legacyBindingLookup(host, caller);
       let migrationProof;
@@ -335,6 +332,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
         turnId: caller.turnId, permissionMode: caller.permissionMode, parentGenerationId: caller.generationId,
         originWorkspace: caller.originWorkspace, executionWorkspace: caller.workspace, ...(legacyChoiceFallback ? { requireLegacyAuthority: true } : {}),
       } : {}) }); executionCaller = invocation.caller; authority = invocation.authority;
+    if (command === 'rescue' && choice === 'fresh') return { type: 'parent-replan', command: 'rescue' };
     if (command === 'rescue' && invocation.route?.routeKind !== 'bound' && !authority) {
       const refreshed = await resolveRoutedForwardingExecutor(dataRoot, cwd, ambientThreadId, { continuation: true });
       assertSameRoutedExecutionContext({ executor, executionWorkspace }, refreshed); executor = refreshed.executor;

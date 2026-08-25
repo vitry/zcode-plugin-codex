@@ -50,6 +50,7 @@ export async function planRescueActivation(input) {
   if (!Array.isArray(children) || children.length > MAX_CHILDREN) throw plannerError('CODEX_CHILD_DISCOVERY_FAILED');
   const hostChildren = validateChildren(children, input.caller.sessionId);
   const resume = input.envelope.options?.resume === 'resume';
+  if (input.envelope.options?.resume === 'fresh') return spawnPlan(hostChildren);
   const provenCandidates = []; const legacyCandidates = [];
   for (const host of hostChildren) {
     const hostClass = classifyHost(host);
@@ -105,6 +106,11 @@ export async function planRescueActivation(input) {
     const assignment = selected.executor?.agentType ?? 'zcode-rescue';
     return { activation, directive: validateRescueRouteDirective({ version: 2, action: 'followup', target: selected.host.agentPath, assignment }) };
   }
+  return spawnPlan(hostChildren);
+}
+
+/** @param {any[]} hostChildren */
+function spawnPlan(hostChildren) {
   const occupied = new Set(hostChildren.map((host) => host.agentPath));
   const taskName = allocateTaskName(occupied);
   const agentPath = `/root/${taskName}`;
