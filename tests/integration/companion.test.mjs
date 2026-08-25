@@ -332,13 +332,13 @@ async function companionWithArchiveHandshake(context, args) {
   return result;
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'online',acceptedOnline:number,rejectedSequence:number}}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
   const heartbeatDiagnostic = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
   const completionAfterProgressLine = options.completionAfterProgressLine ?? (options.heartbeat ? heartbeatDiagnostic : undefined);
-  const gateNonce = completionAfterProgressLine ? randomBytes(32).toString('hex') : undefined;
+  const gateNonce = completionAfterProgressLine || options.completionAfterProbe ? randomBytes(32).toString('hex') : undefined;
   const gatePath = gateNonce ? join(context.directory, `${scenario}-${gateNonce}-progress-dispatch-gate.json`) : undefined;
   let gateTimedOut = false; let gateWriteError; let observedExpectedLine = false; let gateDeadline;
   /** @type {()=>void} */ let heartbeat = () => { throw new Error('heartbeat was not assigned'); };
@@ -379,6 +379,10 @@ async function deterministicConversationScenario(context, scenario, options = {}
       assert.equal(heartbeatAssigned, true);
       heartbeat();
     }
+    if (options.completionAfterProbe) {
+      await waitForDurableConversationProbe(context, record, owner.sessionId, options.completionAfterProbe);
+      await releaseGate();
+    }
     output = await execution;
   } finally {
     if (gateDeadline) clearTimeout(gateDeadline);
@@ -390,6 +394,24 @@ async function deterministicConversationScenario(context, scenario, options = {}
   const stored = await createStateStore({ dataRoot: context.dataRoot }).readJob(context.workspace, output.job.id);
   const requests = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   return { lines, output, requests, status, stored };
+}
+
+/** @param {any} context @param {string} record @param {string} ownerSessionId @param {{state:'online',acceptedOnline:number,rejectedSequence:number}} expected */
+async function waitForDurableConversationProbe(context, record, ownerSessionId, expected) {
+  const storage = await resolveWorkspaceStorage(context);
+  await waitFor(async () => {
+    const requests = await readFile(record, 'utf8').then((contents) => contents.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).catch(() => []);
+    if (!requests.some((frame) => frame.method === 'session/send')) return false;
+    const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
+    for (const name of names) {
+      if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
+      const job = await readFile(join(storage.directory, 'jobs', name), 'utf8').then(JSON.parse).catch(() => null);
+      if (job?.ownerSessionId !== ownerSessionId || typeof job.inputId !== 'string' || !Number.isSafeInteger(job.startRevision)) continue;
+      if (job.progressProbe?.state === expected.state && job.progressProbe.acceptedOnline === expected.acceptedOnline
+        && job.progressProbe.rejected?.sequence === expected.rejectedSequence) return true;
+    }
+    return false;
+  }, `conversation probe for ${ownerSessionId} was not durably persisted before completion`);
 }
 
 /** @param {any} context @param {string} record @param {string} scenario */
@@ -3025,7 +3047,9 @@ test('conversation online progress reaches stderr and preview while initial and 
 
 test('observed unknown conversation rows and a sequence gap preserve later safe progress', async () => {
   const context = await fixture();
-  const scenario = await deterministicConversationScenario(context, 'observed-traffic');
+  const scenario = await deterministicConversationScenario(context, 'observed-traffic', {
+    completionAfterProbe: { state: 'online', acceptedOnline: 2, rejectedSequence: 1 },
+  });
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
   assert.match(visible, /ZCode turn started\./);
   assert.match(visible, /Read completed \(25ms\)\./);
@@ -3040,7 +3064,9 @@ test('observed unknown conversation rows and a sequence gap preserve later safe 
 
 test('exclusive-baseline conversation ranges emit each known lifecycle once', async () => {
   const context = await fixture();
-  const scenario = await deterministicConversationScenario(context, 'exclusive-ranges');
+  const scenario = await deterministicConversationScenario(context, 'exclusive-ranges', {
+    completionAfterProbe: { state: 'online', acceptedOnline: 4, rejectedSequence: 0 },
+  });
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
   assert.equal(scenario.lines.filter((line) => line === '[zcode] ZCode turn started.\n').length, 1);
   assert.equal(scenario.lines.filter((line) => line === '[zcode] Running tool: Read.\n').length, 1);
