@@ -332,7 +332,7 @@ async function companionWithArchiveHandshake(context, args) {
   return result;
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'online',acceptedOnline:number,rejectedSequence:number},waitForDurableProbe?:typeof waitForDurableConversationProbe}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'online',acceptedOnline:number,rejectedSequence:number},waitForDurableProbe?:typeof waitForDurableConversationProbe,writeGateFile?:(path:string,data:string,options:any)=>Promise<void>}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
@@ -340,20 +340,34 @@ async function deterministicConversationScenario(context, scenario, options = {}
   const completionAfterProgressLine = options.completionAfterProgressLine ?? (options.heartbeat ? heartbeatDiagnostic : undefined);
   const gateNonce = completionAfterProgressLine || options.completionAfterProbe ? randomBytes(32).toString('hex') : undefined;
   const gatePath = gateNonce ? join(context.directory, `${scenario}-${gateNonce}-progress-dispatch-gate.json`) : undefined;
-  let gateTimedOut = false; let gateWriteError; let observedExpectedLine = false; let gateDeadline;
+  let gateTimedOut = false; let observedExpectedLine = false; let gateDeadline;
+  /** @type {unknown} */
+  let gateWriteError;
+  const executionController = new AbortController();
+  let signalGateDeadline = () => {};
+  const gateDeadlineReached = new Promise((resolvePromise) => { signalGateDeadline = () => resolvePromise(undefined); });
   /** @type {()=>void} */ let heartbeat = () => { throw new Error('heartbeat was not assigned'); };
   let heartbeatAssigned = false; let signalHeartbeatAssigned = () => {};
   const heartbeatReady = new Promise((resolvePromise) => { signalHeartbeatAssigned = () => resolvePromise(undefined); });
   const releaseGate = async () => {
-    if (!gatePath || !gateNonce) return;
-    try { await writeFile(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'release' }), { mode: 0o600 }); }
-    catch (error) { gateWriteError ??= error; }
+    if (!gatePath || !gateNonce) return true;
+    try {
+      await (options.writeGateFile ?? writeFile)(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'release' }), { mode: 0o600 });
+      return true;
+    }
+    catch (error) { gateWriteError ??= error; return false; }
   };
-  if (gatePath && gateNonce) await writeFile(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'held' }), { mode: 0o600 });
+  const abortHeldExecution = () => {
+    if (!executionController.signal.aborted) executionController.abort(gateWriteError);
+  };
+  if (gatePath && gateNonce) await (options.writeGateFile ?? writeFile)(gatePath, JSON.stringify({ version: 1, nonce: gateNonce, state: 'held' }), { mode: 0o600 });
   let output; let pendingExecution; let primaryError;
   try {
     if (gatePath) {
-      gateDeadline = setTimeout(() => { gateTimedOut = true; void releaseGate(); }, 15_000);
+      gateDeadline = setTimeout(() => {
+        gateTimedOut = true;
+        void releaseGate().then((released) => { if (!released) abortHeldExecution(); }).finally(signalGateDeadline);
+      }, 15_000);
       gateDeadline.unref?.();
     }
     pendingExecution = runCompanion(['rescue', '--fresh', `${scenario} conversation compatibility`], {
@@ -372,6 +386,7 @@ async function deterministicConversationScenario(context, scenario, options = {}
         setInterval: (/** @type {()=>void} */ callback) => { heartbeat = callback; heartbeatAssigned = true; signalHeartbeatAssigned(); return { unref() {} }; },
         clearInterval: () => {},
       } } : {}),
+      signal: executionController.signal,
     });
     if (options.heartbeat) {
       await heartbeatReady;
@@ -381,22 +396,32 @@ async function deterministicConversationScenario(context, scenario, options = {}
     }
     if (options.completionAfterProbe) {
       await (options.waitForDurableProbe ?? waitForDurableConversationProbe)(context, record, owner.sessionId, options.completionAfterProbe);
-      await releaseGate();
+      if (!await releaseGate()) throw gateWriteError;
     }
     const execution = pendingExecution;
     pendingExecution = undefined;
     output = await execution;
   } catch (error) {
-    primaryError = error;
+    primaryError = executionController.signal.aborted && executionController.signal.reason === gateWriteError ? gateWriteError : error;
   } finally {
-    if (gateDeadline) clearTimeout(gateDeadline);
-    await releaseGate();
+    const released = await releaseGate();
+    if (!released) abortHeldExecution();
     if (pendingExecution) {
       const execution = pendingExecution;
       pendingExecution = undefined;
-      try { await execution; }
-      catch (error) { primaryError ??= error; }
+      const observed = /** @type {Promise<{kind:'fulfilled'}|{kind:'rejected',error:unknown}>} */ (execution.then(
+        () => ({ kind: 'fulfilled' }),
+        (error) => ({ kind: 'rejected', error }),
+      ));
+      /** @type {{kind:'fulfilled'}|{kind:'rejected',error:unknown}|{kind:'deadline'}} */
+      const outcome = released ? await observed : await Promise.race([
+        observed,
+        gateDeadlineReached.then(() => /** @type {{kind:'deadline'}} */ ({ kind: 'deadline' })),
+      ]);
+      if (outcome.kind === 'rejected') primaryError ??= outcome.error;
+      else if (outcome.kind === 'deadline') primaryError ??= gateWriteError;
     }
+    if (gateDeadline) clearTimeout(gateDeadline);
   }
   if (primaryError) throw primaryError;
   if (gateTimedOut || !observedExpectedLine && completionAfterProgressLine) throw new Error(`expected public progress line was not dispatched: ${completionAfterProgressLine}`);
@@ -3070,6 +3095,34 @@ test('conversation scenario teardown settles its started execution after probe w
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].status, 'failed', 'failed test setup must settle the released execution rejection before returning');
+});
+
+test('conversation scenario gate write failure aborts held execution with bounded error priority', async () => {
+  for (const original of [undefined, new Error('injected probe failure before gate release')]) {
+    const context = await fixture();
+    const gateFailure = new Error('injected gate release write failure');
+    let releaseAttempts = 0;
+    /** @type {NodeJS.Timeout|undefined} */ let deadline;
+    const execution = deterministicConversationScenario(context, 'observed-traffic', {
+      completionAfterProbe: { state: 'online', acceptedOnline: 2, rejectedSequence: 1 },
+      waitForDurableProbe: async (...args) => {
+        await waitForDurableConversationProbe(...args);
+        if (original) throw original;
+      },
+      writeGateFile: async (path, data, options) => {
+        if (JSON.parse(data).state === 'release') { releaseAttempts += 1; throw gateFailure; }
+        await writeFile(path, data, options);
+      },
+    });
+    const bounded = Promise.race([execution, new Promise((_, reject) => {
+      deadline = setTimeout(() => reject(new Error('gate write failure teardown did not settle')), 2_000);
+    })]).finally(() => clearTimeout(deadline));
+    await assert.rejects(bounded, (error) => error === (original ?? gateFailure));
+    assert.ok(releaseAttempts >= 1);
+    const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+    assert.equal(jobs.length, 1);
+    assert.equal(['cancelled', 'failed'].includes(jobs[0].status), true, 'gate failure must leave no active execution');
+  }
 });
 
 test('observed unknown conversation rows and a sequence gap preserve later safe progress', async () => {
