@@ -152,7 +152,35 @@ Reuse PR #44's safety mechanisms and make the smallest local change. If any revi
 - Regenerate: `marketplace/plugins/zcode/skills/rescue/SKILL.md`
 
 - [ ] **RED:** Update release/public-text and qualification assertions first. Replace host-only adoption and pending-fresh same-child fixtures in `tests/codex-rescue-qualification.test.mjs`, its helper, and the Codex E2E suite with A1 exact `_2` eligibility/ambiguity, A3 parent-replanned new-child fresh, and A8 source/marketplace/foreground/background parity. Reject jobs-only adoption, same-child fresh/replacement, broad SessionEnd preservation, latest/base fallback, and response-loss resend; require bilingual exact-binding, v1/v2 migration/`notLoaded`, exact-session resume, confirmed exact close, and status/result recovery wording. Expected: focused contracts fail on PR #44 snapshots and old rollout assertions.
-- [ ] **GREEN:** Make the smallest matching English/Chinese README, SECURITY, and Unreleased changelog edits; update only the named qualification helper/snapshots/E2E expectations to A1/A3/A8. Regenerate the checked-in marketplace snapshot with the repository's existing build flow so every changed runtime/public file is byte-identical and provenance is current; do not hand-edit generated runtime mirrors or add qualification governance.
-- [ ] **Focused verify:** Run `node --test tests/release-contracts.test.mjs tests/public-text.test.mjs tests/plugin-contracts.test.mjs tests/codex-rescue-qualification.test.mjs tests/e2e/codex-skills-e2e.test.mjs tests/marketplace-snapshot.test.mjs tests/integration/marketplace-snapshot-build.mjs`, then `npm run check`, `node --test tests/integration/package-install.test.mjs`, and explicitly `node --test tests/integration/marketplace-install.test.mjs`. Run `git diff --check`, confirm `git status --short` contains only intended source/tests/docs/generated mirrors, and inspect `git diff --stat origin/main...HEAD` plus `git diff origin/main...HEAD -- README.md README.zh-CN.md SECURITY.md CHANGELOG.md scripts hooks tests marketplace` for scope and private-state leakage. Expected: all local gates PASS and no unexpected files.
-- [ ] **Commit:** Stage the exact files listed above, confirm with `git diff --cached --name-only`, then run `git commit -m "docs: publish exact rescue binding contracts"`.
+- [ ] **GREEN:** Make the smallest matching English/Chinese README, SECURITY, and Unreleased changelog edits; update only the named qualification helper/snapshots/E2E expectations to A1/A3/A8. Do not hand-edit generated runtime mirrors or add qualification governance.
+- [ ] **Commit boundary A — source/docs/qualification:** Run `node --test tests/release-contracts.test.mjs tests/public-text.test.mjs tests/codex-rescue-qualification.test.mjs`, then `git diff --check`. Confirm `git status --short` contains only the intended non-generated source docs and qualification tests, stage those exact files, inspect `git diff --cached --name-only`, and commit them with `git commit -m "docs: publish exact rescue binding contracts"`. Require `git status --porcelain=v1` to be empty before continuing; the marketplace builder must run with no tracked or untracked changes.
+- [ ] **Commit boundary B — generated marketplace snapshot:** From that clean source commit, run the repository builder and mechanically synchronize its actual output layout; do not hand-edit generated files:
+
+  ```bash
+  SOURCE_SHA="$(git rev-parse HEAD)"
+  SNAPSHOT_PARENT="$(mktemp -d)"
+  trap 'rm -rf "$SNAPSHOT_PARENT"' EXIT
+  node scripts/build-marketplace-snapshot.mjs \
+    --output "$SNAPSHOT_PARENT/marketplace-snapshot" \
+    --source-ref "$SOURCE_SHA" \
+    --source-sha "$SOURCE_SHA"
+  rsync -a --delete "$SNAPSHOT_PARENT/marketplace-snapshot/plugins/zcode/" marketplace/plugins/zcode/
+  cmp -s "$SNAPSHOT_PARENT/marketplace-snapshot/.agents/plugins/marketplace.json" marketplace/.agents/plugins/marketplace.json || cp "$SNAPSHOT_PARENT/marketplace-snapshot/.agents/plugins/marketplace.json" marketplace/.agents/plugins/marketplace.json
+  cmp -s "$SNAPSHOT_PARENT/marketplace-snapshot/.agents/plugins/provenance.json" marketplace/.agents/plugins/provenance.json || cp "$SNAPSHOT_PARENT/marketplace-snapshot/.agents/plugins/provenance.json" marketplace/.agents/plugins/provenance.json
+  ```
+
+  Verify parity, plugin contracts, the builder, and installation against that exact output:
+
+  ```bash
+  node --test tests/marketplace-snapshot.test.mjs tests/plugin-contracts.test.mjs tests/release-contracts.test.mjs
+  node --test tests/integration/marketplace-snapshot-build.mjs
+  MARKETPLACE_SNAPSHOT="$SNAPSHOT_PARENT/marketplace-snapshot" \
+  MARKETPLACE_SOURCE_REF="$SOURCE_SHA" \
+  MARKETPLACE_SOURCE_SHA="$SOURCE_SHA" \
+  node --test tests/integration/marketplace-install.test.mjs
+  git diff --check
+  ```
+
+  Confirm only `marketplace/plugins/zcode`, `marketplace/.agents/plugins/marketplace.json`, and `marketplace/.agents/plugins/provenance.json` changed; stage exactly those paths, inspect `git diff --cached --name-only`, and commit separately with `git commit -m "build: refresh ZCode marketplace snapshot"`.
+- [ ] **Final qualification:** From the clean two-commit result, run `npm run check` and `node --test tests/integration/package-install.test.mjs`. Inspect `git status --short`, `git diff --stat origin/main...HEAD`, and `git diff origin/main...HEAD -- README.md README.zh-CN.md SECURITY.md CHANGELOG.md scripts hooks tests marketplace` for scope and private-state leakage. Expected: all local gates PASS, the worktree is clean, and provenance identifies boundary A's `SOURCE_SHA` rather than the generated-snapshot commit.
 - [ ] **Independent reviews:** First give the complete `origin/main...HEAD` diff plus `ca8d7d9` to a fresh spec reviewer; resolve findings and rerun focused/full gates. Then give the clean final diff to a different quality reviewer; resolve findings and rerun `npm run check`, packed/native gates, and `git diff --check`. Push this branch and open a new PR (PR #44 is merged); require all six matrix CI jobs—Ubuntu/macOS/Windows on Node 22.13 and LTS—to be green before merge.
