@@ -405,6 +405,7 @@ async function deterministicConversationScenario(context, scenario, options = {}
     const executionOutcome = pendingExecutionOutcome;
     pendingExecutionOutcome = undefined;
     const outcome = await executionOutcome;
+    settledStartedExecution = true;
     if (outcome.kind === 'rejected') throw outcome.error;
     output = outcome.value;
   } catch (error) {
@@ -425,7 +426,7 @@ async function deterministicConversationScenario(context, scenario, options = {}
       else if (outcome.kind === 'deadline') primaryError ??= gateWriteError;
     }
     if (gateDeadline) clearTimeout(gateDeadline);
-    if (settledStartedExecution && (!options.runExecution || options.waitForDurableTerminal)) {
+    if (settledStartedExecution && primaryError && (!options.runExecution || options.waitForDurableTerminal)) {
       try { await (options.waitForDurableTerminal ?? waitForDurableConversationTerminal)(context, owner); }
       catch (error) { primaryError ??= error; }
     }
@@ -3126,6 +3127,49 @@ test('conversation scenario teardown settles its started execution after probe w
   assert.equal(jobs[0].status, 'failed', 'failed test setup must settle the released execution rejection before returning');
 });
 
+test('conversation scenario main path recovers an execution rejection after successful probe waiting', async () => {
+  for (const recoveryFailure of [undefined, new Error('injected durable terminal recovery failure')]) {
+    const context = await fixture(); const store = createStateStore({ dataRoot: context.dataRoot });
+    const executionFailure = new Error('injected execution rejection after probe success');
+    /** @type {any} */
+    let exactJob;
+    /** @type {any} */
+    let executionOwner;
+    let recoveries = 0;
+    let signalJobReady = () => {}; const jobReady = new Promise((resolvePromise) => { signalJobReady = () => resolvePromise(undefined); });
+    let rejectExecution = () => {}; const rejected = new Promise((resolvePromise, rejectPromise) => { rejectExecution = () => rejectPromise(executionFailure); });
+    await assert.rejects(deterministicConversationScenario(context, 'observed-traffic', {
+      completionAfterProbe: { state: 'online', acceptedOnline: 2, rejectedSequence: 1 },
+      runExecution: (args, runtime) => {
+        executionOwner = runtime.caller;
+        return (async () => {
+          const queued = await store.reserveJob({
+            workspace: context.workspace, ownerSessionId: executionOwner.sessionId, ownerTurnId: executionOwner.turnId,
+            command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: executionOwner.permissionMode },
+          });
+          exactJob = await startWritableRescueForTest(store, context.workspace, queued, { zcodeSessionId: 'controlled-conversation-session' });
+          signalJobReady();
+          await rejected;
+          return { args, runtime };
+        })();
+      },
+      waitForDurableProbe: async () => { await jobReady; rejectExecution(); },
+      waitForDurableTerminal: async (actualContext, owner) => {
+        recoveries += 1;
+        assert.equal(actualContext, context); assert.equal(owner, executionOwner);
+        const owned = await store.listOwnedJobs(context.workspace, owner.sessionId);
+        assert.equal(owned.length, 1); assert.equal(owned[0].id, exactJob.id); assert.equal(owned[0].status, 'running');
+        const terminal = await store.finishJob(context.workspace, exactJob.id, ['running'], 'failed', { error: { message: executionFailure.message }, exitCode: 1 });
+        if (recoveryFailure) throw recoveryFailure;
+        return terminal;
+      },
+    }), (error) => error === executionFailure);
+    assert.equal(recoveries, 1, 'main-path rejection must cross the durable terminal boundary exactly once');
+    const terminal = await store.readJob(context.workspace, exactJob.id);
+    assert.equal(terminal.ownerSessionId, executionOwner.sessionId); assert.equal(terminal.status, 'failed');
+  }
+});
+
 test('conversation scenario observes execution rejection before durable probe waiting', async () => {
   const context = await fixture();
   const lateObserver = new Error('execution rejection observer was attached after probe waiting started');
@@ -3188,9 +3232,10 @@ test('conversation scenario gate write failure aborts held execution with bounde
 });
 
 test('observed unknown conversation rows and a sequence gap preserve later safe progress', async () => {
-  const context = await fixture();
+  const context = await fixture(); let durableTerminalWaits = 0;
   const scenario = await deterministicConversationScenario(context, 'observed-traffic', {
     completionAfterProbe: { state: 'online', acceptedOnline: 2, rejectedSequence: 1 },
+    waitForDurableTerminal: async () => { durableTerminalWaits += 1; },
   });
   const visible = `${scenario.lines.join('')}${renderOutput(scenario.output, { json: true })}${JSON.stringify(scenario.status)}`;
   assert.match(visible, /ZCode turn started\./);
@@ -3202,6 +3247,7 @@ test('observed unknown conversation rows and a sequence gap preserve later safe 
   assert.equal(scenario.stored.progressProbe.rejected.sequence, 1);
   assert.deepEqual(scenario.status.job.progressProbe, scenario.stored.progressProbe);
   assert.equal(scenario.requests.filter((request) => request.method === 'session/read').length, 1);
+  assert.equal(durableTerminalWaits, 0, 'successful execution must not add teardown recovery waiting');
 });
 
 test('exclusive-baseline conversation ranges emit each known lifecycle once', async () => {
