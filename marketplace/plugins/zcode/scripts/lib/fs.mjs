@@ -142,7 +142,7 @@ export async function readBoundedJsonFile(root, path, maximumBytes, options = {}
 /**
  * @param {string} path
  * @param {unknown} value
- * @param {{signal?:AbortSignal,privateRoot?:string,platform?:NodeJS.Platform,maximumAttempts?:number,renameFn?:(from:string,to:string)=>Promise<void>,retryDelayFn?:(milliseconds:number,signal?:AbortSignal)=>Promise<void>}} [options]
+ * @param {{signal?:AbortSignal,privateRoot?:string,platform?:NodeJS.Platform,maximumAttempts?:number,renameFn?:(from:string,to:string)=>Promise<void>,retryDelayFn?:(milliseconds:number,signal?:AbortSignal)=>Promise<void>,testOnlyAfterRename?:()=>void|Promise<void>}} [options]
  */
 export async function atomicWriteJson(path, value, options = {}) {
   await atomicWritePrivateFile(path, `${JSON.stringify(value, null, 2)}\n`, options);
@@ -151,7 +151,7 @@ export async function atomicWriteJson(path, value, options = {}) {
 /**
  * @param {string} path
  * @param {string|Buffer} bytes
- * @param {{signal?:AbortSignal,privateRoot?:string,platform?:NodeJS.Platform,maximumAttempts?:number,renameFn?:(from:string,to:string)=>Promise<void>,retryDelayFn?:(milliseconds:number,signal?:AbortSignal)=>Promise<void>}} [options]
+ * @param {{signal?:AbortSignal,privateRoot?:string,platform?:NodeJS.Platform,maximumAttempts?:number,renameFn?:(from:string,to:string)=>Promise<void>,retryDelayFn?:(milliseconds:number,signal?:AbortSignal)=>Promise<void>,testOnlyAfterRename?:()=>void|Promise<void>}} [options]
  */
 export async function atomicWritePrivateFile(path, bytes, options = {}) {
   const directory = dirname(path);
@@ -175,6 +175,7 @@ export async function atomicWritePrivateFile(path, bytes, options = {}) {
     handle = undefined;
     options.signal?.throwIfAborted();
     await replaceFileAtomically(temporaryPath, path, options);
+    await options.testOnlyAfterRename?.();
     options.signal?.throwIfAborted();
     await chmod(path, 0o600);
     options.signal?.throwIfAborted();

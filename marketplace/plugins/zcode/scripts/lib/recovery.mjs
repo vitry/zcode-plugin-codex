@@ -1,11 +1,10 @@
-import { createHash } from 'node:crypto';
-import { resolve, sep } from 'node:path';
-
 import { PluginError } from './errors.mjs';
+import { createIdentityStore } from './identity.mjs';
 import { boundedCancelMessage, durableCancelledWinner, ownerIdForSession, withJobCancellationLock } from './job-control.mjs';
 import { extractFinalResult, SuccessfulResultFinalizationError, writeResultArtifact } from './review.mjs';
-import { readBoundedJsonFile, withFileLock } from './fs.mjs';
+import { withFileLock } from './fs.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
+import { readQueuedRescueMigrationRollback } from './rescue-migration.mjs';
 import { resolveWorkspaceStorage } from './workspace.mjs';
 import { reconcileBrokerOwnership } from '../zcode-broker.mjs';
 
@@ -22,44 +21,75 @@ export async function withWorkerLease(input, operation) {
   return withFileLock(joinWorkerLease(storage.directory, input.jobId, input.workerLeaseId), operation, { timeoutMs: input.timeoutMs ?? 30_000 });
 }
 
-/** Reconcile only provably orphaned jobs owned by one exact Codex session. @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,createClient:(job:any,ownerId:string)=>Promise<any>,reconcileOwnership?:(input:any)=>Promise<any>,now?:()=>number,signal?:AbortSignal}} input */
+/** Reconcile only provably orphaned jobs owned by one exact Codex session. @param {{store:any,identity?:any,dataRoot:string,workspace:string,ownerSessionId:string,createClient:(job:any,ownerId:string)=>Promise<any>,reconcileOwnership?:(input:any)=>Promise<any>,now?:()=>number,signal?:AbortSignal}} input */
 export async function reconcileOwnedJobs(input) {
-  const jobs = (await input.store.listOwnedJobs(input.workspace, input.ownerSessionId))
-    .filter((/** @type {any} */ job) => !TERMINAL.has(job.status));
-  const outcomes = [];
+  const listed = await input.store.listOwnedJobs(input.workspace, input.ownerSessionId);
+  const outcomes = await cleanupListedTerminalReservations(input, listed);
+  const jobs = listed.filter((/** @type {any} */ job) => !TERMINAL.has(job.status));
   for (const job of jobs) {
-    try { outcomes.push(await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'owner-recovery' })); }
+    try {
+      const settled = await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'owner-recovery' });
+      outcomes.push(await cleanupTerminalReservation(input, settled));
+    }
     catch (error) { throwIfRecoveryInterrupted(input, error); if (error instanceof SuccessfulResultFinalizationError) throw error; outcomes.push(job); }
   }
   return outcomes;
 }
 
-/** Settle provably orphaned writable Rescue blockers without adopting their public ownership. @param {{store:any,dataRoot:string,workspace:string,createClient:(job:any,ownerId:string)=>Promise<any>,reconcileOwnership?:(input:any)=>Promise<any>,now?:()=>number,signal?:AbortSignal}} input */
+/** Settle provably orphaned writable Rescue blockers without adopting their public ownership. @param {{store:any,identity?:any,dataRoot:string,workspace:string,createClient:(job:any,ownerId:string)=>Promise<any>,reconcileOwnership?:(input:any)=>Promise<any>,now?:()=>number,signal?:AbortSignal}} input */
 export async function scavengeWritableJobs(input) {
-  const jobs = (await input.store.listJobs(input.workspace))
+  const listed = await input.store.listJobs(input.workspace);
+  const outcomes = await cleanupListedTerminalReservations(input, listed);
+  const jobs = listed
     .filter((/** @type {any} */ job) => job.command === 'rescue' && job.readOnly === false && !TERMINAL.has(job.status));
-  const outcomes = [];
   for (const job of jobs) {
-    try { outcomes.push(await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'scavenge' })); }
+    try {
+      const settled = await settleSelectedJob({ ...input, selectedJobId: job.id, expectedOwnerSessionId: job.ownerSessionId, intent: 'scavenge' });
+      outcomes.push(await cleanupTerminalReservation(input, settled));
+    }
     catch (error) { throwIfRecoveryInterrupted(input, error); if (error instanceof SuccessfulResultFinalizationError) throw error; outcomes.push(job); }
   }
   return outcomes;
+}
+
+/** @param {any} input @param {any[]} jobs */
+async function cleanupListedTerminalReservations(input, jobs) {
+  const outcomes = [];
+  for (const job of jobs.filter((/** @type {any} */ candidate) => TERMINAL.has(candidate.status)
+    && candidate.rescueExecutionReservation !== undefined)) {
+    try { outcomes.push(await cleanupTerminalReservation(input, job)); }
+    catch (error) { throwIfRecoveryInterrupted(input, error); outcomes.push(job); }
+  }
+  return outcomes;
+}
+
+/** @param {any} input @param {any} job */
+async function cleanupTerminalReservation(input, job) {
+  if (!TERMINAL.has(job.status) || job.rescueExecutionReservation === undefined) return job;
+  const identity = input.identity ?? createIdentityStore({ dataRoot: input.dataRoot });
+  return input.store.cleanupTerminalExecutionReservation(input.workspace, job.id, identity);
 }
 
 /**
  * Best-effort settlement for the ending owner's one active writable Rescue.
  * Unlike orphan scavenging, SessionEnd is an explicit owner lifecycle signal, so
  * an accepted remote turn may be stopped even while its worker lease is held.
- * @param {{store:any,dataRoot:string,workspace:string,ownerSessionId:string,lockTimeoutMs?:number,requestTimeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal}} input
+ * @param {{store:any,identity?:any,dataRoot:string,workspace:string,ownerSessionId:string,lockTimeoutMs?:number,requestTimeoutMs?:number,createClient:(job:any,ownerId:string)=>Promise<any>,signal?:AbortSignal}} input
  */
 export async function settleEndedOwnerWritableJob(input) {
-  const selected = (await input.store.listOwnedJobs(input.workspace, input.ownerSessionId))
+  const listed = await input.store.listOwnedJobs(input.workspace, input.ownerSessionId);
+  for (const terminal of listed.filter((/** @type {any} */ job) => TERMINAL.has(job.status)
+    && job.rescueExecutionReservation !== undefined)) {
+    await cleanupTerminalReservation(input, terminal).catch(() => terminal);
+  }
+  const selected = listed
     .filter((/** @type {any} */ job) => job.command === 'rescue'
       && job.readOnly === false && !TERMINAL.has(job.status))
     .at(-1);
   if (!selected) return null;
+  let settled;
   try {
-    return await withJobCancellationLock({
+    settled = await withJobCancellationLock({
       dataRoot: input.dataRoot,
       workspace: input.workspace,
       jobId: selected.id,
@@ -68,28 +98,16 @@ export async function settleEndedOwnerWritableJob(input) {
       const current = await input.store.readJob(input.workspace, selected.id);
       if (current.id !== selected.id || current.ownerSessionId !== input.ownerSessionId
         || current.command !== 'rescue' || current.readOnly !== false || TERMINAL.has(current.status)) return current;
-      if (current.status === 'queued' && !isDigest(current.workerLeaseId)) return cancelQueuedJob(input, current);
-      if (current.status === 'queued') {
-        try {
-          return await withWorkerLease({
-            dataRoot: input.dataRoot,
-            workspace: input.workspace,
-            jobId: current.id,
-            workerLeaseId: current.workerLeaseId,
-            timeoutMs: 0,
-          }, () => cancelQueuedJob(input, current));
-        } catch (error) {
-          if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return current;
-          throw error;
-        }
-      }
+      if (current.status === 'queued') return cancelQueuedJob(input, current);
       if (!['running', 'cancelling'].includes(current.status) || typeof current.zcodeSessionId !== 'string') return current;
       return settleEndedRemoteJob(input, current);
     });
   } catch (error) {
-    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return input.store.readJob(input.workspace, selected.id);
-    throw error;
+    if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') settled = await input.store.readJob(input.workspace, selected.id);
+    else throw error;
   }
+  try { return await cleanupTerminalReservation(input, settled); }
+  catch { return settled; }
 }
 
 /** @param {any} input */
@@ -98,22 +116,45 @@ async function settleSelectedJob(input) {
     const current = await input.store.readJob(input.workspace, input.selectedJobId);
     if (current.id !== input.selectedJobId || current.ownerSessionId !== input.expectedOwnerSessionId || TERMINAL.has(current.status)) return current;
     if (input.intent === 'scavenge' && (current.command !== 'rescue' || current.readOnly !== false)) return current;
-    if (current.status === 'queued' && !isDigest(current.workerLeaseId)) {
-      return (input.now ?? Date.now)() - Date.parse(current.createdAt) >= LEGACY_QUEUED_STALE_MS
-        ? failJob(input, current, recoveryError('Queued reservation exceeded the conservative worker-claim grace period.'))
-        : current;
-    }
-    if (!isDigest(current.workerLeaseId) && legacyWorkerAlive(current)) return current;
-    if (!isDigest(current.workerLeaseId)) return reconcileOrphan(input, current);
+    const workerLeaseId = recoveryWorkerLease(current);
+    if (current.status === 'queued') return !isDigest(workerLeaseId)
+      && (input.now ?? Date.now)() - Date.parse(current.createdAt) < LEGACY_QUEUED_STALE_MS
+      ? current : failJob(input, current, recoveryError(isDigest(workerLeaseId)
+        ? 'Claimed queued worker exited before execution started.'
+        : 'Queued reservation exceeded the conservative worker-claim grace period.'));
+    if (!isDigest(workerLeaseId) && legacyWorkerAlive(current)) return current;
+    if (!isDigest(workerLeaseId)) return reconcileOrphan(input, current);
     try {
-      return await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: current.id, workerLeaseId: current.workerLeaseId, timeoutMs: 0 }, () => current.status === 'queued'
-        ? failJob(input, current, recoveryError('Claimed queued worker exited before execution started.'))
-        : reconcileOrphan(input, current));
+      return await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: current.id, workerLeaseId, timeoutMs: 0 }, () => reconcileOrphan(input, current));
     } catch (error) {
       if (error instanceof PluginError && error.code === 'LOCK_TIMEOUT') return current;
       throw error;
     }
   });
+}
+
+/** Select only an exact claimed or private fenced worker lease. Corrupt authority is uncertainty, not absence. @param {any} job */
+function recoveryWorkerLease(job) {
+  if (job.workerLeaseId !== undefined && !isDigest(job.workerLeaseId)) throw recoveryError('Persisted worker lease is invalid.');
+  const authority = job.rescueExecutionReservation;
+  if (authority === undefined) return job.workerLeaseId;
+  const keys = typeof authority === 'object' && authority !== null && !Array.isArray(authority)
+    ? Object.keys(authority).sort().join(',') : '';
+  const sealed = ['capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,version,workspace',
+    'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,version,workerLeaseId,workspace'].includes(keys)
+    && authority.jobSpecFormat === 'sealed-v2' && authority.specDigest === undefined;
+  const legacy = ['capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,specDigest,version,workspace',
+    'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,specDigest,version,workerLeaseId,workspace'].includes(keys)
+    && authority.jobSpecFormat === 'legacy-v1' && isDigest(authority.specDigest);
+  if ((!sealed && !legacy) || authority.version !== 1 || !isDigest(authority.capabilityDigest)
+    || !isDigest(authority.reservationId) || authority.jobId !== job.id
+    || authority.ownerSessionId !== job.ownerSessionId || authority.workspace !== job.workspace
+    || authority.operation !== 'run-reserved-job'
+    || authority.workerLeaseId !== undefined && !isDigest(authority.workerLeaseId)
+    || job.workerLeaseId !== undefined && authority.workerLeaseId !== job.workerLeaseId) {
+    throw recoveryError('Persisted execution reservation authority is invalid.');
+  }
+  return job.workerLeaseId ?? authority.workerLeaseId;
 }
 
 /** @param {any} input @param {any} job */
@@ -182,37 +223,18 @@ async function reconcileOrphan(input, job) {
 
 /** @param {any} job */
 function hasBoundary(job) { return typeof job.inputId === 'string' && Number.isSafeInteger(job.startRevision) && Array.isArray(job.beforeMessageIds); }
-/** Restore a durable migration tombstone before any orphaned queued attempt becomes terminal. @param {any} input @param {any} job */
-async function rollbackQueuedMigration(input, job) {
-  const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
-  const root = resolve(storage.directory, 'job-specs'); const path = resolve(root, `${job.id}.json`);
-  if (!path.startsWith(`${root}${sep}`)) throw recoveryError('Queued migration specification path is invalid.');
-  let record;
-  try { record = await readBoundedJsonFile(storage.directory, path, 512 * 1024, { requirePrivatePermissions: true }); }
-  catch (error) { if (/** @type {any} */ (error)?.code === 'ENOENT') return; throw error; }
-  const spec = record?.spec; const migrationKeys = ['migrationParentSessionId', 'migrationChildAgentId', 'migrationOperationId',
-    'migrationPriorCurrentJobId', 'migrationPriorUpdatedAt', 'migrationPriorClosedAt', 'migrationPriorVersion'];
-  const present = migrationKeys.filter((key) => spec?.[key] !== undefined);
-  if (present.length === 0) return;
-  const digest = spec && typeof spec === 'object' && !Array.isArray(spec)
-    ? createHash('sha256').update(JSON.stringify(spec, Object.keys(spec).sort())).digest('hex') : null;
-  const priorVersion = Number(spec?.migrationPriorVersion);
-  if (present.length !== migrationKeys.length || record?.version !== 1 || record.jobId !== job.id
-    || record.ownerSessionId !== job.ownerSessionId || record.workspace !== job.workspace || record.digest !== digest
-    || spec.migrationParentSessionId !== job.ownerSessionId || ![1, 2, 3].includes(priorVersion)) {
-    throw recoveryError('Queued migration specification is invalid.');
-  }
-  await input.store.rollbackSessionEndedRescueContinuation({ workspace: input.workspace, jobId: job.id,
-    parentSessionId: spec.migrationParentSessionId, childAgentId: spec.migrationChildAgentId,
-    operationId: spec.migrationOperationId, priorCurrentJobId: spec.migrationPriorCurrentJobId,
-    priorUpdatedAt: spec.migrationPriorUpdatedAt, priorClosedAt: spec.migrationPriorClosedAt, priorVersion });
+/** Resolve exact rollback evidence for atomic queued terminalization. @param {any} input @param {any} job */
+async function queuedMigrationRollback(input, job) {
+  return readQueuedRescueMigrationRollback({ dataRoot: input.dataRoot, workspace: input.workspace, job, store: input.store,
+    invalid: () => recoveryError('Queued migration specification is invalid.') });
 }
 /** @param {any} input @param {any} job @param {unknown} error */
 async function failJob(input, job, error) {
   const current = await input.store.readJob(input.workspace, job.id);
   if (TERMINAL.has(current.status)) return current;
-  if (current.status === 'queued') await rollbackQueuedMigration(input, current);
-  try { return await input.store.finishJob(input.workspace, job.id, [current.status], 'failed', { error: { message: recoveryMessage(error) }, exitCode: 1 }); }
+  const patch = { error: { message: recoveryMessage(error) }, exitCode: 1 };
+  if (current.status === 'queued') return finishQueuedJobAfterLeaseProbe(input, current, 'failed', patch);
+  try { return await input.store.finishJob(input.workspace, job.id, [current.status], 'failed', patch); }
   catch (transitionError) { return conflictWinner(input, job, transitionError); }
 }
 /** @param {any} input @param {any} job */
@@ -227,10 +249,29 @@ async function cancelJob(input, job) {
 /** @param {any} input @param {any} job */
 async function cancelQueuedJob(input, job) {
   const current = await input.store.readJob(input.workspace, job.id);
-  if (current.status === 'queued') await rollbackQueuedMigration(input, current);
   if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
-  try { return await input.store.finishJob(input.workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); }
+  try { return await finishQueuedJobAfterLeaseProbe(input, current, 'cancelled', { exitCode: null }); }
   catch (error) { return cancelledConflictWinner(input, job, error); }
+}
+
+/** Re-read, probe the exact effective lease, then let State CAS that same lease at terminal publication. @param {any} input @param {any} job @param {'failed'|'cancelled'} nextStatus @param {any} patch */
+async function finishQueuedJobAfterLeaseProbe(input, job, nextStatus, patch) {
+  const current = await input.store.readJob(input.workspace, job.id);
+  if (TERMINAL.has(current.status) || current.status !== 'queued') return current;
+  const workerLeaseId = recoveryWorkerLease(current); const rollback = await queuedMigrationRollback(input, current);
+  const finish = () => input.store.finishQueuedJobAfterRecoveryLease(input.workspace, current.id,
+    workerLeaseId ?? null, rollback, nextStatus, patch);
+  try {
+    return isDigest(workerLeaseId)
+      ? await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace,
+        jobId: current.id, workerLeaseId, timeoutMs: 0 }, finish)
+      : await finish();
+  } catch (error) {
+    if (error instanceof PluginError && ['LOCK_TIMEOUT', 'WORKER_LEASE_CONFLICT'].includes(error.code)) {
+      return input.store.readJob(input.workspace, current.id);
+    }
+    throw error;
+  }
 }
 
 /** @param {any} input @param {any} job @param {unknown} error */

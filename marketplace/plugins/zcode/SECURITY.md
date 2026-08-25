@@ -7,6 +7,7 @@ Report suspected vulnerabilities privately through GitHub's private vulnerabilit
 ## Security boundaries
 
 - Treat caller-context and one-time background execution capabilities as secrets. They belong only on protected process descriptors and must never appear in argv, user output, logs, prompts, artifacts, or subagents outside the reserved worker.
+- The sealed-v2 commitment pins one already-published encrypted job-spec to its private queued reservation and closes artifact-replacement/API races by a capability bearer. It is not a security boundary against a hostile same-UID process that can directly rewrite both raw StateStore and identity files; private file ownership and operating-system account integrity remain part of the threat model.
 - ZCode permission approval is not an operating-system sandbox. Read-only reviews deny mutation; Rescue uses the initiating Codex turn's immutable permission snapshot and restricts unknown states.
 - Jobs are scoped to the canonical workspace and owning Codex session. Knowing a job ID does not authorize status, result, cancellation, or resumption.
 - Transfer imports only visible text. Review output and Git content remain untrusted model input.
