@@ -175,6 +175,15 @@ or Identity reservation is settled by ordinary orphan recovery using the
 private authority without the bearer. Terminal release and authority clearing
 remain separately idempotent. The authority is absent from public status,
 rendered output, logs, and job-spec artifacts.
+For recovery liveness, a queued fenced attempt owns the exact worker lease in
+its private execution authority even before `job.workerLeaseId` is published by
+the claim. Recovery and SessionEnd derive one effective lease from the claimed
+job lease or, when it is absent, the validated authority lease. A live lock for
+that lease retains the queued job regardless of elapsed grace; a dead lock is
+an exact orphan and may be terminalized and cleaned. A truly unfenced historical
+job with no lease retains the conservative grace policy. Missing, corrupt, or
+contradictory authority/lease state fails closed through persisted-job schema
+validation rather than being treated as an orphan.
 For an exact v1 spec, `resumeSessionId` and `candidateJobId` are one paired
 identity: both absent means historical unbound execution, both present requires
 the exact historical bound proof, and either field alone fails before identity
