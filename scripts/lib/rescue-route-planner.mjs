@@ -62,8 +62,8 @@ export async function planRescueActivation(input) {
         if (hostClass === 'generic') continue;
         if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
         const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, host, executionWorkspace });
-        if (binding.kind === 'missing') legacyCandidates.push({ binding: null, host });
-        else legacyCandidates.push({ binding: validatePersistedBinding(binding.binding, {
+        if (binding.kind === 'missing') legacyCandidates.push({ kind: /** @type {'legacy'} */ ('legacy'), binding: null, host });
+        else legacyCandidates.push({ kind: /** @type {'legacy'} */ ('legacy'), binding: validatePersistedBinding(binding.binding, {
           caller: input.caller, executionWorkspace, host, originWorkspace, requirePermissionMatch: resume,
         }), host });
         continue;
@@ -97,13 +97,20 @@ export async function planRescueActivation(input) {
   }
 
   if (selected !== null) {
-    const modernBinding = selected.binding && rescueBindingAuthorityView(selected.binding).kind === 'subagent-start';
-    const activation = selected.executor || modernBinding
-      ? { kind: 'reactivate', executorAgentId: selected.executor?.agentId ?? selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) }
-      : selected.binding
-        ? { kind: 'legacy-bound', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath), bindingKey: selected.binding.key }
-        : { kind: 'legacy-adopt', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) };
-    const assignment = selected.executor?.agentType ?? 'zcode-rescue';
+    let activation; let assignment;
+    if (selected.kind === 'executor') {
+      activation = { kind: 'reactivate', executorAgentId: selected.executor.agentId, agentPathDigest: pathDigest(selected.host.agentPath) };
+      assignment = selected.executor.agentType;
+    } else {
+      const modernBinding = selected.binding !== null
+        && rescueBindingAuthorityView(selected.binding).kind === 'subagent-start';
+      activation = modernBinding
+        ? { kind: 'reactivate', executorAgentId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) }
+        : selected.binding !== null
+          ? { kind: 'legacy-bound', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath), bindingKey: selected.binding.key }
+          : { kind: 'legacy-adopt', childThreadId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) };
+      assignment = 'zcode-rescue';
+    }
     return { activation, directive: validateRescueRouteDirective({ version: 2, action: 'followup', target: selected.host.agentPath, assignment }) };
   }
   return spawnPlan(hostChildren);
@@ -223,7 +230,7 @@ function validateCandidate(resolved, host, caller, originWorkspace, executionWor
   const roleMatches = found.agentType === 'zcode-rescue' && host.agentRole === 'zcode-rescue'
     || found.agentType === 'default' && host.agentRole === null;
   if (!roleMatches) throw plannerError('EXECUTOR_ROLE_UNAPPROVED');
-  return { executor: { ...found }, host };
+  return { kind: /** @type {'executor'} */ ('executor'), executor: { ...found }, host };
 }
 
 /** @param {string} dataRoot */

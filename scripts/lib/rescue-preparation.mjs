@@ -37,6 +37,8 @@ const V2_RECORD_KEYS = Object.freeze([
   'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'generation', 'key',
   'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source', 'turnId', 'version', 'workspace',
 ]);
+const PENDING_FRESH_V2_RECORD_KEYS = Object.freeze([...V2_RECORD_KEYS, 'pendingFreshProvenance']);
+const PENDING_FRESH_PROVENANCE_KEYS = Object.freeze(['executorAgentId', 'originatingTurnId']);
 const V3_RECORD_KEYS = Object.freeze([
   'activation', 'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt',
   'generation', 'key', 'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source',
@@ -230,7 +232,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
               && envelope.options.resume === 'resume'
               && sameConsumedTurn;
             const freshReplan = envelope.options.resume === 'fresh'
-              && kind === 'v2'
+              && kind === 'pending-fresh'
               && current.envelope.options.resume === undefined
               && current.source === envelope.source
               && sameConsumedTurn;
@@ -279,6 +281,9 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
             permissionMode: input.permissionMode,
             source: envelope.source,
             envelope,
+            ...(recordVersion === 2 && input.pendingFreshProvenance !== undefined
+              ? { pendingFreshProvenance: { ...input.pendingFreshProvenance } }
+              : {}),
             ...(recordVersion === RESCUE_PREPARATION_RECORD_VERSION ? { activation } : {}),
             generation,
             requiredExecutorAgentId,
@@ -539,6 +544,8 @@ function validRecord(record, key, workspace) {
     && Date.parse(record.consumedAt) < Date.parse(record.expiresAt)
     && (kind === 'legacy' || record.requiredExecutorAgentId === null
       || record.executorAgentId === record.requiredExecutorAgentId)
+    && (kind !== 'pending-fresh'
+      || record.executorAgentId === record.pendingFreshProvenance.executorAgentId)
     && (kind !== 'current' || record.activation === null
       || record.activation.kind === 'reactivate' && record.executorAgentId === record.activation.executorAgentId
       || ['legacy-adopt', 'legacy-bound'].includes(record.activation.kind)
@@ -546,14 +553,16 @@ function validRecord(record, key, workspace) {
       || !['reactivate', 'legacy-adopt', 'legacy-bound'].includes(record.activation.kind));
 }
 
-/** @param {any} record @returns {'legacy'|'v2'|'current'|null} */
+/** @param {any} record @returns {'legacy'|'v2'|'pending-fresh'|'current'|null} */
 function recordKind(record) {
   if (!plain(record)) return null;
   if (record.version === RESCUE_PREPARATION_VERSION && sameKeys(record, V1_RECORD_KEYS)) return 'legacy';
   if (record.version === 2) {
-    if (!sameKeys(record, V2_RECORD_KEYS)
-      || !validGenerationBinding(record)) return null;
-    return 'v2';
+    if (!validGenerationBinding(record)) return null;
+    if (sameKeys(record, V2_RECORD_KEYS)) return 'v2';
+    if (sameKeys(record, PENDING_FRESH_V2_RECORD_KEYS)
+      && validPendingFreshProvenance(record.pendingFreshProvenance, record.turnId)) return 'pending-fresh';
+    return null;
   }
   if (record.version !== RESCUE_PREPARATION_RECORD_VERSION || !sameKeys(record, V3_RECORD_KEYS)
     || !validActivationForGeneration(record)) return null;
@@ -586,12 +595,22 @@ function validGenerationBinding(record) {
       : record.requiredExecutorAgentId !== null);
 }
 
+/** @param {unknown} value @param {string} turnId */
+function validPendingFreshProvenance(value, turnId) {
+  return plain(value) && sameKeys(value, PENDING_FRESH_PROVENANCE_KEYS)
+    && safeIdentifier(value.executorAgentId) && nonempty(value.originatingTurnId)
+    && value.originatingTurnId !== turnId;
+}
+
 /** @param {any} input */
 function validateSaveInput(input) {
   if (!plain(input) || !nonempty(input.sessionId) || !nonempty(input.turnId)
     || !nonempty(input.workspace) || !PERMISSION_MODES.includes(input.permissionMode)
     || typeof input.recordedPrompt !== 'string' || Buffer.byteLength(input.recordedPrompt) > RESCUE_TASK_MAX_BYTES
-    || input.signal !== undefined && !(input.signal instanceof AbortSignal)) {
+    || input.signal !== undefined && !(input.signal instanceof AbortSignal)
+    || input.pendingFreshProvenance !== undefined
+      && (input.activation !== undefined
+        || !validPendingFreshProvenance(input.pendingFreshProvenance, input.turnId))) {
     throw invalidPreparation();
   }
   timestamp(input.now);

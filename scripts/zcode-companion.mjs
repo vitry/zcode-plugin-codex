@@ -516,6 +516,10 @@ async function authorizePendingFreshReplan({ dataRoot, caller, executorAgentId, 
     ...caller,
     recordedPrompt: invocation.source === 'explicit' ? '$zcode:rescue' : '',
     envelope,
+    pendingFreshProvenance: {
+      executorAgentId,
+      originatingTurnId: invocation.caller.turnId,
+    },
   });
   await preparations.consume({ ...caller, executorAgentId });
 }

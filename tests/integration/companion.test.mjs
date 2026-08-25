@@ -113,15 +113,6 @@ const reactivationDependencies = (executorAgentId) => ({ planRescueActivation: a
   directive: { version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'zcode-rescue' },
 }) });
 
-/** @param {any} binding */
-function legacyMigrationProofForTest(binding) {
-  return { parentSessionId: binding.parentSessionId, childAgentId: binding.childAuthority.childAgentId,
-    childAgentType: binding.childAuthority.childAgentType, operationId: binding.operationId,
-    originWorkspace: binding.childAuthority.originWorkspace, executionWorkspace: binding.childAuthority.executionWorkspace,
-    agentPathDigest: binding.childAuthority.agentPathDigest,
-    bindingDigest: createHash('sha256').update(JSON.stringify(binding)).digest('hex') };
-}
-
 /** @param {{id:string,parentThreadId:string,cwd:string,agentRole?:string|null,agentPath?:string,status?:Record<string,unknown>}} input */
 function rawCodexChild({ id, parentThreadId, cwd, agentRole = 'zcode-rescue', agentPath = '/root/zcode_rescue_task', status = { type: 'active', activeFlags: [] } }) {
   return {

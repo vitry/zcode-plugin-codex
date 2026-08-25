@@ -221,6 +221,21 @@ test('omitted generation-one activation writes strict v2 and consumes without pr
   assert.equal(consumed.executorAgentId, 'legacy-child');
 });
 
+test('ordinary consumed v2 preparation cannot authorize a pending-fresh replan', async () => {
+  const { dataRoot, store, workspaceA } = await storeFixture();
+  const base = { sessionId: 'ordinary-v2-parent', turnId: 'ordinary-v2-turn', workspace: workspaceA,
+    permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue ordinary v2' };
+  const ordinaryEnvelope = { ...validEnvelope, options: { execution: 'foreground', effort: 'high' } };
+  await store.save({ ...base, envelope: ordinaryEnvelope });
+  await store.consume({ ...base, executorAgentId: 'ordinary-v2-child' });
+  const path = await preparedPath(dataRoot, workspaceA, base.sessionId, base.turnId); const before = await readFile(path);
+  await assert.rejects(store.save({ ...base,
+    envelope: { ...ordinaryEnvelope, options: { ...ordinaryEnvelope.options, resume: 'fresh' } },
+    activation: spawnActivation,
+  }), { code: 'RESCUE_PREPARATION_EXISTS' });
+  assert.deepEqual(await readFile(path), before);
+});
+
 test('generation-one spawn and reactivate activations round trip with exact proofs', async (t) => {
   /** @type {Array<[string, any, string, any]>} */
   const variants = [
