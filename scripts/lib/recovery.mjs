@@ -92,14 +92,15 @@ export async function settleEndedOwnerWritableJob(input) {
       const current = await input.store.readJob(input.workspace, selected.id);
       if (current.id !== selected.id || current.ownerSessionId !== input.ownerSessionId
         || current.command !== 'rescue' || current.readOnly !== false || TERMINAL.has(current.status)) return current;
-      if (current.status === 'queued' && !isDigest(current.workerLeaseId)) return cancelQueuedJob(input, current);
+      const workerLeaseId = recoveryWorkerLease(current);
+      if (current.status === 'queued' && !isDigest(workerLeaseId)) return cancelQueuedJob(input, current);
       if (current.status === 'queued') {
         try {
           return await withWorkerLease({
             dataRoot: input.dataRoot,
             workspace: input.workspace,
             jobId: current.id,
-            workerLeaseId: current.workerLeaseId,
+            workerLeaseId,
             timeoutMs: 0,
           }, () => cancelQueuedJob(input, current));
         } catch (error) {
@@ -122,15 +123,16 @@ async function settleSelectedJob(input) {
     const current = await input.store.readJob(input.workspace, input.selectedJobId);
     if (current.id !== input.selectedJobId || current.ownerSessionId !== input.expectedOwnerSessionId || TERMINAL.has(current.status)) return current;
     if (input.intent === 'scavenge' && (current.command !== 'rescue' || current.readOnly !== false)) return current;
-    if (current.status === 'queued' && !isDigest(current.workerLeaseId)) {
+    const workerLeaseId = recoveryWorkerLease(current);
+    if (current.status === 'queued' && !isDigest(workerLeaseId)) {
       return (input.now ?? Date.now)() - Date.parse(current.createdAt) >= LEGACY_QUEUED_STALE_MS
         ? failJob(input, current, recoveryError('Queued reservation exceeded the conservative worker-claim grace period.'))
         : current;
     }
-    if (!isDigest(current.workerLeaseId) && legacyWorkerAlive(current)) return current;
-    if (!isDigest(current.workerLeaseId)) return reconcileOrphan(input, current);
+    if (!isDigest(workerLeaseId) && legacyWorkerAlive(current)) return current;
+    if (!isDigest(workerLeaseId)) return reconcileOrphan(input, current);
     try {
-      return await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: current.id, workerLeaseId: current.workerLeaseId, timeoutMs: 0 }, () => current.status === 'queued'
+      return await withWorkerLease({ dataRoot: input.dataRoot, workspace: input.workspace, jobId: current.id, workerLeaseId, timeoutMs: 0 }, () => current.status === 'queued'
         ? failJob(input, current, recoveryError('Claimed queued worker exited before execution started.'))
         : reconcileOrphan(input, current));
     } catch (error) {
@@ -138,6 +140,30 @@ async function settleSelectedJob(input) {
       throw error;
     }
   });
+}
+
+/** Select only an exact claimed or private fenced worker lease. Corrupt authority is uncertainty, not absence. @param {any} job */
+function recoveryWorkerLease(job) {
+  if (job.workerLeaseId !== undefined && !isDigest(job.workerLeaseId)) throw recoveryError('Persisted worker lease is invalid.');
+  const authority = job.rescueExecutionReservation;
+  if (authority === undefined) return job.workerLeaseId;
+  const keys = typeof authority === 'object' && authority !== null && !Array.isArray(authority)
+    ? Object.keys(authority).sort().join(',') : '';
+  const sealed = ['capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,version,workspace',
+    'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,version,workerLeaseId,workspace'].includes(keys)
+    && authority.jobSpecFormat === 'sealed-v2' && authority.specDigest === undefined;
+  const legacy = ['capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,specDigest,version,workspace',
+    'capabilityDigest,jobId,jobSpecFormat,operation,ownerSessionId,reservationId,specDigest,version,workerLeaseId,workspace'].includes(keys)
+    && authority.jobSpecFormat === 'legacy-v1' && isDigest(authority.specDigest);
+  if ((!sealed && !legacy) || authority.version !== 1 || !isDigest(authority.capabilityDigest)
+    || !isDigest(authority.reservationId) || authority.jobId !== job.id
+    || authority.ownerSessionId !== job.ownerSessionId || authority.workspace !== job.workspace
+    || authority.operation !== 'run-reserved-job'
+    || authority.workerLeaseId !== undefined && !isDigest(authority.workerLeaseId)
+    || job.workerLeaseId !== undefined && authority.workerLeaseId !== job.workerLeaseId) {
+    throw recoveryError('Persisted execution reservation authority is invalid.');
+  }
+  return job.workerLeaseId ?? authority.workerLeaseId;
 }
 
 /** @param {any} input @param {any} job */

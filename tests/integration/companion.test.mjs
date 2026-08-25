@@ -1515,31 +1515,35 @@ test('background production execution claims an exact owner-v1 classless v2-boun
   assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
 });
 
-test('two real historical-v1 workers preserve the State-fenced Identity winner', async (t) => {
+test('two real historical-v1 workers with the same inspection elect one State-fence winner', async (t) => {
   const context = await fixture(); const historical = await historicalV1BackgroundFixture(
     context, 'historical v1 concurrent fence', 'legacy-v1-fence-race');
-  const reached = join(context.directory, 'legacy-v1-a-reached.json'); const release = join(context.directory, 'legacy-v1-a-release');
+  const reachedA = join(context.directory, 'legacy-v1-a-reached.json'); const releaseA = join(context.directory, 'legacy-v1-a-release');
+  const reachedB = join(context.directory, 'legacy-v1-b-reached.json'); const releaseB = join(context.directory, 'legacy-v1-b-release');
   const workerA = spawnLegacyFenceWorker(context, historical.job.id, historical.executionCapability, {
-    ZCODE_TEST_FENCE_REACHED: reached, ZCODE_TEST_FENCE_RELEASE: release, FAKE_ZCODE_RECORD: historical.record,
+    ZCODE_TEST_FENCE_STAGE: 'before-fence', ZCODE_TEST_FENCE_REACHED: reachedA,
+    ZCODE_TEST_FENCE_RELEASE: releaseA, FAKE_ZCODE_RECORD: historical.record,
   });
-  let aExited = false; void workerA.exit.then(() => { aExited = true; });
-  t.after(() => { if (!aExited) workerA.child.kill('SIGKILL'); });
-  await waitFor(() => stat(reached).then(() => true).catch(() => false), 'worker A did not reach its post-reservation gate');
-  const marker = JSON.parse(await readFile(reached, 'utf8')); const store = createStateStore({ dataRoot: context.dataRoot });
-  const fenced = await store.readJob(context.workspace, historical.job.id);
-  assert.equal(fenced.status, 'queued'); assert.equal(fenced.rescueExecutionReservation.workerLeaseId, marker.workerLeaseId);
-  const rendered = renderOutput({ job: { ...fenced, owned: true, owner: 'same-owner' } }, { json: true });
-  assert.doesNotMatch(rendered, /rescueExecutionReservation|capabilityDigest|reservationId|workerLeaseId|specDigest/u);
-
-  const workerB = spawnLegacyFenceWorker(context, historical.job.id, historical.executionCapability,
-    { FAKE_ZCODE_RECORD: historical.record });
-  const loser = await workerB.exit;
-  assert.notEqual(loser.code, 0); assert.match(loser.stderr, /WORKER_LEASE_CONFLICT/u);
-  const afterLoser = await store.readJob(context.workspace, historical.job.id);
-  assert.equal(afterLoser.status, 'queued'); assert.equal(afterLoser.rescueExecutionReservation.workerLeaseId, marker.workerLeaseId);
-
-  await writeFile(release, 'release\n'); const winner = await workerA.exit; aExited = true;
-  assert.deepEqual({ code: winner.code, signal: winner.signal }, { code: 0, signal: null }, winner.stderr);
+  const workerB = spawnLegacyFenceWorker(context, historical.job.id, historical.executionCapability, {
+    ZCODE_TEST_FENCE_STAGE: 'before-fence', ZCODE_TEST_FENCE_REACHED: reachedB,
+    ZCODE_TEST_FENCE_RELEASE: releaseB, FAKE_ZCODE_RECORD: historical.record,
+  });
+  let aExited = false; let bExited = false; void workerA.exit.then(() => { aExited = true; });
+  void workerB.exit.then(() => { bExited = true; });
+  t.after(() => { if (!aExited) workerA.child.kill('SIGKILL'); if (!bExited) workerB.child.kill('SIGKILL'); });
+  await Promise.all([
+    waitFor(() => stat(reachedA).then(() => true).catch(() => false), 'worker A did not reach its pre-fence gate'),
+    waitFor(() => stat(reachedB).then(() => true).catch(() => false), 'worker B did not reach its pre-fence gate'),
+  ]);
+  const [markerA, markerB] = await Promise.all([readFile(reachedA, 'utf8').then(JSON.parse), readFile(reachedB, 'utf8').then(JSON.parse)]);
+  assert.equal(markerA.inspection, markerB.inspection); assert.notEqual(markerA.workerLeaseId, markerB.workerLeaseId);
+  const store = createStateStore({ dataRoot: context.dataRoot }); const inspected = await store.readJob(context.workspace, historical.job.id);
+  const inspectedOutput = renderOutput({ job: { ...inspected, owned: true, owner: 'same-owner' } }, { json: true });
+  assert.doesNotMatch(inspectedOutput, /rescueExecutionReservation|capabilityDigest|reservationId|workerLeaseId|specDigest/u);
+  await Promise.all([writeFile(releaseA, 'release\n'), writeFile(releaseB, 'release\n')]);
+  const exits = await Promise.all([workerA.exit, workerB.exit]); aExited = true; bExited = true;
+  const [winner] = exits.filter((result) => result.code === 0); const [loser] = exits.filter((result) => result.code !== 0);
+  assert.ok(winner); assert.ok(loser); assert.match(loser.stderr, /(?:WORKER_LEASE_CONFLICT|RESCUE_BINDING_INVALID)/u);
   const succeeded = await store.readJob(context.workspace, historical.job.id);
   assert.equal(succeeded.status, 'succeeded'); assert.equal(succeeded.rescueExecutionReservation, undefined);
   const capability = JSON.parse(await readFile(historical.capabilityPath, 'utf8')); assert.ok(capability.consumedAt);
@@ -1548,7 +1552,7 @@ test('two real historical-v1 workers preserve the State-fenced Identity winner',
   assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
 });
 
-test('real detached historical-v1 fence crash is bearerlessly and idempotently scavenged', {
+test('live pre-Identity historical-v1 fence survives grace then SIGKILL is bearerlessly scavenged twice', {
   skip: process.platform === 'win32' ? 'real detached SIGKILL evidence is required' : false,
 }, async (t) => {
   const context = await fixture(); const historical = await historicalV1BackgroundFixture(
@@ -1556,21 +1560,27 @@ test('real detached historical-v1 fence crash is bearerlessly and idempotently s
   const reached = join(context.directory, 'legacy-v1-crash-reached.json'); const release = join(context.directory, 'legacy-v1-crash-release');
   let bearer = historical.executionCapability;
   const worker = spawnLegacyFenceWorker(context, historical.job.id, bearer, {
-    ZCODE_TEST_FENCE_REACHED: reached, ZCODE_TEST_FENCE_RELEASE: release, FAKE_ZCODE_RECORD: historical.record,
+    ZCODE_TEST_FENCE_STAGE: 'after-fence', ZCODE_TEST_FENCE_REACHED: reached,
+    ZCODE_TEST_FENCE_RELEASE: release, FAKE_ZCODE_RECORD: historical.record,
   });
   bearer = undefined; delete historical.executionCapability;
   let exited = false; void worker.exit.then(() => { exited = true; });
   t.after(() => { if (!exited) worker.child.kill('SIGKILL'); });
-  await waitFor(() => stat(reached).then(() => true).catch(() => false), 'crash worker did not reach its post-reservation gate');
+  await waitFor(() => stat(reached).then(() => true).catch(() => false), 'crash worker did not reach its post-fence pre-Identity gate');
   const marker = JSON.parse(await readFile(reached, 'utf8')); const store = createStateStore({ dataRoot: context.dataRoot });
   const fenced = await store.readJob(context.workspace, historical.job.id);
   assert.equal(fenced.rescueExecutionReservation.workerLeaseId, marker.workerLeaseId);
-  assert.ok(JSON.parse(await readFile(historical.capabilityPath, 'utf8')).executionReservationId);
-  worker.child.kill('SIGKILL'); await worker.exit; exited = true;
-
+  assert.equal(JSON.parse(await readFile(historical.capabilityPath, 'utf8')).executionReservationId, undefined);
+  const rendered = renderOutput({ job: { ...fenced, owned: true, owner: 'same-owner' } }, { json: true });
+  assert.doesNotMatch(rendered, /rescueExecutionReservation|capabilityDigest|reservationId|workerLeaseId|specDigest/u);
   const recover = () => scavengeWritableJobs({ store, dataRoot: context.dataRoot, workspace: context.workspace,
     now: () => Date.now() + 10 * 60_000,
     createClient: async () => { throw new Error('queued v1 fence recovery must not start ZCode'); } });
+  await recover();
+  const retained = await store.readJob(context.workspace, historical.job.id);
+  assert.equal(retained.status, 'queued'); assert.equal(retained.rescueExecutionReservation.workerLeaseId, marker.workerLeaseId);
+  assert.equal(JSON.parse(await readFile(historical.capabilityPath, 'utf8')).executionReservationId, undefined);
+  worker.child.kill('SIGKILL'); await worker.exit; exited = true;
   await recover(); await recover();
   const terminal = await store.readJob(context.workspace, historical.job.id);
   assert.equal(terminal.status, 'failed'); assert.equal(terminal.rescueExecutionReservation, undefined);

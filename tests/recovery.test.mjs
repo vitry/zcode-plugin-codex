@@ -276,6 +276,44 @@ test('workspace scavenging preserves an unclaimed reservation through claim grac
   await scavengeWritableJobs(input); assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'failed');
 });
 
+test('workspace scavenging fails closed on corrupt or contradictory private execution-fence evidence', async () => {
+  for (const mode of ['corrupt-authority', 'contradictory-lease']) {
+    const fixture = await context(); const store = createStateStore({ dataRoot: fixture.dataRoot });
+    const job = await store.reserveJob({
+      workspace: fixture.workspace, ownerSessionId: 'owner', ownerTurnId: mode,
+      command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' },
+    });
+    const authority = {
+      version: 1, capabilityDigest: 'a'.repeat(64), reservationId: 'b'.repeat(64),
+      jobId: job.id, ownerSessionId: job.ownerSessionId, workspace: job.workspace,
+      operation: 'run-reserved-job', jobSpecFormat: 'sealed-v2', workerLeaseId: 'c'.repeat(64),
+    };
+    await store.publishJobSpecCommitment(fixture.workspace, job.id, 'd'.repeat(64), authority);
+    const wrapped = {
+      ...store,
+      readJob: async (...args) => {
+        const current = await store.readJob(...args);
+        return mode === 'corrupt-authority'
+          ? { ...current, rescueExecutionReservation: { ...current.rescueExecutionReservation, unexpected: true } }
+          : { ...current, workerLeaseId: 'e'.repeat(64) };
+      },
+      finishJob: async () => { assert.fail(`${mode} must not terminalize uncertain fence ownership`); },
+    };
+    let clients = 0;
+    const { scavengeWritableJobs } = await import('../scripts/lib/recovery.mjs');
+    const outcomes = await scavengeWritableJobs({
+      store: wrapped, dataRoot: fixture.dataRoot, workspace: fixture.workspace,
+      now: () => Date.parse(job.createdAt) + 10 * 60_000,
+      reconcileOwnership: async () => { assert.fail(`${mode} must not reconcile remote ownership`); },
+      createClient: async () => { clients += 1; throw new Error('unreachable'); },
+    });
+    assert.equal(clients, 0, mode);
+    assert.equal(outcomes.at(-1).status, 'queued', mode);
+    assert.equal((await store.readJob(fixture.workspace, job.id)).status, 'queued', mode);
+    await cleanupRecoveryFixture(fixture);
+  }
+});
+
 test('workspace scavenging stops an active orphan and rereads completion before terminalizing', async () => {
   const fixture = await context(); const { job, store } = await orphanJob(fixture); let reads = 0; let stops = 0;
   const completed = { projection: { status: 'completed' }, runtime: { stateRevision: 8 }, messages: [{ info: { role: 'assistant', messageId: 'answer', parentMessageId: 'accepted-input' }, parts: [{ type: 'text', text: 'completion won the stop race' }] }] };

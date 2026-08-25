@@ -356,7 +356,7 @@ await identity.reserveExecutionCapability(token, expected, reservationId, worker
 `tests/integration/companion.test.mjs`, `tests/recovery.test.mjs`, this spec,
 and this plan.
 
-- [ ] Add an internal dependency seam immediately after the shared initial
+- [x] Add an internal dependency seam immediately after the shared initial
   inspection and before `fenceJobWorkerExecution`. Start two real workers,
   wait until both report the same pre-fence inspection boundary, release both,
   and assert one exact fence winner while the loser cannot terminalize or
@@ -367,7 +367,7 @@ await context.dependencies?.testOnlyBeforeExecutionFence?.();
 const fenced = await context.store.fenceJobWorkerExecution(/* exact inputs */);
 ```
 
-- [ ] Add an internal dependency seam immediately after durable State fence
+- [x] Add an internal dependency seam immediately after durable State fence
   publication and before `reserveExecutionCapability`. Pause a real detached
   worker there, advance recovery time beyond `LEGACY_QUEUED_STALE_MS`, and
   assert actual scavenging preserves the queued job and private authority while
@@ -379,20 +379,20 @@ await context.dependencies?.testOnlyAfterExecutionFence?.();
 await context.identity.reserveExecutionCapability(/* exact inputs */);
 ```
 
-- [ ] SIGKILL that same worker before Identity reservation, run actual
+- [x] SIGKILL that same worker before Identity reservation, run actual
   `scavengeWritableJobs` twice without a bearer, and assert one terminal job,
   no private authority, no Identity reservation, no RPC, and idempotent output.
 
-- [ ] Make recovery and SessionEnd derive an effective worker lease as
+- [x] Make recovery and SessionEnd derive an effective worker lease as
   `job.workerLeaseId ?? job.rescueExecutionReservation?.workerLeaseId` only
   after normal State record validation. Probe that exact lock before applying
   queued grace/orphan settlement; retain live locks and settle dead locks.
 
-- [ ] Add public projection assertions for both seam states and corruption
+- [x] Add public projection assertions for both seam states and corruption
   tests proving missing/mismatched authority or contradictory claimed/fenced
   leases fail closed without terminalization or release.
 
-- [ ] Run focused RED/GREEN tests, then complete
+- [x] Run focused RED/GREEN tests, then complete
   identity/state/binding/controller/recovery/SessionEnd/hooks/companion/skills
   suites and `npm run typecheck`, `npm run lint`,
   `npm run check:line-endings`, and `git diff --check`. Commit source/tests/spec

@@ -848,10 +848,16 @@ async function executeWithWorkerLease(context) {
       await context.dependencies?.testOnlyBeforeExecutionClaim?.();
       let executionInspection;
       if (context.executionCapability !== undefined) {
+        await context.dependencies?.testOnlyBeforeExecutionFence?.({
+          inspection: initialExecutionInspection, workerLeaseId,
+        });
         const fenced = await context.store.fenceJobWorkerExecution(context.cwd, context.job.id,
           { childPid: process.pid, workerLeaseId }, migrationRollback, executionAuthorization,
           initialExecutionInspection, context.executionReservation);
         executionInspection = fenced.inspection;
+        await context.dependencies?.testOnlyAfterExecutionFence?.({
+          inspection: executionInspection, workerLeaseId,
+        });
         await context.identity.reserveExecutionCapability(context.executionCapability,
           context.capabilityExpected, context.capabilityReservationId, workerLeaseId);
       } else executionInspection = await context.store.inspectJobWorkerExecution(context.cwd, context.job.id,
