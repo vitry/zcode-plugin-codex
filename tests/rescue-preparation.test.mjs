@@ -236,6 +236,53 @@ test('ordinary consumed v2 preparation cannot authorize a pending-fresh replan',
   assert.deepEqual(await readFile(path), before);
 });
 
+test('pending-fresh replan preserves the normalized objective and every original option', async (t) => {
+  const original = { version: 1, source: 'explicit', task: 'ORIGINAL',
+    options: { execution: 'foreground', model: 'provider/model', effort: 'low' } };
+  const setup = async () => {
+    const { dataRoot, store, workspaceA } = await storeFixture();
+    const base = { sessionId: 'pending-parent', turnId: 'pending-answer-turn', workspace: workspaceA,
+      permissionMode: 'workspace-write', recordedPrompt: '$zcode:rescue pending choice' };
+    await store.save({ ...base, envelope: original,
+      pendingFreshProvenance: { executorAgentId: 'pending-child', originatingTurnId: 'choice-turn' } });
+    await store.consume({ ...base, executorAgentId: 'pending-child' });
+    return { base, path: await preparedPath(dataRoot, workspaceA, base.sessionId, base.turnId), store };
+  };
+  /** @type {Array<[string, {task?:string,options?:Record<string,string>}]>} */
+  const mutations = [
+    ['objective', { task: 'DIFFERENT' }],
+    ['execution', { options: { ...original.options, execution: 'background', resume: 'fresh' } }],
+    ['model', { options: { ...original.options, model: 'other/model', resume: 'fresh' } }],
+    ['reasoning', { options: { ...original.options, effort: 'xhigh', resume: 'fresh' } }],
+  ];
+  for (const [name, patch] of mutations) await t.test(name, async () => {
+    const { base, path, store } = await setup();
+    const before = await readFile(path);
+    const envelope = { ...original, ...patch,
+      options: patch.options ?? { ...original.options, resume: 'fresh' } };
+    await assert.rejects(store.save({ ...base, envelope, activation: spawnActivation }),
+      { code: 'RESCUE_PREPARATION_EXISTS' });
+    assert.deepEqual(await readFile(path), before);
+  });
+  await t.test('permission', async () => {
+    const { base, path, store } = await setup();
+    const before = await readFile(path);
+    await assert.rejects(store.save({ ...base, permissionMode: 'read-only',
+      envelope: { ...original, options: { ...original.options, resume: 'fresh' } }, activation: spawnActivation }),
+    { code: 'RESCUE_PREPARATION_EXISTS' });
+    assert.deepEqual(await readFile(path), before);
+  });
+  const { base, path, store } = await setup();
+  await store.save({ ...base,
+    envelope: { ...original, options: { ...original.options, resume: 'fresh' } }, activation: spawnActivation });
+  const replanned = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(replanned.envelope.task, 'ORIGINAL');
+  assert.deepEqual(replanned.envelope.options,
+    { execution: 'foreground', model: 'provider/model', effort: 'low', resume: 'fresh' });
+  assert.deepEqual(replanned.activation, spawnActivation);
+  assert.equal(replanned.pendingFreshProvenance, undefined);
+});
+
 test('generation-one spawn and reactivate activations round trip with exact proofs', async (t) => {
   /** @type {Array<[string, any, string, any]>} */
   const variants = [

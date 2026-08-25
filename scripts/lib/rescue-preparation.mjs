@@ -233,8 +233,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
               && sameConsumedTurn;
             const freshReplan = envelope.options.resume === 'fresh'
               && kind === 'pending-fresh'
-              && current.envelope.options.resume === undefined
-              && current.source === envelope.source
+              && exactPendingFreshEnvelope(current.envelope, envelope)
               && sameConsumedTurn;
             if (!boundResume && !freshReplan) throw preparationError(
               'RESCUE_PREPARATION_EXISTS', 'A Rescue preparation already exists for this turn.',
@@ -600,6 +599,18 @@ function validPendingFreshProvenance(value, turnId) {
   return plain(value) && sameKeys(value, PENDING_FRESH_PROVENANCE_KEYS)
     && safeIdentifier(value.executorAgentId) && nonempty(value.originatingTurnId)
     && value.originatingTurnId !== turnId;
+}
+
+/** @param {any} original @param {any} replanned */
+function exactPendingFreshEnvelope(original, replanned) {
+  if (original.version !== replanned.version || original.source !== replanned.source
+    || original.task !== replanned.task || original.options.resume !== undefined
+    || replanned.options.resume !== 'fresh') return false;
+  const originalKeys = Object.keys(original.options);
+  const replannedKeys = Object.keys(replanned.options);
+  return replannedKeys.length === originalKeys.length + 1
+    && originalKeys.every((key) => Object.hasOwn(replanned.options, key)
+      && replanned.options[key] === original.options[key]);
 }
 
 /** @param {any} input */

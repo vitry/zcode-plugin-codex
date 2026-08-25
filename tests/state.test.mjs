@@ -153,12 +153,16 @@ test('migration proof is non-mutating and cannot resolve a same-child fresh repl
   const proof = await store.readRescueBindingMigrationProof(lookup);
   assert.equal(proof.kind, 'proof');
   assert.deepEqual(await readFile(partitionPath), beforeProof, 'proof read must not reactivate the tombstone');
-  const replacement = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace, 'turn-b'),
-    authority: await brandedStateAuthority(base.dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key) });
-  await startWritableRescueForTest(store, workspace, replacement.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'legacy-session-b' });
-  await store.finishJob(workspace, replacement.job.id, ['running'], 'succeeded');
-  await assert.rejects(store.resolveRescueBindingForResume({ workspace, parentSessionId: 'parent-session', executorAgentId: 'legacy-child',
-    permissionMode: 'workspace-write', migrationProof: proof.migrationProof }), { code: 'RESCUE_BINDING_STALE' });
+  const jobsBefore = await store.listJobs(workspace);
+  await assert.rejects(store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace, 'turn-b'),
+    authority: await brandedStateAuthority(base.dataRoot, workspace, 'legacy-bound', 'turn-b', first.binding.key) }),
+  { code: 'RESCUE_BINDING_STALE' });
+  assert.deepEqual(await store.listJobs(workspace), jobsBefore);
+  assert.deepEqual(await readFile(partitionPath), beforeProof);
+  const resolved = await store.resolveRescueBindingForResume({ workspace, parentSessionId: 'parent-session', executorAgentId: 'legacy-child',
+    permissionMode: 'workspace-write', migrationProof: proof.migrationProof });
+  assert.equal(resolved.kind, 'bound');
+  assert.equal(resolved.binding.operationId, first.binding.operationId);
 });
 
 test('session-ended resume validation leaves its closed tombstone unchanged until continuation reservation', async () => {
@@ -225,7 +229,8 @@ test('queued cancellation restores a migrated session-ended tombstone before ter
 });
 
 test('StateStore rejects non-migratable closed bindings without mutation', async (t) => {
-  for (const reason of ['cancel', 'fresh', 'invalidated']) await t.test(reason, async () => {
+  for (const [reason, code] of [['cancel', 'RESCUE_BINDING_CLOSED'], ['fresh', 'RESCUE_BINDING_INVALID'],
+    ['invalidated', 'RESCUE_BINDING_CLOSED']]) await t.test(reason, async () => {
     const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
     const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
       authority: await brandedStateAuthority(base.dataRoot, workspace, 'legacy-adopt') });
@@ -242,7 +247,7 @@ test('StateStore rejects non-migratable closed bindings without mutation', async
     const beforeJobs = await store.listJobs(workspace);
     await assert.rejects(store.resolveRescueBindingForResume({ workspace, parentSessionId: 'parent-session',
       executorAgentId: 'legacy-child', permissionMode: 'workspace-write', migrationProof: legacyMigrationProof(record) }),
-    { code: 'RESCUE_BINDING_CLOSED' });
+    { code });
     assert.deepEqual(await store.listJobs(workspace), beforeJobs);
   });
 });

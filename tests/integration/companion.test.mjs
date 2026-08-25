@@ -3261,25 +3261,25 @@ test('same-parent-turn bound continuation rejects a stale current job at its res
   await assertNoPreparedReservationSideEffects(context, prepared.record, jobsAfterMutation);
 });
 
-test('same-parent-turn bound continuation rejects a replaced operation and anchor at its reservation guard', async () => {
+test('same-parent-turn bound continuation rejects a replaced operation at its reservation guard', async () => {
   const context = await fixture(); const prepared = await preparedSameTurnBoundContinuation(context, { name: 'same-turn-stale-operation' });
   let jobsAfterMutation = 0;
   await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
     cwd: context.workspace, env: prepared.env, dependencies: {
       testOnlyAfterPreparedBindingResolution: async () => {
         const store = createStateStore({ dataRoot: context.dataRoot });
-        const replacement = await store.reserveFreshRescueJob({
-          workspace: context.workspace,
-          reservation: { workspace: context.workspace, ownerSessionId: prepared.parentSessionId, ownerTurnId: prepared.parentTurnId, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'workspace-write' } },
-          executor: prepared.executor,
-        });
-        await startWritableRescueForTest(store, context.workspace, replacement.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'replacement-session' });
-        await store.finishJob(context.workspace, replacement.job.id, ['running'], 'succeeded');
+        const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+        const [partitionName] = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'));
+        const partitionPath = join(storage.directory, partitionName); const partition = JSON.parse(await readFile(partitionPath, 'utf8'));
+        partition.records[0].operationId = randomBytes(32).toString('hex');
+        await atomicWriteJson(partitionPath, createRescueBindingPartition({
+          parentSessionId: prepared.parentSessionId, workspace: storage.workspacePath, records: partition.records,
+        }));
         jobsAfterMutation = (await store.listJobs(context.workspace)).length;
       },
     },
   }), { code: 'RESCUE_BINDING_STALE' });
-  assert.equal(jobsAfterMutation, 2);
+  assert.equal(jobsAfterMutation, 1);
   await assertNoPreparedReservationSideEffects(context, prepared.record, jobsAfterMutation);
 });
 
@@ -3290,16 +3290,18 @@ test('same-parent-turn bound continuation rejects an exact permission mismatch b
     cwd: context.workspace, env: prepared.env, dependencies: {
       testOnlyAfterPreparedBindingResolution: async () => {
         const store = createStateStore({ dataRoot: context.dataRoot });
-        await store.reserveFreshRescueJob({
-          workspace: context.workspace,
-          reservation: { workspace: context.workspace, ownerSessionId: prepared.parentSessionId, ownerTurnId: prepared.parentTurnId, command: 'rescue', readOnly: false, permissionSnapshot: { permissionMode: 'read-only' } },
-          executor: prepared.executor,
-        });
+        const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: context.workspace });
+        const [partitionName] = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'));
+        const partitionPath = join(storage.directory, partitionName); const partition = JSON.parse(await readFile(partitionPath, 'utf8'));
+        partition.records[0].permissionMode = 'read-only';
+        await atomicWriteJson(partitionPath, createRescueBindingPartition({
+          parentSessionId: prepared.parentSessionId, workspace: storage.workspacePath, records: partition.records,
+        }));
         jobsAfterMutation = (await store.listJobs(context.workspace)).length;
       },
     },
   }), { code: 'RESCUE_BINDING_INVALID' });
-  assert.equal(jobsAfterMutation, 2);
+  assert.equal(jobsAfterMutation, 1);
   await assertNoPreparedReservationSideEffects(context, prepared.record, jobsAfterMutation);
 });
 

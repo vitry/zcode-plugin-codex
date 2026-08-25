@@ -24,7 +24,6 @@ import {
   readRescueBindingAuthorityFile,
   readRescueBindingPartitionFile,
   rescueBindingAuthorityView,
-  rescueBindingFreshSuperseded,
   rescueBindingKey,
   rescueBindingPartitionKey,
   RESCUE_BINDING_MAX_RECORDS,
@@ -182,14 +181,14 @@ export function createStateStore(options) {
         if (input.expectedOperationId !== undefined
           && (!(readOnlyPrevious?.state === 'active' || readOnlyPrevious?.state === 'closed' && readOnlyPrevious.closeReason === 'session-ended') || readOnlyPrevious.operationId !== input.expectedOperationId
             || readOnlyPrevious.anchorJobId !== input.expectedAnchorJobId || readOnlyPrevious.currentJobId !== input.expectedCurrentJobId)) throw staleRescueBinding();
+        if (readOnlyPrevious !== null) throw staleRescueBinding();
         const childAuthority = authorityForReservation(context, readOnlyPrevious, input.reservation, storage.workspacePath, true);
         const jobs = await readAllJobs(storage.jobsDirectory, storage.workspacePath);
         const job = makeReservedJob(storage, jobs, input.reservation, 'bound');
         const createdAt = new Date().toISOString();
         const binding = createRescueBinding({ ...exactIdentity, childAuthority,
           anchorJobId: job.id, currentJobId: job.id, operationId: randomBytes(32).toString('hex'), now: createdAt,
-          superseded: readOnlyPrevious && (readOnlyPrevious.state === 'active' || readOnlyPrevious.closeReason === 'session-ended') ? rescueBindingFreshSuperseded(readOnlyPrevious, createdAt)
-            : readOnlyPrevious?.version === 3 ? readOnlyPrevious.superseded : [] });
+          superseded: [] });
         const closedGcCutoff = Date.now() - RESCUE_BINDING_CLOSED_GC_MS;
         const plannedBeforeSnapshot = planBindingSlot(readOnlySnapshot, binding.key, closedGcCutoff);
         const plannedAfterSnapshot = bindingSnapshotWith(plannedBeforeSnapshot, binding);
