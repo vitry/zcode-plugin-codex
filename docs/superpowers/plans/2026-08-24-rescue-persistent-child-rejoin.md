@@ -281,6 +281,74 @@ ZCODE_CODEX_SKILLS_E2E=1 ZCODE_CODEX_RESCUE_E2E=1 ZCODE_REAL_E2E=1 ZCODE_REAL_E2
 - [ ] Confirm the PR is mergeable and leave it unmerged unless separately
   authorized.
 
+## Task 8 — Fence historical v1 execution before Identity reservation
+
+**Files:** `scripts/lib/state.mjs`, `scripts/lib/identity.mjs`,
+`scripts/lib/recovery.mjs`, `scripts/lib/render.mjs`,
+`scripts/zcode-companion.mjs`, `tests/fixtures/legacy-fence-worker.mjs`,
+`tests/integration/companion.test.mjs`, `tests/state.test.mjs`, and
+`tests/identity.test.mjs`.
+
+- [ ] Add a real two-worker RED fixture. Worker A pauses after the State fence
+  and Identity reservation; worker B uses the same historical v1 bearer with a
+  different lease. Assert B gets a foreign-lease conflict without terminalizing
+  or releasing A, then release A and assert exactly one claim, consumption, and
+  remote execution.
+
+```js
+await gate.wait('a-reserved');
+await workerB.exit();
+assert.equal((await store.readJob(workspace, jobId)).status, 'queued');
+await gate.release('a');
+assert.equal((await workerA.exit()).code, 0);
+```
+
+- [ ] Add a real crash RED fixture. Kill worker A after its State fence and
+  Identity reservation without retaining the bearer in the recovery process;
+  run the production orphan scavenger twice and assert terminal settlement,
+  exact Identity reservation release, private-authority clearing, and
+  idempotence.
+
+```js
+await gate.wait('a-reserved');
+workerA.kill('SIGKILL');
+await scavengeWritableJobs({ dataRoot, workspace });
+await scavengeWritableJobs({ dataRoot, workspace });
+assert.equal((await store.readJob(workspace, jobId)).rescueExecutionReservation, undefined);
+```
+
+- [ ] Add zero-mutation RED controls for malformed v1 pairing, corrupt or
+  ambiguous historical proof, and State CAS rejection. Compare the exact job
+  and capability bytes before and after each rejection and require no fence or
+  Identity reservation.
+
+- [ ] Extend the private execution-authority schema with an exact historical
+  v1 variant carrying `specDigest`, and add one StateStore API that atomically
+  revalidates the prior inspection/proof and either installs the exact lease
+  fence, returns the same-lease fence idempotently, or rejects a foreign lease.
+
+```js
+await store.fenceJobWorkerExecution(workspace, jobId, worker, rollback,
+  executionAuthorization, expectedInspection, executionReservation);
+await identity.reserveExecutionCapability(token, expected, reservationId, worker.workerLeaseId);
+```
+
+- [ ] Make claim, failure reconciliation, terminal cleanup, Identity
+  release-by-reservation, and orphan recovery consume the same sealed-v2 or
+  historical-v1 authority union. Foreign, nonterminal, corrupt, mismatched, or
+  unreadable evidence remains fail closed; release then State clearing remains
+  crash-idempotent.
+
+- [ ] Strip both authority variants from every public/render/job-spec path and
+  add direct assertions that capability digest, reservation, worker lease, and
+  legacy spec digest never appear.
+
+- [ ] Run the focused real-worker tests first, then the complete
+  identity/state/binding/controller/recovery/SessionEnd/hooks/companion/skills
+  suites, followed by `npm run typecheck`, `npm run lint`,
+  `npm run check:line-endings`, and `git diff --check`. Commit only source,
+  tests, spec, and plan; marketplace remains for the later generation task.
+
 ## Completion evidence
 
 - Final design and executable plan commits.

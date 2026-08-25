@@ -161,6 +161,20 @@ modern `sealed-v2` capability or modern reservation without that
 historical proof cannot be downgraded by replacing its file. Queued
 cancel/recovery classifies a v2 record from durable job/binding state without
 decrypting its task payload.
+Historical v1 execution uses the same State-before-Identity fencing order as
+sealed v2. After all read-only capability, outer-schema, pairing, and locked
+historical-proof checks pass, one StateStore CAS publishes a private execution
+recovery authority bound to the exact capability digest, deterministic
+reservation, normalized-spec digest, job, owner, canonical workspace,
+operation, format, and worker lease. Identity reservation may happen only
+after that fence is durable. A competing lease observes the foreign State
+fence and may neither terminalize the job nor release the winner's Identity
+reservation. Claim and consume revalidate the same fence. A rejection before
+fence publication makes no persistent change; a crash after fence publication
+or Identity reservation is settled by ordinary orphan recovery using the
+private authority without the bearer. Terminal release and authority clearing
+remain separately idempotent. The authority is absent from public status,
+rendered output, logs, and job-spec artifacts.
 For an exact v1 spec, `resumeSessionId` and `candidateJobId` are one paired
 identity: both absent means historical unbound execution, both present requires
 the exact historical bound proof, and either field alone fails before identity
@@ -196,8 +210,9 @@ Historical writable records that predate reservation classes are compatible
 only when the canonical job omits the class and its exact owner binding has the
 legacy v1 format. A classless owner-v1 job may be ordinary unbound, or may be
 bound by complete and exact historical v1/v2 child evidence. Production
-execution upgrades that authority only by publishing a private v2 execution
-claim under the state lock. A classless owner-v1 job associated with a v3 child
+execution upgrades that authority by publishing the private exact execution
+fence before Identity reservation and then the execution claim under the state
+lock. A classless owner-v1 job associated with a v3 child
 binding fails closed for continuation, adoption, fresh/ordinary, production
 claim, and direct-transition paths. The sole v3 exception is an exact
 markerless migration successor reconstructed from a v1/v2 `session-ended`
