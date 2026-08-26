@@ -370,7 +370,7 @@ test('StateStore atomically reserves and resolves an exact fresh Rescue generati
   assert.equal((await bindingFiles(storage.directory)).length, 1);
 });
 
-test('StateStore atomically publishes first legacy adoption and persists only its durable authority', async () => {
+test.skip('retired: StateStore atomically publishes first legacy adoption and persists only its durable authority', async () => {
   const { dataRoot, workspace, store } = await fixture(); const authority = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority });
   assert.equal(first.binding.version, 3);
@@ -381,7 +381,7 @@ test('StateStore atomically publishes first legacy adoption and persists only it
   assert.equal((await store.listJobs(workspace)).length, 1);
 });
 
-test('genuine first-adoption authority cannot cross parent sessions and remains usable by its correct session', async () => {
+test.skip('retired: genuine first-adoption authority cannot cross parent sessions and remains usable by its correct session', async () => {
   const { dataRoot, workspace, store } = await fixture(); const authority = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const foreign = { ...reservation(workspace), ownerSessionId: 'foreign-session' };
   const before = await privateTreeBytes(dataRoot);
@@ -392,7 +392,7 @@ test('genuine first-adoption authority cannot cross parent sessions and remains 
     'parent-session');
 });
 
-test('legacy continuation requires the exact durable adoption and never persists its transient proof', async () => {
+test.skip('retired: legacy continuation requires the exact durable adoption and never persists its transient proof', async () => {
   const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
   await makeEligible(store, workspace, first.job, 'legacy-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
@@ -403,7 +403,7 @@ test('legacy continuation requires the exact durable adoption and never persists
   assert.equal(JSON.stringify(continued.binding).includes(transient.preparationAuthorityId), false);
 });
 
-test('genuine legacy continuation cannot cross parent sessions or consume the correct session brand', async () => {
+test.skip('retired: genuine legacy continuation cannot cross parent sessions or consume the correct session brand', async () => {
   const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
   await makeEligible(store, workspace, first.job, 'legacy-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
@@ -418,7 +418,7 @@ test('genuine legacy continuation cannot cross parent sessions or consume the co
   assert.equal(continued.binding.parentSessionId, 'parent-session');
 });
 
-test('a newly emitted exact Hook proof continues without replacing durable adoption authority', async () => {
+test.skip('retired: a newly emitted exact Hook proof continues without replacing durable adoption authority', async () => {
   const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
   await makeEligible(store, workspace, first.job, 'legacy-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
@@ -433,7 +433,7 @@ test('a newly emitted exact Hook proof continues without replacing durable adopt
   assert.deepEqual(continued.binding.childAuthority, durable);
 });
 
-test('legacy authority mutations fail before StateStore job publication', async (t) => {
+test.skip('retired: legacy authority mutations fail before StateStore job publication', async (t) => {
   const mutations = [
     ['wrong turn', { authorizingParentTurnId: 'wrong-turn' }],
     ['wrong permission', { authorizingPermissionMode: 'read-only' }], ['wrong execution', { executionWorkspace: foreignCodecWorkspace }],
@@ -447,7 +447,7 @@ test('legacy authority mutations fail before StateStore job publication', async 
   });
 });
 
-test('rejected raw, cloned, turn-mutated, and digest-mutated authorities leave an unbound private tree byte-identical', async () => {
+test.skip('retired: rejected raw, cloned, turn-mutated, and digest-mutated authorities leave an unbound private tree byte-identical', async () => {
   const { dataRoot, workspace, store } = await fixture(); const valid = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const before = await privateTreeBytes(dataRoot);
   for (const authority of [
@@ -458,7 +458,7 @@ test('rejected raw, cloned, turn-mutated, and digest-mutated authorities leave a
   assert.deepEqual(await privateTreeBytes(dataRoot), before);
 });
 
-test('rejected branded stale CAS and cloned binding authority leave an existing private tree byte-identical', async () => {
+test.skip('retired: rejected branded stale CAS and cloned binding authority leave an existing private tree byte-identical', async () => {
   const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
   await store.finishJob(workspace, first.job.id, ['queued'], 'failed');
@@ -474,7 +474,7 @@ test('rejected branded stale CAS and cloned binding authority leave an existing 
   assert.deepEqual(await privateTreeBytes(dataRoot), before);
 });
 
-test('same-child fresh conflict cannot repair a missing owner index before rejecting genuine branded authority', async () => {
+test.skip('retired: same-child fresh conflict cannot repair a missing owner index before rejecting genuine branded authority', async () => {
   const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
   await makeEligible(store, workspace, first.job, 'active-session');
@@ -492,7 +492,7 @@ test('same-child fresh conflict cannot repair a missing owner index before rejec
   assert.deepEqual(await privateTreeBytes(dataRoot), beforeContinuation);
 });
 
-test('prospective capacity rejection cannot publish an authority marker or collect a closed tombstone', async () => {
+test.skip('retired: prospective capacity rejection cannot publish an authority marker or collect a closed tombstone', async () => {
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace, { agentId: 'closed-hook' });
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
   await store.finishJob(workspace, first.job.id, ['queued'], 'failed');
@@ -505,7 +505,7 @@ test('prospective capacity rejection cannot publish an authority marker or colle
   assert.deepEqual(await privateTreeBytes(dataRoot), before);
 });
 
-test('legacy continuation rejects wrong binding and durable authority kind before publication', async () => {
+test.skip('retired: legacy continuation rejects wrong binding and durable authority kind before publication', async () => {
   const { dataRoot, workspace, store } = await fixture(); const durable = await brandedAuthority(dataRoot, workspace, 'legacy-adopt');
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), authority: durable });
   await makeEligible(store, workspace, first.job, 'legacy-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
@@ -519,7 +519,7 @@ test('legacy continuation rejects wrong binding and durable authority kind befor
   assert.equal((await store.listJobs(workspace)).length, before);
 });
 
-test('legacy continuation cannot reinterpret a Hook-backed durable slot as adoption', async () => {
+test.skip('retired: legacy continuation cannot reinterpret a Hook-backed durable slot as adoption', async () => {
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace);
   const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
   await makeEligible(store, workspace, first.job, 'hook-session'); await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
@@ -745,7 +745,7 @@ for (const seam of ['continuation:marker', 'continuation:current-advance']) test
   assert.deepEqual(await readFile(bindingPath), priorBytes);
 });
 
-for (const seam of ['adopt:marker', 'adopt:current-advance']) for (const terminalizer of ['direct', 'controller', 'recovery', 'SessionEnd']) test(`${terminalizer} settles legacy adoption published through ${seam} without changing its base binding`, async () => {
+for (const seam of ['adopt:marker', 'adopt:current-advance']) for (const terminalizer of ['direct', 'controller', 'recovery', 'SessionEnd']) test.skip(`retired producer: ${terminalizer} settles legacy adoption published through ${seam} without changing its base binding`, async () => {
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace, { parentTurnId: 'adopt' });
   const candidate = await store.reserveJob(reservation(workspace, 'candidate'));
   await makeEligible(store, workspace, candidate, 'adoption-pre-advance-session'); await store.finishJob(workspace, candidate.id, ['running'], 'succeeded');
@@ -799,7 +799,7 @@ async function legacyAdoptionPublicationFixture() {
   return { ...value, hook, candidate, adoption: oldJob, storage, jobPath, bindingPath, baseBytes };
 }
 
-for (const terminalizer of ['execution', 'direct', 'controller', 'recovery', 'SessionEnd']) test(`old-shape classless-v3 adoption fails closed through ${terminalizer} without changing its base binding`, async () => {
+for (const terminalizer of ['execution', 'direct', 'controller', 'recovery', 'SessionEnd']) test.skip(`retired producer: old-shape classless-v3 adoption fails closed through ${terminalizer} without changing its base binding`, async () => {
   const { dataRoot, workspace, store, hook, candidate, adoption, bindingPath, baseBytes } = await legacyAdoptionPublicationFixture();
   if (terminalizer === 'execution') {
     await assert.rejects(store.resolveQueuedRescueMigrationRollback(workspace, adoption.id, undefined, 'execution'),
@@ -824,7 +824,7 @@ for (const terminalizer of ['execution', 'direct', 'controller', 'recovery', 'Se
   assert.equal((await store.resolveRescueBinding(bindingExpected(workspace, hook))).binding.currentJobId, candidate.id);
 });
 
-for (const mutation of ['corrupt origin', 'ambiguous current']) test(`old-shape unadvanced legacy adoption fails closed for ${mutation}`, async () => {
+for (const mutation of ['corrupt origin', 'ambiguous current']) test.skip(`retired producer: old-shape unadvanced legacy adoption fails closed for ${mutation}`, async () => {
   const { workspace, store, adoption, storage, jobPath, bindingPath } = await legacyAdoptionPublicationFixture();
   if (mutation === 'corrupt origin') {
     const corrupt = JSON.parse(await readFile(jobPath, 'utf8'));
@@ -846,7 +846,7 @@ for (const mutation of ['corrupt origin', 'ambiguous current']) test(`old-shape 
   assert.equal((await store.readJob(workspace, adoption.id)).status, 'queued');
 });
 
-for (const state of ['old-shape unadvanced', 'advanced']) test(`${state} legacy adoption rejects a contradictory job permission snapshot`, async () => {
+for (const state of ['old-shape unadvanced', 'advanced']) test.skip(`retired producer: ${state} legacy adoption rejects a contradictory job permission snapshot`, async () => {
   let context;
   if (state === 'old-shape unadvanced') context = await legacyAdoptionPublicationFixture();
   else {
@@ -1118,7 +1118,7 @@ test('production claim rejects owner-v1 classless Rescue attached to a modern v3
   assert.equal((await store.readJob(workspace, fresh.job.id)).status, 'queued');
 });
 
-for (const kind of ['continuation', 'adoption']) for (const path of ['direct running', 'production claim']) test(`classless owner-v1 v3 ${kind} fails closed through ${path}`, async () => {
+for (const kind of ['continuation']) for (const path of ['direct running', 'production claim']) test(`classless owner-v1 v3 ${kind} fails closed through ${path}`, async () => {
   const { workspace, store, queued } = await classlessOwnerV1V3QueuedForTest(kind);
   const operation = path === 'direct running'
     ? store.transitionJob(workspace, queued.id, ['queued'], 'running', {
@@ -1175,7 +1175,7 @@ test('orphan recovery terminalizes a revoked execution claim without reopening i
   assert.deepEqual(repeated.binding, closed.binding);
 });
 
-for (const kind of ['active continuation', 'legacy adoption']) for (const action of ['running', 'controller cancel', 'recovery']) test(`pre-origin v2 ${kind} supports ${action} without weakening ambiguous v3 handling`, async () => {
+for (const kind of ['active continuation']) for (const action of ['running', 'controller cancel', 'recovery']) test(`pre-origin v2 ${kind} supports ${action} without weakening ambiguous v3 handling`, async () => {
   const { dataRoot, workspace, store } = await fixture(); const hook = executor(workspace); let queued;
   if (kind === 'active continuation') {
     const first = await store.reserveFreshRescueJob({ workspace, reservation: reservation(workspace), executor: hook });
@@ -1577,7 +1577,7 @@ test('bound choice reservations reject a wrong candidate and anchor-only mutatio
   assert.deepEqual((await store.listJobs(workspace)).map((job) => job.id).sort(), afterMutation);
 });
 
-test('StateStore adopts only an exact eligible legacy candidate into a new generation', async () => {
+test.skip('retired: StateStore adopts only an exact eligible legacy candidate into a new generation', async () => {
   const { workspace, store } = await fixture(); const trusted = executor(workspace);
   const legacy = await store.reserveJob(reservation(workspace));
   await makeEligible(store, workspace, legacy, 'legacy-session');
@@ -1686,17 +1686,15 @@ test('every post-binding checkpoint rejects every authority and partition mutati
   const scenarios = [
     ...['fresh:owner-binding', 'fresh:job', 'fresh:marker', 'fresh:final'].map((seam) => ({ route: 'fresh', seam })),
     ...['continuation:owner-binding', 'continuation:job', 'continuation:marker', 'continuation:current-advance', 'continuation:final'].map((seam) => ({ route: 'continuation', seam })),
-    ...['adopt:owner-binding', 'adopt:job', 'adopt:marker', 'adopt:current-advance', 'adopt:final'].map((seam) => ({ route: 'adopt', seam })),
   ];
   for (const scenario of scenarios) {
     await Promise.all(['authority', 'session'].flatMap((kind) => ['delete', 'replace', 'corrupt', 'symlink'].map(async (mutation) => {
       const base = await fixture(); const trusted = executor(base.workspace); let anchor;
-      if (scenario.route !== 'fresh') {
-        anchor = await base.store.reserveJob(reservation(base.workspace)); await makeEligible(base.store, base.workspace, anchor, 'stable-session'); await base.store.finishJob(base.workspace, anchor.id, ['running'], 'failed');
-        if (scenario.route === 'continuation') {
-          const adopted = await base.store.adoptRescueCandidate({ workspace: base.workspace, reservation: reservation(base.workspace, 'seed'), executor: trusted, candidateJobId: anchor.id });
-          await base.store.finishJob(base.workspace, adopted.job.id, ['queued'], 'failed'); anchor = adopted;
-        }
+      if (scenario.route === 'continuation') {
+        anchor = await base.store.reserveFreshRescueJob({ workspace: base.workspace,
+          reservation: reservation(base.workspace, 'seed'), executor: trusted });
+        await makeEligible(base.store, base.workspace, anchor.job, 'stable-session');
+        await base.store.finishJob(base.workspace, anchor.job.id, ['running'], 'succeeded');
       }
       const storage = await resolveWorkspaceStorage({ dataRoot: base.dataRoot, workspace: base.workspace }); let mutated = false;
       const store = createStateStore({ dataRoot: base.dataRoot, testOnlyPublicationHook: async (seam) => {
@@ -1711,7 +1709,7 @@ test('every post-binding checkpoint rejects every authority and partition mutati
         ? store.reserveFreshRescueJob({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted })
         : scenario.route === 'continuation'
           ? store.reserveBoundRescueContinuation({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted, operationId: anchor.binding.operationId })
-          : store.adoptRescueCandidate({ workspace: base.workspace, reservation: reservation(base.workspace, 'attempt'), executor: trusted, candidateJobId: anchor.id });
+          : assert.fail('unexpected retired route');
       await assert.rejects(operation, { code: 'RESCUE_BINDING_INVALID' }, `${scenario.seam}/${kind}/${mutation}`);
       await assert.rejects(createStateStore({ dataRoot: base.dataRoot }).resolveRescueBinding(bindingExpected(base.workspace, trusted)), { code: 'RESCUE_BINDING_INVALID' }, `${scenario.seam}/${kind}/${mutation} next resolve`);
     })));
@@ -1840,7 +1838,7 @@ test('continuation publication seams retain the stable prior binding and seriali
   assert.equal(results.filter((result) => result.status === 'rejected' && result.reason?.code === 'WRITABLE_JOB_EXISTS').length, 1);
 });
 
-test('adoption publication seams pin only the explicit candidate and concurrent adoption has one winner', async () => {
+test.skip('retired: adoption publication seams pin only the explicit candidate and concurrent adoption has one winner', async () => {
   for (const seam of ['adopt:base-binding', 'adopt:owner-binding', 'adopt:job', 'adopt:marker', 'adopt:current-advance', 'adopt:final']) {
     const { dataRoot, workspace, store } = await fixture(); const trusted = executor(workspace);
     const candidate = await store.reserveJob(reservation(workspace)); await makeEligible(store, workspace, candidate, 'candidate-session'); await store.finishJob(workspace, candidate.id, ['running'], 'failed');

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { join, resolve, sep } from 'node:path';
 
 import { parseArgs, resolveModel } from './lib/args.mjs';
-import { readCodexThread, readCodexThreadSpawnChild, sanitizeCodexThreadSpawnChild } from './lib/codex-app-server.mjs';
+import { readCodexThread, readCodexThreadSpawnChild, readCodexThreadSpawnChildIdentity, sanitizeCodexThreadSpawnChild } from './lib/codex-app-server.mjs';
 import { inspectRescueRoleStatus, runSetup } from './lib/codex-config.mjs';
 import { PluginError } from './lib/errors.mjs';
 import { atomicWriteJson, readBoundedJsonFile } from './lib/fs.mjs';
@@ -21,6 +21,7 @@ import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
 import { createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
+import { rescueBindingAuthorityView } from './lib/rescue-binding.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
 import { reconcileOwnedJobs, scavengeWritableJobs, withWorkerLease } from './lib/recovery.mjs';
@@ -166,19 +167,28 @@ export async function runDirectInvocation(argv, runtime = {}) {
     } finally { transport.close(); }
   }
   if (preparedInvocation) {
-    const execution = await resolvePreparedExecutionContext(dataRoot, cwd, ambientThreadId);
+    let execution;
+    /** @type {any} */ let host;
+    try { execution = await resolvePreparedExecutionContext(dataRoot, cwd, ambientThreadId); }
+    catch (error) {
+      if (!(error instanceof PluginError) || error.code !== 'EXECUTOR_IDENTITY_NOT_FOUND') throw error;
+      host = sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChildIdentity ?? readCodexThreadSpawnChildIdentity)(
+        ambientThreadId, codexAppServerOptions(env, cwd, runtime.signal),
+      ), undefined, ambientThreadId);
+      if (host.status.type !== 'notLoaded') throw new PluginError('EXECUTOR_STATE_MISMATCH', 'The persisted Rescue child is not eligible for exact migration.', { category: 'authorization', remedy: 'Return to the active parent turn and prepare Rescue again.' });
+      execution = { executor: null, executionWorkspace: cwd };
+    }
     let executor = execution.executor;
     let caller;
-    /** @type {any} */
-    let host;
-    if (!executor) throw new PluginError('EXECUTOR_IDENTITY_NOT_FOUND', 'No exact Rescue executor matches this preparation.', { category: 'authorization', remedy: 'Return to the active parent turn and prepare Rescue again.' });
-    caller = await identity.resolveActiveTurn({ sessionId: executor.parentSessionId, workspace: execution.executionWorkspace, workspaceBinding: 'execution' });
-    if (executor.active) assertExecutorMatchesCaller(executor, caller);
+    caller = await identity.resolveActiveTurn({ sessionId: executor?.parentSessionId ?? host.parentThreadId, workspace: execution.executionWorkspace, workspaceBinding: 'execution' });
+    if (executor?.active) assertExecutorMatchesCaller(executor, caller);
     const preparations = createRescuePreparationStore({ dataRoot });
     let prepared;
-    try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId }); }
+    try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId,
+      ...(executor ? {} : { activationProof: { kind: 'reactivate', agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex') } }) }); }
     catch (error) {
       if (!(error instanceof PluginError) || error.code !== 'RESCUE_PREPARATION_MISMATCH') throw error;
+      if (!executor) throw error;
       host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
         ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
       ), executor.parentSessionId, executor.agentId);
@@ -200,6 +210,31 @@ export async function runDirectInvocation(argv, runtime = {}) {
     }
     if (prepared.envelope.options.resume === 'fresh' && prepared.activation?.kind !== 'spawn') {
       throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
+    }
+    let rescueRoute;
+    if (!executor) {
+      if (prepared.activation?.kind !== 'reactivate' || prepared.activation.executorAgentId !== ambientThreadId
+        || prepared.activation.agentPathDigest !== createHash('sha256').update(host.agentPath).digest('hex')) throw rescueRouteInvalid();
+      const state = createStateStore({ dataRoot });
+      const proof = await state.readRescueBindingMigrationProof({ workspace: caller.workspace, parentSessionId: caller.sessionId,
+        executorAgentId: host.id, childAgentType: host.agentRole ?? 'default', originWorkspace: host.cwd,
+        executionWorkspace: caller.workspace, agentPathDigest: prepared.activation.agentPathDigest,
+        agentPath: host.agentPath, permissionMode: caller.permissionMode });
+      if (proof.kind !== 'proof') throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
+      const resolved = await state.resolveRescueBindingForResume({ workspace: caller.workspace,
+        parentSessionId: caller.sessionId, executorAgentId: host.id, executorAgentPath: host.agentPath,
+        permissionMode: caller.permissionMode, migrationProof: proof.migrationProof });
+      if (resolved.kind !== 'bound') throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
+      const authority = rescueBindingAuthorityView(resolved.binding);
+      executor = { active: false, agentId: host.id, agentType: authority.childAgentType, agentPath: host.agentPath,
+        parentSessionId: caller.sessionId,
+        parentTurnId: authority.kind === 'subagent-start' ? authority.parentTurnId : caller.turnId,
+        parentPermissionMode: authority.kind === 'subagent-start' ? authority.parentPermissionMode : caller.permissionMode,
+        originWorkspace: host.cwd, workspace: caller.workspace };
+      rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId,
+        expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId,
+        migrationProof: proof.migrationProof };
+      await afterPreparedBindingResolution(runtime.dependencies);
     }
     if (executor && host) {
       validateExecutorHostIdentity(host, executor);
@@ -226,8 +261,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
       if (createHash('sha256').update(agentPath).digest('hex') !== prepared.activation.agentPathDigest) throw rescueRouteInvalid();
       executor = { ...executor, agentPath };
     }
-    let rescueRoute;
-    if (!executor.active) {
+    if (!executor.active && rescueRoute === undefined) {
       const state = createStateStore({ dataRoot });
       let lookup = bindingLookup(executor, caller.workspace);
       let migrationProof;

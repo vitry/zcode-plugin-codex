@@ -51,7 +51,7 @@ export async function planRescueActivation(input) {
   const hostChildren = validateChildren(children, input.caller.sessionId);
   const resume = input.envelope.options?.resume === 'resume';
   if (input.envelope.options?.resume === 'fresh') return spawnPlan(hostChildren);
-  const provenCandidates = []; const persistedCandidates = [];
+  const provenCandidates = []; const persistedCandidates = []; let ineligiblePersisted = false;
   for (const host of hostChildren) {
     const hostClass = classifyHost(host);
     if (hostClass === 'occupancy') continue;
@@ -60,10 +60,11 @@ export async function planRescueActivation(input) {
     catch (error) {
       if (/** @type {any} */ (error)?.code === 'EXECUTOR_IDENTITY_NOT_FOUND') {
         const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, host, executionWorkspace });
-        if (binding.kind === 'missing' || binding.kind === 'ineligible') continue;
+        if (binding.kind === 'missing') continue;
+        if (binding.kind === 'ineligible') { ineligiblePersisted = true; continue; }
         if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
         persistedCandidates.push({ kind: /** @type {'persisted'} */ ('persisted'), binding: validatePersistedBinding(binding.binding, {
-          caller: input.caller, executionWorkspace, host, originWorkspace, requirePermissionMatch: resume,
+          caller: input.caller, executionWorkspace, host, originWorkspace, requirePermissionMatch: true,
         }), host });
         continue;
       }
@@ -101,7 +102,7 @@ export async function planRescueActivation(input) {
     }
     return { activation, directive: validateRescueRouteDirective({ version: 2, action: 'followup', target: selected.host.agentPath, assignment }) };
   }
-  if (resume) throw plannerError('RESCUE_BINDING_INVALID');
+  if (resume || ineligiblePersisted) throw plannerError('RESCUE_BINDING_INVALID');
   return spawnPlan(hostChildren);
 }
 
@@ -229,7 +230,7 @@ function validateCandidate(resolved, host, caller, originWorkspace, executionWor
 /** @param {string} dataRoot */
 function defaultBindingResolver(dataRoot) {
   const store = createStateStore({ dataRoot });
-  return async (/** @type {any} */ { caller, envelope, executor, host, executionWorkspace }) => {
+  return async (/** @type {any} */ { caller, executor, host, executionWorkspace }) => {
     const lookup = {
     workspace: executionWorkspace,
     parentSessionId: caller.sessionId,
@@ -240,13 +241,13 @@ function defaultBindingResolver(dataRoot) {
       executorParentTurnId: executor.parentTurnId,
       executorParentPermissionMode: executor.parentPermissionMode,
     } : {}),
-    ...(envelope.options?.resume === 'resume' ? { permissionMode: caller.permissionMode } : {}),
+    permissionMode: caller.permissionMode,
     };
     let migrationProof;
     const proof = await store.readRescueBindingMigrationProof({
       workspace: executionWorkspace, parentSessionId: caller.sessionId, executorAgentId: executor?.agentId ?? host.id,
       childAgentType: executor?.agentType ?? host.agentRole, originWorkspace: host.cwd, executionWorkspace,
-      agentPathDigest: pathDigest(host.agentPath), agentPath: host.agentPath,
+      agentPathDigest: pathDigest(host.agentPath), agentPath: host.agentPath, permissionMode: caller.permissionMode,
     });
     if (proof.kind === 'ineligible') return { kind: 'ineligible' };
     if (proof.kind === 'proof') migrationProof = proof.migrationProof;
