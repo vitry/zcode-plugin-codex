@@ -1900,18 +1900,20 @@ test('ordinary continuation rejects a complete binding permission mismatch befor
     .filter((name) => name.endsWith('.json')), []);
 });
 
-test('complete nonmatching base sibling is ineligible while the sole exact task_2 binding is selected', async () => {
-  const context = await fixture(); const parentSessionId = 'nonmatching-sibling-parent';
-  const base = await persistCompletedExactBinding(context, { parentSessionId, parentTurnId: 'base-turn', childId: 'nonmatching-base',
-    agentPath: '/root/zcode_rescue_task', permissionMode: 'read-only', zcodeSessionId: 'base-session' });
-  const exact = await persistCompletedExactBinding(context, { parentSessionId, parentTurnId: 'exact-turn', childId: 'eligible-task-2',
+for (const siblingKind of ['permission-nonmatching', 'revoked']) test(`complete ${siblingKind} base sibling is ineligible while the sole exact task_2 binding is selected`, async () => {
+  const context = await fixture(); const parentSessionId = `${siblingKind}-sibling-parent`;
+  const base = await persistCompletedExactBinding(context, { parentSessionId, parentTurnId: 'base-turn', childId: `${siblingKind}-base`,
+    agentPath: '/root/zcode_rescue_task', permissionMode: siblingKind === 'permission-nonmatching' ? 'read-only' : 'workspace-write', zcodeSessionId: 'base-session' });
+  const exact = await persistCompletedExactBinding(context, { parentSessionId, parentTurnId: 'exact-turn', childId: `eligible-${siblingKind}-task-2`,
     agentPath: '/root/zcode_rescue_task_2', permissionMode: 'workspace-write', zcodeSessionId: 'task-2-session', legacyVersion: 2, close: true });
+  if (siblingKind === 'revoked') await base.store.closeRescueBindingForChild({ workspace: base.workspace, parentSessionId,
+    executorAgentId: base.executor.agentId, operationId: base.reserved.binding.operationId, reason: 'invalidated' });
   await createIdentityStore({ dataRoot: context.dataRoot }).beginCallerTurn({ sessionId: parentSessionId,
     turnId: 'resume-turn', workspace: context.workspace, permissionMode: 'workspace-write',
     prompt: '$zcode:rescue --resume exact sibling join' });
-  const baseHost = { id: 'nonmatching-base', parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task',
+  const baseHost = { id: base.executor.agentId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task',
     agentRole: 'zcode-rescue', cwd: base.workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 3 };
-  const exactHost = { ...baseHost, id: 'eligible-task-2', agentPath: '/root/zcode_rescue_task_2', createdAt: 2, updatedAt: 4 };
+  const exactHost = { ...baseHost, id: exact.executor.agentId, agentPath: '/root/zcode_rescue_task_2', createdAt: 2, updatedAt: 4 };
   const planned = await runDirectInvocation(['prepare', 'rescue'], {
     cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
     input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'exact sibling join', options: { execution: 'foreground', resume: 'resume' } })}\n`]),
@@ -1920,6 +1922,40 @@ test('complete nonmatching base sibling is ineligible while the sole exact task_
   assert.deepEqual(planned, { type: 'prepared', command: 'rescue',
     route: { version: 2, action: 'followup', target: exactHost.agentPath, assignment: 'zcode-rescue' } });
   assert.equal((await exact.store.listJobs(exact.workspace)).length, 2);
+});
+
+for (const siblingKind of ['permission-nonmatching', 'revoked']) test(`corrupt ${siblingKind} base sibling fails closed before selecting exact task_2`, async () => {
+  const context = await fixture(); const record = join(context.directory, `corrupt-${siblingKind}-sibling.jsonl`); await writeFile(record, '');
+  const parentSessionId = `corrupt-${siblingKind}-parent`;
+  const base = await persistCompletedExactBinding(context, { parentSessionId, parentTurnId: 'base-turn', childId: `corrupt-${siblingKind}-base`,
+    agentPath: '/root/zcode_rescue_task', permissionMode: siblingKind === 'permission-nonmatching' ? 'read-only' : 'workspace-write', zcodeSessionId: 'base-session' });
+  const exact = await persistCompletedExactBinding(context, { parentSessionId, parentTurnId: 'exact-turn', childId: `eligible-${siblingKind}-task-2`,
+    agentPath: '/root/zcode_rescue_task_2', permissionMode: 'workspace-write', zcodeSessionId: 'task-2-session', legacyVersion: 2, close: true });
+  if (siblingKind === 'revoked') await base.store.closeRescueBindingForChild({ workspace: base.workspace, parentSessionId,
+    executorAgentId: base.executor.agentId, operationId: base.reserved.binding.operationId, reason: 'invalidated' });
+  await createIdentityStore({ dataRoot: context.dataRoot }).beginCallerTurn({ sessionId: parentSessionId,
+    turnId: 'resume-turn', workspace: context.workspace, permissionMode: 'workspace-write',
+    prompt: '$zcode:rescue --resume reject corrupt sibling' });
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: base.workspace });
+  const baseJobPath = join(storage.directory, 'jobs', `${base.reserved.job.id}.json`);
+  const baseJob = JSON.parse(await readFile(baseJobPath, 'utf8')); delete baseJob.zcodeSessionId; await atomicWriteJson(baseJobPath, baseJob);
+  const baseHost = { id: base.executor.agentId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task',
+    agentRole: 'zcode-rescue', cwd: base.workspace, status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 3 };
+  const exactHost = { ...baseHost, id: exact.executor.agentId, agentPath: '/root/zcode_rescue_task_2', createdAt: 2, updatedAt: 4 };
+  const beforeJobs = await base.store.listJobs(base.workspace);
+  const beforeBindings = await Promise.all((await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'))
+    .map((name) => readFile(join(storage.directory, name))));
+  await assert.rejects(runDirectInvocation(['prepare', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId, FAKE_ZCODE_RECORD: record },
+    input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'reject corrupt sibling', options: { execution: 'foreground', resume: 'resume' } })}\n`]),
+    dependencies: { planRescueActivation: (/** @type {any} */ input) => planRescueActivation({ ...input, listChildren: async () => [baseHost, exactHost] }) },
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.deepEqual(await base.store.listJobs(base.workspace), beforeJobs);
+  assert.deepEqual(await Promise.all((await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'))
+    .map((name) => readFile(join(storage.directory, name)))), beforeBindings);
+  assert.equal(await readFile(record, 'utf8'), '');
+  assert.deepEqual((await readdir(join(storage.directory, 'invocations', 'prepared')).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
+    .filter((name) => name.endsWith('.json')), []);
 });
 
 /** @param {any} context @param {{name:string}} input */

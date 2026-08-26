@@ -139,6 +139,8 @@ export function createStateStore(options) {
         const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, true);
         const binding = snapshot.records.get(rescueBindingKey(input)) ?? null;
         if (binding === null) return { kind: 'missing' };
+        const resolved = await resolveBindingJobsLocked(storage, binding);
+        validateAnchorJob(resolved.currentJob, binding.parentSessionId, storage.workspacePath);
         const authority = rescueBindingAuthorityView(binding);
         const nonmatching = input.permissionMode !== undefined && binding.permissionMode !== input.permissionMode
           || authority.childAgentType !== input.childAgentType
