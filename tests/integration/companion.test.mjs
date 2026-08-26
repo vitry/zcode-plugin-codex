@@ -2820,6 +2820,9 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   const finalMirrorCount = log.split(finalBlock).length - 1;
   assert.ok([0, 1].includes(finalMirrorCount));
   assert.equal((log.match(/Final output/g) ?? []).length, finalMirrorCount);
+  if (finalMirrorCount === 0) {
+    assert.equal(result.stderr.split('[zcode] ZCode job log was disabled.\n').length - 1, 1);
+  }
   assert.doesNotMatch(log, /RAW_TOOL_OUTPUT|PRIVATE_REASONING|CAPABILITY_TOKEN/);
 });
 
