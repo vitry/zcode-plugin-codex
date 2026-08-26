@@ -3483,7 +3483,7 @@ for (const execution of ['foreground', 'background']) test(`same-parent exact ch
   assert.equal(consumed.generation, 2); assert.equal(consumed.executorAgentId, childId); assert.ok(consumed.consumedAt);
 });
 
-for (const execution of /** @type {const} */ (['foreground', 'background'])) test(`exact ${execution} continuation revalidates after reconciliation before resume`, async () => {
+for (const execution of /** @type {const} */ (['foreground', 'background'])) for (const drift of ['revoke', 'generation', 'path', 'role']) test(`exact ${execution} continuation revalidates ${drift} after reconciliation before resume`, async () => {
   const context = await fixture();
   const prepared = await preparedSameTurnBoundContinuation(context, {
     name: `reconcile-final-${execution}`, exact: true, execution,
@@ -3494,25 +3494,39 @@ for (const execution of /** @type {const} */ (['foreground', 'background'])) tes
   let reconciled = 0;
   /** @type {any} */
   let worker;
-  const reconcileThenRevoke = async () => {
+  const reconcileThenDrift = async () => {
     reconciled += 1;
-    const binding = await store.resolveRescueBinding({ workspace: context.workspace,
-      parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId });
-    if (binding.kind !== 'bound') throw new Error('expected exact binding');
-    await store.closeRescueBindingForChild({ workspace: context.workspace, parentSessionId: prepared.parentSessionId,
-      executorAgentId: prepared.childId, operationId: binding.binding.operationId, reason: 'invalidated' });
+    if (drift === 'revoke') {
+      const binding = await store.resolveRescueBinding({ workspace: context.workspace,
+        parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId });
+      if (binding.kind !== 'bound') throw new Error('expected exact binding');
+      await store.closeRescueBindingForChild({ workspace: context.workspace, parentSessionId: prepared.parentSessionId,
+        executorAgentId: prepared.childId, operationId: binding.binding.operationId, reason: 'invalidated' });
+    } else {
+      const storage = await resolveWorkspaceStorage(context);
+      const [partitionName] = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'));
+      const partitionPath = join(storage.directory, partitionName);
+      const partition = JSON.parse(await readFile(partitionPath, 'utf8')); const binding = partition.records[0];
+      if (drift === 'generation') binding.updatedAt = new Date(Date.parse(binding.updatedAt) + 1_000).toISOString();
+      if (drift === 'path') binding.childAuthority.agentPath = '/root/zcode_rescue_task_2';
+      if (drift === 'role') binding.childAuthority.childAgentType = 'default';
+      await atomicWriteJson(partitionPath, createRescueBindingPartition({
+        parentSessionId: prepared.parentSessionId, workspace: storage.workspacePath, records: partition.records,
+      }));
+    }
   };
   const invocation = runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: prepared.env,
     dependencies: { readCodexThreadSpawnChild: async () => host,
-      reconcileBrokerOwnership: reconcileThenRevoke,
+      reconcileBrokerOwnership: reconcileThenDrift,
       ...(execution === 'background' ? { startBackgroundWorker: async (/** @type {any} */ input) => { worker = input; } } : {}) } });
+  const expectedError = { code: ['path', 'role'].includes(drift) ? 'RESCUE_BINDING_INVALID' : 'RESCUE_BINDING_STALE' };
   if (execution === 'background') {
     const reserved = await invocation;
     if (!worker) throw new Error('expected background worker');
     await assert.rejects(runCompanion(['run-reserved-job', reserved.job.id], { cwd: context.workspace, env: prepared.env,
       authorization: { executionCapability: worker.executionCapability, jobId: reserved.job.id },
-      dependencies: { reconcileBrokerOwnership: reconcileThenRevoke } }), { code: 'RESCUE_BINDING_STALE' });
-  } else await assert.rejects(invocation, { code: 'RESCUE_BINDING_STALE' });
+      dependencies: { reconcileBrokerOwnership: reconcileThenDrift } }), expectedError);
+  } else await assert.rejects(invocation, expectedError);
   assert.equal(reconciled, 1);
   const calls = (await readFile(prepared.record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.equal(calls.filter((frame) => frame.method === 'session/resume').length, 0);

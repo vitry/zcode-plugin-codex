@@ -436,7 +436,6 @@ function validatePlannedRescueActivation(value) {
   throw rescueRouteInvalid();
 }
 
-/** @param {any} activation */
 /** @param {unknown} value @param {string[]} keys */
 function exactPlainObject(value, keys) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype

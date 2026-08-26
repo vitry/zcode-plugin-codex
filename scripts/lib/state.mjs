@@ -145,10 +145,12 @@ export function createStateStore(options) {
         const expected = validateRescueBinding(prior);
         const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, false);
         const binding = snapshot.records.get(expected.key) ?? null;
+        const reservedBinding = job.rescueExecutionClaim?.binding;
         if (!binding || binding.state !== 'active' || binding.operationId !== expected.operationId
           || binding.anchorJobId !== expected.anchorJobId || binding.currentJobId !== job.id
           || binding.permissionMode !== job.permissionSnapshot.permissionMode || binding.workspace !== storage.workspacePath
-          || input.candidateJobId !== expected.anchorJobId) throw staleRescueBinding();
+          || input.candidateJobId !== expected.anchorJobId || !reservedBinding
+          || !sameExactBinding(binding, reservedBinding)) throw staleRescueBinding();
         const anchor = await readExactBindingJob(storage, expected.anchorJobId);
         validateAnchorJob(anchor, input.parentSessionId, storage.workspacePath);
         if (anchor.zcodeSessionId !== input.resumeSessionId) throw staleRescueBinding();
