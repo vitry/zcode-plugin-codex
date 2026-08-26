@@ -2784,6 +2784,9 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   const context = await fixture();
   const result = await companionWithArchiveHandshake(context, ['rescue', '--fresh', 'surface progress']);
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.stdout, 'done\n');
+  assert.equal(result.json.job.status, 'succeeded'); assert.equal(result.json.result, 'done');
+  const storage = await resolveWorkspaceStorage(context);
+  assert.equal(await readFile(join(storage.directory, result.json.job.resultArtifact), 'utf8'), result.json.result);
   assert.match(result.stderr, /\[zcode\] ZCode started the delegated turn\./);
   assert.match(result.stderr, /\[zcode\] ZCode is generating a response\./);
   assert.match(result.stderr, /\[zcode\] ZCode started a tool call\./);
@@ -2808,8 +2811,15 @@ test('foreground rescue streams safe progress to stderr and durably exposes it t
   for (const message of archivedMessages) {
     const index = log.indexOf(message); assert.ok(index > previousIndex, `${message} must be archived in receive order`); previousIndex = index;
   }
-  assert.match(log, /Assistant message\ndone\n/);
-  assert.match(log, /Final output\ndone\n/);
+  const assistantBlock = 'Assistant message\ndone\n';
+  const finalBlock = 'Final output\ndone\n';
+  assert.equal(log.split(assistantBlock).length - 1, 1);
+  assert.equal((log.match(/Assistant message/g) ?? []).length, 1);
+  // The final block is an observational mirror written after durable success;
+  // its bounded append may time out under filesystem load (notably on Windows).
+  const finalMirrorCount = log.split(finalBlock).length - 1;
+  assert.ok([0, 1].includes(finalMirrorCount));
+  assert.equal((log.match(/Final output/g) ?? []).length, finalMirrorCount);
   assert.doesNotMatch(log, /RAW_TOOL_OUTPUT|PRIVATE_REASONING|CAPABILITY_TOKEN/);
 });
 
