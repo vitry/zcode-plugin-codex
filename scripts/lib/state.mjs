@@ -150,6 +150,9 @@ export function createStateStore(options) {
           if ([anchorJob, currentJob].some((job) => job.ownerSessionId !== binding.parentSessionId || job.workspace !== storage.workspacePath
             || job.command !== 'rescue' || !TERMINAL_STATUSES.has(job.status)
             || (job.status === 'succeeded' || job.startedAt !== undefined) && !isSafeIdentifier(job.zcodeSessionId))) throw invalidRescueBinding();
+          const anchorSessionId = isSafeIdentifier(anchorJob.zcodeSessionId) ? anchorJob.zcodeSessionId : null;
+          const currentSessionId = isSafeIdentifier(currentJob.zcodeSessionId) ? currentJob.zcodeSessionId : null;
+          if (anchorSessionId !== currentSessionId) throw invalidRescueBinding();
         }
         const authority = rescueBindingAuthorityView(binding);
         const nonmatching = input.permissionMode !== undefined && binding.permissionMode !== input.permissionMode
