@@ -139,8 +139,18 @@ export function createStateStore(options) {
         const snapshot = await readBindingPartitionSnapshot(storage, input.parentSessionId, true);
         const binding = snapshot.records.get(rescueBindingKey(input)) ?? null;
         if (binding === null) return { kind: 'missing' };
-        const resolved = await resolveBindingJobsLocked(storage, binding);
-        validateAnchorJob(resolved.currentJob, binding.parentSessionId, storage.workspacePath);
+        if (binding.state === 'active') {
+          const resolved = await resolveBindingJobsLocked(storage, binding);
+          validateAnchorJob(resolved.currentJob, binding.parentSessionId, storage.workspacePath);
+        } else if (binding.closeReason === 'session-ended') {
+          await resolveMigrationBindingJobsLocked(storage, binding);
+        } else {
+          const anchorJob = await readExactBindingJob(storage, binding.anchorJobId);
+          const currentJob = binding.currentJobId === binding.anchorJobId ? anchorJob : await readExactBindingJob(storage, binding.currentJobId);
+          if ([anchorJob, currentJob].some((job) => job.ownerSessionId !== binding.parentSessionId || job.workspace !== storage.workspacePath
+            || job.command !== 'rescue' || !TERMINAL_STATUSES.has(job.status)
+            || (job.status === 'succeeded' || job.startedAt !== undefined) && !isSafeIdentifier(job.zcodeSessionId))) throw invalidRescueBinding();
+        }
         const authority = rescueBindingAuthorityView(binding);
         const nonmatching = input.permissionMode !== undefined && binding.permissionMode !== input.permissionMode
           || authority.childAgentType !== input.childAgentType
@@ -156,7 +166,6 @@ export function createStateStore(options) {
           || migrationProof.originWorkspace !== input.originWorkspace || migrationProof.executionWorkspace !== input.executionWorkspace
           || authority.kind === 'codex-legacy-adoption' && migrationProof.agentPathDigest !== input.agentPathDigest
           || authority.kind === 'subagent-start' && migrationProof.agentPath !== input.agentPath) return { kind: 'ineligible' };
-        await resolveMigrationBindingJobsLocked(storage, binding);
         return { kind: 'proof', migrationProof };
       });
     },
