@@ -492,6 +492,22 @@ test('two usable bindings without an explicit choice are ambiguous instead of pr
   await assert.rejects(planRescueActivation({ ...input, ...adapters([base, newer], values, bindings) }), { code: 'RESCUE_CHILD_AMBIGUOUS' });
 });
 
+test('no explicit choice ignores stopped proof without an exact binding and selects the sole bound child', async () => {
+  const input = await context(); input.envelope.options = {};
+  const unbound = child(input.caller.workspace);
+  const exact = child(input.caller.workspace, { id: 'child-2', agentPath: '/root/zcode_rescue_task_2' });
+  const values = new Map([
+    [unbound.id, { executor: executor(input.caller.workspace), executionWorkspace: input.caller.workspace }],
+    [exact.id, { executor: executor(input.caller.workspace, { agentId: exact.id }), executionWorkspace: input.caller.workspace }],
+  ]);
+  const bindings = new Map([[exact.id, { kind: 'bound', binding: modernBinding(input, exact) }]]);
+  const planned = await planRescueActivation({ ...input, ...adapters([unbound, exact], values, bindings) });
+  assert.deepEqual(planned, {
+    activation: { kind: 'reactivate', executorAgentId: exact.id, agentPathDigest: digest(exact.agentPath) },
+    directive: { version: 2, action: 'followup', target: exact.agentPath, assignment: 'zcode-rescue' },
+  });
+});
+
 test('incomplete discovery fails closed and redacts adapter payloads', async () => {
   const input = await context();
   for (const listChildren of [

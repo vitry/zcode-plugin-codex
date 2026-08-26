@@ -75,21 +75,14 @@ export async function planRescueActivation(input) {
     provenCandidates.push(candidate);
   }
 
-  let selected = null;
-  if (resume) {
-    const bound = [];
-    for (const candidate of provenCandidates) {
-      const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, executor: candidate.executor, host: candidate.host, executionWorkspace });
-      if (binding.kind === 'bound') bound.push({ ...candidate, resolvedBinding: binding });
-    }
-    for (const candidate of persistedCandidates) bound.push(candidate);
-    if (bound.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
-    selected = bound[0] ?? null;
-  } else {
-    const usable = [...provenCandidates, ...persistedCandidates];
-    if (usable.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
-    selected = usable[0] ?? null;
+  const usable = [];
+  for (const candidate of provenCandidates) {
+    const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, executor: candidate.executor, host: candidate.host, executionWorkspace });
+    if (binding.kind === 'bound') usable.push({ ...candidate, resolvedBinding: binding });
   }
+  for (const candidate of persistedCandidates) usable.push(candidate);
+  if (usable.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
+  const selected = usable[0] ?? null;
 
   if (selected !== null) {
     let activation; let assignment;
