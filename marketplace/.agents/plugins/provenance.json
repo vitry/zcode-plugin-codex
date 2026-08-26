@@ -1,15 +1,15 @@
 {
   "packageVersion": "0.1.0",
   "pluginVersion": "0.1.0",
-  "sourceRef": "fdd25468ce5fa2c36bce7f083c109e47515952e8",
-  "sourceSha": "fdd25468ce5fa2c36bce7f083c109e47515952e8",
+  "sourceRef": "a989dab35be163f09f8a6a857aaabeb433070bbe",
+  "sourceSha": "a989dab35be163f09f8a6a857aaabeb433070bbe",
   "dependencyLock": {
     "file": "npm-shrinkwrap.json",
     "sha256": "fa927194e6ca0b25c1d3f428859b2ab4798b8eabb4d31bc87188d73c630f9938"
   },
   "content": {
     "algorithm": "sha256",
-    "sha256": "ff76d1e785abaf91f8725d1013c68d7debb0565ed5f30901965a39b704afb5a5",
+    "sha256": "c4716802a50d5744a9971b2d5a350ad7fa8b7d5b4229e77496fc9befa1274a36",
     "files": [
       {
         "path": ".agents/plugins/marketplace.json",
@@ -648,8 +648,8 @@
       },
       {
         "path": "plugins/zcode/scripts/lib/rescue-route-planner.mjs",
-        "size": 20646,
-        "sha256": "7ae4f9c038e8c7e09e70a17f9bb5e0d7b395d9d7e1bef24b2ec2688eb9be6229"
+        "size": 20495,
+        "sha256": "852cf55156ee19d2338e23e11c5a6c97f84564921a3aad3082a03ec1481d954e"
       },
       {
         "path": "plugins/zcode/scripts/lib/review-schema.mjs",
