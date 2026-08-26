@@ -876,11 +876,12 @@ for (const closeReason of ['invalidated', 'session-ended']) for (const phase of 
   });
   const closed = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
     executorAgentId: hook.agentId, operationId: fresh.binding.operationId, reason: closeReason });
-  const cancelled = phase === 'queued'
+  let stops = 0; const cancelled = phase === 'queued'
     ? await store.finishJob(workspace, fresh.job.id, ['queued'], 'cancelled', { exitCode: null })
-    : await createJobController({ store, dataRoot, stopSession: async () => {} })
+    : await createJobController({ store, dataRoot, stopSession: async () => { stops += 1; } })
       .cancel(workspace, fresh.job.id, fresh.job.ownerSessionId);
-  assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.rescueExecutionClaim, undefined);
+  assert.equal(cancelled.status, phase === 'queued' ? 'cancelled' : 'cancelling'); assert.equal(stops, 0);
+  assert.equal(cancelled.rescueExecutionClaim, undefined);
   const repeated = await store.closeRescueBindingForChild({ workspace, parentSessionId: hook.parentSessionId,
     executorAgentId: hook.agentId, operationId: fresh.binding.operationId, reason: closeReason });
   assert.deepEqual(repeated.binding, closed.binding);

@@ -402,6 +402,57 @@ test('bound stop guard directly rejects stale operation generation current-job a
   });
 });
 
+for (const reason of /** @type {const} */ (['session-ended', 'invalidated', 'cancel'])) test(`bound stop guard treats a ${reason} binding as stale and explicit cancel sends zero RPC`, async () => {
+  const { root, workspace, store } = await setup();
+  const executor = { parentSessionId: 'session-a', parentTurnId: 'parent-turn', agentId: `closed-${reason}-child`, agentType: 'zcode-rescue', agentPath: `/root/closed-${reason}-child`, workspace, parentPermissionMode: 'workspace-write' };
+  const active = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ...reservation }, executor });
+  const claimed = await store.claimJobWorkerForExecution(workspace, active.job.id, { childPid: 999_999, workerLeaseId: active.job.id });
+  const running = await store.transitionJob(workspace, claimed.id, ['queued'], 'running', { startedAt: new Date().toISOString(), childPid: claimed.childPid, workerLeaseId: claimed.workerLeaseId, zcodeSessionId: `zs-closed-${reason}` });
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId, operationId: active.binding.operationId, reason });
+  let stops = 0;
+  const outcome = await createJobController({ store, dataRoot: join(root, 'data'), stopSession: async () => { stops += 1; } }).cancel(workspace, running.id, running.ownerSessionId);
+  assert.equal(stops, 0); assert.equal(outcome.status, 'cancelling');
+  assert.equal((await store.revalidateBoundRescueStop({ workspace, jobId: running.id, ownerSessionId: running.ownerSessionId,
+    status: 'cancelling', zcodeSessionId: running.zcodeSessionId, workerLeaseId: running.workerLeaseId })).kind, 'stale');
+});
+
+for (const stage of ['queued-interruption', 'running-failure']) test(`review executor ${stage} bound stop revalidates a gated stale binding and sends zero RPC`, async () => {
+  const { root, workspace, store } = await setup(); const controller = new AbortController();
+  const executor = { parentSessionId: 'session-a', parentTurnId: 'parent-turn', agentId: `review-${stage}-child`, agentType: 'zcode-rescue', agentPath: `/root/review-${stage}-child`, workspace, parentPermissionMode: 'workspace-write' };
+  const active = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ...reservation }, executor });
+  const workerLeaseId = 'd'.repeat(64); const claimed = await store.claimJobWorkerForExecution(workspace, active.job.id, { childPid: 999_999, workerLeaseId });
+  let observed = () => {}; const observation = new Promise((resolve) => { observed = () => resolve(undefined); });
+  let release = () => {}; const gate = new Promise((resolve) => { release = () => resolve(undefined); }); let gated = false; let stops = 0;
+  /** @type {any[]} */ const stopGuards = [];
+  const wrapped = { ...store, revalidateBoundRescueStop: async (/** @type {any} */ input) => {
+    const result = await store.revalidateBoundRescueStop(input); stopGuards.push({ input, result }); return result;
+  }, readJob: async (/** @type {string} */ targetWorkspace, /** @type {string} */ jobId) => {
+    const value = await store.readJob(targetWorkspace, jobId);
+    const expected = stage === 'queued-interruption' ? 'queued' : 'running';
+    if (!gated && value.id === claimed.id && value.status === expected) { gated = true; observed(); await gate; }
+    return value;
+  } };
+  const interruption = new PluginError('JOB_INTERRUPTED', 'review stop guard race');
+  const client = {
+    createSession: async () => {
+      if (stage === 'queued-interruption') controller.abort(interruption);
+      return { session: { sessionId: `zs-review-${stage}` }, settings: { model: { current: { providerId: 'p', modelId: 'm' }, available: [] } }, messages: [] };
+    },
+    setPermissionHandler: () => {}, subscribe: silentSubscribe,
+    send: async () => ({ inputId: `input-review-${stage}`, stateRevision: 1 }),
+    waitForCompletion: async () => { throw new Error('review execution failed after accepted send'); },
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  };
+  const execution = executeJobProduction({ job: claimed, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', childPid: 999_999, workerLeaseId, signal: controller.signal });
+  await observation;
+  await store.closeRescueBindingForChild({ workspace, parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId, operationId: active.binding.operationId, reason: 'invalidated' });
+  release();
+  await assert.rejects(execution, stage === 'queued-interruption' ? (error) => error === interruption : /review execution failed/);
+  assert.equal(stops, 0); assert.equal((await store.readJob(workspace, claimed.id)).status, stage === 'queued-interruption' ? 'queued' : 'running');
+  assert.equal(stopGuards.length, 2); assert.equal(stopGuards[0].input.expected, undefined);
+  assert.deepEqual(stopGuards[1].input.expected, stopGuards[0].result.guard);
+});
+
 test('failed cancellation is durably settled and a later immediate caller starts a new attempt', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); await store.transitionJob(workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'zs' });
   const attemptFile = await attemptFixture(root, workspace, job.id); let failedStops = 0;

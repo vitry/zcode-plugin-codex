@@ -214,23 +214,24 @@ export function createStateStore(options) {
     },
 
     /** Read or revalidate one exact bound Rescue stop target under the shared State lock.
-     * @param {{workspace:string,jobId:string,ownerSessionId:string,status:'running'|'cancelling',zcodeSessionId:string,workerLeaseId?:string,expected?:any}} input */
+     * @param {{workspace:string,jobId:string,ownerSessionId:string,status:'queued'|'running'|'cancelling',zcodeSessionId?:string,workerLeaseId?:string,expected?:any}} input */
     async revalidateBoundRescueStop(input) {
       if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isDigest(input.jobId)
-        || !isBoundedOwnerSessionId(input.ownerSessionId) || !['running', 'cancelling'].includes(input.status)
-        || !isSafeIdentifier(input.zcodeSessionId)
+        || !isBoundedOwnerSessionId(input.ownerSessionId) || !['queued', 'running', 'cancelling'].includes(input.status)
+        || input.zcodeSessionId !== undefined && !isSafeIdentifier(input.zcodeSessionId)
+        || input.status !== 'queued' && input.zcodeSessionId === undefined
         || input.workerLeaseId !== undefined && !isDigest(input.workerLeaseId)) throw invalidRescueBinding();
       const storage = await jobStorage(dataRoot, input.workspace);
       return withFileLock(storage.lockPath, async () => {
         const job = await readExactBindingJob(storage, input.jobId);
         const sameTarget = job.id === input.jobId && job.ownerSessionId === input.ownerSessionId
           && job.command === 'rescue' && job.readOnly === false && job.rescueReservationKind === 'bound'
-          && job.status === input.status && job.zcodeSessionId === input.zcodeSessionId
+          && job.status === input.status && (job.status === 'queued' ? job.zcodeSessionId === undefined : job.zcodeSessionId === input.zcodeSessionId)
           && job.workerLeaseId === input.workerLeaseId;
         if (!sameTarget) return { kind: 'stale', job: structuredClone(job) };
         const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
         const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
-        if (matches.length !== 1) return { kind: 'stale', job: structuredClone(job) };
+        if (matches.length !== 1 || matches[0].state !== 'active') return { kind: 'stale', job: structuredClone(job) };
         const binding = matches[0]; const guard = {
           operationId: binding.operationId, bindingKey: binding.key, bindingUpdatedAt: binding.updatedAt,
           currentJobId: binding.currentJobId, workerLeaseId: job.workerLeaseId ?? null,

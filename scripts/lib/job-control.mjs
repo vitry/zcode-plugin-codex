@@ -202,12 +202,13 @@ async function performCancellation(input, attempts, election) {
   return recordCancelledAttempt(input, attempts, attempt, cancelled);
 }
 
-/** @param {any} store @param {string} workspace @param {any} job @param {any} [expected] */
-async function revalidateBoundRescueStop(store, workspace, job, expected) {
+/** @param {any} store @param {string} workspace @param {any} job @param {any} [expected] @param {string} [zcodeSessionId] */
+export async function revalidateBoundRescueStop(store, workspace, job, expected, zcodeSessionId = job.zcodeSessionId) {
   if (job.command !== 'rescue' || job.readOnly !== false || job.rescueReservationKind !== 'bound') return null;
   if (typeof store.revalidateBoundRescueStop !== 'function') return { kind: 'stale', job: await store.readJob(workspace, job.id) };
   return store.revalidateBoundRescueStop({ workspace, jobId: job.id, ownerSessionId: job.ownerSessionId,
-    status: job.status, zcodeSessionId: job.zcodeSessionId, ...(job.workerLeaseId === undefined ? {} : { workerLeaseId: job.workerLeaseId }),
+    status: job.status, ...(zcodeSessionId === undefined ? {} : { zcodeSessionId }),
+    ...(job.workerLeaseId === undefined ? {} : { workerLeaseId: job.workerLeaseId }),
     ...(expected === undefined ? {} : { expected }) });
 }
 

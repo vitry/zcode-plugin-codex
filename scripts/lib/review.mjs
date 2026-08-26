@@ -7,7 +7,7 @@ import { PluginError } from './errors.mjs';
 import { resolveModel } from './args.mjs';
 import { ensurePrivateDirectory, withFileLock } from './fs.mjs';
 import { collectGitFacts } from './git.mjs';
-import { createJobController, withJobCancellationLock } from './job-control.mjs';
+import { createJobController, revalidateBoundRescueStop, withJobCancellationLock } from './job-control.mjs';
 import { isBoundedPublicIdentifier } from './identifier.mjs';
 import { openRuntimeJobLog } from './job-log-runtime.mjs';
 import { createProgressReporter, waitForCompletionOrAbort } from './progress.mjs';
@@ -58,6 +58,7 @@ export async function executeJob(input) {
   let progressCleaned = false;
   /** @type {any} */ let jobLog;
   let jobLogCleaned = false;
+  const observedBoundStop = await revalidateBoundRescueStop(input.store, workspace, job);
   const cleanupJobLog = async () => {
     if (jobLogCleaned) return;
     jobLogCleaned = true;
@@ -188,7 +189,8 @@ export async function executeJob(input) {
     else if (!resumeFailureSettlementRejected && isInterruption(error) && current && !['failed', 'succeeded', 'cancelled'].includes(current.status)) {
       if (current.status === 'queued' && sessionId) {
         let stopped = false;
-        try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
+        const finalStop = await revalidateBoundRescueStop(input.store, workspace, current, observedBoundStop?.guard, sessionId);
+        if (finalStop?.kind !== 'stale') try { await client.stopSession(sessionId); stopped = true; } catch { /* retain the writable guard when remote stop is unacknowledged */ }
         if (stopped) try { await input.store.finishJob(workspace, job.id, ['queued'], 'cancelled', { exitCode: null }); } catch (finalizeError) { primaryError = finalizeError; }
       } else {
         const cancellation = createJobController({ store: input.store, dataRoot, stopSession: (id) => client.stopSession(id) });
@@ -197,10 +199,14 @@ export async function executeJob(input) {
     } else if (!resumeFailureSettlementRejected && current && !['failed', 'succeeded', 'cancelled', 'cancelling'].includes(current.status)) {
       let canFail = true;
       if (current.status === 'running' && sendAttempted && sessionId && !remoteTerminalProven) {
-        try { await client.stopSession(sessionId); }
-        catch (stopError) {
-          await input.store.transitionJob(workspace, job.id, ['running'], 'running', { lastCancelError: safeError(stopError).message }).catch(() => {});
-          canFail = false;
+        const finalStop = await revalidateBoundRescueStop(input.store, workspace, current, observedBoundStop?.guard, sessionId);
+        if (finalStop?.kind === 'stale') canFail = false;
+        else {
+          try { await client.stopSession(sessionId); }
+          catch (stopError) {
+            await input.store.transitionJob(workspace, job.id, ['running'], 'running', { lastCancelError: safeError(stopError).message }).catch(() => {});
+            canFail = false;
+          }
         }
       }
       if (canFail) try { await input.store.finishJob(workspace, job.id, [current.status], 'failed', { error: safeError(error), exitCode: 1 }); } catch (finalizeError) { primaryError = finalizeError; }
