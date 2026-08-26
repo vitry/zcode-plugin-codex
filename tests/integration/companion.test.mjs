@@ -291,6 +291,12 @@ async function cleanupChildLossProcesses(input) {
 const DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS = 15_000;
 const DURABLE_PROGRESS_TEST_TIMEOUT_MS = DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS + 10_000;
 
+/** @param {unknown} value @returns {string} */
+function requireDurableProgressJobId(value) {
+  if (typeof value !== 'string') assert.fail('timed-out durable progress fixture must identify its exact job');
+  return value;
+}
+
 /** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} [extraEnv] @param {Record<string,unknown>} [authorization] @param {AbortSignal} [signal] */
 async function companion(context, args, extraEnv = {}, authorization = { callerContext: context.caller }, signal) {
   const result = await run(process.execPath, [cli, ...args], { cwd: context.workspace, env: { ...context.env, ...extraEnv }, input: authorization, signal });
@@ -316,7 +322,7 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
   )).then((outcome) => { observedExecutionOutcome = outcome; return outcome; });
   /** @type {CompanionOutcome|undefined} */
   let settledOutcome;
-  let result; let primaryError;
+  let result; let primaryError; let durableJobId;
   const throwIfExecutionSettled = () => {
     if (observedExecutionOutcome?.kind === 'rejected') throw observedExecutionOutcome.error;
     if (observedExecutionOutcome?.kind === 'fulfilled') throw new Error('Companion settled before progress was durably persisted.');
@@ -338,7 +344,7 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
       for (const name of names) {
         if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
         const job = await readFile(join(storage.directory, 'jobs', name), 'utf8').then(JSON.parse).catch(() => null);
-        if (job?.progressPreview?.includes(expectedMessage)) return true;
+        if (job?.progressPreview?.includes(expectedMessage)) { durableJobId = job.id; return true; }
       }
       throwIfExecutionSettled();
       return false;
@@ -351,6 +357,16 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
   } finally {
     try { await atomicWriteJson(gate, gateRecord('release')); } catch (error) { primaryError ??= error; }
     if (!settledOutcome) { try { await settleExecution(); } catch (error) { primaryError ??= error; } }
+    if ((/** @type {any} */ (primaryError))?.code === 'TEST_CHILD_TIMEOUT') {
+      try {
+        const jobId = requireDurableProgressJobId(durableJobId);
+        const store = createStateStore({ dataRoot: context.dataRoot });
+        let job = await store.readJob(context.workspace, jobId);
+        if (job.status === 'running') job = await store.transitionJob(context.workspace, jobId, ['running'], 'cancelling');
+        if (job.status === 'cancelling') job = await store.finishJob(context.workspace, jobId, ['cancelling'], 'cancelled', { exitCode: null });
+        assert.equal(job.status, 'cancelled', 'timed-out durable progress fixture must prove terminal cleanup');
+      } catch (error) { primaryError = error; }
+    }
     try { await unlink(gate); } catch (error) { if ((/** @type {any} */ (error))?.code !== 'ENOENT') primaryError ??= error; }
   }
   if (primaryError) throw primaryError;
