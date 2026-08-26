@@ -1,108 +1,73 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { createInvocationStore, parseRecordedInvocation, readPendingLegacyChildAuthorityContext } from '../scripts/lib/invocation.mjs';
-import { createConsumedLegacyChildAuthority, createRescuePreparationStore } from '../scripts/lib/rescue-preparation.mjs';
+import {
+  consumePendingLegacyChildAuthorityContext,
+  createInvocationStore,
+  parseRecordedInvocation,
+  readPendingLegacyChildAuthorityContext,
+} from '../scripts/lib/invocation.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 
 const JOB_ID = 'a'.repeat(64);
 
-async function pendingLegacyFixture() {
-  const root = await mkdtemp(join(tmpdir(), 'zcode-invocation-')); const dataRoot = join(root, 'data');
+async function historicalAuthorityPendingFixture(routeKind = 'bound', createdAt = '2026-08-24T00:00:00.000Z') {
+  const root = await mkdtemp(join(tmpdir(), 'zcode-invocation-v3-')); const dataRoot = join(root, 'data');
   const workspace = join(root, 'workspace'); await mkdir(workspace); const canonical = await realpath(workspace);
-  const preparation = createRescuePreparationStore({ dataRoot });
-  const activation = { kind: 'legacy-bound', childThreadId: 'legacy-child', agentPathDigest: 'a'.repeat(64), bindingKey: 'b'.repeat(64) };
-  const base = { sessionId: 'parent', turnId: 'turn-a', workspace: canonical, permissionMode: 'workspace-write',
-    recordedPrompt: '$zcode:rescue continue', envelope: { version: 1, source: 'explicit', task: 'task', options: {} }, activation };
-  await preparation.save(base);
-  const receipt = await preparation.consume({ ...base, executorAgentId: 'legacy-child', activationProof: activation });
-  const authority = createConsumedLegacyChildAuthority(receipt, { authorizingParentGenerationId: 'c'.repeat(64),
-    originWorkspace: canonical, executionWorkspace: canonical });
-  const pending = createInvocationStore({ dataRoot });
-  const route = { /** @type {'bound'} */ routeKind: 'bound', candidateJobId: 'd'.repeat(64), expectedOperationId: 'e'.repeat(64), expectedCurrentJobId: 'f'.repeat(64) };
-  /** @type {any} */ const save = { sessionId: 'parent', turnId: 'turn-a', workspace: canonical, permissionMode: 'workspace-write', command: 'rescue',
-    source: 'explicit', executorAgentId: 'legacy-child', spec: { argv: ['rescue', 'task'] }, ...route, legacyAuthority: authority };
-  return { authority, canonical, dataRoot, pending, route, save };
+  const storage = await resolveWorkspaceStorage({ dataRoot, workspace: canonical });
+  const directory = join(storage.directory, 'invocations', 'pending'); await mkdir(directory, { recursive: true });
+  const key = createHash('sha256').update(JSON.stringify(['parent', canonical, 'rescue'])).digest('hex');
+  const legacyAuthority = routeKind === 'legacy'
+    ? { kind: 'codex-legacy-adoption', authorityId: 'a'.repeat(64), childAgentId: 'legacy-child', childAgentType: 'zcode-rescue',
+      authorizingParentTurnId: 'turn-a', authorizingParentGenerationId: 'c'.repeat(64), authorizingPermissionMode: 'workspace-write',
+      originWorkspace: canonical, executionWorkspace: canonical, agentPathDigest: 'b'.repeat(64) }
+    : { kind: 'codex-legacy-continuation', preparationAuthorityId: 'a'.repeat(64), bindingKey: 'b'.repeat(64),
+      childAgentId: 'legacy-child', childAgentType: 'zcode-rescue', authorizingParentTurnId: 'turn-a',
+      authorizingParentGenerationId: 'c'.repeat(64), authorizingPermissionMode: 'workspace-write',
+      originWorkspace: canonical, executionWorkspace: canonical, agentPathDigest: 'd'.repeat(64) };
+  /** @type {any} */ const record = { version: 3, key, sessionId: 'parent', originatingTurnId: 'turn-a', workspace: canonical,
+    permissionMode: 'workspace-write', command: 'rescue', spec: { argv: ['rescue', 'task'] }, source: 'explicit',
+    executorAgentId: 'legacy-child', routeKind, candidateJobId: 'e'.repeat(64),
+    ...(routeKind === 'bound' ? { expectedOperationId: 'f'.repeat(64), expectedCurrentJobId: '1'.repeat(64) } : {}),
+    legacyAuthority, createdAt, expiresAt: new Date(Date.parse(createdAt) + 30 * 60_000).toISOString() };
+  record.legacyAuthorityDigest = createHash('sha256').update(JSON.stringify([
+    'rescue-pending-legacy-authority-v1', record.key, record.sessionId, record.originatingTurnId, record.workspace,
+    record.permissionMode, record.executorAgentId, record.routeKind, record.candidateJobId, record.expectedOperationId,
+    record.expectedCurrentJobId, record.legacyAuthority,
+  ])).digest('hex');
+  const path = join(directory, `${key}.json`); await writeFile(path, `${JSON.stringify(record, null, 2)}\n`);
+  return { canonical, dataRoot, path, pending: createInvocationStore({ dataRoot }), record };
 }
 
-async function pendingLegacyAdoptionFixture() {
-  const root = await mkdtemp(join(tmpdir(), 'zcode-invocation-adoption-')); const dataRoot = join(root, 'data');
-  const workspace = join(root, 'workspace'); await mkdir(workspace); const canonical = await realpath(workspace);
-  const preparation = createRescuePreparationStore({ dataRoot });
-  const activation = { kind: 'legacy-adopt', childThreadId: 'legacy-child', agentPathDigest: 'a'.repeat(64) };
-  const base = { sessionId: 'parent', turnId: 'turn-a', workspace: canonical, permissionMode: 'workspace-write',
-    recordedPrompt: '$zcode:rescue task', envelope: { version: 1, source: 'explicit', task: 'task', options: {} }, activation };
-  await preparation.save(base);
-  const receipt = await preparation.consume({ ...base, executorAgentId: 'legacy-child', activationProof: activation });
-  const authority = createConsumedLegacyChildAuthority(receipt, { authorizingParentGenerationId: 'c'.repeat(64),
-    originWorkspace: canonical, executionWorkspace: canonical });
-  const pending = createInvocationStore({ dataRoot });
-  /** @type {any} */ const save = { sessionId: 'parent', turnId: 'turn-a', workspace: canonical, permissionMode: 'workspace-write', command: 'rescue',
-    source: 'explicit', executorAgentId: 'legacy-child', spec: { argv: ['rescue', 'task'] }, routeKind: 'legacy',
-    candidateJobId: 'd'.repeat(64), legacyAuthority: authority };
-  return { authority, canonical, dataRoot, pending, save };
-}
-
-test('v3 first-adoption pending is a strict legacy-route one-shot closed-union variant', async () => {
-  const fixture = await pendingLegacyAdoptionFixture(); await fixture.pending.savePending(fixture.save);
-  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.canonical });
-  const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory); const path = join(directory, name);
-  const record = JSON.parse(await readFile(path, 'utf8')); assert.equal(record.version, 3); assert.equal(record.routeKind, 'legacy');
-  assert.equal(record.expectedOperationId, undefined); assert.deepEqual(record.legacyAuthority, fixture.authority);
-  const otherWorkspace = join(fixture.canonical, '..', 'first-adoption-other'); await mkdir(otherWorkspace);
-  const exact = { sessionId: 'parent', workspace: fixture.canonical, command: 'rescue', choice: 'resume', executorAgentId: 'legacy-child',
-    turnId: 'turn-a', permissionMode: 'workspace-write', parentGenerationId: 'c'.repeat(64), originWorkspace: fixture.canonical, executionWorkspace: fixture.canonical };
-  for (const mutation of [{ sessionId: 'other-parent' }, { workspace: otherWorkspace }, { executorAgentId: 'sibling' }, { turnId: 'other-turn' }, { permissionMode: 'read-only' },
-    { parentGenerationId: '9'.repeat(64) }, { originWorkspace: '/private/other' }, { executionWorkspace: '/private/other' }]) {
-    await assert.rejects(fixture.pending.consumePending({ ...exact, ...mutation }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
-  }
-  const consumed = await fixture.pending.consumePending(exact); assert.deepEqual(consumed.route, { routeKind: 'legacy', candidateJobId: 'd'.repeat(64) });
-  assert.equal(readPendingLegacyChildAuthorityContext(consumed.authority).parentSessionId, 'parent');
-  assert.throws(() => readPendingLegacyChildAuthorityContext(structuredClone(consumed.authority)), { code: 'PENDING_INVOCATION_INVALID' });
-  await assert.rejects(fixture.pending.consumePending(exact), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+test('new pending invocations reject historical authority input before publication', async () => {
+  const fixture = await historicalAuthorityPendingFixture();
+  await assert.rejects(fixture.pending.savePending({ sessionId: 'parent', turnId: 'turn-a', workspace: fixture.canonical,
+    permissionMode: 'workspace-write', command: 'rescue', source: 'explicit', executorAgentId: 'legacy-child',
+    spec: { argv: ['rescue', 'task'] }, routeKind: 'bound', candidateJobId: 'e'.repeat(64),
+    expectedOperationId: 'f'.repeat(64), expectedCurrentJobId: '1'.repeat(64), legacyAuthority: fixture.record.legacyAuthority }),
+  { code: 'PENDING_INVOCATION_INVALID' });
+  assert.deepEqual(JSON.parse(await readFile(fixture.path, 'utf8')), fixture.record);
 });
 
-test('v3 first-adoption pending rejects path, candidate, authority-kind, and route mutations without consumption', async () => {
-  for (const mutate of [
-    (/** @type {any} */ record) => { record.legacyAuthority.agentPathDigest = '9'.repeat(64); },
-    (/** @type {any} */ record) => { record.candidateJobId = '9'.repeat(64); },
-    (/** @type {any} */ record) => { record.legacyAuthority.kind = 'codex-legacy-continuation'; },
-    (/** @type {any} */ record) => { record.routeKind = 'bound'; },
-  ]) {
-    const fixture = await pendingLegacyAdoptionFixture(); await fixture.pending.savePending(fixture.save);
-    const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.canonical });
-    const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory); const path = join(directory, name);
-    const record = JSON.parse(await readFile(path, 'utf8')); mutate(record); await writeFile(path, `${JSON.stringify(record, null, 2)}\n`); const before = await readFile(path);
-    await assert.rejects(fixture.pending.consumePending({ sessionId: 'parent', workspace: fixture.canonical, command: 'rescue', choice: 'fresh', executorAgentId: 'legacy-child',
-      turnId: 'turn-a', permissionMode: 'workspace-write', parentGenerationId: 'c'.repeat(64), originWorkspace: fixture.canonical, executionWorkspace: fixture.canonical }),
-    { code: 'PENDING_INVOCATION_NOT_FOUND' });
-    assert.deepEqual(await readFile(path), before);
+test('historical v3 adoption and continuation pending records are incompatible one-shots', async () => {
+  for (const routeKind of ['legacy', 'bound']) {
+    const fixture = await historicalAuthorityPendingFixture(routeKind);
+    const input = { sessionId: 'parent', workspace: fixture.canonical, command: 'rescue', choice: 'resume', executorAgentId: 'legacy-child' };
+    await assert.rejects(fixture.pending.consumePending(input), { code: 'PENDING_INVOCATION_INCOMPATIBLE' });
+    await assert.rejects(fixture.pending.consumePending(input), { code: 'PENDING_INVOCATION_NOT_FOUND' });
   }
 });
 
-test('v3 pending legacy authority is strict, exact-current, one-shot, and clone resistant', async () => {
-  const fixture = await pendingLegacyFixture(); await fixture.pending.savePending(fixture.save);
-  const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.canonical });
-  const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory); const path = join(directory, name);
-  const persisted = JSON.parse(await readFile(path, 'utf8'));
-  assert.equal(persisted.version, 3); assert.deepEqual(persisted.legacyAuthority, fixture.authority);
-  const otherWorkspace = join(fixture.canonical, '..', 'other-workspace'); await mkdir(otherWorkspace);
-  const exact = { sessionId: 'parent', workspace: fixture.canonical, command: 'rescue', choice: 'resume', executorAgentId: 'legacy-child',
-    turnId: 'turn-a', permissionMode: 'workspace-write', parentGenerationId: 'c'.repeat(64), originWorkspace: fixture.canonical, executionWorkspace: fixture.canonical };
-  for (const mutation of [
-    { sessionId: 'sibling' }, { workspace: otherWorkspace }, { executorAgentId: 'sibling-child' },
-    { turnId: 'turn-b' }, { permissionMode: 'read-only' }, { parentGenerationId: '9'.repeat(64) },
-    { originWorkspace: '/private/other' }, { executionWorkspace: '/private/other' },
-  ]) await assert.rejects(fixture.pending.consumePending({ ...exact, ...mutation }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
-  assert.deepEqual(await readFile(path, 'utf8'), `${JSON.stringify(persisted, null, 2)}\n`);
-  const consumed = await fixture.pending.consumePending(exact);
-  assert.deepEqual(consumed.argv, ['rescue', '--resume', 'task']); assert.deepEqual(consumed.route, fixture.route);
-  assert.equal(readPendingLegacyChildAuthorityContext(consumed.authority).parentSessionId, 'parent');
-  assert.throws(() => readPendingLegacyChildAuthorityContext(structuredClone(consumed.authority)), { code: 'PENDING_INVOCATION_INVALID' });
-  await assert.rejects(fixture.pending.consumePending(exact), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+test('historical v3 authority objects cannot be read, cloned, or consumed as authorization', async () => {
+  const fixture = await historicalAuthorityPendingFixture();
+  for (const value of [fixture.record.legacyAuthority, structuredClone(fixture.record.legacyAuthority), Object.freeze({})]) {
+    assert.throws(() => readPendingLegacyChildAuthorityContext(value), { code: 'PENDING_INVOCATION_INVALID' });
+    assert.throws(() => consumePendingLegacyChildAuthorityContext(value), { code: 'PENDING_INVOCATION_INVALID' });
+  }
 });
 
 test('v3 pending rejects authority and binding mutations without consuming the record', async () => {
@@ -114,15 +79,12 @@ test('v3 pending rejects authority and binding mutations without consuming the r
     (/** @type {any} */ record) => { record.routeKind = 'legacy'; },
     (/** @type {any} */ record) => { record.expectedOperationId = 'short'; },
   ]) {
-    const fixture = await pendingLegacyFixture(); await fixture.pending.savePending(fixture.save);
-    const storage = await resolveWorkspaceStorage({ dataRoot: fixture.dataRoot, workspace: fixture.canonical });
-    const directory = join(storage.directory, 'invocations', 'pending'); const [name] = await readdir(directory); const path = join(directory, name);
-    const record = JSON.parse(await readFile(path, 'utf8')); mutate(record); await writeFile(path, `${JSON.stringify(record, null, 2)}\n`);
-    const before = await readFile(path);
+    const fixture = await historicalAuthorityPendingFixture(); const record = structuredClone(fixture.record);
+    mutate(record); await writeFile(fixture.path, `${JSON.stringify(record, null, 2)}\n`); const before = await readFile(fixture.path);
     await assert.rejects(fixture.pending.consumePending({ sessionId: 'parent', workspace: fixture.canonical, command: 'rescue', choice: 'fresh', executorAgentId: 'legacy-child',
       turnId: 'turn-a', permissionMode: 'workspace-write', parentGenerationId: 'c'.repeat(64), originWorkspace: fixture.canonical, executionWorkspace: fixture.canonical }),
     { code: 'PENDING_INVOCATION_NOT_FOUND' });
-    assert.deepEqual(await readFile(path), before);
+    assert.deepEqual(await readFile(fixture.path), before);
   }
 });
 
@@ -147,12 +109,11 @@ test('v1 executor-bound pending compatibility remains fresh-only', async () => {
 });
 
 test('expired v3 pending authority is deleted without issuing a brand', async () => {
-  const fixture = await pendingLegacyFixture(); const now = new Date('2026-08-24T00:00:00.000Z');
-  await fixture.pending.savePending({ ...fixture.save, now });
-  const input = { sessionId: 'parent', workspace: fixture.canonical, command: 'rescue', choice: 'resume', executorAgentId: 'legacy-child',
-    turnId: 'turn-a', permissionMode: 'workspace-write', parentGenerationId: 'c'.repeat(64), originWorkspace: fixture.canonical, executionWorkspace: fixture.canonical };
-  await assert.rejects(fixture.pending.consumePending({ ...input, now: new Date(now.getTime() + 30 * 60_000) }), { code: 'PENDING_INVOCATION_EXPIRED' });
-  await assert.rejects(fixture.pending.consumePending({ ...input, now }), { code: 'PENDING_INVOCATION_NOT_FOUND' });
+  const fixture = await historicalAuthorityPendingFixture('bound', '2026-08-24T00:00:00.000Z');
+  const input = { sessionId: 'parent', workspace: fixture.canonical, command: 'rescue', choice: 'resume', executorAgentId: 'legacy-child' };
+  await assert.rejects(fixture.pending.consumePending({ ...input, now: '2026-08-24T00:30:00.000Z' }),
+    { code: 'PENDING_INVOCATION_INCOMPATIBLE' });
+  await assert.rejects(fixture.pending.consumePending(input), { code: 'PENDING_INVOCATION_NOT_FOUND' });
 });
 
 test('embedded result marker in prose does not consume prose as arguments', () => {

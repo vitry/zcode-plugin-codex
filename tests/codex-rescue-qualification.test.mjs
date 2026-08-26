@@ -21,7 +21,6 @@ import {
   parseCodexRolloutJsonl,
   qualifyCodexRescueBackgroundEvidence,
   qualifyCodexRescueChoiceEvidence,
-  qualifyCodexRescueLegacyAdoptionEvidence,
   qualifyCodexRescuePreparedContinuationEvidence,
   qualifyCodexRescueRestoredChildEvidence,
   qualifyCodexRescueEvidence,
@@ -50,103 +49,15 @@ const backgroundJobId = 'b'.repeat(64);
 const backgroundPublicOutput = `Reserved background job ${backgroundJobId}.`;
 const executionCapability = 'qualification-capability-sentinel-private';
 
-test('qualifies host-only legacy adoption without reconstructing Hook provenance', async (t) => {
-  const temporary = await mkdtemp(join(tmpdir(), 'zcode-legacy-adoption-qualification-'));
+test('legacy adoption qualification cannot mint retired preparation authority', async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'zcode-legacy-adoption-rejected-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const originDirectory = join(temporary, 'origin'); const targetDirectory = join(temporary, 'target');
   await mkdir(originDirectory); await runGit(['init', '-q'], originDirectory); await writeFile(join(originDirectory, 'fixture.txt'), 'base\n');
   await runGit(['add', 'fixture.txt'], originDirectory); await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
-  await runGit(['worktree', 'add', '-qb', 'legacy-adoption-target', targetDirectory], originDirectory);
-  const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(targetDirectory);
-  const input = await legacyAdoptionQualificationFixture({ originWorkspace, executionWorkspace });
-  const privateTask = 'recover the private legacy adoption objective'; const encodedPrivateTask = nestedUnicodeJson(privateTask, 3);
-
-  assert.deepEqual(await qualifyCodexRescueLegacyAdoptionEvidence(input), {
-    route: 'named-legacy-adoption', parentSessionId: parentId, childThreadId: childId,
-    agentPath: '/root/zcode_rescue_task', originWorkspace, executionWorkspace,
-    followupCount: 1, spawnCount: 0, hookFabricationCount: 0, ordinaryExecutorResolutionCount: 0,
-    firstAdoptionModes: ['choice-fresh', 'choice-resume', 'fresh', 'resume'], boundContinuationChecked: true,
-  });
-
-  let mutationIndex = 0;
-  for (const [code, mutate, field] of [
-    ['legacy-adoption-hooks', (rows) => rows.push({ hook_event_name: 'SubagentStart' }), 'hookLifecycleJson'],
-    ['legacy-adoption-ordinary-isolation', (value) => { value.resolverTranscript.push({ request: { childId: 'ordinary-default', cwd: originWorkspace }, response: { code: 'EXECUTOR_ROLE_UNAPPROVED', ok: false } }); }, 'ordinaryIsolationJson'],
-    ['legacy-adoption-directive', (rows) => { rows.find((row) => row?.payload?.call_id === 'legacy-prepare' && row.payload.type === 'custom_tool_call_output').payload.output = capturedResult({ output: preparedAck({ version: 2, action: 'followup', target: '/root/zcode_rescue_task', assignment: 'default' }), exit_code: 0 }); }, 'parentRolloutJson'],
-    ['legacy-adoption-parent', (rows) => { rows.find((row) => row?.payload?.call_id === 'legacy-followup').turn_id = 'sibling-turn'; }, 'parentRolloutJson'],
-    ['legacy-adoption-host', (rows) => { rows[3].result.thread.status = { type: 'notLoaded' }; }, 'appServerTranscriptJson'],
-    ['legacy-adoption-host', (rows) => { rows[3].result.thread.status = { type: 'idle' }; }, 'appServerTranscriptJson'],
-    ['legacy-adoption-host', (rows) => { rows[3].result.thread.cwd = `${originWorkspace}-drift`; }, 'appServerTranscriptJson'],
-    ['legacy-adoption-ordinary-isolation', (value) => { value.extra = true; }, 'ordinaryIsolationJson'],
-    ['legacy-adoption-private-task', (value) => { value.faultExecutorArtifacts[0].bytes = 'recover the private legacy adoption objective\n'; }, 'ordinaryIsolationJson'],
-    ['legacy-adoption-private-task', (value) => { value.faultExecutorArtifacts[0].bytes = `${encodedPrivateTask}\n`; }, 'ordinaryIsolationJson'],
-    ['legacy-adoption-first-modes', (value) => { value[0].authority.authorityId = '0'.repeat(64); }, 'firstLifecyclesJson'],
-    ['legacy-adoption-first-modes', (value) => { value[0].extra = true; }, 'firstLifecyclesJson'],
-    ['legacy-adoption-first-modes', (value) => { const envelope = JSON.parse(value[0].initialEnvelopeBytes); envelope.options.resume = 'fresh'; value[0].initialEnvelopeBytes = `${JSON.stringify(envelope)}\n`; }, 'firstLifecyclesJson'],
-    ['legacy-adoption-first-modes', (value) => { const pending = JSON.parse(value[0].pendingRecordBytes); pending.extra = true; value[0].pendingRecordBytes = `${JSON.stringify(pending)}\n`; }, 'firstLifecyclesJson'],
-    ['legacy-adoption-first-modes', (value) => { const pending = JSON.parse(value[1].pendingRecordBytes); pending.candidateJobId = '0'.repeat(64); value[1].pendingRecordBytes = `${JSON.stringify(pending)}\n`; }, 'firstLifecyclesJson'],
-    ['legacy-adoption-first-modes', (value) => { value[0].choiceRequest.executorAgentId = 'sibling-child'; }, 'firstLifecyclesJson'],
-    ['legacy-adoption-first-modes', (value) => { value[1].replayCode = 'PENDING_INVOCATION_EXPIRED'; }, 'firstLifecyclesJson'],
-    ['legacy-adoption-first-modes', (value) => { value[1].candidateTranscript.request.ownerTurnId = 'sibling-turn'; }, 'firstLifecyclesJson'],
-    ['legacy-adoption-private-task', (value) => { value[0].routeTranscript.response.task = 'recover the private legacy adoption objective'; }, 'firstLifecyclesJson'],
-    ['legacy-adoption-private-task', (value) => { value[0].candidateTranscript.response.sessionId = encodedPrivateTask; }, 'firstLifecyclesJson'],
-    ['legacy-adoption-bound-continuation', (value) => { value.extra = true; }, 'boundContinuationJson'],
-    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.requiredExecutorAgentId = null; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
-    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.requiredExecutorAgentId = 'sibling-child'; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
-    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.generation = 2; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
-    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.expiresAt = record.createdAt; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
-    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.envelope.source = 'explicit'; value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
-    ['legacy-adoption-bound-continuation', (value) => { const record = JSON.parse(value.preparationRecordBytes); record.activation.bindingKey = '0'.repeat(64); value.preparationRecordBytes = `${JSON.stringify(record)}\n`; }, 'boundContinuationJson'],
-    ['legacy-adoption-private-task', (value) => { value.peerCalls[1].response = 'recover the private legacy adoption objective'; }, 'boundContinuationJson'],
-    ['legacy-adoption-private-task', (value) => { value.peerCalls[1].response = encodedPrivateTask; }, 'boundContinuationJson'],
-    ['legacy-adoption-private-task', (value) => { value[0].method = encodedPrivateTask; }, 'fakePeerJson'],
-    ['legacy-adoption-private-task', (rows) => { rows.find((row) => row?.payload?.call_id === 'legacy-followup' && row.payload.type === 'function_call_output').payload.output = encodedPrivateTask; }, 'parentRolloutJson'],
-  ]) {
-    const changed = structuredClone(input); const value = JSON.parse(changed[field]); mutate(value); changed[field] = JSON.stringify(value);
-    await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(changed),
-      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code, `mutation ${mutationIndex} ${field}`);
-    mutationIndex += 1;
-  }
-
-  for (const [field, code] of [['ordinaryIsolationJson', 'legacy-adoption-ordinary-isolation'], ['boundContinuationJson', 'legacy-adoption-bound-continuation']]) {
-    const oversized = structuredClone(input); oversized[field] += ' '.repeat(17 * 1024 * 1024);
-    await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(oversized),
-      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code && /oversized/u.test(error.message));
-    const manyLeaves = structuredClone(input); const leavesValue = JSON.parse(manyLeaves[field]);
-    if (field === 'ordinaryIsolationJson') leavesValue.faultExecutorArtifacts = Array.from({ length: 8_193 }, (_, index) => index);
-    else leavesValue.peerCalls = Array.from({ length: 8_193 }, (_, index) => index);
-    manyLeaves[field] = JSON.stringify(leavesValue);
-    await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(manyLeaves),
-      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code && /structural bound/u.test(error.message));
-    const deep = structuredClone(input); const value = JSON.parse(deep[field]);
-    let cursor = field === 'ordinaryIsolationJson' ? value.planResult : value.routeTranscript.response;
-    for (let depth = 0; depth < 16; depth += 1) cursor = cursor.deep = {};
-    deep[field] = JSON.stringify(value);
-    await assert.rejects(qualifyCodexRescueLegacyAdoptionEvidence(deep),
-      (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === code && /structural bound/u.test(error.message));
-  }
-});
-
-test('legacy adoption qualification captures production one-shot choice and bound preparation lifecycles', async (t) => {
-  const temporary = await mkdtemp(join(tmpdir(), 'zcode-legacy-lifecycle-qualification-'));
-  t.after(() => rm(temporary, { recursive: true, force: true }));
-  const originDirectory = join(temporary, 'origin'); const targetDirectory = join(temporary, 'target');
-  await mkdir(originDirectory); await runGit(['init', '-q'], originDirectory); await writeFile(join(originDirectory, 'fixture.txt'), 'base\n');
-  await runGit(['add', 'fixture.txt'], originDirectory); await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
-  await runGit(['worktree', 'add', '-qb', 'legacy-lifecycle-target', targetDirectory], originDirectory);
-  const input = await legacyAdoptionQualificationFixture({ originWorkspace: await realpath(originDirectory), executionWorkspace: await realpath(targetDirectory) });
-  const lifecycles = JSON.parse(input.firstLifecyclesJson);
-  for (const mode of ['choice-fresh', 'choice-resume']) {
-    const lifecycle = lifecycles.find((entry) => entry.mode === mode);
-    assert.equal(Object.hasOwn(JSON.parse(lifecycle.initialEnvelopeBytes).options, 'resume'), false);
-    assert.equal(lifecycle.startPublic.status, 'needs-choice');
-    assert.equal(JSON.parse(lifecycle.pendingRecordBytes).version, 3);
-    assert.equal(lifecycle.pendingDeleted, true);
-    assert.equal(lifecycle.replayCode, 'PENDING_INVOCATION_NOT_FOUND');
-  }
-  const bound = JSON.parse(input.boundContinuationJson); const preparation = JSON.parse(bound.preparationRecordBytes);
-  assert.equal(preparation.requiredExecutorAgentId, childId);
-  assert.equal(preparation.activation.bindingKey, JSON.parse(bound.bindingBeforeBytes).key);
+  await runGit(['worktree', 'add', '-qb', 'legacy-adoption-rejected', targetDirectory], originDirectory);
+  await assert.rejects(legacyAdoptionQualificationFixture({ originWorkspace: await realpath(originDirectory),
+    executionWorkspace: await realpath(targetDirectory) }), { code: 'RESCUE_PREPARATION_INVALID' });
 });
 
 test('qualifies a resumed parent reactivating one initially unloaded original child in its linked worktree', async (t) => {
@@ -2663,13 +2574,6 @@ function legacyQualificationRawChild({ id, path, role, cwd, createdAt }) {
     modelProvider: 'openai', createdAt, updatedAt: createdAt + 1, recencyAt: createdAt + 1, status: { type: 'notLoaded' }, path: null, cwd,
     source: { subAgent: { thread_spawn: { parent_thread_id: parentId, depth: 1, agent_path: path, agent_nickname: null, agent_role: role } } },
     canAcceptDirectInput: null, threadSource: null, agentNickname: null, agentRole: role, gitInfo: null, name: null, turns: [] };
-}
-
-function nestedUnicodeJson(value, depth) {
-  const unicode = [...value].map((character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
-  let encoded = `"${unicode}"`;
-  for (let index = 1; index < depth; index += 1) encoded = JSON.stringify(encoded);
-  return encoded;
 }
 
 function restoredRawCodexChild({ originWorkspace, restoredPath, agentRole }) {

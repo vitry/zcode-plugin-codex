@@ -16,7 +16,7 @@ import { createRescuePreparationStore } from '../../scripts/lib/rescue-preparati
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
 import { createStateStore } from '../../scripts/lib/state.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
-import { runCompanion, runDirectInvocation } from '../../scripts/zcode-companion.mjs';
+import { runDirectInvocation } from '../../scripts/zcode-companion.mjs';
 import { instantiatePr39OriginRouteTemplate, PR39_ORIGIN_ROUTE_TEMPLATES } from '../fixtures/pr39-origin-route-compatibility.mjs';
 import { runChild } from '../helpers/run-child.mjs';
 
@@ -733,21 +733,6 @@ test('prepared Rescue is single-use and bound to the exact parent turn, workspac
   assert.notEqual(stale.code, 0); assert.match(stale.stdout, /EXECUTOR_PARENT_TURN_MISMATCH/);
 });
 
-test('prepared explicit candidate choice preserves source and normalized argv for the same child', async (t) => {
-  const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot });
-  await runCompanion(['rescue', '--fresh', 'seed candidate'], { cwd: ctx.workspace, env: ctx.env, caller: { sessionId: 'choice-parent', turnId: 'seed-turn', permissionMode: 'workspace-write' } });
-  await identity.beginCallerTurn({ sessionId: 'choice-parent', turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue choose continuation' });
-  await prepareRescue(ctx, 'choice-parent', { version: 1, source: 'explicit', task: 'choose continuation', options: { execution: 'foreground', model: 'model', effort: 'high' } });
-  await startRescueChild(ctx, 'choice-parent', 'prepared-choice-child');
-  const undecided = await runChild(process.execPath, [cli, 'invoke-prepared', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'prepared-choice-child' } });
-  assert.equal(undecided.code, 3, undecided.stderr || undecided.stdout); assert.match(undecided.stdout, /needs-choice/);
-  assert.deepEqual(await createInvocationStore({ dataRoot: ctx.dataRoot }).consumePending({ sessionId: 'choice-parent', workspace: ctx.workspace, command: 'rescue', choice: 'resume', executorAgentId: 'prepared-choice-child' }), {
-    argv: ['rescue', '--resume', '--model', 'model', '--effort', 'high', '--', 'choose continuation'], source: 'explicit',
-    caller: { sessionId: 'choice-parent', turnId: 'choice-turn', workspace: ctx.workspace, permissionMode: 'workspace-write' },
-    route: { routeKind: 'legacy', candidateJobId: (await storeCandidate(ctx, 'choice-parent')).id },
-  });
-});
-
 test('bound needs-choice snapshots candidate A and ignores a newer eligible candidate B', async (t) => {
   const ctx = await fixture(t); const identity = createIdentityStore({ dataRoot: ctx.dataRoot }); const store = createStateStore({ dataRoot: ctx.dataRoot });
   const record = join(ctx.directory, 'candidate-snapshot-peer.jsonl'); await writeFile(record, '');
@@ -999,7 +984,6 @@ test('bound Rescue status sidecar rejects missing, sibling, stale-turn and ambig
   const exact = await runChild(process.execPath, [cli, 'invoke-status', 'rescue'], { cwd: ctx.workspace, env: { ...ctx.env, CODEX_THREAD_ID: 'bound-child' } });
   assert.equal(exact.code, 0, exact.stderr || exact.stdout);
 });
-async function storeCandidate(ctx, sessionId) { return (await createStateStore({ dataRoot: ctx.dataRoot }).listOwnedJobs(ctx.workspace, sessionId)).find((job) => job.command === 'rescue'); }
 async function stopRescueChild(ctx, parentSessionId, childId, turnId = `${childId}-turn`, agentType = 'zcode-rescue') {
   const result = await runChild(process.execPath, [join(root, 'hooks', 'subagent-hook.mjs')], { cwd: ctx.workspace, env: ctx.env, ordinaryInput: true, input: { session_id: parentSessionId, turn_id: turnId, cwd: ctx.workspace, hook_event_name: 'SubagentStop', transcript_path: null, model: 'gpt', permission_mode: 'acceptEdits', agent_id: childId, agent_type: agentType, agent_transcript_path: null, stop_hook_active: false, last_assistant_message: null } });
   assert.equal(result.code, 0, result.stderr || result.stdout);

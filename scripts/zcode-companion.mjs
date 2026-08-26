@@ -182,13 +182,36 @@ export async function runDirectInvocation(argv, runtime = {}) {
     let caller;
     caller = await identity.resolveActiveTurn({ sessionId: executor?.parentSessionId ?? host.parentThreadId, workspace: execution.executionWorkspace, workspaceBinding: 'execution' });
     if (executor?.active) assertExecutorMatchesCaller(executor, caller);
+    let rescueRoute; const recoveredWithoutExecutor = !executor;
+    if (recoveredWithoutExecutor) {
+      const state = createStateStore({ dataRoot }); const agentPathDigest = createHash('sha256').update(host.agentPath).digest('hex');
+      const proof = await state.readRescueBindingMigrationProof({ workspace: caller.workspace, parentSessionId: caller.sessionId,
+        executorAgentId: host.id, childAgentType: host.agentRole ?? 'default', originWorkspace: host.cwd,
+        executionWorkspace: caller.workspace, agentPathDigest, agentPath: host.agentPath, permissionMode: caller.permissionMode });
+      if (!['bound', 'proof'].includes(proof.kind)) throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
+      const migrationProof = proof.kind === 'proof' ? proof.migrationProof : undefined;
+      const resolved = await state.resolveRescueBindingForResume({ workspace: caller.workspace,
+        parentSessionId: caller.sessionId, executorAgentId: host.id, executorAgentPath: host.agentPath,
+        permissionMode: caller.permissionMode, ...(migrationProof === undefined ? {} : { migrationProof }) });
+      if (resolved.kind !== 'bound') throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
+      const authority = rescueBindingAuthorityView(resolved.binding);
+      executor = { active: false, agentId: host.id, agentType: authority.childAgentType, agentPath: host.agentPath,
+        parentSessionId: caller.sessionId,
+        parentTurnId: authority.kind === 'subagent-start' ? authority.parentTurnId : caller.turnId,
+        parentPermissionMode: authority.kind === 'subagent-start' ? authority.parentPermissionMode : caller.permissionMode,
+        originWorkspace: host.cwd, workspace: caller.workspace };
+      rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId,
+        expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId,
+        ...(migrationProof === undefined ? {} : { migrationProof }) };
+      await afterPreparedBindingResolution(runtime.dependencies);
+    }
     const preparations = createRescuePreparationStore({ dataRoot });
     let prepared;
     try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId,
-      ...(executor ? {} : { activationProof: { kind: 'reactivate', agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex') } }) }); }
+      ...(recoveredWithoutExecutor ? { activationProof: { kind: 'reactivate', agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex') } } : {}) }); }
     catch (error) {
       if (!(error instanceof PluginError) || error.code !== 'RESCUE_PREPARATION_MISMATCH') throw error;
-      if (!executor) throw error;
+      if (recoveredWithoutExecutor) throw error;
       host ??= sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
         ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
       ), executor.parentSessionId, executor.agentId);
@@ -210,31 +233,6 @@ export async function runDirectInvocation(argv, runtime = {}) {
     }
     if (prepared.envelope.options.resume === 'fresh' && prepared.activation?.kind !== 'spawn') {
       throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
-    }
-    let rescueRoute;
-    if (!executor) {
-      if (prepared.activation?.kind !== 'reactivate' || prepared.activation.executorAgentId !== ambientThreadId
-        || prepared.activation.agentPathDigest !== createHash('sha256').update(host.agentPath).digest('hex')) throw rescueRouteInvalid();
-      const state = createStateStore({ dataRoot });
-      const proof = await state.readRescueBindingMigrationProof({ workspace: caller.workspace, parentSessionId: caller.sessionId,
-        executorAgentId: host.id, childAgentType: host.agentRole ?? 'default', originWorkspace: host.cwd,
-        executionWorkspace: caller.workspace, agentPathDigest: prepared.activation.agentPathDigest,
-        agentPath: host.agentPath, permissionMode: caller.permissionMode });
-      if (proof.kind !== 'proof') throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
-      const resolved = await state.resolveRescueBindingForResume({ workspace: caller.workspace,
-        parentSessionId: caller.sessionId, executorAgentId: host.id, executorAgentPath: host.agentPath,
-        permissionMode: caller.permissionMode, migrationProof: proof.migrationProof });
-      if (resolved.kind !== 'bound') throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
-      const authority = rescueBindingAuthorityView(resolved.binding);
-      executor = { active: false, agentId: host.id, agentType: authority.childAgentType, agentPath: host.agentPath,
-        parentSessionId: caller.sessionId,
-        parentTurnId: authority.kind === 'subagent-start' ? authority.parentTurnId : caller.turnId,
-        parentPermissionMode: authority.kind === 'subagent-start' ? authority.parentPermissionMode : caller.permissionMode,
-        originWorkspace: host.cwd, workspace: caller.workspace };
-      rescueRoute = { routeKind: 'bound', candidateJobId: resolved.binding.anchorJobId,
-        expectedOperationId: resolved.binding.operationId, expectedCurrentJobId: resolved.binding.currentJobId,
-        migrationProof: proof.migrationProof };
-      await afterPreparedBindingResolution(runtime.dependencies);
     }
     if (executor && host) {
       validateExecutorHostIdentity(host, executor);

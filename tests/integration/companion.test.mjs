@@ -1823,6 +1823,58 @@ test('exact notLoaded task_2 migrates without SubagentStop provenance and resume
   assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
 });
 
+test('active-v3 exact notLoaded task_2 resumes without SubagentStop provenance', async () => {
+  const context = await fixture(); const record = join(context.directory, 'active-v3-no-hook.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'active-v3-no-hook-parent'; const childId = 'active-v3-no-hook-child';
+  const exactPath = '/root/zcode_rescue_task_2'; const originalSession = 'active-v3-no-hook-session';
+  const persisted = await persistCompletedExactBinding(context, { parentSessionId, parentTurnId: 'historical-turn', childId,
+    agentPath: exactPath, permissionMode: 'workspace-write', zcodeSessionId: originalSession });
+  await createIdentityStore({ dataRoot: context.dataRoot }).beginCallerTurn({ sessionId: parentSessionId,
+    turnId: 'resume-turn', workspace: context.workspace, permissionMode: 'workspace-write',
+    prompt: '$zcode:rescue --resume --wait active v3 no-hook' });
+  const exact = { id: childId, parentThreadId: parentSessionId, agentPath: exactPath, agentRole: 'zcode-rescue',
+    cwd: persisted.workspace, status: { type: 'notLoaded' }, createdAt: 2, updatedAt: 3 };
+  await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
+    input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'active v3 no-hook', options: { execution: 'foreground', resume: 'resume' } })}\n`]),
+    dependencies: { planRescueActivation: (/** @type {any} */ input) => planRescueActivation({ ...input, listChildren: async () => [exact] }) },
+  });
+  const resumed = await runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+    dependencies: { readCodexThreadSpawnChildIdentity: async () => exact },
+  });
+  assert.equal(resumed.job.status, 'succeeded'); assert.equal(resumed.job.zcodeSessionId, originalSession);
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 0);
+  assert.equal(calls.filter((frame) => frame.method === 'session/resume').length, 1);
+});
+
+test('active-v3 exact notLoaded rejects invalid bound jobs before consuming preparation or RPC', async () => {
+  const context = await fixture(); const record = join(context.directory, 'active-v3-invalid-no-hook.jsonl'); await writeFile(record, '');
+  const parentSessionId = 'active-v3-invalid-parent'; const childId = 'active-v3-invalid-child'; const exactPath = '/root/zcode_rescue_task_2';
+  const persisted = await persistCompletedExactBinding(context, { parentSessionId, parentTurnId: 'historical-turn', childId,
+    agentPath: exactPath, permissionMode: 'workspace-write', zcodeSessionId: 'active-v3-invalid-session' });
+  await createIdentityStore({ dataRoot: context.dataRoot }).beginCallerTurn({ sessionId: parentSessionId,
+    turnId: 'resume-turn', workspace: context.workspace, permissionMode: 'workspace-write', prompt: '$zcode:rescue --resume invalid active v3' });
+  const exact = { id: childId, parentThreadId: parentSessionId, agentPath: exactPath, agentRole: 'zcode-rescue',
+    cwd: persisted.workspace, status: { type: 'notLoaded' }, createdAt: 2, updatedAt: 3 };
+  await runDirectInvocation(['prepare', 'rescue'], { cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
+    input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'explicit', task: 'invalid active v3', options: { execution: 'foreground', resume: 'resume' } })}\n`]),
+    dependencies: { planRescueActivation: (/** @type {any} */ input) => planRescueActivation({ ...input, listChildren: async () => [exact] }) } });
+  const storage = await resolveWorkspaceStorage({ dataRoot: context.dataRoot, workspace: persisted.workspace });
+  const jobPath = join(storage.directory, 'jobs', `${persisted.reserved.job.id}.json`); const job = JSON.parse(await readFile(jobPath, 'utf8'));
+  delete job.zcodeSessionId; await atomicWriteJson(jobPath, job);
+  const [preparationName] = await readdir(join(storage.directory, 'invocations', 'prepared'));
+  const preparationPath = join(storage.directory, 'invocations', 'prepared', preparationName);
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+    dependencies: { readCodexThreadSpawnChildIdentity: async () => exact },
+  }), { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal(JSON.parse(await readFile(preparationPath, 'utf8')).consumedAt, null);
+  assert.equal(await readFile(record, 'utf8'), '');
+  assert.equal((await persisted.store.listJobs(persisted.workspace)).length, 1);
+});
+
 test('ordinary continuation rejects a complete binding permission mismatch before preparation mutation or RPC', async () => {
   const context = await fixture(); const record = join(context.directory, 'ordinary-permission-mismatch.jsonl'); await writeFile(record, '');
   const parentSessionId = 'ordinary-permission-parent'; const childId = 'ordinary-permission-child'; const agentPath = '/root/zcode_rescue_task';
