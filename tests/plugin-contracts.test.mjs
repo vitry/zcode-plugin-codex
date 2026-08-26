@@ -269,6 +269,10 @@ test('conversation compatibility progress has no dependency capable of reading d
 });
 
 const criticalRescueMirrorPaths = Object.freeze([
+    'README.md',
+    'README.zh-CN.md',
+    'SECURITY.md',
+    'CHANGELOG.md',
     'skills/rescue/launcher.mjs',
     'scripts/lib/rescue-launcher-command.mjs',
     'scripts/lib/plugin-data.mjs',

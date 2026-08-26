@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { boundUtf8, normalizePublicText, publicErrorMessage } from '../scripts/lib/public-text.mjs';
@@ -25,5 +26,17 @@ test('public error projection accepts legacy and object messages without exposin
   assert.equal(publicErrorMessage({ ...value, message: 'ab界界界' }, 10), 'ab界...');
   for (const absent of [null, undefined, {}, { message: 42 }, '', ' \n\u0000\u061c\u200e\u202e\u2069 ']) {
     assert.equal(publicErrorMessage(absent), null);
+  }
+});
+
+test('public Rescue text rejects adoption, same-child fresh, fallback selection, and automatic resend claims', () => {
+  const root = new URL('../', import.meta.url);
+  for (const path of ['README.md', 'README.zh-CN.md', 'SECURITY.md', 'CHANGELOG.md']) {
+    const source = readFileSync(new URL(path, root), 'utf8');
+    assert.doesNotMatch(source, /jobs-only state may adopt|jobs-only 状态只会采用/i);
+    assert.doesNotMatch(source, /same-child fresh replacement (?:may|retains)|同 child fresh 替换(?:可以|会)/i);
+    assert.doesNotMatch(source, /(?:managed base|受管 base).{0,160}(?:newest|最新)/is);
+    assert.doesNotMatch(source, /response loss.{0,120}(?:automatically resends|may resend|resends the prompt)|响应丢失.{0,120}(?:会自动重发|可以重发)/is);
+    assert.doesNotMatch(source, /atomic stop|原子 stop/i);
   }
 });

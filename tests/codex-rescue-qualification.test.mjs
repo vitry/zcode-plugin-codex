@@ -66,7 +66,7 @@ test('qualifies a resumed parent reactivating one initially unloaded original ch
   await runGit(['add', 'fixture.txt'], originDirectory); await runGit(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], originDirectory);
   await runGit(['worktree', 'add', '-qb', 'restored-target', targetDirectory], originDirectory);
   const originWorkspace = await realpath(originDirectory); const executionWorkspace = await realpath(targetDirectory);
-  const restoredPath = '/root/zcode_rescue_task'; const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs"';
+  const restoredPath = '/root/zcode_rescue_task_2'; const launcherCommand = 'node "/installed/zcode/skills/rescue/launcher.mjs"';
   const input = restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: restoredPath, launcherCommand });
   const evidence = await qualifyCodexRescueRestoredChildEvidence(input);
   assert.deepEqual(evidence, { route: 'named', parentSessionId: parentId, childThreadId: childId, agentPath: restoredPath,
@@ -1080,17 +1080,12 @@ test('background qualification rejects a production-minted capability across eve
   }
 });
 
-test('qualifies exact resume and fresh follow-ups against one existing child ID', () => {
-  for (const choice of ['resume', 'fresh']) {
-    const input = choiceFixture(choice);
-    assert.deepEqual(qualifyCodexRescueChoiceEvidence(input, choiceOptions(choice)), {
-      parentThreadId: parentId,
-      childThreadId: childId,
-      agentPath,
-      taskName,
-      choice,
-    });
-  }
+test('qualifies exact resume against one existing child ID and rejects same-child fresh', () => {
+  assert.deepEqual(qualifyCodexRescueChoiceEvidence(choiceFixture('resume'), choiceOptions('resume')), {
+    parentThreadId: parentId, childThreadId: childId, agentPath, taskName, choice: 'resume',
+  });
+  assert.throws(() => qualifyCodexRescueChoiceEvidence(choiceFixture('fresh'), choiceOptions('fresh')),
+    (error) => error instanceof CodexRescueEvidenceMismatchError && error.code === 'choice-fresh-requires-parent-replan');
 });
 
 test('choice qualification permits yielded polling in the initial turn, continuation turn, or both', () => {
@@ -2350,7 +2345,11 @@ function preparedContinuationFixture(route, execution = 'foreground') {
     bindingPartitionBytes: `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: expectedWorkspace, records: [binding] }))}\n`,
     preparationRecordBytesJson: JSON.stringify([
       `${JSON.stringify(preparationRecord('turn-original', 1, 'explicit', 'fresh', execution, null, childId))}\n`,
-      `${JSON.stringify(preparationRecord('turn-original', 2, 'proactive', 'resume', execution, childId, childId))}\n`,
+      `${JSON.stringify(preparationRecord('turn-original', 2, 'proactive', 'resume', execution, childId, childId, {
+        kind: 'reactivate', executorAgentId: childId, agentPathDigest: createHash('sha256').update(agentPath).digest('hex'),
+        bindingKey: binding.key, operationId: binding.operationId, anchorJobId: binding.anchorJobId, currentJobId: preReservationBinding.currentJobId,
+        bindingUpdatedAt: preReservationBinding.updatedAt, zcodeSessionId: 'zcode-session-original',
+      }))}\n`,
     ]),
     jobRecordBytesJson: JSON.stringify([
       `${JSON.stringify(rawJob(anchorJobId, 'turn-original', 'succeeded', { zcodeSessionId: 'zcode-session-original', updatedAt: '2026-08-10T00:00:05.000Z' }))}\n`,
@@ -2378,7 +2377,8 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
   const roleCommand = `${launcherCommand} role-status rescue`; const prepareCommand = `${launcherCommand} prepare rescue`; const invokeCommand = `${launcherCommand} invoke-prepared rescue`;
   return {
     expected: { parentSessionId: parentId, childThreadId: childId, agentPath: restoredPath, originalParentTurnId: 'turn-original',
-      resumedParentTurnId: 'turn-resumed', originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand, publicOutput: 'fake restored response: agent path collision diagnosed' },
+      resumedParentTurnId: 'turn-resumed', originWorkspace, executionWorkspace, permissionMode: 'acceptEdits', launcherCommand,
+      publicOutput: 'fake restored response: agent path collision diagnosed', zcodeSessionId: 'exact-task-2-session' },
     parentRolloutJson: JSON.stringify([
       { type: 'session_meta', payload: { id: parentId, session_id: parentId, thread_source: 'user' } },
       { type: 'response_item', turn_id: 'turn-original', timestamp: '2026-08-10T00:00:00.100Z', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-original', arguments: JSON.stringify(spawnArguments) } },
@@ -2406,7 +2406,10 @@ function restoredChildFixture({ originWorkspace, executionWorkspace, agentPath: 
       { ...structuredExecResult(invokeCommand, 'invoke-restored', { workdir: originWorkspace }), turn_id: 'child-turn-resumed', timestamp: '2026-08-10T01:00:00.900Z', thread_id: childId },
       { ...capturedResultEvent('invoke-restored', { output: 'fake restored response: agent path collision diagnosed', exit_code: 0 }), turn_id: 'child-turn-resumed', timestamp: '2026-08-10T01:00:01.000Z', thread_id: childId },
     ]),
-    fakePeerJson: JSON.stringify([{ method: 'session/create', params: { workspace: { workspacePath: executionWorkspace } } }, { method: 'session/send', params: { response: 'fake restored response: agent path collision diagnosed' } }]),
+    fakePeerJson: JSON.stringify([
+      { method: 'session/resume', params: { sessionId: 'exact-task-2-session', workspace: { workspacePath: executionWorkspace } } },
+      { method: 'session/send', params: { sessionId: 'exact-task-2-session', response: 'fake restored response: agent path collision diagnosed' } },
+    ]),
   };
 }
 
@@ -2430,14 +2433,14 @@ function restoredAppServerTranscript(thread) {
 const PREPARATION_READY = `${JSON.stringify({ type: 'preparation-input-ready', command: 'rescue' })}\n`;
 function preparedAck(route) { return `${JSON.stringify({ type: 'prepared', command: 'rescue', route })}\n`; }
 function preparationEnvelope(source, resume, execution) { return { version: 1, source, task: source === 'explicit' ? 'repair fixture' : 'continue fixture', options: { execution, resume } }; }
-function preparationRecord(turnId, generation, source, resume, execution, requiredExecutorAgentId, executorAgentId) {
+function preparationRecord(turnId, generation, source, resume, execution, requiredExecutorAgentId, executorAgentId, reactivation = null) {
   const key = createHash('sha256').update(JSON.stringify([parentId, turnId, expectedWorkspace, 'rescue'])).digest('hex');
   const createdAt = generation === 1 ? '2026-08-10T00:00:00.600Z' : '2026-08-10T01:01:00.600Z';
   const expiresAt = generation === 1 ? '2026-08-10T00:30:00.600Z' : '2026-08-10T01:31:00.600Z';
   const consumedAt = generation === 1 ? '2026-08-10T00:00:03.000Z' : '2026-08-10T01:01:04.000Z';
   const activation = generation === 1
     ? { kind: 'spawn', taskName, agentPathDigest: createHash('sha256').update(agentPath).digest('hex') }
-    : null;
+    : reactivation;
   return { version: 3, key, sessionId: parentId, turnId, workspace: expectedWorkspace, permissionMode: 'acceptEdits', source,
     envelope: preparationEnvelope(source, resume, execution), generation, requiredExecutorAgentId,
     activation, createdAt, expiresAt, consumedAt, executorAgentId };
@@ -2481,6 +2484,10 @@ function workspaceBoundContinuationFixture(originWorkspace, executionWorkspace) 
     now: current.createdAt });
   rebound.updatedAt = current.updatedAt;
   const pre = { ...rebound, currentJobId: rebound.anchorJobId, updatedAt: '2026-08-10T00:00:05.000Z' };
+  const reboundPreparations = JSON.parse(input.preparationRecordBytesJson); const reboundContinuation = JSON.parse(reboundPreparations[1]);
+  reboundContinuation.activation = { ...reboundContinuation.activation, bindingKey: rebound.key, operationId: rebound.operationId,
+    anchorJobId: rebound.anchorJobId, currentJobId: pre.currentJobId, bindingUpdatedAt: pre.updatedAt };
+  reboundPreparations[1] = `${JSON.stringify(reboundContinuation)}\n`; input.preparationRecordBytesJson = JSON.stringify(reboundPreparations);
   input.bindingAuthorityBytes = `${JSON.stringify(createRescueBindingAuthority({ parentSessionId: parentId, workspace: executionWorkspace, createdAt: '2026-08-10T00:00:00.000Z' }))}\n`;
   input.bindingPreReservationBytes = `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: executionWorkspace, records: [pre] }))}\n`;
   input.bindingPartitionBytes = `${JSON.stringify(createRescueBindingPartition({ parentSessionId: parentId, workspace: executionWorkspace, records: [rebound] }))}\n`;

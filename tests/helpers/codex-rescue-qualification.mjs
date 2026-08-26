@@ -197,6 +197,10 @@ export async function qualifyCodexRescuePreparedContinuationEvidence(input, opti
   const anchor = jobs.find((job) => job?.id === binding.anchorJobId); const current = jobs.find((job) => job?.id === binding.currentJobId);
   if (!current) mismatch('continuation-current-job-stale', 'Raw current job evidence is absent.');
   if (!anchor || anchor.status === 'cancelled' || !boundedString(anchor.zcodeSessionId)) mismatch('continuation-anchor-invalid', 'Raw anchor job is not resumable.');
+  const reactivation = preparationRecords[1].activation;
+  if (reactivation.bindingKey !== preBinding.key || reactivation.operationId !== preBinding.operationId
+    || reactivation.anchorJobId !== preBinding.anchorJobId || reactivation.currentJobId !== preBinding.currentJobId
+    || reactivation.bindingUpdatedAt !== preBinding.updatedAt || reactivation.zcodeSessionId !== anchor.zcodeSessionId) mismatch('continuation-preparation-records', 'Consumed continuation preparation is not bound to the exact resumable operation.');
   if (anchor.ownerTurnId !== originalParentTurnId || current.ownerTurnId !== originalParentTurnId) mismatch('continuation-job-record', 'Raw job owner turns do not match the active parent turn.');
   if (Date.parse(anchor.createdAt) > Date.parse(stops[0].timestamp) || Date.parse(preBinding.updatedAt) > Date.parse(preparationRecords[1].createdAt)
     || Date.parse(current.createdAt) < Date.parse(preparationRecords[1].createdAt) || Date.parse(binding.updatedAt) < Date.parse(current.createdAt)) mismatch('continuation-job-record', 'Raw binding and job timestamps do not match the long-running lifecycle transition.');
@@ -276,13 +280,13 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
   const expectedKeys = ['appServerTranscriptJson', 'childRolloutJson', 'executorRecordBytes', 'expected', 'fakePeerJson', 'hookLifecycleJson', 'parentRolloutJson', 'preparationRecordBytes'];
   if (Object.keys(input).sort().join('\0') !== expectedKeys.sort().join('\0')) mismatch('restored-child-contract', 'Restored-child evidence has an invalid shape.');
   const expected = input.expected;
-  const expectedFields = ['agentPath', 'childThreadId', 'executionWorkspace', 'launcherCommand', 'originalParentTurnId', 'originWorkspace', 'parentSessionId', 'permissionMode', 'publicOutput', 'resumedParentTurnId'];
+  const expectedFields = ['agentPath', 'childThreadId', 'executionWorkspace', 'launcherCommand', 'originalParentTurnId', 'originWorkspace', 'parentSessionId', 'permissionMode', 'publicOutput', 'resumedParentTurnId', 'zcodeSessionId'];
   if (!expected || Object.keys(expected).sort().join('\0') !== expectedFields.sort().join('\0')) mismatch('restored-child-contract', 'Restored-child expectations have an invalid shape.');
   const ids = ['parentSessionId', 'childThreadId', 'originalParentTurnId', 'resumedParentTurnId'].map((key) => boundedString(expected[key]));
   if (ids.some((value) => !value) || expected.originalParentTurnId === expected.resumedParentTurnId
     || !/^\/root\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/u.test(boundedString(expected.agentPath) ?? '') || !boundedString(expected.launcherCommand)
     || !boundedString(expected.originWorkspace) || !boundedString(expected.executionWorkspace)
-    || !boundedString(expected.permissionMode) || !boundedString(expected.publicOutput)) mismatch('restored-child-identity', 'Restored-child identity is invalid.');
+    || !boundedString(expected.permissionMode) || !boundedString(expected.publicOutput) || !boundedString(expected.zcodeSessionId)) mismatch('restored-child-identity', 'Restored-child identity is invalid.');
   const parseArray = (text, code) => { if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_ROLLOUT_BYTES) mismatch(code, 'Captured evidence is absent or oversized.');
     let value; try { value = JSON.parse(text); } catch { mismatch(code, 'Captured evidence is malformed.'); }
     return boundedArray(value, MAX_EVENTS_PER_ROLLOUT, code); };
@@ -441,8 +445,9 @@ export async function qualifyCodexRescueRestoredChildEvidence(input) {
       && appServerTimes[3] <= preparationConsumed && preparationConsumed < childOutputTime)) mismatch('restored-child-invocation', 'Restored Role, prepare, follow-up, host read proof, consumption, and child execution chronology is invalid.');
   assertParentPreparationTaskExclusivity(parent, writeCall.event, preparationEnvelope.task, parsedCurrent, currentCustomOutputs.map((event) => ({ event })));
   if ([child, transcript, hooks, peer].some((surface) => stringLeafContains(surface, preparationEnvelope.task))) mismatch('restored-child-private-task', 'The private preparation task escaped its authorized write or private record.');
-  if (peer.length !== 2 || peer[0]?.method !== 'session/create' || peer[0]?.params?.workspace?.workspacePath !== expected.executionWorkspace
-    || peer[1]?.method !== 'session/send' || peer[1]?.params?.response !== expected.publicOutput) mismatch('restored-child-peer', 'Fake ZCode evidence does not execute in the immutable target worktree.');
+  if (peer.length !== 2 || peer[0]?.method !== 'session/resume' || peer[0]?.params?.sessionId !== expected.zcodeSessionId
+    || peer[0]?.params?.workspace?.workspacePath !== expected.executionWorkspace || peer[1]?.method !== 'session/send'
+    || peer[1]?.params?.sessionId !== expected.zcodeSessionId || peer[1]?.params?.response !== expected.publicOutput) mismatch('restored-child-peer', 'Fake ZCode evidence does not resume the exact original session in the immutable target worktree.');
   if (expected.originWorkspace !== expected.executionWorkspace) await validateCanonicalGitLineage(expected.originWorkspace, expected.executionWorkspace);
   return { route, parentSessionId: expected.parentSessionId, childThreadId: expected.childThreadId, agentPath: expected.agentPath,
     originalParentTurnId: expected.originalParentTurnId, resumedParentTurnId: expected.resumedParentTurnId,
@@ -571,7 +576,9 @@ function validateImmutableArtifactHistory(history, input) {
   for (const [path, bytes] of expectedArtifacts) if (!history.some((artifact) => artifact.path === path && artifact.bytes === bytes)) mismatch('continuation-artifact-history', 'Selected authority bytes are absent from their exact captured path.');
   for (const versions of preparationHistory.values()) {
     if (versions.length !== 2 || versions[0].version !== 3 || versions[0].generation !== 1 || versions[0].requiredExecutorAgentId !== null
-      || versions[0].activation?.kind !== 'spawn' || versions[1].version !== 3 || versions[1].generation !== 2 || versions[1].activation !== null || versions[1].requiredExecutorAgentId !== versions[0].executorAgentId
+      || versions[0].activation?.kind !== 'spawn' || versions[1].version !== 3 || versions[1].generation !== 2
+      || versions[1].activation?.kind !== 'reactivate' || versions[1].activation.executorAgentId !== versions[0].executorAgentId
+      || versions[1].requiredExecutorAgentId !== versions[0].executorAgentId
       || versions.some((record) => record.consumedAt === null || record.executorAgentId !== versions[0].executorAgentId)
       || JSON.stringify(Object.fromEntries(Object.entries(versions[0]).filter(([key]) => !['activation', 'createdAt', 'expiresAt', 'consumedAt', 'envelope', 'generation', 'requiredExecutorAgentId', 'source'].includes(key))))
         !== JSON.stringify(Object.fromEntries(Object.entries(versions[1]).filter(([key]) => !['activation', 'createdAt', 'expiresAt', 'consumedAt', 'envelope', 'generation', 'requiredExecutorAgentId', 'source'].includes(key))))) {
@@ -1082,6 +1089,7 @@ export function qualifyCodexRescueBackgroundEvidence(input, options) {
 }
 
 export function qualifyCodexRescueChoiceEvidence(input, options) {
+  if (options?.expectedChoice !== 'resume') mismatch('choice-fresh-requires-parent-replan', 'Fresh cannot be qualified as a same-child follow-up; it must return to the parent planner and spawn a new child.');
   const rollouts = boundedArray(input?.rollouts, MAX_ROLLOUTS, 'choice-rollouts');
   for (const rollout of rollouts) boundedArray(rollout, MAX_EVENTS_PER_ROLLOUT, 'choice-rollout-events');
   if (!['resume', 'fresh'].includes(options?.expectedChoice)) mismatch('choice-invalid', 'The expected Rescue choice is invalid.');
@@ -1675,10 +1683,16 @@ async function validateContinuationPreparations(parent, rawRecordsJson, expected
     if (envelope.source !== specification.source || envelope.options.resume !== specification.resume || (envelope.options.execution ?? 'foreground') !== expected.execution) mismatch('continuation-preparation-route', 'Preparation source or exact route is invalid.');
     const record = parsedRecords[generationIndex];
     const keys = ['activation', 'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'generation', 'key', 'permissionMode', 'requiredExecutorAgentId', 'sessionId', 'source', 'turnId', 'version', 'workspace'];
-    const expectedActivation = generationIndex === 0 ? { kind: 'spawn', taskName: expectedRoute.taskName, agentPathDigest: createHash('sha256').update(expected.agentPath).digest('hex') } : null;
+    const expectedActivation = generationIndex === 0 ? { kind: 'spawn', taskName: expectedRoute.taskName, agentPathDigest: createHash('sha256').update(expected.agentPath).digest('hex') } : record?.activation;
+    const exactReactivation = generationIndex === 0 || expectedActivation?.kind === 'reactivate'
+      && Object.keys(expectedActivation).sort().join('\0') === ['agentPathDigest', 'anchorJobId', 'bindingKey', 'bindingUpdatedAt', 'currentJobId', 'executorAgentId', 'kind', 'operationId', 'zcodeSessionId'].sort().join('\0')
+      && expectedActivation.executorAgentId === expected.childThreadId
+      && expectedActivation.agentPathDigest === createHash('sha256').update(expected.agentPath).digest('hex')
+      && ['anchorJobId', 'bindingKey', 'currentJobId', 'operationId'].every((key) => /^[a-f0-9]{64}$/u.test(expectedActivation[key]))
+      && boundedString(expectedActivation.zcodeSessionId) && Number.isFinite(Date.parse(expectedActivation.bindingUpdatedAt));
     if (!record || Object.keys(record).sort().join('\0') !== keys.sort().join('\0') || record.version !== 3 || record.generation !== specification.generation
       || record.requiredExecutorAgentId !== specification.requiredExecutorAgentId || !/^[a-f0-9]{64}$/u.test(record.key)
-      || !isDeepStrictEqual(record.activation, expectedActivation)
+      || !exactReactivation || !isDeepStrictEqual(record.activation, expectedActivation)
       || record.sessionId !== expected.parentSessionId || record.turnId !== expected.originalParentTurnId || record.workspace !== expected.workspace || record.permissionMode !== expected.permissionMode
       || record.executorAgentId !== expected.childThreadId || record.source !== specification.source || JSON.stringify(record.envelope) !== JSON.stringify(envelope)
       || !Number.isFinite(Date.parse(record.createdAt)) || Date.parse(record.expiresAt) - Date.parse(record.createdAt) !== 30 * 60_000
@@ -1699,11 +1713,12 @@ async function assertPreparationGenerationsWithProduction(records, expected) {
     const consumedFirst = await store.consume({ ...identity, executorAgentId: first.executorAgentId,
       activationProof: { kind: 'spawn', taskName: first.activation.taskName, agentPathDigest: first.activation.agentPathDigest }, now: first.consumedAt });
     if (!isDeepStrictEqual(consumedFirst, first)) mismatch('continuation-preparation-records', 'Production preparation store did not reproduce consumed generation 1.');
-    await store.save({ ...identity, envelope: second.envelope, recordedPrompt: 'proactive fixture', now: second.createdAt });
-    await assertRejectCode(store.consume({ ...identity, executorAgentId: 'sibling-executor', now: second.consumedAt }), 'RESCUE_PREPARATION_MISMATCH');
-    const consumedSecond = await store.consume({ ...identity, executorAgentId: second.executorAgentId, now: second.consumedAt });
+    await store.save({ ...identity, envelope: second.envelope, activation: second.activation, recordedPrompt: 'proactive fixture', now: second.createdAt });
+    const activationProof = { kind: 'reactivate', agentPathDigest: second.activation.agentPathDigest };
+    await assertRejectCode(store.consume({ ...identity, executorAgentId: 'sibling-executor', activationProof, now: second.consumedAt }), 'RESCUE_PREPARATION_MISMATCH');
+    const consumedSecond = await store.consume({ ...identity, executorAgentId: second.executorAgentId, activationProof, now: second.consumedAt });
     if (!isDeepStrictEqual(consumedSecond, second)) mismatch('continuation-preparation-records', 'Production preparation store did not reproduce the fresh expired-tombstone successor.');
-    await assertRejectCode(store.consume({ ...identity, executorAgentId: second.executorAgentId, now: second.consumedAt }), 'RESCUE_PREPARATION_CONSUMED');
+    await assertRejectCode(store.consume({ ...identity, executorAgentId: second.executorAgentId, activationProof, now: second.consumedAt }), 'RESCUE_PREPARATION_CONSUMED');
   } finally { await rm(dataRoot, { recursive: true, force: true }); }
 }
 
