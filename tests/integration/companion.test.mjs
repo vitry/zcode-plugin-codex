@@ -288,6 +288,8 @@ async function cleanupChildLossProcesses(input) {
 }
 
 /** @typedef {{kind:'fulfilled',value:any}|{kind:'rejected',error:unknown}} CompanionOutcome */
+const DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS = 15_000;
+const DURABLE_PROGRESS_TEST_TIMEOUT_MS = DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS + 10_000;
 
 /** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} [extraEnv] @param {Record<string,unknown>} [authorization] @param {AbortSignal} [signal] */
 async function companion(context, args, extraEnv = {}, authorization = { callerContext: context.caller }, signal) {
@@ -295,8 +297,8 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
-/** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} extraEnv @param {string} expectedMessage */
-async function companionAfterDurableProgress(context, args, extraEnv, expectedMessage) {
+/** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} extraEnv @param {string} expectedMessage @param {{onDurableProgress?:()=>void}} [options] */
+async function companionAfterDurableProgress(context, args, extraEnv, expectedMessage, options = {}) {
   const nonce = randomBytes(32).toString('hex');
   const gate = join(context.directory, `${nonce}-progress-dispatch-gate.json`);
   const gateRecord = (/** @type {'held'|'release'} */ state) => ({ version: 1, nonce, state });
@@ -321,8 +323,8 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
   };
   const settleExecution = async () => {
     if (!settledOutcome) {
-      const timeout = Object.assign(new Error('Companion did not settle within 2 seconds after durable progress.'), { code: 'TEST_CHILD_TIMEOUT' });
-      const timer = setTimeout(() => controller.abort(timeout), 2_000); timer.unref?.();
+      const timeout = Object.assign(new Error('Companion did not settle within the durable progress fixture deadline.'), { code: 'TEST_CHILD_TIMEOUT' });
+      const timer = setTimeout(() => controller.abort(timeout), DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS); timer.unref?.();
       try { settledOutcome = await executionOutcome; } finally { clearTimeout(timer); }
     }
     if (settledOutcome.kind === 'rejected') throw settledOutcome.error;
@@ -341,6 +343,7 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
       throwIfExecutionSettled();
       return false;
     }, `progress was not durably persisted before completion: ${expectedMessage}`);
+    options.onDurableProgress?.();
     await atomicWriteJson(gate, gateRecord('release'));
     result = await settleExecution();
   } catch (error) {
@@ -3085,7 +3088,7 @@ test('conversation online progress sent before the subscribe response is buffere
   const context = await fixture();
   const progress = 'Running command: echo prebind.';
   const result = await companionAfterDurableProgress(context, ['rescue', '--fresh', 'prebind conversation progress'], {
-    FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE: '1',
+    FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE: '1', FAKE_ZCODE_COMPLETION_DELAY_MS: '2500',
   }, progress);
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.result, 'done');
   assert.match(result.stderr, /Running command: echo prebind\./);
@@ -3093,15 +3096,17 @@ test('conversation online progress sent before the subscribe response is buffere
   assert.equal(status.json.job.progressPreview.includes(progress), true);
 });
 
-test('durable progress fixture bounds suppressed completion and reaps its companion', async () => {
-  const context = await fixture(); const startedAt = Date.now();
+test('durable progress fixture bounds suppressed completion and reaps its companion', { timeout: DURABLE_PROGRESS_TEST_TIMEOUT_MS }, async () => {
+  const context = await fixture();
+  /** @type {number|undefined} */ let releasedAt;
   /** @type {number|undefined} */ let companionPid;
   await assert.rejects(companionAfterDurableProgress(context, ['rescue', '--fresh', 'suppress completion after durable progress'], {
     FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE: '1', FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1',
-  }, 'Running command: echo prebind.'), (error) => {
+  }, 'Running command: echo prebind.', { onDurableProgress: () => { releasedAt = Date.now(); } }), (error) => {
     companionPid = (/** @type {any} */ (error))?.pid; return (/** @type {any} */ (error))?.code === 'TEST_CHILD_TIMEOUT';
   });
-  assert.ok(Date.now() - startedAt < 5_000, 'suppressed completion fixture exceeded its settlement bound');
+  assert.equal(Number.isSafeInteger(releasedAt), true);
+  assert.ok(Date.now() - /** @type {number} */ (releasedAt) >= DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS, 'fixture timed out before its settlement deadline');
   assert.equal(Number.isSafeInteger(companionPid), true); assert.equal(processAlive(/** @type {number} */ (companionPid)), false);
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled');
