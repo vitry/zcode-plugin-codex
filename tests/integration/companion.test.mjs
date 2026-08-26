@@ -911,7 +911,7 @@ test('reserved execution losing revoke race before its atomic claim has no promp
   assert.equal(reusableCapability.consumedAt, null); assert.equal(reusableCapability.executionReservationId, undefined);
 });
 
-test('reserved execution winning its atomic claim remains authorized across a later binding revoke', async () => {
+test('reserved execution revalidates its exact binding after claim and before background resume', async () => {
   const context = await fixture(); const workspace = await realpath(context.workspace);
   const parentSessionId = 'execution-claim-winner-parent'; const childId = 'execution-claim-winner-child';
   /** @param {string} turn */
@@ -935,7 +935,7 @@ test('reserved execution winning its atomic claim remains authorized across a la
   // This session exists only in durable Rescue state. Windows intentionally
   // launches the fake peer from tmpdir, so its synthetic resume snapshot must
   // use the exact durable workspace instead of inheriting process.cwd().
-  const result = await runCompanion(['run-reserved-job', continuation.job.id], {
+  await assert.rejects(runCompanion(['run-reserved-job', continuation.job.id], {
     cwd: workspace, env: { ...context.env, FAKE_ZCODE_RECORD: record, FAKE_ZCODE_RESULT: 'claim winner result',
       FAKE_ZCODE_WORKSPACE: workspace },
     authorization: { executionCapability: capability, jobId: continuation.job.id },
@@ -944,12 +944,11 @@ test('reserved execution winning its atomic claim remains authorized across a la
       await store.closeRescueBindingForChild({ workspace, parentSessionId, executorAgentId: childId,
         operationId: continuation.binding.operationId, reason: 'invalidated' });
     } },
-  });
-  assert.equal(revoked, true); assert.equal(result.job.status, 'succeeded');
-  assert.equal(result.job.rescueExecutionClaim, undefined);
-  const requests = (await readFile(record, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-  assert.equal(requests.filter((request) => request.method === 'session/resume').length, 1);
-  assert.equal(requests.filter((request) => request.method === 'session/send').length, 1);
+  }), { code: 'RESCUE_BINDING_STALE' });
+  assert.equal(revoked, true); assert.equal((await store.readJob(workspace, continuation.job.id)).status, 'failed');
+  const raw = (await readFile(record, 'utf8')).trim(); const requests = raw ? raw.split('\n').map((line) => JSON.parse(line)) : [];
+  assert.equal(requests.filter((request) => request.method === 'session/resume').length, 0);
+  assert.equal(requests.filter((request) => request.method === 'session/send').length, 0);
   await assert.rejects(store.resolveRescueBinding({ workspace, parentSessionId, executorAgentId: childId }),
     { code: 'RESCUE_BINDING_CLOSED' });
 });
@@ -2068,7 +2067,7 @@ for (const siblingKind of ['permission-nonmatching', 'revoked']) test(`corrupt $
     .filter((name) => name.endsWith('.json')), []);
 });
 
-/** @param {any} context @param {{name:string}} input */
+/** @param {any} context @param {{name:string,exact?:boolean}} input */
 async function preparedSameTurnBoundContinuation(context, input) {
   const record = join(context.directory, `${input.name}.jsonl`); await writeFile(record, '');
   const parentSessionId = `${input.name}-parent`; const parentTurnId = `${input.name}-parent-turn`; const childId = `${input.name}-child`; const childTurnId = `${input.name}-child-turn`;
@@ -2083,10 +2082,16 @@ async function preparedSameTurnBoundContinuation(context, input) {
     session_id: parentSessionId, turn_id: childTurnId, cwd: context.workspace, hook_event_name: 'SubagentStop',
     agent_id: childId, agent_type: 'zcode-rescue',
   });
-  assert.deepEqual(await prepareRescueInCurrentTurn(context, {
-    parentSessionId, source: 'proactive', task: 'exercise exact reservation guards',
-    options: { execution: 'foreground', resume: 'resume' },
-  }), legacyPreparedRoute);
+  const host = { id: childId, parentThreadId: parentSessionId, agentPath: '/root/zcode_rescue_task', agentRole: 'zcode-rescue',
+    cwd: await realpath(context.workspace), status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
+  if (input.exact) assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], {
+      cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
+      input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'proactive', task: 'exercise exact reservation guards',
+        options: { execution: 'foreground', resume: 'resume' } })}\n`]),
+      dependencies: { planRescueActivation: (/** @type {any} */ value) => planRescueActivation({ ...value, listChildren: async () => [host] }) },
+    }), { type: 'prepared', command: 'rescue', route: { version: 2, action: 'followup', target: host.agentPath, assignment: 'zcode-rescue' } });
+  else assert.deepEqual(await prepareRescueInCurrentTurn(context, { parentSessionId, source: 'proactive',
+    task: 'exercise exact reservation guards', options: { execution: 'foreground', resume: 'resume' } }), legacyPreparedRoute);
   await writeFile(record, '');
   return {
     record, parentSessionId, parentTurnId, childId, env, first,
@@ -3430,6 +3435,84 @@ test('same-parent-turn continuation follows up its resident exact Rescue child',
   const [preparedName] = (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json'));
   const consumed = JSON.parse(await readFile(join(storage.directory, 'invocations', 'prepared', preparedName), 'utf8'));
   assert.equal(consumed.generation, 2); assert.equal(consumed.executorAgentId, childId); assert.ok(consumed.consumedAt);
+});
+
+for (const execution of ['foreground', 'background']) test(`same-parent exact child ${execution} continuation resumes only its original ZCode session`, async () => {
+  const context = await fixture(); const record = join(context.directory, `exact-${execution}-continuation.jsonl`); await writeFile(record, '');
+  const parentSessionId = `exact-${execution}-parent`; const parentTurnId = `exact-${execution}-parent-turn`;
+  const childId = `exact-${execution}-child`; const childTurnId = `exact-${execution}-child-turn`; const agentPath = '/root/zcode_rescue_task';
+  await prepareDirectRescueChild(context, { parentSessionId, parentTurnId, childId, childTurnId,
+    prompt: '$zcode:rescue --fresh --wait establish exact original session' });
+  const env = { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record };
+  const first = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env });
+  assert.equal(first.job.status, 'succeeded'); assert.ok(first.job.zcodeSessionId);
+  await markForwarding(context.dataRoot, { session_id: parentSessionId, turn_id: childTurnId, cwd: context.workspace,
+    hook_event_name: 'SubagentStop', agent_id: childId, agent_type: 'zcode-rescue' });
+  const host = { id: childId, parentThreadId: parentSessionId, agentPath, agentRole: 'zcode-rescue', cwd: await realpath(context.workspace),
+    status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
+  let plans = 0;
+  const prepared = await runDirectInvocation(['prepare', 'rescue'], {
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
+    input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'proactive', task: `continue exact ${execution}`,
+      options: { execution, resume: 'resume' } })}\n`]),
+    dependencies: { planRescueActivation: async (/** @type {any} */ input) => { plans += 1;
+      return planRescueActivation({ ...input, listChildren: async () => [host] }); } },
+  });
+  assert.deepEqual(prepared, { type: 'prepared', command: 'rescue',
+    route: { version: 2, action: 'followup', target: agentPath, assignment: 'zcode-rescue' } });
+  assert.equal(plans, 1, 'one native follow-up preparation');
+  await writeFile(record, '');
+  /** @type {any} */ let worker;
+  const continuation = await runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env,
+    dependencies: { readCodexThreadSpawnChild: async () => host,
+      ...(execution === 'background' ? { startBackgroundWorker: async (/** @type {any} */ input) => { worker = input; } } : {}) } });
+  const result = execution === 'background'
+    ? await runCompanion(['run-reserved-job', continuation.job.id], { cwd: context.workspace, env,
+      authorization: { executionCapability: worker.executionCapability, jobId: continuation.job.id } })
+    : continuation;
+  assert.equal(result.job.status, 'succeeded'); assert.equal(result.job.zcodeSessionId, first.job.zcodeSessionId);
+  const calls = (await readFile(record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/resume' && frame.params?.sessionId === first.job.zcodeSessionId).length, 1);
+  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 1);
+  assert.equal(calls.filter((frame) => frame.method === 'session/create').length, 0);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 2, 'one continuation reservation');
+  const storage = await resolveWorkspaceStorage(context);
+  const [preparedName] = (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json'));
+  const consumed = JSON.parse(await readFile(join(storage.directory, 'invocations', 'prepared', preparedName), 'utf8'));
+  assert.equal(consumed.generation, 2); assert.equal(consumed.executorAgentId, childId); assert.ok(consumed.consumedAt);
+});
+
+for (const drift of ['route-child', 'session', 'anchor', 'current', 'operation', 'generation', 'workspace', 'permission']) test(`planned exact continuation fails closed before consuming preparation when ${drift} drifts`, async () => {
+  const context = await fixture(); const prepared = await preparedSameTurnBoundContinuation(context, { name: `planned-drift-${drift}`, exact: true });
+  const storage = await resolveWorkspaceStorage(context);
+  const [preparedName] = (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json'));
+  const preparationPath = join(storage.directory, 'invocations', 'prepared', preparedName);
+  const preparationBefore = JSON.parse(await readFile(preparationPath, 'utf8'));
+  const [partitionName] = (await readdir(storage.directory)).filter((name) => name.startsWith('rescue-binding-session-'));
+  const partitionPath = join(storage.directory, partitionName);
+  if (drift === 'session') {
+    const firstPath = join(storage.directory, 'jobs', `${prepared.first.job.id}.json`);
+    const first = JSON.parse(await readFile(firstPath, 'utf8')); first.zcodeSessionId = 'drifted-session'; await atomicWriteJson(firstPath, first);
+  } else {
+    const partition = JSON.parse(await readFile(partitionPath, 'utf8')); const binding = partition.records[0];
+    if (drift === 'anchor') binding.anchorJobId = 'a'.repeat(64);
+    if (drift === 'current') binding.currentJobId = 'b'.repeat(64);
+    if (drift === 'operation') binding.operationId = 'c'.repeat(64);
+    if (drift === 'generation') binding.updatedAt = new Date(Date.parse(binding.updatedAt) + 1_000).toISOString();
+    if (drift === 'workspace') binding.workspace = join(binding.workspace, 'drifted');
+    if (drift === 'permission') binding.permissionMode = 'read-only';
+    await atomicWriteJson(partitionPath, drift === 'workspace' ? partition : createRescueBindingPartition({
+      parentSessionId: prepared.parentSessionId, workspace: storage.workspacePath, records: partition.records,
+    }));
+  }
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: prepared.env,
+    dependencies: { readCodexThreadSpawnChild: async () => ({ id: prepared.env.CODEX_THREAD_ID,
+      parentThreadId: prepared.parentSessionId, agentPath: drift === 'route-child' ? '/root/zcode_rescue_task_2' : '/root/zcode_rescue_task',
+      agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'active', activeFlags: [] }, createdAt: 1, updatedAt: 2 }) } }));
+  const preparationAfter = JSON.parse(await readFile(preparationPath, 'utf8'));
+  assert.equal(preparationAfter.consumedAt, preparationBefore.consumedAt, 'proof drift must be rejected before consumption');
+  await assertNoPreparedReservationSideEffects(context, prepared.record, 1);
 });
 
 test('same-parent-turn bound continuation rejects a stale current job at its reservation guard', async () => {

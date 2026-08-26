@@ -194,6 +194,22 @@ test('session-ended resume validation leaves its closed tombstone unchanged unti
   assert.deepEqual(await readFile(partitionPath), before);
 });
 
+test('bound continuation reservation rejects a planner-selected original session mismatch without mutation', async () => {
+  const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
+  const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),
+    executor: legacyExecutor(workspace) });
+  await startWritableRescueForTest(store, workspace, first.job, { startedAt: new Date().toISOString(), zcodeSessionId: 'exact-original-session' });
+  await store.finishJob(workspace, first.job.id, ['running'], 'succeeded');
+  const jobsBefore = await store.listJobs(workspace);
+  await assert.rejects(store.reserveBoundRescueContinuation({ workspace,
+    reservation: rescueReservation(workspace, 'turn-b'), executor: legacyExecutor(workspace),
+    operationId: first.binding.operationId, expectedCurrentJobId: first.binding.currentJobId,
+    expectedAnchorJobId: first.binding.anchorJobId, expectedBindingKey: first.binding.key,
+    expectedBindingUpdatedAt: first.binding.updatedAt, expectedResumeSessionId: 'different-session',
+  }), { code: 'RESCUE_BINDING_STALE' });
+  assert.deepEqual(await store.listJobs(workspace), jobsBefore);
+});
+
 test('failed remote resume can atomically restore the exact session-ended tombstone before failing its attempt', async () => {
   const base = await fixture(); const workspace = await realpath(base.workspace); const store = createStateStore({ dataRoot: base.dataRoot });
   const first = await store.reserveFreshRescueJob({ workspace, reservation: rescueReservation(workspace),

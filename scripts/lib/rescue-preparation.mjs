@@ -46,6 +46,10 @@ const V3_RECORD_KEYS = Object.freeze([
 ]);
 const SPAWN_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'kind', 'taskName']);
 const REACTIVATE_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'executorAgentId', 'kind']);
+const EXACT_REACTIVATE_ACTIVATION_KEYS = Object.freeze([
+  ...REACTIVATE_ACTIVATION_KEYS, 'anchorJobId', 'bindingKey', 'bindingUpdatedAt', 'currentJobId',
+  'operationId', 'zcodeSessionId',
+]);
 const REACTIVATE_PROOF_KEYS = Object.freeze(['agentPathDigest', 'kind']);
 const LEGACY_ADOPT_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'childThreadId', 'kind']);
 const LEGACY_BOUND_ACTIVATION_KEYS = Object.freeze(['agentPathDigest', 'bindingKey', 'childThreadId', 'kind']);
@@ -202,6 +206,8 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
                 const legacyActivation = /** @type {any} */ (activation);
                 if (activation.kind === 'legacy-bound') {
                   if (legacyActivation.childThreadId !== requiredExecutorAgentId) throw invalidPreparation();
+                } else if (activation.kind === 'reactivate' && exactReactivateActivation(activation)) {
+                  if ((/** @type {any} */ (activation)).executorAgentId !== requiredExecutorAgentId) throw invalidPreparation();
                 } else {
                   if (activation.kind === 'legacy-adopt') throw invalidPreparation();
                   activation = null;
@@ -283,6 +289,7 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           );
         }
         if (kind === 'current' && ['legacy-adopt', 'legacy-bound'].includes(record.activation?.kind)) throw invalidPreparation();
+        if (input.beforeConsume !== undefined) await input.beforeConsume(cloneRecord(record));
         const consumedAt = timestamp(input.now);
         if (consumedAt < Date.parse(record.createdAt)) throw invalidPreparation();
         if (consumedAt >= Date.parse(record.expiresAt)) throw preparationError(
@@ -523,8 +530,9 @@ function validActivationForGeneration(record) {
   }
   return record.requiredExecutorAgentId !== null
     && (record.activation === null || validActivation(record.activation)
-      && record.activation.kind === 'legacy-bound'
-      && record.activation.childThreadId === record.requiredExecutorAgentId);
+      && (record.activation.kind === 'legacy-bound' && record.activation.childThreadId === record.requiredExecutorAgentId
+        || record.activation.kind === 'reactivate' && exactReactivateActivation(record.activation)
+        && record.activation.executorAgentId === record.requiredExecutorAgentId));
 }
 
 /** @param {any} record */
@@ -573,7 +581,8 @@ function validateSaveInput(input) {
 function validateConsumeInput(input) {
   validateTurnInput(input);
   if (!PERMISSION_MODES.includes(input.permissionMode) || !safeIdentifier(input.executorAgentId)
-    || input.beforeLegacyConsume !== undefined && typeof input.beforeLegacyConsume !== 'function') {
+    || input.beforeLegacyConsume !== undefined && typeof input.beforeLegacyConsume !== 'function'
+    || input.beforeConsume !== undefined && typeof input.beforeConsume !== 'function') {
     throw invalidPreparation();
   }
   timestamp(input.now);
@@ -591,6 +600,11 @@ function validateActivation(value) {
       kind: activation.kind,
       executorAgentId: activation.executorAgentId,
       agentPathDigest: activation.agentPathDigest,
+      ...(exactReactivateActivation(activation) ? {
+        bindingKey: activation.bindingKey, operationId: activation.operationId,
+        anchorJobId: activation.anchorJobId, currentJobId: activation.currentJobId,
+        bindingUpdatedAt: activation.bindingUpdatedAt, zcodeSessionId: activation.zcodeSessionId,
+      } : {}),
   };
   return {
     kind: activation.kind,
@@ -607,7 +621,9 @@ function validActivation(value) {
     return sameKeys(value, SPAWN_ACTIVATION_KEYS) && safeIdentifier(value.taskName);
   }
   if (value.kind === 'reactivate') {
-    return sameKeys(value, REACTIVATE_ACTIVATION_KEYS) && safeIdentifier(value.executorAgentId);
+    return (sameKeys(value, REACTIVATE_ACTIVATION_KEYS) || sameKeys(value, EXACT_REACTIVATE_ACTIVATION_KEYS))
+      && safeIdentifier(value.executorAgentId) && (!sameKeys(value, EXACT_REACTIVATE_ACTIVATION_KEYS)
+        || exactReactivateActivation(value));
   }
   if (value.kind === 'legacy-adopt') {
     return sameKeys(value, LEGACY_ADOPT_ACTIVATION_KEYS) && safeIdentifier(value.childThreadId);
@@ -617,6 +633,13 @@ function validActivation(value) {
       && /^[a-f0-9]{64}$/u.test(value.bindingKey);
   }
   return false;
+}
+
+/** @param {any} value */
+function exactReactivateActivation(value) {
+  return plain(value) && sameKeys(value, EXACT_REACTIVATE_ACTIVATION_KEYS)
+    && [value.bindingKey, value.operationId, value.anchorJobId, value.currentJobId].every((item) => /^[a-f0-9]{64}$/u.test(item))
+    && validDate(value.bindingUpdatedAt) && safeIdentifier(value.zcodeSessionId);
 }
 
 /** @param {any} activation @param {unknown} proof @param {string} executorAgentId */

@@ -65,7 +65,7 @@ export async function planRescueActivation(input) {
         if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
         persistedCandidates.push({ kind: /** @type {'persisted'} */ ('persisted'), binding: validatePersistedBinding(binding.binding, {
           caller: input.caller, executionWorkspace, host, originWorkspace, requirePermissionMatch: true,
-        }), host });
+        }), resolvedBinding: binding, host });
         continue;
       }
       throw sanitizeExecutorError(error);
@@ -80,7 +80,7 @@ export async function planRescueActivation(input) {
     const bound = [];
     for (const candidate of provenCandidates) {
       const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, executor: candidate.executor, host: candidate.host, executionWorkspace });
-      if (binding.kind === 'bound') bound.push(candidate);
+      if (binding.kind === 'bound') bound.push({ ...candidate, resolvedBinding: binding });
     }
     for (const candidate of persistedCandidates) bound.push(candidate);
     if (bound.length > 1) throw plannerError('RESCUE_CHILD_AMBIGUOUS');
@@ -94,16 +94,28 @@ export async function planRescueActivation(input) {
   if (selected !== null) {
     let activation; let assignment;
     if (selected.kind === 'executor') {
-      activation = { kind: 'reactivate', executorAgentId: selected.executor.agentId, agentPathDigest: pathDigest(selected.host.agentPath) };
+      activation = reactivateActivation(selected.executor.agentId, selected.host.agentPath, (/** @type {any} */ (selected)).resolvedBinding);
       assignment = selected.executor.agentType;
     } else {
-      activation = { kind: 'reactivate', executorAgentId: selected.host.id, agentPathDigest: pathDigest(selected.host.agentPath) };
+      activation = reactivateActivation(selected.host.id, selected.host.agentPath, selected.resolvedBinding);
       assignment = 'zcode-rescue';
     }
     return { activation, directive: validateRescueRouteDirective({ version: 2, action: 'followup', target: selected.host.agentPath, assignment }) };
   }
   if (resume || ineligiblePersisted) throw plannerError('RESCUE_BINDING_INVALID');
   return spawnPlan(hostChildren);
+}
+
+/** Preserve the exact planner-selected binding CAS when its joined jobs are available. @param {string} executorAgentId @param {string} agentPath @param {any} resolved */
+function reactivateActivation(executorAgentId, agentPath, resolved) {
+  const base = { kind: 'reactivate', executorAgentId, agentPathDigest: pathDigest(agentPath) };
+  if (resolved?.kind !== 'bound' || !resolved.binding || !resolved.anchorJob || !resolved.currentJob) return base;
+  const zcodeSessionId = resolved.anchorJob.zcodeSessionId;
+  if (typeof zcodeSessionId !== 'string' || zcodeSessionId.length === 0
+    || resolved.currentJob.zcodeSessionId !== zcodeSessionId) throw plannerError('RESCUE_BINDING_INVALID');
+  return { ...base, bindingKey: resolved.binding.key, operationId: resolved.binding.operationId,
+    anchorJobId: resolved.binding.anchorJobId, currentJobId: resolved.binding.currentJobId,
+    bindingUpdatedAt: resolved.binding.updatedAt, zcodeSessionId };
 }
 
 /** @param {any[]} hostChildren */

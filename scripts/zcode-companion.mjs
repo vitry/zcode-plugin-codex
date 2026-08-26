@@ -207,7 +207,39 @@ export async function runDirectInvocation(argv, runtime = {}) {
     }
     const preparations = createRescuePreparationStore({ dataRoot });
     let prepared;
-    try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId,
+    const beforeConsume = async (/** @type {any} */ record) => {
+      const exact = exactReactivateProof(record.activation);
+      if (!exact) return;
+      if (executor && !host) host = sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
+        ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
+      ), executor.parentSessionId, executor.agentId);
+      if (executor && host) validateExecutorHostIdentity(host, executor);
+      const agentPath = host?.agentPath ?? executor?.agentPath;
+      if (!executor || executor.agentId !== record.activation.executorAgentId || typeof agentPath !== 'string'
+        || createHash('sha256').update(agentPath).digest('hex') !== record.activation.agentPathDigest) throw rescueRouteInvalid();
+      const state = createStateStore({ dataRoot });
+      const lookup = { workspace: caller.workspace,
+        parentSessionId: caller.sessionId, executorAgentId: executor.agentId, executorAgentType: executor.agentType,
+        permissionMode: caller.permissionMode, executorAgentPath: agentPath };
+      const migration = await state.readRescueBindingMigrationProof({ workspace: caller.workspace,
+        parentSessionId: caller.sessionId, executorAgentId: executor.agentId, childAgentType: executor.agentType,
+        permissionMode: caller.permissionMode, agentPath, originWorkspace: executor.originWorkspace,
+        executionWorkspace: caller.workspace, agentPathDigest: record.activation.agentPathDigest });
+      if (!['bound', 'proof'].includes(migration.kind)) throw rescueRouteInvalid();
+      const migrationProof = migration.kind === 'proof' ? migration.migrationProof : undefined;
+      const resolved = await state.resolveRescueBindingForResume({ ...lookup, ...(migrationProof ? { migrationProof } : {}) });
+      if (resolved.kind !== 'bound' || resolved.binding.key !== exact.bindingKey
+        || resolved.binding.operationId !== exact.operationId || resolved.binding.anchorJobId !== exact.anchorJobId
+        || resolved.binding.currentJobId !== exact.currentJobId || resolved.binding.updatedAt !== exact.bindingUpdatedAt
+        || resolved.anchorJob.zcodeSessionId !== exact.zcodeSessionId
+        || resolved.currentJob.zcodeSessionId !== exact.zcodeSessionId) throw rescueRouteInvalid();
+      rescueRoute = { routeKind: 'bound', candidateJobId: exact.anchorJobId,
+        expectedBindingKey: exact.bindingKey, expectedOperationId: exact.operationId,
+        expectedAnchorJobId: exact.anchorJobId, expectedCurrentJobId: exact.currentJobId,
+        expectedBindingUpdatedAt: exact.bindingUpdatedAt, expectedResumeSessionId: exact.zcodeSessionId,
+        ...(migrationProof ? { migrationProof } : {}) };
+    };
+    try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, beforeConsume,
       ...(recoveredWithoutExecutor ? { activationProof: { kind: 'reactivate', agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex') } } : {}) }); }
     catch (error) {
       if (!(error instanceof PluginError) || error.code !== 'RESCUE_PREPARATION_MISMATCH') throw error;
@@ -217,13 +249,13 @@ export async function runDirectInvocation(argv, runtime = {}) {
       ), executor.parentSessionId, executor.agentId);
       let activationProof = executor ? preparedActivationProof(host, executor) : null;
       try {
-        if (activationProof) prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof });
+        if (activationProof) prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof, beforeConsume });
         else throw error;
       } catch (proofError) {
         if (!(proofError instanceof PluginError) || proofError.code !== 'RESCUE_PREPARATION_MISMATCH') throw proofError;
         if (executor?.active) {
           activationProof = { kind: 'reactivate', agentPathDigest: createHash('sha256').update(host.agentPath).digest('hex') };
-          try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof }); }
+          try { prepared = await preparations.consume({ ...caller, executorAgentId: ambientThreadId, activationProof, beforeConsume }); }
           catch (residentError) {
             if (!(residentError instanceof PluginError) || residentError.code !== 'RESCUE_PREPARATION_MISMATCH') throw residentError;
           }
@@ -234,6 +266,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     if (prepared.envelope.options.resume === 'fresh' && prepared.activation?.kind !== 'spawn') {
       throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
     }
+    if (!recoveredWithoutExecutor && exactReactivateProof(prepared.activation)) await afterPreparedBindingResolution(runtime.dependencies);
     if (executor && host) {
       validateExecutorHostIdentity(host, executor);
       if (prepared.activation && prepared.activation.kind !== 'spawn'
@@ -386,11 +419,25 @@ function validatePlannedRescueActivation(value) {
   }
   const digest = createHash('sha256').update(directive.target).digest('hex');
   if (activation?.kind === 'reactivate') {
-    if (!exactPlainObject(activation, ['agentPathDigest', 'executorAgentId', 'kind'])
+    const bareKeys = ['agentPathDigest', 'executorAgentId', 'kind'];
+    const exactKeys = [...bareKeys, 'anchorJobId', 'bindingKey', 'bindingUpdatedAt', 'currentJobId', 'operationId', 'zcodeSessionId'];
+    if (![bareKeys, exactKeys].some((keys) => exactPlainObject(activation, keys))
       || !safeCompanionIdentifier(activation.executorAgentId) || activation.agentPathDigest !== digest) throw rescueRouteInvalid();
-    return { activation: { kind: 'reactivate', executorAgentId: activation.executorAgentId, agentPathDigest: activation.agentPathDigest }, directive };
+    const exact = exactReactivateProof(activation);
+    if (exactPlainObject(activation, exactKeys) && !exact) throw rescueRouteInvalid();
+    return { activation: { kind: 'reactivate', executorAgentId: activation.executorAgentId, agentPathDigest: activation.agentPathDigest,
+      ...(exact ?? {}) }, directive };
   }
   throw rescueRouteInvalid();
+}
+
+/** @param {any} activation */
+function exactReactivateProof(activation) {
+  const keys = ['anchorJobId', 'bindingKey', 'bindingUpdatedAt', 'currentJobId', 'operationId', 'zcodeSessionId'];
+  if (!activation || !keys.every((key) => Object.hasOwn(activation, key))) return null;
+  if (![activation.bindingKey, activation.operationId, activation.anchorJobId, activation.currentJobId].every((value) => /^[a-f0-9]{64}$/u.test(value))
+    || !Number.isFinite(Date.parse(activation.bindingUpdatedAt)) || !safeCompanionIdentifier(activation.zcodeSessionId)) return null;
+  return Object.fromEntries(keys.map((key) => [key, activation[key]]));
 }
 
 /** @param {unknown} value @param {string[]} keys */
@@ -616,7 +663,13 @@ async function startPublic(context) {
         : context.executor ? bindingLookup(context.executor, cwd) : authorityBindingLookup(context.authority, caller, cwd)),
       permissionMode: caller.permissionMode, ...(previewMigrationProof ? { migrationProof: previewMigrationProof } : {}) });
       const migrationProof = previewMigrationProof;
-      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? { expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId, expectedAnchorJobId: context.rescueRoute.candidateJobId } : {}) }));
+      reserved = await reservePublicRescueJob(context, () => store.reserveBoundRescueContinuation({ workspace: cwd, reservation, ...childProof, operationId: context.rescueRoute?.expectedOperationId ?? resolved.operationId, ...(migrationProof ? { migrationProof } : {}), ...(context.rescueRoute?.expectedCurrentJobId ? {
+        expectedCurrentJobId: context.rescueRoute.expectedCurrentJobId,
+        expectedAnchorJobId: context.rescueRoute.expectedAnchorJobId ?? context.rescueRoute.candidateJobId,
+        ...(context.rescueRoute.expectedBindingKey ? { expectedBindingKey: context.rescueRoute.expectedBindingKey } : {}),
+        ...(context.rescueRoute.expectedBindingUpdatedAt ? { expectedBindingUpdatedAt: context.rescueRoute.expectedBindingUpdatedAt } : {}),
+        ...(context.rescueRoute.expectedResumeSessionId ? { expectedResumeSessionId: context.rescueRoute.expectedResumeSessionId } : {}),
+      } : {}) }));
       candidate = reserved.anchorJob;
     } else throw new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' });
     job = reserved.job;
@@ -873,7 +926,7 @@ async function executeReserved(context) {
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
     const executionClient = client; client = undefined;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); }, onResumeSucceeded: () => { resumeSucceeded = true; }, ...(migrationRollback ? { onResumeFailure: async (error) => {
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); }, onResumeSucceeded: () => { resumeSucceeded = true; }, ...(migrationRollback ? { onResumeFailure: async (error) => {
       if (resumeSucceeded) return;
       await store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
     } } : {}) });
