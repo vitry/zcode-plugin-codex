@@ -289,12 +289,12 @@ export function createRescuePreparationStore({ dataRoot, testOnlyBeforeSaveLockO
           );
         }
         if (kind === 'current' && ['legacy-adopt', 'legacy-bound'].includes(record.activation?.kind)) throw invalidPreparation();
-        if (input.beforeConsume !== undefined) await input.beforeConsume(cloneRecord(record));
         const consumedAt = timestamp(input.now);
         if (consumedAt < Date.parse(record.createdAt)) throw invalidPreparation();
         if (consumedAt >= Date.parse(record.expiresAt)) throw preparationError(
           'RESCUE_PREPARATION_EXPIRED', 'The Rescue preparation has expired.',
         );
+        if (input.beforeConsume !== undefined) await input.beforeConsume(cloneRecord(record));
         const consumed = {
           ...record,
           envelope: validateRescuePreparation(record.envelope),
@@ -596,15 +596,8 @@ function validateActivation(value) {
   if (activation.kind === 'spawn') return {
     kind: activation.kind, taskName: activation.taskName, agentPathDigest: activation.agentPathDigest,
   };
-  if (activation.kind === 'reactivate') return {
-      kind: activation.kind,
-      executorAgentId: activation.executorAgentId,
-      agentPathDigest: activation.agentPathDigest,
-      ...(exactReactivateActivation(activation) ? {
-        bindingKey: activation.bindingKey, operationId: activation.operationId,
-        anchorJobId: activation.anchorJobId, currentJobId: activation.currentJobId,
-        bindingUpdatedAt: activation.bindingUpdatedAt, zcodeSessionId: activation.zcodeSessionId,
-      } : {}),
+  if (activation.kind === 'reactivate') return canonicalExactReactivateActivation(activation) ?? {
+    kind: activation.kind, executorAgentId: activation.executorAgentId, agentPathDigest: activation.agentPathDigest,
   };
   return {
     kind: activation.kind,
@@ -637,9 +630,19 @@ function validActivation(value) {
 
 /** @param {any} value */
 function exactReactivateActivation(value) {
+  return canonicalExactReactivateActivation(value) !== null;
+}
+
+/** @param {any} value */
+export function canonicalExactReactivateActivation(value) {
   return plain(value) && sameKeys(value, EXACT_REACTIVATE_ACTIVATION_KEYS)
+    && value.kind === 'reactivate' && safeIdentifier(value.executorAgentId) && /^[a-f0-9]{64}$/u.test(value.agentPathDigest)
     && [value.bindingKey, value.operationId, value.anchorJobId, value.currentJobId].every((item) => /^[a-f0-9]{64}$/u.test(item))
-    && validDate(value.bindingUpdatedAt) && safeIdentifier(value.zcodeSessionId);
+    && validDate(value.bindingUpdatedAt) && safeIdentifier(value.zcodeSessionId)
+    ? { kind: value.kind, executorAgentId: value.executorAgentId, agentPathDigest: value.agentPathDigest,
+        bindingKey: value.bindingKey, operationId: value.operationId, anchorJobId: value.anchorJobId,
+        currentJobId: value.currentJobId, bindingUpdatedAt: value.bindingUpdatedAt, zcodeSessionId: value.zcodeSessionId }
+    : null;
 }
 
 /** @param {any} activation @param {unknown} proof @param {string} executorAgentId */

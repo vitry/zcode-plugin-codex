@@ -2067,7 +2067,7 @@ for (const siblingKind of ['permission-nonmatching', 'revoked']) test(`corrupt $
     .filter((name) => name.endsWith('.json')), []);
 });
 
-/** @param {any} context @param {{name:string,exact?:boolean}} input */
+/** @param {any} context @param {{name:string,exact?:boolean,execution?:'foreground'|'background'}} input */
 async function preparedSameTurnBoundContinuation(context, input) {
   const record = join(context.directory, `${input.name}.jsonl`); await writeFile(record, '');
   const parentSessionId = `${input.name}-parent`; const parentTurnId = `${input.name}-parent-turn`; const childId = `${input.name}-child`; const childTurnId = `${input.name}-child-turn`;
@@ -2087,7 +2087,7 @@ async function preparedSameTurnBoundContinuation(context, input) {
   if (input.exact) assert.deepEqual(await runDirectInvocation(['prepare', 'rescue'], {
       cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: parentSessionId },
       input: PassThrough.from([`${JSON.stringify({ version: 1, source: 'proactive', task: 'exercise exact reservation guards',
-        options: { execution: 'foreground', resume: 'resume' } })}\n`]),
+        options: { execution: input.execution ?? 'foreground', resume: 'resume' } })}\n`]),
       dependencies: { planRescueActivation: (/** @type {any} */ value) => planRescueActivation({ ...value, listChildren: async () => [host] }) },
     }), { type: 'prepared', command: 'rescue', route: { version: 2, action: 'followup', target: host.agentPath, assignment: 'zcode-rescue' } });
   else assert.deepEqual(await prepareRescueInCurrentTurn(context, { parentSessionId, source: 'proactive',
@@ -3483,6 +3483,42 @@ for (const execution of ['foreground', 'background']) test(`same-parent exact ch
   assert.equal(consumed.generation, 2); assert.equal(consumed.executorAgentId, childId); assert.ok(consumed.consumedAt);
 });
 
+for (const execution of /** @type {const} */ (['foreground', 'background'])) test(`exact ${execution} continuation revalidates after reconciliation before resume`, async () => {
+  const context = await fixture();
+  const prepared = await preparedSameTurnBoundContinuation(context, {
+    name: `reconcile-final-${execution}`, exact: true, execution,
+  });
+  const store = createStateStore({ dataRoot: context.dataRoot });
+  const host = { id: prepared.childId, parentThreadId: prepared.parentSessionId, agentPath: '/root/zcode_rescue_task',
+    agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
+  let reconciled = 0;
+  /** @type {any} */
+  let worker;
+  const reconcileThenRevoke = async () => {
+    reconciled += 1;
+    const binding = await store.resolveRescueBinding({ workspace: context.workspace,
+      parentSessionId: prepared.parentSessionId, executorAgentId: prepared.childId });
+    if (binding.kind !== 'bound') throw new Error('expected exact binding');
+    await store.closeRescueBindingForChild({ workspace: context.workspace, parentSessionId: prepared.parentSessionId,
+      executorAgentId: prepared.childId, operationId: binding.binding.operationId, reason: 'invalidated' });
+  };
+  const invocation = runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: prepared.env,
+    dependencies: { readCodexThreadSpawnChild: async () => host,
+      reconcileBrokerOwnership: reconcileThenRevoke,
+      ...(execution === 'background' ? { startBackgroundWorker: async (/** @type {any} */ input) => { worker = input; } } : {}) } });
+  if (execution === 'background') {
+    const reserved = await invocation;
+    if (!worker) throw new Error('expected background worker');
+    await assert.rejects(runCompanion(['run-reserved-job', reserved.job.id], { cwd: context.workspace, env: prepared.env,
+      authorization: { executionCapability: worker.executionCapability, jobId: reserved.job.id },
+      dependencies: { reconcileBrokerOwnership: reconcileThenRevoke } }), { code: 'RESCUE_BINDING_STALE' });
+  } else await assert.rejects(invocation, { code: 'RESCUE_BINDING_STALE' });
+  assert.equal(reconciled, 1);
+  const calls = (await readFile(prepared.record, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(calls.filter((frame) => frame.method === 'session/resume').length, 0);
+  assert.equal(calls.filter((frame) => frame.method === 'session/send').length, 0);
+});
+
 for (const drift of ['route-child', 'session', 'anchor', 'current', 'operation', 'generation', 'workspace', 'permission']) test(`planned exact continuation fails closed before consuming preparation when ${drift} drifts`, async () => {
   const context = await fixture(); const prepared = await preparedSameTurnBoundContinuation(context, { name: `planned-drift-${drift}`, exact: true });
   const storage = await resolveWorkspaceStorage(context);
@@ -3512,6 +3548,42 @@ for (const drift of ['route-child', 'session', 'anchor', 'current', 'operation',
       agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'active', activeFlags: [] }, createdAt: 1, updatedAt: 2 }) } }));
   const preparationAfter = JSON.parse(await readFile(preparationPath, 'utf8'));
   assert.equal(preparationAfter.consumedAt, preparationBefore.consumedAt, 'proof drift must be rejected before consumption');
+  await assertNoPreparedReservationSideEffects(context, prepared.record, 1);
+});
+
+for (const fault of ['JOB_NOT_FOUND', 'internal']) test(`invoke-time exact proof ${fault} failure is sanitized before consume`, async () => {
+  const context = await fixture(); const prepared = await preparedSameTurnBoundContinuation(context,
+    { name: `proof-read-${fault}`, exact: true });
+  const storage = await resolveWorkspaceStorage(context);
+  const [preparedName] = (await readdir(join(storage.directory, 'invocations', 'prepared'))).filter((name) => name.endsWith('.json'));
+  const preparationPath = join(storage.directory, 'invocations', 'prepared', preparedName);
+  const host = { id: prepared.childId, parentThreadId: prepared.parentSessionId, agentPath: '/root/zcode_rescue_task',
+    agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
+  const failure = fault === 'JOB_NOT_FOUND' ? new PluginError('JOB_NOT_FOUND', 'private state detail') : new Error('private storage detail');
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: prepared.env,
+    dependencies: { readCodexThreadSpawnChild: async () => host,
+      createRescueContinuationStateStore: () => ({
+        readRescueBindingMigrationProof: async () => {
+          if (fault === 'JOB_NOT_FOUND') throw failure;
+          return { kind: 'bound' };
+        },
+        resolveRescueBindingForResume: async () => { throw failure; },
+      }) } }),
+  { code: 'RESCUE_BINDING_INVALID' });
+  assert.equal(JSON.parse(await readFile(preparationPath, 'utf8')).consumedAt, null);
+  await assertNoPreparedReservationSideEffects(context, prepared.record, 1);
+});
+
+test('invoke-time exact proof preserves interruption before consume', async () => {
+  const context = await fixture(); const prepared = await preparedSameTurnBoundContinuation(context,
+    { name: 'proof-read-interruption', exact: true });
+  const interruption = new PluginError('JOB_INTERRUPTED', 'stop proof read', { category: 'interruption' });
+  const host = { id: prepared.childId, parentThreadId: prepared.parentSessionId, agentPath: '/root/zcode_rescue_task',
+    agentRole: 'zcode-rescue', cwd: await realpath(context.workspace), status: { type: 'notLoaded' }, createdAt: 1, updatedAt: 2 };
+  await assert.rejects(runDirectInvocation(['invoke-prepared', 'rescue'], { cwd: context.workspace, env: prepared.env,
+    dependencies: { readCodexThreadSpawnChild: async () => host,
+      createRescueContinuationStateStore: () => ({ readRescueBindingMigrationProof: async () => { throw interruption; } }) } }),
+  (error) => error === interruption);
   await assertNoPreparedReservationSideEffects(context, prepared.record, 1);
 });
 

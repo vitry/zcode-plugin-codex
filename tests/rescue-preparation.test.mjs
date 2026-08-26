@@ -67,6 +67,17 @@ test('exports the versioned Rescue preparation byte bounds', () => {
   assert.equal(RESCUE_ENVELOPE_MAX_BYTES, 64 * 1024 + 4096);
 });
 
+test('exports one canonical exact reactivation validator and defensive copy', async () => {
+  const module = await import('../scripts/lib/rescue-preparation.mjs');
+  const exact = { ...reactivateActivation, bindingKey: 'c'.repeat(64), operationId: 'd'.repeat(64),
+    anchorJobId: 'e'.repeat(64), currentJobId: 'f'.repeat(64), bindingUpdatedAt: '2026-08-17T00:00:00.000Z',
+    zcodeSessionId: 'original-session' };
+  assert.equal(typeof module.canonicalExactReactivateActivation, 'function');
+  const copied = module.canonicalExactReactivateActivation(exact);
+  assert.deepEqual(copied, exact); assert.notEqual(copied, exact);
+  assert.equal(module.canonicalExactReactivateActivation({ ...exact, zcodeSessionId: '' }), null);
+});
+
 test('path-to-handle snapshots tolerate only the Windows device split', () => {
   const pathStats = { dev: 41n, ino: 73n, size: 101n, mtimeNs: 107n, ctimeNs: 109n };
   const handleStats = { ...pathStats, dev: 43n };
@@ -356,9 +367,15 @@ test('reactivation proof binds the exact executor and remains one-shot and expir
 
   const expired = { ...base, turnId: 'turn-expired' };
   await store.save({ ...expired, envelope: validEnvelope, activation: reactivateActivation, now });
+  let callbacks = 0;
   await assert.rejects(store.consume({ ...expired, executorAgentId: 'rescue-child',
-    activationProof: reactivateActivationProof, now: new Date(now.getTime() + 30 * 60_000) }),
+    activationProof: reactivateActivationProof, now: new Date(now.getTime() - 1),
+    beforeConsume: async () => { callbacks += 1; } }), { code: 'RESCUE_PREPARATION_INVALID' });
+  await assert.rejects(store.consume({ ...expired, executorAgentId: 'rescue-child',
+    activationProof: reactivateActivationProof, now: new Date(now.getTime() + 30 * 60_000),
+    beforeConsume: async () => { callbacks += 1; } }),
   { code: 'RESCUE_PREPARATION_EXPIRED' });
+  assert.equal(callbacks, 0, 'expired preparations must not enter child/state proof callbacks');
 });
 
 test('activation codecs reject unknown keys, invalid digests, and illegal cross-field shapes', async () => {

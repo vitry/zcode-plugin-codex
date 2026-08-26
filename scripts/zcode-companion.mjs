@@ -20,7 +20,7 @@ import { discoverZCode } from './lib/zcode-discovery.mjs';
 import { createManagedZCodeClient } from './lib/zcode-client.mjs';
 import { acknowledgeBackgroundStartup, startBackgroundWorker } from './lib/background-worker.mjs';
 import { createInvocationStore, parseRecordedInvocation, requiresExecutionChoice } from './lib/invocation.mjs';
-import { createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
+import { canonicalExactReactivateActivation, createRescuePreparationStore, readRescuePreparation, RESCUE_ENVELOPE_MAX_BYTES } from './lib/rescue-preparation.mjs';
 import { rescueBindingAuthorityView } from './lib/rescue-binding.mjs';
 import { planRescueActivation, validateRescueRouteDirective } from './lib/rescue-route-planner.mjs';
 import { executeJob, readResultArtifact } from './lib/review.mjs';
@@ -208,7 +208,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     const preparations = createRescuePreparationStore({ dataRoot });
     let prepared;
     const beforeConsume = async (/** @type {any} */ record) => {
-      const exact = exactReactivateProof(record.activation);
+      const exact = canonicalExactReactivateActivation(record.activation);
       if (!exact) return;
       if (executor && !host) host = sanitizeCodexThreadSpawnChild(await (runtime.dependencies?.readCodexThreadSpawnChild ?? readCodexThreadSpawnChild)(
         ambientThreadId, executor.parentSessionId, codexAppServerOptions(env, executor.originWorkspace, runtime.signal),
@@ -217,22 +217,29 @@ export async function runDirectInvocation(argv, runtime = {}) {
       const agentPath = host?.agentPath ?? executor?.agentPath;
       if (!executor || executor.agentId !== record.activation.executorAgentId || typeof agentPath !== 'string'
         || createHash('sha256').update(agentPath).digest('hex') !== record.activation.agentPathDigest) throw rescueRouteInvalid();
-      const state = createStateStore({ dataRoot });
+      const state = (runtime.dependencies?.createRescueContinuationStateStore ?? createStateStore)({ dataRoot });
       const lookup = { workspace: caller.workspace,
         parentSessionId: caller.sessionId, executorAgentId: executor.agentId, executorAgentType: executor.agentType,
         permissionMode: caller.permissionMode, executorAgentPath: agentPath };
-      const migration = await state.readRescueBindingMigrationProof({ workspace: caller.workspace,
-        parentSessionId: caller.sessionId, executorAgentId: executor.agentId, childAgentType: executor.agentType,
-        permissionMode: caller.permissionMode, agentPath, originWorkspace: executor.originWorkspace,
-        executionWorkspace: caller.workspace, agentPathDigest: record.activation.agentPathDigest });
-      if (!['bound', 'proof'].includes(migration.kind)) throw rescueRouteInvalid();
+      let migration; let resolved;
+      try {
+        migration = await state.readRescueBindingMigrationProof({ workspace: caller.workspace,
+          parentSessionId: caller.sessionId, executorAgentId: executor.agentId, childAgentType: executor.agentType,
+          permissionMode: caller.permissionMode, agentPath, originWorkspace: executor.originWorkspace,
+          executionWorkspace: caller.workspace, agentPathDigest: record.activation.agentPathDigest });
+        if (!['bound', 'proof'].includes(migration.kind)) throw rescueBindingInvalid();
+        const proof = migration.kind === 'proof' ? migration.migrationProof : undefined;
+        resolved = await state.resolveRescueBindingForResume({ ...lookup, ...(proof ? { migrationProof: proof } : {}) });
+      } catch (error) {
+        if (isInterruption(error)) throw error;
+        throw rescueBindingInvalid();
+      }
       const migrationProof = migration.kind === 'proof' ? migration.migrationProof : undefined;
-      const resolved = await state.resolveRescueBindingForResume({ ...lookup, ...(migrationProof ? { migrationProof } : {}) });
       if (resolved.kind !== 'bound' || resolved.binding.key !== exact.bindingKey
         || resolved.binding.operationId !== exact.operationId || resolved.binding.anchorJobId !== exact.anchorJobId
         || resolved.binding.currentJobId !== exact.currentJobId || resolved.binding.updatedAt !== exact.bindingUpdatedAt
         || resolved.anchorJob.zcodeSessionId !== exact.zcodeSessionId
-        || resolved.currentJob.zcodeSessionId !== exact.zcodeSessionId) throw rescueRouteInvalid();
+        || resolved.currentJob.zcodeSessionId !== exact.zcodeSessionId) throw rescueBindingInvalid();
       rescueRoute = { routeKind: 'bound', candidateJobId: exact.anchorJobId,
         expectedBindingKey: exact.bindingKey, expectedOperationId: exact.operationId,
         expectedAnchorJobId: exact.anchorJobId, expectedCurrentJobId: exact.currentJobId,
@@ -266,7 +273,7 @@ export async function runDirectInvocation(argv, runtime = {}) {
     if (prepared.envelope.options.resume === 'fresh' && prepared.activation?.kind !== 'spawn') {
       throw new PluginError('RESCUE_PREPARATION_MISMATCH', 'The Rescue preparation activation does not match.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' });
     }
-    if (!recoveredWithoutExecutor && exactReactivateProof(prepared.activation)) await afterPreparedBindingResolution(runtime.dependencies);
+    if (!recoveredWithoutExecutor && canonicalExactReactivateActivation(prepared.activation)) await afterPreparedBindingResolution(runtime.dependencies);
     if (executor && host) {
       validateExecutorHostIdentity(host, executor);
       if (prepared.activation && prepared.activation.kind !== 'spawn'
@@ -420,26 +427,16 @@ function validatePlannedRescueActivation(value) {
   const digest = createHash('sha256').update(directive.target).digest('hex');
   if (activation?.kind === 'reactivate') {
     const bareKeys = ['agentPathDigest', 'executorAgentId', 'kind'];
-    const exactKeys = [...bareKeys, 'anchorJobId', 'bindingKey', 'bindingUpdatedAt', 'currentJobId', 'operationId', 'zcodeSessionId'];
-    if (![bareKeys, exactKeys].some((keys) => exactPlainObject(activation, keys))
+    const exact = canonicalExactReactivateActivation(activation);
+    if (!exact && !exactPlainObject(activation, bareKeys)
       || !safeCompanionIdentifier(activation.executorAgentId) || activation.agentPathDigest !== digest) throw rescueRouteInvalid();
-    const exact = exactReactivateProof(activation);
-    if (exactPlainObject(activation, exactKeys) && !exact) throw rescueRouteInvalid();
-    return { activation: { kind: 'reactivate', executorAgentId: activation.executorAgentId, agentPathDigest: activation.agentPathDigest,
-      ...(exact ?? {}) }, directive };
+    return { activation: exact ?? { kind: 'reactivate', executorAgentId: activation.executorAgentId,
+      agentPathDigest: activation.agentPathDigest }, directive };
   }
   throw rescueRouteInvalid();
 }
 
 /** @param {any} activation */
-function exactReactivateProof(activation) {
-  const keys = ['anchorJobId', 'bindingKey', 'bindingUpdatedAt', 'currentJobId', 'operationId', 'zcodeSessionId'];
-  if (!activation || !keys.every((key) => Object.hasOwn(activation, key))) return null;
-  if (![activation.bindingKey, activation.operationId, activation.anchorJobId, activation.currentJobId].every((value) => /^[a-f0-9]{64}$/u.test(value))
-    || !Number.isFinite(Date.parse(activation.bindingUpdatedAt)) || !safeCompanionIdentifier(activation.zcodeSessionId)) return null;
-  return Object.fromEntries(keys.map((key) => [key, activation[key]]));
-}
-
 /** @param {unknown} value @param {string[]} keys */
 function exactPlainObject(value, keys) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype
@@ -451,6 +448,7 @@ function safeCompanionIdentifier(value, maxBytes = 512) {
     && ![...value].some((character) => { const code = /** @type {number} */ (character.codePointAt(0)); return code <= 31 || code === 127; });
 }
 function rescueRouteInvalid() { return new PluginError('RESCUE_ROUTE_INVALID', 'The Rescue activation route is invalid.', { category: 'authorization', remedy: 'Return to the parent turn and prepare Rescue again.' }); }
+function rescueBindingInvalid() { return new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', { category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.' }); }
 
 /** @param {any} host @param {any} executor */
 function preparedActivationProof(host, executor) {
@@ -926,7 +924,7 @@ async function executeReserved(context) {
     const modelConfig = await readWorkspaceModelConfig({ dataRoot, workspace: cwd }); const modelRequest = spec.model ?? modelConfig.defaultModel;
     const preResolvedModel = modelRequest && (modelRequest.includes('/') || Object.hasOwn(modelConfig.models, modelRequest)) ? resolveModel(modelRequest, modelConfig.models, []) : undefined;
     const executionClient = client; client = undefined;
-    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); await reconcileBrokerOwnership({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); }, onResumeSucceeded: () => { resumeSucceeded = true; }, ...(migrationRollback ? { onResumeFailure: async (error) => {
+    return await executeJob({ job, workspace: cwd, dataRoot, store, client: executionClient, scope: spec.scope, base: spec.base, focus: spec.focus, task: spec.task, model: preResolvedModel, modelRequest: preResolvedModel ? undefined : modelRequest, modelAliases: modelConfig.models, effort: spec.effort, resumeSessionId: spec.resumeSessionId, childPid: context.childPid, workerLeaseId: context.workerLeaseId, onBoundaryPersisted: context.onBoundaryPersisted, progressWriter: context.progressWriter, progressRelayWriter: context.progressRelayWriter, progressDependencies: context.progressDependencies, signal: context.signal, onBeforeResume: async () => { await validateResumeCandidate(store, cwd, job.ownerSessionId, spec); await (context.dependencies?.reconcileBrokerOwnership ?? reconcileBrokerOwnership)({ dataRoot, workspace: cwd, ownerId, ownedSessionIds: [spec.resumeSessionId] }); if (job.rescueContinuationOrigin || job.rescueMigrationRollback) await store.validateReservedRescueContinuation({ workspace: cwd, parentSessionId: job.ownerSessionId, jobId: job.id, candidateJobId: spec.candidateJobId, resumeSessionId: spec.resumeSessionId }); }, onResumeSucceeded: () => { resumeSucceeded = true; }, ...(migrationRollback ? { onResumeFailure: async (error) => {
       if (resumeSucceeded) return;
       await store.finishSessionEndedRescueContinuation(cwd, job.id, migrationRollback, 'failed', { error: { message: error instanceof Error ? error.message.slice(0, 2048) : 'ZCode resume failed' }, exitCode: 1 });
     } } : {}) });
