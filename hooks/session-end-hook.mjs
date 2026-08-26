@@ -37,7 +37,7 @@ try {
       let ownerReleaseSafe = false;
       let ownerCleanupStage = 'settlement';
       try {
-        await settleEndedOwnerWritableJob({
+        const settlement = await settleEndedOwnerWritableJob({
           store,
           dataRoot,
           workspace,
@@ -45,6 +45,7 @@ try {
           requestTimeoutMs: existingBrokerRequestTimeoutMs,
           lockTimeoutMs: 0,
           signal: remoteController.signal,
+          includeSettlementEvidence: true,
           createClient: (job, derivedOwnerId) => createExistingManagedZCodeClient({
             dataRoot,
             workspace,
@@ -52,6 +53,11 @@ try {
             requestTimeoutMs: existingBrokerRequestTimeoutMs,
           }),
         });
+        if (settlement.kind === 'confirmed-cancellation') {
+          await store.closeRescueBindingForCancelledJob({
+            workspace, parentSessionId: ownerSessionId, jobId: settlement.job.id,
+          });
+        }
         if (remoteController.signal.aborted) throw remoteController.signal.reason;
         ownerCleanupStage = 'retained-writable-guard';
         const ownedJobs = await store.listOwnedJobs(workspace, ownerSessionId);

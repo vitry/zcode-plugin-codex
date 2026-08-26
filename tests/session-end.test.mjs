@@ -72,6 +72,75 @@ async function job(input, options = {}) {
   return value;
 }
 
+function exactExecutor(workspace, child = 'rescue-child') {
+  return {
+    parentSessionId: 'owner-a', parentTurnId: `${child}-turn`, agentId: child,
+    agentType: 'zcode-rescue', agentPath: `/root/${child}`,
+    workspace, parentPermissionMode: 'workspace-write',
+  };
+}
+
+async function exactBoundJob(input, child, options = {}) {
+  const executor = exactExecutor(input.workspace, child);
+  const reserved = await input.store.reserveFreshRescueJob({
+    workspace: input.workspace,
+    reservation: {
+      workspace: input.workspace, ownerSessionId: executor.parentSessionId,
+      ownerTurnId: executor.parentTurnId, command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    },
+    executor,
+  });
+  const claimed = await input.store.claimJobWorkerForExecution(input.workspace, reserved.job.id, {
+    childPid: 999_999, workerLeaseId: options.workerLeaseId ?? reserved.job.id,
+  });
+  let running = await input.store.transitionJob(input.workspace, claimed.id, ['queued'], 'running', {
+    startedAt: new Date().toISOString(), childPid: claimed.childPid,
+    workerLeaseId: claimed.workerLeaseId, zcodeSessionId: options.zcodeSessionId ?? `remote-${child}`,
+  });
+  running = await input.store.transitionJob(input.workspace, running.id, ['running'], 'running', {
+    inputId: `input-${child}`, startRevision: 7, beforeMessageIds: ['historical'],
+  });
+  return { ...reserved, executor, job: running };
+}
+
+async function bindingRecordBytes(input, child) {
+  const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
+  const paths = (await readdir(storage.directory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && /^rescue-binding-session-[a-f0-9]{64}\.json$/u.test(entry.name))
+    .map((entry) => join(storage.directory, entry.name));
+  for (const path of paths) {
+    const partition = JSON.parse(await readFile(path, 'utf8'));
+    const record = partition.records.find((candidate) => candidate.childAuthority?.childAgentId === child
+      || candidate.executorAgentId === child);
+    if (record) return Buffer.from(JSON.stringify(record));
+  }
+  throw new Error(`missing exact binding for ${child}`);
+}
+
+async function mutateBindingRecord(input, child, mutate) {
+  const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
+  const paths = (await readdir(storage.directory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && /^rescue-binding-session-[a-f0-9]{64}\.json$/u.test(entry.name))
+    .map((entry) => join(storage.directory, entry.name));
+  for (const path of paths) {
+    const partition = JSON.parse(await readFile(path, 'utf8'));
+    const index = partition.records.findIndex((candidate) => candidate.childAuthority?.childAgentId === child
+      || candidate.executorAgentId === child);
+    if (index < 0) continue;
+    partition.records[index] = mutate(partition.records[index]);
+    await writeFile(path, `${JSON.stringify(partition, null, 2)}\n`);
+    return;
+  }
+  throw new Error(`missing exact binding for ${child}`);
+}
+
+async function completedExactSibling(input) {
+  const sibling = await exactBoundJob(input, 'sibling-child');
+  await input.store.finishJob(input.workspace, sibling.job.id, ['running'], 'succeeded', { exitCode: 0 });
+  return bindingRecordBytes(input, 'sibling-child');
+}
+
 /** Lower-level executor tests receive the companion's already-claimed contract. @param {any} input */
 async function executeJob(input) {
   let job = input.job; let childPid = input.childPid; let workerLeaseId = input.workerLeaseId;
@@ -116,11 +185,16 @@ function executorClient(text = 'executor result') {
   };
 }
 
-async function settle(input, createClient, ownerSessionId = 'owner-a') {
+async function settleOutcome(input, createClient, ownerSessionId = 'owner-a') {
   return settleEndedOwnerWritableJob({
     store: input.store, dataRoot: input.dataRoot, workspace: input.workspace,
     ownerSessionId, lockTimeoutMs: 0, requestTimeoutMs: 250, createClient, signal: input.signal,
+    includeSettlementEvidence: true,
   });
+}
+
+async function settle(input, createClient, ownerSessionId = 'owner-a') {
+  return (await settleOutcome(input, createClient, ownerSessionId)).job;
 }
 
 test('SessionEnd cancels an unclaimed queued reservation and prevents a later claim', async () => {
@@ -203,6 +277,112 @@ test('SessionEnd cancels an active turn only after acknowledged stop and noncomp
     onStop: () => { stops += 1; }, onClose: () => { closes += 1; },
   }));
   assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled'); assert.equal(stops, 1); assert.equal(closes, 1);
+});
+
+test('SessionEnd closes only the exact active operation after acknowledged cancellation', async () => {
+  const input = await fixture();
+  const siblingBefore = await completedExactSibling(input);
+  const active = await exactBoundJob(input, 'active-child');
+
+  const settlement = await settleOutcome(input, async (current) => clientFor(current, {
+    reads: [
+      { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] },
+      { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] },
+    ],
+  }));
+
+  const stored = await input.store.readJob(input.workspace, active.job.id);
+  const closed = JSON.parse((await bindingRecordBytes(input, 'active-child')).toString('utf8'));
+  assert.deepEqual(settlement, { kind: 'confirmed-cancellation', job: stored });
+  assert.equal(stored.status, 'cancelled');
+  assert.equal(closed.operationId, active.binding.operationId);
+  assert.equal(closed.currentJobId, active.job.id);
+  assert.equal(closed.state, 'closed');
+  assert.equal(closed.closeReason, 'cancel');
+  assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
+});
+
+test('SessionEnd preserves a completed exact binding with no active current attempt', async () => {
+  const input = await fixture(); const siblingBefore = await completedExactSibling(input);
+  const completedBinding = await exactBoundJob(input, 'completed-child');
+  await input.store.finishJob(input.workspace, completedBinding.job.id, ['running'], 'succeeded', { exitCode: 0 });
+  const targetBefore = await bindingRecordBytes(input, 'completed-child');
+
+  const settlement = await settleOutcome(input, async () => { throw new Error('completed binding must not create a client'); });
+
+  assert.deepEqual(settlement, { kind: 'no-active-job', job: null });
+  assert.deepEqual(await bindingRecordBytes(input, 'completed-child'), targetBefore);
+  assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
+});
+
+for (const version of [1, 2]) test(`SessionEnd preserves an exact v${version} session-ended migration candidate`, async () => {
+  const input = await fixture(); const siblingBefore = await completedExactSibling(input);
+  const legacy = await exactBoundJob(input, `legacy-v${version}-child`);
+  await input.store.finishJob(input.workspace, legacy.job.id, ['running'], 'succeeded', { exitCode: 0 });
+  await input.store.closeRescueBindingForChild({
+    workspace: input.workspace, parentSessionId: 'owner-a', executorAgentId: legacy.executor.agentId,
+    operationId: legacy.binding.operationId, reason: 'session-ended',
+  });
+  await mutateBindingRecord(input, legacy.executor.agentId, (record) => {
+    const historical = { ...record, version };
+    delete historical.superseded;
+    if (version === 1) {
+      const authority = historical.childAuthority;
+      delete historical.childAuthority;
+      Object.assign(historical, {
+        executorAgentId: authority.childAgentId, executorAgentType: authority.childAgentType,
+        executorParentTurnId: authority.parentTurnId,
+        executorParentPermissionMode: authority.parentPermissionMode,
+      });
+    } else if (historical.childAuthority?.kind === 'subagent-start') {
+      historical.childAuthority = { ...historical.childAuthority };
+      delete historical.childAuthority.agentPath;
+    }
+    return historical;
+  });
+  const targetBefore = await bindingRecordBytes(input, legacy.executor.agentId);
+
+  const settlement = await settleOutcome(input, async () => { throw new Error('legacy candidate must not create a client'); });
+
+  assert.deepEqual(settlement, { kind: 'no-active-job', job: null });
+  assert.deepEqual(await bindingRecordBytes(input, legacy.executor.agentId), targetBefore);
+  assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
+});
+
+test('SessionEnd retains an unacknowledged exact active stop without claiming completion or resumability', async () => {
+  const input = await fixture(); const siblingBefore = await completedExactSibling(input);
+  const active = await exactBoundJob(input, 'unacknowledged-child');
+  const targetBefore = await bindingRecordBytes(input, active.executor.agentId);
+
+  const settlement = await settleOutcome(input, async (current) => clientFor(current, { stopError: new Error('stop not acknowledged') }));
+  const stored = await input.store.readJob(input.workspace, active.job.id);
+
+  assert.equal(settlement.kind, 'retained-writable-guard');
+  assert.deepEqual(settlement.job, stored);
+  assert.ok(['running', 'cancelling'].includes(stored.status));
+  assert.match(stored.lastCancelError, /stop not acknowledged/u);
+  assert.deepEqual(await bindingRecordBytes(input, active.executor.agentId), targetBefore);
+  assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
+});
+
+test('SessionEnd preserves the exact binding when completion races an acknowledged stop', async () => {
+  const input = await fixture(); const siblingBefore = await completedExactSibling(input);
+  const active = await exactBoundJob(input, 'racing-child');
+  const targetBefore = await bindingRecordBytes(input, active.executor.agentId);
+
+  const settlement = await settleOutcome(input, async (current) => clientFor(current, {
+    reads: [
+      { projection: { status: 'waiting' }, runtime: { stateRevision: 8 }, messages: [] },
+      { ...completed('race won'), messages: [{ info: { role: 'assistant', messageId: 'race-answer', parentMessageId: `input-${active.executor.agentId}` }, parts: [{ type: 'text', text: 'race won' }] }] },
+    ],
+  }));
+  const stored = await input.store.readJob(input.workspace, active.job.id);
+
+  assert.equal(settlement.kind, 'durable-completion');
+  assert.deepEqual(settlement.job, stored);
+  assert.equal(stored.status, 'succeeded');
+  assert.deepEqual(await bindingRecordBytes(input, active.executor.agentId), targetBefore);
+  assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
 });
 
 test('SessionEnd preserves a completion that races an acknowledged stop', async () => {
