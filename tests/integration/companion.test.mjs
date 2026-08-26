@@ -322,7 +322,7 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
   )).then((outcome) => { observedExecutionOutcome = outcome; return outcome; });
   /** @type {CompanionOutcome|undefined} */
   let settledOutcome;
-  let result; let primaryError; let durableJobId;
+  let result; let primaryError; let settlementError; let durableJobId;
   const throwIfExecutionSettled = () => {
     if (observedExecutionOutcome?.kind === 'rejected') throw observedExecutionOutcome.error;
     if (observedExecutionOutcome?.kind === 'fulfilled') throw new Error('Companion settled before progress was durably persisted.');
@@ -333,7 +333,7 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
       const timer = setTimeout(() => controller.abort(timeout), DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS); timer.unref?.();
       try { settledOutcome = await executionOutcome; } finally { clearTimeout(timer); }
     }
-    if (settledOutcome.kind === 'rejected') throw settledOutcome.error;
+    if (settledOutcome.kind === 'rejected') { settlementError = settledOutcome.error; throw settlementError; }
     return settledOutcome.value;
   };
   try {
@@ -357,12 +357,12 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
   } finally {
     try { await atomicWriteJson(gate, gateRecord('release')); } catch (error) { primaryError ??= error; }
     if (!settledOutcome) { try { await settleExecution(); } catch (error) { primaryError ??= error; } }
-    if ((/** @type {any} */ (primaryError))?.code === 'TEST_CHILD_TIMEOUT') {
+    if ((/** @type {any} */ (settlementError))?.code === 'TEST_CHILD_TIMEOUT') {
       try {
         const jobId = requireDurableProgressJobId(durableJobId);
         const store = createStateStore({ dataRoot: context.dataRoot });
         let job = await store.readJob(context.workspace, jobId);
-        if (job.status === 'running') job = await store.transitionJob(context.workspace, jobId, ['running'], 'cancelling');
+        if (job.status === 'running') job = await store.transitionJob(context.workspace, jobId, ['running'], 'cancelling', job.lastCancelError ? { lastCancelError: null } : {});
         if (job.status === 'cancelling') job = await store.finishJob(context.workspace, jobId, ['cancelling'], 'cancelled', { exitCode: null });
         assert.equal(job.status, 'cancelled', 'timed-out durable progress fixture must prove terminal cleanup');
       } catch (error) { primaryError = error; }
@@ -3124,6 +3124,15 @@ test('durable progress fixture bounds suppressed completion and reaps its compan
   assert.equal(Number.isSafeInteger(releasedAt), true);
   assert.ok(Date.now() - /** @type {number} */ (releasedAt) >= DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS, 'fixture timed out before its settlement deadline');
   assert.equal(Number.isSafeInteger(companionPid), true); assert.equal(processAlive(/** @type {number} */ (companionPid)), false);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled');
+});
+
+test('durable progress fixture terminalizes a timed-out job behind an earlier fixture failure', { timeout: DURABLE_PROGRESS_TEST_TIMEOUT_MS }, async () => {
+  const context = await fixture(); const injected = new Error('injected fixture failure before settlement timeout');
+  await assert.rejects(companionAfterDurableProgress(context, ['rescue', '--fresh', 'preserve earlier fixture failure'], {
+    FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE: '1', FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1', FAKE_ZCODE_STOP_ERROR_ONCE: '1',
+  }, 'Running command: echo prebind.', { onDurableProgress: () => { throw injected; } }), (error) => error === injected);
   const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
   assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled');
 });
