@@ -37,7 +37,7 @@ try {
       let ownerReleaseSafe = false;
       let ownerCleanupStage = 'settlement';
       try {
-        await settleEndedOwnerWritableJob({
+        const settlement = await settleEndedOwnerWritableJob({
           store,
           dataRoot,
           workspace,
@@ -45,6 +45,7 @@ try {
           requestTimeoutMs: existingBrokerRequestTimeoutMs,
           lockTimeoutMs: 0,
           signal: remoteController.signal,
+          includeSettlementEvidence: true,
           createClient: (job, derivedOwnerId) => createExistingManagedZCodeClient({
             dataRoot,
             workspace,
@@ -57,7 +58,7 @@ try {
         const ownedJobs = await store.listOwnedJobs(workspace, ownerSessionId);
         const retainedJobs = ownedJobs.filter((job) => job.command === 'rescue'
           && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
-        const retainedWritableGuard = retainedJobs.length > 0;
+        const retainedWritableGuard = settlement.kind === 'retained-writable-guard' || retainedJobs.length > 0;
         if (retainedWritableGuard) process.stderr.write(`ZCode SessionEnd retained writable guard: ${retainedJobs.map((job) => `${job.status}:${typeof job.workerLeaseId === 'string'}`).join(',')}\n`);
         ownerReleaseSafe = !retainedWritableGuard;
       } catch (error) {

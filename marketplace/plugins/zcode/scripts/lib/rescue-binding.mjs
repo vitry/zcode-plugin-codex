@@ -31,7 +31,7 @@ const ADOPTION_AUTHORITY_KEYS = [
   'agentPathDigest', 'authorityId', 'authorizingParentGenerationId', 'authorizingParentTurnId',
   'authorizingPermissionMode', 'childAgentId', 'childAgentType', 'executionWorkspace', 'kind', 'originWorkspace',
 ];
-const CLOSE_REASONS = new Set(['cancel', 'fresh', 'session-ended', 'invalidated']);
+const CLOSE_REASONS = new Set(['cancel', 'session-ended', 'invalidated']);
 const SUPERSEDED_KEYS = ['anchorJobId', 'closedAt', 'closeReason', 'currentJobId', 'operationId'];
 const EXECUTOR_AGENT_TYPES = new Set(['zcode-rescue', 'default']);
 
@@ -83,19 +83,6 @@ export function createRescueBinding(input) {
     closeReason: null,
   };
   return modernRecord ? { ...record, superseded: validateSuperseded(input.superseded ?? []) } : record;
-}
-
-/** @param {any} record @param {Date|number|string} [now] */
-export function rescueBindingFreshSuperseded(record, now) {
-  const valid = validateRescueBinding(record);
-  if (valid.state !== 'active' && !(valid.state === 'closed' && valid.closeReason === 'session-ended')) throw staleBinding();
-  const closedAt = timestamp(now);
-  if (Date.parse(closedAt) < Date.parse(valid.updatedAt)) throw invalidBinding();
-  const prior = valid.version === 3 ? valid.superseded : [];
-  return validateSuperseded([...prior, {
-    operationId: valid.operationId, anchorJobId: valid.anchorJobId, currentJobId: valid.currentJobId,
-    closedAt, closeReason: 'fresh',
-  }]);
 }
 
 /** @param {any} record @param {{operationId:string,reason:string,now?:Date|number|string}} input */
