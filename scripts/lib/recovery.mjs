@@ -171,6 +171,8 @@ async function reconcileOrphan(input, job) {
   let jobLog;
   if (job.status === 'queued') return failJob(input, job, recoveryError('Queued worker reservation is orphaned.'));
   if (typeof job.zcodeSessionId !== 'string') return failJob(input, job, recoveryError('Worker exited before a remote session was accepted.'));
+  input = { ...input, boundStopGuard: await revalidateBoundRescueStop(input, job) };
+  if (input.boundStopGuard?.kind === 'stale') return input.boundStopGuard.job;
   const ownerId = ownerIdForSession(job.ownerSessionId);
   try {
     await (input.reconcileOwnership ?? reconcileBrokerOwnership)({ dataRoot: input.dataRoot, workspace: input.workspace, ownerId, ownedSessionIds: [job.zcodeSessionId] });
@@ -297,6 +299,8 @@ async function cancelledConflictWinner(input, job, error) {
 /** @param {any} input @param {any} job */
 async function settleEndedRemoteJob(input, job) {
   let client;
+  const observedStop = await revalidateBoundRescueStop(input, job);
+  if (observedStop?.kind === 'stale') return classifyEndedSettlement(observedStop.job);
   const jobLog = await openRecoveryJobLog(input, job);
   try {
     try { client = await input.createClient(job, ownerIdForSession(job.ownerSessionId)); throwIfRecoveryInterrupted(input); }
@@ -315,6 +319,8 @@ async function settleEndedRemoteJob(input, job) {
     const completed = await completeEndedJob(input, job, snapshot, jobLog);
     if (completed) return classifyEndedSettlement(completed);
     if (!REMOTE_ACTIVE.has(snapshot?.projection?.status)) return classifyEndedSettlement(await input.store.readJob(input.workspace, job.id));
+    const revalidated = await revalidateBoundRescueStop(input, job, observedStop?.guard);
+    if (revalidated?.kind === 'stale') return classifyEndedSettlement(revalidated.job);
     try { await client.stopSession(job.zcodeSessionId); throwIfRecoveryInterrupted(input); }
     catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(await retainAfterStopFailure(input, job, error)); }
     try { snapshot = await client.readSession(job.zcodeSessionId); }
@@ -387,7 +393,8 @@ async function openRecoveryJobLog(input, job) {
 }
 /** @param {any} input @param {any} job @param {any} client @param {unknown} error @param {any} jobLog */
 async function stopThenSettle(input, job, client, error, jobLog) {
-  const stopped = await stopRemote(job, client);
+  const stopped = await stopRemote(input, job, client);
+  if (stopped.stale) return stopped.job;
   throwIfRecoveryInterrupted(input, stopped.ok ? undefined : stopped.error);
   if (!stopped.ok) return input.intent === 'scavenge' && controlChannelUnavailable(stopped.error)
     ? failJob(input, job, establishedUnavailableOrphanError(stopped.error))
@@ -400,10 +407,22 @@ async function stopThenSettle(input, job, client, error, jobLog) {
     && ['completed', 'idle'].includes(snapshot?.projection?.status)) return completeJob(input, job, snapshot, job.status === 'cancelling' ? 'cancel' : 'fail', jobLog);
   return job.status === 'cancelling' ? cancelJob(input, job) : failJob(input, job, error);
 }
-/** @param {any} job @param {any} client */
-async function stopRemote(job, client) {
+/** @param {any} input @param {any} job @param {any} client */
+async function stopRemote(input, job, client) {
+  const revalidated = await revalidateBoundRescueStop(input, job, input.boundStopGuard?.guard);
+  if (revalidated?.kind === 'stale') return { ok: false, stale: true, job: revalidated.job };
   try { await client.stopSession(job.zcodeSessionId); return { ok: true }; }
   catch (error) { return { ok: false, error }; }
+}
+
+/** @param {any} input @param {any} job @param {any} [expected] */
+async function revalidateBoundRescueStop(input, job, expected) {
+  if (job.command !== 'rescue' || job.readOnly !== false || job.rescueReservationKind !== 'bound') return null;
+  if (typeof input.store.revalidateBoundRescueStop !== 'function') return { kind: 'stale', job: await input.store.readJob(input.workspace, job.id) };
+  return input.store.revalidateBoundRescueStop({ workspace: input.workspace, jobId: job.id,
+    ownerSessionId: job.ownerSessionId, status: job.status, zcodeSessionId: job.zcodeSessionId,
+    ...(job.workerLeaseId === undefined ? {} : { workerLeaseId: job.workerLeaseId }),
+    ...(expected === undefined ? {} : { expected }) });
 }
 /** @param {any} input @param {any} job @param {unknown} error */
 async function retainAfterStopFailure(input, job, error) {

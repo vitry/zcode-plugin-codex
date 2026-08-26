@@ -213,6 +213,35 @@ export function createStateStore(options) {
       });
     },
 
+    /** Read or revalidate one exact bound Rescue stop target under the shared State lock.
+     * @param {{workspace:string,jobId:string,ownerSessionId:string,status:'running'|'cancelling',zcodeSessionId:string,workerLeaseId?:string,expected?:any}} input */
+    async revalidateBoundRescueStop(input) {
+      if (!isPlainJsonObject(input) || !isNonEmptyString(input.workspace) || !isDigest(input.jobId)
+        || !isBoundedOwnerSessionId(input.ownerSessionId) || !['running', 'cancelling'].includes(input.status)
+        || !isSafeIdentifier(input.zcodeSessionId)
+        || input.workerLeaseId !== undefined && !isDigest(input.workerLeaseId)) throw invalidRescueBinding();
+      const storage = await jobStorage(dataRoot, input.workspace);
+      return withFileLock(storage.lockPath, async () => {
+        const job = await readExactBindingJob(storage, input.jobId);
+        const sameTarget = job.id === input.jobId && job.ownerSessionId === input.ownerSessionId
+          && job.command === 'rescue' && job.readOnly === false && job.rescueReservationKind === 'bound'
+          && job.status === input.status && job.zcodeSessionId === input.zcodeSessionId
+          && job.workerLeaseId === input.workerLeaseId;
+        if (!sameTarget) return { kind: 'stale', job: structuredClone(job) };
+        const snapshot = await readBindingPartitionSnapshot(storage, input.ownerSessionId, true);
+        const matches = [...snapshot.records.values()].filter((record) => record.currentJobId === job.id);
+        if (matches.length !== 1) return { kind: 'stale', job: structuredClone(job) };
+        const binding = matches[0]; const guard = {
+          operationId: binding.operationId, bindingKey: binding.key, bindingUpdatedAt: binding.updatedAt,
+          currentJobId: binding.currentJobId, workerLeaseId: job.workerLeaseId ?? null,
+        };
+        if (input.expected !== undefined && (!isPlainJsonObject(input.expected)
+          || Object.keys(input.expected).sort().join(',') !== 'bindingKey,bindingUpdatedAt,currentJobId,operationId,workerLeaseId'
+          || JSON.stringify(input.expected) !== JSON.stringify(guard))) return { kind: 'stale', job: structuredClone(job) };
+        return { kind: 'current', job: structuredClone(job), guard };
+      });
+    },
+
     /** @param {{workspace:string,reservation:JobReservation,executor?:any,authority?:any,expectedOperationId?:string,expectedCurrentJobId?:string,expectedAnchorJobId?:string}} input */
     async reserveFreshRescueJob(input) {
       validateRescueReservationInput(input);

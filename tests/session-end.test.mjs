@@ -104,6 +104,23 @@ async function exactBoundJob(input, child, options = {}) {
   return { ...reserved, executor, job: running };
 }
 
+async function advanceExactBinding(input, active, suffix) {
+  const winner = await input.store.finishJob(input.workspace, active.job.id, [active.job.status, 'cancelling'], 'succeeded', {
+    resultArtifact: `results/${active.job.id}-${suffix}.md`, exitCode: 0,
+  });
+  const continuation = await input.store.reserveBoundRescueContinuation({
+    workspace: input.workspace,
+    reservation: {
+      workspace: input.workspace, ownerSessionId: active.executor.parentSessionId,
+      ownerTurnId: `${active.executor.parentTurnId}-${suffix}`, command: 'rescue', readOnly: false,
+      permissionSnapshot: { permissionMode: 'workspace-write' },
+    },
+    executor: active.executor, operationId: active.binding.operationId,
+    expectedCurrentJobId: active.job.id, expectedAnchorJobId: active.binding.anchorJobId,
+  });
+  return { winner, continuation };
+}
+
 async function bindingRecordBytes(input, child) {
   const storage = await resolveWorkspaceStorage({ dataRoot: input.dataRoot, workspace: input.workspace });
   const paths = (await readdir(storage.directory, { withFileTypes: true }))
@@ -277,6 +294,44 @@ test('SessionEnd cancels an active turn only after acknowledged stop and noncomp
     onStop: () => { stops += 1; }, onClose: () => { closes += 1; },
   }));
   assert.equal((await input.store.readJob(input.workspace, value.id)).status, 'cancelled'); assert.equal(stops, 1); assert.equal(closes, 1);
+});
+
+test('orphan recovery does not stop a bound session after a continuation winner advances the current job', async () => {
+  const input = await fixture(); const active = await exactBoundJob(input, 'recovery-stale-child');
+  await input.store.transitionJob(input.workspace, active.job.id, ['running'], 'cancelling');
+  active.job = await input.store.readJob(input.workspace, active.job.id);
+  let stops = 0; let advanced;
+  const recovered = await reconcileOwnedJobs({
+    store: input.store, dataRoot: input.dataRoot, workspace: input.workspace, ownerSessionId: active.job.ownerSessionId,
+    reconcileOwnership: async () => {},
+    createClient: async () => ({
+      listSessions: async () => ({ sessions: [{ sessionId: active.job.zcodeSessionId }] }),
+      readSession: async () => {
+        advanced ??= await advanceExactBinding(input, active, 'recovery-winner');
+        return { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] };
+      },
+      stopSession: async () => { stops += 1; }, close: async () => {},
+    }),
+  });
+  const binding = JSON.parse((await bindingRecordBytes(input, active.executor.agentId)).toString('utf8'));
+  assert.equal(stops, 0); assert.equal(recovered.at(-1).id, active.job.id); assert.equal(recovered.at(-1).status, 'succeeded');
+  assert.equal(binding.state, 'active'); assert.equal(binding.operationId, active.binding.operationId); assert.equal(binding.currentJobId, advanced.continuation.job.id);
+  assert.equal((await input.store.readJob(input.workspace, advanced.continuation.job.id)).status, 'queued');
+});
+
+test('SessionEnd does not stop a bound session after a continuation winner advances the current job', async () => {
+  const input = await fixture(); const active = await exactBoundJob(input, 'session-end-stale-child'); let stops = 0; let advanced;
+  const settlement = await settleOutcome(input, async () => ({
+    readSession: async () => {
+      advanced ??= await advanceExactBinding(input, active, 'session-end-winner');
+      return { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] };
+    },
+    stopSession: async () => { stops += 1; }, close: async () => {},
+  }));
+  const binding = JSON.parse((await bindingRecordBytes(input, active.executor.agentId)).toString('utf8'));
+  assert.equal(stops, 0); assert.equal(settlement.kind, 'durable-completion'); assert.deepEqual(settlement.job, advanced.winner);
+  assert.equal(binding.state, 'active'); assert.equal(binding.operationId, active.binding.operationId); assert.equal(binding.currentJobId, advanced.continuation.job.id);
+  assert.equal((await input.store.readJob(input.workspace, advanced.continuation.job.id)).status, 'queued');
 });
 
 test('SessionEnd closes only the exact active operation after acknowledged cancellation', async () => {
