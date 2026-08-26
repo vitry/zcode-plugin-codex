@@ -51,7 +51,7 @@ export async function planRescueActivation(input) {
   const hostChildren = validateChildren(children, input.caller.sessionId);
   const resume = input.envelope.options?.resume === 'resume';
   if (input.envelope.options?.resume === 'fresh') return spawnPlan(hostChildren);
-  const provenCandidates = []; const persistedCandidates = []; let ineligiblePersisted = false;
+  const provenCandidates = []; const persistedCandidates = []; let ineligibleCandidate = false;
   for (const host of hostChildren) {
     const hostClass = classifyHost(host);
     if (hostClass === 'occupancy') continue;
@@ -61,7 +61,7 @@ export async function planRescueActivation(input) {
       if (/** @type {any} */ (error)?.code === 'EXECUTOR_IDENTITY_NOT_FOUND') {
         const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, host, executionWorkspace });
         if (binding.kind === 'missing') continue;
-        if (binding.kind === 'ineligible') { ineligiblePersisted = true; continue; }
+        if (binding.kind === 'ineligible') { ineligibleCandidate = true; continue; }
         if (host.status.type !== 'notLoaded') throw plannerError('EXECUTOR_STATE_MISMATCH');
         persistedCandidates.push({ kind: /** @type {'persisted'} */ ('persisted'), binding: validatePersistedBinding(binding.binding, {
           caller: input.caller, executionWorkspace, host, originWorkspace, requirePermissionMatch: true,
@@ -78,6 +78,7 @@ export async function planRescueActivation(input) {
   const usable = [];
   for (const candidate of provenCandidates) {
     const binding = await resolveExactBinding(resolveBinding, { caller: input.caller, envelope: input.envelope, executor: candidate.executor, host: candidate.host, executionWorkspace });
+    if (binding.kind === 'ineligible') { ineligibleCandidate = true; continue; }
     if (binding.kind === 'bound') usable.push({ ...candidate, resolvedBinding: binding });
   }
   for (const candidate of persistedCandidates) usable.push(candidate);
@@ -95,7 +96,7 @@ export async function planRescueActivation(input) {
     }
     return { activation, directive: validateRescueRouteDirective({ version: 2, action: 'followup', target: selected.host.agentPath, assignment }) };
   }
-  if (resume || ineligiblePersisted) throw plannerError('RESCUE_BINDING_INVALID');
+  if (resume || ineligibleCandidate) throw plannerError('RESCUE_BINDING_INVALID');
   return spawnPlan(hostChildren);
 }
 

@@ -508,6 +508,15 @@ test('no explicit choice ignores stopped proof without an exact binding and sele
   });
 });
 
+test('no explicit choice fails closed for a sole stopped child with an ineligible binding', async () => {
+  const input = await context(); input.envelope.options = {};
+  const host = child(input.caller.workspace);
+  const values = new Map([[host.id, { executor: executor(input.caller.workspace), executionWorkspace: input.caller.workspace }]]);
+  const bindings = new Map([[host.id, { kind: 'ineligible' }]]);
+  await assert.rejects(planRescueActivation({ ...input, ...adapters([host], values, bindings) }),
+    { code: 'RESCUE_BINDING_INVALID' });
+});
+
 test('incomplete discovery fails closed and redacts adapter payloads', async () => {
   const input = await context();
   for (const listChildren of [
