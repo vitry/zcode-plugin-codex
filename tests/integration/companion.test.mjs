@@ -278,6 +278,39 @@ async function companion(context, args, extraEnv = {}, authorization = { callerC
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
+/** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} extraEnv @param {string} expectedMessage */
+async function companionAfterDurableProgress(context, args, extraEnv, expectedMessage) {
+  const nonce = randomBytes(32).toString('hex');
+  const gate = join(context.directory, `${nonce}-progress-dispatch-gate.json`);
+  const gateRecord = (/** @type {'held'|'release'} */ state) => ({ version: 1, nonce, state });
+  await atomicWriteJson(gate, gateRecord('held'));
+  const execution = companion(context, args, {
+    ...extraEnv,
+    FAKE_ZCODE_PROGRESS_DISPATCH_GATE: gate,
+    FAKE_ZCODE_PROGRESS_DISPATCH_GATE_NONCE: nonce,
+  });
+  let result;
+  try {
+    const storage = await resolveWorkspaceStorage(context);
+    await waitFor(async () => {
+      const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
+      for (const name of names) {
+        if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
+        const job = await readFile(join(storage.directory, 'jobs', name), 'utf8').then(JSON.parse).catch(() => null);
+        if (job?.progressPreview?.includes(expectedMessage)) return true;
+      }
+      return false;
+    }, `progress was not durably persisted before completion: ${expectedMessage}`);
+    await atomicWriteJson(gate, gateRecord('release'));
+    result = await execution;
+  } finally {
+    await atomicWriteJson(gate, gateRecord('release')).catch(() => {});
+    if (!result) await execution.catch(() => {});
+    await unlink(gate).catch(() => {});
+  }
+  return result;
+}
+
 /** @param {any} context @param {string[]} args */
 async function companionWithArchiveHandshake(context, args) {
   const nonce = randomBytes(32).toString('hex');
@@ -319,12 +352,12 @@ async function companionWithArchiveHandshake(context, args) {
   return result;
 }
 
-/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'online',acceptedOnline:number,rejectedSequence:number},waitForDurableProbe?:typeof waitForDurableConversationProbe,waitForDurableTerminal?:(context:any,owner:any)=>Promise<any>,writeGateFile?:(path:string,data:string,options:any)=>Promise<void>,runExecution?:(...args:any[])=>PromiseLike<any>}} [options] */
+/** @param {any} context @param {'initial-only'|'zero-online'|'rejection-burst'|'sequence-gap'|'observed-traffic'|'exclusive-ranges'} scenario @param {{heartbeat?:boolean,env?:NodeJS.ProcessEnv,completionAfterProgressLine?:string,completionAfterProbe?:{state:'probing'|'online'|'snapshot-fallback'|'lifecycle-only',acceptedOnline?:number,rejectedSequence?:number},waitForDurableProbe?:typeof waitForDurableConversationProbe,waitForDurableTerminal?:(context:any,owner:any)=>Promise<any>,writeGateFile?:(path:string,data:string,options:any)=>Promise<void>,runExecution?:(...args:any[])=>PromiseLike<any>}} [options] */
 async function deterministicConversationScenario(context, scenario, options = {}) {
   const record = join(context.directory, `${scenario}-conversation-requests.jsonl`);
   const owner = caller(`conversation-${scenario}`); const lines = /** @type {string[]} */ ([]);
   const heartbeatDiagnostic = '[zcode] ZCode conversation frames were unavailable; using bounded session progress.\n';
-  const completionAfterProgressLine = options.completionAfterProgressLine ?? (options.heartbeat ? heartbeatDiagnostic : undefined);
+  const completionAfterProgressLine = options.completionAfterProgressLine ?? (options.heartbeat && !options.completionAfterProbe ? heartbeatDiagnostic : undefined);
   const gateNonce = completionAfterProgressLine || options.completionAfterProbe ? randomBytes(32).toString('hex') : undefined;
   const gatePath = gateNonce ? join(context.directory, `${scenario}-${gateNonce}-progress-dispatch-gate.json`) : undefined;
   let gateTimedOut = false; let observedExpectedLine = false; let gateDeadline;
@@ -427,7 +460,7 @@ async function deterministicConversationScenario(context, scenario, options = {}
   return { lines, output, requests, status, stored };
 }
 
-/** @param {any} context @param {string} record @param {string} ownerSessionId @param {{state:'online',acceptedOnline:number,rejectedSequence:number}} expected */
+/** @param {any} context @param {string} record @param {string} ownerSessionId @param {{state:'probing'|'online'|'snapshot-fallback'|'lifecycle-only',acceptedOnline?:number,rejectedSequence?:number}} expected */
 async function waitForDurableConversationProbe(context, record, ownerSessionId, expected) {
   const storage = await resolveWorkspaceStorage(context);
   await waitFor(async () => {
@@ -438,8 +471,10 @@ async function waitForDurableConversationProbe(context, record, ownerSessionId, 
       if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
       const job = await readFile(join(storage.directory, 'jobs', name), 'utf8').then(JSON.parse).catch(() => null);
       if (job?.ownerSessionId !== ownerSessionId || typeof job.inputId !== 'string' || !Number.isSafeInteger(job.startRevision)) continue;
-      if (job.progressProbe?.state === expected.state && job.progressProbe.acceptedOnline === expected.acceptedOnline
-        && job.progressProbe.rejected?.sequence === expected.rejectedSequence) return true;
+      if (job.progressProbe?.state !== expected.state) continue;
+      if (expected.acceptedOnline !== undefined && job.progressProbe.acceptedOnline !== expected.acceptedOnline) continue;
+      if (expected.rejectedSequence !== undefined && job.progressProbe.rejected?.sequence !== expected.rejectedSequence) continue;
+      return true;
     }
     return false;
   }, `conversation probe for ${ownerSessionId} was not durably persisted before completion`);
@@ -1812,7 +1847,8 @@ test('exact notLoaded task_2 migrates without SubagentStop provenance and resume
   assert.deepEqual(prepared, { type: 'prepared', command: 'rescue',
     route: { version: 2, action: 'followup', target: exactPath, assignment: 'zcode-rescue' } });
   const resumed = await runDirectInvocation(['invoke-prepared', 'rescue'], {
-    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record,
+      FAKE_ZCODE_WORKSPACE: persisted.workspace },
     dependencies: { readCodexThreadSpawnChildIdentity: async () => exact },
   });
   assert.equal(resumed.job.status, 'succeeded'); assert.equal(resumed.job.zcodeSessionId, originalSession);
@@ -1839,7 +1875,8 @@ test('active-v3 exact notLoaded task_2 resumes without SubagentStop provenance',
     dependencies: { planRescueActivation: (/** @type {any} */ input) => planRescueActivation({ ...input, listChildren: async () => [exact] }) },
   });
   const resumed = await runDirectInvocation(['invoke-prepared', 'rescue'], {
-    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record },
+    cwd: context.workspace, env: { ...context.env, CODEX_THREAD_ID: childId, FAKE_ZCODE_RECORD: record,
+      FAKE_ZCODE_WORKSPACE: persisted.workspace },
     dependencies: { readCodexThreadSpawnChildIdentity: async () => exact },
   });
   assert.equal(resumed.job.status, 'succeeded'); assert.equal(resumed.job.zcodeSessionId, originalSession);
@@ -2968,7 +3005,9 @@ test('later accepted online recovery stops snapshot reads and discards a delayed
 });
 
 test('accepted zero-event online conversation frame remains eligible for deterministic heartbeat fallback', async () => {
-  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'zero-online', { heartbeat: true });
+  const context = await fixture(); const scenario = await deterministicConversationScenario(context, 'zero-online', {
+    heartbeat: true, completionAfterProbe: { state: 'snapshot-fallback', acceptedOnline: 1 },
+  });
   assert.equal(scenario.output.result, 'done'); assert.equal(scenario.output.job.status, 'succeeded'); assert.equal(scenario.output.job.exitCode, 0);
   assert.equal(scenario.stored.progressProbe.state, 'snapshot-fallback'); assert.equal(scenario.stored.progressProbe.acceptedOnline, 1);
   assert.equal(scenario.lines.filter((line) => /ZCode conversation frames were unavailable/.test(line)).length, 1);
@@ -3001,11 +3040,14 @@ test('one sequence gap restores continuity without treating an empty online fram
 
 test('conversation online progress sent before the subscribe response is buffered until the subscription binds', async () => {
   const context = await fixture();
-  const result = await companion(context, ['rescue', '--fresh', 'prebind conversation progress'], { FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE: '1' });
+  const progress = 'Running command: echo prebind.';
+  const result = await companionAfterDurableProgress(context, ['rescue', '--fresh', 'prebind conversation progress'], {
+    FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE: '1',
+  }, progress);
   assert.equal(result.code, 0, `${result.stderr}${result.stdout}`); assert.equal(result.json.result, 'done');
   assert.match(result.stderr, /Running command: echo prebind\./);
   const status = await companion(context, ['status', result.json.job.id]);
-  assert.match(JSON.stringify(status.json.job.progressPreview), /Running command: echo prebind/);
+  assert.equal(status.json.job.progressPreview.includes(progress), true);
 });
 
 test('conversation subscribe failure is observational, durable, and preserves the exact result', async () => {
