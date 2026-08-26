@@ -365,6 +365,82 @@ test('SessionEnd retains an unacknowledged exact active stop without claiming co
   assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
 });
 
+for (const code of ['ZCODE_DISCONNECTED', 'ZCODE_BROKER_PROTOCOL_UNAVAILABLE']) test(`SessionEnd retains the exact writable guard when stop acknowledgement is unknown after ${code}`, async () => {
+  const input = await fixture(); const siblingBefore = await completedExactSibling(input);
+  const active = await exactBoundJob(input, `${code.toLowerCase()}-child`);
+  const targetBefore = await bindingRecordBytes(input, active.executor.agentId);
+
+  const settlement = await settleOutcome(input, async (current) => clientFor(current, {
+    stopError: new PluginError(code, `private ${code} stop uncertainty`, { category: 'runtime', remedy: 'retry' }),
+  }));
+  const stored = await input.store.readJob(input.workspace, active.job.id);
+
+  assert.equal(settlement.kind, 'retained-writable-guard');
+  assert.deepEqual(settlement.job, stored);
+  assert.ok(['running', 'cancelling'].includes(stored.status));
+  assert.match(stored.lastCancelError, new RegExp(code, 'iu'));
+  assert.deepEqual(await bindingRecordBytes(input, active.executor.agentId), targetBefore);
+  assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
+});
+
+test('SessionEnd cancellation evidence follows a failed CAS winner', async () => {
+  const input = await fixture(); const siblingBefore = await completedExactSibling(input);
+  const active = await exactBoundJob(input, 'cancel-failed-winner-child'); let raced = false;
+  const wrapped = {
+    ...input.store,
+    finishJob: async (workspace, jobId, expected, next, patch) => {
+      if (!raced && next === 'cancelled') {
+        raced = true;
+        await input.store.finishJob(workspace, jobId, ['cancelling'], 'failed', {
+          error: { message: 'executor failed before cancellation CAS' }, exitCode: 1,
+        });
+        throw new PluginError('JOB_TERMINAL', 'failed winner', { category: 'state', remedy: 'inspect' });
+      }
+      return input.store.finishJob(workspace, jobId, expected, next, patch);
+    },
+  };
+
+  const settlement = await settleOutcome({ ...input, store: wrapped }, async (current) => clientFor(current, {
+    reads: [
+      { projection: { status: 'running' }, runtime: { stateRevision: 8 }, messages: [] },
+      { projection: { status: 'paused' }, runtime: { stateRevision: 8 }, messages: [] },
+    ],
+  }));
+  const stored = await input.store.readJob(input.workspace, active.job.id);
+
+  assert.equal(settlement.kind, 'terminal');
+  assert.deepEqual(settlement.job, stored);
+  assert.equal(stored.status, 'failed');
+  assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
+});
+
+test('SessionEnd completion evidence follows a cancelled CAS winner', async () => {
+  const input = await fixture(); const siblingBefore = await completedExactSibling(input);
+  const active = await exactBoundJob(input, 'completion-cancelled-winner-child'); let raced = false;
+  const wrapped = {
+    ...input.store,
+    finishJob: async (workspace, jobId, expected, next, patch) => {
+      if (!raced && next === 'succeeded') {
+        raced = true;
+        await input.store.transitionJob(workspace, jobId, ['running'], 'cancelling');
+        await input.store.finishJob(workspace, jobId, ['cancelling'], 'cancelled', { exitCode: null });
+        throw new PluginError('JOB_TERMINAL', 'cancelled winner', { category: 'state', remedy: 'inspect' });
+      }
+      return input.store.finishJob(workspace, jobId, expected, next, patch);
+    },
+  };
+
+  const settlement = await settleOutcome({ ...input, store: wrapped }, async (current) => clientFor(current, {
+    reads: [{ ...completed('completion lost CAS'), messages: [{ info: { role: 'assistant', messageId: 'cas-answer', parentMessageId: `input-${active.executor.agentId}` }, parts: [{ type: 'text', text: 'completion lost CAS' }] }] }],
+  }));
+  const stored = await input.store.readJob(input.workspace, active.job.id);
+
+  assert.equal(settlement.kind, 'confirmed-cancellation');
+  assert.deepEqual(settlement.job, stored);
+  assert.equal(stored.status, 'cancelled');
+  assert.deepEqual(await bindingRecordBytes(input, 'sibling-child'), siblingBefore);
+});
+
 test('SessionEnd preserves the exact binding when completion races an acknowledged stop', async () => {
   const input = await fixture(); const siblingBefore = await completedExactSibling(input);
   const active = await exactBoundJob(input, 'racing-child');

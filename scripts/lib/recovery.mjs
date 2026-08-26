@@ -98,7 +98,7 @@ export async function settleEndedOwnerWritableJob(input) {
       const current = await input.store.readJob(input.workspace, selected.id);
       if (current.id !== selected.id || current.ownerSessionId !== input.ownerSessionId
         || current.command !== 'rescue' || current.readOnly !== false || TERMINAL.has(current.status)) return classifyEndedSettlement(current);
-      if (current.status === 'queued') return { kind: 'local-cancellation', job: await cancelQueuedJob(input, current) };
+      if (current.status === 'queued') return classifyEndedSettlement(await cancelQueuedJob(input, current));
       if (!['running', 'cancelling'].includes(current.status) || typeof current.zcodeSessionId !== 'string') return { kind: 'retained-writable-guard', job: current };
       return settleEndedRemoteJob(input, current);
     });
@@ -114,7 +114,7 @@ export async function settleEndedOwnerWritableJob(input) {
 /** @param {any} job */
 function classifyEndedSettlement(job) {
   if (job?.status === 'succeeded' && typeof job.resultArtifact === 'string') return { kind: 'durable-completion', job };
-  if (job?.status === 'cancelled') return { kind: 'local-cancellation', job };
+  if (job?.status === 'cancelled') return { kind: 'confirmed-cancellation', job };
   return { kind: TERMINAL.has(job?.status) ? 'terminal' : 'retained-writable-guard', job };
 }
 
@@ -313,16 +313,15 @@ async function settleEndedRemoteJob(input, job) {
     catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(controlChannelUnavailable(error) ? await failEndedUnavailableJob(input, job, establishedUnavailableOrphanError(error)) : await retainAfterStopFailure(input, job, error)); }
     throwIfRecoveryInterrupted(input);
     const completed = await completeEndedJob(input, job, snapshot, jobLog);
-    if (completed) return { kind: 'durable-completion', job: completed };
-    if (!REMOTE_ACTIVE.has(snapshot?.projection?.status)) return { kind: 'retained-writable-guard', job: await input.store.readJob(input.workspace, job.id) };
+    if (completed) return classifyEndedSettlement(completed);
+    if (!REMOTE_ACTIVE.has(snapshot?.projection?.status)) return classifyEndedSettlement(await input.store.readJob(input.workspace, job.id));
     try { await client.stopSession(job.zcodeSessionId); throwIfRecoveryInterrupted(input); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(controlChannelUnavailable(error) ? await failEndedUnavailableJob(input, job, establishedUnavailableOrphanError(error)) : await retainAfterStopFailure(input, job, error)); }
+    catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(await retainAfterStopFailure(input, job, error)); }
     try { snapshot = await client.readSession(job.zcodeSessionId); }
-    catch (error) { throwIfRecoveryInterrupted(input, error); return { kind: 'confirmed-cancellation', job: await cancelJob(input, job) }; }
+    catch (error) { throwIfRecoveryInterrupted(input, error); return classifyEndedSettlement(await cancelJob(input, job)); }
     throwIfRecoveryInterrupted(input);
     const racedCompletion = await completeEndedJob(input, job, snapshot, jobLog);
-    return racedCompletion ? { kind: 'durable-completion', job: racedCompletion }
-      : { kind: 'confirmed-cancellation', job: await cancelJob(input, job) };
+    return classifyEndedSettlement(racedCompletion ?? await cancelJob(input, job));
   } catch (error) {
     throwIfRecoveryInterrupted(input, error);
     if (error instanceof SuccessfulResultFinalizationError) throw error;

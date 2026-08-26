@@ -53,17 +53,12 @@ try {
             requestTimeoutMs: existingBrokerRequestTimeoutMs,
           }),
         });
-        if (settlement.kind === 'confirmed-cancellation') {
-          await store.closeRescueBindingForCancelledJob({
-            workspace, parentSessionId: ownerSessionId, jobId: settlement.job.id,
-          });
-        }
         if (remoteController.signal.aborted) throw remoteController.signal.reason;
         ownerCleanupStage = 'retained-writable-guard';
         const ownedJobs = await store.listOwnedJobs(workspace, ownerSessionId);
         const retainedJobs = ownedJobs.filter((job) => job.command === 'rescue'
           && job.readOnly === false && !['succeeded', 'failed', 'cancelled'].includes(job.status));
-        const retainedWritableGuard = retainedJobs.length > 0;
+        const retainedWritableGuard = settlement.kind === 'retained-writable-guard' || retainedJobs.length > 0;
         if (retainedWritableGuard) process.stderr.write(`ZCode SessionEnd retained writable guard: ${retainedJobs.map((job) => `${job.status}:${typeof job.workerLeaseId === 'string'}`).join(',')}\n`);
         ownerReleaseSafe = !retainedWritableGuard;
       } catch (error) {
