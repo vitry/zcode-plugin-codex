@@ -453,6 +453,32 @@ for (const stage of ['queued-interruption', 'running-failure']) test(`review exe
   assert.deepEqual(stopGuards[1].input.expected, stopGuards[0].result.guard);
 });
 
+test('review executor closes its acquired client when the initial bound stop guard fails without mutating durable state', async () => {
+  const { root, workspace, store } = await setup();
+  const executor = { parentSessionId: 'session-a', parentTurnId: 'parent-turn', agentId: 'review-initial-guard-child', agentType: 'zcode-rescue', agentPath: '/root/review-initial-guard-child', workspace, parentPermissionMode: 'workspace-write' };
+  const active = await store.reserveFreshRescueJob({ workspace, reservation: { workspace, ...reservation }, executor });
+  const workerLeaseId = 'e'.repeat(64); const claimed = await store.claimJobWorkerForExecution(workspace, active.job.id, { childPid: 999_999, workerLeaseId });
+  const beforeJob = await store.readJob(workspace, claimed.id);
+  const beforeBinding = await store.resolveRescueBinding({ workspace, parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId });
+  const primary = new PluginError('RESCUE_BINDING_INVALID', 'The private Rescue operation binding is invalid.', {
+    category: 'authorization', remedy: 'Start a fresh Rescue operation from the active parent turn.',
+  });
+  const wrapped = { ...store, revalidateBoundRescueStop: async () => { throw primary; } };
+  let creates = 0; let stops = 0; let closes = 0;
+  const client = {
+    createSession: async () => { creates += 1; throw new Error('create must not run'); },
+    stopSession: async () => { stops += 1; }, close: async () => { closes += 1; throw new Error('close is advisory'); },
+  };
+  const caught = await executeJobProduction({ job: claimed, workspace, dataRoot: join(root, 'data'), store: wrapped, client, task: 'task', childPid: 999_999, workerLeaseId }).catch((error) => error);
+  assert.equal(caught, primary);
+  assert.deepEqual((await import('../scripts/lib/render.mjs')).errorEnvelope(caught), {
+    error: { code: 'RESCUE_BINDING_INVALID', category: 'authorization', message: 'The private Rescue operation binding is invalid.', remedy: 'Start a fresh Rescue operation from the active parent turn.', details: {} },
+  });
+  assert.equal(creates, 0); assert.equal(stops, 0); assert.equal(closes, 1);
+  assert.deepEqual(await store.readJob(workspace, claimed.id), beforeJob);
+  assert.deepEqual(await store.resolveRescueBinding({ workspace, parentSessionId: executor.parentSessionId, executorAgentId: executor.agentId }), beforeBinding);
+});
+
 test('failed cancellation is durably settled and a later immediate caller starts a new attempt', async () => {
   const { root, workspace, store } = await setup(); const job = await store.reserveJob({ workspace, ...reservation }); await store.transitionJob(workspace, job.id, ['queued'], 'running', { zcodeSessionId: 'zs' });
   const attemptFile = await attemptFixture(root, workspace, job.id); let failedStops = 0;

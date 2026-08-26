@@ -58,7 +58,8 @@ export async function executeJob(input) {
   let progressCleaned = false;
   /** @type {any} */ let jobLog;
   let jobLogCleaned = false;
-  const observedBoundStop = await revalidateBoundRescueStop(input.store, workspace, job);
+  /** @type {any} */ let observedBoundStop;
+  let initialBoundStopGuardComplete = false;
   const cleanupJobLog = async () => {
     if (jobLogCleaned) return;
     jobLogCleaned = true;
@@ -85,6 +86,8 @@ export async function executeJob(input) {
     try { reporter?.close(); } catch { /* progress-only */ }
   };
   try {
+    observedBoundStop = await revalidateBoundRescueStop(input.store, workspace, job);
+    initialBoundStopGuardComplete = true;
     jobLog = await openRuntimeJobLog({
       dataRoot, workspace, job, store: input.store, attach: 'always', fenceMs: OPTIONAL_PROGRESS_FENCE_MS,
       writeDiagnostic: input.progressWriter,
@@ -170,7 +173,7 @@ export async function executeJob(input) {
     appliedFinalization = publication.appliedFinalization;
   } catch (error) {
     primaryError = error instanceof SuccessfulResultFinalizationError ? error.cause : error;
-    let current = await input.store.readJob(workspace, job.id).catch(() => running);
+    let current = initialBoundStopGuardComplete ? await input.store.readJob(workspace, job.id).catch(() => running) : null;
     let resumeFailureSettlementRejected = false;
     if (input.resumeSessionId && current?.status === 'queued' && input.onResumeFailure) {
       try {
