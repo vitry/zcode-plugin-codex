@@ -24,6 +24,7 @@ import { createStateStore } from '../../scripts/lib/state.mjs';
 import { TRANSFER_WIRE_LIMITS } from '../../scripts/lib/transfer.mjs';
 import { writeResultArtifact } from '../../scripts/lib/review.mjs';
 import { createManagedZCodeClient, releaseManagedZCodeOwner } from '../../scripts/lib/zcode-client.mjs';
+import { terminateProcess } from '../../scripts/lib/process.mjs';
 import { resolveWorkspaceStorage } from '../../scripts/lib/workspace.mjs';
 import { renderOutput } from '../../scripts/lib/render.mjs';
 import { withWorkerLease } from '../../scripts/lib/recovery.mjs';
@@ -167,16 +168,30 @@ async function recordRealParentTurn(context, input) {
   assert.equal(prompted.code, 0, prompted.stderr || prompted.stdout);
 }
 
-/** @param {string} command @param {string[]} args @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:unknown,rawInput?:string}} [options] */
+/** @param {string} command @param {string[]} args @param {{cwd?:string,env?:NodeJS.ProcessEnv,input?:unknown,rawInput?:string,signal?:AbortSignal}} [options] */
 function run(command, args, options = {}) {
-  const child = spawn(command, args, { cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], shell: false });
+  const child = spawn(command, args, { cwd: options.cwd, env: options.env, detached: Boolean(options.signal) && process.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], shell: false });
   return new Promise((resolvePromise, reject) => {
-    let stdout = ''; let stderr = ''; let internal = '';
+    let stdout = ''; let stderr = ''; let internal = ''; let settled = false; let terminating = false;
+    /** @param {any} error @param {any} [value] */
+    const finish = (error, value) => {
+      if (settled) return; settled = true; options.signal?.removeEventListener('abort', onAbort);
+      if (error) reject(error); else resolvePromise(value);
+    };
+    const onAbort = () => {
+      if (settled || terminating) return; terminating = true;
+      const reason = options.signal?.reason instanceof Error ? options.signal.reason : new Error('Test child was aborted.');
+      if (!Object.hasOwn(reason, 'pid')) Object.assign(reason, { pid: child.pid });
+      void terminateProcess(child, { graceMs: 1_000 }).then(() => finish(reason), (error) => finish(error));
+    };
     child.stdout?.on('data', (chunk) => { stdout += chunk; }); child.stderr?.on('data', (chunk) => { stderr += chunk; });
     child.stdio[4]?.on('data', (chunk) => { internal += chunk; });
     child.stdio[3]?.on('error', consumePipeError); child.stdio[4]?.on('error', consumePipeError);
     /** @type {import('node:stream').Writable} */ (child.stdio[3]).end(options.rawInput ?? `${JSON.stringify(options.input ?? {})}\n`);
-    child.once('error', reject); child.once('exit', (code) => resolvePromise({ code, stdout, stderr, internal }));
+    options.signal?.addEventListener('abort', onAbort, { once: true }); if (options.signal?.aborted) onAbort();
+    child.once('error', (error) => finish(error));
+    child.once('exit', (code) => { if (!terminating) finish(null, { code, stdout, stderr, internal }); });
   });
 }
 
@@ -272,9 +287,11 @@ async function cleanupChildLossProcesses(input) {
   if (cleanupError) throw cleanupError;
 }
 
-/** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} [extraEnv] @param {Record<string,unknown>} [authorization] */
-async function companion(context, args, extraEnv = {}, authorization = { callerContext: context.caller }) {
-  const result = await run(process.execPath, [cli, ...args], { cwd: context.workspace, env: { ...context.env, ...extraEnv }, input: authorization });
+/** @typedef {{kind:'fulfilled',value:any}|{kind:'rejected',error:unknown}} CompanionOutcome */
+
+/** @param {any} context @param {string[]} args @param {NodeJS.ProcessEnv} [extraEnv] @param {Record<string,unknown>} [authorization] @param {AbortSignal} [signal] */
+async function companion(context, args, extraEnv = {}, authorization = { callerContext: context.caller }, signal) {
+  const result = await run(process.execPath, [cli, ...args], { cwd: context.workspace, env: { ...context.env, ...extraEnv }, input: authorization, signal });
   return { ...result, json: result.internal ? JSON.parse(result.internal) : null };
 }
 
@@ -284,30 +301,56 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
   const gate = join(context.directory, `${nonce}-progress-dispatch-gate.json`);
   const gateRecord = (/** @type {'held'|'release'} */ state) => ({ version: 1, nonce, state });
   await atomicWriteJson(gate, gateRecord('held'));
-  const execution = companion(context, args, {
+  const controller = new AbortController();
+  /** @type {CompanionOutcome|undefined} */
+  let observedExecutionOutcome;
+  const executionOutcome = /** @type {Promise<CompanionOutcome>} */ (companion(context, args, {
     ...extraEnv,
     FAKE_ZCODE_PROGRESS_DISPATCH_GATE: gate,
     FAKE_ZCODE_PROGRESS_DISPATCH_GATE_NONCE: nonce,
-  });
-  let result;
+  }, undefined, controller.signal).then(
+    (value) => ({ kind: 'fulfilled', value }),
+    (error) => ({ kind: 'rejected', error }),
+  )).then((outcome) => { observedExecutionOutcome = outcome; return outcome; });
+  /** @type {CompanionOutcome|undefined} */
+  let settledOutcome;
+  let result; let primaryError;
+  const throwIfExecutionSettled = () => {
+    if (observedExecutionOutcome?.kind === 'rejected') throw observedExecutionOutcome.error;
+    if (observedExecutionOutcome?.kind === 'fulfilled') throw new Error('Companion settled before progress was durably persisted.');
+  };
+  const settleExecution = async () => {
+    if (!settledOutcome) {
+      const timeout = Object.assign(new Error('Companion did not settle within 2 seconds after durable progress.'), { code: 'TEST_CHILD_TIMEOUT' });
+      const timer = setTimeout(() => controller.abort(timeout), 2_000); timer.unref?.();
+      try { settledOutcome = await executionOutcome; } finally { clearTimeout(timer); }
+    }
+    if (settledOutcome.kind === 'rejected') throw settledOutcome.error;
+    return settledOutcome.value;
+  };
   try {
     const storage = await resolveWorkspaceStorage(context);
     await waitFor(async () => {
+      throwIfExecutionSettled();
       const names = await readdir(join(storage.directory, 'jobs')).catch(() => []);
       for (const name of names) {
         if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue;
         const job = await readFile(join(storage.directory, 'jobs', name), 'utf8').then(JSON.parse).catch(() => null);
         if (job?.progressPreview?.includes(expectedMessage)) return true;
       }
+      throwIfExecutionSettled();
       return false;
     }, `progress was not durably persisted before completion: ${expectedMessage}`);
     await atomicWriteJson(gate, gateRecord('release'));
-    result = await execution;
+    result = await settleExecution();
+  } catch (error) {
+    primaryError = error;
   } finally {
-    await atomicWriteJson(gate, gateRecord('release')).catch(() => {});
-    if (!result) await execution.catch(() => {});
-    await unlink(gate).catch(() => {});
+    try { await atomicWriteJson(gate, gateRecord('release')); } catch (error) { primaryError ??= error; }
+    if (!settledOutcome) { try { await settleExecution(); } catch (error) { primaryError ??= error; } }
+    try { await unlink(gate); } catch (error) { if ((/** @type {any} */ (error))?.code !== 'ENOENT') primaryError ??= error; }
   }
+  if (primaryError) throw primaryError;
   return result;
 }
 
@@ -3048,6 +3091,20 @@ test('conversation online progress sent before the subscribe response is buffere
   assert.match(result.stderr, /Running command: echo prebind\./);
   const status = await companion(context, ['status', result.json.job.id]);
   assert.equal(status.json.job.progressPreview.includes(progress), true);
+});
+
+test('durable progress fixture bounds suppressed completion and reaps its companion', async () => {
+  const context = await fixture(); const startedAt = Date.now();
+  /** @type {number|undefined} */ let companionPid;
+  await assert.rejects(companionAfterDurableProgress(context, ['rescue', '--fresh', 'suppress completion after durable progress'], {
+    FAKE_ZCODE_CONVERSATION_PREBIND_ONLINE: '1', FAKE_ZCODE_SUPPRESS_FIRST_COMPLETION: '1',
+  }, 'Running command: echo prebind.'), (error) => {
+    companionPid = (/** @type {any} */ (error))?.pid; return (/** @type {any} */ (error))?.code === 'TEST_CHILD_TIMEOUT';
+  });
+  assert.ok(Date.now() - startedAt < 5_000, 'suppressed completion fixture exceeded its settlement bound');
+  assert.equal(Number.isSafeInteger(companionPid), true); assert.equal(processAlive(/** @type {number} */ (companionPid)), false);
+  const jobs = await createStateStore({ dataRoot: context.dataRoot }).listJobs(context.workspace);
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].status, 'cancelled');
 });
 
 test('conversation subscribe failure is observational, durable, and preserves the exact result', async () => {
