@@ -15,10 +15,19 @@ import { atomicWriteJson, withFileLock } from '../scripts/lib/fs.mjs';
 import { PluginError } from '../scripts/lib/errors.mjs';
 import { resolveWorkspaceStorage } from '../scripts/lib/workspace.mjs';
 import { validCreateSnapshot, validSetupAuthProbeSnapshot, validSnapshot } from '../scripts/lib/zcode-schema.mjs';
+import { scaleTestTimeout, testTimeoutMultiplier } from './helpers/test-timeouts.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-zcode-cli.mjs', import.meta.url));
 const brokerStartupFault = fileURLToPath(new URL('./fixtures/broker-startup-fault.cjs', import.meta.url));
 const MACOS_UNIX_SOCKET_PATH_MAX_BYTES = 104;
+
+test('CI timeout multiplier is bounded and defaults to one', () => {
+  assert.equal(testTimeoutMultiplier({}), 1);
+  assert.equal(testTimeoutMultiplier({ ZCODE_TEST_TIMEOUT_MULTIPLIER: '' }), 1);
+  for (const value of ['1', '2', '3']) assert.equal(testTimeoutMultiplier({ ZCODE_TEST_TIMEOUT_MULTIPLIER: value }), Number(value));
+  for (const value of ['0', '4', '1.5', ' 2 ', 'slow']) assert.throws(() => testTimeoutMultiplier({ ZCODE_TEST_TIMEOUT_MULTIPLIER: value }), /ZCODE_TEST_TIMEOUT_MULTIPLIER/u);
+  assert.equal(scaleTestTimeout(500, { ZCODE_TEST_TIMEOUT_MULTIPLIER: '3' }), 1_500);
+});
 
 async function withTestDeadlineKeepalive(operation) {
   const keepalive = setInterval(() => {}, 1_000);
@@ -219,8 +228,8 @@ async function withClient(callback, env = {}, options = {}) {
     workspace: directory,
     launch: { command: process.execPath, args: [fixture], target: fixture },
     env: { ...process.env, FAKE_ZCODE_RECORD: record, ...env },
-    requestTimeoutMs: process.platform === 'win32' ? 2_000 : 500,
-    completionTimeoutMs: process.platform === 'win32' ? 2_000 : 500,
+    requestTimeoutMs: scaleTestTimeout(process.platform === 'win32' ? 2_000 : 500),
+    completionTimeoutMs: scaleTestTimeout(process.platform === 'win32' ? 2_000 : 500),
     ...options,
   });
   try { await callback(client, record); } finally { await client.close(); await rm(directory, { recursive: true, force: true }); }

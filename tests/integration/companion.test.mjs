@@ -6,9 +6,11 @@ import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, syml
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { PassThrough } from 'node:stream';
+
+import { scaleTestTimeout } from '../helpers/test-timeouts.mjs';
 
 import { startBackgroundWorker } from '../../scripts/lib/background-worker.mjs';
 import { scavengeWritableJobs, settleEndedOwnerWritableJob } from '../../scripts/lib/recovery.mjs';
@@ -288,8 +290,9 @@ async function cleanupChildLossProcesses(input) {
 }
 
 /** @typedef {{kind:'fulfilled',value:any}|{kind:'rejected',error:unknown}} CompanionOutcome */
-const DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS = 15_000;
-const DURABLE_PROGRESS_TEST_TIMEOUT_MS = DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS + 10_000;
+const DURABLE_PROGRESS_OBSERVATION_TIMEOUT_MS = scaleTestTimeout(5_000);
+const DURABLE_PROGRESS_SETTLEMENT_TIMEOUT_MS = scaleTestTimeout(15_000);
+const DURABLE_PROGRESS_TEST_TIMEOUT_MS = scaleTestTimeout(25_000);
 
 /** @param {unknown} value @returns {string} */
 function requireDurableProgressJobId(value) {
@@ -348,7 +351,7 @@ async function companionAfterDurableProgress(context, args, extraEnv, expectedMe
       }
       throwIfExecutionSettled();
       return false;
-    }, `progress was not durably persisted before completion: ${expectedMessage}`);
+    }, `progress was not durably persisted before completion: ${expectedMessage}`, DURABLE_PROGRESS_OBSERVATION_TIMEOUT_MS);
     options.onDurableProgress?.();
     await atomicWriteJson(gate, gateRecord('release'));
     result = await settleExecution();
