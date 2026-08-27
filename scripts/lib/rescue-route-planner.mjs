@@ -300,7 +300,20 @@ function sameKeys(value, keys) { return Object.keys(value).sort().join('\0') ===
 /** @param {unknown} value */
 function safeId(value, maxBytes = 4096) {
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= maxBytes
-    && [...value].every((character) => character.charCodeAt(0) > 31 && character.charCodeAt(0) !== 127);
+    && wellFormedControlFree(value);
+}
+/** @param {string} value */
+function wellFormedControlFree(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code >= 0x7f && code <= 0x9f) return false;
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const trailing = value.charCodeAt(index + 1);
+      if (!(trailing >= 0xdc00 && trailing <= 0xdfff)) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false;
+  }
+  return true;
 }
 /** @param {unknown} value */
 function boundedIdentifier(value) { return safeId(value, 512); }

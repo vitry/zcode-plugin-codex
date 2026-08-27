@@ -142,6 +142,9 @@ test('rejects malformed, unsafe, and non-resume v2 continuation targets', () => 
     { ...exact, continuationTarget: { ...target, childId: null } },
     { ...exact, continuationTarget: { ...target, childId: '' } },
     { ...exact, continuationTarget: { ...target, childId: 'child\n2' } },
+    { ...exact, continuationTarget: { ...target, childId: 'child\u00852' } },
+    { ...exact, continuationTarget: { ...target, childId: 'child\ud8002' } },
+    { ...exact, continuationTarget: { ...target, childId: 'child\udc002' } },
     { ...exact, continuationTarget: { ...target, childId: 'x'.repeat(513) } },
     { ...exact, continuationTarget: { ...target, agentPath: null } },
     { ...exact, continuationTarget: { ...target, agentPath: '' } },
@@ -181,6 +184,18 @@ test('rejects malformed framing, UTF-8, duplicate keys, and envelope overflow', 
   await rejectsPreparation('{"version":1,"version":1,"source":"explicit","task":"x","options":{}}\n');
   await rejectsPreparation('{"version":1,"source":"explicit","task":"x","options":{"model":"a","model":"b"}}\n');
   await rejectsPreparation(`${' '.repeat(RESCUE_ENVELOPE_MAX_BYTES)}\n`);
+});
+
+test('deep duplicate-key scanning failures are sanitized without leaking a raw recursion error', async () => {
+  const deeplyNested = `${'['.repeat(5000)}0${']'.repeat(5000)}\n`;
+  await assert.rejects(readRescuePreparation(input(deeplyNested)), (/** @type {any} */ error) => {
+    assert.ok(error instanceof PluginError);
+    assert.equal(error.code, 'RESCUE_PREPARATION_INVALID');
+    assert.equal(error.message, 'The Rescue preparation is invalid.');
+    assert.equal(error.cause, undefined);
+    assert.doesNotMatch(`${error.name}\n${error.stack}`, /RangeError|Maximum call stack/u);
+    return true;
+  });
 });
 
 test('v2 continuation target round trips through v3 consumption and replacement generations', async () => {

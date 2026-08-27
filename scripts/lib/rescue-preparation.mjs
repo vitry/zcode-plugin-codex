@@ -37,6 +37,7 @@ const OPTION_KEYS = new Set(['effort', 'execution', 'model', 'resume']);
 const PREPARATION_LIFETIME_MS = 30 * 60_000;
 const PREPARATION_SCAN_MAX_RECORDS = 1024;
 const PREPARATION_RECORD_MAX_BYTES = 2 * 1024 * 1024;
+const DUPLICATE_SCAN_MAX_DEPTH = 64;
 const V1_RECORD_KEYS = Object.freeze([
   'consumedAt', 'createdAt', 'envelope', 'executorAgentId', 'expiresAt', 'key',
   'permissionMode', 'sessionId', 'source', 'turnId', 'version', 'workspace',
@@ -84,9 +85,11 @@ export async function readRescuePreparation(stream) {
   let text;
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, -1)); }
   catch { throw invalidPreparation(); }
-  rejectDuplicateObjectKeys(text);
   let value;
-  try { value = JSON.parse(text); } catch { throw invalidPreparation(); }
+  try {
+    rejectDuplicateObjectKeys(text);
+    value = JSON.parse(text);
+  } catch { throw invalidPreparation(); }
   return validateRescuePreparation(value);
 }
 
@@ -850,10 +853,21 @@ function nonempty(value) {
 /** @param {unknown} value @param {number} [maximumBytes] */
 function safeIdentifier(value, maximumBytes = 512) {
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= maximumBytes
-    && ![...value].some((character) => {
-      const code = /** @type {number} */ (character.codePointAt(0));
-      return code <= 31 || code === 127;
-    });
+    && wellFormedControlFree(value);
+}
+
+/** @param {string} value */
+function wellFormedControlFree(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code >= 0x7f && code <= 0x9f) return false;
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const trailing = value.charCodeAt(index + 1);
+      if (!(trailing >= 0xdc00 && trailing <= 0xdfff)) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false;
+  }
+  return true;
 }
 
 /** @param {unknown} value */
@@ -910,16 +924,18 @@ function rejectDuplicateObjectKeys(text) {
     }
     throw invalidPreparation();
   };
-  const value = () => {
+  const value = (depth = 0) => {
+    if (depth > DUPLICATE_SCAN_MAX_DEPTH) throw invalidPreparation();
     whitespace();
-    if (text[offset] === '{') return object();
-    if (text[offset] === '[') return array();
+    if (text[offset] === '{') return object(depth + 1);
+    if (text[offset] === '[') return array(depth + 1);
     if (text[offset] === '"') { string(); return; }
     const start = offset;
     while (offset < text.length && !/[\s,\]}]/u.test(text[offset])) offset += 1;
     if (offset === start) throw invalidPreparation();
   };
-  const object = () => {
+  /** @param {number} depth */
+  const object = (depth) => {
     offset += 1; whitespace();
     const keys = new Set();
     if (text[offset] === '}') { offset += 1; return; }
@@ -928,17 +944,18 @@ function rejectDuplicateObjectKeys(text) {
       if (keys.has(key)) throw invalidPreparation();
       keys.add(key);
       if (text[offset++] !== ':') throw invalidPreparation();
-      value(); whitespace();
+      value(depth); whitespace();
       if (text[offset] === '}') { offset += 1; return; }
       if (text[offset++] !== ',') throw invalidPreparation();
     }
     throw invalidPreparation();
   };
-  const array = () => {
+  /** @param {number} depth */
+  const array = (depth) => {
     offset += 1; whitespace();
     if (text[offset] === ']') { offset += 1; return; }
     while (offset < text.length) {
-      value(); whitespace();
+      value(depth); whitespace();
       if (text[offset] === ']') { offset += 1; return; }
       if (text[offset++] !== ',') throw invalidPreparation();
     }
